@@ -6,7 +6,6 @@ import com.ditchoom.buffer.FragmentedReadBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.SuspendCloseable
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -32,28 +31,27 @@ class SuspendingSocketInputStream internal constructor(
         var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
             currentBuffer
         } else {
-            println("recv 1")
             incomingBufferChannel.receive()
         }
-
-        println("recv b")
-        while (fragmentedLocalBuffer.remaining() < size.toUInt()) {
-            println("recv 2")
-            val nextBuffer = incomingBufferChannel.receive()
-            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, nextBuffer)
+        this.currentBuffer = fragmentedLocalBuffer
+        if (fragmentedLocalBuffer.remaining().toInt() >= size) {
+            return fragmentedLocalBuffer
         }
-        println("d")
+
+        // ensure remaining in local buffer at least the size we requested
+        while (fragmentedLocalBuffer.remaining() < size.toUInt()) {
+            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, incomingBufferChannel.receive())
+        }
         this.currentBuffer = fragmentedLocalBuffer
         return fragmentedLocalBuffer
     }
 
     internal suspend fun startListeningToSocketAsync() {
-        scope.launch(Dispatchers.Default) {
-            println("dispatched")
+        scope.launch {
             try {
                 socketFlowReader.read().collect { readBuffer ->
-                    println("sending buffer")
-                    incomingBufferChannel.send(readBuffer)
+                    val sliced = readBuffer.slice()
+                    incomingBufferChannel.send(sliced)
                 }
             } finally {
                 close()

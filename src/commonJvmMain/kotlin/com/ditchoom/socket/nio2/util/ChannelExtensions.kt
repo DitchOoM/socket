@@ -8,6 +8,7 @@ import kotlin.time.ExperimentalTime
 
 fun Channel.blockingClose() {
     try {
+        println("closing! $this")
         close()
     } catch (ex: Throwable) {
         // Specification says that it is Ok to call it any time, but reality is different,

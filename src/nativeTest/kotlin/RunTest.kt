@@ -1,12 +1,15 @@
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 actual fun <T> block(body: suspend CoroutineScope.() -> T) {
     runBlocking {
-        try {
-            body()
-        } catch (e: UnsupportedOperationException) {
-            println("Test hit unsupported code, ignoring")
+        withTimeout(1000) {
+            try {
+                body()
+            } catch (e: UnsupportedOperationException) {
+                println("Test hit unsupported code, ignoring")
+            }
         }
     }
 }

@@ -15,6 +15,7 @@ interface ClientSocket : SuspendCloseable {
     fun localPort(): UShort?
     fun remotePort(): UShort?
     suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int
+    suspend fun readBuffer(timeout: Duration = seconds(1)): SocketDataRead<ReadBuffer> = read(timeout) { buffer, _ -> buffer}
     suspend fun read(timeout: Duration = seconds(1)) = read(timeout) { buffer, bytesRead -> buffer.readUtf8(bytesRead) }
     suspend fun <T> read(timeout: Duration = seconds(1), bufferSize: UInt = 8096u, bufferRead: (PlatformBuffer, Int) -> T): SocketDataRead<T> {
         val buffer = allocateNewBuffer(bufferSize)
@@ -40,11 +41,9 @@ interface ClientSocket : SuspendCloseable {
     suspend fun suspendingInputStream(
         scope: CoroutineScope,
         timeout: Duration = seconds(1),
-        bufferSize: UInt = 8096u
     ): SuspendingSocketInputStream  {
-        val inputStream = SuspendingSocketInputStream(scope, SocketFlowReader(this@ClientSocket, timeout, bufferSize))
+        val inputStream = SuspendingSocketInputStream(scope, SocketFlowReader(this@ClientSocket, timeout))
         inputStream.startListeningToSocketAsync()
-        println("return")
         return inputStream
     }
 }

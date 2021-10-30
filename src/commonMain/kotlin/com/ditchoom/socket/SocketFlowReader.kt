@@ -2,10 +2,7 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.SuspendCloseable
-import com.ditchoom.buffer.allocateNewBuffer
-import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.flow.flow
 import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
@@ -17,15 +14,18 @@ internal class SocketFlowReader(
     private val bufferSize :UInt = 8096u,
 ): SuspendCloseable {
 
-    suspend fun read() = flow<ReadBuffer> {
+    suspend fun read() = flow {
         while (socket.isOpen()) {
-            val buffer = allocateNewBuffer(bufferSize)
             try {
-                val bytesRead = socket.read(buffer, timeout)
-                if (bytesRead < 0) {
+                val socketDataReadTmp = socket.readBuffer(timeout)
+                var newBuffer = socketDataReadTmp.result.slice()
+                newBuffer.setLimit(socketDataReadTmp.bytesRead)
+                newBuffer = newBuffer.slice()
+                val socketDataRead = socketDataReadTmp.copy(newBuffer)
+                if (socketDataRead.bytesRead < 0) {
                     return@flow
                 }
-                emit(buffer)
+                emit(socketDataRead.result)
             } catch (e: Exception) {
             }
         }

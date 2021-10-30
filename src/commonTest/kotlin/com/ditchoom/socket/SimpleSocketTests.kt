@@ -3,17 +3,14 @@
 package com.ditchoom.socket
 
 import block
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.ExperimentalTime
 
-@OptIn(ExperimentalTime::class)
+@ExperimentalTime
 class SimpleSocketTests {
 
     @Test
@@ -47,7 +44,7 @@ Connection: close
             clientToServer.write(text)
         }
         val serverToClient = server.accept()
-        val dataReceivedFromClient = serverToClient.read { buffer, bytesRead ->
+        val dataReceivedFromClient = serverToClient.read() { buffer, bytesRead ->
             buffer.readUtf8(bytesRead.toUInt())
         }
         assertEquals(text, dataReceivedFromClient.result.toString())
@@ -75,7 +72,9 @@ Connection: close
         }
         clientToServer.open(serverPort)
         val dataReceivedFromServer = withContext(Dispatchers.Default) {
-            clientToServer.read { buffer, bytesRead -> buffer.readUtf8(bytesRead.toUInt()) }
+            clientToServer.read() { buffer, bytesRead ->
+                buffer.readUtf8(bytesRead.toUInt())
+            }
         }
         assertEquals(text, dataReceivedFromServer.result.toString())
         val serverToClientPort = assertNotNull(serverToClient.localPort())
@@ -89,45 +88,33 @@ Connection: close
     }
 
     @Test
-    fun clientEchoSuspendingInputStream() = block {
+    fun suspendingInputStream() = block {
         val server = asyncServerSocket()
         server.bind()
-        val clientToServer = asyncClientSocket()
-        val text1 = "yolo swag "
-        val text2 = "lyfestyle"
-        val text = text1 + text2
+        val text = "yolo swag lyfestyle"
         val serverPort = assertNotNull(server.port(), "No port number from server")
-        lateinit var serverToClient: ClientSocket
-        launch {
-            serverToClient = server.accept()
-            serverToClient.write(text1)
-            serverToClient.write(text2)
+        launch(Dispatchers.Default) {
+            val clientToServer = asyncClientSocket()
+            clientToServer.open(serverPort)
+            val inputStream = clientToServer.suspendingInputStream(this)
+            val buffer = inputStream.sizedReadBuffer(text.length).slice()
+            val utf8 = buffer.readUtf8(text.length)
+            assertEquals(utf8.toString(), text)
+            val clientToServerPort = assertNotNull(clientToServer.localPort())
+            inputStream.close()
+            delay(5)
+            checkPort(clientToServerPort)
+            checkPort(serverPort)
+            // Needed for native tests, not sure why
+            cancel()
         }
-        clientToServer.open(serverPort)
-        val inputStream = clientToServer.suspendingInputStream(this, bufferSize = (text.length / 2).toUInt())
-
-        delay(20)
-        val buffer = inputStream.sizedReadBuffer(text.length).slice()
-        val utf8 = buffer.readUtf8(text.length)
-        val dataReceivedFromServer = utf8.toString()
+        val serverToClient = server.accept()
         val serverToClientPort = assertNotNull(serverToClient.localPort())
-        val clientToServerPort = assertNotNull(clientToServer.localPort())
-        println("1")
+        serverToClient.write(text)
         serverToClient.close()
-        println("2")
-        clientToServer.close()
-        println("3")
         server.close()
-        println("4")
-        checkPort(clientToServerPort)
-        println("5")
+        delay(5) // needed for jvm, not sure why
         checkPort(serverToClientPort)
-        println("6")
-        checkPort(serverPort)
-
-        println("7")
-        assertEquals(text, dataReceivedFromServer)
-        println("done")
     }
 
     @ExperimentalUnsignedTypes
