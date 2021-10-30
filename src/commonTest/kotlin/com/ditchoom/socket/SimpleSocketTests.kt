@@ -113,7 +113,7 @@ Connection: close
         serverToClient.write(text)
         serverToClient.close()
         server.close()
-        delay(5) // needed for jvm, not sure why
+        delay(15) // needed for jvm, not sure why
         checkPort(serverToClientPort)
     }
 
