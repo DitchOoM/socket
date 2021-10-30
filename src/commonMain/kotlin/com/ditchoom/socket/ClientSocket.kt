@@ -2,14 +2,11 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.SuspendCloseable
-import com.ditchoom.buffer.allocateNewBuffer
-import com.ditchoom.buffer.toBuffer
+import com.ditchoom.buffer.*
+import kotlinx.coroutines.CoroutineScope
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
-import kotlin.time.seconds
 
 @ExperimentalTime
 interface ClientSocket : SuspendCloseable {
@@ -24,6 +21,7 @@ interface ClientSocket : SuspendCloseable {
         val bytesRead = read(buffer, timeout)
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
+
     suspend fun <T> readTyped(timeout: Duration = seconds(1), bufferRead: (PlatformBuffer) -> T) =
         read(timeout) { buffer, _ ->
             bufferRead(buffer)
@@ -37,6 +35,17 @@ interface ClientSocket : SuspendCloseable {
         while (buffer.position() < buffer.limit()) {
             write(buffer, timeout)
         }
+    }
+
+    suspend fun suspendingInputStream(
+        scope: CoroutineScope,
+        timeout: Duration = seconds(1),
+        bufferSize: UInt = 8096u
+    ): SuspendingSocketInputStream  {
+        val inputStream = SuspendingSocketInputStream(scope, SocketFlowReader(this@ClientSocket, timeout, bufferSize))
+        inputStream.startListeningToSocketAsync()
+        println("return")
+        return inputStream
     }
 }
 

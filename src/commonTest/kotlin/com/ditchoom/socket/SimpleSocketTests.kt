@@ -4,6 +4,7 @@ package com.ditchoom.socket
 
 import block
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.test.Test
@@ -85,6 +86,48 @@ Connection: close
         checkPort(clientToServerPort)
         checkPort(serverToClientPort)
         checkPort(serverPort)
+    }
+
+    @Test
+    fun clientEchoSuspendingInputStream() = block {
+        val server = asyncServerSocket()
+        server.bind()
+        val clientToServer = asyncClientSocket()
+        val text1 = "yolo swag "
+        val text2 = "lyfestyle"
+        val text = text1 + text2
+        val serverPort = assertNotNull(server.port(), "No port number from server")
+        lateinit var serverToClient: ClientSocket
+        launch {
+            serverToClient = server.accept()
+            serverToClient.write(text1)
+            serverToClient.write(text2)
+        }
+        clientToServer.open(serverPort)
+        val inputStream = clientToServer.suspendingInputStream(this, bufferSize = (text.length / 2).toUInt())
+
+        delay(20)
+        val buffer = inputStream.sizedReadBuffer(text.length).slice()
+        val utf8 = buffer.readUtf8(text.length)
+        val dataReceivedFromServer = utf8.toString()
+        val serverToClientPort = assertNotNull(serverToClient.localPort())
+        val clientToServerPort = assertNotNull(clientToServer.localPort())
+        println("1")
+        serverToClient.close()
+        println("2")
+        clientToServer.close()
+        println("3")
+        server.close()
+        println("4")
+        checkPort(clientToServerPort)
+        println("5")
+        checkPort(serverToClientPort)
+        println("6")
+        checkPort(serverPort)
+
+        println("7")
+        assertEquals(text, dataReceivedFromServer)
+        println("done")
     }
 
     @ExperimentalUnsignedTypes
