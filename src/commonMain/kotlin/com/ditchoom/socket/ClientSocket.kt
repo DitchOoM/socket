@@ -38,7 +38,7 @@ interface ClientSocket : SuspendCloseable {
         }
     }
 
-    suspend fun suspendingInputStream(
+    fun suspendingInputStream(
         scope: CoroutineScope,
         timeout: Duration = seconds(1),
     ): SuspendingSocketInputStream  {

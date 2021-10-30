@@ -8,6 +8,7 @@ import com.ditchoom.buffer.SuspendCloseable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlin.time.ExperimentalTime
 
@@ -46,7 +47,7 @@ class SuspendingSocketInputStream internal constructor(
         return fragmentedLocalBuffer
     }
 
-    internal suspend fun startListeningToSocketAsync() {
+    internal fun startListeningToSocketAsync() {
         scope.launch {
             try {
                 socketFlowReader.read().collect { readBuffer ->
@@ -60,6 +61,7 @@ class SuspendingSocketInputStream internal constructor(
     }
 
     override suspend fun close() {
+        incomingBufferChannel.cancel()
         incomingBufferChannel.close()
         socketFlowReader.close()
     }

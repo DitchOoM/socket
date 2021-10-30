@@ -14,7 +14,7 @@ internal class SocketFlowReader(
     private val bufferSize :UInt = 8096u,
 ): SuspendCloseable {
 
-    suspend fun read() = flow {
+    fun read() = flow {
         while (socket.isOpen()) {
             try {
                 val socketDataReadTmp = socket.readBuffer(timeout)
