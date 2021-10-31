@@ -40,7 +40,7 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation("com.ditchoom:buffer:1.0.46")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.5.2-native-mt")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.5.2")
             }
         }
         val commonTest by getting {
