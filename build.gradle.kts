@@ -30,17 +30,17 @@ kotlin {
     js {
         nodejs{ }
     }
-    macosX64()
-    linuxX64()
-//    ios()
-//    iosSimulatorArm64()
-//    watchos()
-//    tvos()
+//    macosX64()
+//    linuxX64()
+////    ios()
+////    iosSimulatorArm64()
+////    watchos()
+////    tvos()
     sourceSets {
         val commonMain by getting {
             dependencies {
                 implementation("com.ditchoom:buffer:1.0.46")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.5.2")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.5.2-native-mt")
             }
         }
         val commonTest by getting {
@@ -61,37 +61,37 @@ kotlin {
                 implementation(npm("tcp-port-used", "1.0.1"))
             }
         }
-        val macosX64Main by getting
-        val macosX64Test by getting
-        val linuxX64Main by getting
-        val linuxX64Test by getting
-//        val iosMain by getting
-//        val iosTest by getting
-//        val iosSimulatorArm64Main by getting
-//        val iosSimulatorArm64Test by getting
-//        val watchosMain by getting
-//        val watchosTest by getting
-//        val tvosMain by getting
-//        val tvosTest by getting
+//        val macosX64Main by getting
+//        val macosX64Test by getting
+//        val linuxX64Main by getting
+//        val linuxX64Test by getting
+////        val iosMain by getting
+////        val iosTest by getting
+////        val iosSimulatorArm64Main by getting
+////        val iosSimulatorArm64Test by getting
+////        val watchosMain by getting
+////        val watchosTest by getting
+////        val tvosMain by getting
+////        val tvosTest by getting
 
-        val nativeMain by sourceSets.creating {
-            dependsOn(commonMain)
-            macosX64Main.dependsOn(this)
-            linuxX64Main.dependsOn(this)
-//            iosMain.dependsOn(this)
-//            iosSimulatorArm64Main.dependsOn(this)
-//            watchosMain.dependsOn(this)
-//            tvosMain.dependsOn(this)
-        }
-        val nativeTest by sourceSets.creating {
-            dependsOn(commonTest)
-            macosX64Test.dependsOn(this)
-            linuxX64Test.dependsOn(this)
-//            iosTest.dependsOn(this)
-//            iosSimulatorArm64Test.dependsOn(this)
-//            watchosTest.dependsOn(this)
-//            tvosTest.dependsOn(this)
-        }
+//        val nativeMain by sourceSets.creating {
+//            dependsOn(commonMain)
+//            macosX64Main.dependsOn(this)
+//            linuxX64Main.dependsOn(this)
+////            iosMain.dependsOn(this)
+////            iosSimulatorArm64Main.dependsOn(this)
+////            watchosMain.dependsOn(this)
+////            tvosMain.dependsOn(this)
+//        }
+//        val nativeTest by sourceSets.creating {
+//            dependsOn(commonTest)
+//            macosX64Test.dependsOn(this)
+//            linuxX64Test.dependsOn(this)
+////            iosTest.dependsOn(this)
+////            iosSimulatorArm64Test.dependsOn(this)
+////            watchosTest.dependsOn(this)
+////            tvosTest.dependsOn(this)
+//        }
 
         val androidMain by getting {
             kotlin.srcDir("src/commonJvmMain/kotlin")
