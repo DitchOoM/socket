@@ -8,10 +8,9 @@ import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
-internal class SocketFlowReader(
-    private val socket: ClientSocket,
+internal class BufferedReader(
+    private val socket: SocketController,
     private val timeout: Duration,
-    private val bufferSize :UInt = 8096u,
 ): SuspendCloseable {
 
     fun read() = flow {

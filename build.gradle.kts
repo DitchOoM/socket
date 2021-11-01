@@ -28,6 +28,7 @@ kotlin {
         }
     }
     js {
+        browser {}
         nodejs{ }
     }
 //    macosX64()
@@ -39,8 +40,8 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.46")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.5.2-native-mt")
+                implementation("com.ditchoom:buffer:1.0.47")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.5.2")
             }
         }
         val commonTest by getting {

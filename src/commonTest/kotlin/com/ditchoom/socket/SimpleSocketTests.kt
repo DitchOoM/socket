@@ -3,18 +3,40 @@
 package com.ditchoom.socket
 
 import block
+import com.ditchoom.buffer.toBuffer
+import com.ditchoom.websocket.WebSocketConnectionOptions
 import kotlinx.coroutines.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
 class SimpleSocketTests {
 
     @Test
+    fun websocket() = block {
+        val webSocketConnectionOptions = WebSocketConnectionOptions(
+            "localhost",
+            8080,
+            "chat",
+            "/chat",
+            seconds(1)
+        )
+        val websocketClient = getWebSocketClient(this, webSocketConnectionOptions)
+        val stringToValidate = "test"
+        websocketClient.writeFully(stringToValidate.toBuffer())
+        val bufferRead = websocketClient.readBuffer()
+        val stringData = bufferRead.result.readUtf8(bufferRead.bytesRead).toString()
+        assertEquals(stringToValidate, stringData)
+        websocketClient.close()
+    }
+
+    @Test
     fun httpRawSocket() = block {
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val client = openClientSocket(80u, hostname = "example.com")
         val request =
             """
@@ -34,6 +56,7 @@ Connection: close
 
     @Test
     fun serverEcho() = block {
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val server = asyncServerSocket()
         server.bind()
         val text = "yolo swag lyfestyle"
@@ -60,6 +83,7 @@ Connection: close
 
     @Test
     fun clientEcho() = block {
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val server = asyncServerSocket()
         server.bind()
         val clientToServer = asyncClientSocket()
@@ -89,6 +113,7 @@ Connection: close
 
     @Test
     fun suspendingInputStream() = block {
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val server = asyncServerSocket()
         server.bind()
         val text = "yolo swag lyfestyle"
@@ -119,6 +144,7 @@ Connection: close
 
     @ExperimentalUnsignedTypes
     private suspend fun checkPort(port: UShort) {
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return
         val stats = readStats(port, "CLOSE_WAIT")
         if (stats.isNotEmpty()) {
             println("stats (${stats.count()}): $stats")

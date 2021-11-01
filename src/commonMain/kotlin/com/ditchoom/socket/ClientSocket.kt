@@ -9,13 +9,13 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
-interface ClientSocket : SuspendCloseable {
+interface ClientSocket : SocketController, SuspendCloseable {
 
-    fun isOpen(): Boolean
+    override fun isOpen(): Boolean
     fun localPort(): UShort?
     fun remotePort(): UShort?
     suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int
-    suspend fun readBuffer(timeout: Duration = seconds(1)): SocketDataRead<ReadBuffer> = read(timeout) { buffer, _ -> buffer}
+    override suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> = read(timeout) { buffer, _ -> buffer}
     suspend fun read(timeout: Duration = seconds(1)) = read(timeout) { buffer, bytesRead -> buffer.readUtf8(bytesRead) }
     suspend fun <T> read(timeout: Duration = seconds(1), bufferSize: UInt = 8096u, bufferRead: (PlatformBuffer, Int) -> T): SocketDataRead<T> {
         val buffer = allocateNewBuffer(bufferSize)
@@ -28,11 +28,11 @@ interface ClientSocket : SuspendCloseable {
             bufferRead(buffer)
         }.result
 
-    suspend fun write(buffer: PlatformBuffer, timeout: Duration = seconds(1)): Int
+    suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int
     suspend fun write(buffer: String, timeout: Duration = seconds(1)): Int
             = write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
 
-    suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
+    override suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
         while (buffer.position() < buffer.limit()) {
             write(buffer, timeout)
         }
@@ -41,11 +41,7 @@ interface ClientSocket : SuspendCloseable {
     fun suspendingInputStream(
         scope: CoroutineScope,
         timeout: Duration = seconds(1),
-    ): SuspendingSocketInputStream  {
-        val inputStream = SuspendingSocketInputStream(scope, SocketFlowReader(this@ClientSocket, timeout))
-        inputStream.startListeningToSocketAsync()
-        return inputStream
-    }
+    ) = SuspendingSocketInputStream(scope, BufferedReader(this@ClientSocket, timeout))
 }
 
 data class SocketDataRead<T>(val result: T, val bytesRead: Int)

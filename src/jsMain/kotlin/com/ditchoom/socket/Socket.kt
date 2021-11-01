@@ -1,6 +1,6 @@
 package com.ditchoom.socket
 
-import kotlin.browser.window
+import kotlinx.browser.window
 import kotlin.time.ExperimentalTime
 
 val isNodeJs by lazy {

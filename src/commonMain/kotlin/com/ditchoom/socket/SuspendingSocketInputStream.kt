@@ -2,10 +2,7 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.FragmentedReadBuffer
-import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.SuspendCloseable
-import com.ditchoom.buffer.allocateNewBuffer
+import com.ditchoom.buffer.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
@@ -19,13 +16,25 @@ import kotlin.time.ExperimentalTime
 @ExperimentalTime
 class SuspendingSocketInputStream internal constructor(
     private val scope: CoroutineScope,
-    private val socketFlowReader: SocketFlowReader,
+    private val bufferedReader: BufferedReader,
 ): SuspendCloseable {
+
+    var transformer: ((UInt, Byte) -> Byte)? = null
 
     private val incomingBufferChannel = Channel<ReadBuffer>(2)
     private var currentBuffer :ReadBuffer? = null
+    private val readerJob = scope.launch {
+        try {
+            bufferedReader.read().collect { readBuffer ->
+                val sliced = readBuffer.slice()
+                incomingBufferChannel.send(sliced)
+            }
+        } finally {
+            close()
+        }
+    }
     private val emptyBuffer = allocateNewBuffer(0u)
-    
+
     suspend fun readUnsignedByte() = sizedReadBuffer(UByte.SIZE_BYTES).readUnsignedByte()
     suspend fun readByte() = sizedReadBuffer(Byte.SIZE_BYTES).readByte()
 
@@ -48,26 +57,19 @@ class SuspendingSocketInputStream internal constructor(
         while (fragmentedLocalBuffer.remaining() < size.toUInt()) {
             fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, incomingBufferChannel.receive())
         }
-        this.currentBuffer = fragmentedLocalBuffer
-        return fragmentedLocalBuffer
-    }
-
-    internal fun startListeningToSocketAsync() {
-        scope.launch {
-            try {
-                socketFlowReader.read().collect { readBuffer ->
-                    val sliced = readBuffer.slice()
-                    incomingBufferChannel.send(sliced)
-                }
-            } finally {
-                close()
-            }
+        val transformer = transformer
+        val buffer = if (transformer != null) {
+            TransformedReadBuffer(fragmentedLocalBuffer, transformer)
+        } else {
+            fragmentedLocalBuffer
         }
+        this.currentBuffer = buffer
+        return buffer
     }
 
     override suspend fun close() {
         incomingBufferChannel.cancel()
         incomingBufferChannel.close()
-        socketFlowReader.close()
+        bufferedReader.close()
     }
 }
