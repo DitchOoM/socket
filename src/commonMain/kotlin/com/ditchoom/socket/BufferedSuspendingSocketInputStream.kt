@@ -5,6 +5,7 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.FragmentedReadBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.SuspendCloseable
+import com.ditchoom.buffer.allocateNewBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
@@ -23,11 +24,15 @@ class SuspendingSocketInputStream internal constructor(
 
     private val incomingBufferChannel = Channel<ReadBuffer>(2)
     private var currentBuffer :ReadBuffer? = null
-
+    private val emptyBuffer = allocateNewBuffer(0u)
+    
     suspend fun readUnsignedByte() = sizedReadBuffer(UByte.SIZE_BYTES).readUnsignedByte()
     suspend fun readByte() = sizedReadBuffer(Byte.SIZE_BYTES).readByte()
 
     suspend fun sizedReadBuffer(size: Int): ReadBuffer {
+        if (size < 1) {
+            return emptyBuffer
+        }
         val currentBuffer = currentBuffer
         var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
             currentBuffer
