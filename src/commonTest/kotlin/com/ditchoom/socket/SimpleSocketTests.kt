@@ -21,8 +21,8 @@ class SimpleSocketTests {
         val webSocketConnectionOptions = WebSocketConnectionOptions(
             "localhost",
             8080,
-            "chat",
-            "/chat",
+            "echo",
+            "/echo",
             seconds(1)
         )
         val websocketClient = getWebSocketClient(this, webSocketConnectionOptions)
@@ -30,8 +30,8 @@ class SimpleSocketTests {
         websocketClient.writeFully(stringToValidate.toBuffer())
         val bufferRead = websocketClient.readBuffer()
         val stringData = bufferRead.result.readUtf8(bufferRead.bytesRead).toString()
-        assertEquals(stringToValidate, stringData)
         websocketClient.close()
+        assertEquals(stringToValidate, stringData)
     }
 
     @Test

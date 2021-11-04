@@ -58,7 +58,6 @@ class ClientWebSocket(
             ) {
                 throw IllegalStateException("Invalid response from server when reading the result from websockets. Response:\r\n$response")
             }
-            println(response)
             val bufferedReader = BufferedReader(socketController, connectionOptions.readTimeout)
             val suspendingInputStream = SuspendingSocketInputStream(scope, bufferedReader)
             val reader = WebSocketFrameReader(suspendingInputStream)

@@ -3,6 +3,7 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.*
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.promise
@@ -12,6 +13,7 @@ import org.w3c.dom.ARRAYBUFFER
 import org.w3c.dom.BinaryType
 import org.w3c.dom.WebSocket
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
@@ -19,44 +21,41 @@ import kotlin.time.ExperimentalTime
 @ExperimentalUnsignedTypes
 @ExperimentalTime
 class BrowserWebsocketController(
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     connectionOptions: WebSocketConnectionOptions
 ) : SocketController {
 
-    private val websocket: WebSocket =
-        WebSocket(
-            "ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}",
-            "mqtt"
-        )
+    private val websocket :WebSocket =
+        WebSocket("ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}")
+
     private var isConnected = false
 
     private val reader = SuspendableReader(scope, websocket)
 
     init {
         websocket.binaryType = BinaryType.ARRAYBUFFER
-        websocket.onclose = {
-            isConnected = false
-            Unit
-        }
-        websocket.onerror = {
-            isConnected = false
-            println("websocket onerror $it")
-            Unit
-        }
     }
 
-    override fun isOpen(): Boolean {
-        return isConnected
-    }
+    override fun isOpen() = isConnected
 
     suspend fun connect() {
         suspendCoroutine<Unit> { continuation ->
+            websocket.onclose = {
+                isConnected = false
+                console.error("onclose $it")
+                continuation.resumeWithException(Exception(it.toString()))
+                launchClose()
+                Unit
+            }
+            websocket.onerror = {
+                isConnected = false
+                console.error("ws error", it)
+                Unit
+            }
             websocket.onopen = { event ->
                 isConnected = true
                 continuation.resume(Unit)
-            }
-            websocket.onerror = { event ->
-                println("error ${event.type}")
+                Unit
             }
         }
     }
@@ -71,6 +70,9 @@ class BrowserWebsocketController(
         websocket.send(arrayBuffer)
     }
 
+    fun launchClose() = scope.launch {
+        close()
+    }
     override suspend fun close() {
         reader.incomingChannel.close()
         websocket.close()
@@ -88,9 +90,7 @@ class BrowserWebsocketController(
                 buffer.setLimit(array.length)
                 buffer.setPosition(0)
                 scope.promise {
-                    println("sending")
                     incomingChannel.send(buffer)
-                    println("sent")
                 }
                 Unit
             }

@@ -213,3 +213,16 @@ System.getenv("GITHUB_REPOSITORY")?.let {
 plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
     the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootExtension>().disableGranularWorkspaces()
 }
+
+
+val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
+    port.set(8080)
+}
+
+tasks.forEach { task ->
+    val taskName = task.name
+    if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true))
+        || taskName == "check") {
+        task.dependsOn(echoWebsocket)
+    }
+}
