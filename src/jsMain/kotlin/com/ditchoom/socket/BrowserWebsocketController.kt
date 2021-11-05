@@ -5,6 +5,8 @@ import com.ditchoom.websocket.WebSocketConnectionOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.promise
 import org.khronos.webgl.ArrayBuffer
@@ -29,11 +31,16 @@ class BrowserWebsocketController(
         WebSocket("ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}")
 
     private var isConnected = false
-
+    private val readerChannel = Channel<ReadBuffer>()
     private val reader = SuspendableReader(scope, websocket)
 
     init {
         websocket.binaryType = BinaryType.ARRAYBUFFER
+        scope.launch {
+            reader.read().collect {
+                readerChannel.send(it)
+            }
+        }
     }
 
     override fun isOpen() = isConnected
@@ -61,7 +68,7 @@ class BrowserWebsocketController(
     }
 
     override suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> {
-        val buffer = reader.incomingChannel.receive()
+        val buffer = readerChannel.receive()
         return SocketDataRead(buffer, buffer.remaining().toInt())
     }
 
@@ -74,12 +81,13 @@ class BrowserWebsocketController(
         close()
     }
     override suspend fun close() {
-        reader.incomingChannel.close()
+        readerChannel.close()
+        reader.close()
         websocket.close()
     }
 
-    class SuspendableReader(scope: CoroutineScope, webSocket: WebSocket) {
-        internal val incomingChannel = Channel<JsBuffer>()
+    class SuspendableReader(scope: CoroutineScope, webSocket: WebSocket): Reader {
+        private val incomingChannel = Channel<JsBuffer>()
         private var currentBuffer: JsBuffer? = null
 
         init {
@@ -95,7 +103,20 @@ class BrowserWebsocketController(
                 Unit
             }
         }
+
+        override fun read() = flow<ReadBuffer> {
+            emit(incomingChannel.receive())
+        }
+
+        override suspend fun close() {
+            incomingChannel.close()
+        }
     }
+
+    override fun suspendingInputStream(
+        scope: CoroutineScope,
+        socketReadTimeout: Duration
+    ) = SuspendingSocketInputStream(scope, reader)
 
     companion object {
         suspend fun open(scope: CoroutineScope, webSocketConnectionOptions: WebSocketConnectionOptions): BrowserWebsocketController {

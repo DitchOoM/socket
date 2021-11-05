@@ -27,6 +27,10 @@ class ClientWebSocket(
         val buffer = reader.read() ?: emptyBuffer
         return SocketDataRead(buffer, buffer.remaining().toInt())
     }
+    override fun suspendingInputStream(
+        scope: CoroutineScope,
+        timeout: Duration,
+    ) = reader.inputStream
 
     override suspend fun close(): Unit = webSocket.close()
 

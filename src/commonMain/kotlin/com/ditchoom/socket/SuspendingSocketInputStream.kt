@@ -6,7 +6,6 @@ import com.ditchoom.buffer.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlin.time.ExperimentalTime
 
@@ -16,7 +15,7 @@ import kotlin.time.ExperimentalTime
 @ExperimentalTime
 class SuspendingSocketInputStream internal constructor(
     private val scope: CoroutineScope,
-    private val bufferedReader: BufferedReader,
+    private val reader: Reader,
 ): SuspendCloseable {
 
     var transformer: ((UInt, Byte) -> Byte)? = null
@@ -25,7 +24,7 @@ class SuspendingSocketInputStream internal constructor(
     private var currentBuffer :ReadBuffer? = null
     private val readerJob = scope.launch {
         try {
-            bufferedReader.read().collect { readBuffer ->
+            reader.read().collect { readBuffer ->
                 val sliced = readBuffer.slice()
                 incomingBufferChannel.send(sliced)
             }
@@ -70,6 +69,6 @@ class SuspendingSocketInputStream internal constructor(
     override suspend fun close() {
         incomingBufferChannel.cancel()
         incomingBufferChannel.close()
-        bufferedReader.close()
+        reader.close()
     }
 }

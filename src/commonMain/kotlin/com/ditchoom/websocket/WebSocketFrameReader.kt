@@ -8,7 +8,7 @@ import kotlin.experimental.and
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
-class WebSocketFrameReader(private val inputStream: SuspendingSocketInputStream) {
+class WebSocketFrameReader(val inputStream: SuspendingSocketInputStream) {
 
     suspend fun read(): ReadBuffer? {
         val metadata = readFrameMetadata() ?: return null

@@ -38,9 +38,9 @@ interface ClientSocket : SocketController, SuspendCloseable {
         }
     }
 
-    fun suspendingInputStream(
+    override fun suspendingInputStream(
         scope: CoroutineScope,
-        timeout: Duration = seconds(1),
+        timeout: Duration,
     ) = SuspendingSocketInputStream(scope, BufferedReader(this@ClientSocket, timeout))
 }
 

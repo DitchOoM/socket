@@ -2,18 +2,25 @@
 
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.SuspendCloseable
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
+
+interface Reader: SuspendCloseable {
+    fun read(): Flow<ReadBuffer>
+}
+
 
 @ExperimentalTime
 internal class BufferedReader(
     private val socket: SocketController,
     private val timeout: Duration,
-): SuspendCloseable {
+): Reader {
 
-    fun read() = flow {
+    override fun read() = flow {
         while (socket.isOpen()) {
             try {
                 val socketDataReadTmp = socket.readBuffer(timeout)

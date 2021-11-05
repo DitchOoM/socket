@@ -5,6 +5,7 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.SuspendCloseable
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.flow
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -22,4 +23,6 @@ interface SocketController: SuspendCloseable {
             emit(readBuffer(timeout).result)
         }
     }
+
+    fun suspendingInputStream(scope: CoroutineScope, socketReadTimeout: Duration = seconds(1)): SuspendingSocketInputStream
 }
