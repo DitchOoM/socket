@@ -11,7 +11,6 @@ buildscript {
 
 apply plugin: 'kotlin'
 
-
 repositories {
     google()
     mavenCentral()
@@ -21,4 +20,9 @@ dependencies {
     implementation gradleApi()
     implementation("io.ktor:ktor-server-netty:1.6.5")
     implementation("io.ktor:ktor-websockets:1.6.5")
+}
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(8))
+    }
 }
