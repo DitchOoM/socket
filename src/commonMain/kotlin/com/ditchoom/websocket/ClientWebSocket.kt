@@ -29,7 +29,7 @@ class ClientWebSocket(
     }
     override fun suspendingInputStream(
         scope: CoroutineScope,
-        timeout: Duration,
+        socketReadTimeout: Duration,
     ) = reader.inputStream
 
     override suspend fun close(): Unit = webSocket.close()

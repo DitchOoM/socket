@@ -53,7 +53,7 @@ suspend fun Selector.select(selectionKey: SelectionKey, attachment: Any, timeout
     if (selectedCount == 0) {
         throw CancellationException("Selector timed out after waiting $timeout for ${selectionKey.isConnectable}")
     }
-    while (isOpen && timeout - startTime.elapsedNow() > 0.milliseconds) {
+    while (isOpen && timeout - startTime.elapsedNow() > Duration.milliseconds(0)) {
         if (selectedKeys().remove(selectionKey)) {
             val cont = selectionKey.attachment() as WrappedContinuation<*>
             if (cont.attachment != attachment) {

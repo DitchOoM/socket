@@ -15,6 +15,7 @@ interface Reader: SuspendCloseable {
 
 
 @ExperimentalTime
+@ExperimentalUnsignedTypes
 internal class BufferedReader(
     private val socket: SocketController,
     private val timeout: Duration,

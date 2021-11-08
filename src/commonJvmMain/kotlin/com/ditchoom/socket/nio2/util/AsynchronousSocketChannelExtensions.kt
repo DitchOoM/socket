@@ -52,7 +52,7 @@ suspend fun AsynchronousSocketChannel.aRead(
 ): Int {
     val result = suspendCancellableCoroutine<Int> { cont ->
         read(
-            buf, duration.toLongMilliseconds(), TimeUnit.MILLISECONDS, cont,
+            buf, duration.inWholeMilliseconds, TimeUnit.MILLISECONDS, cont,
             asyncIOIntHandler()
         )
         closeOnCancel(cont)
@@ -76,7 +76,7 @@ suspend fun AsynchronousSocketChannel.aWrite(
     return suspendCancellableCoroutine<Int> { cont ->
         buf.flip()
         write(
-            buf, duration.toLongMilliseconds(), TimeUnit.MILLISECONDS, cont,
+            buf, duration.inWholeMilliseconds, TimeUnit.MILLISECONDS, cont,
             asyncIOHandler()
         )
         closeOnCancel(cont)

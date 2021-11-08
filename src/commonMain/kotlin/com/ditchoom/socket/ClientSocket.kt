@@ -8,6 +8,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
+@ExperimentalUnsignedTypes
 @ExperimentalTime
 interface ClientSocket : SocketController, SuspendCloseable {
 
@@ -40,8 +41,8 @@ interface ClientSocket : SocketController, SuspendCloseable {
 
     override fun suspendingInputStream(
         scope: CoroutineScope,
-        timeout: Duration,
-    ) = SuspendingSocketInputStream(scope, BufferedReader(this@ClientSocket, timeout))
+        socketReadTimeout: Duration,
+    ) = SuspendingSocketInputStream(scope, BufferedReader(this@ClientSocket, socketReadTimeout))
 }
 
 data class SocketDataRead<T>(val result: T, val bytesRead: Int)

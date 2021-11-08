@@ -17,7 +17,7 @@ suspend fun Selector.aSelect(timeout: Duration): Int {
     return withContext(Dispatchers.IO) {
         suspendCancellableCoroutine<Int> {
             try {
-                it.resume(select(timeout.toLongMilliseconds()))
+                it.resume(select(timeout.inWholeMilliseconds))
             } catch (e: Throwable) {
                 if (e is AsynchronousCloseException && it.isCancelled) {
                     selector.close()
