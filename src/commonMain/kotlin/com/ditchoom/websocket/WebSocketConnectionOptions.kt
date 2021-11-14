@@ -4,7 +4,7 @@ import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
-class WebSocketConnectionOptions (
+class WebSocketConnectionOptions(
     val name: String,
     val port: Int,
     val protocol: String,

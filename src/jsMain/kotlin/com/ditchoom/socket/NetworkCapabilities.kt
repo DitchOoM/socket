@@ -2,20 +2,19 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.websocket.ClientWebSocket
+import com.ditchoom.websocket.NativeWebsocket
+import com.ditchoom.websocket.WebSocket
 import com.ditchoom.websocket.WebSocketConnectionOptions
-import kotlinx.coroutines.CoroutineScope
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
 actual suspend fun getWebSocketClient(
-    scope: CoroutineScope,
     connectionOptions: WebSocketConnectionOptions,
-): SocketController {
+): WebSocket {
     return if (isNodeJs) {
-        ClientWebSocket.open(scope, connectionOptions)
+        NativeWebsocket.open(connectionOptions)
     } else {
-        BrowserWebsocketController.open(scope, connectionOptions)
+        BrowserWebsocketController.open(connectionOptions)
     }
 }
 

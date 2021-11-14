@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
+import com.ditchoom.websocket.WebSocket
 import com.ditchoom.websocket.WebSocketConnectionOptions
-import kotlinx.coroutines.CoroutineScope
 import kotlin.time.ExperimentalTime
 
 enum class NetworkCapabilities {
@@ -13,8 +13,8 @@ enum class NetworkCapabilities {
 expect fun getNetworkCapabilities(): NetworkCapabilities
 
 
+@ExperimentalUnsignedTypes
 @ExperimentalTime
 expect suspend fun getWebSocketClient(
-    scope: CoroutineScope,
     connectionOptions: WebSocketConnectionOptions,
-): SocketController
+): WebSocket

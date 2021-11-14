@@ -2,15 +2,16 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.websocket.ClientWebSocket
+import com.ditchoom.websocket.NativeWebsocket
+import com.ditchoom.websocket.WebSocket
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import kotlinx.coroutines.CoroutineScope
+import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
 actual suspend fun getWebSocketClient(
-    scope: CoroutineScope,
     connectionOptions: WebSocketConnectionOptions,
-): SocketController = ClientWebSocket.open(scope, connectionOptions)
+): WebSocket = NativeWebsocket.open(connectionOptions)
 
 actual fun getNetworkCapabilities() = NetworkCapabilities.FULL_SOCKET_ACCESS

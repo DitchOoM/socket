@@ -3,22 +3,30 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.*
-import kotlinx.coroutines.CoroutineScope
+import com.ditchoom.data.Reader
+import com.ditchoom.data.Writer
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 @ExperimentalUnsignedTypes
 @ExperimentalTime
-interface ClientSocket : SocketController, SuspendCloseable {
+interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBuffer>, SuspendCloseable {
 
     override fun isOpen(): Boolean
     fun localPort(): UShort?
     fun remotePort(): UShort?
     suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int
-    override suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> = read(timeout) { buffer, _ -> buffer}
+    override suspend fun readData(timeout: Duration) = readBuffer(timeout).result
+    suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> =
+        read(timeout) { buffer, _ -> buffer }
+
     suspend fun read(timeout: Duration = seconds(1)) = read(timeout) { buffer, bytesRead -> buffer.readUtf8(bytesRead) }
-    suspend fun <T> read(timeout: Duration = seconds(1), bufferSize: UInt = 8096u, bufferRead: (PlatformBuffer, Int) -> T): SocketDataRead<T> {
+    suspend fun <T> read(
+        timeout: Duration = seconds(1),
+        bufferSize: UInt = 4u * 1024u,
+        bufferRead: (PlatformBuffer, Int) -> T
+    ): SocketDataRead<T> {
         val buffer = allocateNewBuffer(bufferSize)
         val bytesRead = read(buffer, timeout)
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
@@ -29,29 +37,26 @@ interface ClientSocket : SocketController, SuspendCloseable {
             bufferRead(buffer)
         }.result
 
-    suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int
-    suspend fun write(buffer: String, timeout: Duration = seconds(1)): Int
-            = write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int
+    suspend fun write(buffer: String, timeout: Duration = seconds(1)): Int =
+        write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
 
-    override suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
+    suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
         while (buffer.position() < buffer.limit()) {
             write(buffer, timeout)
         }
     }
-
-    override fun suspendingInputStream(
-        scope: CoroutineScope,
-        socketReadTimeout: Duration,
-    ) = SuspendingSocketInputStream(scope, BufferedReader(this@ClientSocket, socketReadTimeout))
 }
 
 data class SocketDataRead<T>(val result: T, val bytesRead: Int)
 
 @ExperimentalTime
-suspend fun openClientSocket(port: UShort,
-                             timeout: Duration = seconds(1),
-                             hostname: String? = null,
-                             socketOptions: SocketOptions? = null): ClientToServerSocket {
+suspend fun openClientSocket(
+    port: UShort,
+    timeout: Duration = seconds(1),
+    hostname: String? = null,
+    socketOptions: SocketOptions? = null
+): ClientToServerSocket {
     val socket = getClientSocket()
     socket.open(port, timeout, hostname, socketOptions)
     return socket

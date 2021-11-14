@@ -2,36 +2,23 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
+import com.ditchoom.buffer.FragmentedReadBuffer
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.allocateNewBuffer
+import com.ditchoom.data.Reader
+import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
 /**
  * Non blocking, suspending socket input stream.
  */
 @ExperimentalTime
-class SuspendingSocketInputStream internal constructor(
-    private val scope: CoroutineScope,
-    private val reader: Reader,
-): SuspendCloseable {
+class SuspendingSocketInputStream(
+    private val readTimeout: Duration,
+    private val reader: Reader<ReadBuffer>,
+) {
 
-    var transformer: ((UInt, Byte) -> Byte)? = null
-
-    private val incomingBufferChannel = Channel<ReadBuffer>(2)
-    private var currentBuffer :ReadBuffer? = null
-    private val readerJob = scope.launch {
-        try {
-            reader.read().collect { readBuffer ->
-                val sliced = readBuffer.slice()
-                incomingBufferChannel.send(sliced)
-            }
-        } finally {
-            close()
-        }
-    }
+    private var currentBuffer: ReadBuffer? = null
     private val emptyBuffer = allocateNewBuffer(0u)
 
     suspend fun readUnsignedByte() = sizedReadBuffer(UByte.SIZE_BYTES).readUnsignedByte()
@@ -45,7 +32,7 @@ class SuspendingSocketInputStream internal constructor(
         var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
             currentBuffer
         } else {
-            incomingBufferChannel.receive()
+            reader.readData(readTimeout)
         }
         this.currentBuffer = fragmentedLocalBuffer
         if (fragmentedLocalBuffer.remaining().toInt() >= size) {
@@ -54,21 +41,10 @@ class SuspendingSocketInputStream internal constructor(
 
         // ensure remaining in local buffer at least the size we requested
         while (fragmentedLocalBuffer.remaining() < size.toUInt()) {
-            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, incomingBufferChannel.receive())
+            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, reader.readData(readTimeout))
         }
-        val transformer = transformer
-        val buffer = if (transformer != null) {
-            TransformedReadBuffer(fragmentedLocalBuffer, transformer)
-        } else {
-            fragmentedLocalBuffer
-        }
-        this.currentBuffer = buffer
-        return buffer
+        this.currentBuffer = fragmentedLocalBuffer
+        return fragmentedLocalBuffer
     }
 
-    override suspend fun close() {
-        incomingBufferChannel.cancel()
-        incomingBufferChannel.close()
-        reader.close()
-    }
 }

@@ -26,10 +26,10 @@ abstract class EchoWebsocketTask: DefaultTask() {
 
     @TaskAction
     fun startWebsocketServer() {
-        val workQueue = getWorkerExecutor().noIsolation()
-        workQueue.submit(EchoWebsocketServer::class.java) { parameters ->
-            parameters.port = port.get()
-        }
+//        val workQueue = getWorkerExecutor().noIsolation()
+//        workQueue.submit(EchoWebsocketServer::class.java) { parameters ->
+//            parameters.port = port.get()
+//        }
     }
 }
 

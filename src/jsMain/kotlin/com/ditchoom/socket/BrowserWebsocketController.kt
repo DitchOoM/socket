@@ -1,14 +1,10 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.*
+import com.ditchoom.buffer.JsBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
+import com.ditchoom.websocket.WebSocketDataRead
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.promise
 import org.khronos.webgl.ArrayBuffer
 import org.khronos.webgl.Uint8Array
 import org.w3c.dom.ARRAYBUFFER
@@ -23,24 +19,17 @@ import kotlin.time.ExperimentalTime
 @ExperimentalUnsignedTypes
 @ExperimentalTime
 class BrowserWebsocketController(
-    private val scope: CoroutineScope,
     connectionOptions: WebSocketConnectionOptions
-) : SocketController {
+) : com.ditchoom.websocket.WebSocket {
 
     private val websocket :WebSocket =
         WebSocket("ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}")
 
     private var isConnected = false
-    private val readerChannel = Channel<ReadBuffer>()
-    private val reader = SuspendableReader(scope, websocket)
+    private val incomingChannel = Channel<WebSocketDataRead>(Channel.UNLIMITED)
 
     init {
         websocket.binaryType = BinaryType.ARRAYBUFFER
-        scope.launch {
-            reader.read().collect {
-                readerChannel.send(it)
-            }
-        }
     }
 
     override fun isOpen() = isConnected
@@ -51,12 +40,30 @@ class BrowserWebsocketController(
                 isConnected = false
                 console.error("onclose $it")
                 continuation.resumeWithException(Exception(it.toString()))
-                launchClose()
                 Unit
             }
             websocket.onerror = {
                 isConnected = false
                 console.error("ws error", it)
+                Unit
+            }
+            websocket.onmessage = {
+                val data = it.data
+                when (data) {
+                    is ArrayBuffer -> {
+                        val array = Uint8Array(data)
+                        val buffer = JsBuffer(array)
+                        buffer.setLimit(array.length)
+                        buffer.setPosition(0)
+                        incomingChannel.trySend(WebSocketDataRead.BinaryWebSocketDataRead(buffer)).getOrThrow()
+                    }
+                    is CharSequence -> {
+                        incomingChannel.trySend(WebSocketDataRead.CharSequenceWebSocketDataRead(data)).getOrThrow()
+                    }
+                    else -> {
+                        throw IllegalArgumentException("Received invalid message type!")
+                    }
+                }
                 Unit
             }
             websocket.onopen = { event ->
@@ -67,60 +74,37 @@ class BrowserWebsocketController(
         }
     }
 
-    override suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> {
-        val buffer = readerChannel.receive()
-        return SocketDataRead(buffer, buffer.remaining().toInt())
+    override suspend fun read() :WebSocketDataRead {
+        return incomingChannel.receive()
+    }
+    override suspend fun readData(timeout: Duration) = when (val data = incomingChannel.receive()) {
+        is WebSocketDataRead.BinaryWebSocketDataRead -> data.data
+        else -> throw IllegalArgumentException("Unable to read binary data when received string data")
     }
 
-    override suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
+    override suspend fun write(string: String) {
+        websocket.send(string)
+    }
+
+    override suspend fun ping() {/*Not surfaced on browser*/}
+
+    override suspend fun write(buffer: PlatformBuffer) {
         val arrayBuffer = (buffer as JsBuffer).buffer.buffer.slice(buffer.position().toInt(), buffer.limit().toInt())
         websocket.send(arrayBuffer)
     }
-
-    fun launchClose() = scope.launch {
-        close()
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
+        write(buffer)
+        return buffer.limit().toInt()
     }
+
     override suspend fun close() {
-        readerChannel.close()
-        reader.close()
+        incomingChannel.close()
         websocket.close()
     }
 
-    class SuspendableReader(scope: CoroutineScope, webSocket: WebSocket): Reader {
-        private val incomingChannel = Channel<JsBuffer>()
-        private var currentBuffer: JsBuffer? = null
-
-        init {
-            webSocket.onmessage = {
-                val arrayBuffer = it.data as ArrayBuffer
-                val array = Uint8Array(arrayBuffer)
-                val buffer = JsBuffer(array)
-                buffer.setLimit(array.length)
-                buffer.setPosition(0)
-                scope.promise {
-                    incomingChannel.send(buffer)
-                }
-                Unit
-            }
-        }
-
-        override fun read() = flow<ReadBuffer> {
-            emit(incomingChannel.receive())
-        }
-
-        override suspend fun close() {
-            incomingChannel.close()
-        }
-    }
-
-    override fun suspendingInputStream(
-        scope: CoroutineScope,
-        socketReadTimeout: Duration
-    ) = SuspendingSocketInputStream(scope, reader)
-
     companion object {
-        suspend fun open(scope: CoroutineScope, webSocketConnectionOptions: WebSocketConnectionOptions): BrowserWebsocketController {
-            val controller = BrowserWebsocketController(scope, webSocketConnectionOptions)
+        suspend fun open(webSocketConnectionOptions: WebSocketConnectionOptions): BrowserWebsocketController {
+            val controller = BrowserWebsocketController(webSocketConnectionOptions)
             controller.connect()
             return controller
         }

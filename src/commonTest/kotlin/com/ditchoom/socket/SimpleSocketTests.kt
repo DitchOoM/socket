@@ -5,7 +5,10 @@ package com.ditchoom.socket
 import block
 import com.ditchoom.buffer.toBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
-import kotlinx.coroutines.*
+import com.ditchoom.websocket.WebSocketDataRead
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -25,13 +28,16 @@ class SimpleSocketTests {
             "/echo",
             seconds(1)
         )
-        val websocketClient = getWebSocketClient(this, webSocketConnectionOptions)
+        val websocketClient = getWebSocketClient(webSocketConnectionOptions)
         val stringToValidate = "test"
-        websocketClient.writeFully(stringToValidate.toBuffer())
-        val bufferRead = websocketClient.readBuffer()
-        val stringData = bufferRead.result.readUtf8(bufferRead.bytesRead).toString()
+        websocketClient.write(stringToValidate.toBuffer())
+        withContext(Dispatchers.Default) {
+            val dataRead = websocketClient.read()
+            assertTrue(dataRead is WebSocketDataRead.BinaryWebSocketDataRead)
+            val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()
+            assertEquals(stringToValidate, stringData)
+        }
         websocketClient.close()
-        assertEquals(stringToValidate, stringData)
     }
 
     @Test
@@ -111,36 +117,36 @@ Connection: close
         checkPort(serverPort)
     }
 
-    @Test
-    fun suspendingInputStream() = block {
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val server = asyncServerSocket()
-        server.bind()
-        val text = "yolo swag lyfestyle"
-        val serverPort = assertNotNull(server.port(), "No port number from server")
-        launch(Dispatchers.Default) {
-            val clientToServer = asyncClientSocket()
-            clientToServer.open(serverPort)
-            val inputStream = clientToServer.suspendingInputStream(this)
-            val buffer = inputStream.sizedReadBuffer(text.length).slice()
-            val utf8 = buffer.readUtf8(text.length)
-            assertEquals(utf8.toString(), text)
-            val clientToServerPort = assertNotNull(clientToServer.localPort())
-            inputStream.close()
-            delay(5)
-            checkPort(clientToServerPort)
-            checkPort(serverPort)
-            // Needed for native tests, not sure why
-            cancel()
-        }
-        val serverToClient = server.accept()
-        val serverToClientPort = assertNotNull(serverToClient.localPort())
-        serverToClient.write(text)
-        serverToClient.close()
-        server.close()
-        delay(15) // needed for jvm, not sure why
-        checkPort(serverToClientPort)
-    }
+//    @Test
+//    fun suspendingInputStream() = block {
+//        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+//        val server = asyncServerSocket()
+//        server.bind()
+//        val text = "yolo swag lyfestyle"
+//        val serverPort = assertNotNull(server.port(), "No port number from server")
+//        launch(Dispatchers.Default) {
+//            val clientToServer = asyncClientSocket()
+//            clientToServer.open(serverPort)
+//            val inputStream = clientToServer.suspendingInputStream(this)
+//            val buffer = inputStream.sizedReadBuffer(text.length).slice()
+//            val utf8 = buffer.readUtf8(text.length)
+//            assertEquals(utf8.toString(), text)
+//            val clientToServerPort = assertNotNull(clientToServer.localPort())
+//            inputStream.close()
+//            delay(5)
+//            checkPort(clientToServerPort)
+//            checkPort(serverPort)
+//            // Needed for native tests, not sure why
+//            cancel()
+//        }
+//        val serverToClient = server.accept()
+//        val serverToClientPort = assertNotNull(serverToClient.localPort())
+//        serverToClient.write(text)
+//        serverToClient.close()
+//        server.close()
+//        delay(15) // needed for jvm, not sure why
+//        checkPort(serverToClientPort)
+//    }
 
     @ExperimentalUnsignedTypes
     private suspend fun checkPort(port: UShort) {

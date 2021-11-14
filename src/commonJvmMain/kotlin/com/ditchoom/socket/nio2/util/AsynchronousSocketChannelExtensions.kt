@@ -5,6 +5,7 @@ package com.ditchoom.socket.nio2.util
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
 import java.net.SocketAddress
+import java.nio.Buffer
 import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousChannelGroup
 import java.nio.channels.AsynchronousSocketChannel
@@ -57,7 +58,7 @@ suspend fun AsynchronousSocketChannel.aRead(
         )
         closeOnCancel(cont)
     }
-    buf.flip()
+    (buf as Buffer).flip()
     return result
 }
 
@@ -74,7 +75,7 @@ suspend fun AsynchronousSocketChannel.aWrite(
     duration: Duration
 ): Int {
     return suspendCancellableCoroutine<Int> { cont ->
-        buf.flip()
+        (buf as Buffer).flip()
         write(
             buf, duration.inWholeMilliseconds, TimeUnit.MILLISECONDS, cont,
             asyncIOHandler()

@@ -1,6 +1,6 @@
 package com.ditchoom.websocket
 
-internal class FrameMetadata(
+internal data class WebSocketFrameMetadata(
     val masked: Boolean,
     val payloadLength: Int,
 )

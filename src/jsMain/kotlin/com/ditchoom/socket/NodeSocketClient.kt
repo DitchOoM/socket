@@ -79,7 +79,7 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
     ): SocketOptions {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({
-            val buffer = allocateNewBuffer(8096u) as JsBuffer
+            val buffer = allocateNewBuffer(4u*1024u) as JsBuffer
             arrayPlatformBufferMap[buffer.buffer] = buffer
             buffer.buffer
         }, { bytesRead, buffer ->
