@@ -26,7 +26,7 @@ class BrowserWebsocketController(
         WebSocket("ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}")
 
     private var isConnected = false
-    private val incomingChannel = Channel<WebSocketDataRead>(Channel.UNLIMITED)
+    private val incomingChannel = Channel<WebSocketDataRead>()
 
     init {
         websocket.binaryType = BinaryType.ARRAYBUFFER

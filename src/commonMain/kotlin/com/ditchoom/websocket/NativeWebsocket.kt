@@ -20,7 +20,9 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
     override fun isOpen() = socket.isOpen()
 
     override suspend fun write(buffer: PlatformBuffer) {
-        socket.write(WebSocketClientToServerBinaryFrameTransformer.transform(buffer), connectionOptions.writeTimeout)
+        val t = WebSocketClientToServerBinaryFrameTransformer.transform(buffer)
+        t.position(t.limit().toInt())
+        socket.write(t, connectionOptions.writeTimeout)
     }
 
     override suspend fun write(string: String) {

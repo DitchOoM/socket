@@ -61,10 +61,14 @@ open class NodeSocket : ClientSocket {
     }
 
     override suspend fun close() {
-        incomingMessageChannel.close()
-        val socket = netSocket
-        netSocket = null
-        socket?.close()
+        try {
+            incomingMessageChannel.close()
+        } catch (t: Throwable) {}
+        try {
+            val socket = netSocket
+            netSocket = null
+            socket?.close()
+        } catch (t: Throwable) {}
     }
 }
 

@@ -86,17 +86,17 @@ class WebSocketFrame(
         return buffer
     }
 
+    val actualPayloadLength = if (payloadLength <= 125) {
+        payloadLength
+    } else if (payloadLength == 126) {
+        payloadLength + UShort.SIZE_BYTES
+    } else if (payloadLength == 127) {
+        payloadLength + ULong.SIZE_BYTES
+    } else {
+        throw IllegalStateException("Internal payload len size cannot be larger than 127")
+    }
 
     fun size() :Int {
-        val actualPayloadLength = if (payloadLength <= 125) {
-            payloadLength
-        } else if (payloadLength == 126) {
-            payloadLength + UShort.SIZE_BYTES
-        } else if (payloadLength == 127) {
-            payloadLength + ULong.SIZE_BYTES
-        } else {
-            throw IllegalStateException("Internal payload len size cannot be larger than 127")
-        }
         // the first byte includes fin, rsv1-3, and opcode. second byte includes mask and payload len
         val ws2ByteOverhead = 2
         return actualPayloadLength +  ws2ByteOverhead + when (maskingKey) {
@@ -141,10 +141,11 @@ class WebSocketFrame(
         if (maskingKey is MaskingKey.FourByteMaskingKey) {
             writeBuffer.write(maskingKey.maskingKey)
         }
+
         val data = if (maskingKey is MaskingKey.FourByteMaskingKey) {
             TransformedReadBuffer(payloadData) {i, original ->
                 original xor maskingKey.maskingKey[i.toLong().mod(4)]
-            }
+            }.slice()
         } else {
             payloadData
         }

@@ -18,7 +18,6 @@ object WebSocketClientToServerBinaryFrameTransformer : DataTransformer<PlatformB
         val applyFin = true
         val bytes = Random.nextBytes(4)
         val frame = WebSocketFrame(applyFin, Opcode.Binary, MaskingKey.FourByteMaskingKey(bytes), input)
-
         val websocketEncodedBuffer = allocateNewBuffer(frame.size().toUInt())
         frame.serialize(websocketEncodedBuffer)
         return websocketEncodedBuffer

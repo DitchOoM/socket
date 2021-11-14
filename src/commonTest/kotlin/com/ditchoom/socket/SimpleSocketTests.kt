@@ -31,12 +31,10 @@ class SimpleSocketTests {
         val websocketClient = getWebSocketClient(webSocketConnectionOptions)
         val stringToValidate = "test"
         websocketClient.write(stringToValidate.toBuffer())
-        withContext(Dispatchers.Default) {
-            val dataRead = websocketClient.read()
-            assertTrue(dataRead is WebSocketDataRead.BinaryWebSocketDataRead)
-            val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()
-            assertEquals(stringToValidate, stringData)
-        }
+        val dataRead = websocketClient.read()
+        assertTrue(dataRead is WebSocketDataRead.BinaryWebSocketDataRead)
+        val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()
+        assertEquals(stringToValidate, stringData)
         websocketClient.close()
     }
 
