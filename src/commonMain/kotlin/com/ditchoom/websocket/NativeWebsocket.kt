@@ -92,9 +92,14 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
         val payload = if (actualPayloadLength == 0uL) {
             allocateNewBuffer(0u)
         } else {
-            check(actualPayloadLength < Int.MAX_VALUE.toULong()) {"Payloads larger than ${Int.MAX_VALUE} is currently unsupported"}
+            check(actualPayloadLength < Int.MAX_VALUE.toULong()) { "Payloads larger than ${Int.MAX_VALUE} is currently unsupported" }
             val platformBuffer = allocateNewBuffer(actualPayloadLength.toUInt())
-            val readBuffer = inputStream.sizedReadBuffer(actualPayloadLength.toInt()).slice()
+            val len = actualPayloadLength.toInt()
+            val originalReadBuffer = inputStream.sizedReadBuffer(len)
+            val bytes = originalReadBuffer.readByteArray(actualPayloadLength.toUInt())
+            val readBuffer = allocateNewBuffer(actualPayloadLength.toUInt())
+            readBuffer.write(bytes)
+            readBuffer.resetForRead()
             val transformedBuffer = if (maskingKey is FourByteMaskingKey) {
                 TransformedReadBuffer(readBuffer) { i, original ->
                     original xor maskingKey.maskingKey[i.toLong().mod(4)]
@@ -139,5 +144,4 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
             return NativeWebsocket(connectionOptions, socket)
         }
     }
-
 }

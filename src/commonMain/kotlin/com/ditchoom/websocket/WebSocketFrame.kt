@@ -33,7 +33,7 @@ import kotlin.experimental.xor
  * +---------------------------------------------------------------+
  *
  */
-class WebSocketFrame(
+data class WebSocketFrame(
     /**
      * Indicates that this is the final fragment in a message. The first fragment MAY also be the final fragment.
      */
@@ -57,7 +57,6 @@ class WebSocketFrame(
      */
     val maskingKey: MaskingKey,
     val payloadData: PlatformBuffer,
-) {
     /**
      * The length of the "Payload data", in bytes: if 0-125, that is the payload length.  If 126, the following 2 bytes
      * interpreted as a 16-bit unsigned integer are the payload length.  If 127, the following 8 bytes interpreted as a
@@ -67,13 +66,15 @@ class WebSocketFrame(
      * payload length is the length of the "Extension data" + the length of the "Application data".  The length of the
      * "Extension data" may be zero, in which case the payload length is the length of the "Application data".
      */
-    private val payloadLength = if (payloadData.limit() <= 125u) {
+    private val payloadLength: Int = if (payloadData.limit() <= 125u) {
         payloadData.limit().toInt()
     } else if (payloadData.limit() <= UInt.MAX_VALUE) {
         126
     } else {
         127
     }.also { check(it in 0..127) }
+) {
+
 
     constructor(fin: Boolean, opcode: Opcode, maskingKey: MaskingKey, payloadData: PlatformBuffer)
         :this(fin, false, false, false, opcode, maskingKey, payloadData)
@@ -141,15 +142,17 @@ class WebSocketFrame(
         if (maskingKey is MaskingKey.FourByteMaskingKey) {
             writeBuffer.write(maskingKey.maskingKey)
         }
-
         val data = if (maskingKey is MaskingKey.FourByteMaskingKey) {
+            payloadData.position(0)
             TransformedReadBuffer(payloadData) {i, original ->
                 original xor maskingKey.maskingKey[i.toLong().mod(4)]
             }.slice()
         } else {
             payloadData
         }
+        data.position(0)
         writeBuffer.write(data)
+
     }
 
 }

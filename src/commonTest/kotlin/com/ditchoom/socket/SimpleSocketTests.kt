@@ -3,6 +3,7 @@
 package com.ditchoom.socket
 
 import block
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.toBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
@@ -30,7 +31,9 @@ class SimpleSocketTests {
         )
         val websocketClient = getWebSocketClient(webSocketConnectionOptions)
         val stringToValidate = "test"
-        websocketClient.write(stringToValidate.toBuffer())
+        val buffer = stringToValidate.toBuffer()
+        websocketClient.write(buffer)
+
         val dataRead = websocketClient.read()
         assertTrue(dataRead is WebSocketDataRead.BinaryWebSocketDataRead)
         val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()

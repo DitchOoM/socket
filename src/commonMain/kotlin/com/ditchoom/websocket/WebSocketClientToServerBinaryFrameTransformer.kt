@@ -3,9 +3,6 @@ package com.ditchoom.websocket
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.allocateNewBuffer
 import com.ditchoom.data.DataTransformer
-import kotlin.experimental.and
-import kotlin.experimental.or
-import kotlin.experimental.xor
 import kotlin.random.Random
 
 /**

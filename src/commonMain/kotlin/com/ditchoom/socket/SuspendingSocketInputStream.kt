@@ -18,7 +18,9 @@ class SuspendingSocketInputStream(
     private val reader: Reader<ReadBuffer>,
 ) {
 
-    private var currentBuffer: ReadBuffer? = null
+    internal var currentBuffer: ReadBuffer? = null
+        private set
+
     private val emptyBuffer = allocateNewBuffer(0u)
 
     suspend fun readUnsignedByte() = sizedReadBuffer(UByte.SIZE_BYTES).readUnsignedByte()
@@ -32,7 +34,8 @@ class SuspendingSocketInputStream(
         var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
             currentBuffer
         } else {
-            reader.readData(readTimeout)
+            val dataRead = reader.readData(readTimeout)
+            dataRead
         }
         this.currentBuffer = fragmentedLocalBuffer
         if (fragmentedLocalBuffer.remaining().toInt() >= size) {
@@ -41,7 +44,9 @@ class SuspendingSocketInputStream(
 
         // ensure remaining in local buffer at least the size we requested
         while (fragmentedLocalBuffer.remaining() < size.toUInt()) {
-            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, reader.readData(readTimeout))
+            val moreData = reader.readData(readTimeout)
+            //println("ReadM $moreData ${byteArray(moreData)}")
+            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer,moreData)
         }
         this.currentBuffer = fragmentedLocalBuffer
         return fragmentedLocalBuffer
