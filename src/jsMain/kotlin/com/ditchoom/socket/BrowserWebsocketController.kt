@@ -19,17 +19,36 @@ import kotlin.time.ExperimentalTime
 @ExperimentalUnsignedTypes
 @ExperimentalTime
 class BrowserWebsocketController(
-    connectionOptions: WebSocketConnectionOptions
+    connectionOptions: WebSocketConnectionOptions,
 ) : com.ditchoom.websocket.WebSocket {
-
-    private val websocket :WebSocket =
-        WebSocket("ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}")
+    private val url = "ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}"
+    private val websocket :WebSocket = WebSocket(url, connectionOptions.protocol)
 
     private var isConnected = false
     private val incomingChannel = Channel<WebSocketDataRead>()
 
     init {
         websocket.binaryType = BinaryType.ARRAYBUFFER
+        websocket.onmessage = {
+            val data = it.data
+//            console.log("\r\non msg", it.data)
+            when (data) {
+                is ArrayBuffer -> {
+                    val array = Uint8Array(data)
+                    val buffer = JsBuffer(array)
+                    buffer.setLimit(array.length)
+                    buffer.setPosition(0)
+                    incomingChannel.trySend(WebSocketDataRead.BinaryWebSocketDataRead(buffer)).getOrThrow()
+                }
+                is CharSequence -> {
+                    incomingChannel.trySend(WebSocketDataRead.CharSequenceWebSocketDataRead(data)).getOrThrow()
+                }
+                else -> {
+                    throw IllegalArgumentException("Received invalid message type!")
+                }
+            }
+            Unit
+        }
     }
 
     override fun isOpen() = isConnected
@@ -38,46 +57,29 @@ class BrowserWebsocketController(
         suspendCoroutine<Unit> { continuation ->
             websocket.onclose = {
                 isConnected = false
-                console.error("onclose $it")
+                console.error("\r\nonclose $it")
                 continuation.resumeWithException(Exception(it.toString()))
                 Unit
             }
             websocket.onerror = {
                 isConnected = false
-                console.error("ws error", it)
-                Unit
-            }
-            websocket.onmessage = {
-                val data = it.data
-                when (data) {
-                    is ArrayBuffer -> {
-                        val array = Uint8Array(data)
-                        val buffer = JsBuffer(array)
-                        buffer.setLimit(array.length)
-                        buffer.setPosition(0)
-                        incomingChannel.trySend(WebSocketDataRead.BinaryWebSocketDataRead(buffer)).getOrThrow()
-                    }
-                    is CharSequence -> {
-                        incomingChannel.trySend(WebSocketDataRead.CharSequenceWebSocketDataRead(data)).getOrThrow()
-                    }
-                    else -> {
-                        throw IllegalArgumentException("Received invalid message type!")
-                    }
-                }
+                console.error("\r\nws error", it)
                 Unit
             }
             websocket.onopen = { event ->
                 isConnected = true
+//                console.log("\r\nconnection opened", event)
                 continuation.resume(Unit)
                 Unit
             }
         }
     }
 
-    override suspend fun read() :WebSocketDataRead {
+    override suspend fun read(): WebSocketDataRead {
         return incomingChannel.receive()
     }
-    override suspend fun readData(timeout: Duration) = when (val data = incomingChannel.receive()) {
+
+    override suspend fun readData(timeout: Duration) = when (val data = read()) {
         is WebSocketDataRead.BinaryWebSocketDataRead -> data.data
         else -> throw IllegalArgumentException("Unable to read binary data when received string data")
     }
@@ -89,9 +91,10 @@ class BrowserWebsocketController(
     override suspend fun ping() {/*Not surfaced on browser*/}
 
     override suspend fun write(buffer: PlatformBuffer) {
-        val arrayBuffer = (buffer as JsBuffer).buffer.buffer.slice(buffer.position().toInt(), buffer.limit().toInt())
+        val arrayBuffer = (buffer as JsBuffer).buffer.buffer.slice(0, buffer.limit().toInt())
         websocket.send(arrayBuffer)
     }
+
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         write(buffer)
         return buffer.limit().toInt()
