@@ -5,6 +5,7 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.*
 import kotlinx.coroutines.channels.Channel
 import org.khronos.webgl.Uint8Array
+import kotlin.coroutines.resume
 import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
@@ -98,6 +99,10 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         this.netSocket = netSocket
         netSocket.on("error") { err ->
             error(err.toString())
+        }
+        netSocket.on("close") { _ ->
+            incomingMessageChannel.close()
+            netSocket.end {}
         }
         return SocketOptions()
     }
