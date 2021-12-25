@@ -22,7 +22,11 @@ class BrowserWebsocketController(
     connectionOptions: WebSocketConnectionOptions,
 ) : com.ditchoom.websocket.WebSocket {
     private val url = "ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}"
-    private val websocket :WebSocket = WebSocket(url, connectionOptions.protocol)
+    private val websocket :WebSocket = if (connectionOptions.protocol != null) {
+        WebSocket(url, connectionOptions.protocol)
+    } else {
+        WebSocket(url)
+    }
 
     private var isConnected = false
     private val incomingChannel = Channel<WebSocketDataRead>()
@@ -55,10 +59,15 @@ class BrowserWebsocketController(
 
     suspend fun connect() {
         suspendCoroutine<Unit> { continuation ->
+            var resumed = false
             websocket.onclose = {
                 isConnected = false
-                console.error("\r\nonclose $it")
-                continuation.resumeWithException(Exception(it.toString()))
+                console.error("\r\nonclose", it)
+                incomingChannel.close()
+                if (!resumed) {
+                    continuation.resumeWithException(Exception("closed"))
+                    resumed = true
+                }
                 Unit
             }
             websocket.onerror = {
@@ -68,8 +77,11 @@ class BrowserWebsocketController(
             }
             websocket.onopen = { event ->
                 isConnected = true
-//                console.log("\r\nconnection opened", event)
-                continuation.resume(Unit)
+                console.log("\r\nconnection opened", event)
+                if (!resumed) {
+                    continuation.resume(Unit)
+                    resumed = true
+                }
                 Unit
             }
         }

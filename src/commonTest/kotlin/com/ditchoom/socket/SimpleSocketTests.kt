@@ -25,9 +25,8 @@ class SimpleSocketTests {
         val webSocketConnectionOptions = WebSocketConnectionOptions(
             "localhost",
             8080,
-            "echo",
-            "/echo",
-            seconds(1)
+            websocketEndpoint = "/echo",
+            connectionTimeout = seconds(1),
         )
         val websocketClient = getWebSocketClient(webSocketConnectionOptions)
         val stringToValidate = "test"

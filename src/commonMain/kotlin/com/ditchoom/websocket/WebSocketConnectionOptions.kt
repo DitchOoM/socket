@@ -7,7 +7,7 @@ import kotlin.time.ExperimentalTime
 class WebSocketConnectionOptions(
     val name: String,
     val port: Int,
-    val protocol: String,
+    val protocol: String? = null,
     val websocketEndpoint: String?,
     val connectionTimeout: Duration,
     val readTimeout: Duration = connectionTimeout,

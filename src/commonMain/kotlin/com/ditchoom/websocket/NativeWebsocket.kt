@@ -122,15 +122,16 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
         suspend fun open(connectionOptions: WebSocketConnectionOptions): NativeWebsocket {
             val socket = getClientSocket()
             socket.open(connectionOptions.port.toUShort(), connectionOptions.connectionTimeout, connectionOptions.name)
-            val request =
+            var request =
                 "GET ${connectionOptions.websocketEndpoint} HTTP/1.1" +
                         "\r\nHost: ${connectionOptions.name}:${connectionOptions.port}" +
                         "\r\nUpgrade: websocket" +
                         "\r\nConnection: Upgrade" +
-                        "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" +
-                        "\r\nSec-WebSocket-Protocol: ${connectionOptions.protocol}" +
-                        "\r\nSec-WebSocket-Version: 13" +
-                        "\r\n\r\n"
+                        "\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+            if (connectionOptions.protocol != null) {
+                request += "\r\nSec-WebSocket-Protocol: ${connectionOptions.protocol}"
+            }
+            request += "\r\nSec-WebSocket-Version: 13" + "\r\n\r\n"
             socket.write(request, connectionOptions.writeTimeout)
             val socketDataRead = socket.readBuffer(connectionOptions.readTimeout)
             val response = socketDataRead.result.readUtf8(socketDataRead.bytesRead)
