@@ -28,7 +28,14 @@ kotlin {
         }
     }
     js {
-        browser {}
+        browser {
+            // for some reason this needs extra time on github
+            testTask {
+                useMocha {
+                    timeout = "3500ms"
+                }
+            }
+        }
         nodejs{ }
     }
 //    macosX64()
