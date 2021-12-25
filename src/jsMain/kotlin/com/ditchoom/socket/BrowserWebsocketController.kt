@@ -58,6 +58,7 @@ class BrowserWebsocketController(
     override fun isOpen() = isConnected
 
     suspend fun connect() {
+        console.log("\r\nConnecting to $url")
         suspendCoroutine<Unit> { continuation ->
             var resumed = false
             websocket.onclose = {

@@ -22,6 +22,9 @@ class SimpleSocketTests {
 
     @Test
     fun websocket() = block {
+        val stringToValidate = "test"
+        val buffer = stringToValidate.toBuffer()
+
         val webSocketConnectionOptions = WebSocketConnectionOptions(
             "localhost",
             8080,
@@ -29,11 +32,11 @@ class SimpleSocketTests {
             connectionTimeout = seconds(1),
         )
         val websocketClient = getWebSocketClient(webSocketConnectionOptions)
-        val stringToValidate = "test"
-        val buffer = stringToValidate.toBuffer()
+        println("\r\nwriting")
         websocketClient.write(buffer)
-
+        println("\r\nwrote")
         val dataRead = websocketClient.read()
+        println("\r\nread")
         assertTrue(dataRead is WebSocketDataRead.BinaryWebSocketDataRead)
         val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()
         assertEquals(stringToValidate, stringData)
