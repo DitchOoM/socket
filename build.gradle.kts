@@ -28,8 +28,8 @@ kotlin {
         }
     }
     js {
-        browser {}
-        nodejs {}
+        browser{}
+        nodejs{}
     }
 //    macosX64()
 //    linuxX64()
