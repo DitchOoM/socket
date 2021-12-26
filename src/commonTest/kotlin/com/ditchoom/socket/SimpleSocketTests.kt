@@ -34,12 +34,19 @@ class SimpleSocketTests {
             connectionTimeout = seconds(1),
         )
         val websocketClient = getWebSocketClient(webSocketConnectionOptions)
+        println("got ws client $websocketClient")
         websocketClient.write(buffer)
+        println("wrote bytes")
         val dataRead = websocketClient.read()
+        println("read bytes")
         assertTrue(dataRead is WebSocketDataRead.BinaryWebSocketDataRead)
+        println("assert true")
         val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()
+        println("read utf89")
         assertEquals(stringToValidate, stringData)
+        println("closing")
         websocketClient.close()
+        println("close")
     }
 
     @Test

@@ -5,11 +5,17 @@ import org.w3c.dom.WebSocket
 import org.w3c.dom.get
 import kotlin.time.ExperimentalTime
 
-val isNodeJs = js("global.window") == null
+val isNodeJs = nodeJs()
 
+
+private fun nodeJs() :Boolean {
+    println("isNodeJs ${js("global.window") == null}")
+    return js("global.window") == null
+}
 @ExperimentalUnsignedTypes
 @ExperimentalTime
 actual fun asyncClientSocket(): ClientToServerSocket {
+    println("isNodeJs ${js("global.window") == null}")
     return if (isNodeJs) {
         NodeClientSocket()
     } else {
