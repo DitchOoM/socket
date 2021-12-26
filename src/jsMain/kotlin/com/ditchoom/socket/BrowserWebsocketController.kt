@@ -4,7 +4,11 @@ import com.ditchoom.buffer.JsBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import org.khronos.webgl.ArrayBuffer
 import org.khronos.webgl.Uint8Array
 import org.w3c.dom.ARRAYBUFFER
@@ -27,7 +31,7 @@ class BrowserWebsocketController(
     } else {
         WebSocket(url)
     }
-
+    private val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private var isConnected = false
     private val incomingChannel = Channel<WebSocketDataRead>()
 
@@ -65,6 +69,7 @@ class BrowserWebsocketController(
                 isConnected = false
                 console.error("\r\nonclose", it)
                 incomingChannel.close()
+                disconnectedFlow.tryEmit(Unit)
                 if (!resumed) {
                     continuation.resumeWithException(Exception("closed"))
                     resumed = true
@@ -111,6 +116,10 @@ class BrowserWebsocketController(
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         write(buffer)
         return buffer.limit().toInt()
+    }
+
+    override suspend fun awaitClose() {
+        disconnectedFlow.asSharedFlow().first()
     }
 
     override suspend fun close() {

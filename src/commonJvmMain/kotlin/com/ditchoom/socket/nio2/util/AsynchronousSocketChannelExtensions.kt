@@ -2,7 +2,10 @@
 
 package com.ditchoom.socket.nio2.util
 
+import com.ditchoom.socket.nio.util.aLocalAddress
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.nio.Buffer
@@ -97,14 +100,16 @@ suspend fun AsynchronousSocketChannel.aClose() {
         cont.resume(Unit)
     }
 }
+suspend fun AsynchronousSocketChannel.aRemoteAddress(): SocketAddress? = withContext(Dispatchers.IO) {
+    remoteAddress
+}
 
-
-fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): UShort? {
+suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): UShort? {
     return try {
         if (remote) {
-            (remoteAddress as? InetSocketAddress)?.port?.toUShort()
+            (aRemoteAddress() as? InetSocketAddress)?.port?.toUShort()
         } else {
-            (localAddress as? InetSocketAddress)?.port?.toUShort()
+            (aLocalAddress() as? InetSocketAddress)?.port?.toUShort()
         }
     } catch (e: Exception) {
         null

@@ -3,7 +3,11 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.*
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.time.Duration
@@ -11,15 +15,16 @@ import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
 open class NodeSocket : ClientSocket {
-    var netSocket: Socket? = null
+    internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     private var currentBuffer :ReadBuffer? = null
+    internal val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    
+    override fun isOpen() = netSocket.remoteAddress != null
 
-    override fun isOpen() = netSocket?.remoteAddress != null
+    override suspend fun localPort() = netSocket.localPort.toUShort()
 
-    override fun localPort() = netSocket?.localPort?.toUShort()
-
-    override fun remotePort() = netSocket?.remotePort?.toUShort()
+    override suspend fun remotePort() = netSocket.remotePort.toUShort()
 
 
     private suspend fun readBuffer(size:UInt) :SocketDataRead<ReadBuffer> {
@@ -36,29 +41,32 @@ open class NodeSocket : ClientSocket {
 
     override suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> {
         val msg = incomingMessageChannel.receive()
-        netSocket?.resume()
+        netSocket.resume()
         return msg.copy(result = msg.result.slice())
     }
 
     override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
         val receivedData = readBuffer(buffer.remaining())
-        netSocket?.resume()
+        netSocket.resume()
         val resultBuffer = receivedData.result
         resultBuffer.position(0)
         return receivedData.bytesRead
     }
     override suspend fun <T> read(timeout: Duration, bufferSize: UInt, bufferRead: (PlatformBuffer, Int) -> T): SocketDataRead<T> {
         val receivedData = incomingMessageChannel.receive()
-        netSocket?.resume()
+        netSocket.resume()
         val buffer = receivedData.result.slice() as PlatformBuffer
         return SocketDataRead(bufferRead(buffer, receivedData.bytesRead), receivedData.bytesRead)
     }
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         val array = (buffer as JsBuffer).buffer
-        val netSocket = netSocket ?: return 0
         netSocket.write(array)
         return array.byteLength
+    }
+
+    override suspend fun awaitClose() {
+        disconnectedFlow.asSharedFlow().first()
     }
 
     override suspend fun close() {
@@ -66,10 +74,9 @@ open class NodeSocket : ClientSocket {
             incomingMessageChannel.close()
         } catch (t: Throwable) {}
         try {
-            val socket = netSocket
-            netSocket = null
-            socket?.close()
+            netSocket.close()
         } catch (t: Throwable) {}
+        disconnectedFlow.emit(Unit)
     }
 }
 
@@ -103,6 +110,7 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         netSocket.on("close") { _ ->
             incomingMessageChannel.close()
             netSocket.end {}
+            disconnectedFlow.tryEmit(Unit)
         }
         return SocketOptions()
     }

@@ -5,6 +5,7 @@ package com.ditchoom.socket
 import com.ditchoom.websocket.NativeWebsocket
 import com.ditchoom.websocket.WebSocket
 import com.ditchoom.websocket.WebSocketConnectionOptions
+import kotlinx.browser.window
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime

@@ -14,8 +14,8 @@ import kotlin.time.ExperimentalTime
 interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBuffer>, SuspendCloseable {
 
     override fun isOpen(): Boolean
-    fun localPort(): UShort?
-    fun remotePort(): UShort?
+    suspend fun localPort(): UShort?
+    suspend fun remotePort(): UShort?
     suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int
     override suspend fun readData(timeout: Duration) = readBuffer(timeout).result
     suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> =

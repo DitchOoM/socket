@@ -8,12 +8,14 @@ import com.ditchoom.buffer.toBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
@@ -32,15 +34,25 @@ class SimpleSocketTests {
             connectionTimeout = seconds(1),
         )
         val websocketClient = getWebSocketClient(webSocketConnectionOptions)
-        println("\r\nwriting")
         websocketClient.write(buffer)
-        println("\r\nwrote")
         val dataRead = websocketClient.read()
-        println("\r\nread")
         assertTrue(dataRead is WebSocketDataRead.BinaryWebSocketDataRead)
         val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()
         assertEquals(stringToValidate, stringData)
         websocketClient.close()
+    }
+
+    @Test
+    fun awaitCloseWorks() = block {
+        val client = openClientSocket(80u, hostname = "example.com", timeout = Duration.Companion.milliseconds(100))
+        var count = 0
+        launch {
+            delay(20)
+            count++
+            client.close()
+        }
+        client.awaitClose()
+        assertEquals(1, count)
     }
 
     @Test

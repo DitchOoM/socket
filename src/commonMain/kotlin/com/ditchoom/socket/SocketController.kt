@@ -14,4 +14,9 @@ import kotlin.time.ExperimentalTime
 @ExperimentalTime
 interface SocketController : Reader<ReadBuffer>, Writer<PlatformBuffer>, SuspendCloseable {
     override fun isOpen(): Boolean
+
+    /**
+     * Suspends the caller until the socket connection has fully closed.
+     */
+    suspend fun awaitClose()
 }

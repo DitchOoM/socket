@@ -5,6 +5,8 @@ package com.ditchoom.socket.nio.util
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.ditchoom.socket.SocketOptions
+import java.net.InetSocketAddress
+import java.net.SocketAddress
 import java.net.SocketOption
 import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
@@ -47,6 +49,10 @@ fun <T> NetworkChannel.tryGettingOption(option: SocketOption<T>) = if (supported
     getOption(option)
 } else {
     null
+}
+
+suspend fun NetworkChannel.aLocalAddress(): SocketAddress? = withContext(Dispatchers.IO) {
+    localAddress
 }
 
 @ExperimentalTime

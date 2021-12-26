@@ -1,16 +1,11 @@
 package com.ditchoom.socket
 
 import kotlinx.browser.window
+import org.w3c.dom.WebSocket
+import org.w3c.dom.get
 import kotlin.time.ExperimentalTime
 
-val isNodeJs by lazy {
-    try {
-        window
-        false
-    } catch (t: Throwable) {
-        true
-    }
-}
+val isNodeJs = js("global.window") == null
 
 @ExperimentalUnsignedTypes
 @ExperimentalTime
