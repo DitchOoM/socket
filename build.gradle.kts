@@ -28,13 +28,7 @@ kotlin {
         }
     }
     js {
-        browser{
-            testTask {
-                useKarma {
-                    useChromeHeadless()
-                }
-            }
-        }
+        browser{}
         nodejs{}
     }
 //    macosX64()
