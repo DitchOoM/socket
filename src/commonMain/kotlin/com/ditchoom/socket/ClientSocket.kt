@@ -21,9 +21,9 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
     suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> =
         read(timeout) { buffer, _ -> buffer }
 
-    suspend fun read(timeout: Duration = seconds(1)) = read(timeout) { buffer, bytesRead -> buffer.readUtf8(bytesRead) }
+    suspend fun read(timeout: Duration = 1.seconds) = read(timeout) { buffer, bytesRead -> buffer.readUtf8(bytesRead) }
     suspend fun <T> read(
-        timeout: Duration = seconds(1),
+        timeout: Duration = 1.seconds,
         bufferSize: UInt = 4u * 1024u,
         bufferRead: (PlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
@@ -32,13 +32,13 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
 
-    suspend fun <T> readTyped(timeout: Duration = seconds(1), bufferRead: (PlatformBuffer) -> T) =
+    suspend fun <T> readTyped(timeout: Duration = 1.seconds, bufferRead: (PlatformBuffer) -> T) =
         read(timeout) { buffer, _ ->
             bufferRead(buffer)
         }.result
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int
-    suspend fun write(buffer: String, timeout: Duration = seconds(1)): Int =
+    suspend fun write(buffer: String, timeout: Duration = 1.seconds): Int =
         write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
 
     suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
@@ -53,7 +53,7 @@ data class SocketDataRead<T>(val result: T, val bytesRead: Int)
 @ExperimentalTime
 suspend fun openClientSocket(
     port: UShort,
-    timeout: Duration = seconds(1),
+    timeout: Duration = 1.seconds,
     hostname: String? = null,
     socketOptions: SocketOptions? = null
 ): ClientToServerSocket {

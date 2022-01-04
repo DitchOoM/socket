@@ -15,12 +15,13 @@ import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
 open class NodeSocket : ClientSocket {
+    protected var isClosed = true
     internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     private var currentBuffer :ReadBuffer? = null
     internal val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-    
-    override fun isOpen() = netSocket.remoteAddress != null
+
+    override fun isOpen() = !isClosed && netSocket.remoteAddress != null
 
     override suspend fun localPort() = netSocket.localPort.toUShort()
 
@@ -60,6 +61,7 @@ open class NodeSocket : ClientSocket {
     }
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
+        if (isClosed) return -1
         val array = (buffer as JsBuffer).buffer
         netSocket.write(array)
         return array.byteLength
@@ -70,13 +72,18 @@ open class NodeSocket : ClientSocket {
     }
 
     override suspend fun close() {
+        println("nsc closing")
+        isClosed = true
+        disconnectedFlow.emit(Unit)
+        println("nsc close emitted")
         try {
             incomingMessageChannel.close()
+            println("nsc closed incoming channel")
         } catch (t: Throwable) {}
         try {
             netSocket.close()
+            println("nsc closed net socket")
         } catch (t: Throwable) {}
-        disconnectedFlow.emit(Unit)
     }
 }
 
@@ -103,14 +110,16 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         })
         val options = tcpOptions(port.toInt(), hostname, onRead)
         val netSocket = connect(options)
+        isClosed = false
         this.netSocket = netSocket
         netSocket.on("error") { err ->
             error(err.toString())
         }
-        netSocket.on("close") { _ ->
-            incomingMessageChannel.close()
-            netSocket.end {}
+        netSocket.on("close") { ->
+            println("nsc net socket onclose")
+            isClosed = true
             disconnectedFlow.tryEmit(Unit)
+            incomingMessageChannel.close()
         }
         return SocketOptions()
     }

@@ -7,15 +7,13 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.toBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
@@ -33,7 +31,7 @@ class SimpleSocketTests {
             "localhost",
             8080,
             websocketEndpoint = "/echo",
-            connectionTimeout = seconds(1),
+            connectionTimeout = 1.seconds,
         )
         val websocketClient = getWebSocketClient(webSocketConnectionOptions)
         websocketClient.write(buffer)
@@ -46,14 +44,14 @@ class SimpleSocketTests {
 
     @Test
     fun awaitCloseWorks() = block {
-        val client = openClientSocket(80u, hostname = "example.com", timeout = Duration.Companion.milliseconds(100))
+        val client = openClientSocket(80u, hostname = "example.com", timeout = 100.milliseconds)
         var count = 0
-        launch {
-            delay(20)
-            count++
+        val closeAsyncJob = async {
             client.close()
+            count++
         }
         client.awaitClose()
+        closeAsyncJob.await()
         assertEquals(1, count)
     }
 
@@ -109,6 +107,7 @@ Connection: close
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val server = asyncServerSocket()
         server.bind()
+        println("start server")
         val clientToServer = asyncClientSocket()
         val text = "yolo swag lyfestyle"
         val serverPort = assertNotNull(server.port(), "No port number from server")
@@ -118,12 +117,14 @@ Connection: close
             serverToClient.write(text)
         }
         clientToServer.open(serverPort)
+        println("socket opened")
         val dataReceivedFromServer = withContext(Dispatchers.Default) {
-            clientToServer.read() { buffer, bytesRead ->
+            clientToServer.read { buffer, bytesRead ->
                 buffer.readUtf8(bytesRead.toUInt())
             }
         }
         assertEquals(text, dataReceivedFromServer.result.toString())
+        println("asserted")
         val serverToClientPort = assertNotNull(serverToClient.localPort())
         val clientToServerPort = assertNotNull(clientToServer.localPort())
         serverToClient.close()

@@ -123,8 +123,10 @@ class BrowserWebsocketController(
     }
 
     override suspend fun close() {
+        println("bws closing")
         incomingChannel.close()
         websocket.close()
+        println("bws closed")
     }
 
     companion object {

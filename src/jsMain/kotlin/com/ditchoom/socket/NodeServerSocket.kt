@@ -7,6 +7,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.ExperimentalTime
 
+@ExperimentalUnsignedTypes
 @ExperimentalTime
 class NodeServerSocket : ServerSocket {
     var server: Server? = null
@@ -26,7 +27,7 @@ class NodeServerSocket : ServerSocket {
                 val buffer = JsBuffer(result)
                 buffer.setPosition(0)
                 buffer.setLimit(result.length)
-                nodeSocket.incomingMessageChannel.offer(SocketDataRead(buffer, result.length))
+                nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
             }
             clientSocketChannel.trySend(nodeSocket)
         }

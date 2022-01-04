@@ -9,7 +9,7 @@ import kotlin.time.ExperimentalTime
 interface ClientToServerSocket : ClientSocket {
     suspend fun open(
         port: UShort,
-        timeout: Duration = seconds(1),
+        timeout: Duration = 1.seconds,
         hostname: String? = null,
         socketOptions: SocketOptions? = null
     ): SocketOptions
