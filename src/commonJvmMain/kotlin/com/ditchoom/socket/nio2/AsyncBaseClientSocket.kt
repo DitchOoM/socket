@@ -17,15 +17,25 @@ abstract class AsyncBaseClientSocket :
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
     override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
-        val bytesRead = socket.aRead((buffer as JvmBuffer).byteBuffer, timeout)
+        val bytesRead = try {
+            socket.aRead((buffer as JvmBuffer).byteBuffer, timeout)
+        } catch (e: Exception) {
+            -1
+        }
         if (bytesRead < 0) {
+            isClosing.set(true)
             disconnectedFlow.emit(Unit)
         }
         return bytesRead
     }
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
-        val bytesWritten = socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout)
+        val bytesWritten = try {
+            socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout)
+        } catch (e: Exception) {
+            isClosing.set(true)
+            -1
+        }
         if (bytesWritten < 0) {
             disconnectedFlow.emit(Unit)
         }

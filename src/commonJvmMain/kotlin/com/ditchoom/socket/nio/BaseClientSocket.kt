@@ -25,7 +25,11 @@ abstract class BaseClientSocket(
     override suspend fun remotePort() = (socket.aRemoteAddress() as? InetSocketAddress)?.port?.toUShort()
 
     override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
-        val bytesRead = socket.read((buffer as JvmBuffer).byteBuffer, selector, timeout)
+        val bytesRead = try {
+            socket.read((buffer as JvmBuffer).byteBuffer, selector, timeout)
+        } catch (e: Exception) {
+            -1
+        }
         if (bytesRead < 0) {
             disconnectedFlow.emit(Unit)
         }
@@ -35,7 +39,11 @@ abstract class BaseClientSocket(
     override suspend fun <T> read(timeout: Duration, bufferSize: UInt,  bufferRead: (PlatformBuffer, Int) -> T): SocketDataRead<T> {
         val buffer = allocateNewBuffer(bufferSize) as JvmBuffer
         val byteBuffer = buffer.byteBuffer
-        val bytesRead = socket.read(byteBuffer, selector, timeout)
+        val bytesRead = try {
+            socket.read(byteBuffer, selector, timeout)
+        } catch (e: Exception) {
+            -1
+        }
         if (bytesRead < 0) {
             disconnectedFlow.emit(Unit)
         }
@@ -43,7 +51,11 @@ abstract class BaseClientSocket(
     }
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
-        val bytesWritten = socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout)
+        val bytesWritten = try {
+            socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout)
+        } catch (e: Exception) {
+            -1
+        }
         if (bytesWritten < 0) {
             disconnectedFlow.emit(Unit)
         }

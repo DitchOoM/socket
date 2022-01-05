@@ -48,6 +48,9 @@ open class NodeSocket : ClientSocket {
     }
 
     override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
+        if (isClosed) {
+            return  -1
+        }
         val receivedData = readBuffer(buffer.remaining())
         netSocket.resume()
         val resultBuffer = receivedData.result
@@ -114,8 +117,8 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         }
         netSocket.on("close") { ->
             isClosed = true
-            disconnectedFlow.tryEmit(Unit)
             incomingMessageChannel.close()
+            disconnectedFlow.tryEmit(Unit)
         }
         socketOptions?: SocketOptions()
     }

@@ -16,7 +16,7 @@ import kotlin.time.ExperimentalTime
 @ExperimentalTime
 abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
-    private val isClosing = AtomicBoolean(false)
+    protected val isClosing = AtomicBoolean(false)
     protected val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     override fun isOpen() = try {
