@@ -7,6 +7,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.SuspendCloseable
 import com.ditchoom.data.Reader
 import com.ditchoom.data.Writer
+import kotlinx.coroutines.Deferred
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime

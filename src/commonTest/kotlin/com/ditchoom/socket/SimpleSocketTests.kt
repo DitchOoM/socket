@@ -3,7 +3,6 @@
 package com.ditchoom.socket
 
 import block
-import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.toBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
@@ -12,7 +11,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -21,9 +19,41 @@ import kotlin.time.ExperimentalTime
 class SimpleSocketTests {
 
     @Test
+    fun mock() = block {
+        val server = MockServerSocket()
+        server.bind()
+        // test two in parallel
+        val client1 = testMockClientAsync(server)
+        val client2 = testMockClientAsync(server)
+        awaitAll(client1, client2)
+    }
+
+    @Test
+    fun mockAwaitClose() = block {
+        val server = MockServerSocket()
+        server.bind()
+        val client = testMockClientAsync(server)
+        awaitCloseWorks(client.await())
+    }
+
+    private suspend fun testMockClientAsync(server: MockServerSocket) =
+        coroutineScope {
+            async {
+                launch {
+                    val serverToClientSocket = server.accept()
+                    assertEquals("hello", serverToClientSocket.read().result.toString())
+                    serverToClientSocket.write("meow")
+                }
+                val client = MockClientSocket()
+                client.open(server.port()!!)
+                client.write("hello")
+                assertEquals("meow", client.read().result.toString())
+                client
+            }
+        }
+
+    @Test
     fun websocket() = block {
-        // ignore browser for now due to a ktor issue in build process
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val stringToValidate = "test"
         val buffer = stringToValidate.toBuffer()
 
@@ -45,6 +75,10 @@ class SimpleSocketTests {
     @Test
     fun awaitCloseWorks() = block {
         val client = openClientSocket(80u, hostname = "example.com", timeout = 100.milliseconds)
+        awaitCloseWorks(client)
+    }
+
+    suspend fun awaitCloseWorks(client: ClientSocket) = coroutineScope {
         var count = 0
         val closeAsyncJob = async {
             client.close()
@@ -54,6 +88,8 @@ class SimpleSocketTests {
         closeAsyncJob.await()
         assertEquals(1, count)
     }
+
+
 
     @Test
     fun httpRawSocket() = block {
@@ -107,7 +143,6 @@ Connection: close
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val server = asyncServerSocket()
         server.bind()
-        println("start server")
         val clientToServer = asyncClientSocket()
         val text = "yolo swag lyfestyle"
         val serverPort = assertNotNull(server.port(), "No port number from server")
@@ -117,14 +152,12 @@ Connection: close
             serverToClient.write(text)
         }
         clientToServer.open(serverPort)
-        println("socket opened")
         val dataReceivedFromServer = withContext(Dispatchers.Default) {
             clientToServer.read { buffer, bytesRead ->
                 buffer.readUtf8(bytesRead.toUInt())
             }
         }
         assertEquals(text, dataReceivedFromServer.result.toString())
-        println("asserted")
         val serverToClientPort = assertNotNull(serverToClient.localPort())
         val clientToServerPort = assertNotNull(clientToServer.localPort())
         serverToClient.close()
@@ -135,36 +168,32 @@ Connection: close
         checkPort(serverPort)
     }
 
-//    @Test
-//    fun suspendingInputStream() = block {
-//        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-//        val server = asyncServerSocket()
-//        server.bind()
-//        val text = "yolo swag lyfestyle"
-//        val serverPort = assertNotNull(server.port(), "No port number from server")
-//        launch(Dispatchers.Default) {
-//            val clientToServer = asyncClientSocket()
-//            clientToServer.open(serverPort)
-//            val inputStream = clientToServer.suspendingInputStream(this)
-//            val buffer = inputStream.sizedReadBuffer(text.length).slice()
-//            val utf8 = buffer.readUtf8(text.length)
-//            assertEquals(utf8.toString(), text)
-//            val clientToServerPort = assertNotNull(clientToServer.localPort())
-//            inputStream.close()
-//            delay(5)
-//            checkPort(clientToServerPort)
-//            checkPort(serverPort)
-//            // Needed for native tests, not sure why
-//            cancel()
-//        }
-//        val serverToClient = server.accept()
-//        val serverToClientPort = assertNotNull(serverToClient.localPort())
-//        serverToClient.write(text)
-//        serverToClient.close()
-//        server.close()
-//        delay(15) // needed for jvm, not sure why
-//        checkPort(serverToClientPort)
-//    }
+    @Test
+    fun suspendingInputStream() = block {
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+        val server = asyncServerSocket()
+        server.bind()
+        val text = "yolo swag lyfestyle"
+        val serverPort = assertNotNull(server.port(), "No port number from server")
+        launch(Dispatchers.Default) {
+            val clientToServer = asyncClientSocket()
+            clientToServer.open(serverPort)
+            val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer)
+            val buffer = inputStream.sizedReadBuffer(text.length).slice()
+            val utf8 = buffer.readUtf8(text.length)
+            assertEquals(utf8.toString(), text)
+            val clientToServerPort = assertNotNull(clientToServer.localPort())
+            clientToServer.close()
+            checkPort(clientToServerPort)
+            checkPort(serverPort)
+        }
+        val serverToClient = server.accept()
+        val serverToClientPort = assertNotNull(serverToClient.localPort())
+        serverToClient.write(text)
+        serverToClient.close()
+        server.close()
+        checkPort(serverToClientPort)
+    }
 
     @ExperimentalUnsignedTypes
     private suspend fun checkPort(port: UShort) {

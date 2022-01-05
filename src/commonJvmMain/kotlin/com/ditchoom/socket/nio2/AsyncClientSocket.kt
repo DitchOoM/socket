@@ -6,6 +6,7 @@ import com.ditchoom.socket.nio.util.asInetAddress
 import com.ditchoom.socket.nio.util.asyncSetOptions
 import com.ditchoom.socket.nio2.util.aConnect
 import com.ditchoom.socket.nio2.util.asyncSocket
+import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import kotlin.coroutines.resume
@@ -23,7 +24,7 @@ class AsyncClientSocket : AsyncBaseClientSocket(), ClientToServerSocket {
         timeout: Duration,
         hostname: String?,
         socketOptions: SocketOptions?
-    ): SocketOptions {
+    ): SocketOptions = withTimeout(timeout) {
         val socketAddress = if (hostname != null) {
             InetSocketAddress(hostname.asInetAddress(), port.toInt())
         } else {
@@ -36,10 +37,11 @@ class AsyncClientSocket : AsyncBaseClientSocket(), ClientToServerSocket {
             }
         }
         val asyncSocket = asyncSocket()
-        this.socket = asyncSocket
+
+        this@AsyncClientSocket.socket = asyncSocket
         val options = asyncSocket.asyncSetOptions(socketOptions)
         asyncSocket.aConnect(socketAddress)
-        return options
+        options
     }
 
 }

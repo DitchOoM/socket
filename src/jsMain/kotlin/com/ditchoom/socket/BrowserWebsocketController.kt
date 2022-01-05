@@ -62,12 +62,10 @@ class BrowserWebsocketController(
     override fun isOpen() = isConnected
 
     suspend fun connect() {
-        console.log("\r\nConnecting to $url")
         suspendCoroutine<Unit> { continuation ->
             var resumed = false
             websocket.onclose = {
                 isConnected = false
-                console.error("\r\nonclose", it)
                 incomingChannel.close()
                 disconnectedFlow.tryEmit(Unit)
                 if (!resumed) {
@@ -83,7 +81,6 @@ class BrowserWebsocketController(
             }
             websocket.onopen = { event ->
                 isConnected = true
-                console.log("\r\nconnection opened", event)
                 if (!resumed) {
                     continuation.resume(Unit)
                     resumed = true
@@ -123,10 +120,8 @@ class BrowserWebsocketController(
     }
 
     override suspend fun close() {
-        println("bws closing")
         incomingChannel.close()
         websocket.close()
-        println("bws closed")
     }
 
     companion object {

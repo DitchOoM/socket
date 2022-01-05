@@ -8,6 +8,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.time.Duration
@@ -15,7 +16,7 @@ import kotlin.time.ExperimentalTime
 
 @ExperimentalTime
 open class NodeSocket : ClientSocket {
-    protected var isClosed = true
+    internal var isClosed = true
     internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     private var currentBuffer :ReadBuffer? = null
@@ -72,17 +73,13 @@ open class NodeSocket : ClientSocket {
     }
 
     override suspend fun close() {
-        println("nsc closing")
         isClosed = true
         disconnectedFlow.emit(Unit)
-        println("nsc close emitted")
         try {
             incomingMessageChannel.close()
-            println("nsc closed incoming channel")
         } catch (t: Throwable) {}
         try {
             netSocket.close()
-            println("nsc closed net socket")
         } catch (t: Throwable) {}
     }
 }
@@ -95,7 +92,7 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         timeout: Duration,
         hostname: String?,
         socketOptions: SocketOptions?
-    ): SocketOptions {
+    ): SocketOptions = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({
             val buffer = allocateNewBuffer(4u*1024u) as JsBuffer
@@ -111,16 +108,15 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         val options = tcpOptions(port.toInt(), hostname, onRead)
         val netSocket = connect(options)
         isClosed = false
-        this.netSocket = netSocket
+        this@NodeClientSocket.netSocket = netSocket
         netSocket.on("error") { err ->
             error(err.toString())
         }
         netSocket.on("close") { ->
-            println("nsc net socket onclose")
             isClosed = true
             disconnectedFlow.tryEmit(Unit)
             incomingMessageChannel.close()
         }
-        return SocketOptions()
+        socketOptions?: SocketOptions()
     }
 }

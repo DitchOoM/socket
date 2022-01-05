@@ -21,6 +21,7 @@ class NodeServerSocket : ServerSocket {
     ): SocketOptions {
         val server = Net.createServer { clientSocket ->
             val nodeSocket = NodeSocket()
+            nodeSocket.isClosed = false
             nodeSocket.netSocket = clientSocket
             clientSocket.on("data") { data ->
                 val result = uint8ArrayOf(data)
