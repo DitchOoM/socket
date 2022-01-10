@@ -100,6 +100,7 @@ suspend fun AsynchronousSocketChannel.aClose() {
         cont.resume(Unit)
     }
 }
+
 suspend fun AsynchronousSocketChannel.aRemoteAddress(): SocketAddress? = withContext(Dispatchers.IO) {
     remoteAddress
 }

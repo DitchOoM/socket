@@ -24,6 +24,7 @@ fun Byte.toBooleanArray(): BooleanArray {
     booleanArray[7] = get(7)
     return booleanArray
 }
+
 fun BooleanArray.toByte(): Byte {
     var b = 0
     for (i in 0..7) {

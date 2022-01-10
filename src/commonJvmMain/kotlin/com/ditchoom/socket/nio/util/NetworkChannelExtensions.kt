@@ -2,10 +2,9 @@
 
 package com.ditchoom.socket.nio.util
 
+import com.ditchoom.socket.SocketOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import com.ditchoom.socket.SocketOptions
-import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.net.SocketOption
 import java.net.StandardSocketOptions
@@ -45,7 +44,7 @@ suspend fun NetworkChannel.asyncSetOptions(options: SocketOptions?): SocketOptio
     }
 }
 
-fun <T> NetworkChannel.tryGettingOption(option: SocketOption<T>) = if (supportedOptions().contains(option)) {
+private fun <T> NetworkChannel.tryGettingOption(option: SocketOption<T>) = if (supportedOptions().contains(option)) {
     getOption(option)
 } else {
     null
@@ -56,7 +55,7 @@ suspend fun NetworkChannel.aLocalAddress(): SocketAddress? = withContext(Dispatc
 }
 
 @ExperimentalTime
-suspend fun NetworkChannel.aClose() {
+suspend fun NetworkChannel.aClose() = withContext(Dispatchers.IO) {
     suspendCoroutine<Unit> { cont ->
         blockingClose()
         cont.resume(Unit)
@@ -72,7 +71,7 @@ internal fun NetworkChannel.blockingClose() {
         } else if (this is AsynchronousSocketChannel) {
             shutdownInput()
         }
-    } catch (ex: Throwable) {
+    } catch (_: Throwable) {
     }
     try {
         if (this is SocketChannel) {
@@ -80,11 +79,11 @@ internal fun NetworkChannel.blockingClose() {
         } else if (this is AsynchronousSocketChannel) {
             shutdownOutput()
         }
-    } catch (ex: Throwable) {
+    } catch (_: Throwable) {
     }
     try {
         close()
-    } catch (ex: Throwable) {
+    } catch (_: Throwable) {
         // Specification says that it is Ok to call it any time, but reality is different,
         // so we have just to ignore exception
     }

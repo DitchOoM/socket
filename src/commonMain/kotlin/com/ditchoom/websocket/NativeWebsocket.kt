@@ -19,7 +19,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
 
     override fun isOpen() = socket.isOpen()
 
-    override suspend fun write(buffer: PlatformBuffer) {
+    override suspend fun write(buffer: ParcelablePlatformBuffer) {
         val t = WebSocketClientToServerBinaryFrameTransformer.transform(buffer)
         t.position(t.limit().toInt())
         socket.write(t, connectionOptions.writeTimeout)
@@ -29,7 +29,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
         socket.write(WebSocketClientToServerTextFrameTransformer.transform(string), connectionOptions.writeTimeout)
     }
 
-    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
         val limit = buffer.limit().toInt()
         write(buffer)
         return limit
@@ -39,9 +39,9 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
         socket.write(WebSocketFrame(Opcode.Ping).toBuffer(), connectionOptions.writeTimeout)
     }
 
-    override suspend fun readData(timeout: Duration) : ReadBuffer {
+    override suspend fun readData(timeout: Duration): ReadBuffer {
         val frame = readWebSocketFrame()
-        var payload :ReadBuffer = frame.payloadData
+        var payload: ReadBuffer = frame.payloadData
         if (!frame.fin) {
             payload = FragmentedReadBuffer(payload, readData(timeout)).slice()
         }

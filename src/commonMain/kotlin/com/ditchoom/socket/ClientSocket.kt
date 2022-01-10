@@ -11,12 +11,12 @@ import kotlin.time.ExperimentalTime
 
 @ExperimentalUnsignedTypes
 @ExperimentalTime
-interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBuffer>, SuspendCloseable {
+interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<ParcelablePlatformBuffer>, SuspendCloseable {
 
     override fun isOpen(): Boolean
     suspend fun localPort(): UShort?
     suspend fun remotePort(): UShort?
-    suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int
+    suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int
     override suspend fun readData(timeout: Duration) = readBuffer(timeout).result
     suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> =
         read(timeout) { buffer, _ -> buffer }
@@ -25,23 +25,23 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
     suspend fun <T> read(
         timeout: Duration = 1.seconds,
         bufferSize: UInt = 4u * 1024u,
-        bufferRead: (PlatformBuffer, Int) -> T
+        bufferRead: (ParcelablePlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
         val buffer = allocateNewBuffer(bufferSize)
         val bytesRead = read(buffer, timeout)
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
 
-    suspend fun <T> readTyped(timeout: Duration = 1.seconds, bufferRead: (PlatformBuffer) -> T) =
+    suspend fun <T> readTyped(timeout: Duration = 1.seconds, bufferRead: (ParcelablePlatformBuffer) -> T) =
         read(timeout) { buffer, _ ->
             bufferRead(buffer)
         }.result
 
-    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int
+    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int
     suspend fun write(buffer: String, timeout: Duration = 1.seconds): Int =
         write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
 
-    suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
+    suspend fun writeFully(buffer: ParcelablePlatformBuffer, timeout: Duration) {
         while (buffer.position() < buffer.limit()) {
             write(buffer, timeout)
         }

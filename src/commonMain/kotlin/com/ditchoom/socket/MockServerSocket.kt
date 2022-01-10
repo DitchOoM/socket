@@ -1,19 +1,16 @@
 package com.ditchoom.socket
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.isActive
 import kotlin.time.ExperimentalTime
 
 @ExperimentalUnsignedTypes
 @ExperimentalTime
-class MockServerSocket(): ServerSocket {
+class MockServerSocket : ServerSocket {
     private var isBound = false
-    private var port :UShort? = null
+    private var port: UShort? = null
     private val clients = HashMap<UShort, MockClientSocket>()
 
-    override suspend fun accept():ClientSocket {
+    override suspend fun accept(): ClientSocket {
         val remoteSocket = clientsToAccept.receive()
         val serverToClient = MockClientSocket()
         serverToClient.remote = remoteSocket
@@ -45,7 +42,7 @@ class MockServerSocket(): ServerSocket {
 
     override fun isOpen(): Boolean = isBound
 
-    override fun port(): UShort?  = port
+    override fun port(): UShort? = port
 
     override suspend fun close() {
         for (client in clients) {

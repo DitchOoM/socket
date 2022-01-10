@@ -5,8 +5,6 @@ package com.ditchoom.socket
 import com.ditchoom.websocket.NativeWebsocket
 import com.ditchoom.websocket.WebSocket
 import com.ditchoom.websocket.WebSocketConnectionOptions
-import kotlinx.coroutines.CoroutineScope
-import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
 @ExperimentalTime

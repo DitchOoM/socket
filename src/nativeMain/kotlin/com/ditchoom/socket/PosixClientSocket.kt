@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.NativeBuffer
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ParcelablePlatformBuffer
 import com.ditchoom.buffer.allocateNewBuffer
 import kotlinx.cinterop.*
 import kotlinx.coroutines.withTimeout
@@ -35,7 +35,11 @@ open class PosixClientSocket() : ClientSocket {
         else swapBytes(peerAddress.sin_port)
     }
 
-    override suspend fun <T> read(timeout: Duration, bufferSize: UInt, bufferRead: (PlatformBuffer, Int) -> T): SocketDataRead<T> {
+    override suspend fun <T> read(
+        timeout: Duration,
+        bufferSize: UInt,
+        bufferRead: (ParcelablePlatformBuffer, Int) -> T
+    ): SocketDataRead<T> {
         return withTimeout(timeout) {
             val buffer = allocateNewBuffer(bufferSize)
             val nativeBuffer = buffer as NativeBuffer
@@ -48,15 +52,15 @@ open class PosixClientSocket() : ClientSocket {
         }
     }
 
-    override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
+    override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
         val nativeBuffer = buffer as NativeBuffer
         return buffer.data.usePinned { pinned ->
             recv(currentFileDescriptor!!, pinned.addressOf(0), buffer.capacity.toInt().convert(), 0)
-                    .ensureUnixCallResult("read") { it >= 0 }.toInt()
+                .ensureUnixCallResult("read") { it >= 0 }.toInt()
         }
     }
 
-    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
         val currentFileDescriptor = currentFileDescriptor ?: return 0
         buffer.resetForRead()
         return send(

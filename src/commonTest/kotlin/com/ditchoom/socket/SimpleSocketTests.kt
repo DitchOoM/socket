@@ -90,7 +90,6 @@ class SimpleSocketTests {
     }
 
 
-
     @Test
     fun httpRawSocket() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
@@ -124,7 +123,7 @@ Connection: close
             clientToServer.write(text)
         }
         val serverToClient = server.accept()
-        val dataReceivedFromClient = serverToClient.read() { buffer, bytesRead ->
+        val dataReceivedFromClient = serverToClient.read { buffer, bytesRead ->
             buffer.readUtf8(bytesRead.toUInt())
         }
         assertEquals(text, dataReceivedFromClient.result.toString())

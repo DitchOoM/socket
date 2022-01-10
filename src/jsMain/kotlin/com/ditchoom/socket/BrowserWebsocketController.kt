@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.JsBuffer
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ParcelablePlatformBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
 import kotlinx.coroutines.channels.BufferOverflow
@@ -26,7 +26,7 @@ class BrowserWebsocketController(
     connectionOptions: WebSocketConnectionOptions,
 ) : com.ditchoom.websocket.WebSocket {
     private val url = "ws://${connectionOptions.name}:${connectionOptions.port}${connectionOptions.websocketEndpoint}"
-    private val websocket :WebSocket = if (connectionOptions.protocol != null) {
+    private val websocket: WebSocket = if (connectionOptions.protocol != null) {
         WebSocket(url, connectionOptions.protocol)
     } else {
         WebSocket(url)
@@ -103,14 +103,15 @@ class BrowserWebsocketController(
         websocket.send(string)
     }
 
-    override suspend fun ping() {/*Not surfaced on browser*/}
+    override suspend fun ping() {/*Not surfaced on browser*/
+    }
 
-    override suspend fun write(buffer: PlatformBuffer) {
+    override suspend fun write(buffer: ParcelablePlatformBuffer) {
         val arrayBuffer = (buffer as JsBuffer).buffer.buffer.slice(0, buffer.limit().toInt())
         websocket.send(arrayBuffer)
     }
 
-    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
         write(buffer)
         return buffer.limit().toInt()
     }

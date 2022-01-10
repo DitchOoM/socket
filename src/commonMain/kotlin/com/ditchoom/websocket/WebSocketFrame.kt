@@ -2,7 +2,7 @@
 
 package com.ditchoom.websocket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ParcelablePlatformBuffer
 import com.ditchoom.buffer.TransformedReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.allocateNewBuffer
@@ -56,7 +56,7 @@ data class WebSocketFrame(
      * 5.3 for further information on client- to-server masking.
      */
     val maskingKey: MaskingKey,
-    val payloadData: PlatformBuffer,
+    val payloadData: ParcelablePlatformBuffer,
     /**
      * The length of the "Payload data", in bytes: if 0-125, that is the payload length.  If 126, the following 2 bytes
      * interpreted as a 16-bit unsigned integer are the payload length.  If 127, the following 8 bytes interpreted as a
@@ -76,12 +76,17 @@ data class WebSocketFrame(
 ) {
 
 
-    constructor(fin: Boolean, opcode: Opcode, maskingKey: MaskingKey, payloadData: PlatformBuffer)
-        :this(fin, false, false, false, opcode, maskingKey, payloadData)
+    constructor(fin: Boolean, opcode: Opcode, maskingKey: MaskingKey, payloadData: ParcelablePlatformBuffer)
+            : this(fin, false, false, false, opcode, maskingKey, payloadData)
 
-    constructor(opcode: Opcode, payloadData: PlatformBuffer = allocateNewBuffer(0u)) : this(false, opcode, MaskingKey.NoMaskingKey, payloadData)
+    constructor(opcode: Opcode, payloadData: ParcelablePlatformBuffer = allocateNewBuffer(0u)) : this(
+        false,
+        opcode,
+        MaskingKey.NoMaskingKey,
+        payloadData
+    )
 
-    fun toBuffer(): PlatformBuffer {
+    fun toBuffer(): ParcelablePlatformBuffer {
         val buffer = allocateNewBuffer(size().toUInt())
         serialize(buffer)
         return buffer
@@ -97,10 +102,10 @@ data class WebSocketFrame(
         throw IllegalStateException("Internal payload len size cannot be larger than 127")
     }
 
-    fun size() :Int {
+    fun size(): Int {
         // the first byte includes fin, rsv1-3, and opcode. second byte includes mask and payload len
         val ws2ByteOverhead = 2
-        return actualPayloadLength +  ws2ByteOverhead + when (maskingKey) {
+        return actualPayloadLength + ws2ByteOverhead + when (maskingKey) {
             is MaskingKey.FourByteMaskingKey -> 4
             MaskingKey.NoMaskingKey -> 0
         }
@@ -144,7 +149,7 @@ data class WebSocketFrame(
         }
         val data = if (maskingKey is MaskingKey.FourByteMaskingKey) {
             payloadData.position(0)
-            TransformedReadBuffer(payloadData) {i, original ->
+            TransformedReadBuffer(payloadData) { i, original ->
                 original xor maskingKey.maskingKey[i.toLong().mod(4)]
             }.slice()
         } else {

@@ -10,9 +10,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.TimeSource
-import kotlin.time.milliseconds
 
 
 suspend fun openSocketChannel(remote: SocketAddress? = null) = suspendCoroutine<SocketChannel> {
@@ -57,7 +57,7 @@ suspend fun Selector.select(selectionKey: SelectionKey, attachment: Any, timeout
     if (selectedCount == 0) {
         throw CancellationException("Selector timed out after waiting $timeout for ${selectionKey.isConnectable}")
     }
-    while (isOpen && timeout - startTime.elapsedNow() > Duration.milliseconds(0)) {
+    while (isOpen && timeout - startTime.elapsedNow() > 0.milliseconds) {
         if (selectedKeys().remove(selectionKey)) {
             val cont = selectionKey.attachment() as WrappedContinuation<*>
             if (cont.attachment != attachment) {

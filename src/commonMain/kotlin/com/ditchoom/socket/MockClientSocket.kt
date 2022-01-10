@@ -1,6 +1,6 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ParcelablePlatformBuffer
 import com.ditchoom.buffer.allocateNewBuffer
 import com.ditchoom.buffer.toBuffer
 import kotlinx.coroutines.channels.BufferOverflow
@@ -9,16 +9,15 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
 @ExperimentalUnsignedTypes
 @ExperimentalTime
-class MockClientSocket: ClientToServerSocket {
+class MockClientSocket : ClientToServerSocket {
     var isOpenInternal = false
-    private val incomingQueue = Channel<PlatformBuffer>()
-    var localPortInternal :UShort? = null
-    var remotePortInternal :UShort? = null
+    private val incomingQueue = Channel<ParcelablePlatformBuffer>()
+    var localPortInternal: UShort? = null
+    var remotePortInternal: UShort? = null
     val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     lateinit var remote: MockClientSocket
 
@@ -41,7 +40,7 @@ class MockClientSocket: ClientToServerSocket {
 
     override suspend fun remotePort() = remotePortInternal
 
-    override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
+    override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
         val incoming = incomingQueue.receive()
         incoming.resetForRead()
         buffer.write(incoming)
@@ -53,21 +52,23 @@ class MockClientSocket: ClientToServerSocket {
     override suspend fun <T> read(
         timeout: Duration,
         bufferSize: UInt,
-        bufferRead: (PlatformBuffer, Int) -> T
+        bufferRead: (ParcelablePlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
         val buffer = allocateNewBuffer(bufferSize)
         buffer.setLimit(bufferSize.toInt())
         val bytesRead = read(buffer, timeout)
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
+
     override suspend fun read(timeout: Duration) = read(timeout) { buffer, bytesRead ->
         buffer.readUtf8(bytesRead)
     }
 
-    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
         remote.incomingQueue.send(buffer)
         return buffer.limit().toInt()
     }
+
     override suspend fun write(buffer: String, timeout: Duration): Int =
         write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
 

@@ -45,7 +45,7 @@ class SuspendingSocketInputStream(
         // ensure remaining in local buffer at least the size we requested
         while (fragmentedLocalBuffer.remaining() < size.toUInt()) {
             val moreData = reader.readData(readTimeout)
-            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer,moreData)
+            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, moreData)
         }
         this.currentBuffer = fragmentedLocalBuffer
         return fragmentedLocalBuffer
