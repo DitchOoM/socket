@@ -13,6 +13,7 @@ import org.khronos.webgl.ArrayBuffer
 import org.khronos.webgl.Uint8Array
 import org.w3c.dom.ARRAYBUFFER
 import org.w3c.dom.BinaryType
+import org.w3c.dom.CloseEvent
 import org.w3c.dom.WebSocket
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -31,7 +32,8 @@ class BrowserWebsocketController(
     } else {
         WebSocket(url)
     }
-    private val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private var wasCloseInitiatedClientSize = false
+    private val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private var isConnected = false
     private val incomingChannel = Channel<WebSocketDataRead>()
 
@@ -64,19 +66,22 @@ class BrowserWebsocketController(
     suspend fun connect() {
         suspendCoroutine<Unit> { continuation ->
             var resumed = false
+            var error :SocketException? = null
             websocket.onclose = {
+                val closeEvent = it as CloseEvent
                 isConnected = false
                 incomingChannel.close()
-                disconnectedFlow.tryEmit(Unit)
+                val closeException = SocketException("Socket closed reason:${closeEvent.reason}, code:${closeEvent.code}, wasClean: ${closeEvent.wasClean}", wasCloseInitiatedClientSize, error)
+                disconnectedFlow.tryEmit(closeException)
                 if (!resumed) {
-                    continuation.resumeWithException(Exception("closed"))
+                    continuation.resumeWithException(closeException)
                     resumed = true
                 }
                 Unit
             }
             websocket.onerror = {
                 isConnected = false
-                console.error("\r\nws error", it)
+                error = SocketException("WS onError: ${it.asDynamic().code}")
                 Unit
             }
             websocket.onopen = { event ->
@@ -116,11 +121,10 @@ class BrowserWebsocketController(
         return buffer.limit().toInt()
     }
 
-    override suspend fun awaitClose() {
-        disconnectedFlow.asSharedFlow().first()
-    }
+    override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
 
     override suspend fun close() {
+        wasCloseInitiatedClientSize = true
         incomingChannel.close()
         websocket.close()
     }

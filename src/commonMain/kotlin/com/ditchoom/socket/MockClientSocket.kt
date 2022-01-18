@@ -18,7 +18,7 @@ class MockClientSocket : ClientToServerSocket {
     private val incomingQueue = Channel<ParcelablePlatformBuffer>()
     var localPortInternal: UShort? = null
     var remotePortInternal: UShort? = null
-    val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     lateinit var remote: MockClientSocket
 
     override suspend fun open(
@@ -72,12 +72,10 @@ class MockClientSocket : ClientToServerSocket {
     override suspend fun write(buffer: String, timeout: Duration): Int =
         write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
 
-    override suspend fun awaitClose() {
-        disconnectedFlow.asSharedFlow().first()
-    }
+    override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
 
     override suspend fun close() {
-        disconnectedFlow.emit(Unit)
+        disconnectedFlow.emit(SocketException("Mock close", true))
     }
 
     companion object {

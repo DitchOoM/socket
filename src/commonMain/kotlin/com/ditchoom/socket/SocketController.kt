@@ -16,5 +16,5 @@ interface SocketController : Reader<ReadBuffer>, Writer<ParcelablePlatformBuffer
     /**
      * Suspends the caller until the socket connection has fully closed.
      */
-    suspend fun awaitClose()
+    suspend fun awaitClose(): SocketException
 }

@@ -21,8 +21,6 @@ class SuspendingSocketInputStream(
     internal var currentBuffer: ReadBuffer? = null
         private set
 
-    private val emptyBuffer = allocateNewBuffer(0u)
-
     suspend fun readUnsignedByte() = sizedReadBuffer(UByte.SIZE_BYTES).readUnsignedByte()
     suspend fun readByte() = sizedReadBuffer(Byte.SIZE_BYTES).readByte()
 
@@ -51,4 +49,7 @@ class SuspendingSocketInputStream(
         return fragmentedLocalBuffer
     }
 
+    companion object {
+        private val emptyBuffer = allocateNewBuffer(0u)
+    }
 }

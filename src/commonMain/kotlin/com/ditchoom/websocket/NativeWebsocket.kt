@@ -114,9 +114,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
         return WebSocketFrame(fin, rsv1, rsv2, rsv3, opcode, maskingKey, payload)
     }
 
-    override suspend fun awaitClose() {
-        socket.awaitClose()
-    }
+    override suspend fun awaitClose() = socket.awaitClose()
 
     override suspend fun close() {
         socket.close()

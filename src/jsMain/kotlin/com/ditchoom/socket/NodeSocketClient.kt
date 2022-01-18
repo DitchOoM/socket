@@ -19,7 +19,8 @@ open class NodeSocket : ClientSocket {
     internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     private var currentBuffer: ReadBuffer? = null
-    internal val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    protected var wasCloseInitiatedClientSize = false
 
     override fun isOpen() = !isClosed && netSocket.remoteAddress != null
 
@@ -75,13 +76,12 @@ open class NodeSocket : ClientSocket {
         return array.byteLength
     }
 
-    override suspend fun awaitClose() {
-        disconnectedFlow.asSharedFlow().first()
-    }
+    override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
 
     override suspend fun close() {
         isClosed = true
-        disconnectedFlow.emit(Unit)
+        wasCloseInitiatedClientSize = true
+        disconnectedFlow.emit(SocketException("User closed socket", wasCloseInitiatedClientSize))
         try {
             incomingMessageChannel.close()
         } catch (t: Throwable) {
@@ -118,13 +118,14 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         val netSocket = connect(options)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
+        var errorString = "Socket closed without reason"
         netSocket.on("error") { err ->
-            error(err.toString())
+            errorString = err.toString()
         }
         netSocket.on("close") { ->
             isClosed = true
             incomingMessageChannel.close()
-            disconnectedFlow.tryEmit(Unit)
+            disconnectedFlow.tryEmit(SocketException(errorString, wasCloseInitiatedClientSize))
         }
         socketOptions ?: SocketOptions()
     }

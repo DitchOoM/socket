@@ -4,6 +4,7 @@ import com.ditchoom.buffer.JvmBuffer
 import com.ditchoom.buffer.ParcelablePlatformBuffer
 import com.ditchoom.buffer.allocateNewBuffer
 import com.ditchoom.socket.SocketDataRead
+import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.aRemoteAddress
 import com.ditchoom.socket.nio.util.read
@@ -25,13 +26,16 @@ abstract class BaseClientSocket(
     override suspend fun remotePort() = (socket.aRemoteAddress() as? InetSocketAddress)?.port?.toUShort()
 
     override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+        var exception :Exception? = null
         val bytesRead = try {
             socket.read((buffer as JvmBuffer).byteBuffer, selector, timeout)
         } catch (e: Exception) {
+            exception = e
             -1
         }
         if (bytesRead < 0) {
-            disconnectedFlow.emit(Unit)
+            isClosing.set(true)
+            disconnectedFlow.emit(SocketException("Socket read channel has reached end-of-stream", closeInitiatedClientSide, exception))
         }
         return bytesRead
     }
@@ -43,25 +47,31 @@ abstract class BaseClientSocket(
     ): SocketDataRead<T> {
         val buffer = allocateNewBuffer(bufferSize) as JvmBuffer
         val byteBuffer = buffer.byteBuffer
+        var exception :Exception? = null
         val bytesRead = try {
             socket.read(byteBuffer, selector, timeout)
         } catch (e: Exception) {
+            exception = e
             -1
         }
         if (bytesRead < 0) {
-            disconnectedFlow.emit(Unit)
+            isClosing.set(true)
+            disconnectedFlow.emit(SocketException("Socket read channel has reached end-of-stream", closeInitiatedClientSide, exception))
         }
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
 
     override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+        var exception :Exception? = null
         val bytesWritten = try {
             socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout)
         } catch (e: Exception) {
+            exception = e
             -1
         }
         if (bytesWritten < 0) {
-            disconnectedFlow.emit(Unit)
+            isClosing.set(true)
+            disconnectedFlow.emit(SocketException("Socket write channel has reached end-of-stream", closeInitiatedClientSide, exception))
         }
         return bytesWritten
     }

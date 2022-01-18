@@ -1,6 +1,7 @@
 package com.ditchoom.socket.nio
 
 import com.ditchoom.socket.ClientSocket
+import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.aLocalAddress
 import kotlinx.coroutines.channels.BufferOverflow
@@ -17,7 +18,8 @@ import kotlin.time.ExperimentalTime
 abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
     protected val isClosing = AtomicBoolean(false)
-    protected val disconnectedFlow = MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    protected var closeInitiatedClientSide = false
+    protected val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     override fun isOpen() = try {
         socket.isOpen && !isClosing.get()
@@ -27,13 +29,12 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
 
     override suspend fun localPort(): UShort? = (socket.aLocalAddress() as? InetSocketAddress)?.port?.toUShort()
 
-    override suspend fun awaitClose() {
-        disconnectedFlow.asSharedFlow().first()
-    }
+    override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
 
     override suspend fun close() {
         isClosing.set(true)
+        closeInitiatedClientSide = true
         socket.aClose()
-        disconnectedFlow.emit(Unit)
+        disconnectedFlow.emit(SocketException("User closed socket", wasInitiatedClientSize = closeInitiatedClientSide))
     }
 }

@@ -2,6 +2,7 @@ package com.ditchoom.socket.nio2
 
 import com.ditchoom.buffer.JvmBuffer
 import com.ditchoom.buffer.ParcelablePlatformBuffer
+import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
@@ -17,27 +18,31 @@ abstract class AsyncBaseClientSocket :
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
     override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+        var exception :Exception? = null
         val bytesRead = try {
             socket.aRead((buffer as JvmBuffer).byteBuffer, timeout)
         } catch (e: Exception) {
+            exception = e
             -1
         }
         if (bytesRead < 0) {
             isClosing.set(true)
-            disconnectedFlow.emit(Unit)
+            disconnectedFlow.emit(SocketException("Socket read channel has reached end-of-stream", closeInitiatedClientSide, exception))
         }
         return bytesRead
     }
 
     override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+        var exception :Exception? = null
         val bytesWritten = try {
             socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout)
         } catch (e: Exception) {
-            isClosing.set(true)
+            exception = e
             -1
         }
         if (bytesWritten < 0) {
-            disconnectedFlow.emit(Unit)
+            isClosing.set(true)
+            disconnectedFlow.emit(SocketException("Socket read channel has reached end-of-stream", closeInitiatedClientSide, exception))
         }
         return bytesWritten
     }
