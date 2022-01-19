@@ -1,3 +1,3 @@
 package com.ditchoom.socket
 
-class SocketException(message: String, wasInitiatedClientSize: Boolean = false, cause: Throwable? = null): Exception(message, cause)
+class SocketException(override val message: String, val wasInitiatedClientSize: Boolean = false, override val cause: Throwable? = null): Exception(message, cause)
