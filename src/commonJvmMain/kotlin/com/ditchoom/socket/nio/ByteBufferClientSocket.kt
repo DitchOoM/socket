@@ -35,6 +35,6 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
         isClosing.set(true)
         closeInitiatedClientSide = true
         socket.aClose()
-        disconnectedFlow.emit(SocketException("User closed socket", wasInitiatedClientSize = closeInitiatedClientSide))
+        disconnectedFlow.emit(SocketException("User closed socket", wasInitiatedClientSide = closeInitiatedClientSide))
     }
 }
