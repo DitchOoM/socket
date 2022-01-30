@@ -9,19 +9,19 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 internal class AsyncVoidIOHandler(private val cb: (() -> Unit)? = null) :
-    CompletionHandler<Void?, Continuation<Unit>> {
-    override fun completed(result: Void?, cont: Continuation<Unit>) {
+    CompletionHandler<Void?, CancellableContinuation<Unit>> {
+
+    override fun completed(result: Void?, cont: CancellableContinuation<Unit>) {
         cb?.invoke()
         cont.resume(Unit)
     }
 
-    override fun failed(ex: Throwable, cont: Continuation<Unit>) {
+    override fun failed(ex: Throwable, cont: CancellableContinuation<Unit>) {
         // just return if already cancelled and got an expected exception for that case
-        if (cont is CancellableContinuation<Unit>) {
-            if (ex is AsynchronousCloseException && cont.isCancelled) return
-        }
+        if (ex is AsynchronousCloseException && cont.isCancelled) return
         cont.resumeWithException(ex)
     }
+
 }
 
 internal object AsyncIOHandlerAny :

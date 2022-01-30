@@ -49,6 +49,7 @@ external class Socket {
     fun pause(): Socket
     fun resume(): Socket
     fun end(callback: () -> Unit): Socket
+    fun destroy(): Socket
 }
 
 external interface OnReadOpts {

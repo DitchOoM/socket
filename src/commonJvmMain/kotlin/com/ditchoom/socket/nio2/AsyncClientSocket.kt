@@ -40,7 +40,7 @@ class AsyncClientSocket : AsyncBaseClientSocket(), ClientToServerSocket {
 
         this@AsyncClientSocket.socket = asyncSocket
         val options = asyncSocket.asyncSetOptions(socketOptions)
-        asyncSocket.aConnect(socketAddress)
+        asyncSocket.aConnect(socketAddress, timeout)
         options
     }
 

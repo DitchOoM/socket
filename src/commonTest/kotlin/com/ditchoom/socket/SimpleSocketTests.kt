@@ -7,10 +7,7 @@ import com.ditchoom.buffer.toBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
 import kotlinx.coroutines.*
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import kotlin.test.*
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
@@ -70,6 +67,14 @@ class SimpleSocketTests {
         val stringData = dataRead.data.readUtf8(dataRead.data.limit()).toString()
         assertEquals(stringToValidate, stringData)
         websocketClient.close()
+    }
+
+    @Test
+    fun connectTimeoutWorks() = block {
+        try {
+            openClientSocket(3u, hostname = "example.com", timeout = 100.milliseconds)
+            fail("should have timed out")
+        } catch (_: CancellationException) {}
     }
 
     @Test

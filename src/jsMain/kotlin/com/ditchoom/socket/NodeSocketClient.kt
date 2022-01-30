@@ -3,11 +3,13 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.*
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
@@ -78,18 +80,20 @@ open class NodeSocket : ClientSocket {
 
     override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
 
-    override suspend fun close() {
+    fun cleanSocket(netSocket: Socket) {
         isClosed = true
         wasCloseInitiatedClientSize = true
-        disconnectedFlow.emit(SocketException("User closed socket", wasCloseInitiatedClientSize))
+        disconnectedFlow.tryEmit(SocketException("User closed socket", wasCloseInitiatedClientSize))
         try {
             incomingMessageChannel.close()
         } catch (t: Throwable) {
         }
-        try {
-            netSocket.close()
-        } catch (t: Throwable) {
-        }
+        netSocket.end {}
+        netSocket.destroy()
+    }
+
+    override suspend fun close() {
+        cleanSocket(netSocket)
     }
 }
 
@@ -115,17 +119,17 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
             false
         })
         val options = tcpOptions(port.toInt(), hostname, onRead)
-        val netSocket = connect(options)
+        val netSocket = try {
+            connect(options) {
+                cleanSocket(it)
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw e
+        }
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
-        var errorString = "Socket closed without reason"
-        netSocket.on("error") { err ->
-            errorString = err.toString()
-        }
         netSocket.on("close") { ->
-            isClosed = true
-            incomingMessageChannel.close()
-            disconnectedFlow.tryEmit(SocketException(errorString, wasCloseInitiatedClientSize))
+            cleanSocket(netSocket)
         }
         socketOptions ?: SocketOptions()
     }

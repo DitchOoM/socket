@@ -6,6 +6,7 @@ import com.ditchoom.socket.nio.util.aLocalAddress
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.nio.Buffer
@@ -37,9 +38,13 @@ suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) = suspendCorout
  */
 @ExperimentalTime
 suspend fun AsynchronousSocketChannel.aConnect(
-    socketAddress: SocketAddress
-) = suspendCoroutine<Unit> { cont ->
-    connect(socketAddress, cont, AsyncVoidIOHandler())
+    socketAddress: SocketAddress,
+    timeout: Duration,
+) = withTimeout(timeout) {
+    suspendCancellableCoroutine<Unit> { cont ->
+        connect(socketAddress, cont, AsyncVoidIOHandler())
+        closeOnCancel(cont)
+    }
 }
 
 /**
