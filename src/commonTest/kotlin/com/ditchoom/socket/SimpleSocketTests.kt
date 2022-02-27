@@ -209,3 +209,7 @@ Connection: close
         assertEquals(0, stats.count(), "Socket still in CLOSE_WAIT state found!")
     }
 }
+
+
+
+expect suspend fun readStats(port: UShort, contains: String): List<String>
