@@ -1,5 +1,6 @@
 package com.ditchoom.websocket
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.toBuffer
@@ -12,7 +13,7 @@ object WebSocketClientToServerTextFrameTransformer : DataTransformer<String, Pla
         val applyFin = true
         val bytes = Random.nextBytes(4)
         val frame = WebSocketFrame(applyFin, Opcode.Text, MaskingKey.FourByteMaskingKey(bytes), input.toBuffer())
-        val websocketEncodedBuffer = PlatformBuffer.allocate(frame.size())
+        val websocketEncodedBuffer = PlatformBuffer.allocate(frame.size(), zone = AllocationZone.Direct)
         frame.serialize(websocketEncodedBuffer)
         return websocketEncodedBuffer
     }

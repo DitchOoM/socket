@@ -1,5 +1,6 @@
 package com.ditchoom.socket.nio
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.allocate
@@ -16,6 +17,7 @@ import kotlin.time.Duration
 
 abstract class BaseClientSocket(
     protected val blocking: Boolean = false,
+    override val allocationZone: AllocationZone = AllocationZone.Direct
 ) : ByteBufferClientSocket<SocketChannel>() {
 
     val selector = if (!blocking) Selector.open()!! else null
@@ -48,7 +50,7 @@ abstract class BaseClientSocket(
         bufferSize: Int,
         bufferRead: (PlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
-        val buffer = PlatformBuffer.allocate(bufferSize) as JvmBuffer
+        val buffer = PlatformBuffer.allocate(bufferSize, allocationZone) as JvmBuffer
         val byteBuffer = buffer.byteBuffer
         var exception: Exception? = null
         val bytesRead = try {

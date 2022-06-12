@@ -1,8 +1,12 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.SuspendCloseable
 
 interface ServerSocket : SuspendCloseable {
+    val allocationZone: AllocationZone
+        get() = AllocationZone.Direct
+
     suspend fun bind(
         port: UShort? = null,
         host: String? = null,
@@ -15,4 +19,4 @@ interface ServerSocket : SuspendCloseable {
     fun port(): UShort?
 }
 
-expect fun asyncServerSocket(): ServerSocket
+expect fun asyncServerSocket(zone: AllocationZone = AllocationZone.Direct): ServerSocket

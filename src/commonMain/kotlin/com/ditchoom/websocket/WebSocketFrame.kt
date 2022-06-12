@@ -1,9 +1,6 @@
 package com.ditchoom.websocket
 
-import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.TransformedReadBuffer
-import com.ditchoom.buffer.WriteBuffer
-import com.ditchoom.buffer.allocate
+import com.ditchoom.buffer.*
 import com.ditchoom.data.get
 import com.ditchoom.data.toBooleanArray
 import com.ditchoom.data.toByte
@@ -77,7 +74,10 @@ data class WebSocketFrame(
     constructor(fin: Boolean, opcode: Opcode, maskingKey: MaskingKey, payloadData: PlatformBuffer)
             : this(fin, false, false, false, opcode, maskingKey, payloadData)
 
-    constructor(opcode: Opcode, payloadData: PlatformBuffer = PlatformBuffer.allocate(0)) : this(
+    constructor(
+        opcode: Opcode,
+        payloadData: PlatformBuffer = PlatformBuffer.allocate(0, zone = AllocationZone.Direct)
+    ) : this(
         false,
         opcode,
         MaskingKey.NoMaskingKey,
@@ -85,7 +85,7 @@ data class WebSocketFrame(
     )
 
     fun toBuffer(): PlatformBuffer {
-        val buffer = PlatformBuffer.allocate(size())
+        val buffer = PlatformBuffer.allocate(size(), zone = AllocationZone.Direct)
         serialize(buffer)
         return buffer
     }

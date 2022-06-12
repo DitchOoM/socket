@@ -7,6 +7,8 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBuffer>, SuspendCloseable {
+    val allocationZone: AllocationZone
+        get() = AllocationZone.Direct
 
     override fun isOpen(): Boolean
     suspend fun localPort(): UShort?
@@ -23,7 +25,7 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
         bufferRead: (PlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
 
-        val buffer = PlatformBuffer.allocate(bufferSize)
+        val buffer = PlatformBuffer.allocate(bufferSize, zone = allocationZone)
         val bytesRead = read(buffer, timeout)
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
@@ -35,7 +37,7 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int
     suspend fun write(buffer: String, timeout: Duration = 1.seconds): Int =
-        write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
+        write(buffer.toBuffer().also { it.position(it.limit()) }, timeout)
 
     suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
         while (buffer.position() < buffer.limit()) {
@@ -57,16 +59,15 @@ suspend fun openClientSocket(
     return socket
 }
 
-fun getClientSocket(): ClientToServerSocket {
+fun getClientSocket(zone: AllocationZone = AllocationZone.Direct): ClientToServerSocket {
     try {
-        return asyncClientSocket()
+        return asyncClientSocket(zone)
     } catch (e: Throwable) {
         // failed to allocate async socket channel based socket, fallback to nio
     }
-    return clientSocket(false)
+    return clientSocket(zone, false)
 }
 
-expect fun asyncClientSocket(): ClientToServerSocket
+expect fun asyncClientSocket(zone: AllocationZone = AllocationZone.Direct): ClientToServerSocket
 
-expect fun clientSocket(blocking: Boolean = false): ClientToServerSocket
-
+expect fun clientSocket(zone: AllocationZone = AllocationZone.Direct, blocking: Boolean = false): ClientToServerSocket
