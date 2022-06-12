@@ -1,5 +1,3 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.socket
 
 import platform.posix.init_sockets
@@ -13,16 +11,13 @@ private fun initSockets() {
     }
 }
 
-@ExperimentalTime
 actual fun asyncClientSocket() = clientSocket(false)
 
-@ExperimentalTime
 actual fun clientSocket(blocking: Boolean): ClientToServerSocket {
     initSockets()
     return PosixClientToServerSocket()
 }
 
-@ExperimentalTime
 actual fun asyncServerSocket(): ServerSocket {
     initSockets()
 //    throw UnsupportedOperationException("Server not ready yet")

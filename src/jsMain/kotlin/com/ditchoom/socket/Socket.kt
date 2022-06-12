@@ -1,7 +1,5 @@
 package com.ditchoom.socket
 
-import kotlin.time.ExperimentalTime
-
 val isNodeJs = nodeJs()
 
 
@@ -9,8 +7,6 @@ private fun nodeJs(): Boolean {
     return js("global.window") == null
 }
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 actual fun asyncClientSocket(): ClientToServerSocket {
     return if (isNodeJs) {
         NodeClientSocket()
@@ -20,12 +16,9 @@ actual fun asyncClientSocket(): ClientToServerSocket {
 }
 
 
-@ExperimentalTime
 actual fun clientSocket(blocking: Boolean): ClientToServerSocket =
     throw UnsupportedOperationException("Only non blocking io is supported with JS")
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 actual fun asyncServerSocket(): ServerSocket {
     if (isNodeJs) {
 //        throw UnsupportedOperationException("Not implemented yet")

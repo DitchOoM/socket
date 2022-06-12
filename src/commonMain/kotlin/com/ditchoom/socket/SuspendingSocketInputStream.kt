@@ -1,18 +1,15 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.FragmentedReadBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocateNewBuffer
+import com.ditchoom.buffer.allocate
 import com.ditchoom.data.Reader
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
 /**
  * Non blocking, suspending socket input stream.
  */
-@ExperimentalTime
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
     private val reader: Reader<ReadBuffer>,
@@ -41,7 +38,7 @@ class SuspendingSocketInputStream(
         }
 
         // ensure remaining in local buffer at least the size we requested
-        while (fragmentedLocalBuffer.remaining() < size.toUInt()) {
+        while (fragmentedLocalBuffer.remaining() < size) {
             val moreData = reader.readData(readTimeout)
             fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, moreData)
         }
@@ -50,6 +47,6 @@ class SuspendingSocketInputStream(
     }
 
     companion object {
-        private val emptyBuffer = allocateNewBuffer(0u)
+        private val emptyBuffer = PlatformBuffer.allocate(0)
     }
 }

@@ -7,7 +7,7 @@ import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
 
-suspend fun connect(tcpOptions: tcpOptions, failureCb:(Socket)->Unit): Socket {
+suspend fun connect(tcpOptions: tcpOptions, failureCb: (Socket) -> Unit): Socket {
     var netSocket: Socket? = null
     suspendCancellableCoroutine<Unit> {
         val socket = Net.connect(tcpOptions) {

@@ -1,10 +1,7 @@
 package com.ditchoom.socket
 
 import kotlinx.coroutines.channels.Channel
-import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 class MockServerSocket : ServerSocket {
     private var isBound = false
     private var port: UShort? = null
@@ -27,7 +24,7 @@ class MockServerSocket : ServerSocket {
         port: UShort?,
         host: String?,
         socketOptions: SocketOptions?,
-        backlog: UInt
+        backlog: Int
     ): SocketOptions {
         if (servers.contains(port)) {
             throw Exception("Port already used")

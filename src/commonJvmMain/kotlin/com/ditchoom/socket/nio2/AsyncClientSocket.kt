@@ -13,10 +13,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 class AsyncClientSocket : AsyncBaseClientSocket(), ClientToServerSocket {
 
     override suspend fun open(

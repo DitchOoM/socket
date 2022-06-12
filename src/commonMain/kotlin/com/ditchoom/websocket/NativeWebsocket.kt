@@ -9,17 +9,14 @@ import com.ditchoom.websocket.MaskingKey.FourByteMaskingKey
 import com.ditchoom.websocket.MaskingKey.NoMaskingKey
 import kotlin.experimental.xor
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions, private val socket: ClientSocket) :
     WebSocket {
     private val inputStream = SuspendingSocketInputStream(connectionOptions.readTimeout, socket)
 
     override fun isOpen() = socket.isOpen()
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer) {
+    override suspend fun write(buffer: PlatformBuffer) {
         val t = WebSocketClientToServerBinaryFrameTransformer.transform(buffer)
         t.position(t.limit().toInt())
         socket.write(t, connectionOptions.writeTimeout)
@@ -29,7 +26,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
         socket.write(WebSocketClientToServerTextFrameTransformer.transform(string), connectionOptions.writeTimeout)
     }
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         val limit = buffer.limit().toInt()
         write(buffer)
         return limit
@@ -85,19 +82,18 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
             throw IllegalArgumentException("Invalid payload length")
         }
         val maskingKey = if (mask) {
-            FourByteMaskingKey(inputStream.sizedReadBuffer(Int.SIZE_BYTES).readByteArray(Int.SIZE_BYTES.toUInt()))
+            FourByteMaskingKey(inputStream.sizedReadBuffer(Int.SIZE_BYTES).readByteArray(Int.SIZE_BYTES))
         } else {
             NoMaskingKey
         }
         val payload = if (actualPayloadLength == 0uL) {
-            allocateNewBuffer(0u)
+            PlatformBuffer.allocate(0)
         } else {
             check(actualPayloadLength < Int.MAX_VALUE.toULong()) { "Payloads larger than ${Int.MAX_VALUE} is currently unsupported" }
-            val platformBuffer = allocateNewBuffer(actualPayloadLength.toUInt())
-            val len = actualPayloadLength.toInt()
-            val originalReadBuffer = inputStream.sizedReadBuffer(len)
-            val bytes = originalReadBuffer.readByteArray(actualPayloadLength.toUInt())
-            val readBuffer = allocateNewBuffer(actualPayloadLength.toUInt())
+            val platformBuffer = PlatformBuffer.allocate(actualPayloadLength.toInt())
+            val originalReadBuffer = inputStream.sizedReadBuffer(actualPayloadLength.toInt())
+            val bytes = originalReadBuffer.readByteArray(actualPayloadLength.toInt())
+            val readBuffer = PlatformBuffer.allocate(actualPayloadLength.toInt())
             readBuffer.write(bytes)
             readBuffer.resetForRead()
             val transformedBuffer = if (maskingKey is FourByteMaskingKey) {

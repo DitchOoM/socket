@@ -1,5 +1,3 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.socket.nio2.util
 
 import com.ditchoom.socket.nio.util.aLocalAddress
@@ -18,7 +16,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
 
 suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) = suspendCoroutine<AsynchronousSocketChannel> {
@@ -36,7 +33,6 @@ suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) = suspendCorout
  * If the [Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
  * *closes the underlying channel* and immediately resumes with [CancellationException].
  */
-@ExperimentalTime
 suspend fun AsynchronousSocketChannel.aConnect(
     socketAddress: SocketAddress,
     timeout: Duration,
@@ -54,7 +50,6 @@ suspend fun AsynchronousSocketChannel.aConnect(
  * *closes the underlying channel* and immediately resumes with [CancellationException].
  */
 
-@ExperimentalTime
 suspend fun AsynchronousSocketChannel.aRead(
     buf: ByteBuffer,
     duration: Duration
@@ -77,7 +72,6 @@ suspend fun AsynchronousSocketChannel.aRead(
  * *closes the underlying channel* and immediately resumes with [CancellationException].
  */
 
-@ExperimentalTime
 suspend fun AsynchronousSocketChannel.aWrite(
     buf: ByteBuffer,
     duration: Duration
@@ -98,7 +92,6 @@ suspend fun AsynchronousSocketChannel.aWrite(
  * *closes the underlying channel* and immediately resumes with [CancellationException].
  */
 
-@ExperimentalTime
 suspend fun AsynchronousSocketChannel.aClose() {
     suspendCoroutine<Unit> { cont ->
         blockingClose()

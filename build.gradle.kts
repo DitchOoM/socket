@@ -28,8 +28,8 @@ kotlin {
         }
     }
     js {
-        browser{}
-        nodejs{}
+        browser {}
+        nodejs {}
     }
 //    macosX64()
 //    linuxX64()
@@ -40,8 +40,8 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.56")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.0")
+                implementation("com.ditchoom:buffer:1.0.79")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.1")
             }
         }
         val commonTest by getting {
@@ -112,7 +112,7 @@ android {
     }
     lintOptions {
         isQuiet = true
-        isAbortOnError =  false
+        isAbortOnError = false
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
@@ -222,7 +222,8 @@ val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
 tasks.forEach { task ->
     val taskName = task.name
     if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true))
-        || taskName == "check") {
+        || taskName == "check"
+    ) {
         task.dependsOn(echoWebsocket)
     }
 }

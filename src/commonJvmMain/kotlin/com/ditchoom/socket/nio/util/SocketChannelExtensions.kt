@@ -11,8 +11,6 @@ import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.ExperimentalTime
-import kotlin.time.TimeSource
 
 
 suspend fun openSocketChannel(remote: SocketAddress? = null) = suspendCoroutine<SocketChannel> {
@@ -39,7 +37,6 @@ suspend fun SocketChannel.aRemoteAddress(): SocketAddress? = withContext(Dispatc
     remoteAddress
 }
 
-@ExperimentalTime
 suspend fun SocketChannel.suspendUntilReady(selector: Selector, ops: Int, timeout: Duration) {
     val random = random()
     suspendCancellableCoroutine<Double> {
@@ -50,14 +47,13 @@ suspend fun SocketChannel.suspendUntilReady(selector: Selector, ops: Int, timeou
     }
 }
 
-@ExperimentalTime
 suspend fun Selector.select(selectionKey: SelectionKey, attachment: Any, timeout: Duration) {
-    val startTime = TimeSource.Monotonic.markNow()
+    val startTime = System.currentTimeMillis()
     val selectedCount = aSelect(timeout)
     if (selectedCount == 0) {
         throw CancellationException("Selector timed out after waiting $timeout for ${selectionKey.isConnectable}")
     }
-    while (isOpen && timeout - startTime.elapsedNow() > 0.milliseconds) {
+    while (isOpen && timeout - (System.currentTimeMillis() - startTime).milliseconds > 0.milliseconds) {
         if (selectedKeys().remove(selectionKey)) {
             val cont = selectionKey.attachment() as WrappedContinuation<*>
             if (cont.attachment != attachment) {
@@ -92,7 +88,6 @@ private suspend fun SocketChannel.suspendConnect(remote: SocketAddress) = suspen
     }
 }
 
-@ExperimentalTime
 suspend fun SocketChannel.connect(
     remote: SocketAddress,
     selector: Selector? = null,
@@ -105,7 +100,7 @@ suspend fun SocketChannel.connect(
     if (connected || aFinishConnecting()) {
         return true
     }
-    throw TimeoutException("${TimeSource.Monotonic.markNow()} Failed to connect to $remote within $timeout maybe invalid selector")
+    throw TimeoutException("Failed to connect to $remote within $timeout maybe invalid selector")
 }
 
 suspend fun SocketChannel.aFinishConnecting() = suspendCancellableCoroutine<Boolean> {
@@ -124,7 +119,6 @@ suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) = suspendCancel
     }
 }
 
-@ExperimentalTime
 private suspend fun SocketChannel.suspendNonBlockingSelector(
     selector: Selector?,
     op: Int,
@@ -138,7 +132,6 @@ private suspend fun SocketChannel.suspendNonBlockingSelector(
     suspendUntilReady(selectorNonNull, op, timeout)
 }
 
-@ExperimentalTime
 suspend fun SocketChannel.read(
     buffer: ByteBuffer,
     selector: Selector?,
@@ -154,7 +147,6 @@ suspend fun SocketChannel.read(
     }
 }
 
-@ExperimentalTime
 suspend fun SocketChannel.write(
     buffer: ByteBuffer,
     selector: Selector?,
@@ -168,14 +160,12 @@ suspend fun SocketChannel.write(
     }
 }
 
-@ExperimentalTime
 fun NetworkChannel.closeOnCancel(cont: CancellableContinuation<*>) {
     cont.invokeOnCancellation {
         blockingClose()
     }
 }
 
-@ExperimentalTime
 private suspend fun SocketChannel.suspendRead(buffer: ByteBuffer) = suspendCancellableCoroutine<Int> {
     try {
         val read = read(buffer)
@@ -187,7 +177,6 @@ private suspend fun SocketChannel.suspendRead(buffer: ByteBuffer) = suspendCance
     }
 }
 
-@ExperimentalTime
 private suspend fun SocketChannel.suspendWrite(buffer: ByteBuffer) = suspendCancellableCoroutine<Int> {
     try {
         buffer.flip()

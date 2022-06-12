@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.JsBuffer
-import com.ditchoom.buffer.ParcelablePlatformBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.websocket.WebSocketConnectionOptions
 import com.ditchoom.websocket.WebSocketDataRead
 import kotlinx.coroutines.channels.BufferOverflow
@@ -19,10 +19,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 class BrowserWebsocketController(
     connectionOptions: WebSocketConnectionOptions,
 ) : com.ditchoom.websocket.WebSocket {
@@ -33,7 +30,8 @@ class BrowserWebsocketController(
         WebSocket(url)
     }
     private var wasCloseInitiatedClientSize = false
-    private val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val disconnectedFlow =
+        MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private var isConnected = false
     private val incomingChannel = Channel<WebSocketDataRead>()
 
@@ -66,12 +64,16 @@ class BrowserWebsocketController(
     suspend fun connect() {
         suspendCoroutine<Unit> { continuation ->
             var resumed = false
-            var error :SocketException? = null
+            var error: SocketException? = null
             websocket.onclose = {
                 val closeEvent = it as CloseEvent
                 isConnected = false
                 incomingChannel.close()
-                val closeException = SocketException("Socket closed reason:${closeEvent.reason}, code:${closeEvent.code}, wasClean: ${closeEvent.wasClean}", wasCloseInitiatedClientSize, error)
+                val closeException = SocketException(
+                    "Socket closed reason:${closeEvent.reason}, code:${closeEvent.code}, wasClean: ${closeEvent.wasClean}",
+                    wasCloseInitiatedClientSize,
+                    error
+                )
                 disconnectedFlow.tryEmit(closeException)
                 if (!resumed) {
                     continuation.resumeWithException(closeException)
@@ -111,12 +113,12 @@ class BrowserWebsocketController(
     override suspend fun ping() {/*Not surfaced on browser*/
     }
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer) {
+    override suspend fun write(buffer: PlatformBuffer) {
         val arrayBuffer = (buffer as JsBuffer).buffer.buffer.slice(0, buffer.limit().toInt())
         websocket.send(arrayBuffer)
     }
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         write(buffer)
         return buffer.limit().toInt()
     }

@@ -1,5 +1,3 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.socket
 
 actual suspend fun readStats(port: UShort, contains: String): List<String> {

@@ -1,5 +1,3 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.socket.nio.util
 
 import com.ditchoom.socket.SocketOptions
@@ -13,7 +11,6 @@ import java.nio.channels.NetworkChannel
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
-import kotlin.time.ExperimentalTime
 
 suspend fun NetworkChannel.asyncSetOptions(options: SocketOptions?): SocketOptions {
     return withContext(Dispatchers.IO) {
@@ -38,8 +35,8 @@ suspend fun NetworkChannel.asyncSetOptions(options: SocketOptions?): SocketOptio
             tryGettingOption(StandardSocketOptions.TCP_NODELAY),
             tryGettingOption(StandardSocketOptions.SO_REUSEADDR),
             tryGettingOption(StandardSocketOptions.SO_KEEPALIVE),
-            tryGettingOption(StandardSocketOptions.SO_RCVBUF)?.toUInt(),
-            tryGettingOption(StandardSocketOptions.SO_SNDBUF)?.toUInt()
+            tryGettingOption(StandardSocketOptions.SO_RCVBUF),
+            tryGettingOption(StandardSocketOptions.SO_SNDBUF)
         )
     }
 }
@@ -54,7 +51,6 @@ suspend fun NetworkChannel.aLocalAddress(): SocketAddress? = withContext(Dispatc
     localAddress
 }
 
-@ExperimentalTime
 suspend fun NetworkChannel.aClose() = withContext(Dispatchers.IO) {
     suspendCoroutine<Unit> { cont ->
         blockingClose()
@@ -63,7 +59,6 @@ suspend fun NetworkChannel.aClose() = withContext(Dispatchers.IO) {
 }
 
 
-@ExperimentalTime
 internal fun NetworkChannel.blockingClose() {
     try {
         if (this is SocketChannel) {
