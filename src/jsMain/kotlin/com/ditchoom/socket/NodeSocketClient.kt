@@ -13,7 +13,7 @@ import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
 
-open class NodeSocket : ClientSocket {
+open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocket {
     internal var isClosed = true
     internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
@@ -31,14 +31,14 @@ open class NodeSocket : ClientSocket {
 
     private suspend fun readBuffer(size: Int): SocketDataRead<ReadBuffer> {
         var currentBuffer = currentBuffer ?: incomingMessageChannel.receive().result
-        var bytesLeft = currentBuffer.remaining().toInt()
+        var bytesLeft = currentBuffer.remaining()
         while (bytesLeft > 0) {
             val socketDataResult = incomingMessageChannel.receive()
             bytesLeft -= socketDataResult.bytesRead
             currentBuffer = FragmentedReadBuffer(currentBuffer, socketDataResult.result).slice()
         }
         this.currentBuffer = currentBuffer
-        return SocketDataRead(currentBuffer, size.toInt())
+        return SocketDataRead(currentBuffer, size)
     }
 
     override suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> {
@@ -95,7 +95,7 @@ open class NodeSocket : ClientSocket {
     }
 }
 
-class NodeClientSocket : NodeSocket(), ClientToServerSocket {
+class NodeClientSocket(zone: AllocationZone = AllocationZone.Direct) : NodeSocket(zone), ClientToServerSocket {
 
     override suspend fun open(
         port: UShort,
@@ -105,7 +105,7 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
     ): SocketOptions = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({
-            val buffer = PlatformBuffer.allocate(4 * 1024) as JsBuffer
+            val buffer = PlatformBuffer.allocate(4 * 1024, zone = allocationZone) as JsBuffer
             arrayPlatformBufferMap[buffer.buffer] = buffer
             buffer.buffer
         }, { bytesRead, buffer ->

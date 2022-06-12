@@ -1,5 +1,6 @@
 package com.ditchoom.socket.nio
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.nio.util.*
@@ -7,6 +8,7 @@ import java.net.InetSocketAddress
 import kotlin.time.Duration
 
 class NioClientSocket(
+    override val allocationZone: AllocationZone = AllocationZone.Direct,
     blocking: Boolean = true,
 ) : BaseClientSocket(blocking), ClientToServerSocket {
     override suspend fun open(
