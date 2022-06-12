@@ -1,7 +1,7 @@
 package com.ditchoom.socket.nio2
 
 import com.ditchoom.buffer.JvmBuffer
-import com.ditchoom.buffer.ParcelablePlatformBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
@@ -11,13 +11,11 @@ import java.nio.channels.AsynchronousSocketChannel
 import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 abstract class AsyncBaseClientSocket :
     ByteBufferClientSocket<AsynchronousSocketChannel>() {
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
-    override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
         var exception :Exception? = null
         val bytesRead = try {
             socket.aRead((buffer as JvmBuffer).byteBuffer, timeout)
@@ -32,7 +30,7 @@ abstract class AsyncBaseClientSocket :
         return bytesRead
     }
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         var exception :Exception? = null
         val bytesWritten = try {
             socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout)

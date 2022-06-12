@@ -1,4 +1,3 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
 
 package com.ditchoom.socket.nio2.util
 
@@ -13,7 +12,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.ExperimentalTime
 
-@ExperimentalTime
 suspend fun AsynchronousServerSocketChannel.aAccept() = suspendCancellableCoroutine<AsynchronousSocketChannel> { cont ->
     accept(cont, AcceptCompletionHandler(cont))
 }
@@ -41,12 +39,11 @@ data class AcceptCompletionHandler(val continuation: CancellableContinuation<Asy
  * *closes the underlying channel* and immediately resumes with [CancellationException].
  */
 
-@ExperimentalTime
-suspend fun AsynchronousServerSocketChannel.aBind(socketAddress: SocketAddress? = null, backlog: UInt = 0.toUInt()) =
+suspend fun AsynchronousServerSocketChannel.aBind(socketAddress: SocketAddress? = null, backlog: Int = 0) =
     suspendCancellableCoroutine<AsynchronousServerSocketChannel> { cont ->
         try {
             closeOnCancel(cont)
-            cont.resume(bind(socketAddress, backlog.toInt()))
+            cont.resume(bind(socketAddress, backlog))
         } catch (e: Throwable) {
             cont.cancel(e)
         }

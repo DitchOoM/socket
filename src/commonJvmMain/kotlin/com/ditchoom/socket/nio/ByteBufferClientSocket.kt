@@ -13,8 +13,6 @@ import java.nio.channels.NetworkChannel
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
     protected val isClosing = AtomicBoolean(false)

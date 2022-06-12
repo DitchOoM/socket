@@ -1,11 +1,9 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.websocket
 
-import com.ditchoom.buffer.ParcelablePlatformBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.TransformedReadBuffer
 import com.ditchoom.buffer.WriteBuffer
-import com.ditchoom.buffer.allocateNewBuffer
+import com.ditchoom.buffer.allocate
 import com.ditchoom.data.get
 import com.ditchoom.data.toBooleanArray
 import com.ditchoom.data.toByte
@@ -56,7 +54,7 @@ data class WebSocketFrame(
      * 5.3 for further information on client- to-server masking.
      */
     val maskingKey: MaskingKey,
-    val payloadData: ParcelablePlatformBuffer,
+    val payloadData: PlatformBuffer,
     /**
      * The length of the "Payload data", in bytes: if 0-125, that is the payload length.  If 126, the following 2 bytes
      * interpreted as a 16-bit unsigned integer are the payload length.  If 127, the following 8 bytes interpreted as a
@@ -66,9 +64,9 @@ data class WebSocketFrame(
      * payload length is the length of the "Extension data" + the length of the "Application data".  The length of the
      * "Extension data" may be zero, in which case the payload length is the length of the "Application data".
      */
-    private val payloadLength: Int = if (payloadData.limit() <= 125u) {
-        payloadData.limit().toInt()
-    } else if (payloadData.limit() <= UInt.MAX_VALUE) {
+    private val payloadLength: Int = if (payloadData.limit() <= 125) {
+        payloadData.limit()
+    } else if (payloadData.limit().toLong() <= UInt.MAX_VALUE.toLong()) {
         126
     } else {
         127
@@ -76,18 +74,18 @@ data class WebSocketFrame(
 ) {
 
 
-    constructor(fin: Boolean, opcode: Opcode, maskingKey: MaskingKey, payloadData: ParcelablePlatformBuffer)
+    constructor(fin: Boolean, opcode: Opcode, maskingKey: MaskingKey, payloadData: PlatformBuffer)
             : this(fin, false, false, false, opcode, maskingKey, payloadData)
 
-    constructor(opcode: Opcode, payloadData: ParcelablePlatformBuffer = allocateNewBuffer(0u)) : this(
+    constructor(opcode: Opcode, payloadData: PlatformBuffer = PlatformBuffer.allocate(0)) : this(
         false,
         opcode,
         MaskingKey.NoMaskingKey,
         payloadData
     )
 
-    fun toBuffer(): ParcelablePlatformBuffer {
-        val buffer = allocateNewBuffer(size().toUInt())
+    fun toBuffer(): PlatformBuffer {
+        val buffer = PlatformBuffer.allocate(size())
         serialize(buffer)
         return buffer
     }

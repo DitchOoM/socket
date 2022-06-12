@@ -10,9 +10,7 @@ import kotlinx.coroutines.*
 import kotlin.test.*
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.ExperimentalTime
 
-@ExperimentalTime
 class SimpleSocketTests {
 
     @Test
@@ -74,7 +72,8 @@ class SimpleSocketTests {
         try {
             openClientSocket(3u, hostname = "example.com", timeout = 100.milliseconds)
             fail("should have timed out")
-        } catch (_: CancellationException) {}
+        } catch (_: CancellationException) {
+        }
     }
 
     @Test
@@ -129,7 +128,7 @@ Connection: close
         }
         val serverToClient = server.accept()
         val dataReceivedFromClient = serverToClient.read { buffer, bytesRead ->
-            buffer.readUtf8(bytesRead.toUInt())
+            buffer.readUtf8(bytesRead)
         }
         assertEquals(text, dataReceivedFromClient.result.toString())
         val serverToClientPort = assertNotNull(serverToClient.localPort())
@@ -158,7 +157,7 @@ Connection: close
         clientToServer.open(serverPort)
         val dataReceivedFromServer = withContext(Dispatchers.Default) {
             clientToServer.read { buffer, bytesRead ->
-                buffer.readUtf8(bytesRead.toUInt())
+                buffer.readUtf8(bytesRead)
             }
         }
         assertEquals(text, dataReceivedFromServer.result.toString())
@@ -199,7 +198,6 @@ Connection: close
         checkPort(serverToClientPort)
     }
 
-    @ExperimentalUnsignedTypes
     private suspend fun checkPort(port: UShort) {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return
         val stats = readStats(port, "CLOSE_WAIT")
@@ -209,7 +207,6 @@ Connection: close
         assertEquals(0, stats.count(), "Socket still in CLOSE_WAIT state found!")
     }
 }
-
 
 
 expect suspend fun readStats(port: UShort, contains: String): List<String>

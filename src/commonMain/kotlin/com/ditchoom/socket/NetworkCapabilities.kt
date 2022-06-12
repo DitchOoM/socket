@@ -2,7 +2,6 @@ package com.ditchoom.socket
 
 import com.ditchoom.websocket.WebSocket
 import com.ditchoom.websocket.WebSocketConnectionOptions
-import kotlin.time.ExperimentalTime
 
 enum class NetworkCapabilities {
     FULL_SOCKET_ACCESS,
@@ -13,8 +12,6 @@ enum class NetworkCapabilities {
 expect fun getNetworkCapabilities(): NetworkCapabilities
 
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 expect suspend fun getWebSocketClient(
     connectionOptions: WebSocketConnectionOptions,
 ): WebSocket

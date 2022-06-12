@@ -1,5 +1,3 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.socket
 
 import kotlinx.cinterop.*
@@ -7,7 +5,6 @@ import platform.posix.*
 import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 
-@ExperimentalTime
 class PosixClientToServerSocket : PosixClientSocket(), ClientToServerSocket {
     private val memScope = MemScope()
 

@@ -5,10 +5,7 @@ import kotlinx.coroutines.channels.Channel
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
-import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 class NodeServerSocket : ServerSocket {
     var server: Server? = null
     private val clientSocketChannel = Channel<ClientSocket>(Channel.UNLIMITED)
@@ -17,7 +14,7 @@ class NodeServerSocket : ServerSocket {
         port: UShort?,
         host: String?,
         socketOptions: SocketOptions?,
-        backlog: UInt
+        backlog: Int
     ): SocketOptions {
         val server = Net.createServer { clientSocket ->
             val nodeSocket = NodeSocket()
@@ -67,22 +64,22 @@ class NodeServerSocket : ServerSocket {
     }
 }
 
-suspend fun Server.listenSuspend(port: UShort?, host: String?, backlog: UInt) {
+suspend fun Server.listenSuspend(port: UShort?, host: String?, backlog: Int) {
     suspendCoroutine<Unit> {
         if (host != null && port != null) {
-            listen(port.toInt(), host, backlog.toInt()) {
+            listen(port.toInt(), host, backlog) {
                 it.resume(Unit)
             }
         } else if (port != null) {
-            listen(port.toInt(), backlog = backlog.toInt()) {
+            listen(port.toInt(), backlog = backlog) {
                 it.resume(Unit)
             }
         } else if (host != null) {
-            listen(host = host, backlog = backlog.toInt()) {
+            listen(host = host, backlog = backlog) {
                 it.resume(Unit)
             }
         } else {
-            listen(backlog = backlog.toInt()) {
+            listen(backlog = backlog) {
                 it.resume(Unit)
             }
         }

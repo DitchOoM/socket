@@ -1,9 +1,7 @@
 package com.ditchoom.websocket
 
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalTime
 class WebSocketConnectionOptions(
     val name: String,
     val port: Int,

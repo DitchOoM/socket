@@ -9,9 +9,7 @@ import java.util.concurrent.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalTime
 suspend fun Selector.aSelect(timeout: Duration): Int {
     val selector = this
     return withContext(Dispatchers.IO) {

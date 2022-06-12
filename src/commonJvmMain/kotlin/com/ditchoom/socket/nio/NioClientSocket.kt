@@ -8,8 +8,6 @@ import kotlin.time.Duration
 import kotlin.time.ExperimentalTime
 import kotlin.time.TimeSource
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 class NioClientSocket(
     blocking: Boolean = true,
 ) : BaseClientSocket(blocking), ClientToServerSocket {
@@ -24,7 +22,7 @@ class NioClientSocket(
         socketChannel.aConfigureBlocking(blocking)
         this.socket = socketChannel
         if (!socketChannel.connect(socketAddress, selector, timeout)) {
-            println("\"${TimeSource.Monotonic.markNow()} FAILED TO CONNECT CLIENT client ${(socketChannel.remoteAddress as? InetSocketAddress)?.port} $socketChannel")
+            println("FAILED TO CONNECT CLIENT client ${(socketChannel.remoteAddress as? InetSocketAddress)?.port} $socketChannel")
         }
         return socketChannel.asyncSetOptions(socketOptions)
     }

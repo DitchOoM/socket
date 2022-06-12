@@ -1,8 +1,8 @@
 package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.JvmBuffer
-import com.ditchoom.buffer.ParcelablePlatformBuffer
-import com.ditchoom.buffer.allocateNewBuffer
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.allocate
 import com.ditchoom.socket.SocketDataRead
 import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.nio.util.aClose
@@ -13,10 +13,7 @@ import java.net.InetSocketAddress
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 abstract class BaseClientSocket(
     protected val blocking: Boolean = false,
 ) : ByteBufferClientSocket<SocketChannel>() {
@@ -25,7 +22,7 @@ abstract class BaseClientSocket(
 
     override suspend fun remotePort() = (socket.aRemoteAddress() as? InetSocketAddress)?.port?.toUShort()
 
-    override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
         var exception :Exception? = null
         val bytesRead = try {
             socket.read((buffer as JvmBuffer).byteBuffer, selector, timeout)
@@ -42,10 +39,10 @@ abstract class BaseClientSocket(
 
     override suspend fun <T> read(
         timeout: Duration,
-        bufferSize: UInt,
-        bufferRead: (ParcelablePlatformBuffer, Int) -> T
+        bufferSize: Int,
+        bufferRead: (PlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
-        val buffer = allocateNewBuffer(bufferSize) as JvmBuffer
+        val buffer = PlatformBuffer.allocate(bufferSize) as JvmBuffer
         val byteBuffer = buffer.byteBuffer
         var exception :Exception? = null
         val bytesRead = try {
@@ -61,7 +58,7 @@ abstract class BaseClientSocket(
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         var exception :Exception? = null
         val bytesWritten = try {
             socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout)

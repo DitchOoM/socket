@@ -9,8 +9,6 @@ import java.net.SocketAddress
 import java.nio.channels.NetworkChannel
 import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 abstract class BaseServerSocket<S : NetworkChannel> : ServerSocket {
     protected var server: S? = null
 
@@ -26,7 +24,7 @@ abstract class BaseServerSocket<S : NetworkChannel> : ServerSocket {
         port: UShort?,
         host: String?,
         socketOptions: SocketOptions?,
-        backlog: UInt
+        backlog: Int
     ): SocketOptions {
         val socketAddress = if (port != null) {
             InetSocketAddress(host ?: "localhost", port.toInt())
@@ -39,7 +37,7 @@ abstract class BaseServerSocket<S : NetworkChannel> : ServerSocket {
         return options
     }
 
-    abstract suspend fun bind(channel: S, socketAddress: SocketAddress?, backlog: UInt): S
+    abstract suspend fun bind(channel: S, socketAddress: SocketAddress?, backlog: Int): S
     abstract suspend fun serverNetworkChannel(): S
 
     override suspend fun close() {

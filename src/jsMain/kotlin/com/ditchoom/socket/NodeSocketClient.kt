@@ -9,19 +9,17 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalTime
 open class NodeSocket : ClientSocket {
     internal var isClosed = true
     internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     private var currentBuffer: ReadBuffer? = null
-    internal val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val disconnectedFlow =
+        MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     protected var wasCloseInitiatedClientSize = false
 
     override fun isOpen() = !isClosed && netSocket.remoteAddress != null
@@ -31,7 +29,7 @@ open class NodeSocket : ClientSocket {
     override suspend fun remotePort() = netSocket.remotePort.toUShort()
 
 
-    private suspend fun readBuffer(size: UInt): SocketDataRead<ReadBuffer> {
+    private suspend fun readBuffer(size: Int): SocketDataRead<ReadBuffer> {
         var currentBuffer = currentBuffer ?: incomingMessageChannel.receive().result
         var bytesLeft = currentBuffer.remaining().toInt()
         while (bytesLeft > 0) {
@@ -49,7 +47,7 @@ open class NodeSocket : ClientSocket {
         return msg.copy(result = msg.result.slice())
     }
 
-    override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
         if (isClosed) {
             return -1
         }
@@ -62,16 +60,16 @@ open class NodeSocket : ClientSocket {
 
     override suspend fun <T> read(
         timeout: Duration,
-        bufferSize: UInt,
-        bufferRead: (ParcelablePlatformBuffer, Int) -> T
+        bufferSize: Int,
+        bufferRead: (PlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
         val receivedData = incomingMessageChannel.receive()
         netSocket.resume()
-        val buffer = receivedData.result.slice() as ParcelablePlatformBuffer
+        val buffer = receivedData.result.slice() as PlatformBuffer
         return SocketDataRead(bufferRead(buffer, receivedData.bytesRead), receivedData.bytesRead)
     }
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         if (isClosed) return -1
         val array = (buffer as JsBuffer).buffer
         netSocket.write(array)
@@ -97,7 +95,6 @@ open class NodeSocket : ClientSocket {
     }
 }
 
-@ExperimentalTime
 class NodeClientSocket : NodeSocket(), ClientToServerSocket {
 
     override suspend fun open(
@@ -106,13 +103,13 @@ class NodeClientSocket : NodeSocket(), ClientToServerSocket {
         hostname: String?,
         socketOptions: SocketOptions?
     ): SocketOptions = withTimeout(timeout) {
-        val arrayParcelablePlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
+        val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({
-            val buffer = allocateNewBuffer(4u * 1024u) as JsBuffer
-            arrayParcelablePlatformBufferMap[buffer.buffer] = buffer
+            val buffer = PlatformBuffer.allocate(4 * 1024) as JsBuffer
+            arrayPlatformBufferMap[buffer.buffer] = buffer
             buffer.buffer
         }, { bytesRead, buffer ->
-            val platformBuffer = arrayParcelablePlatformBufferMap.remove(buffer)!!
+            val platformBuffer = arrayPlatformBufferMap.remove(buffer)!!
             platformBuffer.setLimit(bytesRead)
             val socketDataRead = SocketDataRead(platformBuffer.slice(), bytesRead)
             incomingMessageChannel.trySend(socketDataRead)

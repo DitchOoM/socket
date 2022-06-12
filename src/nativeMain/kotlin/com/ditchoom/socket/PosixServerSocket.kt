@@ -1,12 +1,9 @@
-@file:Suppress("EXPERIMENTAL_API_USAGE")
-
 package com.ditchoom.socket
 
 import kotlinx.cinterop.*
 import platform.posix.*
 import kotlin.time.ExperimentalTime
 
-@ExperimentalTime
 class PosixServerSocket : ServerSocket {
     private val fileDescriptor: Int
     private val memScope = MemScope()
@@ -20,7 +17,7 @@ class PosixServerSocket : ServerSocket {
         port: UShort?,
         host: String?,
         socketOptions: SocketOptions?,
-        backlog: UInt
+        backlog: Int
     ): SocketOptions {
         val actualPort = port?.toShort() ?: 0
         with(memScope) {

@@ -11,6 +11,7 @@ group = "com.ditchoom"
 version = "$libraryVersionPrefix.0-SNAPSHOT"
 
 repositories {
+    mavenLocal()
     google()
     mavenCentral()
 }
@@ -40,8 +41,8 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.56")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.0")
+                implementation("com.ditchoom:buffer:1.0.79")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.1")
             }
         }
         val commonTest by getting {

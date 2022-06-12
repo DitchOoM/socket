@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.ParcelablePlatformBuffer
-import com.ditchoom.buffer.allocateNewBuffer
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.toBuffer
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -9,13 +9,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
-@ExperimentalUnsignedTypes
-@ExperimentalTime
 class MockClientSocket : ClientToServerSocket {
     var isOpenInternal = false
-    private val incomingQueue = Channel<ParcelablePlatformBuffer>()
+    private val incomingQueue = Channel<PlatformBuffer>()
     var localPortInternal: UShort? = null
     var remotePortInternal: UShort? = null
     val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -40,22 +37,22 @@ class MockClientSocket : ClientToServerSocket {
 
     override suspend fun remotePort() = remotePortInternal
 
-    override suspend fun read(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
         val incoming = incomingQueue.receive()
         incoming.resetForRead()
         buffer.write(incoming)
         buffer.position(0)
-        buffer.setLimit(incoming.limit().toInt())
-        return buffer.limit().toInt()
+        buffer.setLimit(incoming.limit())
+        return buffer.limit()
     }
 
     override suspend fun <T> read(
         timeout: Duration,
-        bufferSize: UInt,
-        bufferRead: (ParcelablePlatformBuffer, Int) -> T
+        bufferSize: Int,
+        bufferRead: (PlatformBuffer, Int) -> T
     ): SocketDataRead<T> {
-        val buffer = allocateNewBuffer(bufferSize)
-        buffer.setLimit(bufferSize.toInt())
+        val buffer = PlatformBuffer.allocate(bufferSize)
+        buffer.setLimit(bufferSize)
         val bytesRead = read(buffer, timeout)
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
@@ -64,13 +61,13 @@ class MockClientSocket : ClientToServerSocket {
         buffer.readUtf8(bytesRead)
     }
 
-    override suspend fun write(buffer: ParcelablePlatformBuffer, timeout: Duration): Int {
+    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         remote.incomingQueue.send(buffer)
-        return buffer.limit().toInt()
+        return buffer.limit()
     }
 
     override suspend fun write(buffer: String, timeout: Duration): Int =
-        write(buffer.toBuffer().also { it.position(it.limit().toInt()) }, timeout)
+        write(buffer.toBuffer().also { it.position(it.limit()) }, timeout)
 
     override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
 

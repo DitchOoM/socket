@@ -22,7 +22,6 @@ fun AsynchronousFileChannel.closeOnCancel(cont: CancellableContinuation<*>) {
     }
 }
 
-@ExperimentalTime
 fun NetworkChannel.closeOnCancel(cont: CancellableContinuation<*>) {
     cont.invokeOnCancellation {
         blockingClose()
