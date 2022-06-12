@@ -23,7 +23,7 @@ abstract class BaseClientSocket(
     override suspend fun remotePort() = (socket.aRemoteAddress() as? InetSocketAddress)?.port?.toUShort()
 
     override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
-        var exception :Exception? = null
+        var exception: Exception? = null
         val bytesRead = try {
             socket.read((buffer as JvmBuffer).byteBuffer, selector, timeout)
         } catch (e: Exception) {
@@ -32,7 +32,13 @@ abstract class BaseClientSocket(
         }
         if (bytesRead < 0) {
             isClosing.set(true)
-            disconnectedFlow.emit(SocketException("Socket read channel has reached end-of-stream", closeInitiatedClientSide, exception))
+            disconnectedFlow.emit(
+                SocketException(
+                    "Socket read channel has reached end-of-stream",
+                    closeInitiatedClientSide,
+                    exception
+                )
+            )
         }
         return bytesRead
     }
@@ -44,7 +50,7 @@ abstract class BaseClientSocket(
     ): SocketDataRead<T> {
         val buffer = PlatformBuffer.allocate(bufferSize) as JvmBuffer
         val byteBuffer = buffer.byteBuffer
-        var exception :Exception? = null
+        var exception: Exception? = null
         val bytesRead = try {
             socket.read(byteBuffer, selector, timeout)
         } catch (e: Exception) {
@@ -53,13 +59,19 @@ abstract class BaseClientSocket(
         }
         if (bytesRead < 0) {
             isClosing.set(true)
-            disconnectedFlow.emit(SocketException("Socket read channel has reached end-of-stream", closeInitiatedClientSide, exception))
+            disconnectedFlow.emit(
+                SocketException(
+                    "Socket read channel has reached end-of-stream",
+                    closeInitiatedClientSide,
+                    exception
+                )
+            )
         }
         return SocketDataRead(bufferRead(buffer, bytesRead), bytesRead)
     }
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
-        var exception :Exception? = null
+        var exception: Exception? = null
         val bytesWritten = try {
             socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout)
         } catch (e: Exception) {
@@ -68,7 +80,13 @@ abstract class BaseClientSocket(
         }
         if (bytesWritten < 0) {
             isClosing.set(true)
-            disconnectedFlow.emit(SocketException("Socket write channel has reached end-of-stream", closeInitiatedClientSide, exception))
+            disconnectedFlow.emit(
+                SocketException(
+                    "Socket write channel has reached end-of-stream",
+                    closeInitiatedClientSide,
+                    exception
+                )
+            )
         }
         return bytesWritten
     }

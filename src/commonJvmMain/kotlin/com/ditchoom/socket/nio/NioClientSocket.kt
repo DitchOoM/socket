@@ -5,8 +5,6 @@ import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.nio.util.*
 import java.net.InetSocketAddress
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
-import kotlin.time.TimeSource
 
 class NioClientSocket(
     blocking: Boolean = true,

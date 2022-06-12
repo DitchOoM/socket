@@ -1,10 +1,8 @@
-
 package com.ditchoom.socket
 
 import com.ditchoom.websocket.NativeWebsocket
 import com.ditchoom.websocket.WebSocket
 import com.ditchoom.websocket.WebSocketConnectionOptions
-import kotlin.time.ExperimentalTime
 
 actual suspend fun getWebSocketClient(
     connectionOptions: WebSocketConnectionOptions,

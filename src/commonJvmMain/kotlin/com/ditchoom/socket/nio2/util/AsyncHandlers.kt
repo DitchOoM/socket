@@ -4,7 +4,6 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.CompletionHandler
-import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 

@@ -5,7 +5,6 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.websocket.*
 import org.gradle.api.DefaultTask
-import org.gradle.api.logging.Logger
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.TaskAction
@@ -14,14 +13,13 @@ import org.gradle.workers.WorkParameters
 import org.gradle.workers.WorkerExecutor
 import javax.inject.Inject
 
-abstract class EchoWebsocketTask: DefaultTask() {
+abstract class EchoWebsocketTask : DefaultTask() {
     @get:Input
     abstract val port: Property<Int>
 
 
     @Inject
     abstract fun getWorkerExecutor(): WorkerExecutor
-
 
 
     @TaskAction
@@ -34,13 +32,13 @@ abstract class EchoWebsocketTask: DefaultTask() {
 }
 
 
-interface EchoWebsocketParameters: WorkParameters {
-    var port :Int
+interface EchoWebsocketParameters : WorkParameters {
+    var port: Int
 }
 
 private var serverGlobal: NettyApplicationEngine? = null
 
-abstract class EchoWebsocketServer: WorkAction<EchoWebsocketParameters> {
+abstract class EchoWebsocketServer : WorkAction<EchoWebsocketParameters> {
 
     override fun execute() {
         if (serverGlobal != null) {

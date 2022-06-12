@@ -11,13 +11,13 @@ import kotlinx.coroutines.flow.first
 import java.net.InetSocketAddress
 import java.nio.channels.NetworkChannel
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.time.ExperimentalTime
 
 abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
     protected val isClosing = AtomicBoolean(false)
     protected var closeInitiatedClientSide = false
-    protected val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    protected val disconnectedFlow =
+        MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     override fun isOpen() = try {
         socket.isOpen && !isClosing.get()
