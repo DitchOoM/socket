@@ -13,18 +13,18 @@ import kotlin.time.Duration
 class MockClientSocket : ClientToServerSocket {
     var isOpenInternal = false
     private val incomingQueue = Channel<PlatformBuffer>()
-    var localPortInternal: UShort? = null
-    var remotePortInternal: UShort? = null
+    var localPortInternal: Int = -1
+    var remotePortInternal: Int = -1
     val disconnectedFlow = MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     lateinit var remote: MockClientSocket
 
     override suspend fun open(
-        port: UShort,
+        port: Int,
         timeout: Duration,
         hostname: String?,
         socketOptions: SocketOptions?
     ): SocketOptions {
-        localPortInternal = lastFakePortUsed++.toUShort()
+        localPortInternal = lastFakePortUsed++
         remotePortInternal = port
         MockServerSocket.clientsToAccept.send(this)
         isOpenInternal = true

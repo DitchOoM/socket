@@ -11,7 +11,7 @@ import java.nio.channels.NetworkChannel
 abstract class BaseServerSocket<S : NetworkChannel> : ServerSocket {
     protected var server: S? = null
 
-    override fun port() = (server?.localAddress as? InetSocketAddress)?.port?.toUShort()
+    override fun port() = (server?.localAddress as? InetSocketAddress)?.port ?: -1
 
     override fun isOpen() = try {
         port() != null && server?.isOpen ?: false
@@ -20,13 +20,13 @@ abstract class BaseServerSocket<S : NetworkChannel> : ServerSocket {
     }
 
     override suspend fun bind(
-        port: UShort?,
+        port: Int,
         host: String?,
         socketOptions: SocketOptions?,
         backlog: Int
     ): SocketOptions {
-        val socketAddress = if (port != null) {
-            InetSocketAddress(host ?: "localhost", port.toInt())
+        val socketAddress = if (port != -1) {
+            InetSocketAddress(host ?: "localhost", port)
         } else {
             null
         }

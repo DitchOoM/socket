@@ -14,7 +14,7 @@ class PosixServerSocket : ServerSocket {
     }
 
     override suspend fun bind(
-        port: UShort?,
+        port: Int,
         host: String?,
         socketOptions: SocketOptions?,
         backlog: Int
@@ -52,7 +52,7 @@ class PosixServerSocket : ServerSocket {
     }
 
 
-    override fun port(): UShort? = memScoped {
+    override fun port(): Int = memScoped {
         val localAddress = alloc<sockaddr_in>()
         val addressLength = alloc<socklen_tVar>()
         addressLength.value = sockaddr_in.size.convert()

@@ -68,7 +68,7 @@ class SimpleSocketTests {
     @Test
     fun connectTimeoutWorks() = block {
         try {
-            openClientSocket(3u, hostname = "example.com", timeout = 100.milliseconds)
+            openClientSocket(3, hostname = "example.com", timeout = 100.milliseconds)
             fail("should have timed out")
         } catch (_: CancellationException) {
         }
@@ -76,7 +76,7 @@ class SimpleSocketTests {
 
     @Test
     fun awaitCloseWorks() = block {
-        val client = openClientSocket(80u, hostname = "example.com", timeout = 100.milliseconds)
+        val client = openClientSocket(80, hostname = "example.com", timeout = 100.milliseconds)
         awaitCloseWorks(client)
     }
 
@@ -95,7 +95,7 @@ class SimpleSocketTests {
     @Test
     fun httpRawSocket() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val client = openClientSocket(80u, hostname = "example.com")
+        val client = openClientSocket(80, hostname = "example.com")
         val request =
             """
 GET / HTTP/1.1
@@ -196,7 +196,7 @@ Connection: close
         checkPort(serverToClientPort)
     }
 
-    private suspend fun checkPort(port: UShort) {
+    private suspend fun checkPort(port: Int) {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return
         val stats = readStats(port, "CLOSE_WAIT")
         if (stats.isNotEmpty()) {
@@ -207,4 +207,4 @@ Connection: close
 }
 
 
-expect suspend fun readStats(port: UShort, contains: String): List<String>
+expect suspend fun readStats(port: Int, contains: String): List<String>

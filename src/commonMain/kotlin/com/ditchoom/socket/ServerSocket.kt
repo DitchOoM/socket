@@ -8,7 +8,7 @@ interface ServerSocket : SuspendCloseable {
         get() = AllocationZone.Direct
 
     suspend fun bind(
-        port: UShort? = null,
+        port: Int = -1,
         host: String? = null,
         socketOptions: SocketOptions? = null,
         backlog: Int = 0
@@ -16,7 +16,7 @@ interface ServerSocket : SuspendCloseable {
 
     suspend fun accept(): ClientSocket
     fun isOpen(): Boolean
-    fun port(): UShort?
+    fun port(): Int
 }
 
 expect fun asyncServerSocket(zone: AllocationZone = AllocationZone.Direct): ServerSocket

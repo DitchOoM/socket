@@ -11,8 +11,8 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
         get() = AllocationZone.Direct
 
     override fun isOpen(): Boolean
-    suspend fun localPort(): UShort?
-    suspend fun remotePort(): UShort?
+    suspend fun localPort(): Int
+    suspend fun remotePort(): Int
     suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int
     override suspend fun readData(timeout: Duration) = readBuffer(timeout).result
     suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> =
@@ -49,7 +49,7 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
 data class SocketDataRead<T>(val result: T, val bytesRead: Int)
 
 suspend fun openClientSocket(
-    port: UShort,
+    port: Int,
     timeout: Duration = 1.seconds,
     hostname: String? = null,
     socketOptions: SocketOptions? = null

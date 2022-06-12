@@ -25,7 +25,7 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
         false
     }
 
-    override suspend fun localPort(): UShort? = (socket.aLocalAddress() as? InetSocketAddress)?.port?.toUShort()
+    override suspend fun localPort(): Int = (socket.aLocalAddress() as? InetSocketAddress)?.port ?: -1
 
     override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
 

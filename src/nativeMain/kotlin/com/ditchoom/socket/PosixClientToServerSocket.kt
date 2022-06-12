@@ -9,7 +9,7 @@ class PosixClientToServerSocket : PosixClientSocket(), ClientToServerSocket {
     private val memScope = MemScope()
 
     override suspend fun open(
-        port: UShort,
+        port: Int,
         timeout: Duration,
         hostname: String?,
         socketOptions: SocketOptions?

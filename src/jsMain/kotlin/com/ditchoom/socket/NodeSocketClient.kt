@@ -22,9 +22,9 @@ open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocke
 
     override fun isOpen() = !isClosed && netSocket.remoteAddress != null
 
-    override suspend fun localPort() = netSocket.localPort.toUShort()
+    override suspend fun localPort() = netSocket.localPort
 
-    override suspend fun remotePort() = netSocket.remotePort.toUShort()
+    override suspend fun remotePort() = netSocket.remotePort
 
 
     private suspend fun readBuffer(size: Int): SocketDataRead<ReadBuffer> {
@@ -96,7 +96,7 @@ open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocke
 class NodeClientSocket(zone: AllocationZone = AllocationZone.Direct) : NodeSocket(zone), ClientToServerSocket {
 
     override suspend fun open(
-        port: UShort,
+        port: Int,
         timeout: Duration,
         hostname: String?,
         socketOptions: SocketOptions?
@@ -113,7 +113,7 @@ class NodeClientSocket(zone: AllocationZone = AllocationZone.Direct) : NodeSocke
             incomingMessageChannel.trySend(socketDataRead)
             false
         })
-        val options = tcpOptions(port.toInt(), hostname, onRead)
+        val options = tcpOptions(port, hostname, onRead)
         val netSocket = try {
             connect(options) {
                 cleanSocket(it)

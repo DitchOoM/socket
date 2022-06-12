@@ -12,7 +12,7 @@ class NodeServerSocket(override val allocationZone: AllocationZone) : ServerSock
     private val clientSocketChannel = Channel<ClientSocket>(Channel.UNLIMITED)
 
     override suspend fun bind(
-        port: UShort?,
+        port: Int,
         host: String?,
         socketOptions: SocketOptions?,
         backlog: Int
@@ -55,7 +55,7 @@ class NodeServerSocket(override val allocationZone: AllocationZone) : ServerSock
 
     override fun isOpen() = server?.listening ?: false
 
-    override fun port() = server?.address()?.port?.toUShort()
+    override fun port() = server?.address()?.port ?: -1
 
     override suspend fun close() {
         val server = server ?: return
@@ -65,14 +65,14 @@ class NodeServerSocket(override val allocationZone: AllocationZone) : ServerSock
     }
 }
 
-suspend fun Server.listenSuspend(port: UShort?, host: String?, backlog: Int) {
+suspend fun Server.listenSuspend(port: Int, host: String?, backlog: Int) {
     suspendCoroutine<Unit> {
-        if (host != null && port != null) {
-            listen(port.toInt(), host, backlog) {
+        if (host != null && port != -1) {
+            listen(port, host, backlog) {
                 it.resume(Unit)
             }
-        } else if (port != null) {
-            listen(port.toInt(), backlog = backlog) {
+        } else if (port != -1) {
+            listen(port, backlog = backlog) {
                 it.resume(Unit)
             }
         } else if (host != null) {

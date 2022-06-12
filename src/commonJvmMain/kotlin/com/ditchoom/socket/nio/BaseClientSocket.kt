@@ -22,7 +22,7 @@ abstract class BaseClientSocket(
 
     val selector = if (!blocking) Selector.open()!! else null
 
-    override suspend fun remotePort() = (socket.aRemoteAddress() as? InetSocketAddress)?.port?.toUShort()
+    override suspend fun remotePort() = (socket.aRemoteAddress() as? InetSocketAddress)?.port ?: -1
 
     override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
         var exception: Exception? = null

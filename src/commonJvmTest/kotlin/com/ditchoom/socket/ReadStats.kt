@@ -1,6 +1,6 @@
 package com.ditchoom.socket
 
-actual suspend fun readStats(port: UShort, contains: String): List<String> {
+actual suspend fun readStats(port: Int, contains: String): List<String> {
     try {
         val process = ProcessBuilder()
             .command("lsof", "-iTCP:${port}", "-sTCP:$contains", "-l", "-n")

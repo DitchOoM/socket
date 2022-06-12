@@ -75,7 +75,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
         val actualPayloadLength = if (payloadLength <= 125) {
             payloadLength.toULong()
         } else if (payloadLength == 126) {
-            inputStream.sizedReadBuffer(UShort.SIZE_BYTES).readUnsignedShort().toULong()
+            inputStream.sizedReadBuffer(Int.SIZE_BYTES).readUnsignedShort().toULong()
         } else if (payloadLength == 127) {
             inputStream.sizedReadBuffer(ULong.SIZE_BYTES).readUnsignedLong()
         } else {
@@ -119,7 +119,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
     companion object {
         suspend fun open(connectionOptions: WebSocketConnectionOptions): NativeWebsocket {
             val socket = getClientSocket()
-            socket.open(connectionOptions.port.toUShort(), connectionOptions.connectionTimeout, connectionOptions.name)
+            socket.open(connectionOptions.port.toInt(), connectionOptions.connectionTimeout, connectionOptions.name)
             var request =
                 "GET ${connectionOptions.websocketEndpoint} HTTP/1.1" +
                         "\r\nHost: ${connectionOptions.name}:${connectionOptions.port}" +
