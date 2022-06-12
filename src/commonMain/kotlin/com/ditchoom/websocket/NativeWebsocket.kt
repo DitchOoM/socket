@@ -18,7 +18,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
 
     override suspend fun write(buffer: PlatformBuffer) {
         val t = WebSocketClientToServerBinaryFrameTransformer.transform(buffer)
-        t.position(t.limit().toInt())
+        t.position(t.limit())
         socket.write(t, connectionOptions.writeTimeout)
     }
 
@@ -27,7 +27,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
     }
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
-        val limit = buffer.limit().toInt()
+        val limit = buffer.limit()
         write(buffer)
         return limit
     }

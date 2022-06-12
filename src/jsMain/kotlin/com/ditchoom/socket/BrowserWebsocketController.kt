@@ -114,13 +114,13 @@ class BrowserWebsocketController(
     }
 
     override suspend fun write(buffer: PlatformBuffer) {
-        val arrayBuffer = (buffer as JsBuffer).buffer.buffer.slice(0, buffer.limit().toInt())
+        val arrayBuffer = (buffer as JsBuffer).buffer.buffer.slice(0, buffer.limit())
         websocket.send(arrayBuffer)
     }
 
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
         write(buffer)
-        return buffer.limit().toInt()
+        return buffer.limit()
     }
 
     override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()

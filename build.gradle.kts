@@ -1,5 +1,5 @@
 plugins {
-    kotlin("multiplatform") version "1.6.10"
+    kotlin("multiplatform") version "1.6.20"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`

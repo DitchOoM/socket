@@ -33,7 +33,7 @@ class SuspendingSocketInputStream(
             dataRead
         }
         this.currentBuffer = fragmentedLocalBuffer
-        if (fragmentedLocalBuffer.remaining().toInt() >= size) {
+        if (fragmentedLocalBuffer.remaining() >= size) {
             return fragmentedLocalBuffer
         }
 
