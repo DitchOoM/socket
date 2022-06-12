@@ -24,8 +24,8 @@ actual fun asyncServerSocket(): ServerSocket {
     return PosixServerSocket()
 }
 
-actual suspend fun readStats(port: UShort, contains: String): List<String> = emptyList()
+actual suspend fun readStats(port: Int, contains: String): List<String> = emptyList()
 
 
-internal fun swapBytes(v: UShort): UShort =
-    (((v.toInt() and 0xFF) shl 8) or ((v.toInt() ushr 8) and 0xFF)).toUShort()
+internal fun swapBytes(v: Int): Int =
+    (((v.toInt() and 0xFF) shl 8) or ((v.toInt() ushr 8) and 0xFF)).toInt()

@@ -93,7 +93,7 @@ data class WebSocketFrame(
     val actualPayloadLength = if (payloadLength <= 125) {
         payloadLength
     } else if (payloadLength == 126) {
-        payloadLength + UShort.SIZE_BYTES
+        payloadLength + Int.SIZE_BYTES
     } else if (payloadLength == 127) {
         payloadLength + ULong.SIZE_BYTES
     } else {
@@ -135,7 +135,7 @@ data class WebSocketFrame(
         val byte = maskedBitAndPayloadLengthArray.toByte()
         writeBuffer.write(byte)
         if (payloadLength == 126) {
-            writeBuffer.write(payloadData.limit().toUShort())
+            writeBuffer.write(payloadData.limit().toInt())
         } else if (payloadLength == 127) {
             writeBuffer.write(payloadData.limit().toULong().toLong())
         }

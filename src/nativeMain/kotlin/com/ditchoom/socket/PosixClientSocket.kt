@@ -11,7 +11,7 @@ import kotlin.time.ExperimentalTime
 
 open class PosixClientSocket() : ClientSocket {
 
-    var currentFileDescriptor: Int? = null
+    var currentFileDescriptor: Int = null
 
     override fun isOpen() = localPort() != null && remotePort() != null
 
@@ -24,7 +24,7 @@ open class PosixClientSocket() : ClientSocket {
         else swapBytes(localAddress.sin_port)
     }
 
-    override fun remotePort(): UShort? = memScoped {
+    override fun remotePort(): Int = memScoped {
         val currentFileDescriptor = currentFileDescriptor ?: return null
         val peerAddress = alloc<sockaddr_in>()
         val addressLength = alloc<socklen_tVar>()

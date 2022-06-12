@@ -103,14 +103,14 @@ suspend fun AsynchronousSocketChannel.aRemoteAddress(): SocketAddress? = withCon
     remoteAddress
 }
 
-suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): UShort? {
+suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): Int {
     return try {
         if (remote) {
-            (aRemoteAddress() as? InetSocketAddress)?.port?.toUShort()
+            (aRemoteAddress() as? InetSocketAddress)?.port ?: -1
         } else {
-            (aLocalAddress() as? InetSocketAddress)?.port?.toUShort()
+            (aLocalAddress() as? InetSocketAddress)?.port ?: -1
         }
     } catch (e: Exception) {
-        null
+        -1
     }
 }

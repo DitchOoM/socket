@@ -20,17 +20,17 @@ class AsyncClientSocket(
 ) : AsyncBaseClientSocket(), ClientToServerSocket {
 
     override suspend fun open(
-        port: UShort,
+        port: Int,
         timeout: Duration,
         hostname: String?,
         socketOptions: SocketOptions?
     ): SocketOptions = withTimeout(timeout) {
         val socketAddress = if (hostname != null) {
-            InetSocketAddress(hostname.asInetAddress(), port.toInt())
+            InetSocketAddress(hostname.asInetAddress(), port)
         } else {
             suspendCoroutine {
                 try {
-                    it.resume(InetSocketAddress(InetAddress.getLocalHost(), port.toInt()))
+                    it.resume(InetSocketAddress(InetAddress.getLocalHost(), port))
                 } catch (e: Exception) {
                     it.resumeWithException(e)
                 }

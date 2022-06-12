@@ -12,12 +12,12 @@ class NioClientSocket(
     blocking: Boolean = true,
 ) : BaseClientSocket(blocking), ClientToServerSocket {
     override suspend fun open(
-        port: UShort,
+        port: Int,
         timeout: Duration,
         hostname: String?,
         socketOptions: SocketOptions?
     ): SocketOptions {
-        val socketAddress = InetSocketAddress(hostname?.asInetAddress(), port.toInt())
+        val socketAddress = InetSocketAddress(hostname?.asInetAddress(), port)
         val socketChannel = openSocketChannel()
         socketChannel.aConfigureBlocking(blocking)
         this.socket = socketChannel

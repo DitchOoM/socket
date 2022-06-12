@@ -4,8 +4,8 @@ import kotlinx.coroutines.channels.Channel
 
 class MockServerSocket : ServerSocket {
     private var isBound = false
-    private var port: UShort? = null
-    private val clients = HashMap<UShort, MockClientSocket>()
+    private var port: Int = -1
+    private val clients = HashMap<Int, MockClientSocket>()
 
     override suspend fun accept(): ClientSocket {
         val remoteSocket = clientsToAccept.receive()
@@ -21,7 +21,7 @@ class MockServerSocket : ServerSocket {
     }
 
     override suspend fun bind(
-        port: UShort?,
+        port: Int,
         host: String?,
         socketOptions: SocketOptions?,
         backlog: Int
@@ -29,7 +29,11 @@ class MockServerSocket : ServerSocket {
         if (servers.contains(port)) {
             throw Exception("Port already used")
         }
-        val actualPort = port ?: MockClientSocket.lastFakePortUsed++.toUShort()
+        val actualPort = if (port == -1) {
+            MockClientSocket.lastFakePortUsed++
+        } else {
+            port
+        }
         servers[actualPort] = this
         isBound = true
         this.port = actualPort
@@ -39,7 +43,7 @@ class MockServerSocket : ServerSocket {
 
     override fun isOpen(): Boolean = isBound
 
-    override fun port(): UShort? = port
+    override fun port(): Int = port
 
     override suspend fun close() {
         for (client in clients) {
@@ -51,7 +55,7 @@ class MockServerSocket : ServerSocket {
     }
 
     companion object {
-        val servers = HashMap<UShort, MockServerSocket>()
+        val servers = HashMap<Int, MockServerSocket>()
         val clientsToAccept = Channel<MockClientSocket>()
     }
 }
