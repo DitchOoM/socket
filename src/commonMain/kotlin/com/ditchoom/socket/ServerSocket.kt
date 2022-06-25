@@ -17,6 +17,8 @@ interface ServerSocket : SuspendCloseable {
     suspend fun accept(): ClientSocket
     fun isOpen(): Boolean
     fun port(): Int
+
+    companion object
 }
 
-expect fun asyncServerSocket(zone: AllocationZone = AllocationZone.Direct): ServerSocket
+expect fun ServerSocket.Companion.allocate(zone: AllocationZone = AllocationZone.Direct): ServerSocket

@@ -1,4 +1,5 @@
 plugins {
+    id("dev.petuska.npm.publish") version "2.1.2"
     kotlin("multiplatform") version "1.6.20"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
@@ -9,7 +10,11 @@ plugins {
 val libraryVersionPrefix: String by project
 group = "com.ditchoom"
 version = "$libraryVersionPrefix.0-SNAPSHOT"
-
+val libraryVersion = if (System.getenv("GITHUB_RUN_NUMBER") != null) {
+    "$libraryVersionPrefix${System.getenv("GITHUB_RUN_NUMBER")}"
+} else {
+    "${libraryVersionPrefix}0-SNAPSHOT"
+}
 repositories {
     google()
     mavenCentral()
@@ -147,11 +152,6 @@ System.getenv("GITHUB_REPOSITORY")?.let {
     val developerEmail: String by project
     val developerId: String by project
 
-    val libraryVersion = if (System.getenv("GITHUB_RUN_NUMBER") != null) {
-        "$libraryVersionPrefix${System.getenv("GITHUB_RUN_NUMBER")}"
-    } else {
-        "${libraryVersionPrefix}0-SNAPSHOT"
-    }
 
     project.group = publishedGroupId
     project.version = libraryVersion
@@ -207,6 +207,28 @@ System.getenv("GITHUB_REPOSITORY")?.let {
         username = ossUser
         password = ossPassword
         packageGroup = publishedGroupId
+    }
+}
+
+if (System.getenv("NPM_ACCESS_TOKEN") != null) {
+    npmPublishing {
+        repositories {
+            repository("npmjs") {
+                registry = uri("https://registry.npmjs.org")
+                authToken = System.getenv("NPM_ACCESS_TOKEN")
+            }
+        }
+        readme = file("Readme.md")
+        organization = "ditchoom"
+        access = PUBLIC
+        bundleKotlinDependencies = true
+        version = libraryVersion
+        dry = !"refs/heads/main".equals(System.getenv("GITHUB_REF"), ignoreCase = true)
+        publications {
+            val js by getting {
+                moduleName = "socket-kt"
+            }
+        }
     }
 }
 

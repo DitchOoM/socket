@@ -4,7 +4,7 @@ import com.ditchoom.buffer.*
 import com.ditchoom.data.get
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.SuspendingSocketInputStream
-import com.ditchoom.socket.getClientSocket
+import com.ditchoom.socket.allocate
 import com.ditchoom.websocket.MaskingKey.FourByteMaskingKey
 import com.ditchoom.websocket.MaskingKey.NoMaskingKey
 import kotlin.experimental.xor
@@ -118,8 +118,8 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
 
     companion object {
         suspend fun open(connectionOptions: WebSocketConnectionOptions): NativeWebsocket {
-            val socket = getClientSocket()
-            socket.open(connectionOptions.port.toInt(), connectionOptions.connectionTimeout, connectionOptions.name)
+            val socket = ClientSocket.allocate()
+            socket.open(connectionOptions.port, connectionOptions.connectionTimeout, connectionOptions.name)
             var request =
                 "GET ${connectionOptions.websocketEndpoint} HTTP/1.1" +
                         "\r\nHost: ${connectionOptions.name}:${connectionOptions.port}" +

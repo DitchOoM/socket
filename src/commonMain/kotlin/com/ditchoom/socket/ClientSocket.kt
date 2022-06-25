@@ -44,30 +44,38 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
             write(buffer, timeout)
         }
     }
+
+    companion object
 }
 
 data class SocketDataRead<T>(val result: T, val bytesRead: Int)
 
-suspend fun openClientSocket(
+suspend fun ClientSocket.Companion.connect(
     port: Int,
-    timeout: Duration = 1.seconds,
     hostname: String? = null,
-    socketOptions: SocketOptions? = null
+    timeout: Duration = 1.seconds,
+    socketOptions: SocketOptions? = null,
+    zone: AllocationZone = AllocationZone.Direct
 ): ClientToServerSocket {
-    val socket = getClientSocket()
+    val socket = ClientSocket.allocate(zone)
     socket.open(port, timeout, hostname, socketOptions)
     return socket
 }
 
-fun getClientSocket(zone: AllocationZone = AllocationZone.Direct): ClientToServerSocket {
-    try {
-        return asyncClientSocket(zone)
-    } catch (e: Throwable) {
-        // failed to allocate async socket channel based socket, fallback to nio
-    }
-    return clientSocket(zone, false)
+suspend fun <T> ClientSocket.Companion.connect(
+    port: Int,
+    hostname: String? = null,
+    timeout: Duration = 1.seconds,
+    socketOptions: SocketOptions? = null,
+    zone: AllocationZone = AllocationZone.Direct,
+    lambda: suspend (ClientSocket) -> T
+): T {
+    val socket = ClientSocket.allocate(zone)
+    socket.open(port, timeout, hostname, socketOptions)
+    val result = lambda(socket)
+    socket.close()
+    return result
 }
 
-expect fun asyncClientSocket(zone: AllocationZone = AllocationZone.Direct): ClientToServerSocket
+expect fun ClientSocket.Companion.allocate(zone: AllocationZone = AllocationZone.Direct): ClientToServerSocket
 
-expect fun clientSocket(zone: AllocationZone = AllocationZone.Direct, blocking: Boolean = false): ClientToServerSocket

@@ -68,7 +68,7 @@ class SimpleSocketTests {
     @Test
     fun connectTimeoutWorks() = block {
         try {
-            openClientSocket(3, hostname = "example.com", timeout = 100.milliseconds)
+            ClientSocket.connect(3, hostname = "example.com", timeout = 100.milliseconds)
             fail("should have timed out")
         } catch (_: CancellationException) {
         }
@@ -76,7 +76,7 @@ class SimpleSocketTests {
 
     @Test
     fun awaitCloseWorks() = block {
-        val client = openClientSocket(80, hostname = "example.com", timeout = 100.milliseconds)
+        val client = ClientSocket.connect(80, hostname = "example.com", timeout = 100.milliseconds)
         awaitCloseWorks(client)
     }
 
@@ -95,18 +95,18 @@ class SimpleSocketTests {
     @Test
     fun httpRawSocket() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val client = openClientSocket(80, hostname = "example.com")
-        val request =
-            """
+        val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
+            val request =
+                """
 GET / HTTP/1.1
 Host: example.com
 Connection: close
 
 """
-        val bytesWritten = client.write(request)
-        assertTrue { bytesWritten > 0 }
-        val response = client.read().result
-        client.close()
+            val bytesWritten = socket.write(request)
+            assertTrue { bytesWritten > 0 }
+            socket.read().result
+        }
         assertTrue { response.contains("200 OK") }
         assertTrue { response.contains("HTTP") }
         assertTrue { response.contains("<html>") }
@@ -115,11 +115,11 @@ Connection: close
     @Test
     fun serverEcho() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val server = asyncServerSocket()
+        val server = ServerSocket.allocate()
         server.bind()
         val text = "yolo swag lyfestyle"
         val serverPort = assertNotNull(server.port(), "No port number from server")
-        val clientToServer = asyncClientSocket()
+        val clientToServer = ClientSocket.allocate()
         launch(Dispatchers.Unconfined) {
             clientToServer.open(serverPort)
             clientToServer.write(text)
@@ -142,9 +142,9 @@ Connection: close
     @Test
     fun clientEcho() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val server = asyncServerSocket()
+        val server = ServerSocket.allocate()
         server.bind()
-        val clientToServer = asyncClientSocket()
+        val clientToServer = ClientSocket.allocate()
         val text = "yolo swag lyfestyle"
         val serverPort = assertNotNull(server.port(), "No port number from server")
         lateinit var serverToClient: ClientSocket
@@ -172,12 +172,12 @@ Connection: close
     @Test
     fun suspendingInputStream() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val server = asyncServerSocket()
+        val server = ServerSocket.allocate()
         server.bind()
         val text = "yolo swag lyfestyle"
         val serverPort = assertNotNull(server.port(), "No port number from server")
         launch(Dispatchers.Default) {
-            val clientToServer = asyncClientSocket()
+            val clientToServer = ClientSocket.allocate()
             clientToServer.open(serverPort)
             val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer)
             val buffer = inputStream.sizedReadBuffer(text.length).slice()

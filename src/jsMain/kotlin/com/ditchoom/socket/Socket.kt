@@ -9,11 +9,8 @@ private fun nodeJs(): Boolean {
     return js("global.window") == null
 }
 
-fun asyncClientSocket(): ClientToServerSocket {
-    return asyncClientSocket(AllocationZone.Direct)
-}
-
-actual fun asyncClientSocket(zone: AllocationZone): ClientToServerSocket {
+fun ClientSocket.Companion.allocate(): ClientToServerSocket = allocate(AllocationZone.Direct)
+actual fun ClientSocket.Companion.allocate(zone: AllocationZone): ClientToServerSocket {
     return if (isNodeJs) {
         NodeClientSocket()
     } else {
@@ -21,13 +18,8 @@ actual fun asyncClientSocket(zone: AllocationZone): ClientToServerSocket {
     }
 }
 
-fun clientSocket(blocking: Boolean): ClientToServerSocket = clientSocket(AllocationZone.Direct, blocking)
-
-actual fun clientSocket(zone: AllocationZone, blocking: Boolean): ClientToServerSocket =
-    throw UnsupportedOperationException("Only non blocking io is supported with JS")
-
-fun asyncServerSocket(): ServerSocket = asyncServerSocket(AllocationZone.Direct)
-actual fun asyncServerSocket(zone: AllocationZone): ServerSocket {
+fun ServerSocket.Companion.allocate(): ServerSocket = allocate(AllocationZone.Direct)
+actual fun ServerSocket.Companion.allocate(zone: AllocationZone): ServerSocket {
     if (isNodeJs) {
 //        throw UnsupportedOperationException("Not implemented yet")
         return NodeServerSocket(zone)
