@@ -7,8 +7,8 @@ import kotlin.time.Duration.Companion.seconds
 interface ClientToServerSocket : ClientSocket {
     suspend fun open(
         port: Int,
-        timeout: Duration = 1.seconds,
         hostname: String? = null,
+        timeout: Duration = 1.seconds,
         socketOptions: SocketOptions? = null
     ): SocketOptions
 }

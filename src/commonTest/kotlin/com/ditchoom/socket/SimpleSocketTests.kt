@@ -112,6 +112,26 @@ Connection: close
         assertTrue { response.contains("<html>") }
     }
 
+//    @Test
+//    fun httpsRawSocket() = block {
+//        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+//        val response = ClientSocket.connect(443, hostname = "google.com", tls = true) { socket ->
+//            val request =
+//                """
+//GET / HTTP/1.1
+//Host: google.com
+//Connection: close
+//
+//"""
+//            val bytesWritten = socket.write(request)
+//            assertTrue { bytesWritten > 0 }
+//            socket.read().result
+//        }
+//        assertTrue { response.contains("200 OK") }
+//        assertTrue { response.contains("HTTP") }
+//        assertTrue { response.contains("<html>") }
+//    }
+
     @Test
     fun serverEcho() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block

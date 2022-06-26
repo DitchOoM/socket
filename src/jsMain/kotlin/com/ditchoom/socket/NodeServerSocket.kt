@@ -7,7 +7,7 @@ import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
-class NodeServerSocket(override val allocationZone: AllocationZone) : ServerSocket {
+class NodeServerSocket(private val tls: Boolean, override val allocationZone: AllocationZone) : ServerSocket {
     var server: Server? = null
     private val clientSocketChannel = Channel<ClientSocket>(Channel.UNLIMITED)
 
@@ -18,7 +18,7 @@ class NodeServerSocket(override val allocationZone: AllocationZone) : ServerSock
         backlog: Int
     ): SocketOptions {
         val server = Net.createServer { clientSocket ->
-            val nodeSocket = NodeSocket(allocationZone)
+            val nodeSocket = NodeSocket(tls, allocationZone)
             nodeSocket.isClosed = false
             nodeSocket.netSocket = clientSocket
             clientSocket.on("data") { data ->

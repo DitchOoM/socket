@@ -11,7 +11,7 @@ import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
 
-open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocket {
+open class NodeSocket(tls: Boolean, override val allocationZone: AllocationZone) : ClientSocket {
     internal var isClosed = true
     internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
@@ -93,12 +93,12 @@ open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocke
     }
 }
 
-class NodeClientSocket(zone: AllocationZone = AllocationZone.Direct) : NodeSocket(zone), ClientToServerSocket {
+class NodeClientSocket(tls: Boolean, zone: AllocationZone = AllocationZone.Direct) : NodeSocket(tls, zone), ClientToServerSocket {
 
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
+        timeout: Duration,
         socketOptions: SocketOptions?
     ): SocketOptions = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()

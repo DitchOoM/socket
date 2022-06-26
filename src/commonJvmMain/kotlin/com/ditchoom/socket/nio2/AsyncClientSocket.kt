@@ -16,13 +16,15 @@ import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 
 class AsyncClientSocket(
-    override val allocationZone: AllocationZone = AllocationZone.Direct
-) : AsyncBaseClientSocket(), ClientToServerSocket {
+    useTLS: Boolean,
+    override val allocationZone: AllocationZone = AllocationZone.Direct,
+) : AsyncBaseClientSocket(useTLS), ClientToServerSocket {
+    override val isClient: Boolean = true
 
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
+        timeout: Duration,
         socketOptions: SocketOptions?
     ): SocketOptions = withTimeout(timeout) {
         val socketAddress = if (hostname != null) {

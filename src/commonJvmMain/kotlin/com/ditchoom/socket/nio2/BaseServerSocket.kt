@@ -1,4 +1,4 @@
-package com.ditchoom.socket.nio
+package com.ditchoom.socket.nio2
 
 import com.ditchoom.socket.ServerSocket
 import com.ditchoom.socket.SocketOptions

@@ -8,13 +8,14 @@ import java.net.InetSocketAddress
 import kotlin.time.Duration
 
 class NioClientSocket(
+    useTLS: Boolean,
     override val allocationZone: AllocationZone = AllocationZone.Direct,
     blocking: Boolean = true,
 ) : BaseClientSocket(blocking), ClientToServerSocket {
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
+        timeout: Duration,
         socketOptions: SocketOptions?
     ): SocketOptions {
         val socketAddress = InetSocketAddress(hostname?.asInetAddress(), port)

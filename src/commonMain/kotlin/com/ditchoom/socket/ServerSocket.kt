@@ -21,4 +21,4 @@ interface ServerSocket : SuspendCloseable {
     companion object
 }
 
-expect fun ServerSocket.Companion.allocate(zone: AllocationZone = AllocationZone.Direct): ServerSocket
+expect fun ServerSocket.Companion.allocate(tls: Boolean = false, zone: AllocationZone = AllocationZone.Direct): ServerSocket

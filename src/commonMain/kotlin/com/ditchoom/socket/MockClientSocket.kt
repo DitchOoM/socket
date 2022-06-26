@@ -20,8 +20,8 @@ class MockClientSocket : ClientToServerSocket {
 
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
+        timeout: Duration,
         socketOptions: SocketOptions?
     ): SocketOptions {
         localPortInternal = lastFakePortUsed++

@@ -35,14 +35,21 @@ interface ClientSocket : SocketController, Reader<ReadBuffer>, Writer<PlatformBu
             bufferRead(buffer)
         }.result
 
+    // TODO: This should accept a read buffer, including transformed read buffers
     override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int
     suspend fun write(buffer: String, timeout: Duration = 1.seconds): Int =
-        write(buffer.toBuffer().also { it.position(it.limit()) }, timeout)
+        writeFully(buffer.toBuffer().also { it.position(it.limit()) }, timeout)
 
-    suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration) {
+    suspend fun writeFully(buffer: PlatformBuffer, timeout: Duration): Int {
+        var total = 0
         while (buffer.position() < buffer.limit()) {
-            write(buffer, timeout)
+            val writtenBytes = write(buffer, timeout)
+            if (writtenBytes == -1) {
+                return  -1
+            }
+            total += writtenBytes
         }
+        return total
     }
 
     companion object
@@ -53,29 +60,31 @@ data class SocketDataRead<T>(val result: T, val bytesRead: Int)
 suspend fun ClientSocket.Companion.connect(
     port: Int,
     hostname: String? = null,
+    tls: Boolean = false,
     timeout: Duration = 1.seconds,
     socketOptions: SocketOptions? = null,
     zone: AllocationZone = AllocationZone.Direct
 ): ClientToServerSocket {
-    val socket = ClientSocket.allocate(zone)
-    socket.open(port, timeout, hostname, socketOptions)
+    val socket = ClientSocket.allocate(tls, zone)
+    socket.open(port, hostname, timeout, socketOptions)
     return socket
 }
 
 suspend fun <T> ClientSocket.Companion.connect(
     port: Int,
     hostname: String? = null,
+    tls: Boolean = false,
     timeout: Duration = 1.seconds,
     socketOptions: SocketOptions? = null,
     zone: AllocationZone = AllocationZone.Direct,
     lambda: suspend (ClientSocket) -> T
 ): T {
-    val socket = ClientSocket.allocate(zone)
-    socket.open(port, timeout, hostname, socketOptions)
+    val socket = ClientSocket.allocate(tls, zone)
+    socket.open(port, hostname, timeout, socketOptions)
     val result = lambda(socket)
     socket.close()
     return result
 }
 
-expect fun ClientSocket.Companion.allocate(zone: AllocationZone = AllocationZone.Direct): ClientToServerSocket
+expect fun ClientSocket.Companion.allocate(tls: Boolean = false, zone: AllocationZone = AllocationZone.Direct): ClientToServerSocket
 

@@ -61,7 +61,6 @@ suspend fun AsynchronousSocketChannel.aRead(
         )
         closeOnCancel(cont)
     }
-    (buf as Buffer).flip()
     return result
 }
 
@@ -77,7 +76,6 @@ suspend fun AsynchronousSocketChannel.aWrite(
     duration: Duration
 ): Int {
     return suspendCancellableCoroutine<Int> { cont ->
-        (buf as Buffer).flip()
         write(
             buf, duration.inWholeMilliseconds, TimeUnit.MILLISECONDS, cont,
             asyncIOHandler()

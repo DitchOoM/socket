@@ -119,7 +119,7 @@ class NativeWebsocket(private val connectionOptions: WebSocketConnectionOptions,
     companion object {
         suspend fun open(connectionOptions: WebSocketConnectionOptions): NativeWebsocket {
             val socket = ClientSocket.allocate()
-            socket.open(connectionOptions.port, connectionOptions.connectionTimeout, connectionOptions.name)
+            socket.open(connectionOptions.port, connectionOptions.name, connectionOptions.connectionTimeout)
             var request =
                 "GET ${connectionOptions.websocketEndpoint} HTTP/1.1" +
                         "\r\nHost: ${connectionOptions.name}:${connectionOptions.port}" +
