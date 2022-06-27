@@ -114,8 +114,7 @@ Or use lambda which auto closes the socket
 ```kotlin
 // Run in a coroutine scope, same defaults as the other `connect` method
 val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
-
-    val request =
+val request =
         """
 GET / HTTP/1.1
 Host: example.com
@@ -123,7 +122,7 @@ Connection: close
 
 """
     val bytesWritten = socket.write(request)
-    socket.read().result
+    socket.read()
 }
 // response is populated, no need to call socket.close()
 ```
