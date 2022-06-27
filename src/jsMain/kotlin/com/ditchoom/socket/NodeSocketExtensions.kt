@@ -16,8 +16,11 @@ suspend fun connect(tcpOptions: tcpOptions, failureCb: (Socket, Throwable?) -> U
                 it.resume(Unit)
             }
             socket.on("error") { e ->
-                console.error("error", e)
-                it.resumeWithException(RuntimeException(e.toString()))
+                if (e.toString().contains("getaddrinfo")) {
+                    it.resumeWithException(SocketUnknownHostException(tcpOptions.host, e.toString()))
+                } else {
+                    it.resumeWithException(SocketException("Failed to connect: $e"))
+                }
             }
             netSocket = socket
             it.invokeOnCancellation { throwableLocal ->

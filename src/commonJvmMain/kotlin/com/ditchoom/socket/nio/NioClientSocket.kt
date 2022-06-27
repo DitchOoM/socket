@@ -28,5 +28,3 @@ class NioClientSocket(
         return socketChannel.asyncSetOptions(socketOptions)
     }
 }
-
-

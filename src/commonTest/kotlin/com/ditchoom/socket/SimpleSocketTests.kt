@@ -28,6 +28,22 @@ class SimpleSocketTests {
     }
 
     @Test
+    fun invalidHost() = block {
+        if (getNetworkCapabilities() == NetworkCapabilities.FULL_SOCKET_ACCESS) {
+            try {
+                ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 40.milliseconds)
+                fail("should not have reached this")
+            } catch(e: SocketUnknownHostException) {
+                // expected
+            }
+        } else {
+            assertFailsWith<UnsupportedOperationException> {
+                ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 40.milliseconds)
+            }
+        }
+    }
+
+    @Test
     fun closeWorks() = block {
         if (getNetworkCapabilities() == NetworkCapabilities.FULL_SOCKET_ACCESS) {
             try {

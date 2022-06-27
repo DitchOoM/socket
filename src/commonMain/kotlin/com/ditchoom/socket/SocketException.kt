@@ -1,6 +1,11 @@
 package com.ditchoom.socket
 
-class SocketException(
+open class SocketException(
     override val message: String,
     override val cause: Throwable? = null
 ) : Exception(message, cause)
+
+class SocketUnknownHostException(hostname: String?,
+                                 extraMessage:String = "",
+    override val cause: Throwable? = null)
+    : SocketException("Failed to get a socket address for hostname: $hostname${if(extraMessage.isNotEmpty()) "\r\nextraMessage" else ""}", cause)

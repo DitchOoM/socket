@@ -2,7 +2,9 @@ package com.ditchoom.socket.nio2
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.ClientToServerSocket
+import com.ditchoom.socket.SocketException
 import com.ditchoom.socket.SocketOptions
+import com.ditchoom.socket.SocketUnknownHostException
 import com.ditchoom.socket.nio.util.asInetAddress
 import com.ditchoom.socket.nio.util.asyncSetOptions
 import com.ditchoom.socket.nio2.util.aConnect
@@ -25,7 +27,11 @@ class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) : AsyncBaseClientSo
         socketOptions: SocketOptions?
     ): SocketOptions = withTimeout(timeout) {
         val socketAddress = if (hostname != null) {
-            InetSocketAddress(hostname.asInetAddress(), port)
+            try {
+                InetSocketAddress(hostname.asInetAddress(), port)
+            } catch (e: Exception) {
+                throw SocketUnknownHostException(hostname, cause = e)
+            }
         } else {
             suspendCoroutine {
                 try {
