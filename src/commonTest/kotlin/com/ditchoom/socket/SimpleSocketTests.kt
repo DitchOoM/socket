@@ -33,7 +33,7 @@ class SimpleSocketTests {
             try {
                 ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 40.milliseconds)
                 fail("should not have reached this")
-            } catch(e: SocketUnknownHostException) {
+            } catch (e: SocketUnknownHostException) {
                 // expected
             }
         } else {
