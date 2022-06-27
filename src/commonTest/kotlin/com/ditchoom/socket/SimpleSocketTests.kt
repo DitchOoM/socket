@@ -46,6 +46,7 @@ class SimpleSocketTests {
     @Test
     fun httpRawSocket() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+        var localPort = 1
         val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
             val request =
                 """
@@ -55,6 +56,7 @@ Connection: close
 
 """
             val bytesWritten = socket.write(request.toBuffer(), 1.seconds)
+            localPort = socket.localPort()
             assertTrue { bytesWritten > 0 }
             val readBuffer = socket.read(1.seconds)
             readBuffer.resetForRead()
@@ -63,6 +65,8 @@ Connection: close
         assertTrue { response.contains("200 OK") }
         assertTrue { response.contains("HTTP") }
         assertTrue { response.contains("<html>") }
+        assertNotEquals(1, localPort)
+        checkPort(localPort)
     }
 
     @Test

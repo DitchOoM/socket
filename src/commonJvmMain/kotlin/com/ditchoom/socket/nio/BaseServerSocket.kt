@@ -14,7 +14,7 @@ abstract class BaseServerSocket<S : NetworkChannel> : ServerSocket {
     override fun port() = (server?.localAddress as? InetSocketAddress)?.port ?: -1
 
     override fun isOpen() = try {
-        port() != null && server?.isOpen ?: false
+        server?.isOpen ?: false
     } catch (e: Throwable) {
         false
     }

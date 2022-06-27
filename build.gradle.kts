@@ -102,9 +102,18 @@ kotlin {
 
         val androidMain by getting {
             kotlin.srcDir("src/commonJvmMain/kotlin")
+            dependsOn(commonMain)
+            dependsOn(jvmMain)
         }
         val androidTest by getting {
             kotlin.srcDir("src/commonJvmTest/kotlin")
+            dependsOn(commonTest)
+            dependsOn(jvmTest)
+        }
+        val androidAndroidTest by getting {
+            dependsOn(commonTest)
+            kotlin.srcDir("src/commonJvmTest/kotlin")
+            kotlin.srcDir("src/commonTest/kotlin")
         }
     }
 }
