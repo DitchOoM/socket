@@ -1,6 +1,6 @@
 package com.ditchoom.socket.nio2
 
-import com.ditchoom.buffer.AllocationZone
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.nio.util.asInetAddress
@@ -15,9 +15,8 @@ import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 
-class AsyncClientSocket(
-    override val allocationZone: AllocationZone = AllocationZone.Direct
-) : AsyncBaseClientSocket(), ClientToServerSocket {
+class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) : AsyncBaseClientSocket(bufferFactory),
+    ClientToServerSocket {
 
     override suspend fun open(
         port: Int,

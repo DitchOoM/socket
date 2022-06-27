@@ -1,12 +1,12 @@
 package com.ditchoom.socket.nio2
 
-import com.ditchoom.buffer.AllocationZone
+import com.ditchoom.buffer.PlatformBuffer
 import java.nio.channels.AsynchronousSocketChannel
 
 class AsyncServerToClientSocket(
-    override val allocationZone: AllocationZone = AllocationZone.Direct,
+    bufferFactory: () -> PlatformBuffer,
     asyncSocket: AsynchronousSocketChannel
-) : AsyncBaseClientSocket() {
+) : AsyncBaseClientSocket(bufferFactory) {
     init {
         this.socket = asyncSocket
     }

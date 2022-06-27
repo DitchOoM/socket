@@ -1,24 +1,17 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.*
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.channels.BufferOverflow
+import com.ditchoom.buffer.JsBuffer
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
 
-open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocket {
+open class NodeSocket : ClientSocket {
     internal var isClosed = true
     internal lateinit var netSocket: Socket
-    internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
-    private var currentBuffer: ReadBuffer? = null
-    internal val disconnectedFlow =
-        MutableSharedFlow<SocketException>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-    protected var wasCloseInitiatedClientSize = false
+    internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
 
     override fun isOpen() = !isClosed && netSocket.remoteAddress != null
 
@@ -26,64 +19,28 @@ open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocke
 
     override suspend fun remotePort() = netSocket.remotePort
 
-
-    private suspend fun readBuffer(size: Int): SocketDataRead<ReadBuffer> {
-        var currentBuffer = currentBuffer ?: incomingMessageChannel.receive().result
-        var bytesLeft = currentBuffer.remaining()
-        while (bytesLeft > 0) {
-            val socketDataResult = incomingMessageChannel.receive()
-            bytesLeft -= socketDataResult.bytesRead
-            currentBuffer = FragmentedReadBuffer(currentBuffer, socketDataResult.result).slice()
+    override suspend fun read(timeout: Duration): ReadBuffer {
+        if (!isOpen()) {
+            throw SocketException("Socket is closed")
         }
-        this.currentBuffer = currentBuffer
-        return SocketDataRead(currentBuffer, size)
-    }
-
-    override suspend fun readBuffer(timeout: Duration): SocketDataRead<ReadBuffer> {
-        val msg = incomingMessageChannel.receive()
         netSocket.resume()
-        return msg.copy(result = msg.result.slice())
+        val message = incomingMessageChannel.receive()
+        message.result.position(message.bytesRead)
+        return message.result
     }
 
-    override suspend fun read(buffer: PlatformBuffer, timeout: Duration): Int {
-        if (isClosed) {
-            return -1
+    override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
+        if (!isOpen()) {
+            throw SocketException("Socket is closed")
         }
-        val receivedData = readBuffer(buffer.remaining())
-        netSocket.resume()
-        val resultBuffer = receivedData.result
-        resultBuffer.position(0)
-        return receivedData.bytesRead
-    }
-
-    override suspend fun <T> read(
-        timeout: Duration,
-        bufferSize: Int,
-        bufferRead: (PlatformBuffer, Int) -> T
-    ): SocketDataRead<T> {
-        val receivedData = incomingMessageChannel.receive()
-        netSocket.resume()
-        val buffer = receivedData.result.slice() as PlatformBuffer
-        return SocketDataRead(bufferRead(buffer, receivedData.bytesRead), receivedData.bytesRead)
-    }
-
-    override suspend fun write(buffer: PlatformBuffer, timeout: Duration): Int {
-        if (isClosed) return -1
         val array = (buffer as JsBuffer).buffer
         netSocket.write(array)
         return array.byteLength
     }
 
-    override suspend fun awaitClose() = disconnectedFlow.asSharedFlow().first()
-
     fun cleanSocket(netSocket: Socket) {
         isClosed = true
-        wasCloseInitiatedClientSize = true
-        disconnectedFlow.tryEmit(SocketException("User closed socket", wasCloseInitiatedClientSize))
-        try {
-            incomingMessageChannel.close()
-        } catch (t: Throwable) {
-        }
+        incomingMessageChannel.close()
         netSocket.end {}
         netSocket.destroy()
     }
@@ -93,7 +50,7 @@ open class NodeSocket(override val allocationZone: AllocationZone) : ClientSocke
     }
 }
 
-class NodeClientSocket(zone: AllocationZone = AllocationZone.Direct) : NodeSocket(zone), ClientToServerSocket {
+class NodeClientSocket(private val bufferFactory: () -> PlatformBuffer) : NodeSocket(), ClientToServerSocket {
 
     override suspend fun open(
         port: Int,
@@ -103,7 +60,7 @@ class NodeClientSocket(zone: AllocationZone = AllocationZone.Direct) : NodeSocke
     ): SocketOptions = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({
-            val buffer = PlatformBuffer.allocate(4 * 1024, zone = allocationZone) as JsBuffer
+            val buffer = bufferFactory() as JsBuffer
             arrayPlatformBufferMap[buffer.buffer] = buffer
             buffer.buffer
         }, { bytesRead, buffer ->
@@ -114,12 +71,8 @@ class NodeClientSocket(zone: AllocationZone = AllocationZone.Direct) : NodeSocke
             false
         })
         val options = tcpOptions(port, hostname, onRead)
-        val netSocket = try {
-            connect(options) {
-                cleanSocket(it)
-            }
-        } catch (e: TimeoutCancellationException) {
-            throw e
+        val netSocket = connect(options) { socket, throwable ->
+            cleanSocket(socket)
         }
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket

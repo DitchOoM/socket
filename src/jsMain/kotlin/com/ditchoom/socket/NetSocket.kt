@@ -89,7 +89,7 @@ open external interface TcpSocketConnectOpts : ConnectOpts {
 
 class OnRead(
     var buffer: (() -> Uint8Array)? = null,
-    var callback: ((Int, Any) -> Boolean)? = null
+    var callback: ((Int, Uint8Array) -> Boolean)? = null
 )
 
 class tcpOptions(

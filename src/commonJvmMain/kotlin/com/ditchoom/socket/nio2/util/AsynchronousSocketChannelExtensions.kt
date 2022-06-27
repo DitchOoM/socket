@@ -7,7 +7,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.net.InetSocketAddress
 import java.net.SocketAddress
-import java.nio.Buffer
 import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousChannelGroup
 import java.nio.channels.AsynchronousSocketChannel
@@ -61,7 +60,6 @@ suspend fun AsynchronousSocketChannel.aRead(
         )
         closeOnCancel(cont)
     }
-    (buf as Buffer).flip()
     return result
 }
 
@@ -77,7 +75,6 @@ suspend fun AsynchronousSocketChannel.aWrite(
     duration: Duration
 ): Int {
     return suspendCancellableCoroutine<Int> { cont ->
-        (buf as Buffer).flip()
         write(
             buf, duration.inWholeMilliseconds, TimeUnit.MILLISECONDS, cont,
             asyncIOHandler()

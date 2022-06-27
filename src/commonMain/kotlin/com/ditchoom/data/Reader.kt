@@ -1,8 +1,9 @@
 package com.ditchoom.data
 
+import com.ditchoom.buffer.ReadBuffer
 import kotlin.time.Duration
 
-interface Reader<T> {
+interface Reader {
     fun isOpen(): Boolean
-    suspend fun readData(timeout: Duration): T
+    suspend fun read(timeout: Duration): ReadBuffer
 }

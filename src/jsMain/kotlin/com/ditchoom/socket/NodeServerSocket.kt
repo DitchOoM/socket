@@ -1,13 +1,12 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
 import kotlinx.coroutines.channels.Channel
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
-class NodeServerSocket(override val allocationZone: AllocationZone) : ServerSocket {
+class NodeServerSocket : ServerSocket {
     var server: Server? = null
     private val clientSocketChannel = Channel<ClientSocket>(Channel.UNLIMITED)
 
@@ -18,13 +17,14 @@ class NodeServerSocket(override val allocationZone: AllocationZone) : ServerSock
         backlog: Int
     ): SocketOptions {
         val server = Net.createServer { clientSocket ->
-            val nodeSocket = NodeSocket(allocationZone)
+            val nodeSocket = NodeSocket()
             nodeSocket.isClosed = false
             nodeSocket.netSocket = clientSocket
             clientSocket.on("data") { data ->
+                console.log("data", data)
                 val result = uint8ArrayOf(data)
                 val buffer = JsBuffer(result)
-                buffer.setPosition(0)
+                buffer.setPosition(result.length)
                 buffer.setLimit(result.length)
                 nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
             }

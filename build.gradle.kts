@@ -52,6 +52,7 @@ kotlin {
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
+                implementation("com.ditchoom:buffer:1.0.85")
             }
         }
         val jvmMain by getting {

@@ -7,18 +7,30 @@ import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
 
-suspend fun connect(tcpOptions: tcpOptions, failureCb: (Socket) -> Unit): Socket {
+suspend fun connect(tcpOptions: tcpOptions, failureCb: (Socket, Throwable?) -> Unit): Socket {
     var netSocket: Socket? = null
-    suspendCancellableCoroutine<Unit> {
-        val socket = Net.connect(tcpOptions) {
-            it.resume(Unit)
+    var throwable: Throwable? = null
+    try {
+        suspendCancellableCoroutine<Unit> {
+            val socket = Net.connect(tcpOptions) {
+                it.resume(Unit)
+            }
+            socket.on("error") { e ->
+                console.error("error", e)
+                it.resumeWithException(RuntimeException(e.toString()))
+            }
+            netSocket = socket
+            it.invokeOnCancellation { throwableLocal ->
+                throwable = throwableLocal
+                failureCb(socket, throwable)
+            }
         }
-        socket.on("error") { e ->
-            it.resumeWithException(RuntimeException(e.toString()))
-        }
-        netSocket = socket
-        it.invokeOnCancellation {
-            failureCb(socket)
+    } catch (t: Throwable) {
+        val throwableLocal = throwable
+        if (throwableLocal != null) {
+            throw throwableLocal
+        } else {
+            throw t
         }
     }
     return netSocket!!
@@ -48,10 +60,8 @@ suspend fun Socket.write(buffer: Uint8Array) {
 
 suspend fun Socket.close() {
     suspendCoroutine<Unit> {
-        println("closing socket")
         end {
             it.resume(Unit)
-            println("Socket closed")
         }
     }
 }

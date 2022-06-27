@@ -1,7 +1,9 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.SuspendCloseable
+import com.ditchoom.buffer.allocate
 
 interface ServerSocket : SuspendCloseable {
     val allocationZone: AllocationZone
@@ -21,4 +23,8 @@ interface ServerSocket : SuspendCloseable {
     companion object
 }
 
-expect fun ServerSocket.Companion.allocate(zone: AllocationZone = AllocationZone.Direct): ServerSocket
+expect fun ServerSocket.Companion.allocate(
+    bufferFactory: () -> PlatformBuffer = {
+        PlatformBuffer.allocate(4 * 1024, AllocationZone.Direct)
+    }
+): ServerSocket

@@ -12,7 +12,8 @@ import kotlin.time.Duration
  */
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
-    private val reader: Reader<ReadBuffer>,
+    private val reader: Reader,
+    private val bufferSize: Int,
 ) {
 
     internal var currentBuffer: ReadBuffer? = null
@@ -29,8 +30,9 @@ class SuspendingSocketInputStream(
         var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
             currentBuffer
         } else {
-            val dataRead = reader.readData(readTimeout)
-            dataRead
+            val buffer = reader.read(readTimeout)
+            buffer.resetForRead()
+            buffer
         }
         this.currentBuffer = fragmentedLocalBuffer
         if (fragmentedLocalBuffer.remaining() >= size) {
@@ -39,7 +41,8 @@ class SuspendingSocketInputStream(
 
         // ensure remaining in local buffer at least the size we requested
         while (fragmentedLocalBuffer.remaining() < size) {
-            val moreData = reader.readData(readTimeout)
+            val moreData = reader.read(readTimeout)
+            moreData.resetForRead()
             fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, moreData)
         }
         this.currentBuffer = fragmentedLocalBuffer

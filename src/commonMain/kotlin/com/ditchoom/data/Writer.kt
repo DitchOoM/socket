@@ -1,7 +1,8 @@
 package com.ditchoom.data
 
+import com.ditchoom.buffer.ReadBuffer
 import kotlin.time.Duration
 
-interface Writer<T> {
-    suspend fun write(buffer: T, timeout: Duration): Int
+interface Writer {
+    suspend fun write(buffer: ReadBuffer, timeout: Duration): Int
 }
