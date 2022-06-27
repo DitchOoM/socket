@@ -71,7 +71,7 @@ class NodeClientSocket(private val bufferFactory: () -> PlatformBuffer) : NodeSo
             false
         })
         val options = tcpOptions(port, hostname, onRead)
-        val netSocket = connect(options) { socket, throwable ->
+        val netSocket = connect(options) { socket, _ ->
             cleanSocket(socket)
         }
         isClosed = false

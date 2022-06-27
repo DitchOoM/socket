@@ -21,7 +21,6 @@ class NodeServerSocket : ServerSocket {
             nodeSocket.isClosed = false
             nodeSocket.netSocket = clientSocket
             clientSocket.on("data") { data ->
-                console.log("data", data)
                 val result = uint8ArrayOf(data)
                 val buffer = JsBuffer(result)
                 buffer.setPosition(result.length)

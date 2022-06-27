@@ -99,12 +99,12 @@ val socket = ClientSocket.connect(
     hostname = "example.com", // null is default which points to localhost
     timeout = 1.seconds, // default
     socketOptions = null, // default
-    zone = AllocationZone.Direct // default
 )
 val isOpen = socket.isOpen()
 val localPort = socket.localPort()
 val remotePort = socket.remotePort()
-val (resultString, bytesRead) = socket.read() // return the result as a utf-8 string
+val stringRead = socket.readUtf8() // read a utf8 string
+val readBuffer = socket.read() // read a ReadBuffer as defined in the buffer module
 val bytesWritten = socket.write(buffer) // write the buffer to the socket
 socket.close() // close the socket
 ```

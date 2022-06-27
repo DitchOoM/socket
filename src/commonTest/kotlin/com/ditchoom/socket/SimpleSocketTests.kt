@@ -55,12 +55,10 @@ Host: example.com
 Connection: close
 
 """
-            val bytesWritten = socket.write(request.toBuffer(), 1.seconds)
+            val bytesWritten = socket.write(request)
             localPort = socket.localPort()
             assertTrue { bytesWritten > 0 }
-            val readBuffer = socket.read(1.seconds)
-            readBuffer.resetForRead()
-            readBuffer.readUtf8(readBuffer.remaining())
+            socket.readUtf8().toString()
         }
         assertTrue { response.contains("200 OK") }
         assertTrue { response.contains("HTTP") }
