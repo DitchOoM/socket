@@ -87,12 +87,11 @@ Connection: close
 
     @Test
     fun httpsRawSocket() = block {
-        // TODO: Figure out why amazon.com isn't working
-        val domains = arrayOf("example.com", "google.com", "yahoo.com")
+        val domains = arrayOf("example.com", "google.com", "yahoo.com", "amazon.com")
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         for (domain in domains) {
             var localPort = 1
-            val response = ClientSocket.connect(443, "www.$domain", tls = true) { socket ->
+            val response = ClientSocket.connect(443, domain, tls = true) { socket ->
                 val request =
                     """
 GET / HTTP/1.1
@@ -119,9 +118,9 @@ Connection: close
                 s
             }
             println(response)
-            assertTrue { response.contains("200 OK") || response.startsWith("HTTP/") }
-            assertTrue { response.contains("html>") }
-            assertTrue { response.contains("/html>") }
+            assertTrue { response.startsWith("HTTP/") }
+            assertTrue { response.contains("html>", ignoreCase = true) }
+            assertTrue { response.contains("/html>", ignoreCase = true) }
             assertNotEquals(1, localPort)
             checkPort(localPort)
         }
