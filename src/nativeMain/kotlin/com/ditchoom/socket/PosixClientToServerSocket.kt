@@ -15,7 +15,8 @@ class PosixClientToServerSocket : PosixClientSocket(), ClientToServerSocket {
         socketOptions: SocketOptions?
     ): SocketOptions {
         val correctedHostName = hostname ?: "localhost"
-        val host = gethostbyname(correctedHostName) ?: throw Exception("Unknown host: $correctedHostName")
+        val host =
+            gethostbyname(correctedHostName) ?: throw Exception("Unknown host: $correctedHostName")
         val socketFileDescriptor = socket(AF_INET, SOCK_STREAM, 0)
             .ensureUnixCallResult("socket") { !it.isMinusOne() }
         with(memScope) {
@@ -24,7 +25,8 @@ class PosixClientToServerSocket : PosixClientSocket(), ClientToServerSocket {
                 memset(this.ptr, 0, sockaddr_in.size.convert())
                 sin_family = AF_INET.convert()
                 sin_port = posix_htons(port.toShort()).convert()
-                sin_addr.s_addr = host.pointed.h_addr_list!![0]!!.reinterpret<UIntVar>().pointed.value
+                sin_addr.s_addr =
+                    host.pointed.h_addr_list!![0]!!.reinterpret<UIntVar>().pointed.value
             }
             connect(socketFileDescriptor, serverAddr.ptr.reinterpret(), sockaddr_in.size.convert())
                 .ensureUnixCallResult("connect") { !it.isMinusOne() }

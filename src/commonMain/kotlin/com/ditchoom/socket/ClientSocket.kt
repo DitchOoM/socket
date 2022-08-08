@@ -13,13 +13,16 @@ interface ClientSocket : SocketController, Reader, Writer, SuspendCloseable {
     companion object
 }
 
+val EMPTY_BUFFER = PlatformBuffer.allocate(0)
+
 suspend fun ClientSocket.Companion.connect(
     port: Int,
     hostname: String? = null,
+    tls: Boolean = false,
     timeout: Duration = 1.seconds,
     socketOptions: SocketOptions? = null,
 ): ClientToServerSocket {
-    val socket = ClientSocket.allocate()
+    val socket = ClientSocket.allocate(tls)
     socket.open(port, timeout, hostname, socketOptions)
     return socket
 }
@@ -27,11 +30,12 @@ suspend fun ClientSocket.Companion.connect(
 suspend fun <T> ClientSocket.Companion.connect(
     port: Int,
     hostname: String? = null,
+    tls: Boolean = false,
     timeout: Duration = 1.seconds,
     socketOptions: SocketOptions? = null,
     lambda: suspend (ClientSocket) -> T
 ): T {
-    val socket = ClientSocket.allocate()
+    val socket = ClientSocket.allocate(tls)
     socket.open(port, timeout, hostname, socketOptions)
     val result = lambda(socket)
     socket.close()
@@ -39,8 +43,9 @@ suspend fun <T> ClientSocket.Companion.connect(
 }
 
 expect fun ClientSocket.Companion.allocate(
+    tls: Boolean = false,
     bufferFactory: () -> PlatformBuffer = {
-        PlatformBuffer.allocate(8 * 1024, AllocationZone.Direct)
+        PlatformBuffer.allocate(28 * 1024, AllocationZone.Direct)
     }
 ): ClientToServerSocket
 

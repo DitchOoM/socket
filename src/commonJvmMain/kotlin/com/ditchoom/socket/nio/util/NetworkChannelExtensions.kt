@@ -41,11 +41,12 @@ suspend fun NetworkChannel.asyncSetOptions(options: SocketOptions?): SocketOptio
     }
 }
 
-private fun <T> NetworkChannel.tryGettingOption(option: SocketOption<T>) = if (supportedOptions().contains(option)) {
-    getOption(option)
-} else {
-    null
-}
+private fun <T> NetworkChannel.tryGettingOption(option: SocketOption<T>) =
+    if (supportedOptions().contains(option)) {
+        getOption(option)
+    } else {
+        null
+    }
 
 suspend fun NetworkChannel.aLocalAddress(): SocketAddress? = withContext(Dispatchers.IO) {
     localAddress

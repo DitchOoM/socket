@@ -70,17 +70,61 @@ GET / HTTP/1.1
 Host: example.com
 Connection: close
 
-"""
-            val bytesWritten = socket.write(request)
+""".toBuffer()
+            val bytesWritten = socket.write(request, 1.seconds)
             localPort = socket.localPort()
             assertTrue { bytesWritten > 0 }
-            socket.readUtf8().toString()
+            val buffer = socket.read(1.seconds)
+            buffer.resetForRead()
+            buffer.readUtf8(buffer.remaining()).toString()
         }
         assertTrue { response.contains("200 OK") }
         assertTrue { response.contains("HTTP") }
         assertTrue { response.contains("<html>") }
         assertNotEquals(1, localPort)
         checkPort(localPort)
+    }
+
+    @Test
+    fun httpsRawSocket() = block {
+        // TODO: Figure out why amazon.com isn't working
+        val domains = arrayOf("example.com", "google.com", "yahoo.com")
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+        for (domain in domains) {
+            var localPort = 1
+            val response = ClientSocket.connect(443, "www.$domain", tls = true) { socket ->
+                val request =
+                    """
+GET / HTTP/1.1
+Host: www.$domain
+Connection: close
+
+""".toBuffer()
+                val bytesWritten = socket.write(request, 5.seconds)
+                localPort = socket.localPort()
+                assertTrue { bytesWritten > 0 }
+                val buffer = socket.read(5.seconds)
+                buffer.resetForRead()
+                var s = buffer.readUtf8(buffer.remaining()).toString()
+                try {
+                    while (socket.isOpen()) {
+                        val buffer2 = socket.read(5.seconds)
+                        buffer2.resetForRead()
+                        val response2 = buffer2.readUtf8(buffer2.remaining())
+                        s += response2
+                    }
+                } catch (e: SocketClosedException) {
+                    // expected when the server has Connection: close header
+                }
+                s
+            }
+            println(response)
+            assertTrue { response.contains("200 OK") || response.startsWith("HTTP/") }
+            assertTrue { response.contains("html>") }
+            assertTrue { response.contains("/html>") }
+            assertNotEquals(1, localPort)
+            checkPort(localPort)
+        }
     }
 
     @Test

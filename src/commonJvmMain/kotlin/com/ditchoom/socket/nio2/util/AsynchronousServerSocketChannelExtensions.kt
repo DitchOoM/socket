@@ -10,9 +10,10 @@ import java.nio.channels.CompletionHandler
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-suspend fun AsynchronousServerSocketChannel.aAccept() = suspendCancellableCoroutine<AsynchronousSocketChannel> { cont ->
-    accept(cont, AcceptCompletionHandler(cont))
-}
+suspend fun AsynchronousServerSocketChannel.aAccept() =
+    suspendCancellableCoroutine<AsynchronousSocketChannel> { cont ->
+        accept(cont, AcceptCompletionHandler(cont))
+    }
 
 data class AcceptCompletionHandler(val continuation: CancellableContinuation<AsynchronousSocketChannel>) :
     CompletionHandler<AsynchronousSocketChannel, CancellableContinuation<AsynchronousSocketChannel>> {
@@ -21,7 +22,10 @@ data class AcceptCompletionHandler(val continuation: CancellableContinuation<Asy
         attachment: CancellableContinuation<AsynchronousSocketChannel>
     ) = continuation.resume(result)
 
-    override fun failed(exc: Throwable, attachment: CancellableContinuation<AsynchronousSocketChannel>) {
+    override fun failed(
+        exc: Throwable,
+        attachment: CancellableContinuation<AsynchronousSocketChannel>
+    ) {
         // just return if already cancelled and got an expected exception for that case
         if (exc is AsynchronousCloseException && continuation.isCancelled) return
         continuation.resumeWithException(exc)
@@ -37,7 +41,10 @@ data class AcceptCompletionHandler(val continuation: CancellableContinuation<Asy
  * *closes the underlying channel* and immediately resumes with [CancellationException].
  */
 
-suspend fun AsynchronousServerSocketChannel.aBind(socketAddress: SocketAddress? = null, backlog: Int = 0) =
+suspend fun AsynchronousServerSocketChannel.aBind(
+    socketAddress: SocketAddress? = null,
+    backlog: Int = 0
+) =
     suspendCancellableCoroutine<AsynchronousServerSocketChannel> { cont ->
         try {
             closeOnCancel(cont)

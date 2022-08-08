@@ -13,7 +13,11 @@ class AsyncServerSocket(private val bufferFactory: () -> PlatformBuffer) :
     BaseServerSocket<AsynchronousServerSocketChannel>() {
     override suspend fun accept() = AsyncServerToClientSocket(bufferFactory, server!!.aAccept())
 
-    override suspend fun bind(channel: AsynchronousServerSocketChannel, socketAddress: SocketAddress?, backlog: Int) =
+    override suspend fun bind(
+        channel: AsynchronousServerSocketChannel,
+        socketAddress: SocketAddress?,
+        backlog: Int
+    ) =
         channel.aBind(socketAddress, backlog)
 
     override suspend fun serverNetworkChannel() = openAsyncServerSocketChannel()
