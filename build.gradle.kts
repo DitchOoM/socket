@@ -140,10 +140,11 @@ val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
 }
 
 System.getenv("GITHUB_REPOSITORY")?.let {
-    signing {
-
-        useInMemoryPgpKeys("56F1A973", System.getenv("GPG_SECRET"), System.getenv("GPG_SIGNING_PASSWORD"))
-        sign(publishing.publications)
+    if (System.getenv("GITHUB_REF") == "refs/heads/main") {
+        signing {
+            useInMemoryPgpKeys("56F1A973", System.getenv("GPG_SECRET"), System.getenv("GPG_SIGNING_PASSWORD"))
+            sign(publishing.publications)
+        }
     }
 
 
@@ -161,7 +162,6 @@ System.getenv("GITHUB_REPOSITORY")?.let {
     val developerName: String by project
     val developerEmail: String by project
     val developerId: String by project
-
 
     project.group = publishedGroupId
     project.version = libraryVersion
