@@ -7,7 +7,6 @@
 
 
 <!-- PROJECT LOGO -->
-<!--suppress ALL -->
 
 <br />
 <p align="center">
