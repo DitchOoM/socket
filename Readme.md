@@ -121,9 +121,17 @@ Connection: close
 
 """
     val bytesWritten = socket.write(request)
-    socket.read()
+    socket.read() // can throw a SocketClosedException
 }
 // response is populated, no need to call socket.close()
+```
+
+## TLS support
+```kotlin
+// Simply add tls=true to your ClientSocket.connect or ClientSocket.allocate
+val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
+    // do something
+}
 ```
 
 ## Building Locally
