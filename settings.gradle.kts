@@ -20,6 +20,6 @@ gradleEnterprise {
     buildScan {
         termsOfServiceUrl = "https://gradle.com/terms-of-service"
         termsOfServiceAgree = "yes"
-        publishOnFailureIf(!System.getenv("GITHUB_RUN_NUMBER").isNullOrEmpty())
+        publishOnFailureIf(!System.getenv("CI").isNullOrEmpty())
     }
 }
