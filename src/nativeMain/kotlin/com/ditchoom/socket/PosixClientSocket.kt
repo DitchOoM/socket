@@ -20,7 +20,12 @@ open class PosixClientSocket() : ClientSocket {
         val localAddress = alloc<sockaddr_in>()
         val addressLength = alloc<socklen_tVar>()
         addressLength.value = sockaddr_in.size.convert()
-        if (getsockname(currentFileDescriptor, localAddress.ptr.reinterpret(), addressLength.ptr) < 0) null
+        if (getsockname(
+                currentFileDescriptor,
+                localAddress.ptr.reinterpret(),
+                addressLength.ptr
+            ) < 0
+        ) null
         else swapBytes(localAddress.sin_port)
     }
 
@@ -29,7 +34,12 @@ open class PosixClientSocket() : ClientSocket {
         val peerAddress = alloc<sockaddr_in>()
         val addressLength = alloc<socklen_tVar>()
         addressLength.value = sockaddr_in.size.convert()
-        if (getpeername(currentFileDescriptor, peerAddress.ptr.reinterpret(), addressLength.ptr) < 0) null
+        if (getpeername(
+                currentFileDescriptor,
+                peerAddress.ptr.reinterpret(),
+                addressLength.ptr
+            ) < 0
+        ) null
         else swapBytes(peerAddress.sin_port)
     }
 
@@ -43,7 +53,12 @@ open class PosixClientSocket() : ClientSocket {
             val nativeBuffer = buffer as NativeBuffer
             buffer.data.usePinned { pinned ->
                 val bytesRead =
-                    recv(currentFileDescriptor!!, pinned.addressOf(0), buffer.capacity.toInt().convert(), 0)
+                    recv(
+                        currentFileDescriptor!!,
+                        pinned.addressOf(0),
+                        buffer.capacity.toInt().convert(),
+                        0
+                    )
                         .ensureUnixCallResult("read") { it >= 0 }
                 SocketDataRead(bufferRead(nativeBuffer, bytesRead.toInt()), bytesRead.toInt())
             }

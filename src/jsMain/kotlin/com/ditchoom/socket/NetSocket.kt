@@ -7,7 +7,25 @@ import org.khronos.webgl.Uint8Array
 external class Net {
     companion object {
         fun connect(tcpOptions: tcpOptions, connectListener: () -> Unit): Socket
-        fun connect(tcpOptions: TcpSocketConnectOpts, connectListener: () -> Unit = definedExternally): Socket
+        fun connect(
+            tcpOptions: TcpSocketConnectOpts,
+            connectListener: () -> Unit = definedExternally
+        ): Socket
+
+        fun createServer(connectionListener: (Socket) -> Unit = definedExternally): Server
+    }
+}
+
+@JsModule("tls")
+@JsNonModule
+external class Tls {
+    companion object {
+        fun connect(tcpOptions: tcpOptions, connectListener: () -> Unit): Socket
+        fun connect(
+            tcpOptions: TcpSocketConnectOpts,
+            connectListener: () -> Unit = definedExternally
+        ): Socket
+
         fun createServer(connectionListener: (Socket) -> Unit = definedExternally): Server
     }
 }
@@ -95,5 +113,6 @@ class OnRead(
 class tcpOptions(
     val port: Int,
     val host: String? = null,
-    val onread: OnRead? = null
+    val onread: OnRead? = null,
+    val servername: String? = host,
 )

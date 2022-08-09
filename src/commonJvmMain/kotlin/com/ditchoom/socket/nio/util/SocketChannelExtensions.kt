@@ -80,13 +80,14 @@ suspend fun SocketChannel.aConnect(remote: SocketAddress) = if (isBlocking) {
     suspendConnect(remote)
 }
 
-private suspend fun SocketChannel.suspendConnect(remote: SocketAddress) = suspendCancellableCoroutine<Boolean> {
-    try {
-        it.resume(connect(remote))
-    } catch (e: Throwable) {
-        it.resumeWithException(e)
+private suspend fun SocketChannel.suspendConnect(remote: SocketAddress) =
+    suspendCancellableCoroutine<Boolean> {
+        try {
+            it.resume(connect(remote))
+        } catch (e: Throwable) {
+            it.resumeWithException(e)
+        }
     }
-}
 
 suspend fun SocketChannel.connect(
     remote: SocketAddress,
@@ -111,13 +112,14 @@ suspend fun SocketChannel.aFinishConnecting() = suspendCancellableCoroutine<Bool
     }
 }
 
-suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) = suspendCancellableCoroutine<SelectableChannel> {
-    try {
-        it.resume(configureBlocking(block))
-    } catch (e: Throwable) {
-        it.resumeWithException(e)
+suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) =
+    suspendCancellableCoroutine<SelectableChannel> {
+        try {
+            it.resume(configureBlocking(block))
+        } catch (e: Throwable) {
+            it.resumeWithException(e)
+        }
     }
-}
 
 private suspend fun SocketChannel.suspendNonBlockingSelector(
     selector: Selector?,
@@ -128,7 +130,8 @@ private suspend fun SocketChannel.suspendNonBlockingSelector(
         return
     }
     val selectorNonNull =
-        selector ?: throw IllegalArgumentException("Selector must be provided if it is a non-blocking channel")
+        selector
+            ?: throw IllegalArgumentException("Selector must be provided if it is a non-blocking channel")
     suspendUntilReady(selectorNonNull, op, timeout)
 }
 
@@ -166,24 +169,26 @@ fun NetworkChannel.closeOnCancel(cont: CancellableContinuation<*>) {
     }
 }
 
-private suspend fun SocketChannel.suspendRead(buffer: ByteBuffer) = suspendCancellableCoroutine<Int> {
-    try {
-        val read = read(buffer)
-        buffer.flip()
-        it.resume(read)
-    } catch (ex: Throwable) {
-        if (ex is AsynchronousCloseException && it.isCancelled) return@suspendCancellableCoroutine
-        closeOnCancel(it)
+private suspend fun SocketChannel.suspendRead(buffer: ByteBuffer) =
+    suspendCancellableCoroutine<Int> {
+        try {
+            val read = read(buffer)
+            buffer.flip()
+            it.resume(read)
+        } catch (ex: Throwable) {
+            if (ex is AsynchronousCloseException && it.isCancelled) return@suspendCancellableCoroutine
+            closeOnCancel(it)
+        }
     }
-}
 
-private suspend fun SocketChannel.suspendWrite(buffer: ByteBuffer) = suspendCancellableCoroutine<Int> {
-    try {
-        buffer.flip()
-        val wrote = write(buffer)
-        it.resume(wrote)
-    } catch (ex: Throwable) {
-        if (ex is AsynchronousCloseException && it.isCancelled) return@suspendCancellableCoroutine
-        closeOnCancel(it)
+private suspend fun SocketChannel.suspendWrite(buffer: ByteBuffer) =
+    suspendCancellableCoroutine<Int> {
+        try {
+            buffer.flip()
+            val wrote = write(buffer)
+            it.resume(wrote)
+        } catch (ex: Throwable) {
+            if (ex is AsynchronousCloseException && it.isCancelled) return@suspendCancellableCoroutine
+            closeOnCancel(it)
+        }
     }
-}

@@ -17,13 +17,14 @@ import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 
 
-suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) = suspendCoroutine<AsynchronousSocketChannel> {
-    try {
-        it.resume(AsynchronousSocketChannel.open(group))
-    } catch (e: Throwable) {
-        it.resumeWithException(e)
+suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) =
+    suspendCoroutine<AsynchronousSocketChannel> {
+        try {
+            it.resume(AsynchronousSocketChannel.open(group))
+        } catch (e: Throwable) {
+            it.resumeWithException(e)
+        }
     }
-}
 
 
 /**
@@ -96,9 +97,10 @@ suspend fun AsynchronousSocketChannel.aClose() {
     }
 }
 
-suspend fun AsynchronousSocketChannel.aRemoteAddress(): SocketAddress? = withContext(Dispatchers.IO) {
-    remoteAddress
-}
+suspend fun AsynchronousSocketChannel.aRemoteAddress(): SocketAddress? =
+    withContext(Dispatchers.IO) {
+        remoteAddress
+    }
 
 suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): Int {
     return try {

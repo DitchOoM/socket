@@ -43,6 +43,7 @@ A kotlin multiplatform library that allows you send network data via sockets</a>
       <a href="#usage">Usage</a>
       <ul>
         <li><a href="#suspend-connect-read-write-and-close">Suspend connect, read, write and close</a></li>
+        <li><a href="#TLS-support">TLS Support</a></li>
       </ul>
     </li>
     <li>
@@ -121,9 +122,17 @@ Connection: close
 
 """
     val bytesWritten = socket.write(request)
-    socket.read()
+    socket.read() // can throw a SocketClosedException
 }
 // response is populated, no need to call socket.close()
+```
+
+## TLS support
+```kotlin
+// Simply add tls=true to your ClientSocket.connect or ClientSocket.allocate
+val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
+    // do something
+}
 ```
 
 ## Building Locally

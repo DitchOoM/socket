@@ -1,9 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.FragmentedReadBuffer
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocate
 import com.ditchoom.data.Reader
 import kotlin.time.Duration
 
@@ -24,7 +22,7 @@ class SuspendingSocketInputStream(
 
     suspend fun sizedReadBuffer(size: Int): ReadBuffer {
         if (size < 1) {
-            return emptyBuffer
+            return EMPTY_BUFFER
         }
         val currentBuffer = currentBuffer
         var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
@@ -47,9 +45,5 @@ class SuspendingSocketInputStream(
         }
         this.currentBuffer = fragmentedLocalBuffer
         return fragmentedLocalBuffer
-    }
-
-    companion object {
-        private val emptyBuffer = PlatformBuffer.allocate(0)
     }
 }

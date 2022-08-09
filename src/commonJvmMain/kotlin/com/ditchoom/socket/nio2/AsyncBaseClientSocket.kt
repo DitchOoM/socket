@@ -3,6 +3,7 @@ package com.ditchoom.socket.nio2
 import com.ditchoom.buffer.JvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
@@ -16,11 +17,23 @@ abstract class AsyncBaseClientSocket(private val bufferFactory: () -> PlatformBu
 
     override suspend fun read(timeout: Duration): ReadBuffer {
         val buffer = bufferFactory() as JvmBuffer
-        socket.aRead(buffer.byteBuffer, timeout)
+        read(buffer, timeout)
         return buffer
     }
 
+    override suspend fun read(buffer: JvmBuffer, timeout: Duration): Int {
+        val bytesRead = socket.aRead(buffer.byteBuffer, timeout)
+        if (bytesRead < 0) {
+            throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
+        }
+        return bytesRead
+    }
+
     override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
-        return socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout)
+        val bytesWritten = socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout)
+        if (bytesWritten < 0) {
+            throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
+        }
+        return bytesWritten
     }
 }
