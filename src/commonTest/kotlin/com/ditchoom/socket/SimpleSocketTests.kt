@@ -87,43 +87,40 @@ Connection: close
 
     @Test
     fun httpsRawSocket() = block {
-        val domains = arrayOf("example.com", "google.com", "yahoo.com", "amazon.com")
+        val domain = "example.com"
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        for (domain in domains) {
-            var localPort = 1
-            val response = ClientSocket.connect(443, domain, tls = true) { socket ->
-                val request =
-                    """
+        var localPort = 1
+        val response = ClientSocket.connect(443, domain, tls = true) { socket ->
+            val request =
+                """
 GET / HTTP/1.1
 Host: www.$domain
 Connection: close
 
 """.toBuffer()
-                val bytesWritten = socket.write(request, 5.seconds)
-                localPort = socket.localPort()
-                assertTrue { bytesWritten > 0 }
-                val buffer = socket.read(5.seconds)
-                buffer.resetForRead()
-                var s = buffer.readUtf8(buffer.remaining()).toString()
-                try {
-                    while (socket.isOpen()) {
-                        val buffer2 = socket.read(5.seconds)
-                        buffer2.resetForRead()
-                        val response2 = buffer2.readUtf8(buffer2.remaining())
-                        s += response2
-                    }
-                } catch (e: SocketClosedException) {
-                    // expected when the server has Connection: close header
+            val bytesWritten = socket.write(request, 5.seconds)
+            localPort = socket.localPort()
+            assertTrue { bytesWritten > 0 }
+            val buffer = socket.read(5.seconds)
+            buffer.resetForRead()
+            var s = buffer.readUtf8(buffer.remaining()).toString()
+            try {
+                while (socket.isOpen()) {
+                    val buffer2 = socket.read(5.seconds)
+                    buffer2.resetForRead()
+                    val response2 = buffer2.readUtf8(buffer2.remaining())
+                    s += response2
                 }
-                s
+            } catch (e: SocketClosedException) {
+                // expected when the server has Connection: close header
             }
-            println(response)
-            assertTrue { response.startsWith("HTTP/") }
-            assertTrue { response.contains("html>", ignoreCase = true) }
-            assertTrue { response.contains("/html>", ignoreCase = true) }
-            assertNotEquals(1, localPort)
-            checkPort(localPort)
+            s
         }
+        assertTrue { response.startsWith("HTTP/") }
+        assertTrue { response.contains("html>", ignoreCase = true) }
+        assertTrue { response.contains("/html>", ignoreCase = true) }
+        assertNotEquals(1, localPort)
+        checkPort(localPort)
     }
 
     @Test
