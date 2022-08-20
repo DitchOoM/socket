@@ -3,7 +3,6 @@ plugins {
     kotlin("multiplatform") version "1.6.20"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
-    id ("de.marcphilipp.nexus-publish") version "0.3.0"
     `maven-publish`
     signing
 }
@@ -218,15 +217,6 @@ System.getenv("GITHUB_REPOSITORY")?.let {
         username = ossUser
         password = ossPassword
         packageGroup = publishedGroupId
-    }
-
-    nexusPublishing {
-        repositories {
-            sonatype {
-                username.set(ossUser)
-                password.set(ossPassword)
-            }
-        }
     }
 }
 
