@@ -45,14 +45,14 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.85")
+                implementation("com.ditchoom:buffer:1.0.86")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.1")
             }
         }
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("com.ditchoom:buffer:1.0.85")
+                implementation("com.ditchoom:buffer:1.0.86")
             }
         }
         val jvmMain by getting {
