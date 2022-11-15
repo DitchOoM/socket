@@ -1,5 +1,5 @@
 buildscript {
-    ext.kotlin_version = '1.6.20'
+    ext.kotlin_version = '1.7.21'
     repositories {
         google()
         mavenCentral()
@@ -22,5 +22,5 @@ dependencies {
     implementation("io.ktor:ktor-websockets:1.6.4")
 }
 java {
-    toolchain.languageVersion.set(JavaLanguageVersion.of(8))
+    toolchain.languageVersion.set(JavaLanguageVersion.of(11))
 }

@@ -1,10 +1,14 @@
+import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
+
 plugins {
     id("dev.petuska.npm.publish") version "2.1.2"
-    kotlin("multiplatform") version "1.6.20"
+    kotlin("multiplatform") version "1.7.21"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`
     signing
+    id("org.jlleitschuh.gradle.ktlint") version "11.0.0"
+    id("org.jlleitschuh.gradle.ktlint-idea") version "11.0.0"
 }
 
 val libraryVersionPrefix: String by project
@@ -25,9 +29,6 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        compilations.all {
-            kotlinOptions.jvmTarget = "1.8"
-        }
         testRuns["test"].executionTask.configure {
             useJUnit()
         }
@@ -45,14 +46,14 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.86")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.1")
+                implementation("com.ditchoom:buffer:1.0.95")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
             }
         }
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("com.ditchoom:buffer:1.0.86")
+                implementation("com.ditchoom:buffer:1.0.95")
             }
         }
         val jvmMain by getting {
@@ -119,20 +120,13 @@ kotlin {
 }
 
 android {
-    compileSdkVersion(31)
+    compileSdk = 33
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdkVersion(9)
-        targetSdkVersion(31)
+        minSdk = 9
+        targetSdk = 33
     }
-    lintOptions {
-        isQuiet = true
-        isAbortOnError = false
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
+    namespace = "$group.${rootProject.name}"
 }
 
 val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
@@ -242,10 +236,10 @@ if (System.getenv("NPM_ACCESS_TOKEN") != null) {
     }
 }
 
-plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
-    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootExtension>().disableGranularWorkspaces()
+ktlint {
+    verbose.set(true)
+    outputToConsole.set(true)
 }
-
 
 val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
     port.set(8080)
