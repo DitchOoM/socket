@@ -6,7 +6,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
-
 suspend fun connect(tls: Boolean, tcpOptions: tcpOptions): Socket {
     var netSocket: Socket? = null
     var throwable: Throwable? = null
@@ -52,7 +51,6 @@ suspend fun connect(tls: Boolean, tcpOptions: tcpOptions): Socket {
     }
     return netSocket!!
 }
-
 
 suspend fun Socket.write(buffer: Uint8Array) {
     suspendCoroutine<Unit> {

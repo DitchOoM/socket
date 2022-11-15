@@ -8,7 +8,6 @@ import com.ditchoom.socket.nio2.util.openAsyncServerSocketChannel
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousServerSocketChannel
 
-
 class AsyncServerSocket(private val bufferFactory: () -> PlatformBuffer) :
     BaseServerSocket<AsynchronousServerSocketChannel>() {
     override suspend fun accept() = AsyncServerToClientSocket(bufferFactory, server!!.aAccept())
@@ -21,5 +20,4 @@ class AsyncServerSocket(private val bufferFactory: () -> PlatformBuffer) :
         channel.aBind(socketAddress, backlog)
 
     override suspend fun serverNetworkChannel() = openAsyncServerSocketChannel()
-
 }

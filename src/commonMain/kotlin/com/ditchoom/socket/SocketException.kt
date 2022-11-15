@@ -5,7 +5,6 @@ open class SocketException(
     override val cause: Throwable? = null
 ) : Exception(message, cause)
 
-
 class SocketClosedException(
     override val message: String,
     override val cause: Throwable? = null

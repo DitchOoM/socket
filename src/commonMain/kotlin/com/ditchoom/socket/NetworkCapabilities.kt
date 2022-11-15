@@ -5,5 +5,4 @@ enum class NetworkCapabilities {
     WEBSOCKETS_ONLY
 }
 
-
 expect fun getNetworkCapabilities(): NetworkCapabilities

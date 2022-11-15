@@ -5,7 +5,6 @@ import kotlin.js.Promise
 
 actual fun <T> block(body: suspend CoroutineScope.() -> T): dynamic = runTestInternal(block = body)
 
-
 fun <T> runTestInternal(
     block: suspend CoroutineScope.() -> T
 ): Promise<T?> {

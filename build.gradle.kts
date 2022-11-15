@@ -1,4 +1,4 @@
-import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
+
 
 plugins {
     id("dev.petuska.npm.publish") version "2.1.2"
@@ -39,10 +39,10 @@ kotlin {
     }
 //    macosX64()
 //    linuxX64()
-////    ios()
-////    iosSimulatorArm64()
-////    watchos()
-////    tvos()
+// //    ios()
+// //    iosSimulatorArm64()
+// //    watchos()
+// //    tvos()
     sourceSets {
         val commonMain by getting {
             dependencies {
@@ -73,32 +73,32 @@ kotlin {
 //        val macosX64Test by getting
 //        val linuxX64Main by getting
 //        val linuxX64Test by getting
-////        val iosMain by getting
-////        val iosTest by getting
-////        val iosSimulatorArm64Main by getting
-////        val iosSimulatorArm64Test by getting
-////        val watchosMain by getting
-////        val watchosTest by getting
-////        val tvosMain by getting
-////        val tvosTest by getting
+// //        val iosMain by getting
+// //        val iosTest by getting
+// //        val iosSimulatorArm64Main by getting
+// //        val iosSimulatorArm64Test by getting
+// //        val watchosMain by getting
+// //        val watchosTest by getting
+// //        val tvosMain by getting
+// //        val tvosTest by getting
 
 //        val nativeMain by sourceSets.creating {
 //            dependsOn(commonMain)
 //            macosX64Main.dependsOn(this)
 //            linuxX64Main.dependsOn(this)
-////            iosMain.dependsOn(this)
-////            iosSimulatorArm64Main.dependsOn(this)
-////            watchosMain.dependsOn(this)
-////            tvosMain.dependsOn(this)
+// //            iosMain.dependsOn(this)
+// //            iosSimulatorArm64Main.dependsOn(this)
+// //            watchosMain.dependsOn(this)
+// //            tvosMain.dependsOn(this)
 //        }
 //        val nativeTest by sourceSets.creating {
 //            dependsOn(commonTest)
 //            macosX64Test.dependsOn(this)
 //            linuxX64Test.dependsOn(this)
-////            iosTest.dependsOn(this)
-////            iosSimulatorArm64Test.dependsOn(this)
-////            watchosTest.dependsOn(this)
-////            tvosTest.dependsOn(this)
+// //            iosTest.dependsOn(this)
+// //            iosSimulatorArm64Test.dependsOn(this)
+// //            watchosTest.dependsOn(this)
+// //            tvosTest.dependsOn(this)
 //        }
 
         val androidMain by getting {
@@ -140,7 +140,6 @@ System.getenv("GITHUB_REPOSITORY")?.let {
             sign(publishing.publications)
         }
     }
-
 
     val ossUser = System.getenv("SONATYPE_NEXUS_USERNAME")
     val ossPassword = System.getenv("SONATYPE_NEXUS_PASSWORD")
@@ -247,8 +246,8 @@ val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
 
 tasks.forEach { task ->
     val taskName = task.name
-    if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true))
-        || taskName == "check"
+    if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true)) ||
+        taskName == "check"
     ) {
         task.dependsOn(echoWebsocket)
     }

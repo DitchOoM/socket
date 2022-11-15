@@ -1,6 +1,10 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.*
+import com.ditchoom.buffer.AllocationZone
+import com.ditchoom.buffer.JvmBuffer
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.allocate
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,7 +15,6 @@ import javax.net.ssl.SSLEngineResult
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-
 class SSLClientSocket(private val underlyingSocket: ClientToServerSocket) : ClientToServerSocket {
 
     private val closeTimeout = 1.seconds
@@ -21,7 +24,6 @@ class SSLClientSocket(private val underlyingSocket: ClientToServerSocket) : Clie
     lateinit var encryptedReadBuffer: JvmBuffer
     lateinit var plainTextReadBuffer: JvmBuffer
     private var shouldReallocatePlainTextBuffer = true
-
 
     override suspend fun open(
         port: Int,
@@ -86,9 +88,7 @@ class SSLClientSocket(private val underlyingSocket: ClientToServerSocket) : Clie
                     }
                 }
             }
-
         }
-
     }
 
     private suspend fun wrap(plainText: JvmBuffer, timeout: Duration): Int {
@@ -168,11 +168,9 @@ class SSLClientSocket(private val underlyingSocket: ClientToServerSocket) : Clie
         return JvmBuffer(plainTextReadBuffer.byteBuffer.asReadOnlyBuffer())
     }
 
-
     override suspend fun close() {
         engine.closeOutbound()
         doHandshake(closeTimeout)
         underlyingSocket.close()
     }
-
 }

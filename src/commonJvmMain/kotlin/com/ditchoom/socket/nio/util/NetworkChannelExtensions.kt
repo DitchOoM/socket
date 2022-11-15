@@ -59,7 +59,6 @@ suspend fun NetworkChannel.aClose() = withContext(Dispatchers.IO) {
     }
 }
 
-
 internal fun NetworkChannel.blockingClose() {
     try {
         if (this is SocketChannel) {
