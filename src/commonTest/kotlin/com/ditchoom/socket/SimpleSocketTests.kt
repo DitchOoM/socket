@@ -22,13 +22,13 @@ class SimpleSocketTests {
     fun connectTimeoutWorks() = block {
         if (getNetworkCapabilities() == NetworkCapabilities.FULL_SOCKET_ACCESS) {
             try {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 40.milliseconds)
+                ClientSocket.connect(3, hostname = "example.com", timeout = 400.milliseconds)
                 fail("should not have reached this")
             } catch (e: TimeoutCancellationException) {
             }
         } else {
             assertFailsWith<UnsupportedOperationException> {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 40.milliseconds)
+                ClientSocket.connect(3, hostname = "example.com", timeout = 400.milliseconds)
             }
         }
     }
