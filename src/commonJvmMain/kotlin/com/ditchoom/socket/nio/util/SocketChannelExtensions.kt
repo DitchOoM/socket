@@ -1,17 +1,26 @@
 package com.ditchoom.socket.nio.util
 
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.lang.Math.random
 import java.net.SocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.*
+import java.nio.channels.AsynchronousCloseException
+import java.nio.channels.NetworkChannel
+import java.nio.channels.SelectableChannel
+import java.nio.channels.SelectionKey
+import java.nio.channels.Selector
+import java.nio.channels.SocketChannel
 import java.util.concurrent.TimeoutException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-
 
 suspend fun openSocketChannel(remote: SocketAddress? = null) = suspendCoroutine<SocketChannel> {
     try {
@@ -70,7 +79,6 @@ suspend fun Selector.select(selectionKey: SelectionKey, attachment: Any, timeout
 
     throw CancellationException("Failed to find selector in time")
 }
-
 
 suspend fun SocketChannel.aConnect(remote: SocketAddress) = if (isBlocking) {
     withContext(Dispatchers.IO) {

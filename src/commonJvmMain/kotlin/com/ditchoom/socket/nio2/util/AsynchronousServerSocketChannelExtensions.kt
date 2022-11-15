@@ -30,9 +30,7 @@ data class AcceptCompletionHandler(val continuation: CancellableContinuation<Asy
         if (exc is AsynchronousCloseException && continuation.isCancelled) return
         continuation.resumeWithException(exc)
     }
-
 }
-
 
 /**
  * Performs [AsynchronousServerSocketChannel.bind] without blocking a thread and resumes when asynchronous operation completes.

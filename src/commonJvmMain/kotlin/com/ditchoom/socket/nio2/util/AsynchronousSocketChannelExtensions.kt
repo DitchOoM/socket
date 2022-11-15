@@ -16,7 +16,6 @@ import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 
-
 suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) =
     suspendCoroutine<AsynchronousSocketChannel> {
         try {
@@ -25,7 +24,6 @@ suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) =
             it.resumeWithException(e)
         }
     }
-
 
 /**
  * Performs [AsynchronousSocketChannel.connect] without blocking a thread and resumes when asynchronous operation completes.

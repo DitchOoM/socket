@@ -14,7 +14,6 @@ fun Channel.blockingClose() {
     }
 }
 
-
 fun AsynchronousFileChannel.closeOnCancel(cont: CancellableContinuation<*>) {
     cont.invokeOnCancellation {
         blockingClose()

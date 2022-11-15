@@ -6,7 +6,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.test.*
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -16,13 +22,13 @@ class SimpleSocketTests {
     fun connectTimeoutWorks() = block {
         if (getNetworkCapabilities() == NetworkCapabilities.FULL_SOCKET_ACCESS) {
             try {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 40.milliseconds)
+                ClientSocket.connect(3, hostname = "example.com", timeout = 400.milliseconds)
                 fail("should not have reached this")
             } catch (e: TimeoutCancellationException) {
             }
         } else {
             assertFailsWith<UnsupportedOperationException> {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 40.milliseconds)
+                ClientSocket.connect(3, hostname = "example.com", timeout = 400.milliseconds)
             }
         }
     }
@@ -216,6 +222,5 @@ Connection: close
         assertEquals(0, stats.count(), "Socket still in CLOSE_WAIT state found!")
     }
 }
-
 
 expect suspend fun readStats(port: Int, contains: String): List<String>

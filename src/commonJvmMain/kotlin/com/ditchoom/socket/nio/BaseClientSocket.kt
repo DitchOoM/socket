@@ -48,5 +48,4 @@ abstract class BaseClientSocket(
         selector?.aClose()
         super.close()
     }
-
 }

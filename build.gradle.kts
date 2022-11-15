@@ -1,10 +1,14 @@
+
+
 plugins {
     id("dev.petuska.npm.publish") version "2.1.2"
-    kotlin("multiplatform") version "1.6.20"
+    kotlin("multiplatform") version "1.7.21"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`
     signing
+    id("org.jlleitschuh.gradle.ktlint") version "11.0.0"
+    id("org.jlleitschuh.gradle.ktlint-idea") version "11.0.0"
 }
 
 val libraryVersionPrefix: String by project
@@ -25,9 +29,6 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        compilations.all {
-            kotlinOptions.jvmTarget = "1.8"
-        }
         testRuns["test"].executionTask.configure {
             useJUnit()
         }
@@ -38,21 +39,21 @@ kotlin {
     }
 //    macosX64()
 //    linuxX64()
-////    ios()
-////    iosSimulatorArm64()
-////    watchos()
-////    tvos()
+// //    ios()
+// //    iosSimulatorArm64()
+// //    watchos()
+// //    tvos()
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.86")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.1")
+                implementation("com.ditchoom:buffer:1.0.95")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
             }
         }
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("com.ditchoom:buffer:1.0.86")
+                implementation("com.ditchoom:buffer:1.0.95")
             }
         }
         val jvmMain by getting {
@@ -72,32 +73,32 @@ kotlin {
 //        val macosX64Test by getting
 //        val linuxX64Main by getting
 //        val linuxX64Test by getting
-////        val iosMain by getting
-////        val iosTest by getting
-////        val iosSimulatorArm64Main by getting
-////        val iosSimulatorArm64Test by getting
-////        val watchosMain by getting
-////        val watchosTest by getting
-////        val tvosMain by getting
-////        val tvosTest by getting
+// //        val iosMain by getting
+// //        val iosTest by getting
+// //        val iosSimulatorArm64Main by getting
+// //        val iosSimulatorArm64Test by getting
+// //        val watchosMain by getting
+// //        val watchosTest by getting
+// //        val tvosMain by getting
+// //        val tvosTest by getting
 
 //        val nativeMain by sourceSets.creating {
 //            dependsOn(commonMain)
 //            macosX64Main.dependsOn(this)
 //            linuxX64Main.dependsOn(this)
-////            iosMain.dependsOn(this)
-////            iosSimulatorArm64Main.dependsOn(this)
-////            watchosMain.dependsOn(this)
-////            tvosMain.dependsOn(this)
+// //            iosMain.dependsOn(this)
+// //            iosSimulatorArm64Main.dependsOn(this)
+// //            watchosMain.dependsOn(this)
+// //            tvosMain.dependsOn(this)
 //        }
 //        val nativeTest by sourceSets.creating {
 //            dependsOn(commonTest)
 //            macosX64Test.dependsOn(this)
 //            linuxX64Test.dependsOn(this)
-////            iosTest.dependsOn(this)
-////            iosSimulatorArm64Test.dependsOn(this)
-////            watchosTest.dependsOn(this)
-////            tvosTest.dependsOn(this)
+// //            iosTest.dependsOn(this)
+// //            iosSimulatorArm64Test.dependsOn(this)
+// //            watchosTest.dependsOn(this)
+// //            tvosTest.dependsOn(this)
 //        }
 
         val androidMain by getting {
@@ -119,20 +120,16 @@ kotlin {
 }
 
 android {
-    compileSdkVersion(31)
+    compileSdk = 33
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdkVersion(9)
-        targetSdkVersion(31)
+        minSdk = 9
+        targetSdk = 33
     }
-    lintOptions {
-        isQuiet = true
-        isAbortOnError = false
+    lint {
+        abortOnError = false
     }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
+    namespace = "$group.${rootProject.name}"
 }
 
 val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
@@ -146,7 +143,6 @@ System.getenv("GITHUB_REPOSITORY")?.let {
             sign(publishing.publications)
         }
     }
-
 
     val ossUser = System.getenv("SONATYPE_NEXUS_USERNAME")
     val ossPassword = System.getenv("SONATYPE_NEXUS_PASSWORD")
@@ -242,10 +238,10 @@ if (System.getenv("NPM_ACCESS_TOKEN") != null) {
     }
 }
 
-plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
-    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootExtension>().disableGranularWorkspaces()
+ktlint {
+    verbose.set(true)
+    outputToConsole.set(true)
 }
-
 
 val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
     port.set(8080)
@@ -253,8 +249,8 @@ val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
 
 tasks.forEach { task ->
     val taskName = task.name
-    if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true))
-        || taskName == "check"
+    if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true)) ||
+        taskName == "check"
     ) {
         task.dependsOn(echoWebsocket)
     }

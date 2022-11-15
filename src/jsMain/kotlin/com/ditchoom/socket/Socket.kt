@@ -4,7 +4,6 @@ import com.ditchoom.buffer.PlatformBuffer
 
 val isNodeJs = nodeJs()
 
-
 private fun nodeJs(): Boolean {
     return js("global.window") == null
 }

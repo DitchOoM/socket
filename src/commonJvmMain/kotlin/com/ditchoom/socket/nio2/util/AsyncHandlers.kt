@@ -19,7 +19,6 @@ internal class AsyncVoidIOHandler(private val cb: (() -> Unit)? = null) :
         if (ex is AsynchronousCloseException && cont.isCancelled) return
         cont.resumeWithException(ex)
     }
-
 }
 
 internal object AsyncIOHandlerAny :
@@ -44,7 +43,6 @@ fun asyncIOIntHandler(): CompletionHandler<Int, CancellableContinuation<Int>> =
         override fun failed(ex: Throwable, cont: CancellableContinuation<Int>) {
             cont.resumeWithException(ex)
         }
-
     }
 
 @Suppress("UNCHECKED_CAST")

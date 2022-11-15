@@ -16,7 +16,8 @@ import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 
-class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) : AsyncBaseClientSocket(bufferFactory),
+class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) :
+    AsyncBaseClientSocket(bufferFactory),
     ClientToServerSocket {
 
     override suspend fun open(
@@ -47,7 +48,4 @@ class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) : AsyncBaseClientSo
         asyncSocket.aConnect(socketAddress, timeout)
         options
     }
-
 }
-
-
