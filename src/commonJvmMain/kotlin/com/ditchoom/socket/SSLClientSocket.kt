@@ -158,6 +158,7 @@ class SSLClientSocket(private val underlyingSocket: ClientToServerSocket) : Clie
                             close()
                             break
                         }
+                        null -> {}
                     }
                 }
             } else {

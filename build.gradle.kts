@@ -126,6 +126,9 @@ android {
         minSdk = 9
         targetSdk = 33
     }
+    lint {
+        abortOnError = false
+    }
     namespace = "$group.${rootProject.name}"
 }
 
