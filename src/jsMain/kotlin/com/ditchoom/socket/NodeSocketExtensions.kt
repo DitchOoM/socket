@@ -6,7 +6,22 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
-suspend fun connect(tls: Boolean, tcpOptions: tcpOptions): Socket {
+suspend fun connect(port: Int, host: String): Socket {
+    var s: Socket? = null
+    suspendCancellableCoroutine<Unit> {
+        val socket = Net.connect(port, host) {
+            it.resume(Unit)
+        }
+        s = socket
+        it.invokeOnCancellation { throwableLocal ->
+            socket.end { }
+            socket.destroy()
+        }
+    }
+    return s!!
+}
+
+suspend fun connect(tls: Boolean, tcpOptions: Options): Socket {
     var netSocket: Socket? = null
     var throwable: Throwable? = null
     try {
@@ -24,10 +39,7 @@ suspend fun connect(tls: Boolean, tcpOptions: tcpOptions): Socket {
                 if (!it.isCompleted) {
                     if (e.toString().contains("getaddrinfo")) {
                         it.resumeWithException(
-                            SocketUnknownHostException(
-                                tcpOptions.host,
-                                e.toString()
-                            )
+                            SocketException(tcpOptions.host ?: "unknown host")
                         )
                     } else {
                         it.resumeWithException(SocketException("Failed to connect: $e"))

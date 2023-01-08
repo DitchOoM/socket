@@ -3,7 +3,6 @@ package com.ditchoom.socket.nio2.util
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.SocketAddress
-import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.AsynchronousServerSocketChannel
 import java.nio.channels.AsynchronousSocketChannel
 import java.nio.channels.CompletionHandler
@@ -13,6 +12,9 @@ import kotlin.coroutines.resumeWithException
 suspend fun AsynchronousServerSocketChannel.aAccept() =
     suspendCancellableCoroutine<AsynchronousSocketChannel> { cont ->
         accept(cont, AcceptCompletionHandler(cont))
+        cont.invokeOnCancellation {
+            this.close()
+        }
     }
 
 data class AcceptCompletionHandler(val continuation: CancellableContinuation<AsynchronousSocketChannel>) :
@@ -27,7 +29,7 @@ data class AcceptCompletionHandler(val continuation: CancellableContinuation<Asy
         attachment: CancellableContinuation<AsynchronousSocketChannel>
     ) {
         // just return if already cancelled and got an expected exception for that case
-        if (exc is AsynchronousCloseException && continuation.isCancelled) return
+//        if (exc is AsynchronousCloseException && continuation.isCancelled) return
         continuation.resumeWithException(exc)
     }
 }

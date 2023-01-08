@@ -1,8 +1,15 @@
+import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 
+buildscript {
+    extra.apply {
+        set("kotlin_version", "1.8.0")
+    }
+}
 
 plugins {
-    id("dev.petuska.npm.publish") version "2.1.2"
-    kotlin("multiplatform") version "1.7.21"
+//    id("dev.petuska.npm.publish") version "3.2.0"
+    kotlin("multiplatform") version "1.8.0"
+    kotlin("native.cocoapods") version "1.8.0"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`
@@ -22,6 +29,7 @@ val libraryVersion = if (System.getenv("GITHUB_RUN_NUMBER") != null) {
 repositories {
     google()
     mavenCentral()
+    mavenLocal()
 }
 
 kotlin {
@@ -29,31 +37,50 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
+        compilations.all {
+            kotlinOptions.jvmTarget = "1.8"
+        }
         testRuns["test"].executionTask.configure {
             useJUnit()
         }
     }
-    js {
-        browser {}
-        nodejs {}
-    }
-//    macosX64()
+//    js(IR) {
+//        browser {}
+//        nodejs {}
+//    }
 //    linuxX64()
-// //    ios()
-// //    iosSimulatorArm64()
-// //    watchos()
-// //    tvos()
+//    macosArm64()
+//    iosArm64()
+//     watchos()
+//     tvos()
+
+    iosSimulatorArm64("ios")
+    tasks.getByName<KotlinNativeSimulatorTest>("iosTest") {
+        deviceId = "iPhone 14"
+    }
+
+    cocoapods {
+        summary = "CocoaPods test library"
+        homepage = "https://github.com/JetBrains/kotlin"
+
+        ios.deploymentTarget = "13.0"
+
+        pod("SocketWrapper") {
+            version = "1.0"
+            source = path(project.file("./SocketWrapper/"))
+        }
+    }
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.95")
+                implementation("com.ditchoom:buffer:1.1.3")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
             }
         }
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("com.ditchoom:buffer:1.0.95")
+                implementation("com.ditchoom:buffer:1.1.3")
             }
         }
         val jvmMain by getting {
@@ -62,13 +89,13 @@ kotlin {
         val jvmTest by getting {
             kotlin.srcDir("src/commonJvmTest/kotlin")
         }
-        val jsMain by getting
-        val jsTest by getting {
-            dependencies {
-                implementation(kotlin("test-js"))
-                implementation(npm("tcp-port-used", "1.0.2"))
-            }
-        }
+//        val jsMain by getting
+//        val jsTest by getting {
+//            dependencies {
+//                implementation(kotlin("test-js"))
+//                implementation(npm("tcp-port-used", "1.0.2"))
+//            }
+//        }
 //        val macosX64Main by getting
 //        val macosX64Test by getting
 //        val linuxX64Main by getting
@@ -123,13 +150,16 @@ android {
     compileSdk = 33
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 9
+        minSdk = 18
         targetSdk = 33
     }
     lint {
         abortOnError = false
     }
     namespace = "$group.${rootProject.name}"
+}
+dependencies {
+    implementation("androidx.core:core-ktx:+")
 }
 
 val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
@@ -139,7 +169,11 @@ val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
 System.getenv("GITHUB_REPOSITORY")?.let {
     if (System.getenv("GITHUB_REF") == "refs/heads/main") {
         signing {
-            useInMemoryPgpKeys("56F1A973", System.getenv("GPG_SECRET"), System.getenv("GPG_SIGNING_PASSWORD"))
+            useInMemoryPgpKeys(
+                "56F1A973",
+                System.getenv("GPG_SECRET"),
+                System.getenv("GPG_SIGNING_PASSWORD")
+            )
             sign(publishing.publications)
         }
     }
@@ -216,42 +250,24 @@ System.getenv("GITHUB_REPOSITORY")?.let {
     }
 }
 
-if (System.getenv("NPM_ACCESS_TOKEN") != null) {
-    npmPublishing {
-        repositories {
-            repository("npmjs") {
-                registry = uri("https://registry.npmjs.org")
-                authToken = System.getenv("NPM_ACCESS_TOKEN")
-            }
-        }
-        readme = file("Readme.md")
-        organization = "ditchoom"
-        access = PUBLIC
-        bundleKotlinDependencies = true
-        version = libraryVersion
-        dry = !"refs/heads/main".equals(System.getenv("GITHUB_REF"), ignoreCase = true)
-        publications {
-            val js by getting {
-                moduleName = "socket-kt"
-            }
-        }
-    }
-}
-
-ktlint {
-    verbose.set(true)
-    outputToConsole.set(true)
-}
-
-val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
-    port.set(8080)
-}
-
-tasks.forEach { task ->
-    val taskName = task.name
-    if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true)) ||
-        taskName == "check"
-    ) {
-        task.dependsOn(echoWebsocket)
-    }
-}
+// if (System.getenv("NPM_ACCESS_TOKEN") != null) {
+//    npmPublishing {
+//        repositories {
+//            repository("npmjs") {
+//                registry = uri("https://registry.npmjs.org")
+//                authToken = System.getenv("NPM_ACCESS_TOKEN")
+//            }
+//        }
+//        readme = file("Readme.md")
+//        organization = "ditchoom"
+//        access = PUBLIC
+//        bundleKotlinDependencies = true
+//        version = libraryVersion
+//        dry = !"refs/heads/main".equals(System.getenv("GITHUB_REF"), ignoreCase = true)
+//        publications {
+//            val js by getting {
+//                moduleName = "socket-kt"
+//            }
+//        }
+//    }
+// }

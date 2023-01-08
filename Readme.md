@@ -58,8 +58,8 @@ A kotlin multiplatform library that allows you send network data via sockets</a>
 ## About The Project
 
 Managing metwork calls can be slightly different based on each platform. This project aims to make
-it **easier to manage sockets in a cross platform way using kotlin multiplatform**. This was originally created as a
-side project for a kotlin multiplatform mqtt data sync solution.
+it **easier to manage sockets in a cross platform way using kotlin multiplatform**. This was
+originally created as a side project for a kotlin multiplatform mqtt data sync solution.
 
 ### Runtime Dependencies
 
@@ -127,6 +127,7 @@ Connection: close
 ```
 
 ## TLS support
+
 ```kotlin
 // Simply add tls=true to your ClientSocket.connect or ClientSocket.allocate
 val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
@@ -138,16 +139,18 @@ val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
 
 - `git clone git@github.com:DitchOoM/socket.git`
 - Open cloned directory with [Intellij IDEA](https://www.jetbrains.com/idea/download).
-    - Be sure to [open with gradle](https://www.jetbrains.com/help/idea/gradle.html#gradle_import_project_start)
+    - Be sure
+      to [open with gradle](https://www.jetbrains.com/help/idea/gradle.html#gradle_import_project_start)
 
 ## Roadmap
 
-See the [open issues](https://github.com/DitchOoM/socket/issues) for a list of proposed features (and known issues).
+See the [open issues](https://github.com/DitchOoM/socket/issues) for a list of proposed features (
+and known issues).
 
 ## Contributing
 
-Contributions are what make the open source community such an amazing place to be learn, inspire, and create. Any
-contributions you make are **greatly appreciated**.
+Contributions are what make the open source community such an amazing place to be learn, inspire,
+and create. Any contributions you make are **greatly appreciated**.
 
 1. Fork the Project
 2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)

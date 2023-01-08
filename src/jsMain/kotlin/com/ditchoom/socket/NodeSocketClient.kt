@@ -15,7 +15,7 @@ open class NodeSocket : ClientSocket {
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
     internal var hadTransmissionError = false
 
-    override fun isOpen() = !isClosed && netSocket.remoteAddress != null
+    override fun isOpen() = !isClosed || netSocket.remoteAddress != null
 
     override suspend fun localPort() = netSocket.localPort
 
@@ -48,7 +48,6 @@ open class NodeSocket : ClientSocket {
             throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val array = (buffer as JsBuffer).buffer
-        netSocket
         netSocket.write(array)
         return array.byteLength
     }
@@ -88,7 +87,7 @@ class NodeClientSocket(
             incomingMessageChannel.trySend(socketDataRead)
             false
         })
-        val options = tcpOptions(port, hostname, onRead)
+        val options = Options(port, hostname, onRead, rejectUnauthorized = false)
         val netSocket = connect(useTls, options)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
