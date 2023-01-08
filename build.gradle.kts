@@ -65,7 +65,6 @@ kotlin {
         homepage = "https://github.com/JetBrains/kotlin"
 
         ios.deploymentTarget = "13.0"
-        osx.deploymentTarget = "11.0"
 
         pod("SocketWrapper") {
             version = "1.0"

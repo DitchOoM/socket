@@ -9,7 +9,6 @@ Pod::Spec.new do |spec|
     spec.vendored_frameworks      = 'build/cocoapods/framework/socket.framework'
     spec.libraries                = 'c++'
     spec.ios.deployment_target = '13.0'
-    spec.osx.deployment_target = '11.0'
     spec.dependency 'SocketWrapper', '1.0'
                 
     spec.pod_target_xcconfig = {
