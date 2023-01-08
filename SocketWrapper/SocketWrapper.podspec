@@ -9,7 +9,7 @@ Pod::Spec.new do |s|
   s.name             = 'SocketWrapper'
   s.version          = '0.1.0'
   s.summary          = 'A short description of SocketWrapper.'
-  s.swift_versions   = ['4.0']
+  s.swift_versions   = ['5.0']
 # This description is used to generate tags and improve search results.
 #   * Think: What does it do? Why did you write it? What is the focus?
 #   * Try to keep it short, snappy and to the point.
@@ -28,7 +28,9 @@ TODO: Add long description of the pod here.
   # s.social_media_url = 'https://twitter.com/<TWITTER_USERNAME>'
 
   s.ios.deployment_target = '13.0'
-
+  s.osx.deployment_target = '11.0'
+  s.watchos.deployment_target = '6.0'
+  s.tvos.deployment_target = '13.0'
   s.source_files = 'SocketWrapper/Classes/**/*'
   
   # s.resource_bundles = {

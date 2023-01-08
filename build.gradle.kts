@@ -49,24 +49,22 @@ kotlin {
         nodejs()
     }
 //    linuxX64()
-//    macosArm64()
-//    macosX64()
-//     watchos()
-//     tvos()
+    macosArm64()
+    macosX64()
+    watchos()
+    tvos()
     ios()
-//    iosSimulatorArm64("ios")
-//    tasks.getByName<KotlinNativeSimulatorTest>("iosTest") {
-//        deviceId = "iPhone 14"
-//    }
+    iosSimulatorArm64()
+    tasks.getByName<KotlinNativeSimulatorTest>("iosSimulatorArm64Test") {
+        deviceId = "iPhone 14"
+    }
 
     cocoapods {
-        summary = "CocoaPods test library"
-        homepage = "https://github.com/JetBrains/kotlin"
-
         ios.deploymentTarget = "13.0"
-
+        osx.deploymentTarget = "11.0"
+        watchos.deploymentTarget = "6.0"
+        tvos.deploymentTarget = "13.0"
         pod("SocketWrapper") {
-            version = "1.0"
             source = path(project.file("./SocketWrapper/"))
         }
     }
@@ -96,39 +94,41 @@ kotlin {
                 implementation(npm("tcp-port-used", "1.0.2"))
             }
         }
-//        val macosX64Main by getting
-//        val macosX64Test by getting
-//        val macosArm64Main by getting
-//        val macosArm64Test by getting
+        val macosX64Main by getting
+        val macosX64Test by getting
+        val macosArm64Main by getting
+        val macosArm64Test by getting
 //        val linuxX64Main by getting
 //        val linuxX64Test by getting
         val iosMain by getting
         val iosTest by getting
-//        val iosSimulatorArm64Main by getting
-//        val iosSimulatorArm64Test by getting
-// //        val watchosMain by getting
-// //        val watchosTest by getting
-// //        val tvosMain by getting
-// //        val tvosTest by getting
+        val iosSimulatorArm64Main by getting
+        val iosSimulatorArm64Test by getting
+        val watchosMain by getting
+        val watchosTest by getting
+        val tvosMain by getting
+        val tvosTest by getting
 
         val appleMain by sourceSets.creating {
             dependsOn(commonMain)
-//            macosX64Main.dependsOn(this)
-//            macosArm64Main.dependsOn(this)
-//            iosMain.dependsOn(this)
-//            iosSimulatorArm64Main.dependsOn(this)
-//            watchosMain.dependsOn(this)
-//            tvosMain.dependsOn(this)
+            kotlin.srcDir("src/appleMain/kotlin")
+            macosX64Main.dependsOn(this)
+            macosArm64Main.dependsOn(this)
+            iosMain.dependsOn(this)
+            iosSimulatorArm64Main.dependsOn(this)
+            watchosMain.dependsOn(this)
+            tvosMain.dependsOn(this)
         }
 
         val appleTest by sourceSets.creating {
             dependsOn(commonTest)
-//            macosX64Test.dependsOn(this)
-//            macosArm64Test.dependsOn(this)
-//            iosTest.dependsOn(this)
-//            iosSimulatorArm64Test.dependsOn(this)
-//            watchosTest.dependsOn(this)
-//            tvosTest.dependsOn(this)
+            kotlin.srcDir("src/appleTest/kotlin")
+            macosX64Test.dependsOn(this)
+            macosArm64Test.dependsOn(this)
+            iosTest.dependsOn(this)
+            iosSimulatorArm64Test.dependsOn(this)
+            watchosTest.dependsOn(this)
+            tvosTest.dependsOn(this)
         }
 
 //        val nativeMain by sourceSets.creating {

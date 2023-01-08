@@ -3,6 +3,7 @@ package com.ditchoom.socket
 import cocoapods.SocketWrapper.ServerSocketListenerWrapper
 import cocoapods.SocketWrapper.ServerSocketWrapper
 import cocoapods.SocketWrapper.SocketWrapper
+import kotlinx.cinterop.convert
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -32,9 +33,9 @@ class NWServerWrapper : ServerSocket {
         server = suspendCancellableCoroutine {
             val server = ServerSocketListenerWrapper()
             server.startWithPort(
-                port.toLong(),
+                port.convert(),
                 host,
-                backlog.toLong(),
+                backlog.convert(),
                 acceptedClientCallback
             ) { serverSocketWrapper, errorString, isPosixError, isDnsError, isTlsError ->
                 if (errorString != null) {

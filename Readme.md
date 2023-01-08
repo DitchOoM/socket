@@ -74,11 +74,11 @@ originally created as a side project for a kotlin multiplatform mqtt data sync s
 | `Browser` (Chrome) |🚀|                                                                                                        unavailable                                                                                                        |
 | `Android` |🚀| [AsynchronousSocketChannel](https://developer.android.com/reference/java/nio/channels/AsynchronousSocketChannel) falling back to [SocketChannel](https://developer.android.com/reference/java/nio/channels/SocketChannel) |
 | `iOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
-| `WatchOS` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
-| `TvOS` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
-| `MacOS` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
-| `Linux X64` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
-| `Windows X64` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
+| `WatchOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `TvOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `MacOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `Linux X64` |🔮|                                                                                                            WIP                                                                                                            |
+| `Windows X64` |🔮|                                                                                                       WIP                                                                                                                 |
 
 ## Installation
 
@@ -110,7 +110,7 @@ Or use lambda which auto closes the socket
 ```kotlin
 // Run in a coroutine scope, same defaults as the other `connect` method
 val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
-val request =
+    val request =
         """
 GET / HTTP/1.1
 Host: example.com
