@@ -80,9 +80,6 @@ originally created as a side project for a kotlin multiplatform mqtt data sync s
 | `Linux X64` |🔮|             Need help             |        WIP         |
 | `Windows X64` |🔮|             Need help             |        WIP         |
 
-> Help needed for getting a native socket to work for other platforms. For Apple products we want to use APIs that work
-> on cellular networks not just WiFi
-
 ## Installation
 
 - Add `implementation("com.ditchoom:socket:$version")` to your `build.gradle` dependencies
