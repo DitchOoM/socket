@@ -10,7 +10,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
@@ -141,7 +140,8 @@ Connection: close
             buffer.resetForRead()
             val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
             assertEquals(text, dataReceivedFromClient)
-            serverToClientPort = assertNotNull(serverToClient.localPort())
+            serverToClientPort = serverToClient.localPort()
+            assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
             serverToClient.close()
             serverToClientMutex.unlock()
         }
@@ -176,14 +176,16 @@ Connection: close
             serverToClientMutex.unlock()
         }
         val clientToServer = ClientSocket.allocate()
-        val serverPort = assertNotNull(server.port(), "No port number from server")
+        val serverPort = server.port()
+        assertTrue(serverPort > 0, "No port number from server")
         clientToServer.open(serverPort)
         val buffer = clientToServer.read(5.seconds)
         buffer.resetForRead()
         val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
         serverToClientMutex.lock()
         assertEquals(text, dataReceivedFromServer)
-        val clientToServerPort = assertNotNull(clientToServer.localPort())
+        val clientToServerPort = clientToServer.localPort()
+        assertTrue(clientToServerPort > 0, "No port number: clientToServerPort")
         clientToServer.close()
         server.close()
         checkPort(clientToServerPort)
@@ -200,12 +202,14 @@ Connection: close
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
         server.start { serverToClient ->
-            serverToClientPort = assertNotNull(serverToClient.localPort())
+            serverToClientPort = serverToClient.localPort()
+            assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
             serverToClient.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
             serverToClient.close()
             serverToClientMutex.unlock()
         }
-        val serverPort = assertNotNull(server.port(), "No port number from server")
+        val serverPort = server.port()
+        assertTrue(serverPort > 0, "No port number from server")
         val clientToServer = ClientSocket.allocate()
         clientToServer.open(serverPort)
         val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer, 8096)
@@ -213,7 +217,8 @@ Connection: close
         serverToClientMutex.lock()
         val utf8 = buffer.readString(text.length, Charset.UTF8)
         assertEquals(utf8, text)
-        val clientToServerPort = assertNotNull(clientToServer.localPort())
+        val clientToServerPort = clientToServer.localPort()
+        assertTrue(clientToServerPort > 0, "No port number from clientToServerPort")
         clientToServer.close()
         server.close()
         checkPort(clientToServerPort)
