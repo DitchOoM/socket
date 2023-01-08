@@ -67,18 +67,18 @@ originally created as a side project for a kotlin multiplatform mqtt data sync s
 
 ### [Supported Platforms](https://kotlinlang.org/docs/reference/mpp-supported-platforms.html)
 
-| Platform | 🛠Builds🛠 + 🔬Tests🔬 |         Deployed Artifact         | Non Kotlin Sample |  
-| :---: | :---: |:---------------------------------:|:-----------------:|
-| `JVM` 1.8 |🚀| [maven central][maven-central]  |        WIP        |
-| `Node.js` |🚀|           [npm][npm] 🔮           |        WIP         |
-| `Browser` (Chrome) |🚀|            unavailable            |        WIP         |
-| `Android` |🚀|  [maven central][maven-central]   |        WIP         |
-| `iOS` |🔮|             Need help             |        WIP         |
-| `WatchOS` |🔮|             Need help             |        WIP         |
-| `TvOS` |🔮|             Need help             |        WIP         |
-| `MacOS` |🔮|             Need help             |        WIP         |
-| `Linux X64` |🔮|             Need help             |        WIP         |
-| `Windows X64` |🔮|             Need help             |        WIP         |
+| Platform | 🛠Builds🛠 + 🔬Tests🔬 |                                                                                                    Native Wrapper For                                                                                                     |  
+| :---: | :---: |:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+| `JVM` 1.8 |🚀|                                        [AsynchronousSocketChannel](https://docs.oracle.com/en/java/javase/12/docs/api/java.base/java/nio/channels/AsynchronousSocketChannel.html)                                         |
+| `Node.js` |🚀|                                                                                 [Socket](https://nodejs.org/api/net.html#class-netsocket)                                                                                 |
+| `Browser` (Chrome) |🚀|                                                                                                        unavailable                                                                                                        |
+| `Android` |🚀| [AsynchronousSocketChannel](https://developer.android.com/reference/java/nio/channels/AsynchronousSocketChannel) falling back to [SocketChannel](https://developer.android.com/reference/java/nio/channels/SocketChannel) |
+| `iOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `WatchOS` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
+| `TvOS` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
+| `MacOS` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
+| `Linux X64` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
+| `Windows X64` |🔮|                                                                                                 Need help with cocoapods                                                                                                  |
 
 ## Installation
 
@@ -99,7 +99,7 @@ val socket = ClientSocket.connect(
 val isOpen = socket.isOpen()
 val localPort = socket.localPort()
 val remotePort = socket.remotePort()
-val stringRead = socket.readUtf8() // read a utf8 string
+val stringRead = socket.readString(com.ditchoom.buffer.Charset.UTF8) // read a utf8 string
 val readBuffer = socket.read() // read a ReadBuffer as defined in the buffer module
 val bytesWritten = socket.write(buffer) // write the buffer to the socket
 socket.close() // close the socket
