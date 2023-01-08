@@ -54,10 +54,10 @@ kotlin {
 //     watchos()
 //     tvos()
     ios()
-    iosSimulatorArm64("ios")
-    tasks.getByName<KotlinNativeSimulatorTest>("iosTest") {
-        deviceId = "iPhone 14"
-    }
+//    iosSimulatorArm64("ios")
+//    tasks.getByName<KotlinNativeSimulatorTest>("iosTest") {
+//        deviceId = "iPhone 14"
+//    }
 
     cocoapods {
         summary = "CocoaPods test library"
