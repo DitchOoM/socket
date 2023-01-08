@@ -138,38 +138,26 @@ Connection: close
         val serverToClientMutex = Mutex(locked = true)
         server.start { serverToClient ->
             val buffer = serverToClient.read(1.seconds)
-            println("read")
             buffer.resetForRead()
             val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
-            println("recv")
             assertEquals(text, dataReceivedFromClient)
             serverToClientPort = assertNotNull(serverToClient.localPort())
-            println("sTc close")
             serverToClient.close()
             serverToClientMutex.unlock()
-            println("sTc closed")
         }
         val serverPort = server.port()
-        println("server prt $serverPort")
         assertTrue(serverPort > 0, "No port number from server")
         val clientToServer = ClientSocket.allocate()
         clientToServer.open(serverPort, 5.seconds)
-        println("client opened ${clientToServer.localPort()}")
         clientToServer.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
         serverToClientMutex.lock()
-        println("wrote")
         val clientToServerPort = clientToServer.localPort()
         assertTrue(clientToServerPort > 0, "Invalid clientToServerPort local port.")
-        println("closing")
         clientToServer.close()
         server.close()
-        println("closed $serverToClientPort")
         checkPort(serverToClientPort)
         checkPort(clientToServerPort)
         checkPort(serverPort)
-        println("delay")
-//        assertTrue { serverToClientClosed }
-        println("done")
     }
 
     @Test
@@ -179,24 +167,21 @@ Connection: close
         val server = ServerSocket.allocate()
         server.setScope(this)
         var serverToClientPort = 0
+        val serverToClientMutex = Mutex(locked = true)
         server.start { serverToClient ->
-            println("accepted client $serverToClient")
             serverToClientPort = serverToClient.localPort()
             assertTrue { serverToClientPort > 0 }
-            println("writing")
             serverToClient.write(text.toReadBuffer(Charset.UTF8), 5.seconds)
             serverToClient.close()
-            println("closed and written")
+            serverToClientMutex.unlock()
         }
         val clientToServer = ClientSocket.allocate()
         val serverPort = assertNotNull(server.port(), "No port number from server")
-        println("server started $serverPort")
         clientToServer.open(serverPort)
-        println("client to server opened")
         val buffer = clientToServer.read(5.seconds)
-        println("read buffer")
         buffer.resetForRead()
         val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
+        serverToClientMutex.lock()
         assertEquals(text, dataReceivedFromServer)
         val clientToServerPort = assertNotNull(clientToServer.localPort())
         clientToServer.close()
@@ -213,24 +198,26 @@ Connection: close
         server.setScope(this)
         val text = "yolo swag lyfestyle"
         var serverToClientPort = 0
+        val serverToClientMutex = Mutex(locked = true)
         server.start { serverToClient ->
             serverToClientPort = assertNotNull(serverToClient.localPort())
             serverToClient.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
             serverToClient.close()
+            serverToClientMutex.unlock()
         }
         val serverPort = assertNotNull(server.port(), "No port number from server")
         val clientToServer = ClientSocket.allocate()
         clientToServer.open(serverPort)
         val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer, 8096)
         val buffer = inputStream.sizedReadBuffer(text.length).slice()
+        serverToClientMutex.lock()
         val utf8 = buffer.readString(text.length, Charset.UTF8)
         assertEquals(utf8, text)
         val clientToServerPort = assertNotNull(clientToServer.localPort())
         clientToServer.close()
+        server.close()
         checkPort(clientToServerPort)
         checkPort(serverPort)
-
-        server.close()
         checkPort(serverToClientPort)
     }
 

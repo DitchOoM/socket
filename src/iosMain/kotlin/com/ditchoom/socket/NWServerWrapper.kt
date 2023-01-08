@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import cocoapods.SocketWrapper.ServerSocketListenerWrapper
+import cocoapods.SocketWrapper.ServerSocketWrapper
 import cocoapods.SocketWrapper.SocketWrapper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -22,18 +23,10 @@ class NWServerWrapper : ServerSocket {
         backlog: Int,
         acceptedClient: suspend (ClientSocket) -> Unit
     ): SocketOptions {
-        val acceptedClientCallback = { acceptedClient: SocketWrapper? ->
-            println("Incoming cl!ent $acceptedClient")
-            val socketWrapper = NWSocketWrapper()
-            socketWrapper.socket = acceptedClient
-
-            println("launch")
-            val j = scope.launch {
-                println("launch accept")
-                acceptedClient(socketWrapper)
-                println("launched accept")
-            }
-            println("launched $j")
+        val acceptedClientCallback: (ServerSocketWrapper?) -> Unit = { socketWrapper: SocketWrapper? ->
+            val nwSocketWrapper = NWSocketWrapper()
+            nwSocketWrapper.socket = socketWrapper
+            scope.launch { acceptedClient(nwSocketWrapper) }
         }
         server = suspendCancellableCoroutine {
             val server = ServerSocketListenerWrapper()
@@ -43,7 +36,6 @@ class NWServerWrapper : ServerSocket {
                 backlog.toLong(),
                 acceptedClientCallback
             ) { serverSocketWrapper, errorString, isPosixError, isDnsError, isTlsError ->
-                println("server started: $serverSocketWrapper $errorString")
                 if (errorString != null) {
                     it.resumeWithException(SocketException(errorString))
                 } else if (serverSocketWrapper != null) {

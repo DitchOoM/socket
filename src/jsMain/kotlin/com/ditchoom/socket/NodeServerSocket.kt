@@ -4,6 +4,7 @@ import com.ditchoom.buffer.JsBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
@@ -11,6 +12,11 @@ import kotlin.coroutines.suspendCoroutine
 
 class NodeServerSocket : ServerSocket {
     var server: Server? = null
+    private lateinit var scope: CoroutineScope
+
+    override fun setScope(scope: CoroutineScope) {
+        this.scope = scope
+    }
 
     override suspend fun start(
         port: Int,
@@ -19,10 +25,8 @@ class NodeServerSocket : ServerSocket {
         backlog: Int,
         acceptedClient: suspend (ClientSocket) -> Unit
     ): SocketOptions {
-        println("start")
         val server = withContext(Dispatchers.Default) {
             Net.createServer { clientSocket ->
-                println("new client socket")
                 val nodeSocket = NodeSocket()
                 nodeSocket.isClosed = false
                 nodeSocket.netSocket = clientSocket
@@ -34,13 +38,12 @@ class NodeServerSocket : ServerSocket {
                     nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
                 }
 
-                launch {
+                scope.launch {
                     acceptedClient(nodeSocket)
                 }
             }
         }
 
-        println("listen suspend")
         server.listenSuspend(port, host, backlog)
         this.server = server
         return socketOptions ?: SocketOptions()
@@ -65,37 +68,32 @@ class NodeServerSocket : ServerSocket {
 
     override suspend fun close() {
         val server = server ?: return
+        if (!isOpen()) return
         suspendCoroutine {
             server.close { it.resume(Unit) }
         }
     }
-
-    override fun setScope(scope: CoroutineScope) = Unit
 }
 
 suspend fun Server.listenSuspend(port: Int, host: String?, backlog: Int) {
-    println("listen suspend $host")
-    suspendCoroutine<Unit> {
+    suspendCancellableCoroutine {
         if (host != null && port != -1) {
-            println("1")
             listen(port, host, backlog) {
                 it.resume(Unit)
             }
         } else if (port != -1) {
-            println("2")
             listen(port, backlog = backlog) {
                 it.resume(Unit)
             }
         } else if (host != null) {
-            println("3")
             listen(host = host, backlog = backlog) {
                 it.resume(Unit)
             }
         } else {
-            println("4")
             listen(backlog = backlog) {
                 it.resume(Unit)
             }
         }
+        it.invokeOnCancellation { close { } }
     }
 }

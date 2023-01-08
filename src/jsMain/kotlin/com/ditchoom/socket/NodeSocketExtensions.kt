@@ -4,22 +4,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
-
-suspend fun connect(port: Int, host: String): Socket {
-    var s: Socket? = null
-    suspendCancellableCoroutine<Unit> {
-        val socket = Net.connect(port, host) {
-            it.resume(Unit)
-        }
-        s = socket
-        it.invokeOnCancellation { throwableLocal ->
-            socket.end { }
-            socket.destroy()
-        }
-    }
-    return s!!
-}
 
 suspend fun connect(tls: Boolean, tcpOptions: Options): Socket {
     var netSocket: Socket? = null
@@ -65,9 +49,13 @@ suspend fun connect(tls: Boolean, tcpOptions: Options): Socket {
 }
 
 suspend fun Socket.write(buffer: Uint8Array) {
-    suspendCoroutine<Unit> {
+    suspendCancellableCoroutine {
         write(buffer) {
             it.resume(Unit)
+        }
+        it.invokeOnCancellation { throwableLocal ->
+            end { }
+            destroy()
         }
     }
 }

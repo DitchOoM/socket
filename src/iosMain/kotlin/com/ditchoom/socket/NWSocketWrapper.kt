@@ -24,17 +24,13 @@ open class NWSocketWrapper : ClientSocket {
     override suspend fun read(timeout: Duration): ReadBuffer {
         val socket = socket ?: return PlatformBuffer.allocate(0)
         return withTimeout(timeout) {
-            println("withTimeout")
             suspendCancellableCoroutine {
-                println("readDataWithCompletion ${isOpen()}")
                 socket.readDataWithCompletion { data, errorString, isComplete ->
-                    println("data read $data $errorString, $isComplete")
                     if (errorString != null) {
                         socket.closeWithCompletionHandler {
                             it.resumeWithException(SocketClosedException(errorString))
                         }
                     } else if (data != null) {
-                        println("data read resume")
                         if (data.length.toInt() == 0) {
                             it.resume(PlatformBuffer.allocate(0))
                         } else {
@@ -54,12 +50,10 @@ open class NWSocketWrapper : ClientSocket {
     }
 
     override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
-        println("writing $socket")
         val socket = socket ?: return -1
         val readBuffer = buffer as DataBuffer
         return withTimeout(timeout) {
             suspendCancellableCoroutine { continuation ->
-                println("suspended start")
                 socket.writeDataWithBuffer(readBuffer.data) { bytesWritten, errorString ->
                     if (errorString != null) {
                         continuation.resumeWithException(SocketException(errorString))

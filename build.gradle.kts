@@ -44,10 +44,10 @@ kotlin {
             useJUnit()
         }
     }
-//    js(IR) {
-//        browser {}
-//        nodejs {}
-//    }
+    js(IR) {
+        browser()
+        nodejs()
+    }
 //    linuxX64()
 //    macosArm64()
 //    iosArm64()
@@ -89,13 +89,13 @@ kotlin {
         val jvmTest by getting {
             kotlin.srcDir("src/commonJvmTest/kotlin")
         }
-//        val jsMain by getting
-//        val jsTest by getting {
-//            dependencies {
-//                implementation(kotlin("test-js"))
-//                implementation(npm("tcp-port-used", "1.0.2"))
-//            }
-//        }
+        val jsMain by getting
+        val jsTest by getting {
+            dependencies {
+                implementation(kotlin("test-js"))
+                implementation(npm("tcp-port-used", "1.0.2"))
+            }
+        }
 //        val macosX64Main by getting
 //        val macosX64Test by getting
 //        val linuxX64Main by getting
