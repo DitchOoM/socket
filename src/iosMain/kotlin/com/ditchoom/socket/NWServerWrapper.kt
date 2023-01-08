@@ -23,11 +23,12 @@ class NWServerWrapper : ServerSocket {
         backlog: Int,
         acceptedClient: suspend (ClientSocket) -> Unit
     ): SocketOptions {
-        val acceptedClientCallback: (ServerSocketWrapper?) -> Unit = { socketWrapper: SocketWrapper? ->
-            val nwSocketWrapper = NWSocketWrapper()
-            nwSocketWrapper.socket = socketWrapper
-            scope.launch { acceptedClient(nwSocketWrapper) }
-        }
+        val acceptedClientCallback: (ServerSocketWrapper?) -> Unit =
+            { socketWrapper: SocketWrapper? ->
+                val nwSocketWrapper = NWSocketWrapper()
+                nwSocketWrapper.socket = socketWrapper
+                scope.launch { acceptedClient(nwSocketWrapper) }
+            }
         server = suspendCancellableCoroutine {
             val server = ServerSocketListenerWrapper()
             server.startWithPort(
