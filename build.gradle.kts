@@ -50,12 +50,13 @@ kotlin {
     }
 //    linuxX64()
 //    macosArm64()
-//    iosArm64()
+//    macosX64()
 //     watchos()
 //     tvos()
-
-    iosSimulatorArm64("ios")
-    tasks.getByName<KotlinNativeSimulatorTest>("iosTest") {
+    ios()
+    iosArm64()
+    iosSimulatorArm64()
+    tasks.getByName<KotlinNativeSimulatorTest>("iosSimulatorArm64Test") {
         deviceId = "iPhone 14"
     }
 
@@ -64,6 +65,7 @@ kotlin {
         homepage = "https://github.com/JetBrains/kotlin"
 
         ios.deploymentTarget = "13.0"
+        osx.deploymentTarget = "11.0"
 
         pod("SocketWrapper") {
             version = "1.0"
@@ -98,16 +100,38 @@ kotlin {
         }
 //        val macosX64Main by getting
 //        val macosX64Test by getting
+//        val macosArm64Main by getting
+//        val macosArm64Test by getting
 //        val linuxX64Main by getting
 //        val linuxX64Test by getting
-// //        val iosMain by getting
-// //        val iosTest by getting
-// //        val iosSimulatorArm64Main by getting
-// //        val iosSimulatorArm64Test by getting
+        val iosMain by getting
+        val iosTest by getting
+        val iosSimulatorArm64Main by getting
+        val iosSimulatorArm64Test by getting
 // //        val watchosMain by getting
 // //        val watchosTest by getting
 // //        val tvosMain by getting
 // //        val tvosTest by getting
+
+        val appleMain by sourceSets.creating {
+            dependsOn(commonMain)
+//            macosX64Main.dependsOn(this)
+//            macosArm64Main.dependsOn(this)
+            iosMain.dependsOn(this)
+            iosSimulatorArm64Main.dependsOn(this)
+//            watchosMain.dependsOn(this)
+//            tvosMain.dependsOn(this)
+        }
+
+        val appleTest by sourceSets.creating {
+            dependsOn(commonTest)
+//            macosX64Test.dependsOn(this)
+//            macosArm64Test.dependsOn(this)
+            iosTest.dependsOn(this)
+            iosSimulatorArm64Test.dependsOn(this)
+//            watchosTest.dependsOn(this)
+//            tvosTest.dependsOn(this)
+        }
 
 //        val nativeMain by sourceSets.creating {
 //            dependsOn(commonMain)
