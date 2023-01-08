@@ -9,7 +9,6 @@ import kotlinx.coroutines.withContext
 import java.lang.Math.random
 import java.net.SocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.NetworkChannel
 import java.nio.channels.SelectableChannel
 import java.nio.channels.SelectionKey
@@ -112,7 +111,7 @@ suspend fun SocketChannel.connect(
     throw TimeoutException("Failed to connect to $remote within $timeout maybe invalid selector")
 }
 
-suspend fun SocketChannel.aFinishConnecting() = suspendCancellableCoroutine<Boolean> {
+suspend fun SocketChannel.aFinishConnecting() = suspendCoroutine<Boolean> {
     try {
         it.resume(finishConnect())
     } catch (e: Throwable) {
@@ -121,7 +120,7 @@ suspend fun SocketChannel.aFinishConnecting() = suspendCancellableCoroutine<Bool
 }
 
 suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) =
-    suspendCancellableCoroutine<SelectableChannel> {
+    suspendCoroutine<SelectableChannel> {
         try {
             it.resume(configureBlocking(block))
         } catch (e: Throwable) {
@@ -184,7 +183,6 @@ private suspend fun SocketChannel.suspendRead(buffer: ByteBuffer) =
             buffer.flip()
             it.resume(read)
         } catch (ex: Throwable) {
-            if (ex is AsynchronousCloseException && it.isCancelled) return@suspendCancellableCoroutine
             closeOnCancel(it)
         }
     }
@@ -196,7 +194,6 @@ private suspend fun SocketChannel.suspendWrite(buffer: ByteBuffer) =
             val wrote = write(buffer)
             it.resume(wrote)
         } catch (ex: Throwable) {
-            if (ex is AsynchronousCloseException && it.isCancelled) return@suspendCancellableCoroutine
             closeOnCancel(it)
         }
     }

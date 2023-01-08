@@ -12,6 +12,7 @@ actual fun ClientSocket.Companion.allocate(
     val clientSocket = try {
         AsyncClientSocket(bufferFactory)
     } catch (t: Throwable) {
+        // It's possible Android OS version is too old to support AsyncSocketChannel
         NioClientSocket(bufferFactory, false)
     }
     return if (tls) {

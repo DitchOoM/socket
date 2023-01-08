@@ -38,7 +38,7 @@ class NioClientSocket(
                 try {
                     it.resume(InetSocketAddress(InetAddress.getLocalHost(), port))
                 } catch (e: Exception) {
-                    it.resumeWithException(e)
+                    it.resumeWithException(SocketUnknownHostException("no hostname set", cause = e))
                 }
             }
         }
