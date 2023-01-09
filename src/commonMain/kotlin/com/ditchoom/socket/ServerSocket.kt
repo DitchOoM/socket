@@ -7,11 +7,6 @@ import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.CoroutineScope
 
 interface ServerSocket : SuspendCloseable {
-    val allocationZone: AllocationZone
-        get() = AllocationZone.Direct
-
-    fun setScope(scope: CoroutineScope) {}
-
     suspend fun start(
         port: Int = -1,
         host: String? = null,
@@ -27,6 +22,7 @@ interface ServerSocket : SuspendCloseable {
 }
 
 expect fun ServerSocket.Companion.allocate(
+    scope: CoroutineScope,
     bufferFactory: () -> PlatformBuffer = {
         PlatformBuffer.allocate(4 * 1024, AllocationZone.Direct)
     }

@@ -43,6 +43,8 @@ A kotlin multiplatform library that allows you send network data via sockets</a>
       <ul>
         <li><a href="#suspend-connect-read-write-and-close">Suspend connect, read, write and close</a></li>
         <li><a href="#TLS-support">TLS Support</a></li>
+        <li><a href="#Client-echo-example">Client echo example</a></li>
+        <li><a href="#Server-echo-example">Server echo example</a></li>
       </ul>
     </li>
     <li>
@@ -130,6 +132,43 @@ Connection: close
 val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
     // do something
 }
+```
+
+## Client echo example
+```kotlin
+val server = ServerSocket.allocate(scope)
+val mutex = Mutex(locked = true) // only needed for local testing
+val text = "Sphinx of black quartz, judge my vow."
+server.start { serverToClient ->
+    serverToClient.write(text, Charset.UTF8)
+    serverToClient.close()
+    mutex.unlock()
+}
+ClientSocket.connect(server.port()) { clientToServer ->
+    val buffer = clientToServer.read()
+    buffer.resetForRead()
+    val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
+    assertEquals(text, dataReceivedFromServer)
+    mutex.lock()
+}
+server.close()
+```
+
+## Server echo example
+```kotlin
+val server = ServerSocket.allocate(scope)
+val text = "Sphinx of black quartz, judge my vow."
+server.start { serverToClient ->
+    val buffer = serverToClient.read(1.seconds)
+    buffer.resetForRead()
+    val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
+    assertEquals(text, dataReceivedFromClient)
+    serverToClient.close()
+}
+ClientSocket.connect(server.port()) { clientToServer ->
+    clientToServer.write(text, Charset.UTF8, 1.seconds)
+}
+server.close()
 ```
 
 ## Building Locally

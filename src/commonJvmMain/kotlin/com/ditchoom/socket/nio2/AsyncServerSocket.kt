@@ -16,14 +16,12 @@ import java.net.InetSocketAddress
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.AsynchronousServerSocketChannel
 
-class AsyncServerSocket(private val bufferFactory: () -> PlatformBuffer) : ServerSocket {
+class AsyncServerSocket(
+    private val coroutineScope: CoroutineScope,
+    private val bufferFactory: () -> PlatformBuffer
+) : ServerSocket {
 
     private var server: AsynchronousServerSocketChannel? = null
-    private lateinit var coroutineScope: CoroutineScope
-
-    override fun setScope(scope: CoroutineScope) {
-        this.coroutineScope = scope
-    }
 
     override fun port() = (server?.localAddress as? InetSocketAddress)?.port ?: -1
 

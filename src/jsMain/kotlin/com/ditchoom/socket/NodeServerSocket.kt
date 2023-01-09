@@ -10,13 +10,8 @@ import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
-class NodeServerSocket : ServerSocket {
+class NodeServerSocket(private val scope: CoroutineScope) : ServerSocket {
     var server: Server? = null
-    private lateinit var scope: CoroutineScope
-
-    override fun setScope(scope: CoroutineScope) {
-        this.scope = scope
-    }
 
     override suspend fun start(
         port: Int,

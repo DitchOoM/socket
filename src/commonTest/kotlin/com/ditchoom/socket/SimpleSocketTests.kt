@@ -90,36 +90,37 @@ class SimpleSocketTests {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         var localPort = 1
         val remotePort = if (tls) 443 else 80
-        val response = ClientSocket.connect(remotePort, domain, tls = tls, timeout = 5.seconds) { socket ->
-            val request =
-                """
+        val response =
+            ClientSocket.connect(remotePort, domain, tls = tls, timeout = 5.seconds) { socket ->
+                val request =
+                    """
 GET / HTTP/1.1
 Host: www.$domain
 Connection: close
 
 """.toReadBuffer(Charset.UTF8, AllocationZone.Heap)
-            val bytesWritten = socket.write(request, 5.seconds)
-            localPort = socket.localPort()
-            assertTrue { bytesWritten > 0 }
-            val buffer = socket.readString(Charset.UTF8, 5.seconds)
-            val charset = if (buffer.contains("charset=ISO-8859-1", ignoreCase = true)) {
-                Charset.ISOLatin1
-            } else if (buffer.contains("charset=ascii", ignoreCase = true)) {
-                Charset.ASCII
-            } else {
-                Charset.UTF8
-            }
-            val s = StringBuilder(buffer)
-            try {
-                while (socket.isOpen()) {
-                    val string = socket.readString(charset, 5.seconds)
-                    s.append(string)
+                val bytesWritten = socket.write(request, 5.seconds)
+                localPort = socket.localPort()
+                assertTrue { bytesWritten > 0 }
+                val buffer = socket.readString(Charset.UTF8, 5.seconds)
+                val charset = if (buffer.contains("charset=ISO-8859-1", ignoreCase = true)) {
+                    Charset.ISOLatin1
+                } else if (buffer.contains("charset=ascii", ignoreCase = true)) {
+                    Charset.ASCII
+                } else {
+                    Charset.UTF8
                 }
-            } catch (e: SocketClosedException) {
-                // expected when the server has Connection: close header
+                val s = StringBuilder(buffer)
+                try {
+                    while (socket.isOpen()) {
+                        val string = socket.readString(charset, 5.seconds)
+                        s.append(string)
+                    }
+                } catch (e: SocketClosedException) {
+                    // expected when the server has Connection: close header
+                }
+                s
             }
-            s
-        }
         assertTrue { response.startsWith("HTTP/") }
         assertTrue { response.contains("<html", ignoreCase = true) }
         assertTrue { response.contains("/html>", ignoreCase = true) }
@@ -130,8 +131,7 @@ Connection: close
     @Test
     fun serverEcho() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val server = ServerSocket.allocate()
-        server.setScope(this)
+        val server = ServerSocket.allocate(this)
         val text = "yolo swag lyfestyle"
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
@@ -164,14 +164,13 @@ Connection: close
     fun clientEcho() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
         val text = "yolo swag lyfestyle"
-        val server = ServerSocket.allocate()
-        server.setScope(this)
+        val server = ServerSocket.allocate(this)
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
         server.start { serverToClient ->
             serverToClientPort = serverToClient.localPort()
             assertTrue { serverToClientPort > 0 }
-            serverToClient.write(text.toReadBuffer(Charset.UTF8), 5.seconds)
+            serverToClient.write(text, Charset.UTF8, 5.seconds)
             serverToClient.close()
             serverToClientMutex.unlock()
         }
@@ -196,8 +195,7 @@ Connection: close
     @Test
     fun suspendingInputStream() = block {
         if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val server = ServerSocket.allocate()
-        server.setScope(this)
+        val server = ServerSocket.allocate(this)
         val text = "yolo swag lyfestyle"
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
