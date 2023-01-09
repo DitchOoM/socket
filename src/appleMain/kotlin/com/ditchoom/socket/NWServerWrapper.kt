@@ -10,7 +10,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class NWServerWrapper(private val coroutineScope: CoroutineScope) : ServerSocket {
+class NWServerWrapper(private val scope: CoroutineScope) : ServerSocket {
     private var server: ServerSocketListenerWrapper? = null
 
     override suspend fun start(
