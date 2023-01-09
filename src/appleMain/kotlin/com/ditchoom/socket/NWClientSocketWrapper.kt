@@ -13,8 +13,7 @@ class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToSe
         port: Int,
         timeout: Duration,
         hostname: String?,
-        socketOptions: SocketOptions?
-    ): SocketOptions {
+    ) {
         val socket = suspendCancellableCoroutine {
             val socketWrapper = ClientSocketWrapper(
                 hostname ?: "localhost",
@@ -40,6 +39,5 @@ class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToSe
             }
         }
         this.socket = socket
-        return socketOptions ?: SocketOptions()
     }
 }

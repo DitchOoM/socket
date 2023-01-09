@@ -29,9 +29,8 @@ class SSLClientSocket(private val underlyingSocket: ClientToServerSocket) : Clie
         port: Int,
         timeout: Duration,
         hostname: String?,
-        socketOptions: SocketOptions?
-    ): SocketOptions {
-        val socketOptionsLocal = underlyingSocket.open(port, timeout, hostname, socketOptions)
+    ) {
+        val socketOptionsLocal = underlyingSocket.open(port, timeout, hostname)
         val context = try {
             SSLContext.getInstance("TLSv1.3")
         } catch (e: NoSuchAlgorithmException) {

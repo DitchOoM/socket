@@ -16,10 +16,9 @@ class NodeServerSocket(private val scope: CoroutineScope) : ServerSocket {
     override suspend fun start(
         port: Int,
         host: String?,
-        socketOptions: SocketOptions?,
         backlog: Int,
         acceptedClient: suspend (ClientSocket) -> Unit
-    ): SocketOptions {
+    ) {
         val server = withContext(Dispatchers.Default) {
             Net.createServer { clientSocket ->
                 val nodeSocket = NodeSocket()
@@ -41,7 +40,6 @@ class NodeServerSocket(private val scope: CoroutineScope) : ServerSocket {
 
         server.listenSuspend(port, host, backlog)
         this.server = server
-        return socketOptions ?: SocketOptions()
     }
 
     @Suppress("MemberVisibilityCanBePrivate")

@@ -73,8 +73,7 @@ class NodeClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
-        socketOptions: SocketOptions?
-    ): SocketOptions = withTimeout(timeout) {
+    ) = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({
             val buffer = bufferFactory() as JsBuffer
@@ -95,6 +94,5 @@ class NodeClientSocket(
             hadTransmissionError = transmissionError.unsafeCast<Boolean>()
             cleanSocket(netSocket)
         }
-        socketOptions ?: SocketOptions()
     }
 }

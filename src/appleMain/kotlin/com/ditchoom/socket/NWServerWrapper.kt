@@ -16,10 +16,9 @@ class NWServerWrapper(private val scope: CoroutineScope) : ServerSocket {
     override suspend fun start(
         port: Int,
         host: String?,
-        socketOptions: SocketOptions?,
         backlog: Int,
         acceptedClient: suspend (ClientSocket) -> Unit
-    ): SocketOptions {
+    ) {
         val acceptedClientCallback: (ServerSocketWrapper?) -> Unit =
             { socketWrapper: SocketWrapper? ->
                 val nwSocketWrapper = NWSocketWrapper()
@@ -46,8 +45,6 @@ class NWServerWrapper(private val scope: CoroutineScope) : ServerSocket {
                 server.stopListeningForInboundConnections()
             }
         }
-
-        return socketOptions ?: SocketOptions()
     }
 
     override fun isOpen(): Boolean = server?.isOpen() ?: false
