@@ -20,10 +20,9 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     tls: Boolean = false,
     timeout: Duration = 15.seconds,
-    socketOptions: SocketOptions? = null,
 ): ClientToServerSocket {
     val socket = ClientSocket.allocate(tls)
-    socket.open(port, timeout, hostname, socketOptions)
+    socket.open(port, timeout, hostname)
     return socket
 }
 
@@ -32,11 +31,10 @@ suspend fun <T> ClientSocket.Companion.connect(
     hostname: String? = null,
     tls: Boolean = false,
     timeout: Duration = 15.seconds,
-    socketOptions: SocketOptions? = null,
     lambda: suspend (ClientSocket) -> T
 ): T {
     val socket = ClientSocket.allocate(tls)
-    socket.open(port, timeout, hostname, socketOptions)
+    socket.open(port, timeout, hostname)
     val result = lambda(socket)
     socket.close()
     return result

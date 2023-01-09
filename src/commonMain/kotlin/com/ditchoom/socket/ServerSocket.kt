@@ -10,10 +10,9 @@ interface ServerSocket : SuspendCloseable {
     suspend fun start(
         port: Int = -1,
         host: String? = null,
-        socketOptions: SocketOptions? = null,
         backlog: Int = 0,
         acceptedClient: suspend (ClientSocket) -> Unit
-    ): SocketOptions
+    )
 
     fun isOpen(): Boolean
     fun port(): Int
