@@ -42,7 +42,10 @@ A kotlin multiplatform library that allows you send network data via sockets</a>
       <a href="#usage">Usage</a>
       <ul>
         <li><a href="#suspend-connect-read-write-and-close">Suspend connect, read, write and close</a></li>
+        <li><a href="#Server-example">Server example</a></li>
         <li><a href="#TLS-support">TLS Support</a></li>
+        <li><a href="#Client-echo-example">Client echo example</a></li>
+        <li><a href="#Server-echo-example">Server echo example</a></li>
       </ul>
     </li>
     <li>
@@ -58,8 +61,8 @@ A kotlin multiplatform library that allows you send network data via sockets</a>
 ## About The Project
 
 Managing metwork calls can be slightly different based on each platform. This project aims to make
-it **easier to manage sockets in a cross platform way using kotlin multiplatform**. This was originally created as a
-side project for a kotlin multiplatform mqtt data sync solution.
+it **easier to manage sockets in a cross platform way using kotlin multiplatform**. This was
+originally created as a side project for a kotlin multiplatform mqtt data sync solution.
 
 ### Runtime Dependencies
 
@@ -67,21 +70,18 @@ side project for a kotlin multiplatform mqtt data sync solution.
 
 ### [Supported Platforms](https://kotlinlang.org/docs/reference/mpp-supported-platforms.html)
 
-| Platform | 🛠Builds🛠 + 🔬Tests🔬 |         Deployed Artifact         | Non Kotlin Sample |  
-| :---: | :---: |:---------------------------------:|:-----------------:|
-| `JVM` 1.8 |🚀| [maven central][maven-central]  |        WIP        |
-| `Node.js` |🚀|           [npm][npm] 🔮           |        WIP         |
-| `Browser` (Chrome) |🚀|            unavailable            |        WIP         |
-| `Android` |🚀|  [maven central][maven-central]   |        WIP         |
-| `iOS` |🔮|             Need help             |        WIP         |
-| `WatchOS` |🔮|             Need help             |        WIP         |
-| `TvOS` |🔮|             Need help             |        WIP         |
-| `MacOS` |🔮|             Need help             |        WIP         |
-| `Linux X64` |🔮|             Need help             |        WIP         |
-| `Windows X64` |🔮|             Need help             |        WIP         |
-
-> Help needed for getting a native socket to work for other platforms. For Apple products we want to use APIs that work
-> on cellular networks not just WiFi
+| Platform | 🛠Builds🛠 + 🔬Tests🔬 |                                                                                                    Native Wrapper For                                                                                                     |  
+| :---: | :---: |:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+| `JVM` 1.8 |🚀|                                        [AsynchronousSocketChannel](https://docs.oracle.com/en/java/javase/12/docs/api/java.base/java/nio/channels/AsynchronousSocketChannel.html)                                         |
+| `Node.js` |🚀|                                                                                 [Socket](https://nodejs.org/api/net.html#class-netsocket)                                                                                 |
+| `Browser` (Chrome) |🚀|                                                                                                        unavailable                                                                                                        |
+| `Android` |🚀| [AsynchronousSocketChannel](https://developer.android.com/reference/java/nio/channels/AsynchronousSocketChannel) falling back to [SocketChannel](https://developer.android.com/reference/java/nio/channels/SocketChannel) |
+| `iOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `WatchOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `TvOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `MacOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+| `Linux X64` |🔮|                                                                                                            WIP                                                                                                            |
+| `Windows X64` |🔮|                                                                                                       WIP                                                                                                                 |
 
 ## Installation
 
@@ -96,13 +96,13 @@ side project for a kotlin multiplatform mqtt data sync solution.
 val socket = ClientSocket.connect(
     port = 80, // no default
     hostname = "example.com", // null is default which points to localhost
-    timeout = 1.seconds, // default
+    timeout = 15.seconds, // default
     socketOptions = null, // default
 )
 val isOpen = socket.isOpen()
 val localPort = socket.localPort()
 val remotePort = socket.remotePort()
-val stringRead = socket.readUtf8() // read a utf8 string
+val stringRead = socket.readString(com.ditchoom.buffer.Charset.UTF8) // read a utf8 string
 val readBuffer = socket.read() // read a ReadBuffer as defined in the buffer module
 val bytesWritten = socket.write(buffer) // write the buffer to the socket
 socket.close() // close the socket
@@ -111,9 +111,9 @@ socket.close() // close the socket
 Or use lambda which auto closes the socket
 
 ```kotlin
-// Run in a coroutine scope, same defaults as the other `connect` method
+// Run in a suspend method, same defaults as the other `connect` method
 val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
-val request =
+    val request =
         """
 GET / HTTP/1.1
 Host: example.com
@@ -126,7 +126,28 @@ Connection: close
 // response is populated, no need to call socket.close()
 ```
 
-## TLS support
+### Server Example
+
+```kotlin
+// Run in a suspend method, pass in the coroutine scope into ServerSocket.allocate
+val server = ServerSocket.allocate(scope)
+val text = "Sphinx of black quartz, judge my vow."
+server.start { serverToClient ->
+    // new client has connected, can now read and write to it.
+    val localPort = serverToClient.localPort()
+    val remotePort = serverToClient.remotePort()
+    val stringRead =
+        serverToClient.readString(com.ditchoom.buffer.Charset.UTF8) // read a utf8 string
+    val readBuffer = serverToClient.read() // read a ReadBuffer as defined in the buffer module
+    val bytesWritten = serverToClient.write(buffer) // write the buffer to the client
+    serverToClient.close()
+}
+// after some time
+server.close()
+```
+
+### TLS support
+
 ```kotlin
 // Simply add tls=true to your ClientSocket.connect or ClientSocket.allocate
 val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
@@ -134,20 +155,61 @@ val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
 }
 ```
 
+### Client echo example
+
+```kotlin
+val server = ServerSocket.allocate(scope)
+val mutex = Mutex(locked = true) // only needed for local testing
+val text = "Sphinx of black quartz, judge my vow."
+server.start { serverToClient ->
+    serverToClient.write(text, Charset.UTF8)
+    serverToClient.close()
+    mutex.unlock()
+}
+ClientSocket.connect(server.port()) { clientToServer ->
+    val buffer = clientToServer.read()
+    buffer.resetForRead()
+    val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
+    assertEquals(text, dataReceivedFromServer)
+    mutex.lock()
+}
+server.close()
+```
+
+### Server echo example
+
+```kotlin
+val server = ServerSocket.allocate(scope)
+val text = "Sphinx of black quartz, judge my vow."
+server.start { serverToClient ->
+    val buffer = serverToClient.read()
+    buffer.resetForRead()
+    val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
+    assertEquals(text, dataReceivedFromClient)
+    serverToClient.close()
+}
+ClientSocket.connect(server.port()) { clientToServer ->
+    clientToServer.write(text, Charset.UTF8)
+}
+server.close()
+```
+
 ## Building Locally
 
 - `git clone git@github.com:DitchOoM/socket.git`
 - Open cloned directory with [Intellij IDEA](https://www.jetbrains.com/idea/download).
-    - Be sure to [open with gradle](https://www.jetbrains.com/help/idea/gradle.html#gradle_import_project_start)
+    - Be sure
+      to [open with gradle](https://www.jetbrains.com/help/idea/gradle.html#gradle_import_project_start)
 
 ## Roadmap
 
-See the [open issues](https://github.com/DitchOoM/socket/issues) for a list of proposed features (and known issues).
+See the [open issues](https://github.com/DitchOoM/socket/issues) for a list of proposed features (
+and known issues).
 
 ## Contributing
 
-Contributions are what make the open source community such an amazing place to be learn, inspire, and create. Any
-contributions you make are **greatly appreciated**.
+Contributions are what make the open source community such an amazing place to be learn, inspire,
+and create. Any contributions you make are **greatly appreciated**.
 
 1. Fork the Project
 2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)

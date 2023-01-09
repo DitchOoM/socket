@@ -37,7 +37,12 @@ class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) :
                 try {
                     it.resume(InetSocketAddress(InetAddress.getLocalHost(), port))
                 } catch (e: Exception) {
-                    it.resumeWithException(e)
+                    it.resumeWithException(
+                        SocketUnknownHostException(
+                            "hostname is null",
+                            cause = e
+                        )
+                    )
                 }
             }
         }

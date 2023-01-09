@@ -1,8 +1,15 @@
+import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 
+buildscript {
+    extra.apply {
+        set("kotlin_version", "1.8.0")
+    }
+}
 
 plugins {
-    id("dev.petuska.npm.publish") version "2.1.2"
-    kotlin("multiplatform") version "1.7.21"
+//    id("dev.petuska.npm.publish") version "3.2.0"
+    kotlin("multiplatform") version "1.8.0"
+    kotlin("native.cocoapods") version "1.8.0"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`
@@ -15,7 +22,7 @@ val libraryVersionPrefix: String by project
 group = "com.ditchoom"
 version = "$libraryVersionPrefix.0-SNAPSHOT"
 val libraryVersion = if (System.getenv("GITHUB_RUN_NUMBER") != null) {
-    "$libraryVersionPrefix${(Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER")) + 45)}"
+    "$libraryVersionPrefix${(Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER")) - 16)}"
 } else {
     "${libraryVersionPrefix}0-SNAPSHOT"
 }
@@ -29,31 +36,48 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
+        compilations.all {
+            kotlinOptions.jvmTarget = "1.8"
+        }
         testRuns["test"].executionTask.configure {
             useJUnit()
         }
     }
-    js {
-        browser {}
-        nodejs {}
+    js(IR) {
+        browser()
+        nodejs()
     }
-//    macosX64()
 //    linuxX64()
-// //    ios()
-// //    iosSimulatorArm64()
-// //    watchos()
-// //    tvos()
+    macosArm64()
+    macosX64()
+    watchos()
+    tvos()
+    ios()
+    iosSimulatorArm64()
+    tasks.getByName<KotlinNativeSimulatorTest>("iosSimulatorArm64Test") {
+        deviceId = "iPhone 14"
+    }
+
+    cocoapods {
+        ios.deploymentTarget = "13.0"
+        osx.deploymentTarget = "11.0"
+        watchos.deploymentTarget = "6.0"
+        tvos.deploymentTarget = "13.0"
+        pod("SocketWrapper") {
+            source = path(project.file("./SocketWrapper/"))
+        }
+    }
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.0.95")
+                implementation("com.ditchoom:buffer:1.1.5")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
             }
         }
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("com.ditchoom:buffer:1.0.95")
+                implementation("com.ditchoom:buffer:1.1.5")
             }
         }
         val jvmMain by getting {
@@ -69,18 +93,42 @@ kotlin {
                 implementation(npm("tcp-port-used", "1.0.2"))
             }
         }
-//        val macosX64Main by getting
-//        val macosX64Test by getting
+        val macosX64Main by getting
+        val macosX64Test by getting
+        val macosArm64Main by getting
+        val macosArm64Test by getting
 //        val linuxX64Main by getting
 //        val linuxX64Test by getting
-// //        val iosMain by getting
-// //        val iosTest by getting
-// //        val iosSimulatorArm64Main by getting
-// //        val iosSimulatorArm64Test by getting
-// //        val watchosMain by getting
-// //        val watchosTest by getting
-// //        val tvosMain by getting
-// //        val tvosTest by getting
+        val iosMain by getting
+        val iosTest by getting
+        val iosSimulatorArm64Main by getting
+        val iosSimulatorArm64Test by getting
+        val watchosMain by getting
+        val watchosTest by getting
+        val tvosMain by getting
+        val tvosTest by getting
+
+        val appleMain by sourceSets.creating {
+            dependsOn(commonMain)
+            kotlin.srcDir("src/appleMain/kotlin")
+            macosX64Main.dependsOn(this)
+            macosArm64Main.dependsOn(this)
+            iosMain.dependsOn(this)
+            iosSimulatorArm64Main.dependsOn(this)
+            watchosMain.dependsOn(this)
+            tvosMain.dependsOn(this)
+        }
+
+        val appleTest by sourceSets.creating {
+            dependsOn(commonTest)
+            kotlin.srcDir("src/appleTest/kotlin")
+            macosX64Test.dependsOn(this)
+            macosArm64Test.dependsOn(this)
+            iosTest.dependsOn(this)
+            iosSimulatorArm64Test.dependsOn(this)
+            watchosTest.dependsOn(this)
+            tvosTest.dependsOn(this)
+        }
 
 //        val nativeMain by sourceSets.creating {
 //            dependsOn(commonMain)
@@ -123,13 +171,16 @@ android {
     compileSdk = 33
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 9
+        minSdk = 18
         targetSdk = 33
     }
     lint {
         abortOnError = false
     }
     namespace = "$group.${rootProject.name}"
+}
+dependencies {
+    implementation("androidx.core:core-ktx:+")
 }
 
 val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
@@ -139,7 +190,11 @@ val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
 System.getenv("GITHUB_REPOSITORY")?.let {
     if (System.getenv("GITHUB_REF") == "refs/heads/main") {
         signing {
-            useInMemoryPgpKeys("56F1A973", System.getenv("GPG_SECRET"), System.getenv("GPG_SIGNING_PASSWORD"))
+            useInMemoryPgpKeys(
+                "56F1A973",
+                System.getenv("GPG_SECRET"),
+                System.getenv("GPG_SIGNING_PASSWORD")
+            )
             sign(publishing.publications)
         }
     }
@@ -216,42 +271,24 @@ System.getenv("GITHUB_REPOSITORY")?.let {
     }
 }
 
-if (System.getenv("NPM_ACCESS_TOKEN") != null) {
-    npmPublishing {
-        repositories {
-            repository("npmjs") {
-                registry = uri("https://registry.npmjs.org")
-                authToken = System.getenv("NPM_ACCESS_TOKEN")
-            }
-        }
-        readme = file("Readme.md")
-        organization = "ditchoom"
-        access = PUBLIC
-        bundleKotlinDependencies = true
-        version = libraryVersion
-        dry = !"refs/heads/main".equals(System.getenv("GITHUB_REF"), ignoreCase = true)
-        publications {
-            val js by getting {
-                moduleName = "socket-kt"
-            }
-        }
-    }
-}
-
-ktlint {
-    verbose.set(true)
-    outputToConsole.set(true)
-}
-
-val echoWebsocket = tasks.register<EchoWebsocketTask>("echoWebsocket") {
-    port.set(8080)
-}
-
-tasks.forEach { task ->
-    val taskName = task.name
-    if ((taskName.contains("test", ignoreCase = true) && !taskName.contains("clean", ignoreCase = true)) ||
-        taskName == "check"
-    ) {
-        task.dependsOn(echoWebsocket)
-    }
-}
+// if (System.getenv("NPM_ACCESS_TOKEN") != null) {
+//    npmPublishing {
+//        repositories {
+//            repository("npmjs") {
+//                registry = uri("https://registry.npmjs.org")
+//                authToken = System.getenv("NPM_ACCESS_TOKEN")
+//            }
+//        }
+//        readme = file("Readme.md")
+//        organization = "ditchoom"
+//        access = PUBLIC
+//        bundleKotlinDependencies = true
+//        version = libraryVersion
+//        dry = !"refs/heads/main".equals(System.getenv("GITHUB_REF"), ignoreCase = true)
+//        publications {
+//            val js by getting {
+//                moduleName = "socket-kt"
+//            }
+//        }
+//    }
+// }

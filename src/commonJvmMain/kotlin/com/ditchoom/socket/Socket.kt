@@ -4,6 +4,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.nio.NioClientSocket
 import com.ditchoom.socket.nio2.AsyncClientSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
+import kotlinx.coroutines.CoroutineScope
 
 actual fun ClientSocket.Companion.allocate(
     tls: Boolean,
@@ -12,6 +13,7 @@ actual fun ClientSocket.Companion.allocate(
     val clientSocket = try {
         AsyncClientSocket(bufferFactory)
     } catch (t: Throwable) {
+        // It's possible Android OS version is too old to support AsyncSocketChannel
         NioClientSocket(bufferFactory, false)
     }
     return if (tls) {
@@ -21,5 +23,8 @@ actual fun ClientSocket.Companion.allocate(
     }
 }
 
-actual fun ServerSocket.Companion.allocate(bufferFactory: () -> PlatformBuffer): ServerSocket =
-    AsyncServerSocket(bufferFactory)
+actual fun ServerSocket.Companion.allocate(
+    scope: CoroutineScope,
+    bufferFactory: () -> PlatformBuffer
+): ServerSocket =
+    AsyncServerSocket(scope, bufferFactory)

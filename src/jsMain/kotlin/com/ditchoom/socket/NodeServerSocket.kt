@@ -1,34 +1,44 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.JsBuffer
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
-class NodeServerSocket : ServerSocket {
+class NodeServerSocket(private val scope: CoroutineScope) : ServerSocket {
     var server: Server? = null
-    private val clientSocketChannel = Channel<ClientSocket>(Channel.UNLIMITED)
 
-    override suspend fun bind(
+    override suspend fun start(
         port: Int,
         host: String?,
         socketOptions: SocketOptions?,
-        backlog: Int
+        backlog: Int,
+        acceptedClient: suspend (ClientSocket) -> Unit
     ): SocketOptions {
-        val server = Net.createServer { clientSocket ->
-            val nodeSocket = NodeSocket()
-            nodeSocket.isClosed = false
-            nodeSocket.netSocket = clientSocket
-            clientSocket.on("data") { data ->
-                val result = uint8ArrayOf(data)
-                val buffer = JsBuffer(result)
-                buffer.setPosition(result.length)
-                buffer.setLimit(result.length)
-                nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+        val server = withContext(Dispatchers.Default) {
+            Net.createServer { clientSocket ->
+                val nodeSocket = NodeSocket()
+                nodeSocket.isClosed = false
+                nodeSocket.netSocket = clientSocket
+                clientSocket.on("data") { data ->
+                    val result = uint8ArrayOf(data)
+                    val buffer = JsBuffer(result)
+                    buffer.setPosition(result.length)
+                    buffer.setLimit(result.length)
+                    nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+                }
+
+                scope.launch {
+                    acceptedClient(nodeSocket)
+                }
             }
-            clientSocketChannel.trySend(nodeSocket)
         }
+
         server.listenSuspend(port, host, backlog)
         this.server = server
         return socketOptions ?: SocketOptions()
@@ -47,25 +57,21 @@ class NodeServerSocket : ServerSocket {
         ) as Uint8Array
     }
 
-    override suspend fun accept(): ClientSocket {
-        val clientSocket = clientSocketChannel.receive()
-        return clientSocket
-    }
-
     override fun isOpen() = server?.listening ?: false
 
     override fun port() = server?.address()?.port ?: -1
 
     override suspend fun close() {
         val server = server ?: return
-        suspendCoroutine<Unit> {
+        if (!isOpen()) return
+        suspendCoroutine {
             server.close { it.resume(Unit) }
         }
     }
 }
 
 suspend fun Server.listenSuspend(port: Int, host: String?, backlog: Int) {
-    suspendCoroutine<Unit> {
+    suspendCancellableCoroutine {
         if (host != null && port != -1) {
             listen(port, host, backlog) {
                 it.resume(Unit)
@@ -83,5 +89,6 @@ suspend fun Server.listenSuspend(port: Int, host: String?, backlog: Int) {
                 it.resume(Unit)
             }
         }
+        it.invokeOnCancellation { close { } }
     }
 }

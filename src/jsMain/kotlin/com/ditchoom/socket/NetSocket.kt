@@ -6,7 +6,8 @@ import org.khronos.webgl.Uint8Array
 @JsNonModule
 external class Net {
     companion object {
-        fun connect(tcpOptions: tcpOptions, connectListener: () -> Unit): Socket
+        fun connect(port: Int, host: String, connectListener: () -> Unit): Socket
+        fun connect(options: Options, connectListener: () -> Unit): Socket
         fun connect(
             tcpOptions: TcpSocketConnectOpts,
             connectListener: () -> Unit = definedExternally
@@ -20,7 +21,7 @@ external class Net {
 @JsNonModule
 external class Tls {
     companion object {
-        fun connect(tcpOptions: tcpOptions, connectListener: () -> Unit): Socket
+        fun connect(tcpOptions: Options, connectListener: () -> Unit): Socket
         fun connect(
             tcpOptions: TcpSocketConnectOpts,
             connectListener: () -> Unit = definedExternally
@@ -105,13 +106,20 @@ open external interface TcpSocketConnectOpts : ConnectOpts {
 }
 
 class OnRead(
+    @JsName("buffer")
     var buffer: (() -> Uint8Array)? = null,
+    @JsName("callback")
     var callback: ((Int, Uint8Array) -> Boolean)? = null
 )
 
-class tcpOptions(
+@JsName("options")
+class Options(
+    @JsName("port")
     val port: Int,
+    @JsName("host")
     val host: String? = null,
+    @JsName("onread")
     val onread: OnRead? = null,
-    val servername: String? = host,
+    @JsName("rejectUnauthorized")
+    val rejectUnauthorized: Boolean = true,
 )

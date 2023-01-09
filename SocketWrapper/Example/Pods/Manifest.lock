@@ -1,0 +1,16 @@
+PODS:
+  - SocketWrapper (0.1.0)
+
+DEPENDENCIES:
+  - SocketWrapper (from `../`)
+
+EXTERNAL SOURCES:
+  SocketWrapper:
+    :path: "../"
+
+SPEC CHECKSUMS:
+  SocketWrapper: ed45d06e09f4f707c51740b4200de495a6c09821
+
+PODFILE CHECKSUM: 2874858563d7e2a01b9e73e378d302235b0126aa
+
+COCOAPODS: 1.11.3

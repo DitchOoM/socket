@@ -19,7 +19,7 @@ suspend fun ClientSocket.Companion.connect(
     port: Int,
     hostname: String? = null,
     tls: Boolean = false,
-    timeout: Duration = 1.seconds,
+    timeout: Duration = 15.seconds,
     socketOptions: SocketOptions? = null,
 ): ClientToServerSocket {
     val socket = ClientSocket.allocate(tls)
@@ -31,7 +31,7 @@ suspend fun <T> ClientSocket.Companion.connect(
     port: Int,
     hostname: String? = null,
     tls: Boolean = false,
-    timeout: Duration = 1.seconds,
+    timeout: Duration = 15.seconds,
     socketOptions: SocketOptions? = null,
     lambda: suspend (ClientSocket) -> T
 ): T {

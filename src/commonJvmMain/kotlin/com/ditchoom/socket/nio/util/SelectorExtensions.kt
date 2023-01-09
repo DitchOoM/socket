@@ -5,9 +5,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.Selector
-import java.util.concurrent.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 
 suspend fun Selector.aSelect(timeout: Duration): Int {
@@ -27,11 +27,9 @@ suspend fun Selector.aSelect(timeout: Duration): Int {
     }
 }
 
-suspend fun Selector.aClose() = suspendCancellableCoroutine<Unit> {
+suspend fun Selector.aClose() = suspendCoroutine<Unit> {
     try {
         it.resume(close())
-    } catch (e: CancellationException) {
-        // ignore
     } catch (e: Throwable) {
         it.resumeWithException(e)
     }
