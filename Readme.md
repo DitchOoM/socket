@@ -42,6 +42,7 @@ A kotlin multiplatform library that allows you send network data via sockets</a>
       <a href="#usage">Usage</a>
       <ul>
         <li><a href="#suspend-connect-read-write-and-close">Suspend connect, read, write and close</a></li>
+        <li><a href="#Server-example">Server example</a></li>
         <li><a href="#TLS-support">TLS Support</a></li>
         <li><a href="#Client-echo-example">Client echo example</a></li>
         <li><a href="#Server-echo-example">Server echo example</a></li>
@@ -110,7 +111,7 @@ socket.close() // close the socket
 Or use lambda which auto closes the socket
 
 ```kotlin
-// Run in a coroutine scope, same defaults as the other `connect` method
+// Run in a suspend method, same defaults as the other `connect` method
 val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
     val request =
         """
@@ -125,6 +126,26 @@ Connection: close
 // response is populated, no need to call socket.close()
 ```
 
+## Server Example
+
+```kotlin
+// Run in a suspend method, pass in the coroutine scope into ServerSocket.allocate
+val server = ServerSocket.allocate(scope)
+val text = "Sphinx of black quartz, judge my vow."
+server.start { serverToClient ->
+    // new client has connected, can now read and write to it.
+    val localPort = serverToClient.localPort()
+    val remotePort = serverToClient.remotePort()
+    val stringRead =
+        serverToClient.readString(com.ditchoom.buffer.Charset.UTF8) // read a utf8 string
+    val readBuffer = serverToClient.read() // read a ReadBuffer as defined in the buffer module
+    val bytesWritten = serverToClient.write(buffer) // write the buffer to the client
+    serverToClient.close()
+}
+// after some time
+server.close()
+```
+
 ## TLS support
 
 ```kotlin
@@ -135,6 +156,7 @@ val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
 ```
 
 ## Client echo example
+
 ```kotlin
 val server = ServerSocket.allocate(scope)
 val mutex = Mutex(locked = true) // only needed for local testing
@@ -155,18 +177,19 @@ server.close()
 ```
 
 ## Server echo example
+
 ```kotlin
 val server = ServerSocket.allocate(scope)
 val text = "Sphinx of black quartz, judge my vow."
 server.start { serverToClient ->
-    val buffer = serverToClient.read(1.seconds)
+    val buffer = serverToClient.read()
     buffer.resetForRead()
     val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
     assertEquals(text, dataReceivedFromClient)
     serverToClient.close()
 }
 ClientSocket.connect(server.port()) { clientToServer ->
-    clientToServer.write(text, Charset.UTF8, 1.seconds)
+    clientToServer.write(text, Charset.UTF8)
 }
 server.close()
 ```
