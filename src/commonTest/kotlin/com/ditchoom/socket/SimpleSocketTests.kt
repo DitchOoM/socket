@@ -91,7 +91,7 @@ class SimpleSocketTests {
         var localPort = 1
         val remotePort = if (tls) 443 else 80
         val response =
-            ClientSocket.connect(remotePort, domain, tls = tls, timeout = 5.seconds) { socket ->
+            ClientSocket.connect(remotePort, domain, tls = tls, timeout = 10.seconds) { socket ->
                 val request =
                     """
 GET / HTTP/1.1

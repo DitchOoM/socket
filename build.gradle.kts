@@ -1,11 +1,5 @@
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 
-buildscript {
-    extra.apply {
-        set("kotlin_version", "1.8.0")
-    }
-}
-
 plugins {
 //    id("dev.petuska.npm.publish") version "3.2.0"
     kotlin("multiplatform") version "1.8.0"
