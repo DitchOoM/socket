@@ -11,10 +11,10 @@ interface Reader {
     fun isOpen(): Boolean
 
     @Throws(CancellationException::class, SocketClosedException::class)
-    suspend fun read(timeout: Duration = 1.seconds): ReadBuffer
+    suspend fun read(timeout: Duration = 15.seconds): ReadBuffer
 
     @Throws(CancellationException::class, SocketClosedException::class)
-    suspend fun readString(charset: Charset, timeout: Duration = 1.seconds): CharSequence {
+    suspend fun readString(charset: Charset, timeout: Duration = 15.seconds): CharSequence {
         val buffer = read(timeout)
         buffer.resetForRead()
         return buffer.readString(buffer.remaining(), charset)

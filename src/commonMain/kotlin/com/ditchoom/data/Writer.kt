@@ -10,10 +10,10 @@ import kotlin.time.Duration.Companion.seconds
 
 interface Writer {
     @Throws(CancellationException::class, SocketClosedException::class)
-    suspend fun write(buffer: ReadBuffer, timeout: Duration = 1.seconds): Int
+    suspend fun write(buffer: ReadBuffer, timeout: Duration = 15.seconds): Int
 
     @Throws(CancellationException::class, SocketClosedException::class)
-    suspend fun write(string: String, charset: Charset, timeout: Duration = 1.seconds): Int {
+    suspend fun write(string: String, charset: Charset, timeout: Duration = 15.seconds): Int {
         return write(string.toReadBuffer(charset), timeout)
     }
 }

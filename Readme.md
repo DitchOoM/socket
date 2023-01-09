@@ -93,7 +93,7 @@ originally created as a side project for a kotlin multiplatform mqtt data sync s
 val socket = ClientSocket.connect(
     port = 80, // no default
     hostname = "example.com", // null is default which points to localhost
-    timeout = 1.seconds, // default
+    timeout = 15.seconds, // default
     socketOptions = null, // default
 )
 val isOpen = socket.isOpen()
