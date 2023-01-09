@@ -179,7 +179,7 @@ android {
     namespace = "$group.${rootProject.name}"
 }
 dependencies {
-    implementation("androidx.core:core-ktx:+")
+    implementation("androidx.core:core-ktx:1.9.0")
 }
 
 val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
