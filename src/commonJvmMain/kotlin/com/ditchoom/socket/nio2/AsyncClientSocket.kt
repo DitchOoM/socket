@@ -2,10 +2,8 @@ package com.ditchoom.socket.nio2
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.ClientToServerSocket
-import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.SocketUnknownHostException
 import com.ditchoom.socket.nio.util.asInetAddress
-import com.ditchoom.socket.nio.util.asyncSetOptions
 import com.ditchoom.socket.nio2.util.aConnect
 import com.ditchoom.socket.nio2.util.asyncSocket
 import kotlinx.coroutines.withTimeout
@@ -23,9 +21,8 @@ class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) :
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?,
-        socketOptions: SocketOptions?
-    ): SocketOptions = withTimeout(timeout) {
+        hostname: String?
+    ) = withTimeout(timeout) {
         val socketAddress = if (hostname != null) {
             try {
                 InetSocketAddress(hostname.asInetAddress(), port)
@@ -49,8 +46,6 @@ class AsyncClientSocket(bufferFactory: () -> PlatformBuffer) :
         val asyncSocket = asyncSocket()
 
         this@AsyncClientSocket.socket = asyncSocket
-        val options = asyncSocket.asyncSetOptions(socketOptions)
         asyncSocket.aConnect(socketAddress, timeout)
-        options
     }
 }

@@ -7,7 +7,6 @@ interface ClientToServerSocket : ClientSocket {
     suspend fun open(
         port: Int,
         timeout: Duration = 15.seconds,
-        hostname: String? = null,
-        socketOptions: SocketOptions? = null
-    ): SocketOptions
+        hostname: String? = null
+    )
 }
