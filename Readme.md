@@ -126,7 +126,7 @@ Connection: close
 // response is populated, no need to call socket.close()
 ```
 
-## Server Example
+### Server Example
 
 ```kotlin
 // Run in a suspend method, pass in the coroutine scope into ServerSocket.allocate
@@ -146,7 +146,7 @@ server.start { serverToClient ->
 server.close()
 ```
 
-## TLS support
+### TLS support
 
 ```kotlin
 // Simply add tls=true to your ClientSocket.connect or ClientSocket.allocate
@@ -155,7 +155,7 @@ val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
 }
 ```
 
-## Client echo example
+### Client echo example
 
 ```kotlin
 val server = ServerSocket.allocate(scope)
@@ -176,7 +176,7 @@ ClientSocket.connect(server.port()) { clientToServer ->
 server.close()
 ```
 
-## Server echo example
+### Server echo example
 
 ```kotlin
 val server = ServerSocket.allocate(scope)
