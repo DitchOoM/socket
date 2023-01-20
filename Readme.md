@@ -12,7 +12,7 @@
 <h3 align="center">Socket</h3>
 
 <p align="center">
-A kotlin multiplatform library that allows you send network data via sockets</a>
+A kotlin multiplatform library that allows you send network data via sockets
 <br />
 <!-- <a href="https://github.com/DitchOoM/socket"><strong>Explore the docs »</strong></a> -->
 <br />
