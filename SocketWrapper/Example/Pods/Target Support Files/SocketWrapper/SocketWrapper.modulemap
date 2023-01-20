@@ -1,6 +1,0 @@
-framework module SocketWrapper {
-  umbrella header "SocketWrapper-umbrella.h"
-
-  export *
-  module * { export * }
-}

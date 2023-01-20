@@ -12,7 +12,7 @@
 <h3 align="center">Socket</h3>
 
 <p align="center">
-A kotlin multiplatform library that allows you send network data via sockets</a>
+A kotlin multiplatform library that allows you send network data via sockets
 <br />
 <!-- <a href="https://github.com/DitchOoM/socket"><strong>Explore the docs »</strong></a> -->
 <br />
@@ -86,6 +86,24 @@ originally created as a side project for a kotlin multiplatform mqtt data sync s
 ## Installation
 
 - Add `implementation("com.ditchoom:socket:$version")` to your `build.gradle` dependencies
+- Copy the contents of this [patch.js](https://github.com/DitchOoM/socket/blob/main/webpack.config.d/patch.js) file into your own `webpack.config.d` directory if you are targeting `js`
+- Add this to your `kotlin {` bracket in build.gradle.kts if you are targeting an apple platform
+```
+kotlin {
+  ...
+    cocoapods {
+        ios.deploymentTarget = "13.0"
+        osx.deploymentTarget = "11.0"
+        watchos.deploymentTarget = "6.0"
+        tvos.deploymentTarget = "13.0"
+        pod("SocketWrapper") {
+            source = git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
+                tag = "0.1.0"
+            }
+        }
+    }
+}
+```
 
 ## Client Socket Usage
 

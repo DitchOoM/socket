@@ -31,5 +31,3 @@ actual fun ServerSocket.Companion.allocate(
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }
 }
-
-external fun require(module: String): dynamic

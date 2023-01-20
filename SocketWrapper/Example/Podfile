@@ -1,7 +1,0 @@
-use_frameworks!
-
-platform :ios, '13.0'
-
-target 'SocketWrapper_Example' do
-  pod 'SocketWrapper', :path => '../'
-end

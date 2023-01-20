@@ -37,7 +37,7 @@ kotlin {
             useJUnit()
         }
     }
-    js(IR) {
+    js(BOTH) {
         browser()
         nodejs()
     }
@@ -45,7 +45,9 @@ kotlin {
     macosArm64()
     macosX64()
     watchos()
+    watchosSimulatorArm64()
     tvos()
+    tvosSimulatorArm64()
     ios()
     iosSimulatorArm64()
     tasks.getByName<KotlinNativeSimulatorTest>("iosSimulatorArm64Test") {
@@ -58,13 +60,15 @@ kotlin {
         watchos.deploymentTarget = "6.0"
         tvos.deploymentTarget = "13.0"
         pod("SocketWrapper") {
-            source = path(project.file("./SocketWrapper/"))
+            source = git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
+                tag = "0.1.0"
+            }
         }
     }
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.1.6")
+                implementation("com.ditchoom:buffer:1.1.8")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
             }
         }
@@ -98,8 +102,12 @@ kotlin {
         val iosSimulatorArm64Test by getting
         val watchosMain by getting
         val watchosTest by getting
+        val watchosSimulatorArm64Main by getting
+        val watchosSimulatorArm64Test by getting
         val tvosMain by getting
         val tvosTest by getting
+        val tvosSimulatorArm64Main by getting
+        val tvosSimulatorArm64Test by getting
 
         val appleMain by sourceSets.creating {
             dependsOn(commonMain)
@@ -108,8 +116,10 @@ kotlin {
             macosArm64Main.dependsOn(this)
             iosMain.dependsOn(this)
             iosSimulatorArm64Main.dependsOn(this)
-            watchosMain.dependsOn(this)
             tvosMain.dependsOn(this)
+            tvosSimulatorArm64Main.dependsOn(this)
+            watchosMain.dependsOn(this)
+            watchosSimulatorArm64Main.dependsOn(this)
         }
 
         val appleTest by sourceSets.creating {
@@ -119,8 +129,10 @@ kotlin {
             macosArm64Test.dependsOn(this)
             iosTest.dependsOn(this)
             iosSimulatorArm64Test.dependsOn(this)
-            watchosTest.dependsOn(this)
             tvosTest.dependsOn(this)
+            tvosSimulatorArm64Test.dependsOn(this)
+            watchosTest.dependsOn(this)
+            watchosSimulatorArm64Test.dependsOn(this)
         }
 
 //        val nativeMain by sourceSets.creating {
