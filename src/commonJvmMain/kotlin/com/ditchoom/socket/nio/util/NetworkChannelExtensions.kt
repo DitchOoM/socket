@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
-import java.nio.channels.DatagramChannel
 import java.nio.channels.NetworkChannel
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.resume
@@ -17,7 +16,6 @@ fun NetworkChannel.localAddressOrNull(): SocketAddress? {
         null
     }
 }
-
 
 suspend fun NetworkChannel.aClose() = withContext(Dispatchers.IO) {
     suspendCoroutine<Unit> { cont ->
