@@ -10,11 +10,15 @@ actual fun ClientSocket.Companion.allocate(
     tls: Boolean,
     bufferFactory: () -> PlatformBuffer
 ): ClientToServerSocket {
-    val clientSocket = try {
-        AsyncClientSocket(bufferFactory)
-    } catch (t: Throwable) {
-        // It's possible Android OS version is too old to support AsyncSocketChannel
-        NioClientSocket(bufferFactory, false)
+    val clientSocket = if (USE_ASYNC_CHANNELS) {
+        try {
+            AsyncClientSocket(bufferFactory)
+        } catch (t: Throwable) {
+            // It's possible Android OS version is too old to support AsyncSocketChannel
+            NioClientSocket(bufferFactory, USE_NIO_BLOCKING)
+        }
+    } else {
+        NioClientSocket(bufferFactory, USE_NIO_BLOCKING)
     }
     return if (tls) {
         SSLClientSocket(clientSocket)
@@ -22,6 +26,9 @@ actual fun ClientSocket.Companion.allocate(
         clientSocket
     }
 }
+
+var USE_ASYNC_CHANNELS = true
+var USE_NIO_BLOCKING = false
 
 actual fun ServerSocket.Companion.allocate(
     scope: CoroutineScope,
