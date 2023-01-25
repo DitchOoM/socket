@@ -46,8 +46,12 @@ data class WrappedContinuation<T>(val continuation: CancellableContinuation<T>, 
     fun cancel() = continuation.cancel()
 }
 
-suspend fun SocketChannel.aRemoteAddress(): SocketAddress? = withContext(Dispatchers.IO) {
-    remoteAddress
+fun SocketChannel.remoteAddressOrNull(): SocketAddress? {
+    return try {
+        remoteAddress
+    } catch (e: Exception) {
+        null
+    }
 }
 
 suspend fun AbstractSelectableChannel.suspendUntilReady(

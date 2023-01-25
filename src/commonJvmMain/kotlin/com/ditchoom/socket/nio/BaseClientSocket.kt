@@ -5,7 +5,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.util.aClose
-import com.ditchoom.socket.nio.util.aRemoteAddress
+import com.ditchoom.socket.nio.util.remoteAddressOrNull
 import com.ditchoom.socket.nio.util.read
 import com.ditchoom.socket.nio.util.write
 import java.net.InetSocketAddress
@@ -20,7 +20,7 @@ abstract class BaseClientSocket(
 
     val selector = if (!blocking) Selector.open()!! else null
 
-    override suspend fun remotePort() = (socket.aRemoteAddress() as? InetSocketAddress)?.port ?: -1
+    override suspend fun remotePort() = (socket.remoteAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
         val buffer = bufferFactory() as JvmBuffer

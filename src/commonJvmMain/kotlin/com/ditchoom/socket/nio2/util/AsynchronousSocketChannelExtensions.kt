@@ -1,6 +1,6 @@
 package com.ditchoom.socket.nio2.util
 
-import com.ditchoom.socket.nio.util.aLocalAddress
+import com.ditchoom.socket.nio.util.localAddressOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -105,7 +105,7 @@ suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): Int 
         if (remote) {
             (aRemoteAddress() as? InetSocketAddress)?.port ?: -1
         } else {
-            (aLocalAddress() as? InetSocketAddress)?.port ?: -1
+            (localAddressOrNull() as? InetSocketAddress)?.port ?: -1
         }
     } catch (e: Exception) {
         -1
