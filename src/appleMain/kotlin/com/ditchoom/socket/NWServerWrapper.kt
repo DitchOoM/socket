@@ -32,7 +32,7 @@ class NWServerWrapper(private val scope: CoroutineScope) : ServerSocket {
                 host,
                 backlog.convert(),
                 acceptedClientCallback
-            ) { serverSocketWrapper, errorString, isPosixError, isDnsError, isTlsError ->
+            ) { serverSocketWrapper, errorString, _, _, _ ->
                 if (errorString != null) {
                     it.resumeWithException(SocketException(errorString))
                 } else if (serverSocketWrapper != null) {

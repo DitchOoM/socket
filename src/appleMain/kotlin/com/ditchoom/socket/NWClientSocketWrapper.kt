@@ -20,7 +20,7 @@ class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToSe
                 port.toUShort(),
                 timeout.inWholeSeconds.convert(),
                 useTls
-            ) { socket, errorString, isPosixError, isDnsError, isTlsError ->
+            ) { socket, errorString, _, isDnsError, _ ->
 
                 if (errorString != null) {
                     if (isDnsError) {

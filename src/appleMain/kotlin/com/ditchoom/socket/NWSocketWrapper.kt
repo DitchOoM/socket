@@ -25,7 +25,7 @@ open class NWSocketWrapper : ClientSocket {
         val socket = socket ?: return PlatformBuffer.allocate(0)
         return withTimeout(timeout) {
             suspendCancellableCoroutine {
-                socket.readDataWithCompletion { data, errorString, isComplete ->
+                socket.readDataWithCompletion { data, errorString, _ ->
                     if (errorString != null) {
                         socket.closeWithCompletionHandler {
                             it.resumeWithException(SocketClosedException(errorString))

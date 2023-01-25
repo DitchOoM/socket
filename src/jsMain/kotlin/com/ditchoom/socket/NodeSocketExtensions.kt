@@ -53,7 +53,7 @@ suspend fun Socket.write(buffer: Uint8Array) {
         write(buffer) {
             it.resume(Unit)
         }
-        it.invokeOnCancellation { throwableLocal ->
+        it.invokeOnCancellation {
             end { }
             destroy()
         }
