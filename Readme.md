@@ -60,7 +60,7 @@ A kotlin multiplatform library that allows you send network data via sockets
 
 ## About The Project
 
-Managing metwork calls can be slightly different based on each platform. This project aims to make
+Managing network calls can be slightly different based on each platform. This project aims to make
 it **easier to manage sockets in a cross platform way using kotlin multiplatform**. This was
 originally created as a side project for a kotlin multiplatform mqtt data sync solution.
 

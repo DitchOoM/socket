@@ -5,6 +5,8 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
@@ -14,7 +16,7 @@ open class NodeSocket : ClientSocket {
     internal lateinit var netSocket: Socket
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
     internal var hadTransmissionError = false
-
+    private val writeMutex = Mutex()
     override fun isOpen() = !isClosed || netSocket.remoteAddress != null
 
     override suspend fun localPort() = netSocket.localPort
@@ -48,7 +50,7 @@ open class NodeSocket : ClientSocket {
             throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val array = (buffer as JsBuffer).buffer
-        netSocket.write(array)
+        writeMutex.withLock { netSocket.write(array) }
         return array.byteLength
     }
 

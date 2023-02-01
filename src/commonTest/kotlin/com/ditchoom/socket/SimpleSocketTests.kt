@@ -4,6 +4,7 @@ import block
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.toReadBuffer
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlin.test.Test
@@ -194,15 +195,27 @@ Connection: close
 
     @Test
     fun suspendingInputStream() = block {
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+        suspendingInputStream(false)
+    }
+
+    @Test
+    fun suspendingInputStreamReadAhead() = block {
+        suspendingInputStream(true)
+    }
+
+    suspend fun CoroutineScope.suspendingInputStream(readAhead: Boolean) {
+        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return
         val server = ServerSocket.allocate(this)
         val text = "yolo swag lyfestyle"
+        val text2 = "old mac donald had a farm"
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
         server.start { serverToClient ->
             serverToClientPort = serverToClient.localPort()
             assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
-            serverToClient.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
+            serverToClient.write(text, Charset.UTF8, 1.seconds)
+//            delay(10)
+//            serverToClient.write(text2, Charset.UTF8, 1.seconds)
             serverToClient.close()
             serverToClientMutex.unlock()
         }
@@ -210,11 +223,13 @@ Connection: close
         assertTrue(serverPort > 0, "No port number from server")
         val clientToServer = ClientSocket.allocate()
         clientToServer.open(serverPort)
-        val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer, 8096)
+        val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer, if (readAhead) this else null)
         val buffer = inputStream.sizedReadBuffer(text.length).slice()
         serverToClientMutex.lock()
         val utf8 = buffer.readString(text.length, Charset.UTF8)
         assertEquals(utf8, text)
+//        val utf8v2 = buffer.readString(text2.length, Charset.UTF8)
+//        assertEquals(utf8v2, text2)
         val clientToServerPort = clientToServer.localPort()
         assertTrue(clientToServerPort > 0, "No port number from clientToServerPort")
         clientToServer.close()

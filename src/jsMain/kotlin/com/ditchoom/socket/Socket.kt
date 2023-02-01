@@ -14,7 +14,9 @@ actual fun ClientSocket.Companion.allocate(
     bufferFactory: () -> PlatformBuffer
 ): ClientToServerSocket {
     return if (js("global.window") == null) {
-        NodeClientSocket(tls, bufferFactory)
+        val s = NodeClientSocket(tls, bufferFactory)
+        println("isnodejs = true")
+        s
     } else {
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }
@@ -28,6 +30,7 @@ actual fun ServerSocket.Companion.allocate(
 //        throw UnsupportedOperationException("Not implemented yet")
         return NodeServerSocket(scope)
     } else {
+        println("server isnodejs = true")
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }
 }

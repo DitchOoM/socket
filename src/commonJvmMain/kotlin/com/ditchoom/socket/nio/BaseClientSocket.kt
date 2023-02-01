@@ -8,6 +8,8 @@ import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
 import com.ditchoom.socket.nio.util.remoteAddressOrNull
 import com.ditchoom.socket.nio.util.write
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.net.InetSocketAddress
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
@@ -20,6 +22,8 @@ abstract class BaseClientSocket(
 
     val selector = if (!blocking) Selector.open()!! else null
 
+    private val readMutex = Mutex()
+    private val writeMutex = Mutex()
     override suspend fun remotePort() = (socket.remoteAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
@@ -29,7 +33,7 @@ abstract class BaseClientSocket(
     }
 
     override suspend fun read(buffer: JvmBuffer, timeout: Duration): Int {
-        val bytesRead = socket.read(buffer.byteBuffer, selector, timeout)
+        val bytesRead = readMutex.withLock { socket.read(buffer.byteBuffer, selector, timeout) }
         if (bytesRead < 0) {
             throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
         }
@@ -37,7 +41,7 @@ abstract class BaseClientSocket(
     }
 
     override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
-        val bytesWritten = socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout)
+        val bytesWritten = writeMutex.withLock { socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout) }
         if (bytesWritten < 0) {
             throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
         }

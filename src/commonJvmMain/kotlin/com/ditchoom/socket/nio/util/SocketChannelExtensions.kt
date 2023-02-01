@@ -1,5 +1,6 @@
 package com.ditchoom.socket.nio.util
 
+import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
@@ -12,6 +13,7 @@ import java.lang.Math.random
 import java.net.SocketAddress
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
+import java.nio.channels.ClosedSelectorException
 import java.nio.channels.NetworkChannel
 import java.nio.channels.ReadableByteChannel
 import java.nio.channels.SelectableChannel
@@ -61,7 +63,12 @@ suspend fun AbstractSelectableChannel.suspendUntilReady(
 ) {
     val random = random()
     suspendCancellableCoroutine<Double> {
-        val key = register(selector, ops, WrappedContinuation(it, random))
+        val key = try {
+            register(selector, ops, WrappedContinuation(it, random))
+        } catch (e: ClosedSelectorException) {
+            it.resumeWithException(SocketClosedException("Socket closed", e))
+            return@suspendCancellableCoroutine
+        }
         runBlocking {
             selector.select(key, random, timeout)
         }
