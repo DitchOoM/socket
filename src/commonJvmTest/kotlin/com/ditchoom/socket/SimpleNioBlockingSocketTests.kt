@@ -31,6 +31,9 @@ class SimpleNioBlockingSocketTests {
     fun httpsRawSocketGoogleDomain() = SimpleSocketTests().httpsRawSocketGoogleDomain()
 
     @Test
+    fun manyClientsConnectingToOneServer() = SimpleSocketTests().manyClientsConnectingToOneServer()
+
+    @Test
     fun serverEcho() = SimpleSocketTests().serverEcho()
 
     @Test

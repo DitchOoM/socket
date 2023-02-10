@@ -83,6 +83,7 @@ class SuspendingSocketInputStream(
         if (!reader.isOpen()) {
             return
         }
+
         this.deferredBuffer = readAheadScope?.async {
             try {
                 readFromReader()

@@ -61,7 +61,7 @@ kotlin {
         tvos.deploymentTarget = "13.0"
         pod("SocketWrapper") {
             source = git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
-                tag = "0.1.0"
+                tag = "0.1.1"
             }
         }
     }

@@ -1,15 +1,18 @@
 package com.ditchoom.socket
 
-import block
+import blockingTest
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -18,77 +21,82 @@ import kotlin.time.Duration.Companion.seconds
 class SimpleSocketTests {
 
     @Test
-    fun connectTimeoutWorks() = block {
-        if (getNetworkCapabilities() == NetworkCapabilities.FULL_SOCKET_ACCESS) {
-            try {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
-                fail("should not have reached this")
-            } catch (_: TimeoutCancellationException) {
-            } catch (_: SocketException) {
-            }
-        } else {
-            assertFailsWith<UnsupportedOperationException> {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
-            }
+    fun connectTimeoutWorks() = blockingTest {
+        try {
+            ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
+            fail("should not have reached this")
+        } catch (_: TimeoutCancellationException) {
+        } catch (_: SocketException) {
         }
     }
 
     @Test
-    fun invalidHost() = block {
-        if (getNetworkCapabilities() == NetworkCapabilities.FULL_SOCKET_ACCESS) {
-            try {
-                ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 1.seconds)
-                fail("should not have reached this")
-            } catch (e: SocketException) {
-                // expected
-            }
-        } else {
-            assertFailsWith<UnsupportedOperationException> {
-                ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 1.seconds)
-            }
+    fun invalidHost() = blockingTest {
+        try {
+            ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 1.seconds)
+            fail("should not have reached this")
+        } catch (e: SocketException) {
+            // expected
         }
     }
 
     @Test
-    fun closeWorks() = block {
-        if (getNetworkCapabilities() == NetworkCapabilities.FULL_SOCKET_ACCESS) {
-            try {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
-                fail("the port is invalid, so this line should never hit")
-            } catch (t: TimeoutCancellationException) {
-                // expected
-            } catch (s: SocketException) {
-                // expected
-            }
-        } else {
-            assertFailsWith<UnsupportedOperationException> {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
-            }
+    fun closeWorks() = blockingTest {
+        try {
+            ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
+            fail("the port is invalid, so this line should never hit")
+        } catch (t: TimeoutCancellationException) {
+            // expected
+        } catch (s: SocketException) {
+            // expected
         }
     }
 
     @Test
-    fun httpRawSocketExampleDomain() = block {
-        http("example.com", false)
+    fun manyClientsConnectingToOneServer() = blockingTest {
+        val server = ServerSocket.allocate()
+        val acceptedClientFlow = server.bind()
+        val clientCount = 5
+        val completed = BooleanArray(clientCount)
+        val jobs = mutableListOf<Job>()
+        launch {
+            acceptedClientFlow.collect { serverToClient ->
+                launch {
+                    val indexReceived = serverToClient.readString().toInt()
+                    completed[indexReceived] = true
+                    serverToClient.writeString("ack $indexReceived")
+                    serverToClient.close()
+                }
+            }
+        }
+        repeat(clientCount) { index ->
+            jobs += launch {
+                ClientSocket.connect(server.port()) { clientToServer ->
+                    clientToServer.writeString(index.toString())
+                    assertEquals("ack $index", clientToServer.readString())
+                    clientToServer.close()
+                }
+            }
+        }
+        jobs.joinAll()
+        server.close()
+        val expected = BooleanArray(clientCount) { true }
+        assertContentEquals(expected, completed)
     }
 
     @Test
-    fun httpsRawSocketExampleDomain() = block {
-        http("example.com", true)
-    }
+    fun httpRawSocketExampleDomain() = readHttp("example.com", false)
 
     @Test
-    fun httpRawSocketGoogleDomain() {
-        http("google.com", false)
-    }
+    fun httpsRawSocketExampleDomain() = readHttp("example.com", true)
 
     @Test
-    fun httpsRawSocketGoogleDomain() {
-        http("google.com", true)
-    }
+    fun httpRawSocketGoogleDomain() = readHttp("google.com", false)
 
-    private fun http(domain: String, tls: Boolean) = block {
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+    @Test
+    fun httpsRawSocketGoogleDomain() = readHttp("google.com", true)
+
+    private fun readHttp(domain: String, tls: Boolean) = blockingTest {
         var localPort = 1
         val remotePort = if (tls) 443 else 80
         val response =
@@ -103,24 +111,18 @@ Connection: close
                 val bytesWritten = socket.write(request, 5.seconds)
                 localPort = socket.localPort()
                 assertTrue { bytesWritten > 0 }
-                val buffer = socket.readString(Charset.UTF8, 5.seconds)
-                val charset = if (buffer.contains("charset=ISO-8859-1", ignoreCase = true)) {
+                val response = StringBuilder(socket.readString(timeout = 5.seconds))
+                val charset = if (response.contains("charset=ISO-8859-1", ignoreCase = true)) {
                     Charset.ISOLatin1
-                } else if (buffer.contains("charset=ascii", ignoreCase = true)) {
+                } else if (response.contains("charset=ascii", ignoreCase = true)) {
                     Charset.ASCII
                 } else {
                     Charset.UTF8
                 }
-                val s = StringBuilder(buffer)
-                try {
-                    while (socket.isOpen()) {
-                        val string = socket.readString(charset, 5.seconds)
-                        s.append(string)
-                    }
-                } catch (e: SocketClosedException) {
-                    // expected when the server has Connection: close header
+                socket.readFlowString(charset, 5.seconds).collect {
+                    response.append(it)
                 }
-                s
+                response
             }
         assertTrue { response.startsWith("HTTP/") }
         assertTrue { response.contains("<html", ignoreCase = true) }
@@ -130,24 +132,26 @@ Connection: close
     }
 
     @Test
-    fun serverEcho() = block {
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
-        val server = ServerSocket.allocate(this)
+    fun serverEcho() = blockingTest {
+        val server = ServerSocket.allocate()
         val text = "yolo swag lyfestyle"
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
-        server.start { serverToClient ->
-            val buffer = serverToClient.read(1.seconds)
-            buffer.resetForRead()
-            val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
-            assertEquals(text, dataReceivedFromClient)
-            serverToClientPort = serverToClient.localPort()
-            assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
-            serverToClient.close()
-            serverToClientMutex.unlock()
+        val flow = server.bind()
+        launch {
+            flow.collect { serverToClient ->
+                val buffer = serverToClient.read(1.seconds)
+                buffer.resetForRead()
+                val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
+                assertEquals(text, dataReceivedFromClient)
+                serverToClientPort = serverToClient.localPort()
+                assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
+                serverToClient.close()
+                serverToClientMutex.unlock()
+            }
         }
         val serverPort = server.port()
-        assertTrue(serverPort > 0, "No port number from server")
+        assertTrue(serverPort > 0, "No port ($serverPort) number from server")
         val clientToServer = ClientSocket.allocate()
         clientToServer.open(serverPort, 5.seconds)
         clientToServer.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
@@ -162,18 +166,21 @@ Connection: close
     }
 
     @Test
-    fun clientEcho() = block {
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@block
+    fun clientEcho() = blockingTest {
         val text = "yolo swag lyfestyle"
-        val server = ServerSocket.allocate(this)
+        val server = ServerSocket.allocate()
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
-        server.start { serverToClient ->
-            serverToClientPort = serverToClient.localPort()
-            assertTrue { serverToClientPort > 0 }
-            serverToClient.write(text, Charset.UTF8, 5.seconds)
-            serverToClient.close()
-            serverToClientMutex.unlock()
+        val acceptedClientFlow = server.bind()
+        launch {
+            acceptedClientFlow.collect { serverToClient ->
+                serverToClientPort = serverToClient.localPort()
+                assertTrue { serverToClientPort > 0 }
+                serverToClient.writeString(text, Charset.UTF8, 5.seconds)
+                serverToClient.close()
+                serverToClientMutex.unlock()
+                return@collect
+            }
         }
         val clientToServer = ClientSocket.allocate()
         val serverPort = server.port()
@@ -194,30 +201,33 @@ Connection: close
     }
 
     @Test
-    fun suspendingInputStream() = block {
+    fun suspendingInputStream() = blockingTest {
         suspendingInputStream(false)
     }
 
     @Test
-    fun suspendingInputStreamReadAhead() = block {
+    fun suspendingInputStreamReadAhead() = blockingTest {
         suspendingInputStream(true)
     }
 
     suspend fun CoroutineScope.suspendingInputStream(readAhead: Boolean) {
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return
-        val server = ServerSocket.allocate(this)
+        val server = ServerSocket.allocate()
         val text = "yolo swag lyfestyle"
         val text2 = "old mac donald had a farm"
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
-        server.start { serverToClient ->
-            serverToClientPort = serverToClient.localPort()
-            assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
-            serverToClient.write(text, Charset.UTF8, 1.seconds)
+        val acceptedClientFlow = server.bind()
+        launch {
+            acceptedClientFlow.collect { serverToClient ->
+                serverToClientPort = serverToClient.localPort()
+                assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
+                serverToClient.writeString(text, Charset.UTF8, 1.seconds)
 //            delay(10)
 //            serverToClient.write(text2, Charset.UTF8, 1.seconds)
-            serverToClient.close()
-            serverToClientMutex.unlock()
+                serverToClient.close()
+                serverToClientMutex.unlock()
+                return@collect
+            }
         }
         val serverPort = server.port()
         assertTrue(serverPort > 0, "No port number from server")

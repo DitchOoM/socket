@@ -79,7 +79,6 @@ class SSLClientSocket(
                     }
                     when (checkNotNull(result.status)) {
                         SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
-                            println("cached underflow")
                             cachedBuffer ?: continue
                             cachedBuffer.byteBuffer.compact()
                             byteBufferClientSocket.read(cachedBuffer, timeout)

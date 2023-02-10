@@ -1,26 +1,26 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.JsBuffer
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
-class NodeServerSocket(private val scope: CoroutineScope) : ServerSocket {
-    var server: Server? = null
+class NodeServerSocket : ServerSocket {
 
-    override suspend fun start(
+    private var server: Server? = null
+
+    override suspend fun bind(
         port: Int,
         host: String?,
-        backlog: Int,
-        acceptedClient: suspend (ClientSocket) -> Unit
-    ) {
-        val server = withContext(Dispatchers.Default) {
-            Net.createServer { clientSocket ->
+        backlog: Int
+    ): Flow<ClientSocket> {
+        val server = Net.createServer()
+        val flow = callbackFlow {
+            server.on<Socket>("connection") { clientSocket ->
                 val nodeSocket = NodeSocket()
                 nodeSocket.isClosed = false
                 nodeSocket.netSocket = clientSocket
@@ -31,15 +31,17 @@ class NodeServerSocket(private val scope: CoroutineScope) : ServerSocket {
                     buffer.setLimit(result.length)
                     nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
                 }
-
-                scope.launch {
-                    acceptedClient(nodeSocket)
-                }
+                trySend(nodeSocket).getOrThrow()
             }
+            server.on("close") {
+                channel.close()
+            }
+            awaitClose { server.close { } }
         }
 
         server.listenSuspend(port, host, backlog)
-        this.server = server
+        this@NodeServerSocket.server = server
+        return flow
     }
 
     @Suppress("MemberVisibilityCanBePrivate")
@@ -55,13 +57,13 @@ class NodeServerSocket(private val scope: CoroutineScope) : ServerSocket {
         ) as Uint8Array
     }
 
-    override fun isOpen() = server?.listening ?: false
+    override fun isListening() = server?.listening ?: false
 
     override fun port() = server?.address()?.port ?: -1
 
     override suspend fun close() {
         val server = server ?: return
-        if (!isOpen()) return
+        if (!isListening()) return
         suspendCoroutine {
             server.close { it.resume(Unit) }
         }
@@ -72,19 +74,27 @@ suspend fun Server.listenSuspend(port: Int, host: String?, backlog: Int) {
     suspendCancellableCoroutine {
         if (host != null && port != -1) {
             listen(port, host, backlog) {
-                it.resume(Unit)
+                if (!it.isCompleted) {
+                    it.resume(Unit)
+                }
             }
         } else if (port != -1) {
             listen(port, backlog = backlog) {
-                it.resume(Unit)
+                if (!it.isCompleted) {
+                    it.resume(Unit)
+                }
             }
         } else if (host != null) {
             listen(host = host, backlog = backlog) {
-                it.resume(Unit)
+                if (!it.isCompleted) {
+                    it.resume(Unit)
+                }
             }
         } else {
             listen(backlog = backlog) {
-                it.resume(Unit)
+                if (!it.isCompleted) {
+                    it.resume(Unit)
+                }
             }
         }
         it.invokeOnCancellation { close { } }

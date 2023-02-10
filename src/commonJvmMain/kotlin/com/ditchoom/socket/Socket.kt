@@ -4,7 +4,6 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.nio.NioClientSocket
 import com.ditchoom.socket.nio2.AsyncClientSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
-import kotlinx.coroutines.CoroutineScope
 
 actual fun ClientSocket.Companion.allocate(
     tls: Boolean,
@@ -31,7 +30,6 @@ var USE_ASYNC_CHANNELS = true
 var USE_NIO_BLOCKING = false
 
 actual fun ServerSocket.Companion.allocate(
-    scope: CoroutineScope,
     bufferFactory: () -> PlatformBuffer
 ): ServerSocket =
-    AsyncServerSocket(scope, bufferFactory)
+    AsyncServerSocket(bufferFactory)

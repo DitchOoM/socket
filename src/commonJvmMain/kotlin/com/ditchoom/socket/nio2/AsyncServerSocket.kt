@@ -7,15 +7,13 @@ import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio2.util.aAccept
 import com.ditchoom.socket.nio2.util.aBind
 import com.ditchoom.socket.nio2.util.openAsyncServerSocketChannel
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import java.net.InetSocketAddress
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.AsynchronousServerSocketChannel
 
 class AsyncServerSocket(
-    private val coroutineScope: CoroutineScope,
     private val bufferFactory: () -> PlatformBuffer
 ) : ServerSocket {
 
@@ -23,18 +21,17 @@ class AsyncServerSocket(
 
     override fun port() = (server?.localAddress as? InetSocketAddress)?.port ?: -1
 
-    override fun isOpen() = try {
+    override fun isListening() = try {
         server?.isOpen ?: false
     } catch (e: Throwable) {
         false
     }
 
-    override suspend fun start(
+    override suspend fun bind(
         port: Int,
         host: String?,
         backlog: Int,
-        acceptedClient: suspend (ClientSocket) -> Unit
-    ) {
+    ): Flow<ClientSocket> {
         val socketAddress = if (port > 0) {
             InetSocketAddress(host ?: "localhost", port)
         } else {
@@ -43,17 +40,16 @@ class AsyncServerSocket(
 
         val serverLocal = openAsyncServerSocketChannel()
         val server = serverLocal.aBind(socketAddress, backlog)
-        this.server = server
-
-        coroutineScope.launch {
-            while (isActive && isOpen()) {
+        this@AsyncServerSocket.server = server
+        return flow {
+            while (isListening()) {
                 val client = try {
                     server.aAccept()
                 } catch (e: AsynchronousCloseException) {
                     break
                 }
                 val serverToClient = AsyncServerToClientSocket(bufferFactory, client)
-                launch { acceptedClient(serverToClient) }
+                emit(serverToClient)
             }
         }
     }

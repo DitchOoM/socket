@@ -13,7 +13,7 @@ interface Writer {
     suspend fun write(buffer: ReadBuffer, timeout: Duration = 15.seconds): Int
 
     @Throws(CancellationException::class, SocketClosedException::class)
-    suspend fun write(string: String, charset: Charset, timeout: Duration = 15.seconds): Int {
+    suspend fun writeString(string: String, charset: Charset = Charset.UTF8, timeout: Duration = 15.seconds): Int {
         return write(string.toReadBuffer(charset), timeout)
     }
 }
