@@ -21,6 +21,10 @@ external class Tls {
 
 external class Server {
     fun address(): IpAddress?
+
+    fun <T> on(event: String, callback: (T) -> Unit)
+    fun on(event: String, callback: () -> Unit)
+
     fun close(callback: () -> Unit): Server
     fun getConnections(callback: (err: Any, count: Int) -> Unit): Server
     fun listen(

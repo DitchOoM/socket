@@ -8,11 +8,17 @@ import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
 import com.ditchoom.socket.nio2.util.assignedPort
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.nio.channels.AsynchronousSocketChannel
 import kotlin.time.Duration
 
 abstract class AsyncBaseClientSocket(private val bufferFactory: () -> PlatformBuffer) :
     ByteBufferClientSocket<AsynchronousSocketChannel>() {
+
+    private val readMutex = Mutex()
+    private val writeMutex = Mutex()
+
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
     override suspend fun read(timeout: Duration): ReadBuffer {
@@ -22,7 +28,7 @@ abstract class AsyncBaseClientSocket(private val bufferFactory: () -> PlatformBu
     }
 
     override suspend fun read(buffer: JvmBuffer, timeout: Duration): Int {
-        val bytesRead = socket.aRead(buffer.byteBuffer, timeout)
+        val bytesRead = readMutex.withLock { socket.aRead(buffer.byteBuffer, timeout) }
         if (bytesRead < 0) {
             throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
         }
@@ -30,7 +36,7 @@ abstract class AsyncBaseClientSocket(private val bufferFactory: () -> PlatformBu
     }
 
     override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
-        val bytesWritten = socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout)
+        val bytesWritten = writeMutex.withLock { socket.aWrite((buffer as JvmBuffer).byteBuffer, timeout) }
         if (bytesWritten < 0) {
             throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
         }

@@ -1,5 +1,7 @@
 package com.ditchoom.socket.nio2.util
 
+import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.SocketException
 import kotlinx.coroutines.CancellableContinuation
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.CompletionHandler
@@ -41,7 +43,12 @@ fun asyncIOIntHandler(): CompletionHandler<Int, CancellableContinuation<Int>> =
         }
 
         override fun failed(ex: Throwable, cont: CancellableContinuation<Int>) {
-            cont.resumeWithException(ex)
+            val message = "Socket operation failed."
+            if (ex is AsynchronousCloseException) {
+                cont.resumeWithException(SocketClosedException(message, ex))
+            } else {
+                cont.resumeWithException(SocketException(message, ex))
+            }
         }
     }
 

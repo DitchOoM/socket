@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.PlatformBuffer
-import kotlinx.coroutines.CoroutineScope
 
 val isNodeJs = nodeJs()
 
@@ -21,12 +20,11 @@ actual fun ClientSocket.Companion.allocate(
 }
 
 actual fun ServerSocket.Companion.allocate(
-    scope: CoroutineScope,
     bufferFactory: () -> PlatformBuffer
 ): ServerSocket {
     if (js("global.window") == null) {
 //        throw UnsupportedOperationException("Not implemented yet")
-        return NodeServerSocket(scope)
+        return NodeServerSocket()
     } else {
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }

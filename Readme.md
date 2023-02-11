@@ -60,7 +60,7 @@ A kotlin multiplatform library that allows you send network data via sockets
 
 ## About The Project
 
-Managing metwork calls can be slightly different based on each platform. This project aims to make
+Managing network calls can be slightly different based on each platform. This project aims to make
 it **easier to manage sockets in a cross platform way using kotlin multiplatform**. This was
 originally created as a side project for a kotlin multiplatform mqtt data sync solution.
 
@@ -70,24 +70,26 @@ originally created as a side project for a kotlin multiplatform mqtt data sync s
 
 ### [Supported Platforms](https://kotlinlang.org/docs/reference/mpp-supported-platforms.html)
 
-| Platform | 🛠Builds🛠 + 🔬Tests🔬 |                                                                                                    Native Wrapper For                                                                                                     |  
-| :---: | :---: |:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
-| `JVM` 1.8 |🚀|                                        [AsynchronousSocketChannel](https://docs.oracle.com/en/java/javase/12/docs/api/java.base/java/nio/channels/AsynchronousSocketChannel.html)                                         |
-| `Node.js` |🚀|                                                                                 [Socket](https://nodejs.org/api/net.html#class-netsocket)                                                                                 |
-| `Browser` (Chrome) |🚀|                                                                                                        unavailable                                                                                                        |
-| `Android` |🚀| [AsynchronousSocketChannel](https://developer.android.com/reference/java/nio/channels/AsynchronousSocketChannel) falling back to [SocketChannel](https://developer.android.com/reference/java/nio/channels/SocketChannel) |
-| `iOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
-| `WatchOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
-| `TvOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
-| `MacOS` |🚀|                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
-| `Linux X64` |🔮|                                                                                                            WIP                                                                                                            |
-| `Windows X64` |🔮|                                                                                                       WIP                                                                                                                 |
+|      Platform      | 🛠Builds🛠 + 🔬Tests🔬 |                                                                                                    Native Wrapper For                                                                                                     |  
+|:------------------:|:----------------------:|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+|     `JVM` 1.8      |           🚀           |                                        [AsynchronousSocketChannel](https://docs.oracle.com/en/java/javase/12/docs/api/java.base/java/nio/channels/AsynchronousSocketChannel.html)                                         |
+|     `Node.js`      |           🚀           |                                                                                 [Socket](https://nodejs.org/api/net.html#class-netsocket)                                                                                 |
+| `Browser` (Chrome) |           🚀           |                                                                                                        unavailable                                                                                                        |
+|     `Android`      |           🚀           | [AsynchronousSocketChannel](https://developer.android.com/reference/java/nio/channels/AsynchronousSocketChannel) falling back to [SocketChannel](https://developer.android.com/reference/java/nio/channels/SocketChannel) |
+|       `iOS`        |           🚀           |                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+|     `WatchOS`      |           🚀           |                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+|       `TvOS`       |           🚀           |                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+|      `MacOS`       |           🚀           |                                                               Custom wrapped [NWConnection](https://developer.apple.com/documentation/network/nwconnection)                                                               |
+|    `Linux X64`     |           🔮           |                                                                                                            WIP                                                                                                            |
+|   `Windows X64`    |           🔮           |                                                                                                            WIP                                                                                                            |
 
 ## Installation
 
 - Add `implementation("com.ditchoom:socket:$version")` to your `build.gradle` dependencies
-- Copy the contents of this [patch.js](https://github.com/DitchOoM/socket/blob/main/webpack.config.d/patch.js) file into your own `webpack.config.d` directory if you are targeting `js`
+- Copy the contents of this [patch.js](https://github.com/DitchOoM/socket/blob/main/webpack.config.d/patch.js) file into
+  your own `webpack.config.d` directory if you are targeting `js`
 - Add this to your `kotlin {` bracket in build.gradle.kts if you are targeting an apple platform
+
 ```
 kotlin {
   ...
@@ -98,7 +100,7 @@ kotlin {
         tvos.deploymentTarget = "13.0"
         pod("SocketWrapper") {
             source = git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
-                tag = "0.1.0"
+                tag = "0.1.1"
             }
         }
     }
@@ -120,9 +122,18 @@ val socket = ClientSocket.connect(
 val isOpen = socket.isOpen()
 val localPort = socket.localPort()
 val remotePort = socket.remotePort()
-val stringRead = socket.readString(com.ditchoom.buffer.Charset.UTF8) // read a utf8 string
-val readBuffer = socket.read() // read a ReadBuffer as defined in the buffer module
+val stringRead = socket.readString() // read a string. utf8 is the default
+val readBuffer =
+    socket.read() // read a ReadBuffer as defined in the buffer module. call resetForRead() before consumption
+socket.readFlow().collect { buffer -> // default charset is utf8
+    buffer.resetForRead()
+    // buffer is ready for consumption
+}
+socket.readFlowString().collect { value -> // default charset is utf8
+    // read a string 
+}
 val bytesWritten = socket.write(buffer) // write the buffer to the socket
+val bytesWrittenString = socket.writeString("hello") // write the buffer to the socket. utf8 is default
 socket.close() // close the socket
 ```
 
@@ -147,21 +158,33 @@ Connection: close
 ### Server Example
 
 ```kotlin
-// Run in a suspend method, pass in the coroutine scope into ServerSocket.allocate
-val server = ServerSocket.allocate(scope)
-val text = "Sphinx of black quartz, judge my vow."
-server.start { serverToClient ->
-    // new client has connected, can now read and write to it.
-    val localPort = serverToClient.localPort()
-    val remotePort = serverToClient.remotePort()
-    val stringRead =
-        serverToClient.readString(com.ditchoom.buffer.Charset.UTF8) // read a utf8 string
-    val readBuffer = serverToClient.read() // read a ReadBuffer as defined in the buffer module
-    val bytesWritten = serverToClient.write(buffer) // write the buffer to the client
-    serverToClient.close()
+val server = ServerSocket.allocate()
+val acceptedClientFlow = server.bind()
+val isListening: Boolean = server.isListening() // returns true if server is listening for connections
+val listenPort: Int = server.port() // the assigned port, -1 if unassigned or closed
+
+launch {
+    acceptedClientFlow.collect { serverToClient ->
+        // new client has connected, can now read and write to it.
+        // same api as ClientSocket
+        val localPort = serverToClient.localPort()
+        val remotePort = serverToClient.remotePort()
+        val stringRead = serverToClient.readString() // read a string. utf8 is the default
+        val readBuffer =
+            serverToClient.read() // read a ReadBuffer as defined in the buffer module. call resetForRead() before consumption
+        serverToClient.readFlow().collect { buffer -> // default charset is utf8
+            buffer.resetForRead()
+            // buffer is ready for consumption
+        }
+        serverToClient.readFlowString().collect { value -> // default charset is utf8
+            // read a string 
+        }
+        val bytesWritten = serverToClient.write(buffer) // write the buffer to the socket
+        val bytesWrittenString = serverToClient.writeString("hello") // write the buffer to the socket. utf8 is default
+        serverToClient.close() // close the socket
+    }
 }
-// after some time
-server.close()
+server.close() // stops listening for connections on the assigned port
 ```
 
 ### TLS support
@@ -175,39 +198,46 @@ val response = ClientSocket.connect(port, hostname, tls = true) { socket ->
 
 ### Client echo example
 
+[Refer to SimpleSocketTests.kt for a tested example](https://github.com/DitchOoM/socket/blob/main/src/commonTest/kotlin/com/ditchoom/socket/SimpleSocketTests.kt)
+
 ```kotlin
-val server = ServerSocket.allocate(scope)
-val mutex = Mutex(locked = true) // only needed for local testing
+val server = ServerSocket.allocate()
 val text = "Sphinx of black quartz, judge my vow."
-server.start { serverToClient ->
-    serverToClient.write(text, Charset.UTF8)
-    serverToClient.close()
-    mutex.unlock()
+val acceptedClientFlow = server.bind()
+launch {
+    acceptedClientFlow.collect { serverToClient ->
+        val dataReceivedFromClient = serverToClient.readString()
+        serverToClient.writeString(dataReceivedFromClient)
+        serverToClient.close()
+    }
 }
-ClientSocket.connect(server.port()) { clientToServer ->
-    val buffer = clientToServer.read()
-    buffer.resetForRead()
-    val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
-    assertEquals(text, dataReceivedFromServer)
-    mutex.lock()
-}
+val clientToServer = ClientSocket.allocate()
+clientToServer.open(server.port())
+clientToServer.writeString(text)
+assertEquals(text, clientToServer.readString())
+clientToServer.close()
 server.close()
 ```
 
 ### Server echo example
 
+[Refer to SimpleSocketTests.kt for a tested example](https://github.com/DitchOoM/socket/blob/main/src/commonTest/kotlin/com/ditchoom/socket/SimpleSocketTests.kt)
+
 ```kotlin
-val server = ServerSocket.allocate(scope)
-val text = "Sphinx of black quartz, judge my vow."
-server.start { serverToClient ->
-    val buffer = serverToClient.read()
-    buffer.resetForRead()
-    val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
-    assertEquals(text, dataReceivedFromClient)
-    serverToClient.close()
+val server = ServerSocket.allocate()
+val text = "yolo swag lyfestyle"
+val acceptedClientFlow = server.bind()
+launch {
+    acceptedClientFlow.collect { serverToClient ->
+        serverToClient.writeString(text)
+        assertEquals(text, serverToClient.readString())
+        serverToClient.close()
+    }
 }
 ClientSocket.connect(server.port()) { clientToServer ->
-    clientToServer.write(text, Charset.UTF8)
+    assertEquals(text, clientToServer.readString())
+    clientToServer.writeString(text)
+    clientToServer.close()
 }
 server.close()
 ```

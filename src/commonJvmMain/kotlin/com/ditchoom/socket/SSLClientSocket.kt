@@ -60,6 +60,7 @@ class SSLClientSocket(
                 SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(emptyBuffer, timeout)
                 SSLEngineResult.HandshakeStatus.NEED_TASK ->
                     withContext(Dispatchers.IO) { engine.delegatedTask.run() }
+
                 else -> { // UNWRAP + UNWRAP AGAIN
                     val dataRead = if (cachedBuffer != null) {
                         cachedBuffer
@@ -78,12 +79,18 @@ class SSLClientSocket(
                     }
                     when (checkNotNull(result.status)) {
                         SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
-                            cachedBuffer = null
+                            cachedBuffer ?: continue
+                            cachedBuffer.byteBuffer.compact()
+                            byteBufferClientSocket.read(cachedBuffer, timeout)
+                            cachedBuffer.resetForRead()
                         }
+
                         SSLEngineResult.Status.BUFFER_OVERFLOW ->
                             throw IllegalStateException("Unwrap Buffer Overflow")
+
                         SSLEngineResult.Status.CLOSED ->
                             throw IllegalStateException("SSLEngineResult Status Closed")
+
                         SSLEngineResult.Status.OK -> continue
                     }
                 }
@@ -99,6 +106,7 @@ class SSLClientSocket(
             SSLEngineResult.Status.BUFFER_OVERFLOW -> {
                 throw IllegalStateException("SSL Engine Buffer Overflow - wrap")
             }
+
             SSLEngineResult.Status.CLOSED,
             SSLEngineResult.Status.OK -> {
                 encrypted.resetForRead()
@@ -139,15 +147,18 @@ class SSLClientSocket(
                     overflowEncryptedReadBuffer = encryptedReadBuffer
                     return slicePlainText(plainTextReadBuffer)
                 }
+
                 SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
                     encryptedReadBuffer.byteBuffer.compact()
                     byteBufferClientSocket.read(encryptedReadBuffer, timeout)
                     encryptedReadBuffer.resetForRead()
                     overflowEncryptedReadBuffer = encryptedReadBuffer
                 }
+
                 SSLEngineResult.Status.OK -> {
                     overflowEncryptedReadBuffer = null
                 }
+
                 SSLEngineResult.Status.CLOSED -> {
                     overflowEncryptedReadBuffer = null
                     close()

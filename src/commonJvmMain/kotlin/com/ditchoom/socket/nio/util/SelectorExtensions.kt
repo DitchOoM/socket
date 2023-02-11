@@ -1,8 +1,10 @@
 package com.ditchoom.socket.nio.util
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.Selector
 import kotlin.coroutines.resume
@@ -12,17 +14,23 @@ import kotlin.time.Duration
 
 suspend fun Selector.aSelect(timeout: Duration): Int {
     val selector = this
-    return withContext(Dispatchers.IO) {
-        suspendCancellableCoroutine<Int> {
-            try {
-                it.resume(select(timeout.inWholeMilliseconds))
-            } catch (e: Throwable) {
-                if (e is AsynchronousCloseException && it.isCancelled) {
-                    selector.close()
-                    return@suspendCancellableCoroutine
+    return withTimeout(timeout) {
+        withContext(Dispatchers.Default) {
+            while (isActive) {
+                try {
+                    val keys = selectNow()
+                    if (keys > 0) {
+                        return@withContext keys
+                    }
+                } catch (e: Throwable) {
+                    if (e is AsynchronousCloseException) {
+                        selector.close()
+                        return@withContext 0
+                    }
                 }
-                it.resumeWithException(e)
+                yield()
             }
+            0
         }
     }
 }
