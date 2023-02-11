@@ -7,6 +7,7 @@ import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -222,8 +223,8 @@ Connection: close
                 serverToClientPort = serverToClient.localPort()
                 assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
                 serverToClient.writeString(text, Charset.UTF8, 1.seconds)
-//            delay(10)
-//            serverToClient.write(text2, Charset.UTF8, 1.seconds)
+                delay(5)
+                serverToClient.writeString(text2, Charset.UTF8, 1.seconds)
                 serverToClient.close()
                 serverToClientMutex.unlock()
                 return@collect
@@ -233,15 +234,16 @@ Connection: close
         assertTrue(serverPort > 0, "No port number from server")
         val clientToServer = ClientSocket.allocate()
         clientToServer.open(serverPort)
-        val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer, if (readAhead) this else null)
-        val buffer = inputStream.sizedReadBuffer(text.length).slice()
+        val clientToServerPort = clientToServer.localPort()
+        assertTrue(clientToServerPort > 0, "No port number from clientToServerPort")
+        val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer, readAhead)
+        var buffer = inputStream.sizedReadBuffer(text.length)
         serverToClientMutex.lock()
         val utf8 = buffer.readString(text.length, Charset.UTF8)
         assertEquals(utf8, text)
-//        val utf8v2 = buffer.readString(text2.length, Charset.UTF8)
-//        assertEquals(utf8v2, text2)
-        val clientToServerPort = clientToServer.localPort()
-        assertTrue(clientToServerPort > 0, "No port number from clientToServerPort")
+        buffer = inputStream.sizedReadBuffer(text2.length)
+        val utf8v2 = buffer.readString(text2.length, Charset.UTF8)
+        assertEquals(utf8v2, text2)
         clientToServer.close()
         server.close()
         checkPort(clientToServerPort)

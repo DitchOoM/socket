@@ -5,9 +5,8 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.data.Reader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
-import kotlinx.coroutines.plus
+import kotlinx.coroutines.coroutineScope
 import kotlin.time.Duration
 
 /**
@@ -16,36 +15,28 @@ import kotlin.time.Duration
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
     private val reader: Reader,
-    parentScope: CoroutineScope? = null
+    private val shouldReadAhead: Boolean = false
 ) {
     private var currentBuffer: ReadBuffer? = null
     private var deferredBuffer: Deferred<ReadBuffer?>? = null
 
     suspend fun readUnsignedByte() = sizedReadBuffer(UByte.SIZE_BYTES).readUnsignedByte()
     suspend fun readByte() = sizedReadBuffer(Byte.SIZE_BYTES).readByte()
-    private val readAheadScope = if (parentScope != null) {
-        val s = parentScope + Job()
-        queueNextRead()
-        s
-    } else {
-        null
-    }
 
     private suspend fun readMaybeQueueNextRead(): ReadBuffer {
-        val readAheadScope = readAheadScope
-        return if (readAheadScope == null) {
-            readFromReader()
-        } else {
+        return if (shouldReadAhead) {
             val deferredBuffer = deferredBuffer
             if (deferredBuffer == null) {
                 val b = readFromReader()
-                queueNextRead()
+                coroutineScope { queueNextRead(this) }
                 b
             } else {
                 val queuedBuffer = deferredBuffer.await() ?: readFromReader()
-                queueNextRead()
+                coroutineScope { queueNextRead(this) }
                 queuedBuffer
             }
+        } else {
+            readFromReader()
         }
     }
 
@@ -79,12 +70,11 @@ class SuspendingSocketInputStream(
         return buffer
     }
 
-    private fun queueNextRead() {
+    private suspend fun queueNextRead(scope: CoroutineScope) {
         if (!reader.isOpen()) {
             return
         }
-
-        this.deferredBuffer = readAheadScope?.async {
+        this.deferredBuffer = scope.async {
             try {
                 readFromReader()
             } catch (e: SocketClosedException) {
