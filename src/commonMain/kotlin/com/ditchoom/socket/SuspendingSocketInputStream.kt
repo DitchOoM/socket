@@ -20,8 +20,13 @@ class SuspendingSocketInputStream(
     private var currentBuffer: ReadBuffer? = null
     private var deferredBuffer: Deferred<ReadBuffer?>? = null
 
-    suspend fun readUnsignedByte() = sizedReadBuffer(UByte.SIZE_BYTES).readUnsignedByte()
-    suspend fun readByte() = sizedReadBuffer(Byte.SIZE_BYTES).readByte()
+    suspend fun readUnsignedByte() = ensureBufferSize(UByte.SIZE_BYTES).readUnsignedByte()
+    suspend fun readByte() = ensureBufferSize(Byte.SIZE_BYTES).readByte()
+
+    suspend fun readBuffer(size: Int): ReadBuffer {
+        val buffer = ensureBufferSize(size)
+        return buffer.readBytes(size)
+    }
 
     private suspend fun readMaybeQueueNextRead(): ReadBuffer {
         return if (shouldReadAhead) {
@@ -40,7 +45,7 @@ class SuspendingSocketInputStream(
         }
     }
 
-    suspend fun sizedReadBuffer(size: Int): ReadBuffer {
+    suspend fun ensureBufferSize(size: Int): ReadBuffer {
         if (size < 1) {
             return EMPTY_BUFFER
         }
