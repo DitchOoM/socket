@@ -12,7 +12,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 
 open class NWSocketWrapper : ClientSocket {
@@ -32,9 +31,8 @@ open class NWSocketWrapper : ClientSocket {
                 suspendCancellableCoroutine {
                     socket.readDataWithCompletion { data, errorString, _ ->
                         if (errorString != null) {
-                            socket.closeWithCompletionHandler {
-                                it.resumeWithException(SocketClosedException(errorString))
-                            }
+                            socket.cancel()
+                            it.resumeWithException(SocketClosedException(errorString))
                         } else if (data != null) {
                             if (data.length.toInt() == 0) {
                                 it.resume(PlatformBuffer.allocate(0))
@@ -48,7 +46,7 @@ open class NWSocketWrapper : ClientSocket {
                         }
                     }
                     it.invokeOnCancellation {
-                        socket.closeWithCompletionHandler { }
+                        socket.cancel()
                     }
                 }
             }
@@ -69,7 +67,7 @@ open class NWSocketWrapper : ClientSocket {
                         }
                     }
                     continuation.invokeOnCancellation {
-                        socket.closeWithCompletionHandler { }
+                        socket.cancel()
                     }
                 }
             }
@@ -79,10 +77,6 @@ open class NWSocketWrapper : ClientSocket {
     override suspend fun close() {
         val socket = socket ?: return
         if (!isOpen()) return
-        suspendCoroutine {
-            socket.closeWithCompletionHandler {
-                it.resume(Unit)
-            }
-        }
+        socket.cancel()
     }
 }

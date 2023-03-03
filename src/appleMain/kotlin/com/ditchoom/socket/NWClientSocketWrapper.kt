@@ -35,7 +35,7 @@ class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToSe
                 }
             }
             it.invokeOnCancellation {
-                socketWrapper.closeWithCompletionHandler { }
+                socketWrapper.cancel()
             }
         }
         this.socket = socket
