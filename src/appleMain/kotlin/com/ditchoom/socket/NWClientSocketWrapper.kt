@@ -21,8 +21,9 @@ class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToSe
                 timeout.inWholeSeconds.convert(),
                 useTls
             ) { socket, errorString, _, isDnsError, _ ->
-
-                if (errorString != null) {
+                if (it.isCompleted) {
+                    // do nothing
+                } else if (errorString != null) {
                     if (isDnsError) {
                         it.resumeWithException(SocketUnknownHostException(errorString))
                     } else {
