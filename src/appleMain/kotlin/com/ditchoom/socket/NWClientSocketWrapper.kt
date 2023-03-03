@@ -2,43 +2,66 @@ package com.ditchoom.socket
 
 import cocoapods.SocketWrapper.ClientSocketWrapper
 import kotlinx.cinterop.convert
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.transformWhile
 import kotlin.time.Duration
 
 class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToServerSocket {
+
+    private val callbackStateFlow by lazy(LazyThreadSafetyMode.NONE) {
+        callbackFlow {
+            val socket = checkNotNull(socket as? ClientSocketWrapper)
+            socket.setStateUpdateHandlerWithHandler { _, state, error, _, dnsError, _ ->
+                if (channel.isClosedForSend) {
+                    return@setStateUpdateHandlerWithHandler
+                }
+                if (state!!.startsWith("ready")) {
+                    trySendBlocking(true).getOrThrow()
+                } else if (state.startsWith("failed") ||
+                    state.startsWith("cancelled") ||
+                    state.startsWith("waiting")
+                ) {
+                    if (error != null) {
+                        if (dnsError) {
+                            channel.close(SocketUnknownHostException(error))
+                        } else {
+                            channel.close(SocketException(error))
+                        }
+                    } else {
+                        channel.close()
+                    }
+                } else {
+                    trySendBlocking(false).getOrThrow()
+                }
+            }
+            awaitClose()
+        }
+    }
 
     override suspend fun open(
         port: Int,
         timeout: Duration,
         hostname: String?,
     ) {
-        val socket = suspendCancellableCoroutine {
-            val socketWrapper = ClientSocketWrapper(
-                hostname ?: "localhost",
-                port.toUShort(),
-                timeout.inWholeSeconds.convert(),
-                useTls
-            ) { socket, errorString, _, isDnsError, _ ->
-                if (it.isCompleted) {
-                    // do nothing
-                } else if (errorString != null) {
-                    if (isDnsError) {
-                        it.resumeWithException(SocketUnknownHostException(errorString))
-                    } else {
-                        it.resumeWithException(SocketException(errorString))
-                    }
-                } else if (socket != null) {
-                    it.resume(socket)
-                } else {
-                    it.resumeWithException(IllegalStateException("Failed to get a valid socket or error message"))
-                }
-            }
-            it.invokeOnCancellation {
-                socketWrapper.cancel()
-            }
-        }
+        val socket = ClientSocketWrapper(
+            hostname ?: "localhost",
+            port.toUShort(),
+            timeout.inWholeSeconds.convert(),
+            useTls
+        )
         this.socket = socket
+        socket.start()
+        awaitConnectionOrThrow()
+    }
+
+    private suspend fun awaitConnectionOrThrow() {
+        if (isOpen()) return
+        callbackStateFlow
+            // keep the flow active until we reach the true state
+            .transformWhile<Boolean, Boolean> { !it }
+            .collect()
     }
 }
