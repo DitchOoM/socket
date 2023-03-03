@@ -49,7 +49,7 @@ class NWServerWrapper : ServerSocket {
     override suspend fun close() {
         val server = server ?: return
         suspendCoroutine {
-            server.stopListeningForInboundConnectionsWithCb {
+            server.assignCloseCallbackWithCb {
                 it.resume(Unit)
             }
         }
