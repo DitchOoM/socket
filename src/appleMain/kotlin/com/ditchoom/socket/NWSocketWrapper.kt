@@ -31,7 +31,7 @@ open class NWSocketWrapper : ClientSocket {
                 suspendCancellableCoroutine {
                     socket.readDataWithCompletion { data, errorString, _ ->
                         if (errorString != null) {
-                            socket.cancel()
+                            closeInternal()
                             it.resumeWithException(SocketClosedException(errorString))
                         } else if (data != null) {
                             if (data.length.toInt() == 0) {
@@ -46,7 +46,7 @@ open class NWSocketWrapper : ClientSocket {
                         }
                     }
                     it.invokeOnCancellation {
-                        socket.cancel()
+                        closeInternal()
                     }
                 }
             }
@@ -67,16 +67,20 @@ open class NWSocketWrapper : ClientSocket {
                         }
                     }
                     continuation.invokeOnCancellation {
-                        socket.cancel()
+                        closeInternal()
                     }
                 }
             }
         }
     }
 
-    override suspend fun close() {
+    private fun closeInternal() {
         val socket = socket ?: return
         if (!isOpen()) return
         socket.cancel()
+        socket.forceCancel()
+    }
+    override suspend fun close() {
+        closeInternal()
     }
 }
