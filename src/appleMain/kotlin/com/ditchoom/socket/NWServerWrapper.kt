@@ -49,8 +49,18 @@ class NWServerWrapper : ServerSocket {
     override suspend fun close() {
         val server = server ?: return
         suspendCoroutine {
+            var isDone = false
+            fun completion() {
+                if (!isDone) {
+                    it.resume(Unit)
+                    isDone = true
+                }
+            }
+            server.assignCloseCallbackWithCb {
+                completion()
+            }
             server.stopListeningForInboundConnectionsWithCb {
-                it.resume(Unit)
+                completion()
             }
         }
     }

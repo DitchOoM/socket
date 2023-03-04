@@ -64,14 +64,14 @@ kotlin {
         tvos.deploymentTarget = "13.0"
         pod("SocketWrapper") {
             source = git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
-                tag = "0.1.1"
+                tag = "0.1.3"
             }
         }
     }
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.1.11")
+                implementation("com.ditchoom:buffer:1.1.13")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
             }
         }
