@@ -1,6 +1,6 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.AllocationZone
 
 val isNodeJs = nodeJs()
 
@@ -10,17 +10,17 @@ private fun nodeJs(): Boolean {
 
 actual fun ClientSocket.Companion.allocate(
     tls: Boolean,
-    bufferFactory: () -> PlatformBuffer
+    allocationZone: AllocationZone
 ): ClientToServerSocket {
     return if (js("global.window") == null) {
-        NodeClientSocket(tls, bufferFactory)
+        NodeClientSocket(tls, allocationZone)
     } else {
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }
 }
 
 actual fun ServerSocket.Companion.allocate(
-    bufferFactory: () -> PlatformBuffer
+    allocationZone: AllocationZone
 ): ServerSocket {
     if (js("global.window") == null) {
 //        throw UnsupportedOperationException("Not implemented yet")

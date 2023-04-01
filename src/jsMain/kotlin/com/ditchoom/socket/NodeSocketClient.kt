@@ -1,8 +1,10 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
@@ -68,7 +70,7 @@ open class NodeSocket : ClientSocket {
 
 class NodeClientSocket(
     private val useTls: Boolean,
-    private val bufferFactory: () -> PlatformBuffer
+    private val allocationZone: AllocationZone
 ) : NodeSocket(), ClientToServerSocket {
 
     override suspend fun open(
@@ -78,7 +80,7 @@ class NodeClientSocket(
     ) = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({
-            val buffer = bufferFactory() as JsBuffer
+            val buffer = PlatformBuffer.allocate(8192, allocationZone) as JsBuffer
             arrayPlatformBufferMap[buffer.buffer] = buffer
             buffer.buffer
         }, { bytesRead, buffer ->

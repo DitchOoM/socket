@@ -20,8 +20,9 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     tls: Boolean = false,
     timeout: Duration = 15.seconds,
+    zone: AllocationZone = AllocationZone.Direct,
 ): ClientToServerSocket {
-    val socket = ClientSocket.allocate(tls)
+    val socket = ClientSocket.allocate(tls, zone)
     socket.open(port, timeout, hostname)
     return socket
 }
@@ -42,7 +43,5 @@ suspend fun <T> ClientSocket.Companion.connect(
 
 expect fun ClientSocket.Companion.allocate(
     tls: Boolean = false,
-    bufferFactory: () -> PlatformBuffer = {
-        PlatformBuffer.allocate(28 * 1024, AllocationZone.Direct)
-    }
+    allocationZone: AllocationZone = AllocationZone.Direct
 ): ClientToServerSocket

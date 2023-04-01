@@ -1,8 +1,10 @@
 package com.ditchoom.socket.nio2
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.allocate
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
@@ -10,10 +12,11 @@ import com.ditchoom.socket.nio2.util.aWrite
 import com.ditchoom.socket.nio2.util.assignedPort
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
 import kotlin.time.Duration
 
-abstract class AsyncBaseClientSocket(private val bufferFactory: () -> PlatformBuffer) :
+abstract class AsyncBaseClientSocket(private val allocationZone: AllocationZone) :
     ByteBufferClientSocket<AsynchronousSocketChannel>() {
 
     private val readMutex = Mutex()
@@ -22,7 +25,8 @@ abstract class AsyncBaseClientSocket(private val bufferFactory: () -> PlatformBu
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        val buffer = bufferFactory() as JvmBuffer
+        val receiveBuffer = socket.getOption(StandardSocketOptions.SO_RCVBUF)
+        val buffer = PlatformBuffer.allocate(receiveBuffer, allocationZone) as JvmBuffer
         read(buffer, timeout)
         return buffer
     }
