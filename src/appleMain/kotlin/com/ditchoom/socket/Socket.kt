@@ -1,13 +1,13 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.AllocationZone
 
 actual fun ClientSocket.Companion.allocate(
     tls: Boolean,
-    bufferFactory: () -> PlatformBuffer
+    allocationZone: AllocationZone
 ): ClientToServerSocket = NWClientSocketWrapper(tls)
 
 actual fun ServerSocket.Companion.allocate(
-    bufferFactory: () -> PlatformBuffer
+    allocationZone: AllocationZone
 ): ServerSocket =
     NWServerWrapper()

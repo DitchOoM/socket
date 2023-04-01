@@ -1,6 +1,6 @@
 package com.ditchoom.socket.nio2
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.ServerSocket
 import com.ditchoom.socket.nio.util.aClose
@@ -14,7 +14,7 @@ import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.AsynchronousServerSocketChannel
 
 class AsyncServerSocket(
-    private val bufferFactory: () -> PlatformBuffer
+    private val allocationZone: AllocationZone
 ) : ServerSocket {
 
     private var server: AsynchronousServerSocketChannel? = null
@@ -48,7 +48,7 @@ class AsyncServerSocket(
                 } catch (e: AsynchronousCloseException) {
                     break
                 }
-                val serverToClient = AsyncServerToClientSocket(bufferFactory, client)
+                val serverToClient = AsyncServerToClientSocket(allocationZone, client)
                 emit(serverToClient)
             }
         }

@@ -1,9 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.SuspendCloseable
-import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.flow.Flow
 
 interface ServerSocket : SuspendCloseable {
@@ -15,7 +13,5 @@ interface ServerSocket : SuspendCloseable {
 }
 
 expect fun ServerSocket.Companion.allocate(
-    bufferFactory: () -> PlatformBuffer = {
-        PlatformBuffer.allocate(4 * 1024, AllocationZone.Direct)
-    }
+    allocationZone: AllocationZone = AllocationZone.Direct
 ): ServerSocket

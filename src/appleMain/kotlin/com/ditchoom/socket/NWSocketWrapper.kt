@@ -80,6 +80,7 @@ open class NWSocketWrapper : ClientSocket {
         socket.cancel()
         socket.forceCancel()
     }
+
     override suspend fun close() {
         closeInternal()
     }
