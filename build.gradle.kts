@@ -86,7 +86,11 @@ kotlin {
         val jvmTest by getting {
             kotlin.srcDir("src/commonJvmTest/kotlin")
         }
-        val jsMain by getting
+        val jsMain by getting {
+            dependencies {
+                implementation("org.jetbrains.kotlin-wrappers:kotlin-js:1.0.0-pre.521")
+            }
+        }
         val jsTest by getting {
             dependencies {
                 implementation(kotlin("test-js"))
