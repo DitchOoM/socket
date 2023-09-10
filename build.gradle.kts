@@ -68,7 +68,7 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.3.1")
+                implementation("com.ditchoom:buffer:1.3.2")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
             }
         }
