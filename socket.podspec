@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
     spec.name                     = 'socket'
-    spec.version                  = '1.1..0-SNAPSHOT'
+    spec.version                  = '10.0.1-SNAPSHOT'
     spec.homepage                 = ''
     spec.source                   = { :http=> ''}
     spec.authors                  = ''
@@ -15,7 +15,7 @@ Pod::Spec.new do |spec|
     spec.dependency 'SocketWrapper'
                 
     spec.pod_target_xcconfig = {
-        'KOTLIN_PROJECT_PATH' => ':',
+        'KOTLIN_PROJECT_PATH' => '',
         'PRODUCT_MODULE_NAME' => 'socket',
     }
                 

@@ -1,6 +1,8 @@
 package com.ditchoom.socket
 
 import cocoapods.SocketWrapper.ServerSocketListenerWrapper
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.UnsafeNumber
 import kotlinx.cinterop.convert
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
@@ -14,6 +16,7 @@ import kotlin.coroutines.suspendCoroutine
 class NWServerWrapper : ServerSocket {
     private var server: ServerSocketListenerWrapper? = null
 
+    @OptIn(UnsafeNumber::class, ExperimentalForeignApi::class)
     override suspend fun bind(port: Int, host: String?, backlog: Int): Flow<ClientSocket> {
         val server = ServerSocketListenerWrapper(port.convert(), host, backlog.convert())
         val flow = callbackFlow {
@@ -44,6 +47,7 @@ class NWServerWrapper : ServerSocket {
 
     override fun isListening(): Boolean = server?.isOpen() ?: false
 
+    @OptIn(UnsafeNumber::class)
     override fun port(): Int = server?.port()?.toInt() ?: -1
 
     override suspend fun close() {

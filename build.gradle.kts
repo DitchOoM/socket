@@ -1,25 +1,21 @@
 import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest
 
 plugins {
-//    id("dev.petuska.npm.publish") version "3.2.0"
-    kotlin("multiplatform") version "1.8.10"
-    kotlin("native.cocoapods") version "1.8.10"
+//    id("dev.petuska.npm.publish") version "3.4.1"
+    kotlin("multiplatform") version "1.9.10"
+    kotlin("native.cocoapods") version "1.9.10"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`
     signing
-    id("org.jlleitschuh.gradle.ktlint") version "11.0.0"
-    id("org.jlleitschuh.gradle.ktlint-idea") version "11.0.0"
+    id("org.jlleitschuh.gradle.ktlint") version "11.5.1"
+    id("org.jlleitschuh.gradle.ktlint-idea") version "11.5.1"
 }
 
 val libraryVersionPrefix: String by project
 group = "com.ditchoom"
-version = "$libraryVersionPrefix.0-SNAPSHOT"
-val libraryVersion = if (System.getenv("GITHUB_RUN_NUMBER") != null) {
-    "$libraryVersionPrefix${(Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER")) - 16)}"
-} else {
-    "${libraryVersionPrefix}0-SNAPSHOT"
-}
+version = "10.0.1-SNAPSHOT"
+val libraryVersion = "10.0.1-SNAPSHOT"
 repositories {
     google()
     mavenCentral()
@@ -40,7 +36,7 @@ kotlin {
             useJUnit()
         }
     }
-    js(BOTH) {
+    js {
         browser()
         nodejs()
     }
@@ -66,13 +62,14 @@ kotlin {
             source = git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
                 tag = "0.1.3"
             }
+//            source = path(project.file("./../SocketWrapper/"))
         }
     }
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.3.0")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
+                implementation("com.ditchoom:buffer:1.3.1")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
             }
         }
         val commonTest by getting {
@@ -88,7 +85,7 @@ kotlin {
         }
         val jsMain by getting {
             dependencies {
-                implementation("org.jetbrains.kotlin-wrappers:kotlin-js:1.0.0-pre.521")
+                implementation("org.jetbrains.kotlin-wrappers:kotlin-js:1.0.0-pre.615")
             }
         }
         val jsTest by getting {
@@ -142,36 +139,17 @@ kotlin {
             watchosSimulatorArm64Test.dependsOn(this)
         }
 
-//        val nativeMain by sourceSets.creating {
-//            dependsOn(commonMain)
-//            macosX64Main.dependsOn(this)
-//            linuxX64Main.dependsOn(this)
-// //            iosMain.dependsOn(this)
-// //            iosSimulatorArm64Main.dependsOn(this)
-// //            watchosMain.dependsOn(this)
-// //            tvosMain.dependsOn(this)
-//        }
-//        val nativeTest by sourceSets.creating {
-//            dependsOn(commonTest)
-//            macosX64Test.dependsOn(this)
-//            linuxX64Test.dependsOn(this)
-// //            iosTest.dependsOn(this)
-// //            iosSimulatorArm64Test.dependsOn(this)
-// //            watchosTest.dependsOn(this)
-// //            tvosTest.dependsOn(this)
-//        }
-
         val androidMain by getting {
             kotlin.srcDir("src/commonJvmMain/kotlin")
             dependsOn(commonMain)
             dependsOn(jvmMain)
         }
-        val androidTest by getting {
+        val androidUnitTest by getting {
             kotlin.srcDir("src/commonJvmTest/kotlin")
             dependsOn(commonTest)
             dependsOn(jvmTest)
         }
-        val androidAndroidTest by getting {
+        val androidInstrumentedTest by getting {
             dependsOn(commonTest)
             kotlin.srcDir("src/commonJvmTest/kotlin")
             kotlin.srcDir("src/commonTest/kotlin")
@@ -192,7 +170,7 @@ android {
     namespace = "$group.${rootProject.name}"
 }
 dependencies {
-    implementation("androidx.core:core-ktx:1.9.0")
+    implementation("androidx.core:core-ktx:1.12.0")
 }
 
 val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {

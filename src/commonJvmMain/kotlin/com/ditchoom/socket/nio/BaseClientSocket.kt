@@ -19,7 +19,7 @@ import kotlin.time.Duration
 
 abstract class BaseClientSocket(
     private val allocationZone: AllocationZone,
-    protected val blocking: Boolean = false,
+    protected val blocking: Boolean = false
 ) : ByteBufferClientSocket<SocketChannel>() {
 
     val selector = if (!blocking) Selector.open()!! else null

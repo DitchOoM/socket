@@ -1,7 +1,10 @@
 package com.ditchoom.socket
 
 import cocoapods.SocketWrapper.ClientSocketWrapper
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.UnsafeNumber
 import kotlinx.cinterop.convert
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.callbackFlow
@@ -11,6 +14,7 @@ import kotlin.time.Duration
 
 class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToServerSocket {
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val callbackStateFlow by lazy(LazyThreadSafetyMode.NONE) {
         callbackFlow {
             val socket = checkNotNull(socket as? ClientSocketWrapper)
@@ -41,10 +45,11 @@ class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToSe
         }
     }
 
+    @OptIn(UnsafeNumber::class, ExperimentalForeignApi::class)
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?,
+        hostname: String?
     ) {
         val socket = ClientSocketWrapper(
             hostname ?: "localhost",

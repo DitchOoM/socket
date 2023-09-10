@@ -76,7 +76,7 @@ class NodeClientSocket(
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?,
+        hostname: String?
     ) = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
         val onRead = OnRead({

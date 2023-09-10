@@ -30,7 +30,7 @@ class AsyncServerSocket(
     override suspend fun bind(
         port: Int,
         host: String?,
-        backlog: Int,
+        backlog: Int
     ): Flow<ClientSocket> {
         val socketAddress = if (port > 0) {
             InetSocketAddress(host ?: "localhost", port)
