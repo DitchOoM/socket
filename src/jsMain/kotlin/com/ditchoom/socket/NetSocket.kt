@@ -71,5 +71,5 @@ class Options(
     @JsName("onread")
     val onread: OnRead? = null,
     @JsName("rejectUnauthorized")
-    val rejectUnauthorized: Boolean = true,
+    val rejectUnauthorized: Boolean = true
 )

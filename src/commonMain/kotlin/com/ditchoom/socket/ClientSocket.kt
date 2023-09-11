@@ -20,7 +20,7 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     tls: Boolean = false,
     timeout: Duration = 15.seconds,
-    zone: AllocationZone = AllocationZone.Direct,
+    zone: AllocationZone = AllocationZone.Direct
 ): ClientToServerSocket {
     val socket = ClientSocket.allocate(tls, zone)
     socket.open(port, timeout, hostname)

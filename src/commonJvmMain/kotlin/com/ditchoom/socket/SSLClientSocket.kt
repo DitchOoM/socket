@@ -26,7 +26,7 @@ class SSLClientSocket(
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?,
+        hostname: String?
     ) {
         val context = try {
             SSLContext.getInstance("TLSv1.3")

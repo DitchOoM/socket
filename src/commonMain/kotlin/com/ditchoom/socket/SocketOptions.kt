@@ -5,5 +5,5 @@ data class SocketOptions(
     val reuseAddress: Boolean? = null,
     val keepAlive: Boolean? = null,
     val receiveBuffer: Int? = null,
-    val sendBuffer: Int? = null,
+    val sendBuffer: Int? = null
 )
