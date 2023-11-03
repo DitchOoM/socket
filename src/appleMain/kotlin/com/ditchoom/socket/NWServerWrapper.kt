@@ -13,6 +13,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
+@OptIn(ExperimentalForeignApi::class)
 class NWServerWrapper : ServerSocket {
     private var server: ServerSocketListenerWrapper? = null
 

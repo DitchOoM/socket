@@ -14,6 +14,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
 
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 open class NWSocketWrapper : ClientSocket {
     internal var socket: SocketWrapper? = null
     private val readMutex = Mutex()
