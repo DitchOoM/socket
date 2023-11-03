@@ -2,8 +2,8 @@ import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTes
 
 plugins {
 //    id("dev.petuska.npm.publish") version "3.4.1"
-    kotlin("multiplatform") version "1.9.10"
-    kotlin("native.cocoapods") version "1.9.10"
+    kotlin("multiplatform") version "1.9.20"
+    kotlin("native.cocoapods") version "1.9.20"
     id("com.android.library")
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`
@@ -14,8 +14,13 @@ plugins {
 
 val libraryVersionPrefix: String by project
 group = "com.ditchoom"
-version = "10.0.1-SNAPSHOT"
-val libraryVersion = "10.0.1-SNAPSHOT"
+version = "$libraryVersionPrefix.0-SNAPSHOT"
+val libraryVersion = if (System.getenv("GITHUB_RUN_NUMBER") != null) {
+    "$libraryVersionPrefix${(Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER")) - 16)}"
+} else {
+    "${libraryVersionPrefix}0-SNAPSHOT"
+}
+
 repositories {
     google()
     mavenCentral()
@@ -68,7 +73,7 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("com.ditchoom:buffer:1.3.3")
+                implementation("com.ditchoom:buffer:1.3.7")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
             }
         }
