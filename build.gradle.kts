@@ -67,6 +67,7 @@ kotlin {
             source = git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
                 tag = "0.1.3"
             }
+            extraOpts += listOf("-compiler-option", "-fmodules")
 //            source = path(project.file("./../SocketWrapper/"))
         }
     }

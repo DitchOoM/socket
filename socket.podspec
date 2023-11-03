@@ -14,6 +14,17 @@ Pod::Spec.new do |spec|
     spec.watchos.deployment_target = '6.0'
     spec.dependency 'SocketWrapper'
                 
+    if !Dir.exist?('build/cocoapods/framework/socket.framework') || Dir.empty?('build/cocoapods/framework/socket.framework')
+        raise "
+
+        Kotlin framework 'socket' doesn't exist yet, so a proper Xcode project can't be generated.
+        'pod install' should be executed after running ':generateDummyFramework' Gradle task:
+
+            ./gradlew :generateDummyFramework
+
+        Alternatively, proper pod installation is performed during Gradle sync in the IDE (if Podfile location is set)"
+    end
+                
     spec.pod_target_xcconfig = {
         'KOTLIN_PROJECT_PATH' => '',
         'PRODUCT_MODULE_NAME' => 'socket',
