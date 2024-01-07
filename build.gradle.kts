@@ -18,7 +18,7 @@ val loadAllPlatforms = !isRunningOnGithub || (isMacOS && isMainBranchGithub) || 
 
 println(
     "isRunningOnGithub: $isRunningOnGithub isMainBranchGithub: $isMainBranchGithub OS:$isMacOS " +
-            "Load All Platforms: $loadAllPlatforms"
+        "Load All Platforms: $loadAllPlatforms"
 )
 
 val libraryVersionPrefix: String by project
@@ -284,6 +284,7 @@ if (isRunningOnGithub) {
 }
 
 ktlint {
+    disabledRules.set(setOf("no-wildcard-imports"))
     verbose.set(true)
     outputToConsole.set(true)
 }

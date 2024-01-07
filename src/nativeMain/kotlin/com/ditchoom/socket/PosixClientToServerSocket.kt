@@ -3,7 +3,6 @@ package com.ditchoom.socket
 import kotlinx.cinterop.*
 import platform.posix.*
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
 class PosixClientToServerSocket : PosixClientSocket(), ClientToServerSocket {
     private val memScope = MemScope()
@@ -34,5 +33,4 @@ class PosixClientToServerSocket : PosixClientSocket(), ClientToServerSocket {
         }
         return SocketOptions()
     }
-
 }

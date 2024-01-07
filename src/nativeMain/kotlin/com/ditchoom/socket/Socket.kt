@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import platform.posix.init_sockets
-import kotlin.time.ExperimentalTime
 
 private var initialized = false
 private fun initSockets() {
@@ -25,7 +24,6 @@ actual fun asyncServerSocket(): ServerSocket {
 }
 
 actual suspend fun readStats(port: Int, contains: String): List<String> = emptyList()
-
 
 internal fun swapBytes(v: Int): Int =
     (((v.toInt() and 0xFF) shl 8) or ((v.toInt() ushr 8) and 0xFF)).toInt()

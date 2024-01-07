@@ -1,11 +1,15 @@
 package com.ditchoom.socket
 
 import kotlinx.cinterop.*
+import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import platform.posix.*
-import kotlin.time.ExperimentalTime
 
 class PosixServerSocket : ServerSocket {
     private val fileDescriptor: Int
+
+    @OptIn(ExperimentalForeignApi::class)
     private val memScope = MemScope()
 
     init {
@@ -13,13 +17,9 @@ class PosixServerSocket : ServerSocket {
             .ensureUnixCallResult("socket") { !it.isMinusOne() }
     }
 
-    override suspend fun bind(
-        port: Int,
-        host: String?,
-        socketOptions: SocketOptions?,
-        backlog: Int
-    ): SocketOptions {
-        val actualPort = port?.toShort() ?: 0
+    @OptIn(ExperimentalForeignApi::class)
+    override suspend fun bind(port: Int, host: String?, backlog: Int): Flow<ClientSocket> {
+        val actualPort = port.toShort()
         with(memScope) {
             val serverAddr = alloc<sockaddr_in>()
             with(serverAddr) {
@@ -32,38 +32,48 @@ class PosixServerSocket : ServerSocket {
         }
         listen(fileDescriptor, backlog.toInt())
             .ensureUnixCallResult("listen") { it == 0 }
-        return SocketOptions()
+        return callbackFlow {
+            while (isOpen()) {
+                trySendBlocking(accept()).getOrThrow()
+            }
+        }
     }
 
-    override suspend fun accept(): ClientSocket {
+    override fun isListening(): Boolean = isOpen()
+
+    @OptIn(ExperimentalForeignApi::class)
+    fun accept(): ClientSocket {
         val acceptedClientFileDescriptor = accept(fileDescriptor, null, null)
             .ensureUnixCallResult("accept") { !it.isMinusOne() }
         val server2Client = PosixClientSocket()
         server2Client.currentFileDescriptor = acceptedClientFileDescriptor
         return server2Client
-
     }
 
-    override fun isOpen() = try {
+    fun isOpen() = try {
         port()
         true
     } catch (e: Throwable) {
         false
     }
 
-
+    @OptIn(ExperimentalForeignApi::class)
     override fun port(): Int = memScoped {
         val localAddress = alloc<sockaddr_in>()
         val addressLength = alloc<socklen_tVar>()
         addressLength.value = sockaddr_in.size.convert()
-        if (getsockname(fileDescriptor, localAddress.ptr.reinterpret(), addressLength.ptr) < 0) null
-        else swapBytes(localAddress.sin_port)
+        if (getsockname(fileDescriptor, localAddress.ptr.reinterpret(), addressLength.ptr) < 0) {
+            -1
+        } else {
+            swapBytes(localAddress.sin_port.toInt())
+        }
     }
 
     override suspend fun close() {
         close(fileDescriptor)
     }
 
+    @OptIn(ExperimentalForeignApi::class)
     private inline fun Int.ensureUnixCallResult(op: String, predicate: (Int) -> Boolean): Int {
         if (!predicate(this)) {
             throw Error("$op: ${strerror(posix_errno())!!.toKString()}")

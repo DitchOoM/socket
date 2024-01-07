@@ -2,12 +2,10 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.NativeBuffer
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.PlatformBuffer.allocate
 import kotlinx.cinterop.*
 import kotlinx.coroutines.withTimeout
 import platform.posix.*
 import kotlin.time.Duration
-import kotlin.time.ExperimentalTime
 
 open class PosixClientSocket() : ClientSocket {
 
@@ -25,8 +23,11 @@ open class PosixClientSocket() : ClientSocket {
                 localAddress.ptr.reinterpret(),
                 addressLength.ptr
             ) < 0
-        ) null
-        else swapBytes(localAddress.sin_port)
+        ) {
+            null
+        } else {
+            swapBytes(localAddress.sin_port)
+        }
     }
 
     override fun remotePort(): Int = memScoped {
@@ -39,8 +40,11 @@ open class PosixClientSocket() : ClientSocket {
                 peerAddress.ptr.reinterpret(),
                 addressLength.ptr
             ) < 0
-        ) null
-        else swapBytes(peerAddress.sin_port)
+        ) {
+            null
+        } else {
+            swapBytes(peerAddress.sin_port)
+        }
     }
 
     override suspend fun <T> read(
@@ -79,7 +83,8 @@ open class PosixClientSocket() : ClientSocket {
         return send(
             currentFileDescriptor,
             (buffer as NativeBuffer).data.refTo(0),
-            (buffer.limit() - buffer.position()).toInt().convert(), 0
+            (buffer.limit() - buffer.position()).toInt().convert(),
+            0
         ).ensureUnixCallResult("write") { it >= 0 }.toInt()
     }
 
