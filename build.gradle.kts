@@ -175,6 +175,12 @@ kotlin {
             kotlin.srcDir("src/commonJvmTest/kotlin")
             kotlin.srcDir("src/commonTest/kotlin")
         }
+
+        all {
+            languageSettings.optIn("kotlinx.cinterop.ExperimentalForeignApi")
+            languageSettings.optIn("kotlinx.cinterop.BetaInteropApi")
+            languageSettings.optIn("kotlinx.cinterop.UnsafeNumber")
+        }
     }
 }
 
