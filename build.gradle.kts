@@ -53,8 +53,6 @@ kotlin {
             nodejs()
         }
     }
-    linuxX64()
-    linuxArm64()
     macosArm64()
     macosX64()
     watchos()
@@ -111,10 +109,6 @@ kotlin {
         val macosX64Test by getting
         val macosArm64Main by getting
         val macosArm64Test by getting
-        val linuxX64Main by getting
-        val linuxX64Test by getting
-        val linuxArm64Main by getting
-        val linuxArm64Test by getting
         val iosMain by getting
         val iosTest by getting
         val iosSimulatorArm64Main by getting
@@ -148,18 +142,6 @@ kotlin {
             tvosTest.dependsOn(this)
             watchosTest.dependsOn(this)
             watchosSimulatorArm64Test.dependsOn(this)
-        }
-
-        val nativeMain by sourceSets.creating {
-            dependsOn(commonMain)
-            linuxX64Main.dependsOn(this)
-            linuxArm64Main.dependsOn(this)
-        }
-
-        val nativeTest by sourceSets.creating {
-            dependsOn(commonTest)
-            linuxX64Test.dependsOn(this)
-            linuxArm64Test.dependsOn(this)
         }
 
         val androidMain by getting {
