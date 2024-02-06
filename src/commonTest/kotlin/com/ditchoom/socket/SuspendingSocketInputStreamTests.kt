@@ -3,6 +3,7 @@ package com.ditchoom.socket
 import block
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.wrap
 import com.ditchoom.data.Reader
