@@ -2,58 +2,51 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.FragmentedReadBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.data.Reader
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlin.time.Duration
+import kotlin.time.measureTimedValue
 
 /**
  * Non blocking, suspending socket input stream.
  */
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
-    private val reader: Reader,
-    private val shouldReadAhead: Boolean = false
+    private val reader: Reader
 ) {
-    private var currentBuffer: ReadBuffer? = null
-    private var deferredBuffer: Deferred<ReadBuffer?>? = null
+    internal var currentBuffer: ReadBuffer? = null
 
     suspend fun readUnsignedByte() = ensureBufferSize(UByte.SIZE_BYTES).readUnsignedByte()
     suspend fun readByte() = ensureBufferSize(Byte.SIZE_BYTES).readByte()
 
-    suspend fun readBuffer(size: Int): ReadBuffer {
+    suspend fun readBuffer(size: Int? = null): ReadBuffer {
         val buffer = ensureBufferSize(size)
-        return buffer.readBytes(size)
-    }
-
-    private suspend fun readMaybeQueueNextRead(): ReadBuffer {
-        return if (shouldReadAhead) {
-            val deferredBuffer = deferredBuffer
-            if (deferredBuffer == null) {
-                val b = readFromReader()
-                coroutineScope { queueNextRead(this) }
-                b
-            } else {
-                val queuedBuffer = deferredBuffer.await() ?: readFromReader()
-                coroutineScope { queueNextRead(this) }
-                queuedBuffer
-            }
+        return if (size != null) {
+            buffer.readBytes(size)
         } else {
-            readFromReader()
+            buffer
         }
     }
 
-    suspend fun ensureBufferSize(size: Int): ReadBuffer {
-        if (size < 1) {
+    internal suspend fun ensureBufferSize(size: Int? = null): ReadBuffer {
+        if (size != null && size < 1) {
             return EMPTY_BUFFER
         }
         val currentBuffer = currentBuffer
+        if (size == null) {
+            val buffer = if (currentBuffer == null) {
+                val b = readFromReader().slice()
+                this.currentBuffer = b
+                b
+            } else {
+                currentBuffer
+            }
+            return buffer
+        }
         var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
             currentBuffer
         } else {
-            readMaybeQueueNextRead()
+            readFromReader()
         }
         this.currentBuffer = fragmentedLocalBuffer
         if (fragmentedLocalBuffer.remaining() >= size) {
@@ -62,29 +55,19 @@ class SuspendingSocketInputStream(
 
         // ensure remaining in local buffer at least the size we requested
         while (fragmentedLocalBuffer.remaining() < size) {
-            val moreData = readMaybeQueueNextRead()
-            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, moreData)
+            val moreData = readFromReader()
+            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, moreData).slice()
         }
         this.currentBuffer = fragmentedLocalBuffer
         return fragmentedLocalBuffer
     }
 
     private suspend fun readFromReader(): ReadBuffer {
-        val buffer = reader.read(readTimeout)
+        val bufferTimed = measureTimedValue {
+            reader.read(readTimeout)
+        }
+        val buffer = bufferTimed.value
         buffer.resetForRead()
-        return buffer
-    }
-
-    private suspend fun queueNextRead(scope: CoroutineScope) {
-        if (!reader.isOpen()) {
-            return
-        }
-        this.deferredBuffer = scope.async {
-            try {
-                readFromReader()
-            } catch (e: SocketClosedException) {
-                null
-            }
-        }
+        return buffer.slice()
     }
 }
