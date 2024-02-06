@@ -206,7 +206,6 @@ Connection: close
         suspendingInputStream()
     }
 
-
     suspend fun CoroutineScope.suspendingInputStream() {
         val server = ServerSocket.allocate()
         val text = "yolo swag lyfestyle"
