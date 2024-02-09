@@ -203,15 +203,10 @@ Connection: close
 
     @Test
     fun suspendingInputStream() = blockingTest {
-        suspendingInputStream(false)
+        suspendingInputStream()
     }
 
-    @Test
-    fun suspendingInputStreamReadAhead() = blockingTest {
-        suspendingInputStream(true)
-    }
-
-    suspend fun CoroutineScope.suspendingInputStream(readAhead: Boolean) {
+    suspend fun CoroutineScope.suspendingInputStream() {
         val server = ServerSocket.allocate()
         val text = "yolo swag lyfestyle"
         val text2 = "old mac donald had a farm"
@@ -236,7 +231,7 @@ Connection: close
         clientToServer.open(serverPort)
         val clientToServerPort = clientToServer.localPort()
         assertTrue(clientToServerPort > 0, "No port number from clientToServerPort")
-        val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer, readAhead)
+        val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer)
         var buffer = inputStream.ensureBufferSize(text.length)
         serverToClientMutex.lock()
         val utf8 = buffer.readString(text.length, Charset.UTF8)

@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.SuspendCloseable
 import com.ditchoom.buffer.allocate
 import com.ditchoom.data.Reader
@@ -12,8 +11,6 @@ import kotlin.time.Duration.Companion.seconds
 interface ClientSocket : SocketController, Reader, Writer, SuspendCloseable {
     companion object
 }
-
-val EMPTY_BUFFER = PlatformBuffer.allocate(0)
 
 suspend fun ClientSocket.Companion.connect(
     port: Int,

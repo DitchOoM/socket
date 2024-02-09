@@ -4,6 +4,7 @@ import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.buffer.allocate
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import kotlinx.coroutines.Dispatchers

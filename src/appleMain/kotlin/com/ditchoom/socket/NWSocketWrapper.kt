@@ -3,9 +3,8 @@ package com.ditchoom.socket
 import cocoapods.SocketWrapper.SocketWrapper
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.DataBuffer
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocate
+import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UnsafeNumber
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -28,7 +27,7 @@ open class NWSocketWrapper : ClientSocket {
 
     override suspend fun remotePort(): Int = socket?.remotePort()?.toInt() ?: -1
     override suspend fun read(timeout: Duration): ReadBuffer {
-        val socket = socket ?: return PlatformBuffer.allocate(0)
+        val socket = socket ?: return EMPTY_BUFFER
         return readMutex.withLock {
             withTimeout(timeout) {
                 suspendCancellableCoroutine {
@@ -38,7 +37,7 @@ open class NWSocketWrapper : ClientSocket {
                             it.resumeWithException(SocketClosedException(errorString))
                         } else if (data != null) {
                             if (data.length.toInt() == 0) {
-                                it.resume(PlatformBuffer.allocate(0))
+                                it.resume(EMPTY_BUFFER)
                             } else {
                                 val d = DataBuffer(data, ByteOrder.BIG_ENDIAN)
                                 d.position(data.length.toInt())
