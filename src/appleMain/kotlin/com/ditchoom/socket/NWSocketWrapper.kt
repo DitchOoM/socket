@@ -65,7 +65,9 @@ open class NWSocketWrapper : ClientSocket {
                         if (errorString != null) {
                             continuation.resumeWithException(SocketException(errorString))
                         } else {
-                            continuation.resume(bytesWritten.toInt())
+                            val writtenBytes = bytesWritten.toInt()
+                            readBuffer.position(readBuffer.position() + writtenBytes)
+                            continuation.resume(writtenBytes)
                         }
                     }
                     continuation.invokeOnCancellation {

@@ -53,6 +53,7 @@ open class NodeSocket : ClientSocket {
         }
         val array = (buffer as JsBuffer).buffer
         writeMutex.withLock { netSocket.write(array) }
+        buffer.position(buffer.position() + array.byteLength)
         return array.byteLength
     }
 
