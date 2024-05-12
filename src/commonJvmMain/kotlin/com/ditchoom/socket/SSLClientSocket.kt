@@ -17,7 +17,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 class SSLClientSocket(
-    private val underlyingSocket: ClientToServerSocket
+    private val underlyingSocket: ClientToServerSocket,
 ) : ClientToServerSocket {
     private val byteBufferClientSocket = underlyingSocket as ByteBufferClientSocket<*>
     private val closeTimeout = 1.seconds
@@ -27,13 +27,14 @@ class SSLClientSocket(
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?
+        hostname: String?,
     ) {
-        val context = try {
-            SSLContext.getInstance("TLSv1.3")
-        } catch (e: NoSuchAlgorithmException) {
-            SSLContext.getInstance("TLSv1.2")
-        }
+        val context =
+            try {
+                SSLContext.getInstance("TLSv1.3")
+            } catch (e: NoSuchAlgorithmException) {
+                SSLContext.getInstance("TLSv1.2")
+            }
         context.init(null, null, null)
         engine = context.createSSLEngine(hostname, port)
         engine.useClientMode = true
@@ -50,8 +51,10 @@ class SSLClientSocket(
 
     override suspend fun read(timeout: Duration): ReadBuffer = unwrap(timeout)
 
-    override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int =
-        wrap(buffer as JvmBuffer, timeout)
+    override suspend fun write(
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ): Int = wrap(buffer as JvmBuffer, timeout)
 
     private suspend fun doHandshake(timeout: Duration) {
         var cachedBuffer: JvmBuffer? = null
@@ -63,21 +66,23 @@ class SSLClientSocket(
                     withContext(Dispatchers.IO) { engine.delegatedTask.run() }
 
                 else -> { // UNWRAP + UNWRAP AGAIN
-                    val dataRead = if (cachedBuffer != null) {
-                        cachedBuffer
-                    } else {
-                        val plainTextReadBuffer =
-                            bufferFactory(engine.session.applicationBufferSize)
-                        byteBufferClientSocket.read(plainTextReadBuffer, timeout)
-                        plainTextReadBuffer.resetForRead()
-                        plainTextReadBuffer
-                    }
+                    val dataRead =
+                        if (cachedBuffer != null) {
+                            cachedBuffer
+                        } else {
+                            val plainTextReadBuffer =
+                                bufferFactory(engine.session.applicationBufferSize)
+                            byteBufferClientSocket.read(plainTextReadBuffer, timeout)
+                            plainTextReadBuffer.resetForRead()
+                            plainTextReadBuffer
+                        }
                     val result = engine.unwrap(dataRead.byteBuffer, emptyBuffer.byteBuffer)
-                    cachedBuffer = if (dataRead.byteBuffer.hasRemaining()) {
-                        dataRead
-                    } else {
-                        null
-                    }
+                    cachedBuffer =
+                        if (dataRead.byteBuffer.hasRemaining()) {
+                            dataRead
+                        } else {
+                            null
+                        }
                     when (checkNotNull(result.status)) {
                         SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
                             cachedBuffer ?: continue
@@ -99,7 +104,10 @@ class SSLClientSocket(
         }
     }
 
-    private suspend fun wrap(plainText: JvmBuffer, timeout: Duration): Int {
+    private suspend fun wrap(
+        plainText: JvmBuffer,
+        timeout: Duration,
+    ): Int {
         val encrypted = bufferFactory(engine.session.packetBufferSize)
         val result = engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
         when (result.status!!) {
@@ -109,7 +117,8 @@ class SSLClientSocket(
             }
 
             SSLEngineResult.Status.CLOSED,
-            SSLEngineResult.Status.OK -> {
+            SSLEngineResult.Status.OK,
+            -> {
                 encrypted.resetForRead()
                 var writtenBytes = 0
                 while (encrypted.hasRemaining()) {
@@ -130,14 +139,15 @@ class SSLClientSocket(
 
     private suspend fun unwrap(timeout: Duration): ReadBuffer {
         val byteBufferClientSocket = underlyingSocket as ByteBufferClientSocket<*>
-        val encryptedReadBuffer = overflowEncryptedReadBuffer
-            ?: bufferFactory(engine.session.packetBufferSize).also {
-                val bytesRead = byteBufferClientSocket.read(it, timeout)
-                if (bytesRead < 1) {
-                    return EMPTY_BUFFER
+        val encryptedReadBuffer =
+            overflowEncryptedReadBuffer
+                ?: bufferFactory(engine.session.packetBufferSize).also {
+                    val bytesRead = byteBufferClientSocket.read(it, timeout)
+                    if (bytesRead < 1) {
+                        return EMPTY_BUFFER
+                    }
+                    it.resetForRead()
                 }
-                it.resetForRead()
-            }
         val plainTextReadBuffer = bufferFactory(engine.session.applicationBufferSize)
         while (encryptedReadBuffer.hasRemaining()) {
             val result =

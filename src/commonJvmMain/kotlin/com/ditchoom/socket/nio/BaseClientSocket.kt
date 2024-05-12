@@ -19,13 +19,13 @@ import kotlin.time.Duration
 
 abstract class BaseClientSocket(
     private val allocationZone: AllocationZone,
-    protected val blocking: Boolean = false
+    protected val blocking: Boolean = false,
 ) : ByteBufferClientSocket<SocketChannel>() {
-
     val selector = if (!blocking) Selector.open()!! else null
 
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
+
     override suspend fun remotePort() = (socket.remoteAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
@@ -34,7 +34,10 @@ abstract class BaseClientSocket(
         return buffer
     }
 
-    override suspend fun read(buffer: JvmBuffer, timeout: Duration): Int {
+    override suspend fun read(
+        buffer: JvmBuffer,
+        timeout: Duration,
+    ): Int {
         val bytesRead = readMutex.withLock { socket.read(buffer.byteBuffer, selector, timeout) }
         if (bytesRead < 0) {
             throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
@@ -42,7 +45,10 @@ abstract class BaseClientSocket(
         return bytesRead
     }
 
-    override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
+    override suspend fun write(
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ): Int {
         val bytesWritten = writeMutex.withLock { socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout) }
         if (bytesWritten < 0) {
             throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")

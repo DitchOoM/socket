@@ -26,6 +26,7 @@ open class NWSocketWrapper : ClientSocket {
     override suspend fun localPort(): Int = socket?.localPort()?.toInt() ?: -1
 
     override suspend fun remotePort(): Int = socket?.remotePort()?.toInt() ?: -1
+
     override suspend fun read(timeout: Duration): ReadBuffer {
         val socket = socket ?: return EMPTY_BUFFER
         return readMutex.withLock {
@@ -55,7 +56,10 @@ open class NWSocketWrapper : ClientSocket {
         }
     }
 
-    override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
+    override suspend fun write(
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ): Int {
         val socket = socket ?: return -1
         val readBuffer = buffer as DataBuffer
         return writeMutex.withLock {

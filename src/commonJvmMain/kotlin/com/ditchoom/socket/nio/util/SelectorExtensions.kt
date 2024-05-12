@@ -35,10 +35,11 @@ suspend fun Selector.aSelect(timeout: Duration): Int {
     }
 }
 
-suspend fun Selector.aClose() = suspendCoroutine<Unit> {
-    try {
-        it.resume(close())
-    } catch (e: Throwable) {
-        it.resumeWithException(e)
+suspend fun Selector.aClose() =
+    suspendCoroutine<Unit> {
+        try {
+            it.resume(close())
+        } catch (e: Throwable) {
+            it.resumeWithException(e)
+        }
     }
-}

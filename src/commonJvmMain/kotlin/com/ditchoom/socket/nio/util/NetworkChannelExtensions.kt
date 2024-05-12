@@ -17,12 +17,13 @@ fun NetworkChannel.localAddressOrNull(): SocketAddress? {
     }
 }
 
-suspend fun NetworkChannel.aClose() = withContext(Dispatchers.IO) {
-    suspendCoroutine<Unit> { cont ->
-        blockingClose()
-        cont.resume(Unit)
+suspend fun NetworkChannel.aClose() =
+    withContext(Dispatchers.IO) {
+        suspendCoroutine<Unit> { cont ->
+            blockingClose()
+            cont.resume(Unit)
+        }
     }
-}
 
 internal fun NetworkChannel.blockingClose() {
     try {

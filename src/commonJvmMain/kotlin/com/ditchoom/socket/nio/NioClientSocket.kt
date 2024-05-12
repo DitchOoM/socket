@@ -12,12 +12,12 @@ import kotlin.time.Duration
 
 class NioClientSocket(
     allocationZone: AllocationZone,
-    blocking: Boolean = true
+    blocking: Boolean = true,
 ) : BaseClientSocket(allocationZone, blocking), ClientToServerSocket {
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?
+        hostname: String?,
     ) {
         val socketAddress = buildInetAddress(port, hostname)
         val socketChannel = openSocketChannel()

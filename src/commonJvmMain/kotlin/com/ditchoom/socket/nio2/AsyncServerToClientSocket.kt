@@ -5,7 +5,7 @@ import java.nio.channels.AsynchronousSocketChannel
 
 class AsyncServerToClientSocket(
     allocationZone: AllocationZone,
-    asyncSocket: AsynchronousSocketChannel
+    asyncSocket: AsynchronousSocketChannel,
 ) : AsyncBaseClientSocket(allocationZone) {
     init {
         this.socket = asyncSocket

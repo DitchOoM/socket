@@ -17,7 +17,7 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     tls: Boolean = false,
     timeout: Duration = 15.seconds,
-    zone: AllocationZone = AllocationZone.Direct
+    zone: AllocationZone = AllocationZone.Direct,
 ): ClientToServerSocket {
     val socket = ClientSocket.allocate(tls, zone)
     socket.open(port, timeout, hostname)
@@ -29,7 +29,7 @@ suspend fun <T> ClientSocket.Companion.connect(
     hostname: String? = null,
     tls: Boolean = false,
     timeout: Duration = 15.seconds,
-    lambda: suspend (ClientSocket) -> T
+    lambda: suspend (ClientSocket) -> T,
 ): T {
     val socket = ClientSocket.allocate(tls)
     socket.open(port, timeout, hostname)
@@ -40,5 +40,5 @@ suspend fun <T> ClientSocket.Companion.connect(
 
 expect fun ClientSocket.Companion.allocate(
     tls: Boolean = false,
-    allocationZone: AllocationZone = AllocationZone.Direct
+    allocationZone: AllocationZone = AllocationZone.Direct,
 ): ClientToServerSocket

@@ -3,10 +3,9 @@ package com.ditchoom.socket
 import kotlin.test.Test
 
 class SimpleNioNonBlockingSocketTests {
-
     init {
-        USE_ASYNC_CHANNELS = false
-        USE_NIO_BLOCKING = false
+        useAsyncChannels = false
+        useNioBlocking = false
     }
 
     @Test

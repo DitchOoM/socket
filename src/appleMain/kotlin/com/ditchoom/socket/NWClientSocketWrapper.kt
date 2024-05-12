@@ -14,7 +14,6 @@ import kotlin.time.Duration
 
 @OptIn(ExperimentalForeignApi::class, DelicateCoroutinesApi::class)
 class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToServerSocket {
-
     private val callbackStateFlow by lazy(LazyThreadSafetyMode.NONE) {
         callbackFlow {
             val socket = checkNotNull(socket as? ClientSocketWrapper)
@@ -49,14 +48,15 @@ class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToSe
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?
+        hostname: String?,
     ) {
-        val socket = ClientSocketWrapper(
-            hostname ?: "localhost",
-            port.toUShort(),
-            timeout.inWholeSeconds.convert(),
-            useTls
-        )
+        val socket =
+            ClientSocketWrapper(
+                hostname ?: "localhost",
+                port.toUShort(),
+                timeout.inWholeSeconds.convert(),
+                useTls,
+            )
         this.socket = socket
         socket.start()
         awaitConnectionOrThrow()

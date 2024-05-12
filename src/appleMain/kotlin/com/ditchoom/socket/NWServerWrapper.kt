@@ -18,31 +18,37 @@ class NWServerWrapper : ServerSocket {
     private var server: ServerSocketListenerWrapper? = null
 
     @OptIn(UnsafeNumber::class, ExperimentalForeignApi::class)
-    override suspend fun bind(port: Int, host: String?, backlog: Int): Flow<ClientSocket> {
+    override suspend fun bind(
+        port: Int,
+        host: String?,
+        backlog: Int,
+    ): Flow<ClientSocket> {
         val server = ServerSocketListenerWrapper(port.convert(), host, backlog.convert())
-        val flow = callbackFlow {
-            server.assignAcceptedCallbackListenerWithAcceptedClient { socketWrapper ->
-                val nwSocketWrapper = NWSocketWrapper()
-                nwSocketWrapper.socket = socketWrapper
-                trySendBlocking(nwSocketWrapper).getOrThrow()
+        val flow =
+            callbackFlow {
+                server.assignAcceptedCallbackListenerWithAcceptedClient { socketWrapper ->
+                    val nwSocketWrapper = NWSocketWrapper()
+                    nwSocketWrapper.socket = socketWrapper
+                    trySendBlocking(nwSocketWrapper).getOrThrow()
+                }
+                server.assignCloseCallbackWithCb {
+                    channel.close()
+                }
+                awaitClose { server.stopListeningForInboundConnectionsWithCb {} }
             }
-            server.assignCloseCallbackWithCb {
-                channel.close()
-            }
-            awaitClose { server.stopListeningForInboundConnectionsWithCb {} }
-        }
 
-        this@NWServerWrapper.server = suspendCancellableCoroutine {
-            server.startWithCompletionHandler { serverSocketListenerWrapper, errorString, _, _, _ ->
-                if (errorString != null) {
-                    it.resumeWithException(SocketException(errorString))
-                } else if (serverSocketListenerWrapper != null) {
-                    it.resume(serverSocketListenerWrapper)
-                } else {
-                    it.resumeWithException(IllegalStateException("Failed to get a valid socket or error message"))
+        this@NWServerWrapper.server =
+            suspendCancellableCoroutine {
+                server.startWithCompletionHandler { serverSocketListenerWrapper, errorString, _, _, _ ->
+                    if (errorString != null) {
+                        it.resumeWithException(SocketException(errorString))
+                    } else if (serverSocketListenerWrapper != null) {
+                        it.resume(serverSocketListenerWrapper)
+                    } else {
+                        it.resumeWithException(IllegalStateException("Failed to get a valid socket or error message"))
+                    }
                 }
             }
-        }
         return flow
     }
 
@@ -55,6 +61,7 @@ class NWServerWrapper : ServerSocket {
         val server = server ?: return
         suspendCoroutine {
             var isDone = false
+
             fun completion() {
                 if (!isDone) {
                     it.resume(Unit)

@@ -19,6 +19,7 @@ open class NodeSocket : ClientSocket {
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
+
     override fun isOpen() = !isClosed || netSocket.remoteAddress != null
 
     override suspend fun localPort() = netSocket.localPort
@@ -30,29 +31,35 @@ open class NodeSocket : ClientSocket {
             throw SocketClosedException("Socket closed. transmissionError=$hadTransmissionError")
         }
         netSocket.resume()
-        val message = withTimeout(timeout) {
-            try {
-                incomingMessageChannel.receive()
-            } catch (e: ClosedReceiveChannelException) {
-                throw SocketClosedException(
-                    "Socket is already closed. transmissionError=$hadTransmissionError",
-                    e
-                )
+        val message =
+            withTimeout(timeout) {
+                try {
+                    incomingMessageChannel.receive()
+                } catch (e: ClosedReceiveChannelException) {
+                    throw SocketClosedException(
+                        "Socket is already closed. transmissionError=$hadTransmissionError",
+                        e,
+                    )
+                }
             }
-        }
         if (message.bytesRead < 0 || !isOpen()) {
-            throw SocketClosedException("Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError")
+            throw SocketClosedException(
+                "Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError",
+            )
         }
         message.result.position(message.bytesRead)
         return message.result
     }
 
-    override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
+    override suspend fun write(
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ): Int {
         if (!isOpen()) {
             throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val array = (buffer as JsBuffer).buffer
-        writeMutex.withLock { netSocket.write(array) }
+        writeMutex.withLock { netSocket.write(Uint8Array(array.buffer)) }
         buffer.position(buffer.position() + array.byteLength)
         return array.byteLength
     }
@@ -71,26 +78,27 @@ open class NodeSocket : ClientSocket {
 
 class NodeClientSocket(
     private val useTls: Boolean,
-    private val allocationZone: AllocationZone
+    private val allocationZone: AllocationZone,
 ) : NodeSocket(), ClientToServerSocket {
-
     override suspend fun open(
         port: Int,
         timeout: Duration,
-        hostname: String?
+        hostname: String?,
     ) = withTimeout(timeout) {
         val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
-        val onRead = OnRead({
-            val buffer = PlatformBuffer.allocate(8192, allocationZone) as JsBuffer
-            arrayPlatformBufferMap[buffer.buffer] = buffer
-            buffer.buffer
-        }, { bytesRead, buffer ->
-            val platformBuffer = arrayPlatformBufferMap.remove(buffer)!!
-            platformBuffer.setLimit(bytesRead)
-            val socketDataRead = SocketDataRead(platformBuffer.slice(), bytesRead)
-            incomingMessageChannel.trySend(socketDataRead)
-            false
-        })
+        val onRead =
+            OnRead({
+                val buffer = PlatformBuffer.allocate(8192, allocationZone) as JsBuffer
+                val uint8Array = Uint8Array(buffer.buffer.buffer)
+                arrayPlatformBufferMap[uint8Array] = buffer
+                uint8Array
+            }, { bytesRead, buffer ->
+                val platformBuffer = arrayPlatformBufferMap.remove(buffer)!!
+                platformBuffer.setLimit(bytesRead)
+                val socketDataRead = SocketDataRead(platformBuffer.slice(), bytesRead)
+                incomingMessageChannel.trySend(socketDataRead)
+                false
+            })
         val options = Options(port, hostname, onRead, rejectUnauthorized = false)
         val netSocket = connect(useTls, options)
         isClosed = false
