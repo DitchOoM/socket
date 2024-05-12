@@ -29,22 +29,24 @@ import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
-suspend fun openSocketChannel(remote: SocketAddress? = null) = suspendCoroutine<SocketChannel> {
-    try {
-        it.resume(
-            if (remote == null) {
-                SocketChannel.open()
-            } else {
-                SocketChannel.open(remote)
-            }
-        )
-    } catch (e: Throwable) {
-        it.resumeWithException(e)
+suspend fun openSocketChannel(remote: SocketAddress? = null) =
+    suspendCoroutine<SocketChannel> {
+        try {
+            it.resume(
+                if (remote == null) {
+                    SocketChannel.open()
+                } else {
+                    SocketChannel.open(remote)
+                },
+            )
+        } catch (e: Throwable) {
+            it.resumeWithException(e)
+        }
     }
-}
 
 data class WrappedContinuation<T>(val continuation: CancellableContinuation<T>, val attachment: T) {
     fun resume() = continuation.resume(attachment)
+
     fun cancel() = continuation.cancel()
 }
 
@@ -59,23 +61,28 @@ fun SocketChannel.remoteAddressOrNull(): SocketAddress? {
 suspend fun AbstractSelectableChannel.suspendUntilReady(
     selector: Selector,
     ops: Int,
-    timeout: Duration
+    timeout: Duration,
 ) {
     val random = random()
     suspendCancellableCoroutine<Double> {
-        val key = try {
-            register(selector, ops, WrappedContinuation(it, random))
-        } catch (e: ClosedSelectorException) {
-            it.resumeWithException(SocketClosedException("Socket closed", e))
-            return@suspendCancellableCoroutine
-        }
+        val key =
+            try {
+                register(selector, ops, WrappedContinuation(it, random))
+            } catch (e: ClosedSelectorException) {
+                it.resumeWithException(SocketClosedException("Socket closed", e))
+                return@suspendCancellableCoroutine
+            }
         runBlocking {
             selector.select(key, random, timeout)
         }
     }
 }
 
-suspend fun Selector.select(selectionKey: SelectionKey, attachment: Any, timeout: Duration) {
+suspend fun Selector.select(
+    selectionKey: SelectionKey,
+    attachment: Any,
+    timeout: Duration,
+) {
     val startTime = System.currentTimeMillis()
     val selectedCount = aSelect(timeout)
     if (selectedCount == 0) {
@@ -99,7 +106,10 @@ suspend fun Selector.select(selectionKey: SelectionKey, attachment: Any, timeout
     throw CancellationException("Failed to find selector in time")
 }
 
-suspend fun SocketChannel.aConnect(remote: SocketAddress, timeout: Duration) = if (isBlocking) {
+suspend fun SocketChannel.aConnect(
+    remote: SocketAddress,
+    timeout: Duration,
+) = if (isBlocking) {
     val socket = socket()!!
     try {
         withContext(Dispatchers.IO) {
@@ -126,7 +136,7 @@ private suspend fun SocketChannel.suspendConnect(remote: SocketAddress) {
 suspend fun SocketChannel.connect(
     remote: SocketAddress,
     selector: Selector? = null,
-    timeout: Duration
+    timeout: Duration,
 ): Boolean {
     withTimeout(timeout) {
         aConnect(remote, timeout)
@@ -140,17 +150,18 @@ suspend fun SocketChannel.connect(
     throw TimeoutException("Failed to connect to $remote within $timeout maybe invalid selector")
 }
 
-suspend fun SocketChannel.aFinishConnecting() = withContext(Dispatchers.Default) {
-    suspendCancellableCoroutine {
-        try {
-            while (it.isActive && !finishConnect()) {
+suspend fun SocketChannel.aFinishConnecting() =
+    withContext(Dispatchers.Default) {
+        suspendCancellableCoroutine {
+            try {
+                while (it.isActive && !finishConnect()) {
+                }
+                it.resume(true)
+            } catch (e: Throwable) {
+                it.resumeWithException(e)
             }
-            it.resume(true)
-        } catch (e: Throwable) {
-            it.resumeWithException(e)
         }
     }
-}
 
 suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) =
     suspendCoroutine<SelectableChannel> {
@@ -164,7 +175,7 @@ suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) =
 private suspend fun AbstractSelectableChannel.suspendNonBlockingSelector(
     selector: Selector?,
     op: Int,
-    timeout: Duration
+    timeout: Duration,
 ) {
     if (isBlocking) {
         return
@@ -178,7 +189,7 @@ private suspend fun AbstractSelectableChannel.suspendNonBlockingSelector(
 suspend fun <T> T.read(
     buffer: ByteBuffer,
     selector: Selector?,
-    timeout: Duration
+    timeout: Duration,
 ): Int where T : AbstractSelectableChannel, T : ReadableByteChannel {
     return if (isBlocking) {
         withContext(Dispatchers.IO) {
@@ -193,7 +204,7 @@ suspend fun <T> T.read(
 suspend fun <T> T.write(
     buffer: ByteBuffer,
     selector: Selector?,
-    timeout: Duration
+    timeout: Duration,
 ): Int where T : AbstractSelectableChannel, T : WritableByteChannel {
     return if (isBlocking) {
         withContext(Dispatchers.IO) {

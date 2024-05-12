@@ -5,25 +5,29 @@ import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-suspend fun connect(tls: Boolean, tcpOptions: Options): Socket {
+suspend fun connect(
+    tls: Boolean,
+    tcpOptions: Options,
+): Socket {
     var netSocket: Socket? = null
     var throwable: Throwable? = null
     try {
         suspendCancellableCoroutine<Unit> {
-            val socket = if (tls) {
-                Tls.connect(tcpOptions) {
-                    it.resume(Unit)
+            val socket =
+                if (tls) {
+                    Tls.connect(tcpOptions) {
+                        it.resume(Unit)
+                    }
+                } else {
+                    Net.connect(tcpOptions) {
+                        it.resume(Unit)
+                    }
                 }
-            } else {
-                Net.connect(tcpOptions) {
-                    it.resume(Unit)
-                }
-            }
             socket.on("error") { e ->
                 if (!it.isCompleted) {
                     if (e.toString().contains("getaddrinfo")) {
                         it.resumeWithException(
-                            SocketException(tcpOptions.host ?: "unknown host")
+                            SocketException(tcpOptions.host ?: "unknown host"),
                         )
                     } else {
                         it.resumeWithException(SocketException("Failed to connect: $e"))

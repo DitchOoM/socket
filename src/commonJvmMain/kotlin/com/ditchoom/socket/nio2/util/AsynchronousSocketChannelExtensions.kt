@@ -33,7 +33,7 @@ suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) =
  */
 suspend fun AsynchronousSocketChannel.aConnect(
     socketAddress: SocketAddress,
-    timeout: Duration
+    timeout: Duration,
 ) = withTimeout(timeout) {
     suspendCancellableCoroutine<Unit> { cont ->
         connect(socketAddress, cont, AsyncVoidIOHandler())
@@ -50,18 +50,19 @@ suspend fun AsynchronousSocketChannel.aConnect(
 
 suspend fun AsynchronousSocketChannel.aRead(
     buf: ByteBuffer,
-    duration: Duration
+    duration: Duration,
 ): Int {
-    val result = suspendCancellableCoroutine<Int> { cont ->
-        read(
-            buf,
-            duration.inWholeMilliseconds,
-            TimeUnit.MILLISECONDS,
-            cont,
-            asyncIOIntHandler()
-        )
-        closeOnCancel(cont)
-    }
+    val result =
+        suspendCancellableCoroutine<Int> { cont ->
+            read(
+                buf,
+                duration.inWholeMilliseconds,
+                TimeUnit.MILLISECONDS,
+                cont,
+                asyncIOIntHandler(),
+            )
+            closeOnCancel(cont)
+        }
     return result
 }
 
@@ -74,7 +75,7 @@ suspend fun AsynchronousSocketChannel.aRead(
 
 suspend fun AsynchronousSocketChannel.aWrite(
     buf: ByteBuffer,
-    duration: Duration
+    duration: Duration,
 ): Int {
     return suspendCancellableCoroutine<Int> { cont ->
         write(
@@ -82,7 +83,7 @@ suspend fun AsynchronousSocketChannel.aWrite(
             duration.inWholeMilliseconds,
             TimeUnit.MILLISECONDS,
             cont,
-            asyncIOHandler()
+            asyncIOHandler(),
         )
         closeOnCancel(cont)
     }

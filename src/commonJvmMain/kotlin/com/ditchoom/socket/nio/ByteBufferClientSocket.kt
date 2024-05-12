@@ -11,16 +11,20 @@ import kotlin.time.Duration
 abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
 
-    override fun isOpen() = try {
-        socket.isOpen
-    } catch (e: Throwable) {
-        false
-    }
+    override fun isOpen() =
+        try {
+            socket.isOpen
+        } catch (e: Throwable) {
+            false
+        }
 
-    override suspend fun localPort(): Int =
-        (socket.localAddressOrNull() as? InetSocketAddress)?.port ?: -1
+    override suspend fun localPort(): Int = (socket.localAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
-    abstract suspend fun read(buffer: JvmBuffer, timeout: Duration): Int
+    abstract suspend fun read(
+        buffer: JvmBuffer,
+        timeout: Duration,
+    ): Int
+
     override suspend fun close() {
         socket.aClose()
     }

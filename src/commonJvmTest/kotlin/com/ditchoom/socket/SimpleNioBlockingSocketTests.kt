@@ -3,10 +3,9 @@ package com.ditchoom.socket
 import org.junit.Test
 
 class SimpleNioBlockingSocketTests {
-
     init {
-        USE_ASYNC_CHANNELS = false
-        USE_NIO_BLOCKING = true
+        useAsyncChannels = false
+        useNioBlocking = true
     }
 
     @Test

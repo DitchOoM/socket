@@ -5,39 +5,39 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
-import org.khronos.webgl.Uint8Array
+import org.khronos.webgl.Int8Array
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 class NodeServerSocket : ServerSocket {
-
     private var server: Server? = null
 
     override suspend fun bind(
         port: Int,
         host: String?,
-        backlog: Int
+        backlog: Int,
     ): Flow<ClientSocket> {
         val server = Net.createServer()
-        val flow = callbackFlow {
-            server.on<Socket>("connection") { clientSocket ->
-                val nodeSocket = NodeSocket()
-                nodeSocket.isClosed = false
-                nodeSocket.netSocket = clientSocket
-                clientSocket.on("data") { data ->
-                    val result = uint8ArrayOf(data)
-                    val buffer = JsBuffer(result)
-                    buffer.setPosition(result.length)
-                    buffer.setLimit(result.length)
-                    nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+        val flow =
+            callbackFlow {
+                server.on<Socket>("connection") { clientSocket ->
+                    val nodeSocket = NodeSocket()
+                    nodeSocket.isClosed = false
+                    nodeSocket.netSocket = clientSocket
+                    clientSocket.on("data") { data ->
+                        val result = int8ArrayOf(data)
+                        val buffer = JsBuffer(result)
+                        buffer.setPosition(result.length)
+                        buffer.setLimit(result.length)
+                        nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+                    }
+                    trySend(nodeSocket).getOrThrow()
                 }
-                trySend(nodeSocket).getOrThrow()
+                server.on("close") {
+                    channel.close()
+                }
+                awaitClose { server.close { } }
             }
-            server.on("close") {
-                channel.close()
-            }
-            awaitClose { server.close { } }
-        }
 
         server.listenSuspend(port, host, backlog)
         this@NodeServerSocket.server = server
@@ -45,16 +45,18 @@ class NodeServerSocket : ServerSocket {
     }
 
     @Suppress("MemberVisibilityCanBePrivate")
-    fun uint8ArrayOf(@Suppress("UNUSED_PARAMETER") obj: Any): Uint8Array {
+    fun int8ArrayOf(
+        @Suppress("UNUSED_PARAMETER") obj: Any,
+    ): Int8Array {
         return js(
             """
             if (Buffer.isBuffer(obj)) {
-                return new Uint8Array(obj.buffer)
+                return new Int8Array(obj.buffer)
             } else {
-                return new Uint8Array(Buffer.from(obj).buffer)
+                return new Int8Array(Buffer.from(obj).buffer)
             }
-        """
-        ) as Uint8Array
+        """,
+        ) as Int8Array
     }
 
     override fun isListening() = server?.listening ?: false
@@ -70,7 +72,11 @@ class NodeServerSocket : ServerSocket {
     }
 }
 
-suspend fun Server.listenSuspend(port: Int, host: String?, backlog: Int) {
+suspend fun Server.listenSuspend(
+    port: Int,
+    host: String?,
+    backlog: Int,
+) {
     suspendCancellableCoroutine {
         if (host != null && port != -1) {
             listen(port, host, backlog) {

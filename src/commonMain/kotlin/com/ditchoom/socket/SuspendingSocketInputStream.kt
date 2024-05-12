@@ -12,11 +12,12 @@ import kotlin.time.measureTimedValue
  */
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
-    private val reader: Reader
+    private val reader: Reader,
 ) {
     internal var currentBuffer: ReadBuffer? = null
 
     suspend fun readUnsignedByte() = ensureBufferSize(UByte.SIZE_BYTES).readUnsignedByte()
+
     suspend fun readByte() = ensureBufferSize(Byte.SIZE_BYTES).readByte()
 
     suspend fun readBuffer(size: Int? = null): ReadBuffer {
@@ -34,20 +35,22 @@ class SuspendingSocketInputStream(
         }
         val currentBuffer = currentBuffer
         if (size == null) {
-            val buffer = if (currentBuffer == null) {
-                val b = readFromReader().slice()
-                this.currentBuffer = b
-                b
-            } else {
-                currentBuffer
-            }
+            val buffer =
+                if (currentBuffer == null) {
+                    val b = readFromReader().slice()
+                    this.currentBuffer = b
+                    b
+                } else {
+                    currentBuffer
+                }
             return buffer
         }
-        var fragmentedLocalBuffer = if (currentBuffer != null && currentBuffer.hasRemaining()) {
-            currentBuffer
-        } else {
-            readFromReader()
-        }
+        var fragmentedLocalBuffer =
+            if (currentBuffer != null && currentBuffer.hasRemaining()) {
+                currentBuffer
+            } else {
+                readFromReader()
+            }
         this.currentBuffer = fragmentedLocalBuffer
         if (fragmentedLocalBuffer.remaining() >= size) {
             return fragmentedLocalBuffer
@@ -63,9 +66,10 @@ class SuspendingSocketInputStream(
     }
 
     private suspend fun readFromReader(): ReadBuffer {
-        val bufferTimed = measureTimedValue {
-            reader.read(readTimeout)
-        }
+        val bufferTimed =
+            measureTimedValue {
+                reader.read(readTimeout)
+            }
         val buffer = bufferTimed.value
         buffer.resetForRead()
         return buffer.slice()

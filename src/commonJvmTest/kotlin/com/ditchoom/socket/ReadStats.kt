@@ -1,11 +1,15 @@
 package com.ditchoom.socket
 
-actual suspend fun readStats(port: Int, contains: String): List<String> {
+actual suspend fun readStats(
+    port: Int,
+    contains: String,
+): List<String> {
     try {
-        val process = ProcessBuilder()
-            .command("lsof", "-iTCP:$port", "-sTCP:$contains", "-l", "-n")
-            .redirectErrorStream(true)
-            .start()
+        val process =
+            ProcessBuilder()
+                .command("lsof", "-iTCP:$port", "-sTCP:$contains", "-l", "-n")
+                .redirectErrorStream(true)
+                .start()
         try {
             process.inputStream.use { stream ->
                 return String(stream.readBytes()).split("\n").filter { it.isNotBlank() }

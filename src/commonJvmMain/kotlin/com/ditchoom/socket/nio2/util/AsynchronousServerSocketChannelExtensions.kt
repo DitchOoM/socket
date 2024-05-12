@@ -21,12 +21,12 @@ data class AcceptCompletionHandler(val continuation: CancellableContinuation<Asy
     CompletionHandler<AsynchronousSocketChannel, CancellableContinuation<AsynchronousSocketChannel>> {
     override fun completed(
         result: AsynchronousSocketChannel,
-        attachment: CancellableContinuation<AsynchronousSocketChannel>
+        attachment: CancellableContinuation<AsynchronousSocketChannel>,
     ) = continuation.resume(result)
 
     override fun failed(
         exc: Throwable,
-        attachment: CancellableContinuation<AsynchronousSocketChannel>
+        attachment: CancellableContinuation<AsynchronousSocketChannel>,
     ) {
         // just return if already cancelled and got an expected exception for that case
 //        if (exc is AsynchronousCloseException && continuation.isCancelled) return
@@ -43,13 +43,12 @@ data class AcceptCompletionHandler(val continuation: CancellableContinuation<Asy
 
 suspend fun AsynchronousServerSocketChannel.aBind(
     socketAddress: SocketAddress? = null,
-    backlog: Int = 0
-) =
-    suspendCancellableCoroutine<AsynchronousServerSocketChannel> { cont ->
-        try {
-            closeOnCancel(cont)
-            cont.resume(bind(socketAddress, backlog))
-        } catch (e: Throwable) {
-            cont.cancel(e)
-        }
+    backlog: Int = 0,
+) = suspendCancellableCoroutine<AsynchronousServerSocketChannel> { cont ->
+    try {
+        closeOnCancel(cont)
+        cont.resume(bind(socketAddress, backlog))
+    } catch (e: Throwable) {
+        cont.cancel(e)
     }
+}

@@ -10,7 +10,7 @@ private fun nodeJs(): Boolean {
 
 actual fun ClientSocket.Companion.allocate(
     tls: Boolean,
-    allocationZone: AllocationZone
+    allocationZone: AllocationZone,
 ): ClientToServerSocket {
     return if (js("global.window") == null) {
         NodeClientSocket(tls, allocationZone)
@@ -19,9 +19,7 @@ actual fun ClientSocket.Companion.allocate(
     }
 }
 
-actual fun ServerSocket.Companion.allocate(
-    allocationZone: AllocationZone
-): ServerSocket {
+actual fun ServerSocket.Companion.allocate(allocationZone: AllocationZone): ServerSocket {
     if (js("global.window") == null) {
 //        throw UnsupportedOperationException("Not implemented yet")
         return NodeServerSocket()
