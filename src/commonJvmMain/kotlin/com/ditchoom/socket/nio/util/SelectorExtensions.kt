@@ -14,7 +14,7 @@ import kotlin.time.Duration
 suspend fun Selector.aSelect(timeout: Duration): Int {
     val selector = this
     return withTimeout(timeout) {
-        withContext(Dispatchers.Default.limitedParallelism(1)) {
+        withContext(Dispatchers.IO.limitedParallelism(1)) {
             while (isActive) {
                 try {
                     val keys = selectNow()
