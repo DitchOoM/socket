@@ -1,12 +1,12 @@
 package com.ditchoom.socket
 
-import block
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.wrap
 import com.ditchoom.data.Reader
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -16,7 +16,7 @@ import kotlin.time.Duration.Companion.seconds
 class SuspendingSocketInputStreamTests {
     @Test
     fun ensureBufferSize_doNotReadAhead_NoCurrentBuffer_NotFragmented() =
-        block {
+        runTest {
             val reader =
                 object : Reader {
                     override fun isOpen(): Boolean = true
@@ -38,7 +38,7 @@ class SuspendingSocketInputStreamTests {
 
     @Test
     fun ensureBufferSize_doNotReadAhead_NoCurrentBuffer_Fragmented() =
-        block {
+        runTest {
             val reader =
                 object : Reader {
                     private var internalCount = 0.toByte()
@@ -63,7 +63,7 @@ class SuspendingSocketInputStreamTests {
 
     @Test
     fun ensureBufferSize_doNotReadAhead_HasCurrentBuffer_Fragmented() =
-        block {
+        runTest {
             val reader =
                 object : Reader {
                     private var internalCount = 1.toByte()
@@ -88,7 +88,7 @@ class SuspendingSocketInputStreamTests {
 
     @Test
     fun ensureBufferSize_shouldReadAhead_HasDeferredBuffer_HasCurrentBuffer_Fragmented() =
-        block {
+        runTest {
             val reader =
                 object : Reader {
                     private var internalCount = 1.toByte()
@@ -112,7 +112,7 @@ class SuspendingSocketInputStreamTests {
 
     @Test
     fun ensureBufferSize_nullSize_NoCurrentBuffer() =
-        block {
+        runTest {
             val reader =
                 object : Reader {
                     private var internalCount = 1.toByte()

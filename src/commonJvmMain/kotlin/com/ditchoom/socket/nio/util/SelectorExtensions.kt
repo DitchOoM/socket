@@ -1,10 +1,12 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package com.ditchoom.socket.nio.util
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.Selector
 import kotlin.coroutines.resume
@@ -15,7 +17,7 @@ import kotlin.time.Duration
 suspend fun Selector.aSelect(timeout: Duration): Int {
     val selector = this
     return withTimeout(timeout) {
-        withContext(Dispatchers.Default) {
+        withContext(Dispatchers.IO.limitedParallelism(1)) {
             while (isActive) {
                 try {
                     val keys = selectNow()
@@ -28,7 +30,6 @@ suspend fun Selector.aSelect(timeout: Duration): Int {
                         return@withContext 0
                     }
                 }
-                yield()
             }
             0
         }

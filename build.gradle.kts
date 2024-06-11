@@ -4,8 +4,8 @@ import org.apache.tools.ant.taskdefs.condition.Os
 import java.net.URL
 
 plugins {
-    kotlin("multiplatform") version "1.9.24"
-    kotlin("native.cocoapods") version "1.9.24"
+    kotlin("multiplatform") version "2.0.0"
+    kotlin("native.cocoapods") version "2.0.0"
     id("com.android.library") version "8.4.0"
     id("io.codearte.nexus-staging") version "0.30.0"
     `maven-publish`
@@ -64,7 +64,7 @@ kotlin {
     }
     sourceSets {
         commonMain.dependencies {
-            implementation("com.ditchoom:buffer:1.4.0")
+            implementation("com.ditchoom:buffer:1.4.1")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
         }
         androidMain.dependencies {
@@ -72,6 +72,8 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
         }
         jsMain.dependencies {
             implementation("org.jetbrains.kotlin-wrappers:kotlin-js:1.0.0-pre.746")
@@ -99,6 +101,9 @@ kotlin {
             dependsOn(commonTest.get())
         }
         jvmTest.get().dependsOn(commonJvmTest)
+        jvmTest.dependencies {
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-debug:1.8.1")
+        }
         androidUnitTest.dependsOn(commonJvmTest)
     }
 }

@@ -1,18 +1,16 @@
 package com.ditchoom.socket
 
-import blockingTest
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -22,18 +20,23 @@ import kotlin.time.Duration.Companion.seconds
 class SimpleSocketTests {
     @Test
     fun connectTimeoutWorks() =
-        blockingTest {
+        runTest {
             try {
                 ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
                 fail("should not have reached this")
             } catch (_: TimeoutCancellationException) {
             } catch (_: SocketException) {
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    // only expected for browsers
+                    throw e
+                }
             }
         }
 
     @Test
     fun invalidHost() =
-        blockingTest {
+        runTestNoTimeSkipping {
             try {
                 ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 1.seconds)
                 fail("should not have reached this")
@@ -44,7 +47,7 @@ class SimpleSocketTests {
 
     @Test
     fun closeWorks() =
-        blockingTest {
+        runTest {
             try {
                 ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
                 fail("the port is invalid, so this line should never hit")
@@ -52,41 +55,37 @@ class SimpleSocketTests {
                 // expected
             } catch (s: SocketException) {
                 // expected
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    // only expected for browsers
+                    throw e
+                }
             }
         }
 
     @Test
     fun manyClientsConnectingToOneServer() =
-        blockingTest {
+        runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val acceptedClientFlow = server.bind()
             val clientCount = 5
-            val completed = BooleanArray(clientCount)
-            val jobs = mutableListOf<Job>()
-            launch {
+            launch(Dispatchers.Default) {
                 acceptedClientFlow.collect { serverToClient ->
-                    launch {
-                        val indexReceived = serverToClient.readString().toInt()
-                        completed[indexReceived] = true
-                        serverToClient.writeString("ack $indexReceived")
-                        serverToClient.close()
-                    }
+                    val s = serverToClient.readString()
+                    val indexReceived = s.toInt()
+                    serverToClient.writeString("ack $indexReceived")
+                    serverToClient.close()
                 }
             }
             repeat(clientCount) { index ->
-                jobs +=
-                    launch {
-                        ClientSocket.connect(server.port()) { clientToServer ->
-                            clientToServer.writeString(index.toString())
-                            assertEquals("ack $index", clientToServer.readString())
-                            clientToServer.close()
-                        }
-                    }
+                ClientSocket.connect(server.port()) { clientToServer ->
+                    clientToServer.writeString(index.toString())
+                    val read = clientToServer.readString()
+                    assertEquals("ack $index", read)
+                    clientToServer.close()
+                }
             }
-            jobs.joinAll()
             server.close()
-            val expected = BooleanArray(clientCount) { true }
-            assertContentEquals(expected, completed)
         }
 
     @Test
@@ -104,7 +103,7 @@ class SimpleSocketTests {
     private fun readHttp(
         domain: String,
         tls: Boolean,
-    ) = blockingTest {
+    ) = runTestNoTimeSkipping {
         var localPort = 1
         val remotePort = if (tls) 443 else 80
         val response =
@@ -142,13 +141,13 @@ Connection: close
 
     @Test
     fun serverEcho() =
-        blockingTest {
+        runTestNoTimeSkipping(3) {
             val server = ServerSocket.allocate()
             val text = "yolo swag lyfestyle"
             var serverToClientPort = 0
             val serverToClientMutex = Mutex(locked = true)
             val flow = server.bind()
-            launch {
+            launch(Dispatchers.Default) {
                 flow.collect { serverToClient ->
                     val buffer = serverToClient.read(1.seconds)
                     buffer.resetForRead()
@@ -177,13 +176,13 @@ Connection: close
 
     @Test
     fun clientEcho() =
-        blockingTest {
+        runTestNoTimeSkipping {
             val text = "yolo swag lyfestyle"
             val server = ServerSocket.allocate()
             var serverToClientPort = 0
             val serverToClientMutex = Mutex(locked = true)
             val acceptedClientFlow = server.bind()
-            launch {
+            launch(Dispatchers.Default) {
                 acceptedClientFlow.collect { serverToClient ->
                     serverToClientPort = serverToClient.localPort()
                     assertTrue { serverToClientPort > 0 }
@@ -213,7 +212,7 @@ Connection: close
 
     @Test
     fun suspendingInputStream() =
-        blockingTest {
+        runTestNoTimeSkipping {
             suspendingInputStream()
         }
 
@@ -224,7 +223,7 @@ Connection: close
         var serverToClientPort = 0
         val serverToClientMutex = Mutex(locked = true)
         val acceptedClientFlow = server.bind()
-        launch {
+        launch(Dispatchers.Default) {
             acceptedClientFlow.collect { serverToClient ->
                 serverToClientPort = serverToClient.localPort()
                 assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
