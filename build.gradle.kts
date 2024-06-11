@@ -72,6 +72,8 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
         }
         jsMain.dependencies {
             implementation("org.jetbrains.kotlin-wrappers:kotlin-js:1.0.0-pre.746")
@@ -99,6 +101,9 @@ kotlin {
             dependsOn(commonTest.get())
         }
         jvmTest.get().dependsOn(commonJvmTest)
+        jvmTest.dependencies {
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-debug:1.8.1")
+        }
         androidUnitTest.dependsOn(commonJvmTest)
     }
 }
