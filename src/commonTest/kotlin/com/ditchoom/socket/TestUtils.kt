@@ -10,7 +10,10 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 
-internal fun runTestNoTimeSkipping(count: Int = 1, block: suspend TestScope.() -> Unit) = runTest {
+internal fun runTestNoTimeSkipping(
+    count: Int = 1,
+    block: suspend TestScope.() -> Unit,
+) = runTest {
     try {
         withContext(Dispatchers.Default.limitedParallelism(count)) {
             block()
@@ -23,4 +26,3 @@ internal fun runTestNoTimeSkipping(count: Int = 1, block: suspend TestScope.() -
         }
     }
 }
-

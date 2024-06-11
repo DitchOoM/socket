@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.Selector
 import kotlin.coroutines.resume
