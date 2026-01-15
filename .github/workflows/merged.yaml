@@ -8,45 +8,76 @@ on:
     types:
       - closed
 
-env:
-  username: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-  password: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
+permissions:
+  contents: write
 
 jobs:
-  create-staging-repository:
+  check-release:
     if: github.event.pull_request.merged == true
-    name: Create staging repository
     runs-on: ubuntu-latest
     outputs:
-      repository_id: ${{ steps.create.outputs.repository_id }}
+      should_release: ${{ steps.check.outputs.should_release }}
+      is_draft: ${{ steps.check.outputs.is_draft }}
+      skip_release: ${{ steps.check.outputs.skip_release }}
     steps:
-      - id: create
+      - name: Check release conditions
+        id: check
         run: |
-          jsonOutput=$(curl -s --request POST -u "$username:$password" \
-              --url https://oss.sonatype.org/service/local/staging/profiles/3abaab4608e7e/start \
-              --header 'Accept: application/json' \
-              --header 'Content-Type: application/json' \
-              --data '{ "data": {"description" : "socket"} }')
-          stagingRepositoryId=$(echo "$jsonOutput" | jq -r '.data.stagedRepositoryId')
-          if [ -z "$stagingRepositoryId" ]; then
-            echo "Error while creating the staging repository."
-            exit 1
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'skip-release') }}" == "true" ]]; then
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "skip_release=true" >> $GITHUB_OUTPUT
+            echo "is_draft=false" >> $GITHUB_OUTPUT
+          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'draft-release') }}" == "true" ]]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "skip_release=false" >> $GITHUB_OUTPUT
+            echo "is_draft=true" >> $GITHUB_OUTPUT
           else
-            echo "repository_id=$stagingRepositoryId" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "skip_release=false" >> $GITHUB_OUTPUT
+            echo "is_draft=false" >> $GITHUB_OUTPUT
           fi
 
-  macos:
-    name: MacOS Build & Upload artifacts to sonatype
-    if: github.event.pull_request.merged == true
-    needs: create-staging-repository
+  dry-run:
+    name: Dry Run (skip-release)
+    if: needs.check-release.outputs.skip_release == 'true'
+    needs: check-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Konan cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Build and test
+        run: ./gradlew check publishToMavenLocal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Package
+          path: build/libs
+
+  draft-release:
+    name: Draft Release (publish to staging)
+    if: needs.check-release.outputs.is_draft == 'true'
+    needs: check-release
     runs-on: macos-latest
     env:
-      SONATYPE_REPOSITORY_ID: ${{ needs.create-staging-repository.outputs.repository_id }}
-      SONATYPE_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-      SONATYPE_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
-      GPG_SECRET: ${{ secrets.GPG_SECRET }}
-      GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
-      NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SIGNING_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -68,60 +99,99 @@ jobs:
         uses: browser-actions/setup-chrome@v1
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-      - name: Import GPG Key
-        id: import_gpg
-        uses: crazy-max/ghaction-import-gpg@v6
+      - name: Determine version increment
+        id: version
+        run: |
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'major') }}" == "true" ]]; then
+            echo "args=-PincrementMajor=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'minor') }}" == "true" ]]; then
+            echo "args=-PincrementMinor=true" >> $GITHUB_OUTPUT
+          else
+            echo "args=" >> $GITHUB_OUTPUT
+          fi
+      - name: Publish to staging
+        run: ./gradlew check publishToMavenCentral ${{ steps.version.outputs.args }}
+      - name: Get version
+        id: get_version
+        run: echo "version=$(./gradlew -q printVersion ${{ steps.version.outputs.args }})" >> $GITHUB_OUTPUT
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.get_version.outputs.version }}" \
+            --repo="$GITHUB_REPOSITORY" \
+            --title="socket ${{ steps.get_version.outputs.version }}" \
+            --draft \
+            --generate-notes
+
+  release:
+    name: Build and Release to Maven Central
+    if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.is_draft != 'true'
+    needs: check-release
+    runs-on: macos-latest
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SIGNING_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
         with:
-          gpg_private_key: ${{ secrets.GPG_SECRET }}
-          passphrase: ${{ secrets.GPG_SIGNING_PASSWORD }}
-      - name: Test and deploy with Gradle Major
-        if: ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Konan cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Determine version increment
+        id: version
+        run: |
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'major') }}" == "true" ]]; then
+            echo "args=-PincrementMajor=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'minor') }}" == "true" ]]; then
+            echo "args=-PincrementMinor=true" >> $GITHUB_OUTPUT
+          else
+            echo "args=" >> $GITHUB_OUTPUT
+          fi
+      - name: Run tests and publish
+        run: ./gradlew check publishAndReleaseToMavenCentral ${{ steps.version.outputs.args }}
+      - name: Get version
+        id: get_version
+        run: echo "version=$(./gradlew -q printVersion ${{ steps.version.outputs.args }})" >> $GITHUB_OUTPUT
+      - name: Create git tag
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag -a "v${{ steps.get_version.outputs.version }}" -m "Release v${{ steps.get_version.outputs.version }}"
+          git push origin "v${{ steps.get_version.outputs.version }}"
+      - name: Create GitHub release
         env:
-          SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-          SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
-          GPG_SECRET: ${{ secrets.GPG_SECRET }}
-          GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
-          NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
-        run: ./gradlew publishAllPublicationsToSonatypeRepository -PincrementMajor=true
-      - name: Test and deploy with Gradle Minor
-        if: ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
-        env:
-          SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-          SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
-          GPG_SECRET: ${{ secrets.GPG_SECRET }}
-          GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
-          NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
-        run: ./gradlew publishAllPublicationsToSonatypeRepository -PincrementMinor=true
-      - name: Test and deploy with Gradle Patch
-        if: ${{ !contains(github.event.pull_request.labels.*.name, 'major') && !contains(github.event.pull_request.labels.*.name, 'minor') }}
-        env:
-          SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-          SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
-          GPG_SECRET: ${{ secrets.GPG_SECRET }}
-          GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
-          NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
-        run: ./gradlew publishAllPublicationsToSonatypeRepository
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.get_version.outputs.version }}" \
+            --repo="$GITHUB_REPOSITORY" \
+            --title="socket ${{ steps.get_version.outputs.version }}" \
+            --generate-notes \
+            --notes "## Maven Central
+
+          \`\`\`kotlin
+          implementation(\"com.ditchoom:socket:${{ steps.get_version.outputs.version }}\")
+          \`\`\`
+
+          [View on Maven Central](https://central.sonatype.com/artifact/com.ditchoom/socket/${{ steps.get_version.outputs.version }})"
       - uses: actions/upload-artifact@v4
         with:
           name: Package
           path: build/libs
-
-  finalize:
-    runs-on: ubuntu-latest
-    needs: [create-staging-repository, macos]
-    if: ${{ always() && needs.create-staging-repository.result == 'success' && github.event.pull_request.merged == true }}
-    steps:
-      - name: Discard
-        if: ${{ needs.macos.result != 'success' }}
-        uses: nexus-actions/drop-nexus-staging-repo@main
-        with:
-          username: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-          password: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
-          staging_repository_id: ${{ needs.create-staging-repository.outputs.repository-id }}
-      - name: Release
-        if: ${{ needs.macos.result == 'success' }}
-        uses: nexus-actions/release-nexus-staging-repo@main
-        with:
-          username: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-          password: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
-          staging_repository_id: ${{ needs.create-staging-repository.outputs.repository_id }}

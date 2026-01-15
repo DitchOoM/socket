@@ -6,7 +6,7 @@ dokka = "2.1.0"
 coroutines = "1.10.2"
 androidxCore = "1.15.0"
 develocity = "4.3"
-nexusStaging = "0.30.0"
+mavenPublish = "0.30.0"
 kotlinJsWrappers = "1.0.0-pre.850"
 
 [libraries]
@@ -22,6 +22,6 @@ kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref 
 kotlin-cocoapods = { id = "org.jetbrains.kotlin.native.cocoapods", version.ref = "kotlin" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
-nexus-staging = { id = "io.codearte.nexus-staging", version.ref = "nexusStaging" }
+maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
 dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
 develocity = { id = "com.gradle.develocity", version.ref = "develocity" }

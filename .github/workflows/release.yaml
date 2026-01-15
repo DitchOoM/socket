@@ -23,10 +23,10 @@ jobs:
     if: ${{ inputs.action == 'complete' }}
     runs-on: macos-latest
     env:
-      SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
-      SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
-      GPG_SECRET: ${{ secrets.GPG_SECRET }}
-      GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SIGNING_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -35,31 +35,55 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
           cache: gradle
+      - name: Konan cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-
       - name: Gradle cache
         uses: gradle/actions/setup-gradle@v4
+      - name: Release from staging
+        run: ./gradlew releaseToMavenCentral
       - name: Create and push tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
           git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
           git push origin "v${{ inputs.version }}"
-      - name: Create GitHub Release
+      - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ inputs.version }}" \
-            --repo="$GITHUB_REPOSITORY" \
-            --title="socket ${{ inputs.version }}" \
-            --generate-notes \
-            --notes "## Maven Central
+          # Check if a draft release exists
+          DRAFT_EXISTS=$(gh release view "v${{ inputs.version }}" --repo="$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "not_found")
+          if [ "$DRAFT_EXISTS" = "true" ]; then
+            # Update draft to published
+            gh release edit "v${{ inputs.version }}" \
+              --repo="$GITHUB_REPOSITORY" \
+              --draft=false \
+              --notes "## Maven Central
 
           \`\`\`kotlin
           implementation(\"com.ditchoom:socket:${{ inputs.version }}\")
           \`\`\`
 
           [View on Maven Central](https://central.sonatype.com/artifact/com.ditchoom/socket/${{ inputs.version }})"
+          else
+            # Create new release
+            gh release create "v${{ inputs.version }}" \
+              --repo="$GITHUB_REPOSITORY" \
+              --title="socket ${{ inputs.version }}" \
+              --generate-notes \
+              --notes "## Maven Central
+
+          \`\`\`kotlin
+          implementation(\"com.ditchoom:socket:${{ inputs.version }}\")
+          \`\`\`
+
+          [View on Maven Central](https://central.sonatype.com/artifact/com.ditchoom/socket/${{ inputs.version }})"
+          fi
 
   cancel-release:
     if: ${{ inputs.action == 'cancel' }}
