@@ -1,0 +1,85 @@
+name: "Release"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.2.3 without v prefix)'
+        required: true
+        type: string
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - complete
+          - cancel
+
+permissions:
+  contents: write
+
+jobs:
+  complete-release:
+    if: ${{ inputs.action == 'complete' }}
+    runs-on: macos-latest
+    env:
+      SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
+      SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
+      GPG_SECRET: ${{ secrets.GPG_SECRET }}
+      GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+      - name: Create and push tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --repo="$GITHUB_REPOSITORY" \
+            --title="socket ${{ inputs.version }}" \
+            --generate-notes \
+            --notes "## Maven Central
+
+          \`\`\`kotlin
+          implementation(\"com.ditchoom:socket:${{ inputs.version }}\")
+          \`\`\`
+
+          [View on Maven Central](https://central.sonatype.com/artifact/com.ditchoom/socket/${{ inputs.version }})"
+
+  cancel-release:
+    if: ${{ inputs.action == 'cancel' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE=$(gh release view "v${{ inputs.version }}" --repo="$GITHUB_REPOSITORY" --json isDraft -q '.isDraft' 2>/dev/null || echo "not_found")
+          if [ "$RELEASE" = "not_found" ]; then
+            echo "Release v${{ inputs.version }} not found"
+            exit 0
+          elif [ "$RELEASE" = "true" ]; then
+            echo "Deleting draft release v${{ inputs.version }}"
+            gh release delete "v${{ inputs.version }}" --repo="$GITHUB_REPOSITORY" --yes
+          else
+            echo "Release v${{ inputs.version }} is already published. Cannot cancel."
+            exit 1
+          fi
+      - name: Reminder
+        run: |
+          echo "::warning::Remember to manually drop the staging repository in Maven Central if it was created."

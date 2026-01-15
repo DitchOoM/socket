@@ -1,4 +1,5 @@
 name: "Build Test and Deploy"
+
 on:
   pull_request_target:
     paths-ignore:
@@ -6,9 +7,11 @@ on:
     branches: [ main ]
     types:
       - closed
+
 env:
   username: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
   password: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
+
 jobs:
   create-staging-repository:
     if: github.event.pull_request.merged == true
@@ -29,13 +32,14 @@ jobs:
             echo "Error while creating the staging repository."
             exit 1
           else
-          echo "repository_id=$stagingRepositoryId" >> $GITHUB_OUTPUT
+            echo "repository_id=$stagingRepositoryId" >> $GITHUB_OUTPUT
           fi
+
   macos:
     name: MacOS Build & Upload artifacts to sonatype
     if: github.event.pull_request.merged == true
     needs: create-staging-repository
-    runs-on: macOS-latest
+    runs-on: macos-latest
     env:
       SONATYPE_REPOSITORY_ID: ${{ needs.create-staging-repository.outputs.repository_id }}
       SONATYPE_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
@@ -45,26 +49,33 @@ jobs:
       NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 19
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: '19'
+          java-version: '21'
           cache: gradle
+      - name: Konan cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-
       - name: Gradle cache
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
+        uses: android-actions/setup-android@v3
       - name: Import GPG Key
         id: import_gpg
-        uses: crazy-max/ghaction-import-gpg@v5
+        uses: crazy-max/ghaction-import-gpg@v6
         with:
           gpg_private_key: ${{ secrets.GPG_SECRET }}
           passphrase: ${{ secrets.GPG_SIGNING_PASSWORD }}
       - name: Test and deploy with Gradle Major
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
         env:
           SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
           SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
@@ -73,7 +84,7 @@ jobs:
           NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
         run: ./gradlew publishAllPublicationsToSonatypeRepository -PincrementMajor=true
       - name: Test and deploy with Gradle Minor
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
         env:
           SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
           SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
@@ -82,7 +93,7 @@ jobs:
           NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
         run: ./gradlew publishAllPublicationsToSonatypeRepository -PincrementMinor=true
       - name: Test and deploy with Gradle Patch
-        if:  ${{ !contains(github.event.pull_request.labels.*.name, 'major') && !contains(github.event.pull_request.labels.*.name, 'minor') }}
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'major') && !contains(github.event.pull_request.labels.*.name, 'minor') }}
         env:
           SONATYPE_NEXUS_USERNAME: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
           SONATYPE_NEXUS_PASSWORD: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
@@ -90,10 +101,11 @@ jobs:
           GPG_SIGNING_PASSWORD: ${{ secrets.GPG_SIGNING_PASSWORD }}
           NPM_ACCESS_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
         run: ./gradlew publishAllPublicationsToSonatypeRepository
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: Package
           path: build/libs
+
   finalize:
     runs-on: ubuntu-latest
     needs: [create-staging-repository, macos]
