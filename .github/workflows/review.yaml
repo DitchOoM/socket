@@ -9,8 +9,8 @@ on:
       - opened
 
 jobs:
-  review-jvm-js:
-    name: JVM & JS Tests
+  review-jvm-js-android:
+    name: JVM, JS & Android Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,12 +20,14 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
           cache: gradle
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
       - name: Gradle cache
         uses: gradle/actions/setup-gradle@v4
       - name: Run ktlint and tests
-        run: ./gradlew ktlintCheck jvmTest jsNodeTest jsBrowserTest wasmJsNodeTest wasmJsBrowserTest
+        run: ./gradlew ktlintCheck jvmTest jsNodeTest jsBrowserTest wasmJsNodeTest wasmJsBrowserTest assembleRelease
 
   review-apple:
     name: Apple Target Tests
