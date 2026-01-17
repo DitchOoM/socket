@@ -7,5 +7,7 @@ sealed interface ConnectionState {
 
     data object Connected : ConnectionState
 
-    open class Disconnected(val t: Throwable? = null) : ConnectionState
+    open class Disconnected(
+        val t: Throwable? = null,
+    ) : ConnectionState
 }

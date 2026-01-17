@@ -44,19 +44,21 @@ suspend fun openSocketChannel(remote: SocketAddress? = null) =
         }
     }
 
-data class WrappedContinuation<T>(val continuation: CancellableContinuation<T>, val attachment: T) {
+data class WrappedContinuation<T>(
+    val continuation: CancellableContinuation<T>,
+    val attachment: T,
+) {
     fun resume() = continuation.resume(attachment)
 
     fun cancel() = continuation.cancel()
 }
 
-fun SocketChannel.remoteAddressOrNull(): SocketAddress? {
-    return try {
+fun SocketChannel.remoteAddressOrNull(): SocketAddress? =
+    try {
         remoteAddress
     } catch (e: Exception) {
         null
     }
-}
 
 suspend fun AbstractSelectableChannel.suspendUntilReady(
     selector: Selector,
@@ -190,8 +192,8 @@ suspend fun <T> T.read(
     buffer: ByteBuffer,
     selector: Selector?,
     timeout: Duration,
-): Int where T : AbstractSelectableChannel, T : ReadableByteChannel {
-    return if (isBlocking) {
+): Int where T : AbstractSelectableChannel, T : ReadableByteChannel =
+    if (isBlocking) {
         withContext(Dispatchers.IO) {
             suspendRead(buffer)
         }
@@ -199,14 +201,13 @@ suspend fun <T> T.read(
         suspendNonBlockingSelector(selector, SelectionKey.OP_READ, timeout)
         suspendRead(buffer)
     }
-}
 
 suspend fun <T> T.write(
     buffer: ByteBuffer,
     selector: Selector?,
     timeout: Duration,
-): Int where T : AbstractSelectableChannel, T : WritableByteChannel {
-    return if (isBlocking) {
+): Int where T : AbstractSelectableChannel, T : WritableByteChannel =
+    if (isBlocking) {
         withContext(Dispatchers.IO) {
             suspendWrite(buffer)
         }
@@ -214,7 +215,6 @@ suspend fun <T> T.write(
         suspendNonBlockingSelector(selector, SelectionKey.OP_WRITE, timeout)
         suspendWrite(buffer)
     }
-}
 
 fun NetworkChannel.closeOnCancel(cont: CancellableContinuation<*>) {
     cont.invokeOnCancellation {

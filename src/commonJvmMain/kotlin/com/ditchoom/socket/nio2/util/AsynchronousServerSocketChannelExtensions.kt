@@ -17,8 +17,9 @@ suspend fun AsynchronousServerSocketChannel.aAccept() =
         }
     }
 
-data class AcceptCompletionHandler(val continuation: CancellableContinuation<AsynchronousSocketChannel>) :
-    CompletionHandler<AsynchronousSocketChannel, CancellableContinuation<AsynchronousSocketChannel>> {
+data class AcceptCompletionHandler(
+    val continuation: CancellableContinuation<AsynchronousSocketChannel>,
+) : CompletionHandler<AsynchronousSocketChannel, CancellableContinuation<AsynchronousSocketChannel>> {
     override fun completed(
         result: AsynchronousSocketChannel,
         attachment: CancellableContinuation<AsynchronousSocketChannel>,

@@ -8,8 +8,9 @@ import java.nio.channels.CompletionHandler
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-internal class AsyncVoidIOHandler(private val cb: (() -> Unit)? = null) :
-    CompletionHandler<Void?, CancellableContinuation<Unit>> {
+internal class AsyncVoidIOHandler(
+    private val cb: (() -> Unit)? = null,
+) : CompletionHandler<Void?, CancellableContinuation<Unit>> {
     override fun completed(
         result: Void?,
         cont: CancellableContinuation<Unit>,

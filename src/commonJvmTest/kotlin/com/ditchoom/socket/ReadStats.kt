@@ -12,7 +12,9 @@ actual suspend fun readStats(
                 .start()
         try {
             process.inputStream.use { stream ->
-                return String(stream.readBytes()).split("\n").filter { it.isNotBlank() }
+                return String(stream.readBytes())
+                    .split("\n")
+                    .filter { it.isNotBlank() }
                     .filter { it.contains(contains) }
             }
         } finally {

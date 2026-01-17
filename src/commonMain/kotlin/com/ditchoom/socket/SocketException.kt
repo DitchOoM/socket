@@ -19,8 +19,11 @@ class SocketUnknownHostException(
         cause,
     )
 
-open class SSLSocketException(message: String, cause: Throwable? = null) :
-    SocketException(message, cause)
+open class SSLSocketException(
+    message: String,
+    cause: Throwable? = null,
+) : SocketException(message, cause)
 
-class SSLHandshakeFailedException(source: Exception) :
-    SSLSocketException(source.message ?: "Failed to complete SSL handshake", source)
+class SSLHandshakeFailedException(
+    source: Exception,
+) : SSLSocketException(source.message ?: "Failed to complete SSL handshake", source)

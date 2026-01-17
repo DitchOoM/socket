@@ -9,13 +9,12 @@ import java.nio.channels.SocketChannel
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
-fun NetworkChannel.localAddressOrNull(): SocketAddress? {
-    return try {
+fun NetworkChannel.localAddressOrNull(): SocketAddress? =
+    try {
         localAddress
     } catch (e: Exception) {
         null
     }
-}
 
 suspend fun NetworkChannel.aClose() =
     withContext(Dispatchers.IO) {

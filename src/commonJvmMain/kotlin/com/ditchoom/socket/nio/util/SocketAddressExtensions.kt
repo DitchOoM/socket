@@ -10,8 +10,8 @@ import kotlin.coroutines.suspendCoroutine
 suspend fun buildInetAddress(
     port: Int,
     hostname: String?,
-): InetSocketAddress {
-    return if (hostname != null) {
+): InetSocketAddress =
+    if (hostname != null) {
         try {
             InetSocketAddress(hostname.asInetAddress(), port)
         } catch (e: Exception) {
@@ -31,4 +31,3 @@ suspend fun buildInetAddress(
             }
         }
     }
-}

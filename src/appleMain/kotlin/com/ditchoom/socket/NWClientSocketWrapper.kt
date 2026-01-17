@@ -13,7 +13,10 @@ import kotlinx.coroutines.flow.transformWhile
 import kotlin.time.Duration
 
 @OptIn(ExperimentalForeignApi::class, DelicateCoroutinesApi::class)
-class NWClientSocketWrapper(val useTls: Boolean) : NWSocketWrapper(), ClientToServerSocket {
+class NWClientSocketWrapper(
+    val useTls: Boolean,
+) : NWSocketWrapper(),
+    ClientToServerSocket {
     private val callbackStateFlow by lazy(LazyThreadSafetyMode.NONE) {
         callbackFlow {
             val socket = checkNotNull(socket as? ClientSocketWrapper)

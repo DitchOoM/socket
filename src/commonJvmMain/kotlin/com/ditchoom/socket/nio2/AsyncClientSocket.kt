@@ -8,8 +8,9 @@ import com.ditchoom.socket.nio2.util.asyncSocket
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 
-class AsyncClientSocket(allocationZone: AllocationZone) :
-    AsyncBaseClientSocket(allocationZone),
+class AsyncClientSocket(
+    allocationZone: AllocationZone,
+) : AsyncBaseClientSocket(allocationZone),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,

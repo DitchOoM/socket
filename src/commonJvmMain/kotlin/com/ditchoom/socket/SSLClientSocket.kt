@@ -133,9 +133,7 @@ class SSLClientSocket(
         }
     }
 
-    private fun bufferFactory(size: Int): JvmBuffer {
-        return PlatformBuffer.allocate(size, AllocationZone.Direct) as JvmBuffer
-    }
+    private fun bufferFactory(size: Int): JvmBuffer = PlatformBuffer.allocate(size, AllocationZone.Direct) as JvmBuffer
 
     private suspend fun unwrap(timeout: Duration): ReadBuffer {
         val byteBufferClientSocket = underlyingSocket as ByteBufferClientSocket<*>

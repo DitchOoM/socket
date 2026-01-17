@@ -1,4 +1,3 @@
-import org.apache.tools.ant.taskdefs.condition.Os
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -14,17 +13,12 @@ apply(from = "gradle/setup.gradle.kts")
 group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-val isMacOS = Os.isFamily(Os.FAMILY_MAC)
-val loadAllPlatforms = !isRunningOnGithub || (isMacOS && isMainBranchGithub) || !isMacOS
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
 project.version = getNextVersion(!isRunningOnGithub).toString()
 
-println(
-    "Version: ${project.version}\nisRunningOnGithub: $isRunningOnGithub\nisMainBranchGithub: $isMainBranchGithub\n" +
-        "OS:$isMacOS\nLoad All Platforms: $loadAllPlatforms",
-)
+println("Version: ${project.version}\nisRunningOnGithub: $isRunningOnGithub\nisMainBranchGithub: $isMainBranchGithub")
 
 repositories {
     google()
@@ -47,29 +41,7 @@ kotlin {
         browser()
         nodejs()
     }
-    if (isRunningOnGithub) {
-        macosX64()
-        macosArm64()
-        iosArm64()
-        iosSimulatorArm64()
-        iosX64()
-        watchosArm64()
-        watchosSimulatorArm64()
-        watchosX64()
-        tvosArm64()
-        tvosSimulatorArm64()
-        tvosX64()
-    } else {
-        val osName = System.getProperty("os.name")
-        if (osName == "Mac OS X") {
-            val osArch = System.getProperty("os.arch")
-            if (osArch == "aarch64") {
-                macosArm64()
-            } else {
-                macosX64()
-            }
-        }
-    }
+    // Note: Apple targets removed - they required cocoapods SocketWrapper which is no longer supported
     applyDefaultHierarchyTemplate()
     sourceSets {
         commonMain.dependencies {

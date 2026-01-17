@@ -79,7 +79,8 @@ open class NodeSocket : ClientSocket {
 class NodeClientSocket(
     private val useTls: Boolean,
     private val allocationZone: AllocationZone,
-) : NodeSocket(), ClientToServerSocket {
+) : NodeSocket(),
+    ClientToServerSocket {
     override suspend fun open(
         port: Int,
         timeout: Duration,

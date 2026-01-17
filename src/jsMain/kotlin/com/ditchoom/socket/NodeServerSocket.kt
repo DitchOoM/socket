@@ -47,8 +47,8 @@ class NodeServerSocket : ServerSocket {
     @Suppress("MemberVisibilityCanBePrivate")
     fun int8ArrayOf(
         @Suppress("UNUSED_PARAMETER") obj: Any,
-    ): Int8Array {
-        return js(
+    ): Int8Array =
+        js(
             """
             if (Buffer.isBuffer(obj)) {
                 return new Int8Array(obj.buffer)
@@ -57,7 +57,6 @@ class NodeServerSocket : ServerSocket {
             }
         """,
         ) as Int8Array
-    }
 
     override fun isListening() = server?.listening ?: false
 

@@ -16,8 +16,9 @@ import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
 import kotlin.time.Duration
 
-abstract class AsyncBaseClientSocket(private val allocationZone: AllocationZone) :
-    ByteBufferClientSocket<AsynchronousSocketChannel>() {
+abstract class AsyncBaseClientSocket(
+    private val allocationZone: AllocationZone,
+) : ByteBufferClientSocket<AsynchronousSocketChannel>() {
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
 

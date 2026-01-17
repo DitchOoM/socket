@@ -20,7 +20,5 @@ interface Writer {
         string: String,
         charset: Charset = Charset.UTF8,
         timeout: Duration = 15.seconds,
-    ): Int {
-        return write(string.toReadBuffer(charset), timeout)
-    }
+    ): Int = write(string.toReadBuffer(charset), timeout)
 }

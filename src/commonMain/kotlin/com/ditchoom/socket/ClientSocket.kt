@@ -8,7 +8,11 @@ import com.ditchoom.data.Writer
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-interface ClientSocket : SocketController, Reader, Writer, SuspendCloseable {
+interface ClientSocket :
+    SocketController,
+    Reader,
+    Writer,
+    SuspendCloseable {
     companion object
 }
 
