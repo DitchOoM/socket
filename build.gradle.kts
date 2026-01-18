@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -13,6 +14,7 @@ apply(from = "gradle/setup.gradle.kts")
 group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
+val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
@@ -24,6 +26,48 @@ repositories {
     google()
     mavenCentral()
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }
+}
+
+// Swift library paths
+val swiftBuildDir = layout.buildDirectory.dir("swift")
+val swiftHeaderDir = swiftBuildDir.map { it.dir("include") }
+val swiftLibDir = swiftBuildDir.map { it.dir("lib") }
+
+// Task to build Swift libraries (only on macOS)
+val buildSwiftTask = tasks.register<Exec>("buildSwift") {
+    onlyIf { isMacOS }
+    workingDir = projectDir
+    commandLine("./buildSwift.sh")
+    outputs.dir(swiftBuildDir)
+    inputs.files(fileTree("src/nativeInterop/cinterop/swift") { include("**/*.swift") })
+}
+
+// Configure cinterop for Apple targets
+fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
+    val libPath = swiftLibDir.get().dir(libSubdir).asFile.absolutePath
+    compilations["main"].cinterops {
+        create("SocketWrapper") {
+            defFile("src/nativeInterop/cinterop/SocketWrapper.def")
+            includeDirs(swiftHeaderDir)
+            extraOpts("-libraryPath", libPath)
+            tasks.named(interopProcessingTaskName) {
+                dependsOn(buildSwiftTask)
+            }
+        }
+    }
+    compilations["main"].compileTaskProvider.configure {
+        dependsOn(buildSwiftTask)
+    }
+    // Link the Swift static library for all binaries (main and test)
+    binaries.all {
+        // Link our Swift wrapper library
+        linkerOpts("-L$libPath", "-lSocketWrapper")
+        // Link Swift runtime libraries
+        linkerOpts(
+            "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx",
+            "-L/usr/lib/swift",
+        )
+    }
 }
 
 kotlin {
@@ -41,7 +85,29 @@ kotlin {
         browser()
         nodejs()
     }
-    // Note: Apple targets removed - they required cocoapods SocketWrapper which is no longer supported
+
+    // Apple targets with Network.framework zero-copy socket implementation
+    if (isMacOS) {
+        // macOS
+        macosArm64 { configureSocketWrapperCinterop("macos") }
+        macosX64 { configureSocketWrapperCinterop("macos") }
+
+        // iOS
+        iosArm64 { configureSocketWrapperCinterop("ios") }
+        iosSimulatorArm64 { configureSocketWrapperCinterop("ios-simulator") }
+        iosX64 { configureSocketWrapperCinterop("ios-simulator") }
+
+        // tvOS
+        tvosArm64 { configureSocketWrapperCinterop("tvos") }
+        tvosSimulatorArm64 { configureSocketWrapperCinterop("tvos-simulator") }
+        tvosX64 { configureSocketWrapperCinterop("tvos-simulator") }
+
+        // watchOS (watchosArm32 not supported by buffer library)
+        watchosArm64 { configureSocketWrapperCinterop("watchos") }
+        watchosSimulatorArm64 { configureSocketWrapperCinterop("watchos-simulator") }
+        watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
+    }
+
     applyDefaultHierarchyTemplate()
     sourceSets {
         commonMain.dependencies {
@@ -86,6 +152,19 @@ kotlin {
             implementation(libs.kotlinx.coroutines.debug)
         }
         androidUnitTest.dependsOn(commonJvmTest)
+
+        // Add shared Apple implementation to all Apple target source sets
+        if (isMacOS) {
+            val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
+            listOf(
+                "macosArm64Main", "macosX64Main",
+                "iosArm64Main", "iosSimulatorArm64Main", "iosX64Main",
+                "tvosArm64Main", "tvosSimulatorArm64Main", "tvosX64Main",
+                "watchosArm64Main", "watchosSimulatorArm64Main", "watchosX64Main",
+            ).forEach { sourceSetName ->
+                findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
+            }
+        }
     }
 }
 
