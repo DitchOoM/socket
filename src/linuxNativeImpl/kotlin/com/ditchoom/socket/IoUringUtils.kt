@@ -71,7 +71,10 @@ internal fun throwSocketException(operation: String): Nothing {
  * Throw exception from a negative result code.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal fun throwFromResult(result: Int, operation: String): Nothing {
+internal fun throwFromResult(
+    result: Int,
+    operation: String,
+): Nothing {
     val errorCode = -result
     val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
     val message = "$operation failed: $errorMessage (errno=$errorCode)"
@@ -89,7 +92,10 @@ internal fun throwFromResult(result: Int, operation: String): Nothing {
  * Check if an operation succeeded, throw exception if not.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal inline fun checkSocketResult(result: Int, operation: String): Int {
+internal inline fun checkSocketResult(
+    result: Int,
+    operation: String,
+): Int {
     if (result < 0) {
         throwSocketException(operation)
     }
@@ -161,7 +167,10 @@ internal fun getRemotePort(sockfd: Int): Int {
  * Extract port from sockaddr based on address family.
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun getPortFromSockaddr(addr: CPointer<sockaddr>, family: Int): Int {
+private fun getPortFromSockaddr(
+    addr: CPointer<sockaddr>,
+    family: Int,
+): Int {
     return when (family) {
         AF_INET -> {
             val addr4 = addr.reinterpret<sockaddr_in>().pointed
@@ -198,7 +207,10 @@ internal fun isSocketIPv6(sockfd: Int): Boolean {
  * When set to false, allows IPv6 socket to accept IPv4 connections (dual-stack).
  */
 @OptIn(ExperimentalForeignApi::class)
-internal fun setIPv6Only(sockfd: Int, v6Only: Boolean) {
+internal fun setIPv6Only(
+    sockfd: Int,
+    v6Only: Boolean,
+) {
     memScoped {
         val optval = alloc<IntVar>()
         optval.value = if (v6Only) 1 else 0

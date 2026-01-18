@@ -13,6 +13,4 @@ actual fun ClientSocket.Companion.allocate(
 /**
  * Linux server socket implementation using io_uring for async accept.
  */
-actual fun ServerSocket.Companion.allocate(
-    allocationZone: AllocationZone,
-): ServerSocket = LinuxServerSocket()
+actual fun ServerSocket.Companion.allocate(allocationZone: AllocationZone): ServerSocket = LinuxServerSocket()
