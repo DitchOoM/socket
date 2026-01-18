@@ -15,7 +15,6 @@ group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
-val isLinux = System.getProperty("os.name").lowercase().contains("linux")
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
@@ -128,21 +127,9 @@ kotlin {
         watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
     }
 
-    // Linux targets with io_uring socket implementation
-    // Always register targets so source sets exist for ktlint, but only configure
-    // cinterop on Linux (since it requires Linux headers like io_uring and OpenSSL)
-    fun KotlinNativeTarget.configureLinuxSocketsCinterop() {
-        if (isLinux) {
-            compilations["main"].cinterops {
-                create("LinuxSockets") {
-                    defFile("src/nativeInterop/cinterop/LinuxSockets.def")
-                }
-            }
-        }
-    }
-
-    linuxX64 { configureLinuxSocketsCinterop() }
-    linuxArm64 { configureLinuxSocketsCinterop() }
+    // Linux targets disabled for now due to glibc version incompatibility with OpenSSL.
+    // Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
+    // TODO: Re-enable with statically-linked OpenSSL or on older Ubuntu runners.
 
     applyDefaultHierarchyTemplate()
     sourceSets {
@@ -209,14 +196,7 @@ kotlin {
             }
         }
 
-        // Add shared Linux implementation to all Linux target source sets
-        val linuxNativeImplDir = file("src/linuxNativeImpl/kotlin")
-        listOf(
-            "linuxX64Main",
-            "linuxArm64Main",
-        ).forEach { sourceSetName ->
-            findByName(sourceSetName)?.kotlin?.srcDir(linuxNativeImplDir)
-        }
+        // Linux source sets disabled (see comment above about glibc incompatibility)
     }
 }
 

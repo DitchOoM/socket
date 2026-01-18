@@ -1,10 +1,13 @@
 language = C
 package = com.ditchoom.socket.linux
 
-headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h openssl/ssl.h openssl/err.h openssl/x509.h liburing.h
+# Note: OpenSSL support disabled due to glibc version incompatibility with Kotlin/Native toolchain.
+# The K/N toolchain uses glibc 2.19, but Ubuntu 24.04's libssl requires glibc 2.33+.
+# TLS support can be added later with statically-linked OpenSSL.
+headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h
 
 compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -I/usr/include -I/usr/include/x86_64-linux-gnu
-linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -luring -lssl -lcrypto -lpthread
+linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -luring -lpthread
 
 ---
 
@@ -25,9 +28,4 @@ static inline int socket_bind(int sockfd, const struct sockaddr *addr, socklen_t
 
 static inline int socket_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     return accept(sockfd, addr, addrlen);
-}
-
-// Wrapper for SSL_set_tlsext_host_name macro (not available via cinterop)
-static inline long ssl_set_hostname(SSL *ssl, const char *hostname) {
-    return SSL_set_tlsext_host_name(ssl, hostname);
 }
