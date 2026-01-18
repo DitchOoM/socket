@@ -52,15 +52,17 @@ class ResourceCleanupTests {
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
-            val clientConnected = Mutex(locked = true)
-            val testDone = Mutex(locked = true)
 
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        clientConnected.unlock()
-                        // Wait for test to signal completion
-                        testDone.lock()
+                        // Just echo back data if received
+                        try {
+                            val data = client.readString(timeout = 500.milliseconds)
+                            client.writeString(data)
+                        } catch (_: Exception) {
+                            // Client may close before sending
+                        }
                         client.close()
                     }
                 }
@@ -70,16 +72,12 @@ class ResourceCleanupTests {
             try {
                 ClientSocket.connect(server.port(), hostname = "127.0.0.1", timeout = 5.seconds) { socket ->
                     socketWasOpen = socket.isOpen()
-                    clientConnected.lock() // Wait for server to acknowledge
                     throw RuntimeException("Test exception")
                 }
                 fail("Should have thrown")
             } catch (e: RuntimeException) {
                 // Expected
             }
-
-            // Signal server to clean up
-            testDone.unlock()
 
             // Verify the socket was open inside the block
             assertTrue(socketWasOpen, "Socket should have been open inside the use block")
