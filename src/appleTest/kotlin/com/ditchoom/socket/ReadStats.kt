@@ -17,4 +17,5 @@ actual suspend fun readStats(
 actual fun supportsIPv6(): Boolean = true // Apple platforms support IPv6
 
 private val startMark = TimeSource.Monotonic.markNow()
+
 actual fun currentTimeMillis(): Long = startMark.elapsedNow().inWholeMilliseconds

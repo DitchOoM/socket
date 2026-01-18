@@ -2,7 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
-import platform.posix.*
+import kotlin.concurrent.AtomicReference
 
 /**
  * Shared io_uring instance for socket operations.
@@ -14,38 +14,37 @@ import platform.posix.*
  */
 @OptIn(ExperimentalForeignApi::class)
 internal object IoUringManager {
-    private var ringPtr: CPointer<io_uring>? = null
-    private val lock = Any()
+    private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
     private const val QUEUE_DEPTH = 256
 
     fun getRing(): CPointer<io_uring> {
-        synchronized(lock) {
-            if (ringPtr == null) {
-                initRing()
-            }
-        }
-        return ringPtr!!
-    }
+        // Try to get existing ring
+        ringRef.value?.let { return it }
 
-    private fun initRing() {
-        // Allocate on native heap (not stack) so it persists beyond this function
+        // Initialize new ring
         val ptr = nativeHeap.alloc<io_uring>().ptr
         val ret = io_uring_queue_init(QUEUE_DEPTH.toUInt(), ptr, 0u)
         if (ret < 0) {
             nativeHeap.free(ptr)
-            errno = -ret
-            throw SocketException("Failed to initialize io_uring: ${strerror(-ret)?.toKString()}")
+            val errorMsg = strerror(-ret)?.toKString() ?: "Unknown error"
+            throw SocketException("Failed to initialize io_uring: $errorMsg (errno=${-ret})")
         }
-        ringPtr = ptr
+
+        // Try to set atomically - if another thread beat us, use theirs
+        if (!ringRef.compareAndSet(null, ptr)) {
+            // Another thread initialized first, clean up ours
+            io_uring_queue_exit(ptr)
+            nativeHeap.free(ptr)
+        }
+
+        return ringRef.value!!
     }
 
     fun cleanup() {
-        synchronized(lock) {
-            ringPtr?.let { ptr ->
-                io_uring_queue_exit(ptr)
-                nativeHeap.free(ptr)
-                ringPtr = null
-            }
+        val ptr = ringRef.getAndSet(null)
+        ptr?.let {
+            io_uring_queue_exit(it)
+            nativeHeap.free(it)
         }
     }
 }
@@ -73,8 +72,17 @@ internal fun throwSocketException(operation: String): Nothing {
  */
 @OptIn(ExperimentalForeignApi::class)
 internal fun throwFromResult(result: Int, operation: String): Nothing {
-    errno = -result
-    throwSocketException(operation)
+    val errorCode = -result
+    val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
+    val message = "$operation failed: $errorMessage (errno=$errorCode)"
+
+    throw when (errorCode) {
+        ECONNREFUSED, ECONNRESET, ECONNABORTED -> SocketException(message)
+        ETIMEDOUT -> SocketException("$operation timed out")
+        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException(message)
+        EHOSTUNREACH, ENETUNREACH -> SocketException(message)
+        else -> SocketException(message)
+    }
 }
 
 /**

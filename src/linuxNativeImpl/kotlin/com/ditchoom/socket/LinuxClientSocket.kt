@@ -8,7 +8,6 @@ import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
-import platform.posix.*
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 
@@ -112,13 +111,16 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
             io_uring_cqe_seen(ring, cqeVal)
 
             if (res < 0) {
-                errno = -res
-                when (-res) {
+                val errorCode = -res
+                when (errorCode) {
                     ECONNREFUSED -> throw SocketException("Connection refused")
                     ETIMEDOUT -> throw SocketException("Connection timed out")
                     ENETUNREACH -> throw SocketException("Network unreachable")
                     EHOSTUNREACH -> throw SocketException("Host unreachable")
-                    else -> throwSocketException("connect")
+                    else -> {
+                        val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
+                        throw SocketException("connect failed: $errorMessage (errno=$errorCode)")
+                    }
                 }
             }
         }
@@ -325,8 +327,8 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
                 throw SocketClosedException("Connection closed")
             }
             else -> {
-                errno = errorCode
-                throwSocketException("recv")
+                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
+                throw SocketException("recv failed: $errorMessage (errno=$errorCode)")
             }
         }
     }
@@ -446,8 +448,8 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
                 throw SocketClosedException("Connection closed")
             }
             else -> {
-                errno = errorCode
-                throwSocketException("send")
+                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
+                throw SocketException("send failed: $errorMessage (errno=$errorCode)")
             }
         }
     }

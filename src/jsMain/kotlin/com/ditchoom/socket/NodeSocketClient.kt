@@ -94,9 +94,9 @@ class NodeClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
-    ) = withTimeout(timeout) {
+    ) {
         val options = Options(port, hostname, onread = null, rejectUnauthorized = false)
-        val netSocket = connect(useTls, options)
+        val netSocket = connect(useTls, options, timeout)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
         netSocket.on("data") { data ->

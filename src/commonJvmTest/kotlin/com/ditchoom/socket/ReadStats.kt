@@ -28,14 +28,13 @@ actual suspend fun readStats(
     }
 }
 
-actual fun supportsIPv6(): Boolean {
-    return try {
+actual fun supportsIPv6(): Boolean =
+    try {
         NetworkInterface.getNetworkInterfaces()?.asSequence()?.any { iface ->
             iface.inetAddresses?.asSequence()?.any { it is Inet6Address && !it.isLoopbackAddress } == true
         } == true
     } catch (e: Exception) {
         false
     }
-}
 
 actual fun currentTimeMillis(): Long = System.currentTimeMillis()

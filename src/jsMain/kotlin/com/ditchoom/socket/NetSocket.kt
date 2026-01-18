@@ -75,6 +75,11 @@ external class Socket {
         callback: (Any) -> Unit,
     )
 
+    fun setTimeout(
+        timeout: Int,
+        callback: (() -> Unit)? = definedExternally,
+    ): Socket
+
     fun resume(): Socket
 
     fun end(callback: () -> Unit): Socket

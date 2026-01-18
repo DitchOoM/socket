@@ -34,6 +34,7 @@ class NWClientSocketWrapper(
                 useTLS = useTls,
             )
         this.socket = clientSocket
+        this.closedLocally = false
 
         // Wait for connection to be established
         suspendCancellableCoroutine { continuation ->

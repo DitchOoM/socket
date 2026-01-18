@@ -31,8 +31,9 @@ open class NWSocketWrapper : ClientSocket {
     internal var socket: SocketWrapper? = null
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
+    internal var closedLocally = false
 
-    override fun isOpen(): Boolean = socket?.isOpen() ?: false
+    override fun isOpen(): Boolean = !closedLocally && (socket?.isOpen() ?: false)
 
     override suspend fun localPort(): Int = socket?.localPort()?.toInt() ?: -1
 
@@ -119,8 +120,9 @@ open class NWSocketWrapper : ClientSocket {
     }
 
     private fun closeInternal() {
+        if (closedLocally) return
+        closedLocally = true
         val socket = socket ?: return
-        if (!isOpen()) return
         socket.close()
         socket.forceClose()
     }

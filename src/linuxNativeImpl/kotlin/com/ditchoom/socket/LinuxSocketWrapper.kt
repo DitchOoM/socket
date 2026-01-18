@@ -8,7 +8,6 @@ import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
-import platform.posix.*
 import kotlin.time.Duration
 
 /**
@@ -102,8 +101,8 @@ open class LinuxSocketWrapper : ClientSocket {
                 throw SocketClosedException("Connection closed")
             }
             else -> {
-                errno = errorCode
-                throwSocketException("recv")
+                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
+                throw SocketException("recv failed: $errorMessage (errno=$errorCode)")
             }
         }
     }
@@ -208,8 +207,8 @@ open class LinuxSocketWrapper : ClientSocket {
                 throw SocketClosedException("Connection closed")
             }
             else -> {
-                errno = errorCode
-                throwSocketException("send")
+                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
+                throw SocketException("send failed: $errorMessage (errno=$errorCode)")
             }
         }
     }
