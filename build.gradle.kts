@@ -44,6 +44,18 @@ val buildSwiftTask =
         inputs.files(fileTree("src/nativeInterop/cinterop/swift") { include("**/*.swift") })
     }
 
+// Map our library subdirs to Swift platform names
+fun swiftPlatformForLibSubdir(libSubdir: String): String = when (libSubdir) {
+    "macos" -> "macosx"
+    "ios" -> "iphoneos"
+    "ios-simulator" -> "iphonesimulator"
+    "tvos" -> "appletvos"
+    "tvos-simulator" -> "appletvsimulator"
+    "watchos" -> "watchos"
+    "watchos-simulator" -> "watchsimulator"
+    else -> "macosx"
+}
+
 // Configure cinterop for Apple targets
 fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     val libPath =
@@ -51,6 +63,7 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
             .get()
             .dir(libSubdir)
             .asFile.absolutePath
+    val swiftPlatform = swiftPlatformForLibSubdir(libSubdir)
     compilations["main"].cinterops {
         create("SocketWrapper") {
             defFile("src/nativeInterop/cinterop/SocketWrapper.def")
@@ -68,9 +81,9 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     binaries.all {
         // Link our Swift wrapper library
         linkerOpts("-L$libPath", "-lSocketWrapper")
-        // Link Swift runtime libraries
+        // Link Swift runtime libraries (platform-specific)
         linkerOpts(
-            "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx",
+            "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$swiftPlatform",
             "-L/usr/lib/swift",
         )
     }
