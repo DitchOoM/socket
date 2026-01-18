@@ -15,7 +15,6 @@ group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
-val isLinux = System.getProperty("os.name").lowercase().contains("linux")
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
@@ -90,15 +89,6 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     }
 }
 
-// Configure cinterop for Linux targets (io_uring + OpenSSL)
-fun KotlinNativeTarget.configureLinuxSocketsCinterop() {
-    compilations["main"].cinterops {
-        create("LinuxSockets") {
-            defFile("src/nativeInterop/cinterop/LinuxSockets.def")
-        }
-    }
-}
-
 kotlin {
     // Ensure consistent JDK version across all developer machines and CI
     jvmToolchain(21)
@@ -135,12 +125,6 @@ kotlin {
         watchosArm64 { configureSocketWrapperCinterop("watchos") }
         watchosSimulatorArm64 { configureSocketWrapperCinterop("watchos-simulator") }
         watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
-    }
-
-    // Linux targets with io_uring socket implementation
-    if (isLinux) {
-        linuxX64 { configureLinuxSocketsCinterop() }
-        linuxArm64 { configureLinuxSocketsCinterop() }
     }
 
     applyDefaultHierarchyTemplate()
@@ -208,19 +192,6 @@ kotlin {
             }
         }
 
-        // Add shared Linux implementation to all Linux target source sets
-        if (isLinux) {
-            val linuxNativeImplDir = file("src/linuxNativeImpl/kotlin")
-            listOf("linuxX64Main", "linuxArm64Main").forEach { sourceSetName ->
-                findByName(sourceSetName)?.kotlin?.srcDir(linuxNativeImplDir)
-            }
-
-            // Add shared Linux test implementation to all Linux target test sets
-            val linuxTestDir = file("src/linuxTest/kotlin")
-            listOf("linuxX64Test", "linuxArm64Test").forEach { sourceSetName ->
-                findByName(sourceSetName)?.kotlin?.srcDir(linuxTestDir)
-            }
-        }
     }
 }
 
