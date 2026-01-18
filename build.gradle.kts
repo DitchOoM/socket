@@ -15,6 +15,7 @@ group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+val isLinux = System.getProperty("os.name").lowercase().contains("linux")
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
@@ -70,6 +71,15 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     }
 }
 
+// Configure cinterop for Linux targets
+fun KotlinNativeTarget.configurePosixSocketsCinterop() {
+    compilations["main"].cinterops {
+        create("PosixSockets") {
+            defFile("src/nativeInterop/cinterop/PosixSockets.def")
+        }
+    }
+}
+
 kotlin {
     // Ensure consistent JDK version across all developer machines and CI
     jvmToolchain(21)
@@ -106,6 +116,12 @@ kotlin {
         watchosArm64 { configureSocketWrapperCinterop("watchos") }
         watchosSimulatorArm64 { configureSocketWrapperCinterop("watchos-simulator") }
         watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
+    }
+
+    // Linux targets with POSIX socket implementation
+    if (isLinux) {
+        linuxX64 { configurePosixSocketsCinterop() }
+        linuxArm64 { configurePosixSocketsCinterop() }
     }
 
     applyDefaultHierarchyTemplate()
@@ -163,6 +179,14 @@ kotlin {
                 "watchosArm64Main", "watchosSimulatorArm64Main", "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
+            }
+        }
+
+        // Add shared Linux implementation to all Linux target source sets
+        if (isLinux) {
+            val linuxNativeImplDir = file("src/linuxNativeImpl/kotlin")
+            listOf("linuxX64Main", "linuxArm64Main").forEach { sourceSetName ->
+                findByName(sourceSetName)?.kotlin?.srcDir(linuxNativeImplDir)
             }
         }
     }
