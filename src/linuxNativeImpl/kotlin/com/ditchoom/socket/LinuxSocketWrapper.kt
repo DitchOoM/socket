@@ -30,19 +30,19 @@ open class LinuxSocketWrapper : ClientSocket {
         if (sockfd < 0) return EMPTY_BUFFER
 
         // Allocate native buffer for zero-copy read
-        val buffer = PlatformBuffer.allocate(65536, AllocationZone.Direct)
+        val bufferSize = 65536
+        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
         val nativeAccess =
             buffer.nativeMemoryAccess
                 ?: throw SocketException("Failed to get native memory access")
         val ptr = nativeAccess.nativeAddress.toCPointer<kotlinx.cinterop.ByteVar>()!!
 
-        val bytesRead = readWithIoUring(ptr, buffer.capacity, timeout)
+        val bytesRead = readWithIoUring(ptr, bufferSize, timeout)
 
         return when {
             bytesRead > 0 -> {
-                // Set position to bytes read, then reset for reading
-                buffer.position(bytesRead.toInt())
-                buffer.resetForRead()
+                // Set limit to bytes read for reading
+                buffer.setLimit(bytesRead.toInt())
                 buffer
             }
             bytesRead == 0L -> {

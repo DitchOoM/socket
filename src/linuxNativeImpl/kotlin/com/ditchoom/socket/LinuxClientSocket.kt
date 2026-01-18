@@ -250,7 +250,8 @@ class LinuxClientSocket(
         if (sockfd < 0) return EMPTY_BUFFER
 
         // Allocate native buffer for zero-copy read
-        val buffer = PlatformBuffer.allocate(65536, AllocationZone.Direct)
+        val bufferSize = 65536
+        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
         val nativeAccess =
             buffer.nativeMemoryAccess
                 ?: throw SocketException("Failed to get native memory access")
@@ -259,16 +260,15 @@ class LinuxClientSocket(
         val bytesRead =
             if (ssl != null) {
                 // TLS read using native buffer
-                SSL_read(ssl, ptr, buffer.capacity).toLong()
+                SSL_read(ssl, ptr, bufferSize).toLong()
             } else {
                 // io_uring async read
-                readWithIoUring(ptr, buffer.capacity, timeout)
+                readWithIoUring(ptr, bufferSize, timeout)
             }
 
         return when {
             bytesRead > 0 -> {
-                buffer.position(bytesRead.toInt())
-                buffer.resetForRead()
+                buffer.setLimit(bytesRead.toInt())
                 buffer
             }
             bytesRead == 0L -> {
