@@ -10,7 +10,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.runTest
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -65,18 +64,23 @@ class SimpleSocketTests {
         }
 
     @Test
-    @Ignore // Flaky: race condition with server close
     fun manyClientsConnectingToOneServer() =
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val acceptedClientFlow = server.bind()
             val clientCount = 5
-            launch(Dispatchers.Default) {
+            val processedClients = Mutex(locked = true)
+            var clientsHandled = 0
+            val serverJob = launch(Dispatchers.Default) {
                 acceptedClientFlow.collect { serverToClient ->
                     val s = serverToClient.readString()
                     val indexReceived = s.toInt()
                     serverToClient.writeString("ack $indexReceived")
                     serverToClient.close()
+                    clientsHandled++
+                    if (clientsHandled >= clientCount) {
+                        processedClients.unlock()
+                    }
                 }
             }
             repeat(clientCount) { index ->
@@ -87,15 +91,14 @@ class SimpleSocketTests {
                     clientToServer.close()
                 }
             }
+            // Wait for server to finish processing all clients
+            processedClients.lock()
             server.close()
+            serverJob.cancel()
         }
 
     @Test
     fun httpRawSocketExampleDomain() = readHttp("example.com", false)
-
-    @Test
-    @Ignore // Flaky: example.com sometimes rejects TLS connections
-    fun httpsRawSocketExampleDomain() = readHttp("example.com", true)
 
     @Test
     fun httpRawSocketGoogleDomain() = readHttp("google.com", false)
