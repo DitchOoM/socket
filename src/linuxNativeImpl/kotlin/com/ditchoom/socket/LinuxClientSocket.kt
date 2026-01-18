@@ -4,6 +4,8 @@ import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.managedMemoryAccess
+import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import platform.posix.*
@@ -12,17 +14,14 @@ import kotlin.time.Duration
 /**
  * Client socket implementation using io_uring for async I/O with optional OpenSSL TLS.
  *
- * io_uring provides true async I/O with zero-copy support on Linux 5.1+.
+ * Uses NativeBuffer for true zero-copy I/O - no ByteArray intermediaries.
+ * io_uring provides async I/O on Linux 5.1+.
  */
 @OptIn(ExperimentalForeignApi::class)
 class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
     private var sockfd: Int = -1
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
-
-    // Pinned buffer for zero-copy reads
-    private var readBuffer: ByteArray? = null
-    private var pinnedReadBuffer: Pinned<ByteArray>? = null
 
     override fun isOpen(): Boolean = sockfd >= 0
 
@@ -67,11 +66,6 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
                 if (useTls) {
                     initTls(host)
                 }
-
-                // Allocate read buffer for zero-copy operations
-                readBuffer = ByteArray(65536)
-                pinnedReadBuffer = readBuffer!!.pin()
-
             } catch (e: Exception) {
                 freeaddrinfo(addrInfo)
                 closeInternal()
@@ -163,29 +157,33 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (sockfd < 0) return EMPTY_BUFFER
 
-        val buffer = readBuffer ?: return EMPTY_BUFFER
-        val pinned = pinnedReadBuffer ?: return EMPTY_BUFFER
+        // Allocate native buffer for zero-copy read
+        val buffer = PlatformBuffer.allocate(65536, AllocationZone.Direct)
+        val nativeAccess = buffer.nativeMemoryAccess
+            ?: throw SocketException("Failed to get native memory access")
+        val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
 
         val bytesRead = if (ssl != null) {
-            // TLS read (blocking on SSL layer)
-            SSL_read(ssl, pinned.addressOf(0), buffer.size).toLong()
+            // TLS read using native buffer
+            SSL_read(ssl, ptr, buffer.capacity).toLong()
         } else {
             // io_uring async read
-            readWithIoUring(pinned, buffer.size, timeout)
+            readWithIoUring(ptr, buffer.capacity, timeout)
         }
 
         return when {
             bytesRead > 0 -> {
-                val resultBuffer = PlatformBuffer.allocate(bytesRead.toInt(), AllocationZone.Heap)
-                resultBuffer.writeBytes(buffer, 0, bytesRead.toInt())
-                resultBuffer.resetForRead()
-                resultBuffer
+                buffer.position(bytesRead.toInt())
+                buffer.resetForRead()
+                buffer
             }
             bytesRead == 0L -> {
+                buffer.close()
                 closeInternal()
                 throw SocketClosedException("Connection closed by peer")
             }
             else -> {
+                buffer.close()
                 if (ssl != null) {
                     handleSslReadError(bytesRead.toInt())
                 } else {
@@ -195,12 +193,12 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         }
     }
 
-    private fun readWithIoUring(pinned: Pinned<ByteArray>, size: Int, timeout: Duration): Long {
+    private fun readWithIoUring(ptr: CPointer<ByteVar>, size: Int, timeout: Duration): Long {
         memScoped {
             val ring = IoUringManager.getRing()
 
             val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
-            io_uring_prep_recv(sqe, sockfd, pinned.addressOf(0), size.convert(), 0)
+            io_uring_prep_recv(sqe, sockfd, ptr, size.convert(), 0)
 
             val submitted = io_uring_submit(ring)
             if (submitted < 0) {
@@ -264,60 +262,92 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         val remaining = buffer.remaining()
         if (remaining == 0) return 0
 
-        val bytes = buffer.readByteArray(remaining)
-
-        val bytesSent = if (ssl != null) {
-            bytes.usePinned { pinned ->
-                SSL_write(ssl, pinned.addressOf(0), bytes.size).toLong()
+        // Zero-copy path: check if buffer has native memory access
+        val nativeAccess = buffer.nativeMemoryAccess
+        if (nativeAccess != null) {
+            val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
+            val bytesSent = if (ssl != null) {
+                SSL_write(ssl, ptr, remaining).toLong()
+            } else {
+                writeWithIoUring(ptr, remaining, timeout)
             }
-        } else {
-            writeWithIoUring(bytes, timeout)
+            return handleWriteResult(buffer, bytesSent)
         }
 
-        return when {
-            bytesSent >= 0 -> bytesSent.toInt()
-            else -> {
-                if (ssl != null) {
-                    handleSslWriteError(bytesSent.toInt())
+        // Zero-copy path: check if buffer has managed array access
+        val managedAccess = buffer.managedMemoryAccess
+        if (managedAccess != null) {
+            val array = managedAccess.backingArray
+            val offset = managedAccess.arrayOffset + buffer.position()
+            return array.usePinned { pinned ->
+                val ptr = pinned.addressOf(offset)
+                val bytesSent = if (ssl != null) {
+                    SSL_write(ssl, ptr, remaining).toLong()
                 } else {
-                    handleWriteError((-bytesSent).toInt())
+                    writeWithIoUring(ptr, remaining, timeout)
                 }
+                handleWriteResult(buffer, bytesSent)
+            }
+        }
+
+        // Fallback: copy to temporary array
+        val bytes = buffer.readByteArray(remaining)
+        return bytes.usePinned { pinned ->
+            val ptr = pinned.addressOf(0)
+            val bytesSent = if (ssl != null) {
+                SSL_write(ssl, ptr, bytes.size).toLong()
+            } else {
+                writeWithIoUring(ptr, bytes.size, timeout)
+            }
+            when {
+                bytesSent >= 0 -> bytesSent.toInt()
+                else -> if (ssl != null) handleSslWriteError(bytesSent.toInt())
+                else handleWriteError((-bytesSent).toInt())
             }
         }
     }
 
-    private fun writeWithIoUring(bytes: ByteArray, timeout: Duration): Long {
-        return bytes.usePinned { pinned ->
-            memScoped {
-                val ring = IoUringManager.getRing()
-
-                val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
-                io_uring_prep_send(sqe, sockfd, pinned.addressOf(0), bytes.size.convert(), 0)
-
-                val submitted = io_uring_submit(ring)
-                if (submitted < 0) {
-                    throwFromResult(submitted, "io_uring_submit")
-                }
-
-                val cqe = allocPointerTo<io_uring_cqe>()
-                val ts = alloc<__kernel_timespec>()
-                ts.tv_sec = timeout.inWholeSeconds
-                ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-                val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-                if (waitRet < 0) {
-                    if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                        throw SocketException("Write timed out")
-                    }
-                    throwFromResult(waitRet, "io_uring_wait_cqe_timeout")
-                }
-
-                val cqeVal = cqe.value!!
-                val res = cqeVal.pointed.res
-                io_uring_cqe_seen(ring, cqeVal)
-
-                if (res >= 0) res.toLong() else -(-res).toLong()
+    private fun handleWriteResult(buffer: ReadBuffer, bytesSent: Long): Int {
+        return when {
+            bytesSent >= 0 -> {
+                buffer.position(buffer.position() + bytesSent.toInt())
+                bytesSent.toInt()
             }
+            else -> if (ssl != null) handleSslWriteError(bytesSent.toInt())
+            else handleWriteError((-bytesSent).toInt())
+        }
+    }
+
+    private fun writeWithIoUring(ptr: CPointer<ByteVar>, size: Int, timeout: Duration): Long {
+        memScoped {
+            val ring = IoUringManager.getRing()
+
+            val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
+            io_uring_prep_send(sqe, sockfd, ptr, size.convert(), 0)
+
+            val submitted = io_uring_submit(ring)
+            if (submitted < 0) {
+                throwFromResult(submitted, "io_uring_submit")
+            }
+
+            val cqe = allocPointerTo<io_uring_cqe>()
+            val ts = alloc<__kernel_timespec>()
+            ts.tv_sec = timeout.inWholeSeconds
+            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
+
+            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
+            if (waitRet < 0) {
+                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
+                    throw SocketException("Write timed out")
+                }
+                throwFromResult(waitRet, "io_uring_wait_cqe_timeout")
+            }
+
+            val cqeVal = cqe.value!!
+            val res = cqeVal.pointed.res
+            io_uring_cqe_seen(ring, cqeVal)
+
+            return if (res >= 0) res.toLong() else -(-res).toLong()
         }
     }
 
@@ -348,10 +378,6 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
     }
 
     private fun closeInternal() {
-        pinnedReadBuffer?.unpin()
-        pinnedReadBuffer = null
-        readBuffer = null
-
         ssl?.let {
             SSL_shutdown(it)
             SSL_free(it)

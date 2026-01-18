@@ -130,10 +130,6 @@ class LinuxServerSocket : ServerSocket {
                     // Successfully accepted a connection
                     val wrapper = LinuxSocketWrapper()
                     wrapper.sockfd = clientFd
-
-                    // Allocate read buffer for the client
-                    wrapper.initReadBuffer()
-
                     wrapper
                 }
                 else -> {
