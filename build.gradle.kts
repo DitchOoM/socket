@@ -191,7 +191,6 @@ kotlin {
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
         }
-
     }
 }
 
