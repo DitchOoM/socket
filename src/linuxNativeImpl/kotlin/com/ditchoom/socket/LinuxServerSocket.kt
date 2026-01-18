@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.linux.*
-import com.ditchoom.socket.linux.bind as posixBind
 import kotlinx.cinterop.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -92,7 +91,7 @@ class LinuxServerSocket : ServerSocket {
                 }
 
                 // Bind
-                val bindResult = posixBind(serverFd, addrPtr, addrLen)
+                val bindResult = socket_bind(serverFd, addrPtr, addrLen)
                 checkSocketResult(bindResult, "bind")
 
                 // Get actual bound port (useful when port=0)

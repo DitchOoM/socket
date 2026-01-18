@@ -141,7 +141,7 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         ssl = SSL_new(sslCtx) ?: throw SSLSocketException("Failed to create SSL object")
 
         // Set hostname for SNI
-        SSL_set_tlsext_host_name(ssl, hostname)
+        ssl_set_hostname(ssl, hostname)
 
         // Attach socket to SSL
         SSL_set_fd(ssl, sockfd)
