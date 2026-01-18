@@ -15,6 +15,7 @@ group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+val isLinux = System.getProperty("os.name").lowercase().contains("linux")
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
@@ -127,6 +128,22 @@ kotlin {
         watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
     }
 
+    // Linux targets with io_uring socket implementation
+    // Always register targets so source sets exist for ktlint, but only configure
+    // cinterop on Linux (since it requires Linux headers like io_uring and OpenSSL)
+    fun KotlinNativeTarget.configureLinuxSocketsCinterop() {
+        if (isLinux) {
+            compilations["main"].cinterops {
+                create("LinuxSockets") {
+                    defFile("src/nativeInterop/cinterop/LinuxSockets.def")
+                }
+            }
+        }
+    }
+
+    linuxX64 { configureLinuxSocketsCinterop() }
+    linuxArm64 { configureLinuxSocketsCinterop() }
+
     applyDefaultHierarchyTemplate()
     sourceSets {
         commonMain.dependencies {
@@ -190,6 +207,15 @@ kotlin {
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
+        }
+
+        // Add shared Linux implementation to all Linux target source sets
+        val linuxNativeImplDir = file("src/linuxNativeImpl/kotlin")
+        listOf(
+            "linuxX64Main",
+            "linuxArm64Main",
+        ).forEach { sourceSetName ->
+            findByName(sourceSetName)?.kotlin?.srcDir(linuxNativeImplDir)
         }
     }
 }
