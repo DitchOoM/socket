@@ -71,11 +71,11 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     }
 }
 
-// Configure cinterop for Linux targets
-fun KotlinNativeTarget.configurePosixSocketsCinterop() {
+// Configure cinterop for Linux targets (io_uring + OpenSSL)
+fun KotlinNativeTarget.configureLinuxSocketsCinterop() {
     compilations["main"].cinterops {
-        create("PosixSockets") {
-            defFile("src/nativeInterop/cinterop/PosixSockets.def")
+        create("LinuxSockets") {
+            defFile("src/nativeInterop/cinterop/LinuxSockets.def")
         }
     }
 }
@@ -118,10 +118,10 @@ kotlin {
         watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
     }
 
-    // Linux targets with POSIX socket implementation
+    // Linux targets with io_uring socket implementation
     if (isLinux) {
-        linuxX64 { configurePosixSocketsCinterop() }
-        linuxArm64 { configurePosixSocketsCinterop() }
+        linuxX64 { configureLinuxSocketsCinterop() }
+        linuxArm64 { configureLinuxSocketsCinterop() }
     }
 
     applyDefaultHierarchyTemplate()

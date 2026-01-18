@@ -1,6 +1,6 @@
 package com.ditchoom.socket
 
-import com.ditchoom.socket.posix.*
+import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import platform.posix.*
 

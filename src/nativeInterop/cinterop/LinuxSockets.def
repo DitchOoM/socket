@@ -1,5 +1,5 @@
 language = C
-package = com.ditchoom.socket.posix
+package = com.ditchoom.socket.linux
 
 headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h string.h openssl/ssl.h openssl/err.h openssl/x509.h liburing.h
 
