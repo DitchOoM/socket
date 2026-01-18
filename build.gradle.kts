@@ -45,16 +45,17 @@ val buildSwiftTask =
     }
 
 // Map our library subdirs to Swift platform names
-fun swiftPlatformForLibSubdir(libSubdir: String): String = when (libSubdir) {
-    "macos" -> "macosx"
-    "ios" -> "iphoneos"
-    "ios-simulator" -> "iphonesimulator"
-    "tvos" -> "appletvos"
-    "tvos-simulator" -> "appletvsimulator"
-    "watchos" -> "watchos"
-    "watchos-simulator" -> "watchsimulator"
-    else -> "macosx"
-}
+fun swiftPlatformForLibSubdir(libSubdir: String): String =
+    when (libSubdir) {
+        "macos" -> "macosx"
+        "ios" -> "iphoneos"
+        "ios-simulator" -> "iphonesimulator"
+        "tvos" -> "appletvos"
+        "tvos-simulator" -> "appletvsimulator"
+        "watchos" -> "watchos"
+        "watchos-simulator" -> "watchsimulator"
+        else -> "macosx"
+    }
 
 // Configure cinterop for Apple targets
 fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
