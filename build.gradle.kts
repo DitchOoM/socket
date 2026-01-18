@@ -93,7 +93,7 @@ android {
     compileSdk = 36
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 19
+        minSdk = 21
     }
     namespace = "$group.${rootProject.name}"
 
