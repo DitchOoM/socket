@@ -14,7 +14,7 @@ import kotlin.coroutines.coroutineContext
  * io_uring provides true async I/O with zero-copy support on Linux 5.1+.
  */
 @OptIn(ExperimentalForeignApi::class)
-class PosixServerSocket : ServerSocket {
+class LinuxServerSocket : ServerSocket {
     private var serverFd: Int = -1
     private var boundPort: Int = -1
     private var listening: Boolean = false
@@ -128,7 +128,7 @@ class PosixServerSocket : ServerSocket {
             return when {
                 clientFd >= 0 -> {
                     // Successfully accepted a connection
-                    val wrapper = PosixSocketWrapper()
+                    val wrapper = LinuxSocketWrapper()
                     wrapper.sockfd = clientFd
 
                     // Allocate read buffer for the client

@@ -15,7 +15,7 @@ import kotlin.time.Duration
  * Provides zero-copy read/write operations with timeout support.
  */
 @OptIn(ExperimentalForeignApi::class)
-open class PosixSocketWrapper : ClientSocket {
+open class LinuxSocketWrapper : ClientSocket {
     internal var sockfd: Int = -1
 
     // Pinned buffer for zero-copy reads

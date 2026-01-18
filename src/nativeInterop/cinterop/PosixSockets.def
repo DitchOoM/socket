@@ -3,5 +3,5 @@ package = com.ditchoom.socket.posix
 
 headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h string.h openssl/ssl.h openssl/err.h openssl/x509.h liburing.h
 
-compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
-linkerOpts.linux = -luring -lssl -lcrypto -lpthread
+compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -I/usr/include -I/usr/include/x86_64-linux-gnu
+linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -luring -lssl -lcrypto -lpthread

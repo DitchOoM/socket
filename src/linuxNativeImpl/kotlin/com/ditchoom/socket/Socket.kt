@@ -8,11 +8,11 @@ import com.ditchoom.buffer.AllocationZone
 actual fun ClientSocket.Companion.allocate(
     tls: Boolean,
     allocationZone: AllocationZone,
-): ClientToServerSocket = PosixClientSocket(useTls = tls)
+): ClientToServerSocket = LinuxClientSocket(useTls = tls)
 
 /**
  * Linux server socket implementation using io_uring for async accept.
  */
 actual fun ServerSocket.Companion.allocate(
     allocationZone: AllocationZone,
-): ServerSocket = PosixServerSocket()
+): ServerSocket = LinuxServerSocket()

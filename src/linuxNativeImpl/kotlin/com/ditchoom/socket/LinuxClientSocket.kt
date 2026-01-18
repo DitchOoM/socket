@@ -15,7 +15,7 @@ import kotlin.time.Duration
  * io_uring provides true async I/O with zero-copy support on Linux 5.1+.
  */
 @OptIn(ExperimentalForeignApi::class)
-class PosixClientSocket(private val useTls: Boolean) : ClientToServerSocket {
+class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
     private var sockfd: Int = -1
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null

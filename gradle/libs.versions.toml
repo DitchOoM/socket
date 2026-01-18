@@ -6,7 +6,7 @@ ktlint = "14.0.1"
 mavenPublish = "0.35.0"
 kotlinxCoroutines = "1.10.2"
 kotlinWrappers = "2025.12.6"
-buffer = "1.4.2"
+buffer = "2.0.2"
 androidxCore = "1.17.0"
 
 [libraries]
