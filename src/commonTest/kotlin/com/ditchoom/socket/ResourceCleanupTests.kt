@@ -52,11 +52,18 @@ class ResourceCleanupTests {
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
+            val clientConnected = Mutex(locked = true)
 
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        delay(5000) // Keep connection open
+                        clientConnected.unlock()
+                        // Wait until test completes or cancellation
+                        try {
+                            delay(10000)
+                        } catch (_: CancellationException) {
+                            // Expected on cleanup
+                        }
                         client.close()
                     }
                 }
@@ -66,6 +73,7 @@ class ResourceCleanupTests {
             try {
                 ClientSocket.connect(server.port(), hostname = "127.0.0.1", timeout = 5.seconds) { socket ->
                     socketWasOpen = socket.isOpen()
+                    clientConnected.lock() // Wait for server to acknowledge
                     throw RuntimeException("Test exception")
                 }
                 fail("Should have thrown")
