@@ -27,17 +27,22 @@ class ConcurrencyTests {
             val clientCount = 10
             var handledClients = 0
             val allClientsHandled = Mutex(locked = true)
+            val handlersMutex = Mutex()
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
-                        launch {
-                            val received = client.readString(timeout = 5.seconds)
-                            client.writeString("ACK:$received")
-                            client.close()
-                            handledClients++
-                            if (handledClients >= clientCount) {
-                                allClientsHandled.unlock()
+                    coroutineScope {
+                        serverFlow.collect { client ->
+                            launch {
+                                val received = client.readString(timeout = 5.seconds)
+                                client.writeString("ACK:$received")
+                                client.close()
+                                handlersMutex.withLock {
+                                    handledClients++
+                                    if (handledClients >= clientCount) {
+                                        allClientsHandled.unlock()
+                                    }
+                                }
                             }
                         }
                     }
