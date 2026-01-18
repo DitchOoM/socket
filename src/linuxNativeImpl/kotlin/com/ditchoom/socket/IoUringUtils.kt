@@ -131,8 +131,9 @@ internal fun getLocalPort(sockfd: Int): Int {
         val addrLen = alloc<socklen_tVar>()
         addrLen.value = sizeOf<sockaddr_storage>().convert()
 
-        if (getsockname(sockfd, addr.ptr.reinterpret(), addrLen.ptr) == 0) {
-            return getPortFromSockaddr(addr.ptr.reinterpret(), addr.ss_family.toInt())
+        val sockaddrPtr = addr.ptr.reinterpret<sockaddr>()
+        if (getsockname(sockfd, sockaddrPtr, addrLen.ptr) == 0) {
+            return getPortFromSockaddr(sockaddrPtr, addr.ss_family.toInt())
         }
     }
     return -1
@@ -148,8 +149,9 @@ internal fun getRemotePort(sockfd: Int): Int {
         val addrLen = alloc<socklen_tVar>()
         addrLen.value = sizeOf<sockaddr_storage>().convert()
 
-        if (getpeername(sockfd, addr.ptr.reinterpret(), addrLen.ptr) == 0) {
-            return getPortFromSockaddr(addr.ptr.reinterpret(), addr.ss_family.toInt())
+        val sockaddrPtr = addr.ptr.reinterpret<sockaddr>()
+        if (getpeername(sockfd, sockaddrPtr, addrLen.ptr) == 0) {
+            return getPortFromSockaddr(sockaddrPtr, addr.ss_family.toInt())
         }
     }
     return -1
@@ -183,7 +185,8 @@ internal fun isSocketIPv6(sockfd: Int): Boolean {
         val addrLen = alloc<socklen_tVar>()
         addrLen.value = sizeOf<sockaddr_storage>().convert()
 
-        if (getsockname(sockfd, addr.ptr.reinterpret(), addrLen.ptr) == 0) {
+        val sockaddrPtr = addr.ptr.reinterpret<sockaddr>()
+        if (getsockname(sockfd, sockaddrPtr, addrLen.ptr) == 0) {
             return addr.ss_family.toInt() == AF_INET6
         }
     }

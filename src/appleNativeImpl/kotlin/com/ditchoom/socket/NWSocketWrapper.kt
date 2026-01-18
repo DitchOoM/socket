@@ -31,6 +31,7 @@ open class NWSocketWrapper : ClientSocket {
     internal var socket: SocketWrapper? = null
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
+    @Volatile
     internal var closedLocally = false
 
     override fun isOpen(): Boolean = !closedLocally && (socket?.isOpen() ?: false)

@@ -127,10 +127,8 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
     }
 
     private fun initTls(hostname: String, timeout: Duration) {
-        // Initialize OpenSSL
-        SSL_library_init()
-        SSL_load_error_strings()
-        OpenSSL_add_all_algorithms()
+        // Initialize OpenSSL (1.1.0+ auto-initializes, but explicit init is safe)
+        OPENSSL_init_ssl(0u, null)
 
         // Create SSL context
         val method = TLS_client_method() ?: throw SSLSocketException("Failed to get TLS method")
