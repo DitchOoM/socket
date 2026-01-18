@@ -1,11 +1,11 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.wrap
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import kotlin.time.Duration
@@ -249,35 +249,33 @@ class LinuxClientSocket(
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (sockfd < 0) return EMPTY_BUFFER
 
-        // Allocate native buffer for zero-copy read
+        // Read into a pinned byte array
         val bufferSize = 65536
-        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
-        val nativeAccess =
-            buffer.nativeMemoryAccess
-                ?: throw SocketException("Failed to get native memory access")
-        val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
+        val tempArray = ByteArray(bufferSize)
 
         val bytesRead =
-            if (ssl != null) {
-                // TLS read using native buffer
-                SSL_read(ssl, ptr, bufferSize).toLong()
-            } else {
-                // io_uring async read
-                readWithIoUring(ptr, bufferSize, timeout)
+            tempArray.usePinned { pinned ->
+                val ptr = pinned.addressOf(0)
+                if (ssl != null) {
+                    // TLS read
+                    SSL_read(ssl, ptr, bufferSize).toLong()
+                } else {
+                    // io_uring async read
+                    readWithIoUring(ptr, bufferSize, timeout)
+                }
             }
 
         return when {
             bytesRead > 0 -> {
-                buffer.setLimit(bytesRead.toInt())
-                buffer
+                // Copy only the bytes we read and wrap them
+                val result = tempArray.copyOf(bytesRead.toInt())
+                PlatformBuffer.wrap(result)
             }
             bytesRead == 0L -> {
-                buffer.close()
                 closeInternal()
                 throw SocketClosedException("Connection closed by peer")
             }
             else -> {
-                buffer.close()
                 if (ssl != null) {
                     handleSslReadError(bytesRead.toInt())
                 } else {
