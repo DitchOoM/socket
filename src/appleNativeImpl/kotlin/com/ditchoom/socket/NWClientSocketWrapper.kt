@@ -1,12 +1,11 @@
 package com.ditchoom.socket
 
+import com.ditchoom.socket.native.ClientSocketWrapper
+import com.ditchoom.socket.native.SocketErrorTypeNone
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UnsafeNumber
 import kotlinx.cinterop.convert
 import kotlinx.coroutines.suspendCancellableCoroutine
-import com.ditchoom.socket.native.ClientSocketWrapper
-import com.ditchoom.socket.native.SocketErrorType
-import com.ditchoom.socket.native.SocketErrorTypeNone
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
@@ -21,19 +20,19 @@ class NWClientSocketWrapper(
     private val useTls: Boolean,
 ) : NWSocketWrapper(),
     ClientToServerSocket {
-
     override suspend fun open(
         port: Int,
         timeout: Duration,
         hostname: String?,
     ) {
         val host = hostname ?: "localhost"
-        val clientSocket = ClientSocketWrapper(
-            host = host,
-            port = port.toUShort(),
-            timeoutSeconds = timeout.inWholeSeconds.convert(),
-            useTLS = useTls,
-        )
+        val clientSocket =
+            ClientSocketWrapper(
+                host = host,
+                port = port.toUShort(),
+                timeoutSeconds = timeout.inWholeSeconds.convert(),
+                useTLS = useTls,
+            )
         this.socket = clientSocket
 
         // Wait for connection to be established

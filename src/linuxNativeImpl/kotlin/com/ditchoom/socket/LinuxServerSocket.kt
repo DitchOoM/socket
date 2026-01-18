@@ -6,12 +6,14 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import platform.posix.*
+import kotlin.concurrent.AtomicLong
 import kotlin.coroutines.coroutineContext
 
 /**
  * Server socket implementation using io_uring for async accept operations.
  *
  * io_uring provides true async I/O with zero-copy support on Linux 5.1+.
+ * Uses io_uring async cancel for immediate cancellation instead of timeout polling.
  */
 @OptIn(ExperimentalForeignApi::class)
 class LinuxServerSocket : ServerSocket {
@@ -19,10 +21,25 @@ class LinuxServerSocket : ServerSocket {
     private var boundPort: Int = -1
     private var listening: Boolean = false
 
+    // Unique user_data for accept operations to enable cancellation
+    private val acceptUserData = AtomicLong(0L)
+    private var pendingAcceptUserData: Long = 0L
+
     override suspend fun bind(port: Int, host: String?, backlog: Int): Flow<ClientSocket> {
         memScoped {
-            // Create socket
-            serverFd = socket(AF_INET, SOCK_STREAM, 0)
+            // Determine address family from host
+            val isIPv6Host = host != null && host.contains(':')
+            val useIPv6 = isIPv6Host || host == null || host == "::" || host == "0.0.0.0"
+
+            // Create socket (prefer IPv6 for dual-stack support)
+            serverFd = if (useIPv6 && !isIPv6Host && (host == null || host == "0.0.0.0")) {
+                // Use IPv6 dual-stack socket to accept both IPv4 and IPv6
+                socket(AF_INET6, SOCK_STREAM, 0)
+            } else if (isIPv6Host || host == "::") {
+                socket(AF_INET6, SOCK_STREAM, 0)
+            } else {
+                socket(AF_INET, SOCK_STREAM, 0)
+            }
             checkSocketResult(serverFd, "socket")
 
             try {
@@ -30,31 +47,56 @@ class LinuxServerSocket : ServerSocket {
                 setReuseAddr(serverFd)
                 setNonBlocking(serverFd)
 
-                // Prepare address
-                val addr = alloc<sockaddr_in>()
-                memset(addr.ptr, 0, sizeOf<sockaddr_in>().convert())
-                addr.sin_family = AF_INET.convert()
-                addr.sin_port = htons(port.toUShort())
+                // For IPv6 sockets, enable dual-stack (accept both IPv4 and IPv6)
+                if (useIPv6 && (host == null || host == "0.0.0.0")) {
+                    setIPv6Only(serverFd, false)
+                }
 
-                if (host != null && host != "0.0.0.0") {
-                    val result = inet_pton(AF_INET, host, addr.sin_addr.ptr)
-                    if (result != 1) {
-                        throw SocketException("Invalid host address: $host")
+                // Prepare address and bind
+                val addrLen: socklen_t
+                val addrPtr: CPointer<sockaddr>
+
+                if (serverFd != -1 && isSocketIPv6(serverFd)) {
+                    val addr = alloc<sockaddr_in6>()
+                    memset(addr.ptr, 0, sizeOf<sockaddr_in6>().convert())
+                    addr.sin6_family = AF_INET6.convert()
+                    addr.sin6_port = htons(port.toUShort())
+
+                    if (host != null && host != "::" && host != "0.0.0.0") {
+                        val result = inet_pton(AF_INET6, host, addr.sin6_addr.ptr)
+                        if (result != 1) {
+                            throw SocketException("Invalid IPv6 address: $host")
+                        }
                     }
+                    // sin6_addr is already zeroed (in6addr_any equivalent)
+
+                    addrLen = sizeOf<sockaddr_in6>().convert()
+                    addrPtr = addr.ptr.reinterpret()
                 } else {
-                    addr.sin_addr.s_addr = htonl(INADDR_ANY.convert())
+                    val addr = alloc<sockaddr_in>()
+                    memset(addr.ptr, 0, sizeOf<sockaddr_in>().convert())
+                    addr.sin_family = AF_INET.convert()
+                    addr.sin_port = htons(port.toUShort())
+
+                    if (host != null && host != "0.0.0.0") {
+                        val result = inet_pton(AF_INET, host, addr.sin_addr.ptr)
+                        if (result != 1) {
+                            throw SocketException("Invalid IPv4 address: $host")
+                        }
+                    } else {
+                        addr.sin_addr.s_addr = htonl(INADDR_ANY.convert())
+                    }
+
+                    addrLen = sizeOf<sockaddr_in>().convert()
+                    addrPtr = addr.ptr.reinterpret()
                 }
 
                 // Bind
-                val bindResult = platform.posix.bind(serverFd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+                val bindResult = platform.posix.bind(serverFd, addrPtr, addrLen)
                 checkSocketResult(bindResult, "bind")
 
                 // Get actual bound port (useful when port=0)
-                val boundAddr = alloc<sockaddr_in>()
-                val boundAddrLen = alloc<socklen_tVar>()
-                boundAddrLen.value = sizeOf<sockaddr_in>().convert()
-                getsockname(serverFd, boundAddr.ptr.reinterpret(), boundAddrLen.ptr)
-                boundPort = ntohs(boundAddr.sin_port).toInt()
+                boundPort = getLocalPort(serverFd)
 
                 // Listen
                 val effectiveBacklog = if (backlog <= 0) SOMAXCONN else backlog
@@ -86,9 +128,10 @@ class LinuxServerSocket : ServerSocket {
         memScoped {
             val ring = IoUringManager.getRing()
 
-            val clientAddr = alloc<sockaddr_in>()
+            // Use sockaddr_storage to handle both IPv4 and IPv6
+            val clientAddr = alloc<sockaddr_storage>()
             val clientAddrLen = alloc<socklen_tVar>()
-            clientAddrLen.value = sizeOf<sockaddr_in>().convert()
+            clientAddrLen.value = sizeOf<sockaddr_storage>().convert()
 
             // Get submission queue entry
             val sqe = io_uring_get_sqe(ring)
@@ -97,27 +140,28 @@ class LinuxServerSocket : ServerSocket {
                 return null
             }
 
-            // Prepare accept operation
+            // Assign unique user_data for cancellation support
+            val userData = acceptUserData.incrementAndGet()
+            pendingAcceptUserData = userData
+
+            // Prepare accept operation with user_data for cancellation
             io_uring_prep_accept(sqe, serverFd, clientAddr.ptr.reinterpret(), clientAddrLen.ptr, 0)
+            io_uring_sqe_set_data64(sqe, userData.toULong())
 
             // Submit
             val submitted = io_uring_submit(ring)
             if (submitted < 0) {
+                pendingAcceptUserData = 0L
                 return null
             }
 
-            // Wait for completion with short timeout (1 second) to allow cancellation checks
+            // Wait for completion (no timeout - relies on cancellation via close())
             val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = 1
-            ts.tv_nsec = 0
+            val waitRet = io_uring_wait_cqe(ring, cqe.ptr)
 
-            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
+            pendingAcceptUserData = 0L
+
             if (waitRet < 0) {
-                // Timeout or error - return null to allow cancellation check
-                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    return null
-                }
                 return null
             }
 
@@ -137,6 +181,11 @@ class LinuxServerSocket : ServerSocket {
                     when (err) {
                         EAGAIN, EWOULDBLOCK, EINTR -> {
                             // No connection ready, return null
+                            null
+                        }
+                        ECANCELED -> {
+                            // Operation was cancelled via close()
+                            listening = false
                             null
                         }
                         EBADF, EINVAL -> {
@@ -159,12 +208,44 @@ class LinuxServerSocket : ServerSocket {
     override fun port(): Int = boundPort
 
     private fun closeInternal() {
+        if (!listening && serverFd < 0) return
+
+        // Cancel any pending accept operation using io_uring async cancel
+        cancelPendingAccept()
+
         listening = false
         if (serverFd >= 0) {
             closeSocket(serverFd)
             serverFd = -1
         }
         boundPort = -1
+    }
+
+    /**
+     * Cancel pending accept operation using io_uring async cancel.
+     */
+    private fun cancelPendingAccept() {
+        val userData = pendingAcceptUserData
+        if (userData == 0L) return
+
+        memScoped {
+            val ring = IoUringManager.getRing()
+            val sqe = io_uring_get_sqe(ring) ?: return
+
+            // Cancel the pending accept by its user_data
+            io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+
+            io_uring_submit(ring)
+
+            // Wait briefly for the cancel to complete
+            val cqe = allocPointerTo<io_uring_cqe>()
+            val ts = alloc<__kernel_timespec>()
+            ts.tv_sec = 0
+            ts.tv_nsec = 100_000_000 // 100ms timeout for cancel
+
+            io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
+            cqe.value?.let { io_uring_cqe_seen(ring, it) }
+        }
     }
 
     override suspend fun close() {

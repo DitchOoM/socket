@@ -27,8 +27,8 @@ class NodeServerSocket : ServerSocket {
                     clientSocket.on("data") { data ->
                         val result = int8ArrayOf(data)
                         val buffer = JsBuffer(result)
-                        buffer.setPosition(result.length)
-                        buffer.setLimit(result.length)
+                        buffer.position(result.length)
+                        buffer.resetForRead()
                         nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
                     }
                     trySend(nodeSocket).getOrThrow()

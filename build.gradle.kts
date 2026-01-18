@@ -35,17 +35,22 @@ val swiftHeaderDir = swiftBuildDir.map { it.dir("include") }
 val swiftLibDir = swiftBuildDir.map { it.dir("lib") }
 
 // Task to build Swift libraries (only on macOS)
-val buildSwiftTask = tasks.register<Exec>("buildSwift") {
-    onlyIf { isMacOS }
-    workingDir = projectDir
-    commandLine("./buildSwift.sh")
-    outputs.dir(swiftBuildDir)
-    inputs.files(fileTree("src/nativeInterop/cinterop/swift") { include("**/*.swift") })
-}
+val buildSwiftTask =
+    tasks.register<Exec>("buildSwift") {
+        onlyIf { isMacOS }
+        workingDir = projectDir
+        commandLine("./buildSwift.sh")
+        outputs.dir(swiftBuildDir)
+        inputs.files(fileTree("src/nativeInterop/cinterop/swift") { include("**/*.swift") })
+    }
 
 // Configure cinterop for Apple targets
 fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
-    val libPath = swiftLibDir.get().dir(libSubdir).asFile.absolutePath
+    val libPath =
+        swiftLibDir
+            .get()
+            .dir(libSubdir)
+            .asFile.absolutePath
     compilations["main"].cinterops {
         create("SocketWrapper") {
             defFile("src/nativeInterop/cinterop/SocketWrapper.def")
@@ -173,10 +178,17 @@ kotlin {
         if (isMacOS) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
-                "macosArm64Main", "macosX64Main",
-                "iosArm64Main", "iosSimulatorArm64Main", "iosX64Main",
-                "tvosArm64Main", "tvosSimulatorArm64Main", "tvosX64Main",
-                "watchosArm64Main", "watchosSimulatorArm64Main", "watchosX64Main",
+                "macosArm64Main",
+                "macosX64Main",
+                "iosArm64Main",
+                "iosSimulatorArm64Main",
+                "iosX64Main",
+                "tvosArm64Main",
+                "tvosSimulatorArm64Main",
+                "tvosX64Main",
+                "watchosArm64Main",
+                "watchosSimulatorArm64Main",
+                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
@@ -187,6 +199,12 @@ kotlin {
             val linuxNativeImplDir = file("src/linuxNativeImpl/kotlin")
             listOf("linuxX64Main", "linuxArm64Main").forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(linuxNativeImplDir)
+            }
+
+            // Add shared Linux test implementation to all Linux target test sets
+            val linuxTestDir = file("src/linuxTest/kotlin")
+            listOf("linuxX64Test", "linuxArm64Test").forEach { sourceSetName ->
+                findByName(sourceSetName)?.kotlin?.srcDir(linuxTestDir)
             }
         }
     }

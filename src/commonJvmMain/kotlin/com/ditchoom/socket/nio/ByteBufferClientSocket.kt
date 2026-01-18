@@ -1,6 +1,6 @@
 package com.ditchoom.socket.nio
 
-import com.ditchoom.buffer.JvmBuffer
+import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.localAddressOrNull
@@ -11,9 +11,12 @@ import kotlin.time.Duration
 abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
 
+    protected val isSocketInitialized: Boolean
+        get() = ::socket.isInitialized
+
     override fun isOpen() =
         try {
-            socket.isOpen
+            isSocketInitialized && socket.isOpen
         } catch (e: Throwable) {
             false
         }
@@ -21,11 +24,13 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     override suspend fun localPort(): Int = (socket.localAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
     abstract suspend fun read(
-        buffer: JvmBuffer,
+        buffer: BaseJvmBuffer,
         timeout: Duration,
     ): Int
 
     override suspend fun close() {
-        socket.aClose()
+        if (isSocketInitialized) {
+            socket.aClose()
+        }
     }
 }

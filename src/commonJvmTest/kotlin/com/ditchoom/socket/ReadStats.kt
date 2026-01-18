@@ -1,5 +1,8 @@
 package com.ditchoom.socket
 
+import java.net.Inet6Address
+import java.net.NetworkInterface
+
 actual suspend fun readStats(
     port: Int,
     contains: String,
@@ -24,3 +27,15 @@ actual suspend fun readStats(
         return emptyList()
     }
 }
+
+actual fun supportsIPv6(): Boolean {
+    return try {
+        NetworkInterface.getNetworkInterfaces()?.asSequence()?.any { iface ->
+            iface.inetAddresses?.asSequence()?.any { it is Inet6Address && !it.isLoopbackAddress } == true
+        } == true
+    } catch (e: Exception) {
+        false
+    }
+}
+
+actual fun currentTimeMillis(): Long = System.currentTimeMillis()

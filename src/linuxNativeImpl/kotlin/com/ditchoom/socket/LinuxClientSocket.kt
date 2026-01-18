@@ -10,6 +10,7 @@ import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import platform.posix.*
 import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 /**
  * Client socket implementation using io_uring for async I/O with optional OpenSSL TLS.
@@ -64,7 +65,7 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
 
                 // Initialize TLS if requested
                 if (useTls) {
-                    initTls(host)
+                    initTls(host, timeout)
                 }
             } catch (e: Exception) {
                 freeaddrinfo(addrInfo)
@@ -123,7 +124,7 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         }
     }
 
-    private fun initTls(hostname: String) {
+    private fun initTls(hostname: String, timeout: Duration) {
         // Initialize OpenSSL
         SSL_library_init()
         SSL_load_error_strings()
@@ -145,12 +146,86 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         // Attach socket to SSL
         SSL_set_fd(ssl, sockfd)
 
-        // Perform handshake (this is blocking, but TLS handshake is complex to do async)
-        val result = SSL_connect(ssl)
-        if (result != 1) {
+        // Perform non-blocking handshake using io_uring for polling
+        performTlsHandshake(timeout)
+    }
+
+    /**
+     * Non-blocking TLS handshake using io_uring poll.
+     * Loops on SSL_connect() handling WANT_READ/WANT_WRITE with io_uring polling.
+     */
+    private fun performTlsHandshake(timeout: Duration) {
+        val mark = TimeSource.Monotonic.markNow()
+
+        while (true) {
+            val result = SSL_connect(ssl)
+            if (result == 1) {
+                // Handshake complete
+                return
+            }
+
             val error = SSL_get_error(ssl, result)
-            val errorStr = getOpenSSLError()
-            throw SSLHandshakeFailedException(Exception("SSL handshake failed: $errorStr (error=$error)"))
+            when (error) {
+                SSL_ERROR_WANT_READ -> {
+                    // Wait for socket to be readable
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
+                    }
+                    waitForPoll(POLLIN.toShort(), remaining)
+                }
+                SSL_ERROR_WANT_WRITE -> {
+                    // Wait for socket to be writable
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
+                    }
+                    waitForPoll(POLLOUT.toShort(), remaining)
+                }
+                else -> {
+                    val errorStr = getOpenSSLError()
+                    throw SSLHandshakeFailedException(Exception("SSL handshake failed: $errorStr (error=$error)"))
+                }
+            }
+        }
+    }
+
+    /**
+     * Wait for socket to be ready for read or write using io_uring poll.
+     */
+    private fun waitForPoll(events: Short, timeout: Duration) {
+        memScoped {
+            val ring = IoUringManager.getRing()
+
+            val sqe = io_uring_get_sqe(ring)
+                ?: throw SSLHandshakeFailedException(Exception("Failed to get SQE for poll"))
+            io_uring_prep_poll_add(sqe, sockfd, events.toUInt())
+
+            val submitted = io_uring_submit(ring)
+            if (submitted < 0) {
+                throw SSLHandshakeFailedException(Exception("Failed to submit poll: ${strerror(-submitted)?.toKString()}"))
+            }
+
+            val cqe = allocPointerTo<io_uring_cqe>()
+            val ts = alloc<__kernel_timespec>()
+            ts.tv_sec = timeout.inWholeSeconds
+            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
+
+            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
+            if (waitRet < 0) {
+                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
+                    throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
+                }
+                throw SSLHandshakeFailedException(Exception("Poll wait failed: ${strerror(-waitRet)?.toKString()}"))
+            }
+
+            val cqeVal = cqe.value!!
+            val res = cqeVal.pointed.res
+            io_uring_cqe_seen(ring, cqeVal)
+
+            if (res < 0) {
+                throw SSLHandshakeFailedException(Exception("Poll failed: ${strerror(-res)?.toKString()}"))
+            }
         }
     }
 

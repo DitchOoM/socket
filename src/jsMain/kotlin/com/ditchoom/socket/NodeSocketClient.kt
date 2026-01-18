@@ -15,22 +15,26 @@ import kotlin.time.Duration
 
 open class NodeSocket : ClientSocket {
     internal var isClosed = true
-    internal lateinit var netSocket: Socket
+    internal var netSocket: Socket? = null
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
 
-    override fun isOpen() = !isClosed || netSocket.remoteAddress != null
+    override fun isOpen(): Boolean {
+        val socket = netSocket ?: return false
+        return !isClosed || socket.remoteAddress != null
+    }
 
-    override suspend fun localPort() = netSocket.localPort
+    override suspend fun localPort() = netSocket?.localPort ?: -1
 
-    override suspend fun remotePort() = netSocket.remotePort
+    override suspend fun remotePort() = netSocket?.remotePort ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        if (!isOpen()) {
+        val socket = netSocket
+        if (socket == null || !isOpen()) {
             throw SocketClosedException("Socket closed. transmissionError=$hadTransmissionError")
         }
-        netSocket.resume()
+        socket.resume()
         val message =
             withTimeout(timeout) {
                 try {
@@ -55,24 +59,26 @@ open class NodeSocket : ClientSocket {
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        if (!isOpen()) {
+        val socket = netSocket
+        if (socket == null || !isOpen()) {
             throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val array = (buffer as JsBuffer).buffer
-        writeMutex.withLock { netSocket.write(Uint8Array(array.buffer)) }
+        writeMutex.withLock { socket.write(Uint8Array(array.buffer)) }
         buffer.position(buffer.position() + array.byteLength)
         return array.byteLength
     }
 
-    fun cleanSocket(netSocket: Socket) {
+    fun cleanSocket(socket: Socket) {
         incomingMessageChannel.close()
-        netSocket.end {}
-        netSocket.destroy()
+        socket.end {}
+        socket.destroy()
         isClosed = true
     }
 
     override suspend fun close() {
-        cleanSocket(netSocket)
+        val socket = netSocket ?: return
+        cleanSocket(socket)
     }
 }
 

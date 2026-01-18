@@ -1,21 +1,21 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.DataBuffer
+import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
-import platform.Foundation.NSData
 import com.ditchoom.socket.native.SocketErrorType
 import com.ditchoom.socket.native.SocketErrorTypeDns
 import com.ditchoom.socket.native.SocketErrorTypeNone
 import com.ditchoom.socket.native.SocketErrorTypePosix
 import com.ditchoom.socket.native.SocketErrorTypeTls
 import com.ditchoom.socket.native.SocketWrapper
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
+import platform.Foundation.NSData
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
@@ -50,8 +50,8 @@ open class NWSocketWrapper : ClientSocket {
                     socket.readWithCompletion { data: NSData?, errorType, errorString, isComplete ->
                         when {
                             data != null && data.length.toInt() > 0 -> {
-                                // Zero-copy: wrap NSData directly using DataBuffer
-                                val buffer = DataBuffer(data, ByteOrder.BIG_ENDIAN)
+                                // Zero-copy: wrap NSData directly using NSDataBuffer
+                                val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
                                 // Set position to end of data so resetForRead() works correctly
                                 // resetForRead() will set limit = position, then position = 0
                                 buffer.position(data.length.toInt())

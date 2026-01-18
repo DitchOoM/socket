@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.socket.native.ServerListenerWrapper
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UnsafeNumber
 import kotlinx.cinterop.convert
@@ -7,7 +8,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
-import com.ditchoom.socket.native.ServerListenerWrapper
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -50,23 +50,24 @@ class NWServerWrapper : ServerSocket {
         }
 
         // Wait for the listener to start before returning
-        this@NWServerWrapper.listener = suspendCancellableCoroutine { continuation ->
-            serverListener.startWithCompletion { success, errorType, errorString ->
-                if (success) {
-                    continuation.resume(serverListener)
-                } else {
+        this@NWServerWrapper.listener =
+            suspendCancellableCoroutine { continuation ->
+                serverListener.startWithCompletion { success, errorType, errorString ->
+                    if (success) {
+                        continuation.resume(serverListener)
+                    } else {
+                        channel.close()
+                        continuation.resumeWithException(
+                            NWSocketWrapper.mapSocketException(errorType, errorString),
+                        )
+                    }
+                }
+
+                continuation.invokeOnCancellation {
                     channel.close()
-                    continuation.resumeWithException(
-                        NWSocketWrapper.mapSocketException(errorType, errorString),
-                    )
+                    serverListener.stopWithCompletion { }
                 }
             }
-
-            continuation.invokeOnCancellation {
-                channel.close()
-                serverListener.stopWithCompletion { }
-            }
-        }
 
         // Return the channel as a flow
         return channel.receiveAsFlow()

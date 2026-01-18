@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import kotlinx.coroutines.asDeferred
+import kotlin.js.Date
 import kotlin.js.Promise
 
 actual suspend fun readStats(
@@ -23,3 +24,7 @@ external class TcpPortUsed {
         ): Promise<Boolean>
     }
 }
+
+actual fun supportsIPv6(): Boolean = false // JS/browser doesn't have direct socket access
+
+actual fun currentTimeMillis(): Long = Date.now().toLong()

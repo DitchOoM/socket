@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.DataBuffer
 import com.ditchoom.buffer.MutableDataBuffer
+import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UnsafeNumber
@@ -22,7 +22,7 @@ internal fun ReadBuffer.toNSData(): NSData {
     // Check for zero-copy buffer types that have direct NSData access
     return when (this) {
         is MutableDataBuffer -> data // NSMutableData extends NSData
-        is DataBuffer -> data // Direct NSData access
+        is NSDataBuffer -> data // Direct NSData access
         else -> {
             // Fallback: copy bytes to NSData for other buffer types
             val remaining = remaining()
