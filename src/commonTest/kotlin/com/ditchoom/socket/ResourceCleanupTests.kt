@@ -53,17 +53,14 @@ class ResourceCleanupTests {
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
             val clientConnected = Mutex(locked = true)
+            val testDone = Mutex(locked = true)
 
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
                         clientConnected.unlock()
-                        // Wait until test completes or cancellation
-                        try {
-                            delay(10000)
-                        } catch (_: CancellationException) {
-                            // Expected on cleanup
-                        }
+                        // Wait for test to signal completion
+                        testDone.lock()
                         client.close()
                     }
                 }
@@ -80,6 +77,9 @@ class ResourceCleanupTests {
             } catch (e: RuntimeException) {
                 // Expected
             }
+
+            // Signal server to clean up
+            testDone.unlock()
 
             // Verify the socket was open inside the block
             assertTrue(socketWasOpen, "Socket should have been open inside the use block")
