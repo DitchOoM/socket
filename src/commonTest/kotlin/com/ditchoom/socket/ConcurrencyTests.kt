@@ -28,11 +28,13 @@ class ConcurrencyTests {
             var handledClients = 0
             val allClientsHandled = Mutex(locked = true)
             val handlersMutex = Mutex()
+            val handlerJobs = mutableListOf<kotlinx.coroutines.Job>()
+            val handlerJobsMutex = Mutex()
 
             val serverJob =
                 launch(Dispatchers.Default) {
-                    coroutineScope {
-                        serverFlow.collect { client ->
+                    serverFlow.collect { client ->
+                        val job =
                             launch {
                                 val received = client.readString(timeout = 5.seconds)
                                 client.writeString("ACK:$received")
@@ -44,6 +46,8 @@ class ConcurrencyTests {
                                     }
                                 }
                             }
+                        handlerJobsMutex.withLock {
+                            handlerJobs.add(job)
                         }
                     }
                 }
@@ -70,6 +74,9 @@ class ConcurrencyTests {
 
             allClientsHandled.lock()
             assertEquals(clientCount, handledClients, "Server should have handled all clients")
+
+            // Wait for all handler jobs to complete before cancelling
+            handlerJobs.forEach { it.join() }
 
             server.close()
             serverJob.cancel()
