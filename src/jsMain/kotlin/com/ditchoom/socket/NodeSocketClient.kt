@@ -119,10 +119,11 @@ class NodeClientSocket(
         js(
             """
             if (Buffer.isBuffer(obj)) {
-                // Create a copy to avoid issues with Node.js Buffer pooling
-                return new Int8Array(obj)
+                // Zero-copy view into the Node.js Buffer
+                return new Int8Array(obj.buffer, obj.byteOffset, obj.byteLength)
             } else {
-                return new Int8Array(Buffer.from(obj))
+                var buf = Buffer.from(obj);
+                return new Int8Array(buf.buffer, buf.byteOffset, buf.byteLength)
             }
         """,
         ) as Int8Array
