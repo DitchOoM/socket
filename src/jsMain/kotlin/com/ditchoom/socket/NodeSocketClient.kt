@@ -2,14 +2,13 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
 
@@ -63,10 +62,14 @@ open class NodeSocket : ClientSocket {
         if (socket == null || !isOpen()) {
             throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
         }
-        val array = (buffer as JsBuffer).buffer
-        writeMutex.withLock { socket.write(Uint8Array(array.buffer)) }
-        buffer.position(buffer.position() + array.byteLength)
-        return array.byteLength
+        val jsBuffer = buffer as JsBuffer
+        val array = jsBuffer.buffer
+        val bytesToWrite = buffer.remaining()
+        // Create a view of only the bytes to write (from position to position + remaining)
+        val dataToWrite = Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+        writeMutex.withLock { socket.write(dataToWrite) }
+        buffer.position(buffer.position() + bytesToWrite)
+        return bytesToWrite
     }
 
     fun cleanSocket(socket: Socket) {
@@ -92,27 +95,35 @@ class NodeClientSocket(
         timeout: Duration,
         hostname: String?,
     ) = withTimeout(timeout) {
-        val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
-        val onRead =
-            OnRead({
-                val buffer = PlatformBuffer.allocate(8192, allocationZone) as JsBuffer
-                val uint8Array = Uint8Array(buffer.buffer.buffer)
-                arrayPlatformBufferMap[uint8Array] = buffer
-                uint8Array
-            }, { bytesRead, buffer ->
-                val platformBuffer = arrayPlatformBufferMap.remove(buffer)!!
-                platformBuffer.setLimit(bytesRead)
-                val socketDataRead = SocketDataRead(platformBuffer.slice(), bytesRead)
-                incomingMessageChannel.trySend(socketDataRead)
-                false
-            })
-        val options = Options(port, hostname, onRead, rejectUnauthorized = false)
+        val options = Options(port, hostname, onread = null, rejectUnauthorized = false)
         val netSocket = connect(useTls, options)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
+        netSocket.on("data") { data ->
+            val result = int8ArrayOf(data)
+            val buffer = JsBuffer(result)
+            buffer.position(result.length)
+            buffer.resetForRead()
+            incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+        }
         netSocket.on("close") { transmissionError ->
             hadTransmissionError = transmissionError.unsafeCast<Boolean>()
             cleanSocket(netSocket)
         }
     }
+
+    @Suppress("MemberVisibilityCanBePrivate")
+    fun int8ArrayOf(
+        @Suppress("UNUSED_PARAMETER") obj: Any,
+    ): Int8Array =
+        js(
+            """
+            if (Buffer.isBuffer(obj)) {
+                // Create a copy to avoid issues with Node.js Buffer pooling
+                return new Int8Array(obj)
+            } else {
+                return new Int8Array(Buffer.from(obj))
+            }
+        """,
+        ) as Int8Array
 }

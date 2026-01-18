@@ -51,9 +51,10 @@ class NodeServerSocket : ServerSocket {
         js(
             """
             if (Buffer.isBuffer(obj)) {
-                return new Int8Array(obj.buffer)
+                // Create a copy to avoid issues with Node.js Buffer pooling
+                return new Int8Array(obj)
             } else {
-                return new Int8Array(Buffer.from(obj).buffer)
+                return new Int8Array(Buffer.from(obj))
             }
         """,
         ) as Int8Array
