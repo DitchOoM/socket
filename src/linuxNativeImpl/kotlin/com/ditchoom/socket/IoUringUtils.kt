@@ -122,7 +122,7 @@ internal fun setReuseAddr(sockfd: Int) {
         optval.value = 1
         checkSocketResult(
             setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, optval.ptr, sizeOf<IntVar>().convert()),
-            "setsockopt(SO_REUSEADDR)"
+            "setsockopt(SO_REUSEADDR)",
         )
     }
 }
@@ -170,8 +170,8 @@ internal fun getRemotePort(sockfd: Int): Int {
 private fun getPortFromSockaddr(
     addr: CPointer<sockaddr>,
     family: Int,
-): Int {
-    return when (family) {
+): Int =
+    when (family) {
         AF_INET -> {
             val addr4 = addr.reinterpret<sockaddr_in>().pointed
             ntohs(addr4.sin_port).toInt()
@@ -182,7 +182,6 @@ private fun getPortFromSockaddr(
         }
         else -> -1
     }
-}
 
 /**
  * Check if a socket is IPv6.

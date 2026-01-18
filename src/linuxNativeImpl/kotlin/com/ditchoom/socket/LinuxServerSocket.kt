@@ -24,21 +24,26 @@ class LinuxServerSocket : ServerSocket {
     private val acceptUserData = AtomicLong(0L)
     private var pendingAcceptUserData: Long = 0L
 
-    override suspend fun bind(port: Int, host: String?, backlog: Int): Flow<ClientSocket> {
+    override suspend fun bind(
+        port: Int,
+        host: String?,
+        backlog: Int,
+    ): Flow<ClientSocket> {
         memScoped {
             // Determine address family from host
             val isIPv6Host = host != null && host.contains(':')
             val useIPv6 = isIPv6Host || host == null || host == "::" || host == "0.0.0.0"
 
             // Create socket (prefer IPv6 for dual-stack support)
-            serverFd = if (useIPv6 && !isIPv6Host && (host == null || host == "0.0.0.0")) {
-                // Use IPv6 dual-stack socket to accept both IPv4 and IPv6
-                socket(AF_INET6, SOCK_STREAM, 0)
-            } else if (isIPv6Host || host == "::") {
-                socket(AF_INET6, SOCK_STREAM, 0)
-            } else {
-                socket(AF_INET, SOCK_STREAM, 0)
-            }
+            serverFd =
+                if (useIPv6 && !isIPv6Host && (host == null || host == "0.0.0.0")) {
+                    // Use IPv6 dual-stack socket to accept both IPv4 and IPv6
+                    socket(AF_INET6, SOCK_STREAM, 0)
+                } else if (isIPv6Host || host == "::") {
+                    socket(AF_INET6, SOCK_STREAM, 0)
+                } else {
+                    socket(AF_INET, SOCK_STREAM, 0)
+                }
             checkSocketResult(serverFd, "socket")
 
             try {
@@ -103,7 +108,6 @@ class LinuxServerSocket : ServerSocket {
                 checkSocketResult(listenResult, "listen")
 
                 listening = true
-
             } catch (e: Exception) {
                 closeInternal()
                 throw e

@@ -31,8 +31,9 @@ open class LinuxSocketWrapper : ClientSocket {
 
         // Allocate native buffer for zero-copy read
         val buffer = PlatformBuffer.allocate(65536, AllocationZone.Direct)
-        val nativeAccess = buffer.nativeMemoryAccess
-            ?: throw SocketException("Failed to get native memory access")
+        val nativeAccess =
+            buffer.nativeMemoryAccess
+                ?: throw SocketException("Failed to get native memory access")
         val ptr = nativeAccess.nativeAddress.toCPointer<kotlinx.cinterop.ByteVar>()!!
 
         val bytesRead = readWithIoUring(ptr, buffer.capacity, timeout)
@@ -107,7 +108,10 @@ open class LinuxSocketWrapper : ClientSocket {
         }
     }
 
-    override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
+    override suspend fun write(
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ): Int {
         if (sockfd < 0) return -1
 
         val remaining = buffer.remaining()
@@ -116,8 +120,9 @@ open class LinuxSocketWrapper : ClientSocket {
         // Zero-copy path: check if buffer has native memory access
         val nativeAccess = buffer.nativeMemoryAccess
         if (nativeAccess != null) {
-            val ptr = (nativeAccess.nativeAddress + buffer.position())
-                .toCPointer<kotlinx.cinterop.ByteVar>()!!
+            val ptr =
+                (nativeAccess.nativeAddress + buffer.position())
+                    .toCPointer<kotlinx.cinterop.ByteVar>()!!
             val bytesSent = writeWithIoUring(ptr, remaining, timeout)
             return when {
                 bytesSent >= 0 -> {

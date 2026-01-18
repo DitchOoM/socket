@@ -18,7 +18,9 @@ import kotlin.time.TimeSource
  * io_uring provides async I/O on Linux 5.1+.
  */
 @OptIn(ExperimentalForeignApi::class)
-class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
+class LinuxClientSocket(
+    private val useTls: Boolean,
+) : ClientToServerSocket {
     private var sockfd: Int = -1
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
@@ -29,7 +31,11 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
 
     override suspend fun remotePort(): Int = getRemotePort(sockfd)
 
-    override suspend fun open(port: Int, timeout: Duration, hostname: String?) {
+    override suspend fun open(
+        port: Int,
+        timeout: Duration,
+        hostname: String?,
+    ) {
         val host = hostname ?: "localhost"
 
         memScoped {
@@ -76,7 +82,11 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         }
     }
 
-    private fun connectWithIoUring(addr: CPointer<sockaddr>, addrLen: socklen_t, timeout: Duration) {
+    private fun connectWithIoUring(
+        addr: CPointer<sockaddr>,
+        addrLen: socklen_t,
+        timeout: Duration,
+    ) {
         memScoped {
             val ring = IoUringManager.getRing()
 
@@ -126,7 +136,10 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         }
     }
 
-    private fun initTls(hostname: String, timeout: Duration) {
+    private fun initTls(
+        hostname: String,
+        timeout: Duration,
+    ) {
         // Initialize OpenSSL (1.1.0+ auto-initializes, but explicit init is safe)
         OPENSSL_init_ssl(0u, null)
 
@@ -193,12 +206,16 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
     /**
      * Wait for socket to be ready for read or write using io_uring poll.
      */
-    private fun waitForPoll(events: Short, timeout: Duration) {
+    private fun waitForPoll(
+        events: Short,
+        timeout: Duration,
+    ) {
         memScoped {
             val ring = IoUringManager.getRing()
 
-            val sqe = io_uring_get_sqe(ring)
-                ?: throw SSLHandshakeFailedException(Exception("Failed to get SQE for poll"))
+            val sqe =
+                io_uring_get_sqe(ring)
+                    ?: throw SSLHandshakeFailedException(Exception("Failed to get SQE for poll"))
             io_uring_prep_poll_add(sqe, sockfd, events.toUInt())
 
             val submitted = io_uring_submit(ring)
@@ -234,17 +251,19 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
 
         // Allocate native buffer for zero-copy read
         val buffer = PlatformBuffer.allocate(65536, AllocationZone.Direct)
-        val nativeAccess = buffer.nativeMemoryAccess
-            ?: throw SocketException("Failed to get native memory access")
+        val nativeAccess =
+            buffer.nativeMemoryAccess
+                ?: throw SocketException("Failed to get native memory access")
         val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
 
-        val bytesRead = if (ssl != null) {
-            // TLS read using native buffer
-            SSL_read(ssl, ptr, buffer.capacity).toLong()
-        } else {
-            // io_uring async read
-            readWithIoUring(ptr, buffer.capacity, timeout)
-        }
+        val bytesRead =
+            if (ssl != null) {
+                // TLS read using native buffer
+                SSL_read(ssl, ptr, buffer.capacity).toLong()
+            } else {
+                // io_uring async read
+                readWithIoUring(ptr, buffer.capacity, timeout)
+            }
 
         return when {
             bytesRead > 0 -> {
@@ -268,7 +287,11 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         }
     }
 
-    private fun readWithIoUring(ptr: CPointer<ByteVar>, size: Int, timeout: Duration): Long {
+    private fun readWithIoUring(
+        ptr: CPointer<ByteVar>,
+        size: Int,
+        timeout: Duration,
+    ): Long {
         memScoped {
             val ring = IoUringManager.getRing()
 
@@ -331,7 +354,10 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         }
     }
 
-    override suspend fun write(buffer: ReadBuffer, timeout: Duration): Int {
+    override suspend fun write(
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ): Int {
         if (sockfd < 0) return -1
 
         val remaining = buffer.remaining()
@@ -341,11 +367,12 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         val nativeAccess = buffer.nativeMemoryAccess
         if (nativeAccess != null) {
             val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
-            val bytesSent = if (ssl != null) {
-                SSL_write(ssl, ptr, remaining).toLong()
-            } else {
-                writeWithIoUring(ptr, remaining, timeout)
-            }
+            val bytesSent =
+                if (ssl != null) {
+                    SSL_write(ssl, ptr, remaining).toLong()
+                } else {
+                    writeWithIoUring(ptr, remaining, timeout)
+                }
             return handleWriteResult(buffer, bytesSent)
         }
 
@@ -356,11 +383,12 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
             val offset = managedAccess.arrayOffset + buffer.position()
             return array.usePinned { pinned ->
                 val ptr = pinned.addressOf(offset)
-                val bytesSent = if (ssl != null) {
-                    SSL_write(ssl, ptr, remaining).toLong()
-                } else {
-                    writeWithIoUring(ptr, remaining, timeout)
-                }
+                val bytesSent =
+                    if (ssl != null) {
+                        SSL_write(ssl, ptr, remaining).toLong()
+                    } else {
+                        writeWithIoUring(ptr, remaining, timeout)
+                    }
                 handleWriteResult(buffer, bytesSent)
             }
         }
@@ -369,31 +397,46 @@ class LinuxClientSocket(private val useTls: Boolean) : ClientToServerSocket {
         val bytes = buffer.readByteArray(remaining)
         return bytes.usePinned { pinned ->
             val ptr = pinned.addressOf(0)
-            val bytesSent = if (ssl != null) {
-                SSL_write(ssl, ptr, bytes.size).toLong()
-            } else {
-                writeWithIoUring(ptr, bytes.size, timeout)
-            }
+            val bytesSent =
+                if (ssl != null) {
+                    SSL_write(ssl, ptr, bytes.size).toLong()
+                } else {
+                    writeWithIoUring(ptr, bytes.size, timeout)
+                }
             when {
                 bytesSent >= 0 -> bytesSent.toInt()
-                else -> if (ssl != null) handleSslWriteError(bytesSent.toInt())
-                else handleWriteError((-bytesSent).toInt())
+                else ->
+                    if (ssl != null) {
+                        handleSslWriteError(bytesSent.toInt())
+                    } else {
+                        handleWriteError((-bytesSent).toInt())
+                    }
             }
         }
     }
 
-    private fun handleWriteResult(buffer: ReadBuffer, bytesSent: Long): Int {
-        return when {
+    private fun handleWriteResult(
+        buffer: ReadBuffer,
+        bytesSent: Long,
+    ): Int =
+        when {
             bytesSent >= 0 -> {
                 buffer.position(buffer.position() + bytesSent.toInt())
                 bytesSent.toInt()
             }
-            else -> if (ssl != null) handleSslWriteError(bytesSent.toInt())
-            else handleWriteError((-bytesSent).toInt())
+            else ->
+                if (ssl != null) {
+                    handleSslWriteError(bytesSent.toInt())
+                } else {
+                    handleWriteError((-bytesSent).toInt())
+                }
         }
-    }
 
-    private fun writeWithIoUring(ptr: CPointer<ByteVar>, size: Int, timeout: Duration): Long {
+    private fun writeWithIoUring(
+        ptr: CPointer<ByteVar>,
+        size: Int,
+        timeout: Duration,
+    ): Long {
         memScoped {
             val ring = IoUringManager.getRing()
 
