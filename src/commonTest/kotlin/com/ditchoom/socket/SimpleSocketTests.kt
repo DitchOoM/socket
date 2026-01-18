@@ -71,18 +71,19 @@ class SimpleSocketTests {
             val clientCount = 5
             val processedClients = Mutex(locked = true)
             var clientsHandled = 0
-            val serverJob = launch(Dispatchers.Default) {
-                acceptedClientFlow.collect { serverToClient ->
-                    val s = serverToClient.readString()
-                    val indexReceived = s.toInt()
-                    serverToClient.writeString("ack $indexReceived")
-                    serverToClient.close()
-                    clientsHandled++
-                    if (clientsHandled >= clientCount) {
-                        processedClients.unlock()
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { serverToClient ->
+                        val s = serverToClient.readString()
+                        val indexReceived = s.toInt()
+                        serverToClient.writeString("ack $indexReceived")
+                        serverToClient.close()
+                        clientsHandled++
+                        if (clientsHandled >= clientCount) {
+                            processedClients.unlock()
+                        }
                     }
                 }
-            }
             repeat(clientCount) { index ->
                 ClientSocket.connect(server.port()) { clientToServer ->
                     clientToServer.writeString(index.toString())
