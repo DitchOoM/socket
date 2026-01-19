@@ -22,7 +22,8 @@ class SimpleSocketTests {
     fun connectTimeoutWorks() =
         runTest {
             try {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
+                // Use non-routable IP address to test connection timeout without external network
+                ClientSocket.connect(80, hostname = "10.255.255.1", timeout = 1.seconds)
                 fail("should not have reached this")
             } catch (_: TimeoutCancellationException) {
             } catch (_: SocketException) {
@@ -38,7 +39,8 @@ class SimpleSocketTests {
     fun invalidHost() =
         runTestNoTimeSkipping {
             try {
-                ClientSocket.connect(3, hostname = "example234asdfa.com", timeout = 1.seconds)
+                // Use .invalid TLD which is reserved per RFC 2606 and should never resolve
+                ClientSocket.connect(80, hostname = "nonexistent.invalid", timeout = 1.seconds)
                 fail("should not have reached this")
             } catch (e: SocketException) {
                 // expected
@@ -49,8 +51,9 @@ class SimpleSocketTests {
     fun closeWorks() =
         runTest {
             try {
-                ClientSocket.connect(3, hostname = "example.com", timeout = 1.seconds)
-                fail("the port is invalid, so this line should never hit")
+                // Use non-routable IP address to test without external network
+                ClientSocket.connect(80, hostname = "10.255.255.1", timeout = 1.seconds)
+                fail("the connection should timeout, so this line should never hit")
             } catch (t: TimeoutCancellationException) {
                 // expected
             } catch (s: SocketException) {
@@ -98,6 +101,10 @@ class SimpleSocketTests {
             serverJob.cancel()
         }
 
+    /**
+     * Integration tests that require external network access.
+     * These verify real-world HTTP/HTTPS connectivity.
+     */
     @Test
     fun httpRawSocketExampleDomain() = readHttp("example.com", false)
 

@@ -8,6 +8,9 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Tests for TLS/SSL error handling.
  *
+ * NOTE: These tests require external network access to verify TLS behavior
+ * with real certificates and SNI. They connect to well-known HTTPS sites.
+ *
  * Exception hierarchy:
  * - SocketException (base)
  *   - SSLSocketException
