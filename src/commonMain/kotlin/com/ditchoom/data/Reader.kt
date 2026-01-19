@@ -41,7 +41,10 @@ interface Reader {
      * Default implementation reads into a new buffer and copies to the provided one.
      */
     @Throws(CancellationException::class, SocketClosedException::class)
-    suspend fun read(buffer: WriteBuffer, timeout: Duration = 15.seconds): Int {
+    suspend fun read(
+        buffer: WriteBuffer,
+        timeout: Duration = 15.seconds,
+    ): Int {
         val readBuffer = read(timeout)
         readBuffer.resetForRead()
         val bytesRead = readBuffer.remaining()
