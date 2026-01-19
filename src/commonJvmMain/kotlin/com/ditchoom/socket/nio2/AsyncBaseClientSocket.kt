@@ -4,6 +4,7 @@ import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.allocate
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.ByteBufferClientSocket
@@ -35,18 +36,42 @@ abstract class AsyncBaseClientSocket(
         buffer: BaseJvmBuffer,
         timeout: Duration,
     ): Int {
-        val bytesRead = readMutex.withLock { socket.aRead(buffer.byteBuffer, timeout) }
+        if (isClosed) {
+            throw SocketClosedException("Socket is closed")
+        }
+        val bytesRead = readMutex.withLock {
+            if (isClosed) {
+                throw SocketClosedException("Socket is closed")
+            }
+            socket.aRead(buffer.byteBuffer, timeout)
+        }
         if (bytesRead < 0) {
             throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
         }
         return bytesRead
     }
 
+    override suspend fun read(
+        buffer: WriteBuffer,
+        timeout: Duration,
+    ): Int {
+        // Efficient JVM implementation using the existing method
+        return read(buffer as BaseJvmBuffer, timeout)
+    }
+
     override suspend fun write(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val bytesWritten = writeMutex.withLock { socket.aWrite((buffer as BaseJvmBuffer).byteBuffer, timeout) }
+        if (isClosed) {
+            throw SocketClosedException("Socket is closed")
+        }
+        val bytesWritten = writeMutex.withLock {
+            if (isClosed) {
+                throw SocketClosedException("Socket is closed")
+            }
+            socket.aWrite((buffer as BaseJvmBuffer).byteBuffer, timeout)
+        }
         if (bytesWritten < 0) {
             throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
         }
