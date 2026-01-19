@@ -36,10 +36,12 @@ suspend fun <T> ClientSocket.Companion.connect(
     lambda: suspend (ClientSocket) -> T,
 ): T {
     val socket = ClientSocket.allocate(tls)
-    socket.open(port, timeout, hostname)
-    val result = lambda(socket)
-    socket.close()
-    return result
+    return try {
+        socket.open(port, timeout, hostname)
+        lambda(socket)
+    } finally {
+        socket.close()
+    }
 }
 
 expect fun ClientSocket.Companion.allocate(

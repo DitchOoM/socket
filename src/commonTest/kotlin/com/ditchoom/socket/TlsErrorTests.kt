@@ -122,8 +122,7 @@ class TlsErrorTests {
             }
         }
 
-    // TODO: This test is flaky due to external network dependencies and cleanup issues
-    // @Test
+    @Test
     fun nonTlsConnectionToTlsPort() =
         runTestNoTimeSkipping {
             // Connect without TLS to an HTTPS port - should get garbage or connection closed
