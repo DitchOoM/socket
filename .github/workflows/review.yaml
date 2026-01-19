@@ -43,8 +43,8 @@ jobs:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
-      - name: Run tests
-        run: ./gradlew macosArm64Test iosSimulatorArm64Test --no-build-cache
+      - name: Run checks and tests
+        run: ./gradlew check --no-build-cache
 
   # Linux targets disabled due to glibc version incompatibility with OpenSSL.
   # Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
