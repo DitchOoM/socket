@@ -76,8 +76,8 @@ suspend fun AsynchronousSocketChannel.aRead(
 suspend fun AsynchronousSocketChannel.aWrite(
     buf: ByteBuffer,
     duration: Duration,
-): Int {
-    return suspendCancellableCoroutine<Int> { cont ->
+): Int =
+    suspendCancellableCoroutine<Int> { cont ->
         write(
             buf,
             duration.inWholeMilliseconds,
@@ -87,7 +87,6 @@ suspend fun AsynchronousSocketChannel.aWrite(
         )
         closeOnCancel(cont)
     }
-}
 
 /**
  * Performs [AsynchronousSocketChannel.close] without blocking a thread and resumes when asynchronous operation completes.
@@ -107,8 +106,8 @@ suspend fun AsynchronousSocketChannel.aRemoteAddress(): SocketAddress? =
         remoteAddress
     }
 
-suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): Int {
-    return try {
+suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): Int =
+    try {
         if (remote) {
             (aRemoteAddress() as? InetSocketAddress)?.port ?: -1
         } else {
@@ -117,4 +116,3 @@ suspend fun AsynchronousSocketChannel.assignedPort(remote: Boolean = true): Int 
     } catch (e: Exception) {
         -1
     }
-}

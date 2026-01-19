@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.khronos.webgl.Int8Array
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
 class NodeServerSocket : ServerSocket {
@@ -27,8 +28,8 @@ class NodeServerSocket : ServerSocket {
                     clientSocket.on("data") { data ->
                         val result = int8ArrayOf(data)
                         val buffer = JsBuffer(result)
-                        buffer.setPosition(result.length)
-                        buffer.setLimit(result.length)
+                        buffer.position(result.length)
+                        buffer.resetForRead()
                         nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
                     }
                     trySend(nodeSocket).getOrThrow()
@@ -47,17 +48,18 @@ class NodeServerSocket : ServerSocket {
     @Suppress("MemberVisibilityCanBePrivate")
     fun int8ArrayOf(
         @Suppress("UNUSED_PARAMETER") obj: Any,
-    ): Int8Array {
-        return js(
+    ): Int8Array =
+        js(
             """
             if (Buffer.isBuffer(obj)) {
-                return new Int8Array(obj.buffer)
+                // Zero-copy view into the Node.js Buffer
+                return new Int8Array(obj.buffer, obj.byteOffset, obj.byteLength)
             } else {
-                return new Int8Array(Buffer.from(obj).buffer)
+                var buf = Buffer.from(obj);
+                return new Int8Array(buf.buffer, buf.byteOffset, buf.byteLength)
             }
         """,
         ) as Int8Array
-    }
 
     override fun isListening() = server?.listening ?: false
 
@@ -77,32 +79,40 @@ suspend fun Server.listenSuspend(
     host: String?,
     backlog: Int,
 ) {
-    suspendCancellableCoroutine {
+    suspendCancellableCoroutine { cont ->
+        // Handle errors (e.g., port already in use)
+        on<Any>("error") { error ->
+            if (!cont.isCompleted) {
+                val message = error.asDynamic().message as? String ?: "Server error"
+                cont.resumeWithException(SocketException(message))
+            }
+        }
+
         if (host != null && port != -1) {
             listen(port, host, backlog) {
-                if (!it.isCompleted) {
-                    it.resume(Unit)
+                if (!cont.isCompleted) {
+                    cont.resume(Unit)
                 }
             }
         } else if (port != -1) {
             listen(port, backlog = backlog) {
-                if (!it.isCompleted) {
-                    it.resume(Unit)
+                if (!cont.isCompleted) {
+                    cont.resume(Unit)
                 }
             }
         } else if (host != null) {
             listen(host = host, backlog = backlog) {
-                if (!it.isCompleted) {
-                    it.resume(Unit)
+                if (!cont.isCompleted) {
+                    cont.resume(Unit)
                 }
             }
         } else {
             listen(backlog = backlog) {
-                if (!it.isCompleted) {
-                    it.resume(Unit)
+                if (!cont.isCompleted) {
+                    cont.resume(Unit)
                 }
             }
         }
-        it.invokeOnCancellation { close { } }
+        cont.invokeOnCancellation { close { } }
     }
 }

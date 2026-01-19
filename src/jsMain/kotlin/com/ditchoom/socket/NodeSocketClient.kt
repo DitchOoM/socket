@@ -2,35 +2,38 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
 
 open class NodeSocket : ClientSocket {
     internal var isClosed = true
-    internal lateinit var netSocket: Socket
+    internal var netSocket: Socket? = null
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
 
-    override fun isOpen() = !isClosed || netSocket.remoteAddress != null
+    override fun isOpen(): Boolean {
+        val socket = netSocket ?: return false
+        return !isClosed || socket.remoteAddress != null
+    }
 
-    override suspend fun localPort() = netSocket.localPort
+    override suspend fun localPort() = netSocket?.localPort ?: -1
 
-    override suspend fun remotePort() = netSocket.remotePort
+    override suspend fun remotePort() = netSocket?.remotePort ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        if (!isOpen()) {
+        val socket = netSocket
+        if (socket == null || !isOpen()) {
             throw SocketClosedException("Socket closed. transmissionError=$hadTransmissionError")
         }
-        netSocket.resume()
+        socket.resume()
         val message =
             withTimeout(timeout) {
                 try {
@@ -55,57 +58,73 @@ open class NodeSocket : ClientSocket {
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        if (!isOpen()) {
+        val socket = netSocket
+        if (socket == null || !isOpen()) {
             throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
         }
-        val array = (buffer as JsBuffer).buffer
-        writeMutex.withLock { netSocket.write(Uint8Array(array.buffer)) }
-        buffer.position(buffer.position() + array.byteLength)
-        return array.byteLength
+        val jsBuffer = buffer as JsBuffer
+        val array = jsBuffer.buffer
+        val bytesToWrite = buffer.remaining()
+        // Create a view of only the bytes to write (from position to position + remaining)
+        val dataToWrite = Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+        writeMutex.withLock { socket.write(dataToWrite) }
+        buffer.position(buffer.position() + bytesToWrite)
+        return bytesToWrite
     }
 
-    fun cleanSocket(netSocket: Socket) {
+    fun cleanSocket(socket: Socket) {
         incomingMessageChannel.close()
-        netSocket.end {}
-        netSocket.destroy()
+        socket.end {}
+        socket.destroy()
         isClosed = true
     }
 
     override suspend fun close() {
-        cleanSocket(netSocket)
+        val socket = netSocket ?: return
+        cleanSocket(socket)
     }
 }
 
 class NodeClientSocket(
     private val useTls: Boolean,
     private val allocationZone: AllocationZone,
-) : NodeSocket(), ClientToServerSocket {
+) : NodeSocket(),
+    ClientToServerSocket {
     override suspend fun open(
         port: Int,
         timeout: Duration,
         hostname: String?,
-    ) = withTimeout(timeout) {
-        val arrayPlatformBufferMap = HashMap<Uint8Array, JsBuffer>()
-        val onRead =
-            OnRead({
-                val buffer = PlatformBuffer.allocate(8192, allocationZone) as JsBuffer
-                val uint8Array = Uint8Array(buffer.buffer.buffer)
-                arrayPlatformBufferMap[uint8Array] = buffer
-                uint8Array
-            }, { bytesRead, buffer ->
-                val platformBuffer = arrayPlatformBufferMap.remove(buffer)!!
-                platformBuffer.setLimit(bytesRead)
-                val socketDataRead = SocketDataRead(platformBuffer.slice(), bytesRead)
-                incomingMessageChannel.trySend(socketDataRead)
-                false
-            })
-        val options = Options(port, hostname, onRead, rejectUnauthorized = false)
-        val netSocket = connect(useTls, options)
+    ) {
+        val options = Options(port, hostname, onread = null, rejectUnauthorized = false)
+        val netSocket = connect(useTls, options, timeout)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
+        netSocket.on("data") { data ->
+            val result = int8ArrayOf(data)
+            val buffer = JsBuffer(result)
+            buffer.position(result.length)
+            buffer.resetForRead()
+            incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+        }
         netSocket.on("close") { transmissionError ->
             hadTransmissionError = transmissionError.unsafeCast<Boolean>()
             cleanSocket(netSocket)
         }
     }
+
+    @Suppress("MemberVisibilityCanBePrivate")
+    fun int8ArrayOf(
+        @Suppress("UNUSED_PARAMETER") obj: Any,
+    ): Int8Array =
+        js(
+            """
+            if (Buffer.isBuffer(obj)) {
+                // Zero-copy view into the Node.js Buffer
+                return new Int8Array(obj.buffer, obj.byteOffset, obj.byteLength)
+            } else {
+                var buf = Buffer.from(obj);
+                return new Int8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+            }
+        """,
+        ) as Int8Array
 }

@@ -1,7 +1,7 @@
 package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.JvmBuffer
+import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.allocate
@@ -29,13 +29,13 @@ abstract class BaseClientSocket(
     override suspend fun remotePort() = (socket.remoteAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        val buffer = PlatformBuffer.allocate(socket.socket().receiveBufferSize, allocationZone) as JvmBuffer
+        val buffer = PlatformBuffer.allocate(socket.socket().receiveBufferSize, allocationZone) as BaseJvmBuffer
         read(buffer, timeout)
         return buffer
     }
 
     override suspend fun read(
-        buffer: JvmBuffer,
+        buffer: BaseJvmBuffer,
         timeout: Duration,
     ): Int {
         val bytesRead = readMutex.withLock { socket.read(buffer.byteBuffer, selector, timeout) }
@@ -49,7 +49,7 @@ abstract class BaseClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val bytesWritten = writeMutex.withLock { socket.write((buffer as JvmBuffer).byteBuffer, selector, timeout) }
+        val bytesWritten = writeMutex.withLock { socket.write((buffer as BaseJvmBuffer).byteBuffer, selector, timeout) }
         if (bytesWritten < 0) {
             throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
         }

@@ -13,7 +13,8 @@ import kotlin.time.Duration
 class NioClientSocket(
     allocationZone: AllocationZone,
     blocking: Boolean = true,
-) : BaseClientSocket(allocationZone, blocking), ClientToServerSocket {
+) : BaseClientSocket(allocationZone, blocking),
+    ClientToServerSocket {
     override suspend fun open(
         port: Int,
         timeout: Duration,

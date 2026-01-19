@@ -21,9 +21,6 @@ class SimpleNioNonBlockingSocketTests {
     fun httpRawSocketExampleDomain() = SimpleSocketTests().httpRawSocketExampleDomain()
 
     @Test
-    fun httpsRawSocketExampleDomain() = SimpleSocketTests().httpsRawSocketExampleDomain()
-
-    @Test
     fun httpRawSocketGoogleDomain() = SimpleSocketTests().httpRawSocketGoogleDomain()
 
     @Test

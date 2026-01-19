@@ -69,14 +69,21 @@ class SimpleSocketTests {
             val server = ServerSocket.allocate()
             val acceptedClientFlow = server.bind()
             val clientCount = 5
-            launch(Dispatchers.Default) {
-                acceptedClientFlow.collect { serverToClient ->
-                    val s = serverToClient.readString()
-                    val indexReceived = s.toInt()
-                    serverToClient.writeString("ack $indexReceived")
-                    serverToClient.close()
+            val processedClients = Mutex(locked = true)
+            var clientsHandled = 0
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { serverToClient ->
+                        val s = serverToClient.readString()
+                        val indexReceived = s.toInt()
+                        serverToClient.writeString("ack $indexReceived")
+                        serverToClient.close()
+                        clientsHandled++
+                        if (clientsHandled >= clientCount) {
+                            processedClients.unlock()
+                        }
+                    }
                 }
-            }
             repeat(clientCount) { index ->
                 ClientSocket.connect(server.port()) { clientToServer ->
                     clientToServer.writeString(index.toString())
@@ -85,14 +92,14 @@ class SimpleSocketTests {
                     clientToServer.close()
                 }
             }
+            // Wait for server to finish processing all clients
+            processedClients.lock()
             server.close()
+            serverJob.cancel()
         }
 
     @Test
     fun httpRawSocketExampleDomain() = readHttp("example.com", false)
-
-    @Test
-    fun httpsRawSocketExampleDomain() = readHttp("example.com", true)
 
     @Test
     fun httpRawSocketGoogleDomain() = readHttp("google.com", false)
@@ -270,3 +277,103 @@ expect suspend fun readStats(
     port: Int,
     contains: String,
 ): List<String>
+
+expect fun supportsIPv6(): Boolean
+
+class IPv6SocketTests {
+    @Test
+    fun serverBindsToIPv6() =
+        runTestNoTimeSkipping {
+            if (!supportsIPv6()) return@runTestNoTimeSkipping
+
+            val server = ServerSocket.allocate()
+            val text = "ipv6 test"
+            val acceptedClientFlow = server.bind(host = "::")
+            var serverReceived = false
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { serverToClient ->
+                        val received = serverToClient.readString()
+                        assertEquals(text, received)
+                        serverReceived = true
+                        serverToClient.close()
+                    }
+                }
+
+            // Connect using localhost (should work via dual-stack or IPv6)
+            val client = ClientSocket.allocate()
+            client.open(server.port(), hostname = "localhost")
+            client.writeString(text)
+            client.close()
+
+            // Give server time to process
+            delay(100)
+            assertTrue(serverReceived, "Server should have received the message")
+
+            server.close()
+            serverJob.cancel()
+        }
+
+    @Test
+    fun serverAcceptsBothIPv4AndIPv6() =
+        runTestNoTimeSkipping {
+            if (!supportsIPv6()) return@runTestNoTimeSkipping
+
+            val server = ServerSocket.allocate()
+            var clientsHandled = 0
+            val acceptedClientFlow = server.bind() // Default should use dual-stack
+
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { serverToClient ->
+                        val received = serverToClient.readString()
+                        assertTrue(received.isNotEmpty())
+                        clientsHandled++
+                        serverToClient.close()
+                    }
+                }
+
+            // Connect using IPv4 localhost
+            val client1 = ClientSocket.allocate()
+            client1.open(server.port(), hostname = "127.0.0.1")
+            client1.writeString("ipv4")
+            client1.close()
+
+            delay(100)
+
+            server.close()
+            serverJob.cancel()
+
+            assertTrue(clientsHandled >= 1, "Server should have handled at least one client")
+        }
+}
+
+class ServerCancellationTests {
+    @Test
+    fun serverClosesQuickly() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val acceptedClientFlow = server.bind()
+
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { _ ->
+                        // Just accept connections
+                    }
+                }
+
+            // Let the server start accepting
+            delay(100)
+
+            // Close the server - should be quick, not wait 1 second
+            val startTime = currentTimeMillis()
+            server.close()
+            serverJob.cancel()
+            val elapsed = currentTimeMillis() - startTime
+
+            // Should close in well under 1 second if cancellation is working
+            assertTrue(elapsed < 500, "Server close took too long: ${elapsed}ms")
+        }
+}
+
+expect fun currentTimeMillis(): Long

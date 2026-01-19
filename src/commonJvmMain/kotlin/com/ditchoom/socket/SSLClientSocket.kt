@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.JvmBuffer
+import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
@@ -22,7 +22,7 @@ class SSLClientSocket(
     private val byteBufferClientSocket = underlyingSocket as ByteBufferClientSocket<*>
     private val closeTimeout = 1.seconds
     private lateinit var engine: SSLEngine
-    private var overflowEncryptedReadBuffer: JvmBuffer? = null
+    private var overflowEncryptedReadBuffer: BaseJvmBuffer? = null
 
     override suspend fun open(
         port: Int,
@@ -54,11 +54,11 @@ class SSLClientSocket(
     override suspend fun write(
         buffer: ReadBuffer,
         timeout: Duration,
-    ): Int = wrap(buffer as JvmBuffer, timeout)
+    ): Int = wrap(buffer as BaseJvmBuffer, timeout)
 
     private suspend fun doHandshake(timeout: Duration) {
-        var cachedBuffer: JvmBuffer? = null
-        val emptyBuffer = EMPTY_BUFFER as JvmBuffer
+        var cachedBuffer: BaseJvmBuffer? = null
+        val emptyBuffer = EMPTY_BUFFER as BaseJvmBuffer
         while (engine.handshakeStatus != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
             when (engine.handshakeStatus) {
                 SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(emptyBuffer, timeout)
@@ -105,7 +105,7 @@ class SSLClientSocket(
     }
 
     private suspend fun wrap(
-        plainText: JvmBuffer,
+        plainText: BaseJvmBuffer,
         timeout: Duration,
     ): Int {
         val encrypted = bufferFactory(engine.session.packetBufferSize)
@@ -133,9 +133,7 @@ class SSLClientSocket(
         }
     }
 
-    private fun bufferFactory(size: Int): JvmBuffer {
-        return PlatformBuffer.allocate(size, AllocationZone.Direct) as JvmBuffer
-    }
+    private fun bufferFactory(size: Int): BaseJvmBuffer = PlatformBuffer.allocate(size, AllocationZone.Direct) as BaseJvmBuffer
 
     private suspend fun unwrap(timeout: Duration): ReadBuffer {
         val byteBufferClientSocket = underlyingSocket as ByteBufferClientSocket<*>
@@ -180,7 +178,7 @@ class SSLClientSocket(
         return slicePlainText(plainTextReadBuffer)
     }
 
-    private fun slicePlainText(plainText: JvmBuffer): JvmBuffer {
+    private fun slicePlainText(plainText: BaseJvmBuffer): PlatformBuffer {
         val position = plainText.position()
         plainText.position(0)
         plainText.setLimit(position)

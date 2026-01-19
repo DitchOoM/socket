@@ -1,0 +1,7 @@
+language = Objective-C
+package = com.ditchoom.socket.native
+
+headers = SocketWrapper-Swift.h
+headerFilter = SocketWrapper-Swift.h
+
+linkerOpts = -framework Network -framework Foundation

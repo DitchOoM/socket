@@ -1,28 +1,26 @@
-import groovy.util.Node
-import groovy.xml.XmlParser
-import org.apache.tools.ant.taskdefs.condition.Os
-import java.net.URL
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
 plugins {
-    kotlin("multiplatform") version "2.0.0"
-    kotlin("native.cocoapods") version "2.0.0"
-    id("com.android.library") version "8.4.0"
-    id("io.codearte.nexus-staging") version "0.30.0"
-    `maven-publish`
+    alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.ktlint)
+    alias(libs.plugins.maven.publish)
     signing
-    id("org.jlleitschuh.gradle.ktlint") version "12.1.1"
 }
+
+apply(from = "gradle/setup.gradle.kts")
+
+group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-val isMacOS = Os.isFamily(Os.FAMILY_MAC)
-val loadAllPlatforms = !isRunningOnGithub || (isMacOS && isMainBranchGithub) || !isMacOS
-val libraryVersionPrefix: String by project
-group = "com.ditchoom"
-val libraryVersion = getNextVersion().toString()
-println(
-    "Version: ${libraryVersion}\nisRunningOnGithub: $isRunningOnGithub\nisMainBranchGithub: $isMainBranchGithub\n" +
-        "OS:$isMacOS\nLoad All Platforms: $loadAllPlatforms",
-)
+val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+
+@Suppress("UNCHECKED_CAST")
+val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
+project.version = getNextVersion(!isRunningOnGithub).toString()
+
+println("Version: ${project.version}\nisRunningOnGithub: $isRunningOnGithub\nisMainBranchGithub: $isMainBranchGithub")
 
 repositories {
     google()
@@ -30,53 +28,125 @@ repositories {
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }
 }
 
+// Swift library paths
+val swiftBuildDir = layout.buildDirectory.dir("swift")
+val swiftHeaderDir = swiftBuildDir.map { it.dir("include") }
+val swiftLibDir = swiftBuildDir.map { it.dir("lib") }
+
+// Task to build Swift libraries (only on macOS)
+val buildSwiftTask =
+    tasks.register<Exec>("buildSwift") {
+        onlyIf { isMacOS }
+        workingDir = projectDir
+        commandLine("./buildSwift.sh")
+        outputs.dir(swiftBuildDir)
+        inputs.files(fileTree("src/nativeInterop/cinterop/swift") { include("**/*.swift") })
+    }
+
+// Map our library subdirs to Swift platform names
+fun swiftPlatformForLibSubdir(libSubdir: String): String =
+    when (libSubdir) {
+        "macos" -> "macosx"
+        "ios" -> "iphoneos"
+        "ios-simulator" -> "iphonesimulator"
+        "tvos" -> "appletvos"
+        "tvos-simulator" -> "appletvsimulator"
+        "watchos" -> "watchos"
+        "watchos-simulator" -> "watchsimulator"
+        else -> "macosx"
+    }
+
+// Configure cinterop for Apple targets
+fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
+    val libPath =
+        swiftLibDir
+            .get()
+            .dir(libSubdir)
+            .asFile.absolutePath
+    val swiftPlatform = swiftPlatformForLibSubdir(libSubdir)
+    compilations["main"].cinterops {
+        create("SocketWrapper") {
+            defFile("src/nativeInterop/cinterop/SocketWrapper.def")
+            includeDirs(swiftHeaderDir)
+            extraOpts("-libraryPath", libPath)
+            tasks.named(interopProcessingTaskName) {
+                dependsOn(buildSwiftTask)
+            }
+        }
+    }
+    compilations["main"].compileTaskProvider.configure {
+        dependsOn(buildSwiftTask)
+    }
+    // Link the Swift static library for all binaries (main and test)
+    binaries.all {
+        // Link our Swift wrapper library
+        linkerOpts("-L$libPath", "-lSocketWrapper")
+        // Link Swift runtime libraries (platform-specific)
+        linkerOpts(
+            "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$swiftPlatform",
+            "-L/usr/lib/swift",
+        )
+    }
+}
+
 kotlin {
-    jvmToolchain(19)
+    // Ensure consistent JDK version across all developer machines and CI
+    jvmToolchain(21)
+
     androidTarget {
         publishLibraryVariants("release")
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
-    jvm()
+    jvm {
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+    }
     js {
         browser()
         nodejs()
     }
-    macosX64()
-    macosArm64()
-    iosArm64()
-    iosX64()
-    watchosArm64()
-    watchosX64()
-    tvosArm64()
-    applyDefaultHierarchyTemplate()
-    cocoapods {
-        ios.deploymentTarget = "13.0"
-        osx.deploymentTarget = "11.0"
-        watchos.deploymentTarget = "6.0"
-        tvos.deploymentTarget = "13.0"
-        pod("SocketWrapper") {
-            source =
-                git("https://github.com/DitchOoM/apple-socket-wrapper.git") {
-                    tag = "0.1.3"
-                }
-            extraOpts += listOf("-compiler-option", "-fmodules")
-        }
-        version = "0.1.3"
+
+    // Apple targets with Network.framework zero-copy socket implementation
+    if (isMacOS) {
+        // macOS
+        macosArm64 { configureSocketWrapperCinterop("macos") }
+        macosX64 { configureSocketWrapperCinterop("macos") }
+
+        // iOS
+        iosArm64 { configureSocketWrapperCinterop("ios") }
+        iosSimulatorArm64 { configureSocketWrapperCinterop("ios-simulator") }
+        iosX64 { configureSocketWrapperCinterop("ios-simulator") }
+
+        // tvOS
+        tvosArm64 { configureSocketWrapperCinterop("tvos") }
+        tvosSimulatorArm64 { configureSocketWrapperCinterop("tvos-simulator") }
+        tvosX64 { configureSocketWrapperCinterop("tvos-simulator") }
+
+        // watchOS (watchosArm32 not supported by buffer library)
+        watchosArm64 { configureSocketWrapperCinterop("watchos") }
+        watchosSimulatorArm64 { configureSocketWrapperCinterop("watchos-simulator") }
+        watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
     }
+
+    // Linux targets disabled for now due to glibc version incompatibility with OpenSSL.
+    // Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
+    // TODO: Re-enable with statically-linked OpenSSL or on older Ubuntu runners.
+
+    applyDefaultHierarchyTemplate()
     sourceSets {
         commonMain.dependencies {
-            implementation("com.ditchoom:buffer:1.4.1")
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+            implementation(libs.buffer)
+            implementation(libs.kotlinx.coroutines.core)
         }
         androidMain.dependencies {
-            implementation("androidx.core:core-ktx:1.13.1")
+            implementation(libs.androidx.core.ktx)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.coroutines.test)
         }
         jsMain.dependencies {
-            implementation("org.jetbrains.kotlin-wrappers:kotlin-js:1.0.0-pre.746")
+            implementation(libs.kotlin.js)
         }
         jsTest.dependencies {
             implementation(kotlin("test-js"))
@@ -102,19 +172,47 @@ kotlin {
         }
         jvmTest.get().dependsOn(commonJvmTest)
         jvmTest.dependencies {
-            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-debug:1.8.1")
+            implementation(libs.kotlinx.coroutines.debug)
         }
         androidUnitTest.dependsOn(commonJvmTest)
+
+        // Add shared Apple implementation to all Apple target source sets
+        if (isMacOS) {
+            val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
+            listOf(
+                "macosArm64Main",
+                "macosX64Main",
+                "iosArm64Main",
+                "iosSimulatorArm64Main",
+                "iosX64Main",
+                "tvosArm64Main",
+                "tvosSimulatorArm64Main",
+                "tvosX64Main",
+                "watchosArm64Main",
+                "watchosSimulatorArm64Main",
+                "watchosX64Main",
+            ).forEach { sourceSetName ->
+                findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
+            }
+        }
+
+        // Linux source sets disabled (see comment above about glibc incompatibility)
     }
 }
 
 android {
-    compileSdk = 34
+    compileSdk = 36
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 19
+        minSdk = 21
     }
     namespace = "$group.${rootProject.name}"
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
     publishing {
         singleVariant("release") {
             withSourcesJar()
@@ -127,156 +225,81 @@ val javadocJar: TaskProvider<Jar> by tasks.registering(Jar::class) {
     archiveClassifier.set("javadoc")
 }
 
-if (isRunningOnGithub) {
-    if (isMainBranchGithub) {
-        signing {
-            useInMemoryPgpKeys(
-                "56F1A973",
-                System.getenv("GPG_SECRET"),
-                System.getenv("GPG_SIGNING_PASSWORD"),
-            )
-            sign(publishing.publications)
-        }
+val publishedGroupId: String by project
+val libraryName: String by project
+val artifactName: String by project
+val libraryDescription: String by project
+val siteUrl: String by project
+val gitUrl: String by project
+val licenseName: String by project
+val licenseUrl: String by project
+val developerOrg: String by project
+val developerName: String by project
+val developerEmail: String by project
+val developerId: String by project
+
+project.group = publishedGroupId
+
+val signingInMemoryKey = project.findProperty("signingInMemoryKey")
+val signingInMemoryKeyPassword = project.findProperty("signingInMemoryKeyPassword")
+val shouldSignAndPublish = isMainBranchGithub && signingInMemoryKey is String && signingInMemoryKeyPassword is String
+
+if (shouldSignAndPublish) {
+    signing {
+        useInMemoryPgpKeys(
+            signingInMemoryKey as String,
+            signingInMemoryKeyPassword as String,
+        )
+        sign(publishing.publications)
+    }
+}
+
+mavenPublishing {
+    if (shouldSignAndPublish) {
+        publishToMavenCentral()
+        signAllPublications()
     }
 
-    val ossUser = System.getenv("SONATYPE_NEXUS_USERNAME")
-    val ossPassword = System.getenv("SONATYPE_NEXUS_PASSWORD")
+    coordinates(publishedGroupId, artifactName, project.version.toString())
 
-    val publishedGroupId: String by project
-    val libraryName: String by project
-    val libraryDescription: String by project
-    val siteUrl: String by project
-    val gitUrl: String by project
-    val licenseName: String by project
-    val licenseUrl: String by project
-    val developerOrg: String by project
-    val developerName: String by project
-    val developerEmail: String by project
-    val developerId: String by project
+    pom {
+        name.set(libraryName)
+        description.set(libraryDescription)
+        url.set(siteUrl)
 
-    project.group = publishedGroupId
-    project.version = libraryVersion
-
-    publishing {
-        publications.withType(MavenPublication::class) {
-            groupId = publishedGroupId
-            version = libraryVersion
-
-            artifact(tasks["javadocJar"])
-
-            pom {
-                name.set(libraryName)
-                description.set(libraryDescription)
-                url.set(siteUrl)
-
-                licenses {
-                    license {
-                        name.set(licenseName)
-                        url.set(licenseUrl)
-                    }
-                }
-                developers {
-                    developer {
-                        id.set(developerId)
-                        name.set(developerName)
-                        email.set(developerEmail)
-                    }
-                }
-                organization {
-                    name.set(developerOrg)
-                }
-                scm {
-                    connection.set(gitUrl)
-                    developerConnection.set(gitUrl)
-                    url.set(siteUrl)
-                }
+        licenses {
+            license {
+                name.set(licenseName)
+                url.set(licenseUrl)
             }
         }
-
-        repositories {
-            val repositoryId = System.getenv("SONATYPE_REPOSITORY_ID")
-            maven("https://oss.sonatype.org/service/local/staging/deployByRepositoryId/$repositoryId/") {
-                name = "sonatype"
-                credentials {
-                    username = ossUser
-                    password = ossPassword
-                }
+        developers {
+            developer {
+                id.set(developerId)
+                name.set(developerName)
+                email.set(developerEmail)
             }
         }
-    }
-
-    nexusStaging {
-        username = ossUser
-        password = ossPassword
-        packageGroup = publishedGroupId
+        organization {
+            name.set(developerOrg)
+        }
+        scm {
+            connection.set(gitUrl)
+            developerConnection.set(gitUrl)
+            url.set(siteUrl)
+        }
     }
 }
 
 ktlint {
     verbose.set(true)
     outputToConsole.set(true)
-}
-
-class Version(val major: UInt, val minor: UInt, val patch: UInt, val snapshot: Boolean) {
-    constructor(string: String, snapshot: Boolean) :
-        this(
-            string.split('.')[0].toUInt(),
-            string.split('.')[1].toUInt(),
-            string.split('.')[2].toUInt(),
-            snapshot,
-        )
-
-    fun incrementMajor() = Version(major + 1u, 0u, 0u, snapshot)
-
-    fun incrementMinor() = Version(major, minor + 1u, 0u, snapshot)
-
-    fun incrementPatch() = Version(major, minor, patch + 1u, snapshot)
-
-    fun snapshot() = Version(major, minor, patch, true)
-
-    fun isVersionZero() = major == 0u && minor == 0u && patch == 0u
-
-    override fun toString(): String =
-        if (snapshot) {
-            "$major.$minor.$patch-SNAPSHOT"
-        } else {
-            "$major.$minor.$patch"
-        }
-}
-private var latestVersion: Version? = Version(0u, 0u, 0u, true)
-
-@Suppress("UNCHECKED_CAST")
-fun getLatestVersion(): Version {
-    val latestVersion = latestVersion
-    if (latestVersion != null && !latestVersion.isVersionZero()) {
-        return latestVersion
+    android.set(true)
+    filter {
+        exclude("**/generated/**")
     }
-    val xml = URL("https://repo1.maven.org/maven2/com/ditchoom/${rootProject.name}/maven-metadata.xml").readText()
-    val versioning = XmlParser().parseText(xml)["versioning"] as List<Node>
-    val latestStringList = versioning.first()["latest"] as List<Node>
-    val result = Version((latestStringList.first().value() as List<*>).first().toString(), false)
-    this.latestVersion = result
-    return result
 }
 
-fun getNextVersion(snapshot: Boolean = !isRunningOnGithub): Version {
-    var v = getLatestVersion()
-    if (snapshot) {
-        v = v.snapshot()
-    }
-    if (project.hasProperty("incrementMajor") && project.property("incrementMajor") == "true") {
-        return v.incrementMajor()
-    } else if (project.hasProperty("incrementMinor") && project.property("incrementMinor") == "true") {
-        return v.incrementMinor()
-    }
-    return v.incrementPatch()
-}
-
-tasks.create("nextVersion") {
-    println(getNextVersion())
-}
-
-val signingTasks = tasks.withType<Sign>()
-tasks.withType<AbstractPublishToMaven>().configureEach {
-    dependsOn(signingTasks)
+tasks.register("nextVersion") {
+    println(getNextVersion(false))
 }
