@@ -8,8 +8,8 @@ on:
       - opened
 
 jobs:
-  review:
-    name: "JVM/JS Tests"
+  check:
+    name: "JVM/JS/Android Tests"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,24 +21,10 @@ jobs:
           cache: gradle
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v1
-      - name: Run tests
-        run: ./gradlew ktlintCheck jvmTest jsNodeTest jsBrowserTest --no-build-cache
-
-  android:
-    name: "Android Unit Tests"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '21'
-          cache: gradle
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
-      - name: Run Android unit tests
-        run: ./gradlew testDebugUnitTest testReleaseUnitTest --no-build-cache
+      - name: Run checks and tests
+        run: ./gradlew check --no-build-cache
 
   apple:
     name: "Apple Target Tests"
@@ -63,4 +49,3 @@ jobs:
   # Linux targets disabled due to glibc version incompatibility with OpenSSL.
   # Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
   # TODO: Re-enable with statically-linked OpenSSL or on older Ubuntu runners.
-
