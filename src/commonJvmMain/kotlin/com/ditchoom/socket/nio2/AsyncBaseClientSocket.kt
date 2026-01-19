@@ -36,9 +36,10 @@ abstract class AsyncBaseClientSocket(
         buffer: BaseJvmBuffer,
         timeout: Duration,
     ): Int {
-        val bytesRead = readMutex.withLock {
-            socket.aRead(buffer.byteBuffer, timeout)
-        }
+        val bytesRead =
+            readMutex.withLock {
+                socket.aRead(buffer.byteBuffer, timeout)
+            }
         if (bytesRead < 0) {
             throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
         }
@@ -57,9 +58,10 @@ abstract class AsyncBaseClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val bytesWritten = writeMutex.withLock {
-            socket.aWrite((buffer as BaseJvmBuffer).byteBuffer, timeout)
-        }
+        val bytesWritten =
+            writeMutex.withLock {
+                socket.aWrite((buffer as BaseJvmBuffer).byteBuffer, timeout)
+            }
         if (bytesWritten < 0) {
             throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
         }
