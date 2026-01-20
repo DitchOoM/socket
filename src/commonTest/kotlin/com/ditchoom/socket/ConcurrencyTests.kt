@@ -24,7 +24,7 @@ class ConcurrencyTests {
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
-            val clientCount = 5  // Reduced from 10 for CI stability
+            val clientCount = 5 // Reduced from 10 for CI stability
             var handledClients = 0
             val allClientsHandled = Mutex(locked = true)
             val handlersMutex = Mutex()
@@ -87,7 +87,7 @@ class ConcurrencyTests {
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
-            val messageCount = 10  // Reduced from 20 for CI stability
+            val messageCount = 10 // Reduced from 20 for CI stability
             val clientReady = Mutex(locked = true)
             val serverMessages = mutableListOf<String>()
             val clientMessages = mutableListOf<String>()
@@ -220,7 +220,7 @@ class ConcurrencyTests {
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
-            val connectionCount = 10  // Reduced from 20 for CI stability
+            val connectionCount = 10 // Reduced from 20 for CI stability
             var acceptedCount = 0
 
             val serverJob =
@@ -305,7 +305,7 @@ class ConcurrencyTests {
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
-            val cycleCount = 10  // Reduced from 20 for CI stability
+            val cycleCount = 10 // Reduced from 20 for CI stability
             var acceptedConnections = 0
             val acceptedMutex = Mutex()
 
