@@ -2,6 +2,7 @@ package com.ditchoom.data
 
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -34,6 +35,22 @@ interface Reader {
 
     @Throws(CancellationException::class, SocketClosedException::class)
     suspend fun read(timeout: Duration = 15.seconds): ReadBuffer
+
+    /**
+     * Read into the provided buffer. Returns the number of bytes read.
+     * Default implementation reads into a new buffer and copies to the provided one.
+     */
+    @Throws(CancellationException::class, SocketClosedException::class)
+    suspend fun read(
+        buffer: WriteBuffer,
+        timeout: Duration = 15.seconds,
+    ): Int {
+        val readBuffer = read(timeout)
+        readBuffer.resetForRead()
+        val bytesRead = readBuffer.remaining()
+        buffer.write(readBuffer)
+        return bytesRead
+    }
 
     @Throws(CancellationException::class, SocketClosedException::class)
     suspend fun readString(

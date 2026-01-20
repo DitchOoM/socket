@@ -4,4 +4,8 @@ package = com.ditchoom.socket.native
 headers = SocketWrapper-Swift.h
 headerFilter = SocketWrapper-Swift.h
 
+# Framework dependencies for the Swift wrapper
 linkerOpts = -framework Network -framework Foundation
+
+# Note: The libSocketWrapper.a static library must be linked by consuming projects.
+# Consumers need to add linkerOpts pointing to the library location.

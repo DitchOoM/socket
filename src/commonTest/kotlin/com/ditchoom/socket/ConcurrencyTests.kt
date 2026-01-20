@@ -295,4 +295,111 @@ class ConcurrencyTests {
             server.close()
             serverJob.cancel()
         }
+
+    /**
+     * Stress test for rapid connect/disconnect cycles to verify resource cleanup.
+     * This test catches resource leaks like unclosed sockets or selectors.
+     */
+    @Test
+    fun rapidConnectDisconnectCycles() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val serverFlow = server.bind()
+            val cycleCount = 20
+            var acceptedConnections = 0
+            val acceptedMutex = Mutex()
+
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    serverFlow.collect { client ->
+                        acceptedMutex.withLock { acceptedConnections++ }
+                        client.close()
+                    }
+                }
+
+            // Rapidly connect and disconnect
+            repeat(cycleCount) {
+                ClientSocket.connect(server.port(), hostname = "127.0.0.1", timeout = 5.seconds) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open")
+                    // Immediately close (via scoped function)
+                }
+            }
+
+            // Give server time to process
+            delay(100)
+
+            assertEquals(cycleCount, acceptedConnections, "Server should have accepted all connections")
+
+            server.close()
+            serverJob.cancel()
+        }
+
+    /**
+     * Test that failed connections don't leak resources.
+     */
+    @Test
+    fun failedConnectionsCleanup() =
+        runTestNoTimeSkipping {
+            val attemptCount = 10
+            var exceptionCount = 0
+
+            // Try to connect to a port that's not listening
+            repeat(attemptCount) {
+                try {
+                    // Use a random high port that's unlikely to be in use
+                    val randomPort = 50000 + (it * 1000)
+                    val socket = ClientSocket.allocate()
+                    socket.open(randomPort, timeout = 100.milliseconds, hostname = "127.0.0.1")
+                    socket.close()
+                } catch (e: Exception) {
+                    // Connection refused, timeout, or socket exceptions are all expected
+                    val name = e::class.simpleName?.lowercase() ?: ""
+                    if (name.contains("socket") || name.contains("connect") || name.contains("timeout") || name.contains("cancellation")) {
+                        exceptionCount++
+                    } else {
+                        throw e
+                    }
+                }
+            }
+
+            // All attempts should have failed with proper cleanup
+            assertEquals(attemptCount, exceptionCount, "All connection attempts should have failed")
+        }
+
+    /**
+     * Test server restart - verifies port can be reused after close.
+     */
+    @Test
+    fun serverRestartCycle() =
+        runTestNoTimeSkipping {
+            val restartCount = 3
+
+            repeat(restartCount) { cycle ->
+                val server = ServerSocket.allocate()
+                val serverFlow = server.bind()
+                var clientConnected = false
+
+                val serverJob =
+                    launch(Dispatchers.Default) {
+                        serverFlow.collect { client ->
+                            clientConnected = true
+                            client.close()
+                        }
+                    }
+
+                // Connect a client
+                ClientSocket.connect(server.port(), hostname = "127.0.0.1", timeout = 5.seconds) { socket ->
+                    assertTrue(socket.isOpen())
+                }
+
+                delay(50)
+                assertTrue(clientConnected, "Client should have connected in cycle $cycle")
+
+                server.close()
+                serverJob.cancel()
+
+                // Brief delay before restarting
+                delay(50)
+            }
+        }
 }

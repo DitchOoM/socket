@@ -61,6 +61,8 @@ fun asyncIOIntHandler(): CompletionHandler<Int, CancellableContinuation<Int>> =
             ex: Throwable,
             cont: CancellableContinuation<Int>,
         ) {
+            // Just return if already cancelled and got an expected exception for that case
+            if (ex is AsynchronousCloseException && cont.isCancelled) return
             val message = "Socket operation failed."
             if (ex is AsynchronousCloseException) {
                 cont.resumeWithException(SocketClosedException(message, ex))

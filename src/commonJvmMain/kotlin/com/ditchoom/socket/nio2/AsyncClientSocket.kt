@@ -18,7 +18,18 @@ class AsyncClientSocket(
         hostname: String?,
     ) = withTimeout(timeout) {
         val asyncSocket = asyncSocket()
+        // Assign socket immediately so close() can clean it up if connect fails
         this@AsyncClientSocket.socket = asyncSocket
-        asyncSocket.aConnect(buildInetAddress(port, hostname), timeout)
+        try {
+            asyncSocket.aConnect(buildInetAddress(port, hostname), timeout)
+        } catch (e: Throwable) {
+            // Ensure socket is closed on any failure during open
+            try {
+                asyncSocket.close()
+            } catch (_: Throwable) {
+                // Ignore close errors
+            }
+            throw e
+        }
     }
 }

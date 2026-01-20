@@ -22,10 +22,21 @@ class NioClientSocket(
     ) {
         val socketAddress = buildInetAddress(port, hostname)
         val socketChannel = openSocketChannel()
-        socketChannel.aConfigureBlocking(blocking)
+        // Assign socket immediately so close() can clean it up if subsequent operations fail
         this.socket = socketChannel
-        if (!socketChannel.connect(socketAddress, selector, timeout)) {
-            throw SocketException("Failed to connect client ${(socketAddress as? InetSocketAddress)?.port} $socketChannel")
+        try {
+            socketChannel.aConfigureBlocking(blocking)
+            if (!socketChannel.connect(socketAddress, selector, timeout)) {
+                throw SocketException("Failed to connect client ${(socketAddress as? InetSocketAddress)?.port} $socketChannel")
+            }
+        } catch (e: Throwable) {
+            // Ensure socket is closed on any failure during open
+            try {
+                socketChannel.close()
+            } catch (_: Throwable) {
+                // Ignore close errors
+            }
+            throw e
         }
     }
 }

@@ -20,7 +20,10 @@ val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
 project.version = getNextVersion(!isRunningOnGithub).toString()
 
-println("Version: ${project.version}\nisRunningOnGithub: $isRunningOnGithub\nisMainBranchGithub: $isMainBranchGithub")
+// Only print version info when not in quiet mode (avoids polluting CI output)
+if (gradle.startParameter.logLevel != LogLevel.QUIET) {
+    println("Version: ${project.version}\nisRunningOnGithub: $isRunningOnGithub\nisMainBranchGithub: $isMainBranchGithub")
+}
 
 repositories {
     google()
