@@ -75,7 +75,7 @@ jobs:
     name: Dry-run Build (skip-release)
     needs: check-release
     if: needs.check-release.outputs.skip_release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -84,6 +84,12 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
           cache: gradle
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
       - name: Run all checks and tests
@@ -105,7 +111,7 @@ jobs:
     name: Draft Release (staging only)
     needs: check-release
     if: needs.check-release.outputs.draft_release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     env:
       ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
       ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
@@ -120,6 +126,12 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
           cache: gradle
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
       - name: Get version (Major)
@@ -163,11 +175,11 @@ jobs:
               --title="v${version}" \
               --notes="## [${PR_TITLE}](${PR_URL})"$'\n\n'"**Status:** Awaiting validation in [Maven Central Staging](${staging_url})"$'\n\n'"### To complete release:"$'\n'"1. Validate artifacts in Maven Central staging area"$'\n'"2. Run the 'Complete Release' workflow, or"$'\n'"3. Publish this draft release (will create tag and release to Maven Central)"$'\n\n'"### To cancel:"$'\n'"1. Drop the staging repository in Maven Central"$'\n'"2. Delete this draft release"$'\n'"   No tag or Maven Central artifacts will remain."
 
-  deploy:
-    name: Build & Deploy to Maven Central
+  macos:
+    name: MacOS Build & Deploy to Maven Central
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     env:
       ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
       ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
@@ -182,6 +194,12 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
           cache: gradle
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
       - name: Get version (Major)

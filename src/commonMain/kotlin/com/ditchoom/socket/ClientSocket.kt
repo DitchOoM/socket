@@ -8,6 +8,10 @@ import com.ditchoom.data.Writer
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+/**
+ * A client socket that can connect to a remote server.
+ * Provides both reading and writing capabilities with suspend functions.
+ */
 interface ClientSocket :
     SocketController,
     Reader,
