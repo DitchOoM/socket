@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.runTest
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -111,6 +112,7 @@ class SimpleSocketTests {
     @Test
     fun httpRawSocketGoogleDomain() = readHttp("google.com", false)
 
+    @Ignore // Depends on external network; replace with local TLS server test
     @Test
     fun httpsRawSocketGoogleDomain() = readHttp("google.com", true)
 
