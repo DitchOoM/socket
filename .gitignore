@@ -15,3 +15,9 @@ kotlinx-io-native/repo/
 
 local.properties
 .claude/
+
+# Docusaurus
+docs/node_modules/
+docs/build/
+docs/.docusaurus/
+docs/static/api/
