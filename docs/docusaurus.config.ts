@@ -5,14 +5,11 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'Socket',
   tagline: 'Kotlin Multiplatform suspend-based socket networking',
-  favicon: 'img/favicon.ico',
 
   future: {
     v4: true,
   },
 
-  // Ensure static files are served correctly
-  staticDirectories: ['static'],
 
   url: 'https://ditchoom.github.io',
   baseUrl: '/socket/',
@@ -22,7 +19,12 @@ const config: Config = {
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
+  },
 
   i18n: {
     defaultLocale: 'en',
