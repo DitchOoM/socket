@@ -7,5 +7,19 @@ headerFilter = SocketWrapper-Swift.h
 # Framework dependencies for the Swift wrapper
 linkerOpts = -framework Network -framework Foundation
 
-# Note: The libSocketWrapper.a static library must be linked by consuming projects.
-# Consumers need to add linkerOpts pointing to the library location.
+# Swift runtime library paths - needed for consumers to link the embedded Swift code
+# These paths work for Xcode installations on macOS
+linkerOpts.macos_arm64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx -L/usr/lib/swift
+linkerOpts.macos_x64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx -L/usr/lib/swift
+linkerOpts.ios_arm64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos -L/usr/lib/swift
+linkerOpts.ios_simulator_arm64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphonesimulator -L/usr/lib/swift
+linkerOpts.ios_x64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphonesimulator -L/usr/lib/swift
+linkerOpts.tvos_arm64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/appletvos -L/usr/lib/swift
+linkerOpts.tvos_simulator_arm64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/appletvsimulator -L/usr/lib/swift
+linkerOpts.tvos_x64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/appletvsimulator -L/usr/lib/swift
+linkerOpts.watchos_arm64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchos -L/usr/lib/swift
+linkerOpts.watchos_simulator_arm64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchsimulator -L/usr/lib/swift
+linkerOpts.watchos_x64 = -L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/watchsimulator -L/usr/lib/swift
+
+# Note: libSocketWrapper.a is embedded in the klib via -staticLibrary in build.gradle.kts
+# Consumers automatically link it when using this library.

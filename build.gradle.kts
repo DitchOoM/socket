@@ -72,7 +72,9 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
         create("SocketWrapper") {
             defFile("src/nativeInterop/cinterop/SocketWrapper.def")
             includeDirs(swiftHeaderDir)
+            // Embed the static library in the klib so consumers link it automatically
             extraOpts("-libraryPath", libPath)
+            extraOpts("-staticLibrary", "libSocketWrapper.a")
             tasks.named(interopProcessingTaskName) {
                 dependsOn(buildSwiftTask)
             }
@@ -81,11 +83,9 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     compilations["main"].compileTaskProvider.configure {
         dependsOn(buildSwiftTask)
     }
-    // Link the Swift static library for all binaries (main and test)
+    // Link Swift runtime libraries (platform-specific) for all binaries
+    // Note: libSocketWrapper.a is now embedded in the klib via -staticLibrary
     binaries.all {
-        // Link our Swift wrapper library
-        linkerOpts("-L$libPath", "-lSocketWrapper")
-        // Link Swift runtime libraries (platform-specific)
         linkerOpts(
             "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$swiftPlatform",
             "-L/usr/lib/swift",
