@@ -7,5 +7,5 @@ headerFilter = SocketWrapper-Swift.h
 # Framework dependencies for the Swift wrapper
 linkerOpts = -framework Network -framework Foundation
 
-# Note: The libSocketWrapper.a static library must be linked by consuming projects.
-# Consumers need to add linkerOpts pointing to the library location.
+# Note: libSocketWrapper.a is embedded in the klib via -staticLibrary in build.gradle.kts
+# Consumers automatically link it when using this library.
