@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
+    alias(libs.plugins.dokka)
     signing
 }
 
@@ -305,4 +306,48 @@ ktlint {
 
 tasks.register("nextVersion") {
     println(getNextVersion(false))
+}
+
+dokka {
+    dokkaSourceSets.configureEach {
+        externalDocumentationLinks.register("kotlin-stdlib") {
+            url("https://kotlinlang.org/api/latest/jvm/stdlib/")
+            packageListUrl("https://kotlinlang.org/api/latest/jvm/stdlib/package-list")
+        }
+        externalDocumentationLinks.register("kotlinx-coroutines") {
+            url("https://kotlinlang.org/api/kotlinx.coroutines/")
+            packageListUrl("https://kotlinlang.org/api/kotlinx.coroutines/package-list")
+        }
+        reportUndocumented.set(false)
+    }
+
+    // Suppress duplicate Apple source sets - keep only macosArm64 as representative
+    val suppressedAppleTargets =
+        listOf(
+            "macosX64",
+            "iosArm64",
+            "iosSimulatorArm64",
+            "iosX64",
+            "tvosArm64",
+            "tvosSimulatorArm64",
+            "tvosX64",
+            "watchosArm64",
+            "watchosSimulatorArm64",
+            "watchosX64",
+        )
+    dokkaSourceSets {
+        suppressedAppleTargets.forEach { target ->
+            findByName("${target}Main")?.suppress?.set(true)
+        }
+    }
+}
+
+// Copy Dokka output to Docusaurus static directory
+tasks.register<Copy>("copyDokkaToDocusaurus") {
+    description = "Generate and copy API documentation to Docusaurus"
+    group = "documentation"
+    dependsOn("dokkaGenerateHtml")
+
+    from(layout.buildDirectory.dir("dokka/html"))
+    into(layout.projectDirectory.dir("docs/static/api"))
 }
