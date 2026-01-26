@@ -68,8 +68,13 @@ jobs:
           path: ~/.konan
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
-      - name: Install liburing
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
+      - name: Build OpenSSL (if not cached)
+        run: |
+          if [ ! -f libs/openssl/linux-x64/lib/libssl.a ]; then
+            ./buildSrc/openssl/build-openssl.sh x64
+          fi
       - name: Run Linux x64 tests
         run: ./gradlew linuxX64Test --no-build-cache
 
@@ -91,7 +96,12 @@ jobs:
           path: ~/.konan
           key: konan-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-arm64-
-      - name: Install liburing
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
+      - name: Build OpenSSL (if not cached)
+        run: |
+          if [ ! -f libs/openssl/linux-arm64/lib/libssl.a ]; then
+            ./buildSrc/openssl/build-openssl.sh arm64
+          fi
       - name: Run Linux ARM64 tests
         run: ./gradlew linuxArm64Test --no-build-cache

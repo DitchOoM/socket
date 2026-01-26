@@ -146,7 +146,7 @@ If you need to update the bundled OpenSSL version:
 ./buildSrc/openssl/build-openssl.sh x64
 ./buildSrc/openssl/build-openssl.sh arm64
 
-# Build for both (requires QEMU for cross-arch)
+# Build for both (requires ARM64 cross-compiler for arm64 on x64)
 ./buildSrc/openssl/build-openssl.sh all
 
 # Verify the build
@@ -154,11 +154,19 @@ cat libs/openssl/linux-x64/VERSION
 cat libs/openssl/linux-arm64/VERSION
 ```
 
+Requirements:
+```bash
+# Basic build tools
+sudo apt install build-essential perl wget
+
+# For ARM64 cross-compilation on x64
+sudo apt install gcc-aarch64-linux-gnu
+```
+
 The build process:
-1. x64: Uses CentOS 7 Docker image (glibc 2.17) for K/N compatibility
-2. ARM64: Uses Debian 11 Docker image (glibc 2.31) with QEMU emulation
-3. Downloads OpenSSL source with SHA256 verification
-4. Builds static libraries with `-fPIC`
-5. Outputs to `libs/openssl/linux-{x64,arm64}/`
+1. Downloads OpenSSL source with SHA256 verification
+2. Configures with minimal TLS build (no legacy algorithms)
+3. Builds static libraries with `-fPIC`
+4. Outputs to `libs/openssl/linux-{x64,arm64}/`
 
 Anyone can rebuild and verify the checksums match.
