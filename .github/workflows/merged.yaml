@@ -436,9 +436,60 @@ jobs:
             ./gradlew publishToMavenCentral --no-configuration-cache
           fi
 
+  # Validate staged artifacts before releasing
+  validate-staging:
+    name: Validate staged artifacts
+    needs: [check-release, publish-macos, publish-linux-x64, publish-linux-arm64]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Publish JVM artifacts to MavenLocal for validation
+        run: |
+          VERSION_FLAG=""
+          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
+            VERSION_FLAG="-PincrementMajor=true"
+          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
+            VERSION_FLAG="-PincrementMinor=true"
+          fi
+          # Only publish JVM/JS artifacts to validate structure (no native deps needed)
+          ./gradlew publishJvmPublicationToMavenLocal publishKotlinMultiplatformPublicationToMavenLocal --no-configuration-cache $VERSION_FLAG
+      - name: Validate artifacts exist in MavenLocal
+        run: |
+          version="${{ needs.publish-linux-x64.outputs.version }}"
+          echo "Validating artifacts for version $version..."
+
+          # Check that key artifacts were published to MavenLocal
+          artifacts=(
+            "socket/$version/socket-$version.module"
+            "socket-jvm/$version/socket-jvm-$version.jar"
+          )
+
+          for artifact in "${artifacts[@]}"; do
+            path="$HOME/.m2/repository/com/ditchoom/$artifact"
+            if [ -f "$path" ]; then
+              echo "✓ Found: $artifact"
+            else
+              echo "✗ Missing: $artifact"
+              echo "Expected at: $path"
+              ls -la "$(dirname "$path")" 2>/dev/null || echo "Directory does not exist"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "All expected artifacts validated!"
+          echo "Note: Full tests already passed in PR review. This validates artifact structure."
+
   release:
     name: Release to Maven Central
-    needs: [check-release, publish-macos, publish-linux-x64, publish-linux-arm64]
+    needs: [check-release, publish-linux-x64, validate-staging]
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     env:
