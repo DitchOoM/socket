@@ -43,10 +43,52 @@ RUN wget -q https://github.com/openssl/openssl/releases/download/openssl-${OPENS
 # no-shared: Build static libraries only
 # no-tests: Skip test suite build
 # -fPIC: Position Independent Code (required for linking into shared libs)
+#
+# Minimal TLS build - disable legacy/deprecated algorithms for smaller size:
+# - no-legacy: Disable legacy provider (MD2, MD4, RIPEMD, etc.)
+# - no-engine: Disable hardware engine support
+# - no-comp: Disable compression (security risk anyway)
+# - no-dtls*: We only need TCP sockets, not DTLS
+# - no-ssl3: SSL 3.0 is insecure
+# - no-idea/rc2/rc4/rc5/des/md4/mdc2/whirlpool: Legacy ciphers
+# - no-psk/srp/gost: Unused authentication methods
+# - no-cms/ts/ocsp/srtp: Unused protocols
 RUN cd openssl-${OPENSSL_VERSION} && \
     ./Configure linux-x86_64 \
         no-shared \
         no-tests \
+        no-legacy \
+        no-engine \
+        no-comp \
+        no-dtls \
+        no-dtls1 \
+        no-dtls1-method \
+        no-ssl3 \
+        no-ssl3-method \
+        no-idea \
+        no-rc2 \
+        no-rc4 \
+        no-rc5 \
+        no-des \
+        no-md4 \
+        no-mdc2 \
+        no-whirlpool \
+        no-psk \
+        no-srp \
+        no-gost \
+        no-cms \
+        no-ts \
+        no-ocsp \
+        no-srtp \
+        no-seed \
+        no-bf \
+        no-cast \
+        no-camellia \
+        no-aria \
+        no-sm2 \
+        no-sm3 \
+        no-sm4 \
+        no-siphash \
         --prefix=/opt/openssl \
         --libdir=lib \
         -fPIC && \

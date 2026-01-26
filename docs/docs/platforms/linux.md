@@ -84,9 +84,10 @@ TLS is provided via statically-linked OpenSSL 3.0 LTS libraries that are bundled
 **Why static linking?** Kotlin/Native's toolchain bundles glibc 2.19 (from 2014), but modern Linux distributions ship OpenSSL compiled against newer glibc (2.33+). By statically linking OpenSSL built on CentOS 7 (glibc 2.17), we ensure compatibility across all systems.
 
 The static OpenSSL libraries:
-- Are built reproducibly via Docker (see `buildSrc/openssl/`)
+- Are built reproducibly via Docker/Podman (see `buildSrc/openssl/`)
 - Support OpenSSL 3.0.16 LTS (maintained until 2026)
-- Include all crypto algorithms needed for modern TLS
+- Minimal build (~9MB) with only modern TLS algorithms (no legacy ciphers)
+- Supports TLS 1.2/1.3 with AES-GCM, ChaCha20, ECDHE, RSA, SHA-256/384
 
 ### CA Certificates
 
