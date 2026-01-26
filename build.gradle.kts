@@ -94,26 +94,32 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
 }
 
 // Configure cinterop for Linux targets with static OpenSSL
-// Requires: sudo apt install liburing-dev libssl-dev
+// Requires: sudo apt install liburing-dev
+// OpenSSL static libraries are pre-built and committed in libs/openssl/
+// To rebuild OpenSSL: ./buildSrc/openssl/build-openssl.sh
 fun KotlinNativeTarget.configureLinuxCinterop() {
+    val opensslDir = projectDir.resolve("libs/openssl/linux-x64")
+
     compilations["main"].cinterops {
         create("LinuxSockets") {
             defFile("src/nativeInterop/cinterop/LinuxSockets.def")
-            // Use system headers for liburing and OpenSSL
-            includeDirs("/usr/include", "/usr/include/x86_64-linux-gnu")
+            // Use system headers for liburing, local headers for OpenSSL
+            includeDirs(
+                "/usr/include",
+                "/usr/include/x86_64-linux-gnu",
+                opensslDir.resolve("include").absolutePath,
+            )
         }
     }
-    // Linking for OpenSSL and liburing
-    // Note: --allow-shlib-undefined bypasses glibc version checks at link time
-    // The binary may still fail at runtime if symbols are actually missing
+    // Link against static OpenSSL (glibc 2.17 compatible) and system liburing
     binaries.all {
         linkerOpts(
-            "-Wl,--allow-shlib-undefined",
+            "-L${opensslDir.resolve("lib").absolutePath}",
             "-L/usr/lib/x86_64-linux-gnu",
             "-L/usr/lib",
-            "-luring",
             "-lssl",
             "-lcrypto",
+            "-luring",
             "-lpthread",
             "-ldl",
         )

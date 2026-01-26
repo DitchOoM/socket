@@ -2,18 +2,25 @@ language = C
 package = com.ditchoom.socket.linux
 
 # Linux socket implementation with io_uring async I/O and OpenSSL TLS support.
-# Uses static linking for OpenSSL to avoid glibc version incompatibility.
-# Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's dynamic libssl requires glibc 2.33+.
+#
+# Dependencies:
+#   - liburing: System package (sudo apt install liburing-dev)
+#   - OpenSSL: Pre-built static libraries in libs/openssl/linux-x64/
+#              Built on CentOS 7 (glibc 2.17) for K/N compatibility
+#              To rebuild: ./buildSrc/openssl/build-openssl.sh
+#
+# Why static OpenSSL? Kotlin/Native bundles glibc 2.19, but Ubuntu 24.04's
+# dynamic libssl requires glibc 2.33+. Our static build uses glibc 2.17.
+
 headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h openssl/ssl.h openssl/err.h openssl/x509.h
 
-# Use system headers for cinterop generation (requires liburing-dev, libssl-dev packages)
-# The --sysroot override allows cinterop to find system headers
+# Compiler flags - OpenSSL include path is added via build.gradle.kts includeDirs
 compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
     -I/usr/include \
-    -I/usr/include/x86_64-linux-gnu \
-    -I/usr/include/openssl
+    -I/usr/include/x86_64-linux-gnu
 
-linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -luring -lssl -lcrypto -lpthread -ldl
+# Linker flags - library paths are set in build.gradle.kts
+linkerOpts.linux = -lpthread -ldl
 
 ---
 

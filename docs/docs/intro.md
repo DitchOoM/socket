@@ -8,7 +8,7 @@ title: Introduction
 
 **Kotlin Multiplatform library for cross-platform TCP socket networking**
 
-Socket provides suspend-based async socket I/O with platform-native implementations, allowing you to write networking code once and run it across JVM, Android, iOS, macOS, and Node.js.
+Socket provides suspend-based async socket I/O with platform-native implementations, allowing you to write networking code once and run it across JVM, Android, iOS, macOS, Linux, and Node.js.
 
 ## Why Socket?
 
@@ -25,6 +25,7 @@ Socket provides suspend-based async socket I/O with platform-native implementati
 | JVM | [`AsynchronousSocketChannel`](https://docs.oracle.com/en/java/javase/12/docs/api/java.base/java/nio/channels/AsynchronousSocketChannel.html) | NIO2 with NIO fallback |
 | Android | Same as JVM | Shared `commonJvmMain` source set |
 | iOS/macOS/tvOS/watchOS | [`NWConnection`](https://developer.apple.com/documentation/network/nwconnection) | Network.framework, zero-copy |
+| Linux (x64/arm64) | [`io_uring`](https://kernel.dk/io_uring.pdf) | Kernel 5.1+, zero-copy, static OpenSSL |
 | Node.js | [`net.Socket`](https://nodejs.org/api/net.html#class-netsocket) | Node.js networking API |
 
 ## Quick Example

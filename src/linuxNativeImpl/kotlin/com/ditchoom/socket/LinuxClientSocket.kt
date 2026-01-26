@@ -121,8 +121,18 @@ class LinuxClientSocket(
         val method = TLS_client_method() ?: throw SSLSocketException("Failed to get TLS method")
         sslCtx = SSL_CTX_new(method) ?: throw SSLSocketException("Failed to create SSL context")
 
-        // Set default verify paths for system CA certificates
-        SSL_CTX_set_default_verify_paths(sslCtx)
+        // Load system CA certificates
+        // Our static OpenSSL was built with /opt/openssl paths, but system certs vary by distro
+        // Try common Linux CA certificate locations in order of prevalence
+        val caLoaded =
+            SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/certs") == 1 || // Debian/Ubuntu
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs") == 1 || // RHEL/Fedora/CentOS
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/ca-bundle.pem", "/etc/ssl/certs") == 1 || // OpenSUSE
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/cert.pem", "/etc/ssl/certs") == 1 || // Alpine/Arch
+                SSL_CTX_set_default_verify_paths(sslCtx) == 1
+        if (!caLoaded) {
+            // Continue without verification - some systems may not have CA certs installed
+        }
 
         // Create SSL connection
         ssl = SSL_new(sslCtx) ?: throw SSLSocketException("Failed to create SSL object")
@@ -210,8 +220,8 @@ class LinuxClientSocket(
         if (nativeAccess != null) {
             val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
             val bytesRead = if (ssl != null) {
-                // TLS read (synchronous, SSL handles buffering)
-                SSL_read(ssl, ptr, bufferSize)
+                // TLS read with polling for non-blocking socket
+                sslRead(ptr, bufferSize, timeout)
             } else {
                 // io_uring async read
                 readWithIoUring(ptr, bufferSize, timeout)
@@ -243,7 +253,7 @@ class LinuxClientSocket(
             val bytesRead = array.usePinned { pinned ->
                 val ptr = pinned.addressOf(0)
                 if (ssl != null) {
-                    SSL_read(ssl, ptr, bufferSize)
+                    sslRead(ptr, bufferSize, timeout)
                 } else {
                     readWithIoUring(ptr, bufferSize, timeout)
                 }
@@ -269,6 +279,43 @@ class LinuxClientSocket(
         }
 
         throw SocketException("Buffer has no accessible memory for io_uring read")
+    }
+
+    /**
+     * SSL read with io_uring polling for non-blocking sockets.
+     * Handles WANT_READ/WANT_WRITE by polling until data is available.
+     */
+    private suspend fun sslRead(
+        ptr: CPointer<ByteVar>,
+        size: Int,
+        timeout: Duration,
+    ): Int {
+        val mark = TimeSource.Monotonic.markNow()
+
+        while (true) {
+            val result = SSL_read(ssl, ptr, size)
+            if (result > 0) return result
+            if (result == 0) return 0 // Connection closed
+
+            val error = SSL_get_error(ssl, result)
+            when (error) {
+                SSL_ERROR_WANT_READ -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1 // Will trigger timeout error
+                    }
+                    waitForPoll(POLLIN.toShort(), remaining)
+                }
+                SSL_ERROR_WANT_WRITE -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1
+                    }
+                    waitForPoll(POLLOUT.toShort(), remaining)
+                }
+                else -> return result // Other error, let caller handle
+            }
+        }
     }
 
     private suspend fun readWithIoUring(
@@ -327,7 +374,7 @@ class LinuxClientSocket(
             val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    SSL_write(ssl, ptr, remaining).toLong()
+                    sslWrite(ptr, remaining, timeout).toLong()
                 } else {
                     writeWithIoUring(ptr, remaining, timeout).toLong()
                 }
@@ -343,7 +390,7 @@ class LinuxClientSocket(
                 val ptr = pinned.addressOf(offset)
                 val bytesSent =
                     if (ssl != null) {
-                        SSL_write(ssl, ptr, remaining).toLong()
+                        sslWrite(ptr, remaining, timeout).toLong()
                     } else {
                         writeWithIoUring(ptr, remaining, timeout).toLong()
                     }
@@ -357,7 +404,7 @@ class LinuxClientSocket(
             val ptr = pinned.addressOf(0)
             val bytesSent =
                 if (ssl != null) {
-                    SSL_write(ssl, ptr, bytes.size).toLong()
+                    sslWrite(ptr, bytes.size, timeout).toLong()
                 } else {
                     writeWithIoUring(ptr, bytes.size, timeout).toLong()
                 }
@@ -398,6 +445,42 @@ class LinuxClientSocket(
         val fd = sockfd
         return IoUringManager.submitAndWait(timeout) { sqe, _ ->
             io_uring_prep_send(sqe, fd, ptr, size.convert(), 0)
+        }
+    }
+
+    /**
+     * SSL write with io_uring polling for non-blocking sockets.
+     * Handles WANT_READ/WANT_WRITE by polling until socket is ready.
+     */
+    private suspend fun sslWrite(
+        ptr: CPointer<ByteVar>,
+        size: Int,
+        timeout: Duration,
+    ): Int {
+        val mark = TimeSource.Monotonic.markNow()
+
+        while (true) {
+            val result = SSL_write(ssl, ptr, size)
+            if (result > 0) return result
+
+            val error = SSL_get_error(ssl, result)
+            when (error) {
+                SSL_ERROR_WANT_READ -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1 // Will trigger timeout error
+                    }
+                    waitForPoll(POLLIN.toShort(), remaining)
+                }
+                SSL_ERROR_WANT_WRITE -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1
+                    }
+                    waitForPoll(POLLOUT.toShort(), remaining)
+                }
+                else -> return result // Other error, let caller handle
+            }
         }
     }
 
