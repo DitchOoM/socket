@@ -373,19 +373,21 @@ kotlin {
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
-    // Only register Linux targets when building on Linux (requires liburing headers)
-    if (isLinux) {
-        linuxX64 {
+    // Always register targets (for Dokka), but only configure cinterop on Linux
+    linuxX64 {
+        if (isLinux) {
             configureLinuxCinterop("x64")
         }
-        // ARM64 requires either native ARM64 machine or cross-compilation headers
-        // On x64, install: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-        val canBuildArm64 =
-            File("/usr/include/aarch64-linux-gnu").exists() ||
-                File("/usr/aarch64-linux-gnu/include").exists() ||
-                System.getProperty("os.arch") == "aarch64"
-        if (canBuildArm64) {
-            linuxArm64 {
+    }
+    linuxArm64 {
+        if (isLinux) {
+            // ARM64 requires either native ARM64 machine or cross-compilation headers
+            // On x64, install: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            val canBuildArm64 =
+                File("/usr/include/aarch64-linux-gnu").exists() ||
+                    File("/usr/aarch64-linux-gnu/include").exists() ||
+                    System.getProperty("os.arch") == "aarch64"
+            if (canBuildArm64) {
                 configureLinuxCinterop("arm64")
             }
         }

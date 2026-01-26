@@ -88,3 +88,13 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
       - name: Run Apple tests
         run: ./gradlew macosX64Test macosArm64Test iosSimulatorArm64Test tvosSimulatorArm64Test watchosSimulatorArm64Test ktlintCheck
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs/package-lock.json
+      - name: Build documentation
+        run: |
+          ./gradlew copyDokkaToDocusaurus
+          cd docs && npm ci && npm run build
