@@ -93,6 +93,33 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     }
 }
 
+// Configure cinterop for Linux targets with static OpenSSL
+// Requires: sudo apt install liburing-dev libssl-dev
+fun KotlinNativeTarget.configureLinuxCinterop() {
+    compilations["main"].cinterops {
+        create("LinuxSockets") {
+            defFile("src/nativeInterop/cinterop/LinuxSockets.def")
+            // Use system headers for liburing and OpenSSL
+            includeDirs("/usr/include", "/usr/include/x86_64-linux-gnu")
+        }
+    }
+    // Linking for OpenSSL and liburing
+    // Note: --allow-shlib-undefined bypasses glibc version checks at link time
+    // The binary may still fail at runtime if symbols are actually missing
+    binaries.all {
+        linkerOpts(
+            "-Wl,--allow-shlib-undefined",
+            "-L/usr/lib/x86_64-linux-gnu",
+            "-L/usr/lib",
+            "-luring",
+            "-lssl",
+            "-lcrypto",
+            "-lpthread",
+            "-ldl",
+        )
+    }
+}
+
 kotlin {
     // Ensure consistent JDK version across all developer machines and CI
     jvmToolchain(21)
@@ -131,9 +158,13 @@ kotlin {
         watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
     }
 
-    // Linux targets disabled for now due to glibc version incompatibility with OpenSSL.
-    // Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
-    // TODO: Re-enable with statically-linked OpenSSL or on older Ubuntu runners.
+    // Linux targets with io_uring async I/O and statically-linked OpenSSL
+    linuxX64 {
+        configureLinuxCinterop()
+    }
+    linuxArm64 {
+        configureLinuxCinterop()
+    }
 
     applyDefaultHierarchyTemplate()
     sourceSets {
@@ -200,7 +231,14 @@ kotlin {
             }
         }
 
-        // Linux source sets disabled (see comment above about glibc incompatibility)
+        // Linux implementation using io_uring for async I/O
+        val linuxNativeImplDir = file("src/linuxNativeImpl/kotlin")
+        listOf(
+            "linuxX64Main",
+            "linuxArm64Main",
+        ).forEach { sourceSetName ->
+            findByName(sourceSetName)?.kotlin?.srcDir(linuxNativeImplDir)
+        }
     }
 }
 

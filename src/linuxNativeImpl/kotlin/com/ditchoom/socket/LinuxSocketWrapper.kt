@@ -1,11 +1,12 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.wrap
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import kotlin.time.Duration
@@ -13,8 +14,9 @@ import kotlin.time.Duration
 /**
  * Base socket wrapper using io_uring for async I/O on Linux.
  *
- * Provides true zero-copy read/write operations using NativeBuffer.
- * No ByteArray intermediaries - data flows directly between native memory and io_uring.
+ * Provides true zero-copy read/write operations using PlatformBuffer with native memory.
+ * Uses IoUringManager for proper completion dispatch, ensuring concurrent operations
+ * on multiple sockets don't interfere with each other.
  */
 @OptIn(ExperimentalForeignApi::class)
 open class LinuxSocketWrapper : ClientSocket {
@@ -29,72 +31,73 @@ open class LinuxSocketWrapper : ClientSocket {
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (sockfd < 0) return EMPTY_BUFFER
 
-        // Read into a pinned byte array
+        // Allocate buffer with native memory for zero-copy io_uring read
         val bufferSize = 65536
-        val tempArray = ByteArray(bufferSize)
+        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
 
-        val bytesRead =
-            tempArray.usePinned { pinned ->
-                val ptr = pinned.addressOf(0)
-                readWithIoUring(ptr, bufferSize, timeout)
-            }
+        // Get native memory pointer
+        val nativeAccess = buffer.nativeMemoryAccess
+        if (nativeAccess != null) {
+            val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
+            val bytesRead = readWithIoUring(ptr, bufferSize, timeout)
 
-        return when {
-            bytesRead > 0 -> {
-                // Copy only the bytes we read and wrap them
-                val result = tempArray.copyOf(bytesRead.toInt())
-                PlatformBuffer.wrap(result)
-            }
-            bytesRead == 0L -> {
-                closeInternal()
-                throw SocketClosedException("Connection closed by peer")
-            }
-            else -> {
-                handleReadError((-bytesRead).toInt())
+            return when {
+                bytesRead > 0 -> {
+                    // Set buffer position to bytesRead so remaining() returns correct value
+                    buffer.position(bytesRead)
+                    buffer
+                }
+                bytesRead == 0 -> {
+                    closeInternal()
+                    throw SocketClosedException("Connection closed by peer")
+                }
+                else -> {
+                    handleReadError(-bytesRead)
+                }
             }
         }
+
+        // Fallback for managed memory (shouldn't happen with AllocationZone.Direct on native)
+        val managedAccess = buffer.managedMemoryAccess
+        if (managedAccess != null) {
+            val array = managedAccess.backingArray
+            val bytesRead = array.usePinned { pinned ->
+                readWithIoUring(pinned.addressOf(0), bufferSize, timeout)
+            }
+
+            return when {
+                bytesRead > 0 -> {
+                    buffer.position(bytesRead)
+                    buffer
+                }
+                bytesRead == 0 -> {
+                    closeInternal()
+                    throw SocketClosedException("Connection closed by peer")
+                }
+                else -> {
+                    handleReadError(-bytesRead)
+                }
+            }
+        }
+
+        throw SocketException("Buffer has no accessible memory for io_uring read")
     }
 
-    private fun readWithIoUring(
-        ptr: CPointer<kotlinx.cinterop.ByteVar>,
+    private suspend fun readWithIoUring(
+        ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Long {
-        memScoped {
-            val ring = IoUringManager.getRing()
-
-            val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
-            io_uring_prep_recv(sqe, sockfd, ptr, size.convert(), 0)
-
-            val submitted = io_uring_submit(ring)
-            if (submitted < 0) {
-                throwFromResult(submitted, "io_uring_submit")
-            }
-
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = timeout.inWholeSeconds
-            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-            if (waitRet < 0) {
-                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    throw SocketException("Read timed out")
-                }
-                throwFromResult(waitRet, "io_uring_wait_cqe_timeout")
-            }
-
-            val cqeVal = cqe.value!!
-            val res = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
-
-            return if (res >= 0) res.toLong() else -(-res).toLong()
+    ): Int {
+        val fd = sockfd
+        val result = IoUringManager.submitAndWait(timeout) { sqe, _ ->
+            io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
         }
+        return result
     }
 
     private fun handleReadError(errorCode: Int): Nothing {
         when (errorCode) {
-            EAGAIN, EWOULDBLOCK -> throw SocketException("Read timed out")
+            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Read timed out")
             ECONNRESET, ENOTCONN, EPIPE -> {
                 closeInternal()
                 throw SocketClosedException("Connection closed")
@@ -118,16 +121,15 @@ open class LinuxSocketWrapper : ClientSocket {
         // Zero-copy path: check if buffer has native memory access
         val nativeAccess = buffer.nativeMemoryAccess
         if (nativeAccess != null) {
-            val ptr =
-                (nativeAccess.nativeAddress + buffer.position())
-                    .toCPointer<kotlinx.cinterop.ByteVar>()!!
+            val ptr = (nativeAccess.nativeAddress + buffer.position())
+                .toCPointer<ByteVar>()!!
             val bytesSent = writeWithIoUring(ptr, remaining, timeout)
             return when {
                 bytesSent >= 0 -> {
-                    buffer.position(buffer.position() + bytesSent.toInt())
-                    bytesSent.toInt()
+                    buffer.position(buffer.position() + bytesSent)
+                    bytesSent
                 }
-                else -> handleWriteError((-bytesSent).toInt())
+                else -> handleWriteError(-bytesSent)
             }
         }
 
@@ -137,74 +139,35 @@ open class LinuxSocketWrapper : ClientSocket {
             val array = managedAccess.backingArray
             val offset = managedAccess.arrayOffset + buffer.position()
             return array.usePinned { pinned ->
-                val bytesSent = writeWithIoUringPinned(pinned.addressOf(offset), remaining, timeout)
+                val bytesSent = writeWithIoUring(pinned.addressOf(offset), remaining, timeout)
                 when {
                     bytesSent >= 0 -> {
-                        buffer.position(buffer.position() + bytesSent.toInt())
-                        bytesSent.toInt()
+                        buffer.position(buffer.position() + bytesSent)
+                        bytesSent
                     }
-                    else -> handleWriteError((-bytesSent).toInt())
+                    else -> handleWriteError(-bytesSent)
                 }
             }
         }
 
-        // Fallback: copy to temporary array (should rarely happen)
-        val bytes = buffer.readByteArray(remaining)
-        return bytes.usePinned { pinned ->
-            val bytesSent = writeWithIoUringPinned(pinned.addressOf(0), bytes.size, timeout)
-            when {
-                bytesSent >= 0 -> bytesSent.toInt()
-                else -> handleWriteError((-bytesSent).toInt())
-            }
-        }
+        throw SocketException("Buffer has no accessible memory for io_uring write")
     }
 
-    private fun writeWithIoUring(
-        ptr: CPointer<kotlinx.cinterop.ByteVar>,
+    private suspend fun writeWithIoUring(
+        ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Long {
-        memScoped {
-            val ring = IoUringManager.getRing()
-
-            val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
-            io_uring_prep_send(sqe, sockfd, ptr, size.convert(), 0)
-
-            val submitted = io_uring_submit(ring)
-            if (submitted < 0) {
-                throwFromResult(submitted, "io_uring_submit")
-            }
-
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = timeout.inWholeSeconds
-            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-            if (waitRet < 0) {
-                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    throw SocketException("Write timed out")
-                }
-                throwFromResult(waitRet, "io_uring_wait_cqe_timeout")
-            }
-
-            val cqeVal = cqe.value!!
-            val res = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
-
-            return if (res >= 0) res.toLong() else -(-res).toLong()
+    ): Int {
+        val fd = sockfd
+        val result = IoUringManager.submitAndWait(timeout) { sqe, _ ->
+            io_uring_prep_send(sqe, fd, ptr, size.convert(), 0)
         }
+        return result
     }
-
-    private fun writeWithIoUringPinned(
-        ptr: CPointer<kotlinx.cinterop.ByteVar>,
-        size: Int,
-        timeout: Duration,
-    ): Long = writeWithIoUring(ptr, size, timeout)
 
     private fun handleWriteError(errorCode: Int): Nothing {
         when (errorCode) {
-            EAGAIN, EWOULDBLOCK -> throw SocketException("Write timed out")
+            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Write timed out")
             ECONNRESET, ENOTCONN, EPIPE -> {
                 closeInternal()
                 throw SocketClosedException("Connection closed")

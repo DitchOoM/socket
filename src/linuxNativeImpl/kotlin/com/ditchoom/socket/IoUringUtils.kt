@@ -2,20 +2,38 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
+import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 /**
- * Shared io_uring instance for socket operations.
+ * Shared io_uring instance with proper completion dispatch.
  *
  * io_uring provides async I/O with zero-copy support on Linux 5.1+.
  *
- * The io_uring struct is allocated on the native heap and must be explicitly
- * cleaned up via [cleanup] to avoid memory leaks.
+ * This implementation properly routes completion queue entries (CQEs) to their
+ * corresponding operations using the user_data field, enabling safe concurrent
+ * operations on multiple sockets sharing the same ring.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal object IoUringManager {
     private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
     private const val QUEUE_DEPTH = 256
+
+    // Unique ID generator for user_data
+    private val nextUserData = AtomicLong(1L)
+
+    // Pending operations waiting for completion
+    // Using a simple concurrent map implementation with mutex
+    private val pendingOps = mutableMapOf<Long, CompletableDeferred<Int>>()
+    private val pendingOpsMutex = Mutex()
+
+    // Mutex for ring operations (submit + wait must be atomic per operation)
+    private val ringMutex = Mutex()
 
     fun getRing(): CPointer<io_uring> {
         // Try to get existing ring
@@ -38,6 +56,206 @@ internal object IoUringManager {
         }
 
         return ringRef.value!!
+    }
+
+    /**
+     * Generate a unique user_data value for an operation.
+     */
+    fun nextUserData(): Long = nextUserData.incrementAndGet()
+
+    /**
+     * Submit an io_uring operation and wait for its completion.
+     *
+     * This handles the complexity of routing CQEs to the correct waiter when
+     * multiple operations are in flight concurrently.
+     *
+     * @param prepareOp Function to prepare the SQE (called with the SQE and user_data)
+     * @param timeout Optional timeout for the operation
+     * @return The result code from the CQE (positive for success, negative for error)
+     */
+    suspend fun submitAndWait(
+        timeout: Duration? = null,
+        prepareOp: (sqe: CPointer<io_uring_sqe>, userData: Long) -> Unit,
+    ): Int {
+        val userData = nextUserData()
+        val deferred = CompletableDeferred<Int>()
+
+        // Register pending operation BEFORE submitting
+        pendingOpsMutex.withLock {
+            pendingOps[userData] = deferred
+        }
+
+        try {
+            // Submit under mutex (quick operation)
+            ringMutex.withLock {
+                memScoped {
+                    val ring = getRing()
+
+                    // Get SQE and prepare operation
+                    val sqe = io_uring_get_sqe(ring)
+                        ?: throw SocketException("Failed to get SQE - ring is full")
+
+                    prepareOp(sqe, userData)
+                    io_uring_sqe_set_data64(sqe, userData.toULong())
+
+                    // Submit
+                    val submitted = io_uring_submit(ring)
+                    if (submitted < 0) {
+                        throwFromResult(submitted, "io_uring_submit")
+                    }
+                }
+            }
+
+            // Poll for completions (releases ringMutex so other operations can submit)
+            pollForCompletion(userData, timeout)
+
+            // Wait for our specific completion
+            return deferred.await()
+        } finally {
+            // Clean up pending operation
+            pendingOpsMutex.withLock {
+                pendingOps.remove(userData)
+            }
+        }
+    }
+
+    /**
+     * Poll for CQEs and dispatch them to their owners.
+     * Continues until the target operation completes.
+     *
+     * This method acquires the ring mutex only briefly to poll, allowing
+     * other coroutines to submit operations while we wait.
+     *
+     * IMPORTANT: No suspend functions inside memScoped - Kotlin/Native memScoped
+     * uses stack allocation, and suspending can corrupt memory.
+     */
+    private suspend fun pollForCompletion(
+        targetUserData: Long,
+        timeout: Duration?,
+    ) {
+        val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
+
+        while (true) {
+            // Check if already completed (another poller might have dispatched it)
+            val alreadyCompleted = pendingOpsMutex.withLock {
+                pendingOps[targetUserData]?.isCompleted == true
+            }
+            if (alreadyCompleted) return
+
+            // Poll under mutex (brief, no suspend inside memScoped)
+            // Collect completions to dispatch AFTER releasing memScoped
+            val pollResult = ringMutex.withLock {
+                pollCqesNonSuspending(targetUserData, deadline)
+            }
+
+            // Now dispatch outside of memScoped (safe to suspend)
+            for ((userData, result) in pollResult.completions) {
+                pendingOpsMutex.withLock {
+                    pendingOps[userData]?.complete(result)
+                }
+            }
+
+            if (pollResult.foundTarget || pollResult.timedOut) {
+                return
+            }
+
+            // Yield to allow other coroutines to run
+            kotlinx.coroutines.yield()
+        }
+    }
+
+    /**
+     * Result of polling CQEs - contains data to dispatch after memScoped exits.
+     */
+    private data class PollResult(
+        val foundTarget: Boolean,
+        val timedOut: Boolean,
+        val completions: List<Pair<Long, Int>>,
+    )
+
+    /**
+     * Poll CQEs without any suspend points - safe to call inside memScoped.
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    private fun pollCqesNonSuspending(
+        targetUserData: Long,
+        deadline: TimeSource.Monotonic.ValueTimeMark?,
+    ): PollResult = memScoped {
+        val ring = getRing()
+        val cqe = allocPointerTo<io_uring_cqe>()
+        val completions = mutableListOf<Pair<Long, Int>>()
+
+        // Calculate remaining timeout
+        val remainingTimeout = if (deadline != null) {
+            val remaining = deadline - TimeSource.Monotonic.markNow()
+            if (remaining.isNegative()) {
+                // Timeout expired
+                completions.add(targetUserData to -ETIMEDOUT)
+                return@memScoped PollResult(foundTarget = true, timedOut = true, completions)
+            }
+            remaining
+        } else {
+            null
+        }
+
+        // Wait with a short timeout to allow other operations to proceed
+        val waitTimeout = if (remainingTimeout != null) {
+            minOf(remainingTimeout, kotlin.time.Duration.parse("100ms"))
+        } else {
+            kotlin.time.Duration.parse("100ms")
+        }
+
+        val ts = alloc<__kernel_timespec>()
+        ts.tv_sec = waitTimeout.inWholeSeconds
+        ts.tv_nsec = ((waitTimeout.inWholeMilliseconds % 1000) * 1_000_000)
+
+        val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
+
+        if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
+            // Short timeout expired, loop and check again
+            return@memScoped PollResult(foundTarget = false, timedOut = false, completions)
+        }
+
+        if (waitRet < 0) {
+            // Other error
+            completions.add(targetUserData to waitRet)
+            return@memScoped PollResult(foundTarget = true, timedOut = false, completions)
+        }
+
+        // Process all available CQEs
+        var foundOurTarget = false
+        do {
+            val cqeVal = cqe.value ?: break
+            val cqeUserData = io_uring_cqe_get_data64(cqeVal).toLong()
+            val result = cqeVal.pointed.res
+            io_uring_cqe_seen(ring, cqeVal)
+
+            // Collect for dispatch after memScoped
+            completions.add(cqeUserData to result)
+
+            if (cqeUserData == targetUserData) {
+                foundOurTarget = true
+            }
+        } while (io_uring_peek_cqe(ring, cqe.ptr) >= 0)
+
+        PollResult(foundTarget = foundOurTarget, timedOut = false, completions)
+    }
+
+    /**
+     * Submit an operation without waiting (fire-and-forget).
+     * Used for cancel operations.
+     */
+    suspend fun submitNoWait(
+        prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit,
+    ) {
+        ringMutex.withLock {
+            memScoped {
+                val ring = getRing()
+                val sqe = io_uring_get_sqe(ring) ?: return
+                prepareOp(sqe)
+                io_uring_submit(ring)
+            }
+        }
     }
 
     fun cleanup() {
