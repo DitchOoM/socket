@@ -38,9 +38,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
       - name: Run checks and tests
-        # Primary CI job: JVM, JS, Linux x64 native, and code style
-        # Skip Android unit tests - they hang on Linux
-        run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck --no-build-cache
+        run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck
 
   linux-arm64:
     name: "Linux ARM64"
@@ -68,7 +66,7 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
       - name: Run Linux ARM64 tests
-        run: ./gradlew linuxArm64Test --no-build-cache
+        run: ./gradlew linuxArm64Test
 
   apple:
     name: "Apple Targets"
@@ -89,5 +87,4 @@ jobs:
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
       - name: Run Apple tests
-        # Also run ktlintCheck to cover Apple-specific source sets
-        run: ./gradlew macosX64Test macosArm64Test iosSimulatorArm64Test tvosSimulatorArm64Test watchosSimulatorArm64Test ktlintCheck --no-build-cache
+        run: ./gradlew macosX64Test macosArm64Test iosSimulatorArm64Test tvosSimulatorArm64Test watchosSimulatorArm64Test ktlintCheck
