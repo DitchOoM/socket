@@ -1,5 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import java.net.URI
+import java.security.MessageDigest
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -93,28 +95,89 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     }
 }
 
+// OpenSSL version for Linux builds - must match buildSrc/openssl/Dockerfile
+val opensslVersion = "3.0.16"
+val opensslSha256 = "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86"
+val opensslDownloadDir = layout.buildDirectory.dir("openssl")
+val opensslIncludeDir = opensslDownloadDir.map { it.dir("openssl-$opensslVersion/include") }
+
+// Task to download and extract OpenSSL headers (avoids committing 40k lines of headers)
+val downloadOpenSslHeaders by tasks.registering {
+    val outputDir = opensslDownloadDir.get().asFile
+    val tarball = File(outputDir, "openssl-$opensslVersion.tar.gz")
+    val markerFile = File(outputDir, "openssl-$opensslVersion/.extracted")
+
+    outputs.file(markerFile)
+
+    doLast {
+        if (markerFile.exists()) {
+            return@doLast
+        }
+
+        outputDir.mkdirs()
+
+        // Download if not present
+        if (!tarball.exists()) {
+            logger.lifecycle("Downloading OpenSSL $opensslVersion headers...")
+            val url = URI("https://github.com/openssl/openssl/releases/download/openssl-$opensslVersion/openssl-$opensslVersion.tar.gz").toURL()
+            url.openStream().use { input: java.io.InputStream ->
+                tarball.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+
+        // Verify SHA256
+        val digest = MessageDigest.getInstance("SHA-256")
+        tarball.inputStream().use { input: java.io.InputStream ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                digest.update(buffer, 0, read)
+            }
+        }
+        val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+        if (actualSha256 != opensslSha256) {
+            tarball.delete()
+            throw GradleException("OpenSSL SHA256 mismatch: expected $opensslSha256, got $actualSha256")
+        }
+
+        // Extract only the include directory
+        logger.lifecycle("Extracting OpenSSL headers...")
+        project.exec {
+            workingDir = outputDir
+            commandLine("tar", "xzf", tarball.name, "openssl-$opensslVersion/include")
+        }
+
+        markerFile.writeText("extracted")
+    }
+}
+
 // Configure cinterop for Linux targets with static OpenSSL
 // Requires: sudo apt install liburing-dev
 // OpenSSL static libraries are pre-built and committed in libs/openssl/
 // To rebuild OpenSSL: ./buildSrc/openssl/build-openssl.sh
 fun KotlinNativeTarget.configureLinuxCinterop() {
-    val opensslDir = projectDir.resolve("libs/openssl/linux-x64")
+    val opensslLibDir = projectDir.resolve("libs/openssl/linux-x64/lib")
 
     compilations["main"].cinterops {
         create("LinuxSockets") {
             defFile("src/nativeInterop/cinterop/LinuxSockets.def")
-            // Use system headers for liburing, local headers for OpenSSL
+            // Use system headers for liburing, downloaded headers for OpenSSL
             includeDirs(
                 "/usr/include",
                 "/usr/include/x86_64-linux-gnu",
-                opensslDir.resolve("include").absolutePath,
+                opensslIncludeDir.get().asFile.absolutePath,
             )
+            tasks.named(interopProcessingTaskName) {
+                dependsOn(downloadOpenSslHeaders)
+            }
         }
     }
     // Link against static OpenSSL (glibc 2.17 compatible) and system liburing
     binaries.all {
         linkerOpts(
-            "-L${opensslDir.resolve("lib").absolutePath}",
+            "-L${opensslLibDir.absolutePath}",
             "-L/usr/lib/x86_64-linux-gnu",
             "-L/usr/lib",
             "-lssl",

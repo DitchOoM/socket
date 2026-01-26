@@ -49,15 +49,14 @@ echo "Building container image..."
 $CONTAINER_CMD build -t openssl-kn-builder "$SCRIPT_DIR"
 
 # Create output directories
-mkdir -p "$OUTPUT_DIR/lib" "$OUTPUT_DIR/include"
+mkdir -p "$OUTPUT_DIR/lib"
 
-# Extract libraries and headers
+# Extract libraries only (headers are downloaded at build time by Gradle)
 echo ""
 echo "Extracting libraries..."
 CONTAINER_ID=$($CONTAINER_CMD create openssl-kn-builder)
 $CONTAINER_CMD cp "$CONTAINER_ID:/opt/openssl/lib/libssl.a" "$OUTPUT_DIR/lib/"
 $CONTAINER_CMD cp "$CONTAINER_ID:/opt/openssl/lib/libcrypto.a" "$OUTPUT_DIR/lib/"
-$CONTAINER_CMD cp "$CONTAINER_ID:/opt/openssl/include/openssl" "$OUTPUT_DIR/include/"
 $CONTAINER_CMD cp "$CONTAINER_ID:/opt/openssl/VERSION" "$OUTPUT_DIR/"
 $CONTAINER_CMD rm "$CONTAINER_ID"
 
