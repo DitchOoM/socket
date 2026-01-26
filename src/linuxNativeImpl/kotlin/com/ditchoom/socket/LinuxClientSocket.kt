@@ -7,7 +7,6 @@ import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.wrap
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import kotlin.time.Duration
@@ -91,9 +90,10 @@ class LinuxClientSocket(
         timeout: Duration,
     ) {
         val fd = sockfd
-        val result = IoUringManager.submitAndWait(timeout) { sqe, _ ->
-            io_uring_prep_connect(sqe, fd, addr, addrLen)
-        }
+        val result =
+            IoUringManager.submitAndWait(timeout) { sqe, _ ->
+                io_uring_prep_connect(sqe, fd, addr, addrLen)
+            }
 
         if (result < 0) {
             val errorCode = -result
@@ -125,10 +125,14 @@ class LinuxClientSocket(
         // Our static OpenSSL was built with /opt/openssl paths, but system certs vary by distro
         // Try common Linux CA certificate locations in order of prevalence
         val caLoaded =
-            SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/certs") == 1 || // Debian/Ubuntu
-                SSL_CTX_load_verify_locations(sslCtx, "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs") == 1 || // RHEL/Fedora/CentOS
-                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/ca-bundle.pem", "/etc/ssl/certs") == 1 || // OpenSUSE
-                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/cert.pem", "/etc/ssl/certs") == 1 || // Alpine/Arch
+            SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/certs") == 1 ||
+                // Debian/Ubuntu
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs") == 1 ||
+                // RHEL/Fedora/CentOS
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/ca-bundle.pem", "/etc/ssl/certs") == 1 ||
+                // OpenSUSE
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/cert.pem", "/etc/ssl/certs") == 1 ||
+                // Alpine/Arch
                 SSL_CTX_set_default_verify_paths(sslCtx) == 1
         if (!caLoaded) {
             // Continue without verification - some systems may not have CA certs installed
@@ -195,9 +199,10 @@ class LinuxClientSocket(
         timeout: Duration,
     ) {
         val fd = sockfd
-        val result = IoUringManager.submitAndWait(timeout) { sqe, _ ->
-            io_uring_prep_poll_add(sqe, fd, events.toUInt())
-        }
+        val result =
+            IoUringManager.submitAndWait(timeout) { sqe, _ ->
+                io_uring_prep_poll_add(sqe, fd, events.toUInt())
+            }
 
         if (result < 0) {
             val errorCode = -result
@@ -219,13 +224,14 @@ class LinuxClientSocket(
         val nativeAccess = buffer.nativeMemoryAccess
         if (nativeAccess != null) {
             val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
-            val bytesRead = if (ssl != null) {
-                // TLS read with polling for non-blocking socket
-                sslRead(ptr, bufferSize, timeout)
-            } else {
-                // io_uring async read
-                readWithIoUring(ptr, bufferSize, timeout)
-            }
+            val bytesRead =
+                if (ssl != null) {
+                    // TLS read with polling for non-blocking socket
+                    sslRead(ptr, bufferSize, timeout)
+                } else {
+                    // io_uring async read
+                    readWithIoUring(ptr, bufferSize, timeout)
+                }
 
             return when {
                 bytesRead > 0 -> {
@@ -250,14 +256,15 @@ class LinuxClientSocket(
         val managedAccess = buffer.managedMemoryAccess
         if (managedAccess != null) {
             val array = managedAccess.backingArray
-            val bytesRead = array.usePinned { pinned ->
-                val ptr = pinned.addressOf(0)
-                if (ssl != null) {
-                    sslRead(ptr, bufferSize, timeout)
-                } else {
-                    readWithIoUring(ptr, bufferSize, timeout)
+            val bytesRead =
+                array.usePinned { pinned ->
+                    val ptr = pinned.addressOf(0)
+                    if (ssl != null) {
+                        sslRead(ptr, bufferSize, timeout)
+                    } else {
+                        readWithIoUring(ptr, bufferSize, timeout)
+                    }
                 }
-            }
 
             return when {
                 bytesRead > 0 -> {

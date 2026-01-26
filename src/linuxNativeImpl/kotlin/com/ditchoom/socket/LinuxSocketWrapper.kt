@@ -61,9 +61,10 @@ open class LinuxSocketWrapper : ClientSocket {
         val managedAccess = buffer.managedMemoryAccess
         if (managedAccess != null) {
             val array = managedAccess.backingArray
-            val bytesRead = array.usePinned { pinned ->
-                readWithIoUring(pinned.addressOf(0), bufferSize, timeout)
-            }
+            val bytesRead =
+                array.usePinned { pinned ->
+                    readWithIoUring(pinned.addressOf(0), bufferSize, timeout)
+                }
 
             return when {
                 bytesRead > 0 -> {
@@ -89,9 +90,10 @@ open class LinuxSocketWrapper : ClientSocket {
         timeout: Duration,
     ): Int {
         val fd = sockfd
-        val result = IoUringManager.submitAndWait(timeout) { sqe, _ ->
-            io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
-        }
+        val result =
+            IoUringManager.submitAndWait(timeout) { sqe, _ ->
+                io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
+            }
         return result
     }
 
@@ -121,8 +123,9 @@ open class LinuxSocketWrapper : ClientSocket {
         // Zero-copy path: check if buffer has native memory access
         val nativeAccess = buffer.nativeMemoryAccess
         if (nativeAccess != null) {
-            val ptr = (nativeAccess.nativeAddress + buffer.position())
-                .toCPointer<ByteVar>()!!
+            val ptr =
+                (nativeAccess.nativeAddress + buffer.position())
+                    .toCPointer<ByteVar>()!!
             val bytesSent = writeWithIoUring(ptr, remaining, timeout)
             return when {
                 bytesSent >= 0 -> {
@@ -159,9 +162,10 @@ open class LinuxSocketWrapper : ClientSocket {
         timeout: Duration,
     ): Int {
         val fd = sockfd
-        val result = IoUringManager.submitAndWait(timeout) { sqe, _ ->
-            io_uring_prep_send(sqe, fd, ptr, size.convert(), 0)
-        }
+        val result =
+            IoUringManager.submitAndWait(timeout) { sqe, _ ->
+                io_uring_prep_send(sqe, fd, ptr, size.convert(), 0)
+            }
         return result
     }
 

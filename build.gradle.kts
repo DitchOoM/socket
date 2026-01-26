@@ -17,7 +17,8 @@ apply(from = "gradle/setup.gradle.kts")
 group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
@@ -102,17 +103,50 @@ val opensslBuildDir = layout.buildDirectory.dir("openssl")
 val opensslIncludeDir = opensslBuildDir.map { it.dir("openssl-$opensslVersion/include") }
 
 // OpenSSL configure options for minimal TLS build
-val opensslConfigureOptions = listOf(
-    "no-shared", "no-tests", "no-legacy", "no-engine", "no-comp",
-    "no-dtls", "no-dtls1", "no-dtls1-method", "no-ssl3", "no-ssl3-method",
-    "no-idea", "no-rc2", "no-rc4", "no-rc5", "no-des", "no-md4", "no-mdc2",
-    "no-whirlpool", "no-psk", "no-srp", "no-gost", "no-cms", "no-ts",
-    "no-ocsp", "no-srtp", "no-seed", "no-bf", "no-cast", "no-camellia",
-    "no-aria", "no-sm2", "no-sm3", "no-sm4", "no-siphash"
-)
+val opensslConfigureOptions =
+    listOf(
+        "no-shared",
+        "no-tests",
+        "no-legacy",
+        "no-engine",
+        "no-comp",
+        "no-dtls",
+        "no-dtls1",
+        "no-dtls1-method",
+        "no-ssl3",
+        "no-ssl3-method",
+        "no-idea",
+        "no-rc2",
+        "no-rc4",
+        "no-rc5",
+        "no-des",
+        "no-md4",
+        "no-mdc2",
+        "no-whirlpool",
+        "no-psk",
+        "no-srp",
+        "no-gost",
+        "no-cms",
+        "no-ts",
+        "no-ocsp",
+        "no-srtp",
+        "no-seed",
+        "no-bf",
+        "no-cast",
+        "no-camellia",
+        "no-aria",
+        "no-sm2",
+        "no-sm3",
+        "no-sm4",
+        "no-siphash",
+    )
 
 // Helper function to download and verify OpenSSL source
-fun downloadOpenSslSource(buildDir: File, version: String, sha256: String): File {
+fun downloadOpenSslSource(
+    buildDir: File,
+    version: String,
+    sha256: String,
+): File {
     val tarball = File(buildDir, "openssl-$version.tar.gz")
     val sourceDir = File(buildDir, "openssl-$version")
 
@@ -181,32 +215,42 @@ fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
             val sourceDir = downloadOpenSslSource(buildDir, opensslVersion, opensslSha256)
 
             // Check for cross-compiler if needed
-            val crossCompile = if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
-                val compiler = "aarch64-linux-gnu-gcc"
-                val result = ProcessBuilder("which", compiler).start().waitFor()
-                if (result != 0) {
-                    throw GradleException("""
-                        Cross-compiler not found for ARM64. Install with:
-                          sudo apt install gcc-aarch64-linux-gnu
-                    """.trimIndent())
+            val crossCompile =
+                if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
+                    val compiler = "aarch64-linux-gnu-gcc"
+                    val result = ProcessBuilder("which", compiler).start().waitFor()
+                    if (result != 0) {
+                        throw GradleException(
+                            """
+                            Cross-compiler not found for ARM64. Install with:
+                              sudo apt install gcc-aarch64-linux-gnu
+                            """.trimIndent(),
+                        )
+                    }
+                    "--cross-compile-prefix=aarch64-linux-gnu-"
+                } else {
+                    null
                 }
-                "--cross-compile-prefix=aarch64-linux-gnu-"
-            } else null
 
             // Configure
             logger.lifecycle("Configuring OpenSSL $opensslVersion for $arch...")
-            val configureArgs = mutableListOf(
-                "./Configure", opensslTarget,
-                "--prefix=/opt/openssl", "--libdir=lib", "-fPIC"
-            )
+            val configureArgs =
+                mutableListOf(
+                    "./Configure",
+                    opensslTarget,
+                    "--prefix=/opt/openssl",
+                    "--libdir=lib",
+                    "-fPIC",
+                )
             crossCompile?.let { configureArgs.add(it) }
             configureArgs.addAll(opensslConfigureOptions)
 
-            val configureResult = ProcessBuilder(configureArgs)
-                .directory(sourceDir)
-                .inheritIO()
-                .start()
-                .waitFor()
+            val configureResult =
+                ProcessBuilder(configureArgs)
+                    .directory(sourceDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
 
             if (configureResult != 0) {
                 throw GradleException("OpenSSL configure failed")
@@ -215,11 +259,12 @@ fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
             // Build
             logger.lifecycle("Building OpenSSL (this may take a few minutes)...")
             val cpuCount = Runtime.getRuntime().availableProcessors()
-            val makeResult = ProcessBuilder("make", "-j$cpuCount")
-                .directory(sourceDir)
-                .inheritIO()
-                .start()
-                .waitFor()
+            val makeResult =
+                ProcessBuilder("make", "-j$cpuCount")
+                    .directory(sourceDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
 
             if (makeResult != 0) {
                 throw GradleException("OpenSSL build failed")
@@ -250,17 +295,18 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
     val buildOpenSslTask = if (arch == "x64") buildOpenSslX64 else buildOpenSslArm64
 
     // Determine include/lib paths based on architecture and available cross-compilation tools
-    val (systemIncludeDirs, systemLibDir) = if (arch == "x64") {
-        listOf("/usr/include", "/usr/include/x86_64-linux-gnu") to "/usr/lib/x86_64-linux-gnu"
-    } else {
-        // ARM64: check for cross-compilation sysroot or native paths
-        val crossRoot = "/usr/aarch64-linux-gnu"
-        if (File(crossRoot).exists()) {
-            listOf("$crossRoot/include", "/usr/include") to "$crossRoot/lib"
+    val (systemIncludeDirs, systemLibDir) =
+        if (arch == "x64") {
+            listOf("/usr/include", "/usr/include/x86_64-linux-gnu") to "/usr/lib/x86_64-linux-gnu"
         } else {
-            listOf("/usr/include", "/usr/include/aarch64-linux-gnu") to "/usr/lib/aarch64-linux-gnu"
+            // ARM64: check for cross-compilation sysroot or native paths
+            val crossRoot = "/usr/aarch64-linux-gnu"
+            if (File(crossRoot).exists()) {
+                listOf("$crossRoot/include", "/usr/include") to "$crossRoot/lib"
+            } else {
+                listOf("/usr/include", "/usr/include/aarch64-linux-gnu") to "/usr/lib/aarch64-linux-gnu"
+            }
         }
-    }
 
     compilations["main"].cinterops {
         create("LinuxSockets") {
@@ -327,17 +373,21 @@ kotlin {
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
-    linuxX64 {
-        configureLinuxCinterop("x64")
-    }
-    // ARM64 requires either native ARM64 machine or cross-compilation headers
-    // On x64, install: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-    val canBuildArm64 = File("/usr/include/aarch64-linux-gnu").exists() ||
-        File("/usr/aarch64-linux-gnu/include").exists() ||
-        System.getProperty("os.arch") == "aarch64"
-    if (canBuildArm64) {
-        linuxArm64 {
-            configureLinuxCinterop("arm64")
+    // Only register Linux targets when building on Linux (requires liburing headers)
+    if (isLinux) {
+        linuxX64 {
+            configureLinuxCinterop("x64")
+        }
+        // ARM64 requires either native ARM64 machine or cross-compilation headers
+        // On x64, install: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+        val canBuildArm64 =
+            File("/usr/include/aarch64-linux-gnu").exists() ||
+                File("/usr/aarch64-linux-gnu/include").exists() ||
+                System.getProperty("os.arch") == "aarch64"
+        if (canBuildArm64) {
+            linuxArm64 {
+                configureLinuxCinterop("arm64")
+            }
         }
     }
 

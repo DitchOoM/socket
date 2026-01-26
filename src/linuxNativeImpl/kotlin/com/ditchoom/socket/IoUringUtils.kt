@@ -92,8 +92,9 @@ internal object IoUringManager {
                     val ring = getRing()
 
                     // Get SQE and prepare operation
-                    val sqe = io_uring_get_sqe(ring)
-                        ?: throw SocketException("Failed to get SQE - ring is full")
+                    val sqe =
+                        io_uring_get_sqe(ring)
+                            ?: throw SocketException("Failed to get SQE - ring is full")
 
                     prepareOp(sqe, userData)
                     io_uring_sqe_set_data64(sqe, userData.toULong())
@@ -137,16 +138,18 @@ internal object IoUringManager {
 
         while (true) {
             // Check if already completed (another poller might have dispatched it)
-            val alreadyCompleted = pendingOpsMutex.withLock {
-                pendingOps[targetUserData]?.isCompleted == true
-            }
+            val alreadyCompleted =
+                pendingOpsMutex.withLock {
+                    pendingOps[targetUserData]?.isCompleted == true
+                }
             if (alreadyCompleted) return
 
             // Poll under mutex (brief, no suspend inside memScoped)
             // Collect completions to dispatch AFTER releasing memScoped
-            val pollResult = ringMutex.withLock {
-                pollCqesNonSuspending(targetUserData, deadline)
-            }
+            val pollResult =
+                ringMutex.withLock {
+                    pollCqesNonSuspending(targetUserData, deadline)
+                }
 
             // Now dispatch outside of memScoped (safe to suspend)
             for ((userData, result) in pollResult.completions) {
@@ -180,74 +183,75 @@ internal object IoUringManager {
     private fun pollCqesNonSuspending(
         targetUserData: Long,
         deadline: TimeSource.Monotonic.ValueTimeMark?,
-    ): PollResult = memScoped {
-        val ring = getRing()
-        val cqe = allocPointerTo<io_uring_cqe>()
-        val completions = mutableListOf<Pair<Long, Int>>()
+    ): PollResult =
+        memScoped {
+            val ring = getRing()
+            val cqe = allocPointerTo<io_uring_cqe>()
+            val completions = mutableListOf<Pair<Long, Int>>()
 
-        // Calculate remaining timeout
-        val remainingTimeout = if (deadline != null) {
-            val remaining = deadline - TimeSource.Monotonic.markNow()
-            if (remaining.isNegative()) {
-                // Timeout expired
-                completions.add(targetUserData to -ETIMEDOUT)
-                return@memScoped PollResult(foundTarget = true, timedOut = true, completions)
+            // Calculate remaining timeout
+            val remainingTimeout =
+                if (deadline != null) {
+                    val remaining = deadline - TimeSource.Monotonic.markNow()
+                    if (remaining.isNegative()) {
+                        // Timeout expired
+                        completions.add(targetUserData to -ETIMEDOUT)
+                        return@memScoped PollResult(foundTarget = true, timedOut = true, completions)
+                    }
+                    remaining
+                } else {
+                    null
+                }
+
+            // Wait with a short timeout to allow other operations to proceed
+            val waitTimeout =
+                if (remainingTimeout != null) {
+                    minOf(remainingTimeout, kotlin.time.Duration.parse("100ms"))
+                } else {
+                    kotlin.time.Duration.parse("100ms")
+                }
+
+            val ts = alloc<__kernel_timespec>()
+            ts.tv_sec = waitTimeout.inWholeSeconds
+            ts.tv_nsec = ((waitTimeout.inWholeMilliseconds % 1000) * 1_000_000)
+
+            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
+
+            if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
+                // Short timeout expired, loop and check again
+                return@memScoped PollResult(foundTarget = false, timedOut = false, completions)
             }
-            remaining
-        } else {
-            null
-        }
 
-        // Wait with a short timeout to allow other operations to proceed
-        val waitTimeout = if (remainingTimeout != null) {
-            minOf(remainingTimeout, kotlin.time.Duration.parse("100ms"))
-        } else {
-            kotlin.time.Duration.parse("100ms")
-        }
-
-        val ts = alloc<__kernel_timespec>()
-        ts.tv_sec = waitTimeout.inWholeSeconds
-        ts.tv_nsec = ((waitTimeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-        val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-
-        if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-            // Short timeout expired, loop and check again
-            return@memScoped PollResult(foundTarget = false, timedOut = false, completions)
-        }
-
-        if (waitRet < 0) {
-            // Other error
-            completions.add(targetUserData to waitRet)
-            return@memScoped PollResult(foundTarget = true, timedOut = false, completions)
-        }
-
-        // Process all available CQEs
-        var foundOurTarget = false
-        do {
-            val cqeVal = cqe.value ?: break
-            val cqeUserData = io_uring_cqe_get_data64(cqeVal).toLong()
-            val result = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
-
-            // Collect for dispatch after memScoped
-            completions.add(cqeUserData to result)
-
-            if (cqeUserData == targetUserData) {
-                foundOurTarget = true
+            if (waitRet < 0) {
+                // Other error
+                completions.add(targetUserData to waitRet)
+                return@memScoped PollResult(foundTarget = true, timedOut = false, completions)
             }
-        } while (io_uring_peek_cqe(ring, cqe.ptr) >= 0)
 
-        PollResult(foundTarget = foundOurTarget, timedOut = false, completions)
-    }
+            // Process all available CQEs
+            var foundOurTarget = false
+            do {
+                val cqeVal = cqe.value ?: break
+                val cqeUserData = io_uring_cqe_get_data64(cqeVal).toLong()
+                val result = cqeVal.pointed.res
+                io_uring_cqe_seen(ring, cqeVal)
+
+                // Collect for dispatch after memScoped
+                completions.add(cqeUserData to result)
+
+                if (cqeUserData == targetUserData) {
+                    foundOurTarget = true
+                }
+            } while (io_uring_peek_cqe(ring, cqe.ptr) >= 0)
+
+            PollResult(foundTarget = foundOurTarget, timedOut = false, completions)
+        }
 
     /**
      * Submit an operation without waiting (fire-and-forget).
      * Used for cancel operations.
      */
-    suspend fun submitNoWait(
-        prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit,
-    ) {
+    suspend fun submitNoWait(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
         ringMutex.withLock {
             memScoped {
                 val ring = getRing()

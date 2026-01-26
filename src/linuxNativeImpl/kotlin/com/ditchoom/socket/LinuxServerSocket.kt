@@ -139,11 +139,12 @@ class LinuxServerSocket : ServerSocket {
             val addrLenPtr = clientAddrLen.ptr
 
             // Submit accept and wait for completion
-            val result = IoUringManager.submitAndWait(timeout = null) { sqe, userData ->
-                io_uring_prep_accept(sqe, fd, addrPtr, addrLenPtr, 0)
-                // Store userData for potential cancellation
-                pendingAcceptUserData.value = userData
-            }
+            val result =
+                IoUringManager.submitAndWait(timeout = null) { sqe, userData ->
+                    io_uring_prep_accept(sqe, fd, addrPtr, addrLenPtr, 0)
+                    // Store userData for potential cancellation
+                    pendingAcceptUserData.value = userData
+                }
 
             pendingAcceptUserData.value = 0L
 
