@@ -16,6 +16,9 @@ kotlinx-io-native/repo/
 local.properties
 .claude/
 
+# Built OpenSSL static libraries (built by Gradle)
+libs/openssl/
+
 # Docusaurus
 docs/node_modules/
 docs/build/

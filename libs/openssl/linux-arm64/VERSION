@@ -1,7 +1,0 @@
-OpenSSL 3.0.16
-Architecture: arm64
-Built on: 2026-01-26T18:25:58Z
-Base image: debian:11
-Source SHA256: 57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86
-82a605b1c159341012cc24f2cdecde234008a89dad67ca0d0060146e530b60d3  /opt/openssl/lib/libssl.a
-17455b4f48ae0ee5be26f9945e04399b1dcafb8b1d6a6c8d7a526eab1cf6ee5b  /opt/openssl/lib/libcrypto.a

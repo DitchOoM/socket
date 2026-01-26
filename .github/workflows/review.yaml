@@ -52,8 +52,8 @@ jobs:
 
   linux-x64:
     name: "Linux x64 Tests"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -68,20 +68,21 @@ jobs:
           path: ~/.konan
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
+      - name: Cache OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-x64
+          key: openssl-linux-x64-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
-      - name: Build OpenSSL (if not cached)
-        run: |
-          if [ ! -f libs/openssl/linux-x64/lib/libssl.a ]; then
-            ./buildSrc/openssl/build-openssl.sh x64
-          fi
       - name: Run Linux x64 tests
+        # Gradle automatically builds OpenSSL if not cached via buildOpenSslX64 task
         run: ./gradlew linuxX64Test --no-build-cache
 
   linux-arm64:
     name: "Linux ARM64 Tests"
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -96,12 +97,13 @@ jobs:
           path: ~/.konan
           key: konan-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-arm64-
+      - name: Cache OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
-      - name: Build OpenSSL (if not cached)
-        run: |
-          if [ ! -f libs/openssl/linux-arm64/lib/libssl.a ]; then
-            ./buildSrc/openssl/build-openssl.sh arm64
-          fi
       - name: Run Linux ARM64 tests
+        # Gradle automatically builds OpenSSL if not cached via buildOpenSslArm64 task
         run: ./gradlew linuxArm64Test --no-build-cache

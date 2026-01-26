@@ -98,68 +98,156 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
 // OpenSSL version for Linux builds - defined in gradle/libs.versions.toml
 val opensslVersion = libs.versions.openssl.get()
 val opensslSha256 = libs.versions.opensslSha256.get()
-val opensslDownloadDir = layout.buildDirectory.dir("openssl")
-val opensslIncludeDir = opensslDownloadDir.map { it.dir("openssl-$opensslVersion/include") }
+val opensslBuildDir = layout.buildDirectory.dir("openssl")
+val opensslIncludeDir = opensslBuildDir.map { it.dir("openssl-$opensslVersion/include") }
 
-// Task to download and extract OpenSSL headers (avoids committing 40k lines of headers)
-val downloadOpenSslHeaders by tasks.registering {
-    val outputDir = opensslDownloadDir.get().asFile
-    val tarball = File(outputDir, "openssl-$opensslVersion.tar.gz")
-    val markerFile = File(outputDir, "openssl-$opensslVersion/.extracted")
+// OpenSSL configure options for minimal TLS build
+val opensslConfigureOptions = listOf(
+    "no-shared", "no-tests", "no-legacy", "no-engine", "no-comp",
+    "no-dtls", "no-dtls1", "no-dtls1-method", "no-ssl3", "no-ssl3-method",
+    "no-idea", "no-rc2", "no-rc4", "no-rc5", "no-des", "no-md4", "no-mdc2",
+    "no-whirlpool", "no-psk", "no-srp", "no-gost", "no-cms", "no-ts",
+    "no-ocsp", "no-srtp", "no-seed", "no-bf", "no-cast", "no-camellia",
+    "no-aria", "no-sm2", "no-sm3", "no-sm4", "no-siphash"
+)
 
-    outputs.file(markerFile)
+// Helper function to download and verify OpenSSL source
+fun downloadOpenSslSource(buildDir: File, version: String, sha256: String): File {
+    val tarball = File(buildDir, "openssl-$version.tar.gz")
+    val sourceDir = File(buildDir, "openssl-$version")
 
-    doLast {
-        if (markerFile.exists()) {
-            return@doLast
+    if (sourceDir.exists()) return sourceDir
+
+    buildDir.mkdirs()
+
+    // Download if not present
+    if (!tarball.exists()) {
+        println("Downloading OpenSSL $version...")
+        val url = URI("https://github.com/openssl/openssl/releases/download/openssl-$version/openssl-$version.tar.gz").toURL()
+        url.openStream().use { input ->
+            tarball.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+    }
+
+    // Verify SHA256
+    val digest = MessageDigest.getInstance("SHA-256")
+    tarball.inputStream().use { input ->
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (input.read(buffer).also { read = it } != -1) {
+            digest.update(buffer, 0, read)
+        }
+    }
+    val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    if (actualSha256 != sha256) {
+        tarball.delete()
+        throw GradleException("OpenSSL SHA256 mismatch: expected $sha256, got $actualSha256")
+    }
+
+    // Extract
+    println("Extracting OpenSSL source...")
+    ProcessBuilder("tar", "xzf", tarball.name)
+        .directory(buildDir)
+        .inheritIO()
+        .start()
+        .waitFor()
+
+    return sourceDir
+}
+
+// Task to build OpenSSL static libraries for a specific architecture
+fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
+    val taskName = "buildOpenSsl${arch.replaceFirstChar { it.uppercase() }}"
+    val opensslTarget = if (arch == "x64") "linux-x86_64" else "linux-aarch64"
+    val outputDir = projectDir.resolve("libs/openssl/linux-$arch")
+    val markerFile = outputDir.resolve("lib/.built-$opensslVersion")
+
+    return tasks.register(taskName) {
+        group = "build"
+        description = "Build OpenSSL static libraries for Linux $arch"
+
+        inputs.property("opensslVersion", opensslVersion)
+        inputs.property("opensslSha256", opensslSha256)
+        outputs.file(markerFile)
+
+        onlyIf {
+            !markerFile.exists()
         }
 
-        outputDir.mkdirs()
+        doLast {
+            val buildDir = opensslBuildDir.get().asFile
+            val sourceDir = downloadOpenSslSource(buildDir, opensslVersion, opensslSha256)
 
-        // Download if not present
-        if (!tarball.exists()) {
-            logger.lifecycle("Downloading OpenSSL $opensslVersion headers...")
-            val url = URI("https://github.com/openssl/openssl/releases/download/openssl-$opensslVersion/openssl-$opensslVersion.tar.gz").toURL()
-            url.openStream().use { input: java.io.InputStream ->
-                tarball.outputStream().use { output ->
-                    input.copyTo(output)
+            // Check for cross-compiler if needed
+            val crossCompile = if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
+                val compiler = "aarch64-linux-gnu-gcc"
+                val result = ProcessBuilder("which", compiler).start().waitFor()
+                if (result != 0) {
+                    throw GradleException("""
+                        Cross-compiler not found for ARM64. Install with:
+                          sudo apt install gcc-aarch64-linux-gnu
+                    """.trimIndent())
                 }
+                "--cross-compile-prefix=aarch64-linux-gnu-"
+            } else null
+
+            // Configure
+            logger.lifecycle("Configuring OpenSSL $opensslVersion for $arch...")
+            val configureArgs = mutableListOf(
+                "./Configure", opensslTarget,
+                "--prefix=/opt/openssl", "--libdir=lib", "-fPIC"
+            )
+            crossCompile?.let { configureArgs.add(it) }
+            configureArgs.addAll(opensslConfigureOptions)
+
+            val configureResult = ProcessBuilder(configureArgs)
+                .directory(sourceDir)
+                .inheritIO()
+                .start()
+                .waitFor()
+
+            if (configureResult != 0) {
+                throw GradleException("OpenSSL configure failed")
             }
-        }
 
-        // Verify SHA256
-        val digest = MessageDigest.getInstance("SHA-256")
-        tarball.inputStream().use { input: java.io.InputStream ->
-            val buffer = ByteArray(8192)
-            var read: Int
-            while (input.read(buffer).also { read = it } != -1) {
-                digest.update(buffer, 0, read)
+            // Build
+            logger.lifecycle("Building OpenSSL (this may take a few minutes)...")
+            val cpuCount = Runtime.getRuntime().availableProcessors()
+            val makeResult = ProcessBuilder("make", "-j$cpuCount")
+                .directory(sourceDir)
+                .inheritIO()
+                .start()
+                .waitFor()
+
+            if (makeResult != 0) {
+                throw GradleException("OpenSSL build failed")
             }
-        }
-        val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-        if (actualSha256 != opensslSha256) {
-            tarball.delete()
-            throw GradleException("OpenSSL SHA256 mismatch: expected $opensslSha256, got $actualSha256")
-        }
 
-        // Extract only the include directory
-        logger.lifecycle("Extracting OpenSSL headers...")
-        project.exec {
-            workingDir = outputDir
-            commandLine("tar", "xzf", tarball.name, "openssl-$opensslVersion/include")
-        }
+            // Copy libraries
+            outputDir.resolve("lib").mkdirs()
+            sourceDir.resolve("libssl.a").copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
+            sourceDir.resolve("libcrypto.a").copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
 
-        markerFile.writeText("extracted")
+            // Write marker file
+            markerFile.writeText("OpenSSL $opensslVersion built on ${System.currentTimeMillis()}")
+
+            logger.lifecycle("OpenSSL $opensslVersion built successfully for $arch")
+        }
     }
 }
 
+val buildOpenSslX64 = createBuildOpenSslTask("x64")
+val buildOpenSslArm64 = createBuildOpenSslTask("arm64")
+
 // Configure cinterop for Linux targets with static OpenSSL
-// Requires: sudo apt install liburing-dev
-// For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-// OpenSSL static libraries are pre-built and committed in libs/openssl/
-// To rebuild OpenSSL: ./buildSrc/openssl/build-openssl.sh
+// Requires: sudo apt install liburing-dev build-essential perl
+// For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu
+// OpenSSL is built automatically by Gradle when needed
 fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
     val opensslLibDir = projectDir.resolve("libs/openssl/linux-$arch/lib")
+    val buildOpenSslTask = if (arch == "x64") buildOpenSslX64 else buildOpenSslArm64
 
     // Determine include/lib paths based on architecture and available cross-compilation tools
     val (systemIncludeDirs, systemLibDir) = if (arch == "x64") {
@@ -177,15 +265,15 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
     compilations["main"].cinterops {
         create("LinuxSockets") {
             defFile("src/nativeInterop/cinterop/LinuxSockets.def")
-            // Use system headers for liburing, downloaded headers for OpenSSL
+            // Use system headers for liburing, build directory headers for OpenSSL
             val allIncludes = systemIncludeDirs + opensslIncludeDir.get().asFile.absolutePath
             includeDirs(*allIncludes.toTypedArray())
             tasks.named(interopProcessingTaskName) {
-                dependsOn(downloadOpenSslHeaders)
+                dependsOn(buildOpenSslTask)
             }
         }
     }
-    // Link against static OpenSSL (glibc 2.17 compatible) and system liburing
+    // Link against static OpenSSL and system liburing
     binaries.all {
         linkerOpts(
             "-L${opensslLibDir.absolutePath}",
