@@ -155,22 +155,31 @@ val downloadOpenSslHeaders by tasks.registering {
 
 // Configure cinterop for Linux targets with static OpenSSL
 // Requires: sudo apt install liburing-dev
+// For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 // OpenSSL static libraries are pre-built and committed in libs/openssl/
 // To rebuild OpenSSL: ./buildSrc/openssl/build-openssl.sh
 fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
     val opensslLibDir = projectDir.resolve("libs/openssl/linux-$arch/lib")
-    val systemLibDir = if (arch == "x64") "/usr/lib/x86_64-linux-gnu" else "/usr/lib/aarch64-linux-gnu"
-    val systemIncludeDir = if (arch == "x64") "/usr/include/x86_64-linux-gnu" else "/usr/include/aarch64-linux-gnu"
+
+    // Determine include/lib paths based on architecture and available cross-compilation tools
+    val (systemIncludeDirs, systemLibDir) = if (arch == "x64") {
+        listOf("/usr/include", "/usr/include/x86_64-linux-gnu") to "/usr/lib/x86_64-linux-gnu"
+    } else {
+        // ARM64: check for cross-compilation sysroot or native paths
+        val crossRoot = "/usr/aarch64-linux-gnu"
+        if (File(crossRoot).exists()) {
+            listOf("$crossRoot/include", "/usr/include") to "$crossRoot/lib"
+        } else {
+            listOf("/usr/include", "/usr/include/aarch64-linux-gnu") to "/usr/lib/aarch64-linux-gnu"
+        }
+    }
 
     compilations["main"].cinterops {
         create("LinuxSockets") {
             defFile("src/nativeInterop/cinterop/LinuxSockets.def")
             // Use system headers for liburing, downloaded headers for OpenSSL
-            includeDirs(
-                "/usr/include",
-                systemIncludeDir,
-                opensslIncludeDir.get().asFile.absolutePath,
-            )
+            val allIncludes = systemIncludeDirs + opensslIncludeDir.get().asFile.absolutePath
+            includeDirs(*allIncludes.toTypedArray())
             tasks.named(interopProcessingTaskName) {
                 dependsOn(downloadOpenSslHeaders)
             }
@@ -233,8 +242,15 @@ kotlin {
     linuxX64 {
         configureLinuxCinterop("x64")
     }
-    linuxArm64 {
-        configureLinuxCinterop("arm64")
+    // ARM64 requires either native ARM64 machine or cross-compilation headers
+    // On x64, install: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+    val canBuildArm64 = File("/usr/include/aarch64-linux-gnu").exists() ||
+        File("/usr/aarch64-linux-gnu/include").exists() ||
+        System.getProperty("os.arch") == "aarch64"
+    if (canBuildArm64) {
+        linuxArm64 {
+            configureLinuxCinterop("arm64")
+        }
     }
 
     applyDefaultHierarchyTemplate()

@@ -110,11 +110,26 @@ cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo "io_uring available"
 ## Building
 
 ```bash
-# Run tests
+# Run x64 tests (on any Linux x64 machine)
 ./gradlew linuxX64Test
 
+# Run ARM64 tests (requires ARM64 machine or cross-compilation headers)
+./gradlew linuxArm64Test
+
 # Build for release
-./gradlew linuxX64MainKlibrary
+./gradlew linuxX64MainKlibrary linuxArm64MainKlibrary
+```
+
+### Cross-compilation (x64 host building for ARM64)
+
+To build/test ARM64 targets on an x64 machine, install cross-compilation tools:
+
+```bash
+# Ubuntu/Debian
+sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+# Then you can build ARM64 targets
+./gradlew linuxArm64MainKlibrary
 ```
 
 ## Rebuilding OpenSSL (maintainers only)
@@ -122,17 +137,28 @@ cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo "io_uring available"
 If you need to update the bundled OpenSSL version:
 
 ```bash
-# Requires podman or docker
+# Update version in gradle/libs.versions.toml first, then:
+
+# Build for current architecture
 ./buildSrc/openssl/build-openssl.sh
+
+# Build for specific architecture
+./buildSrc/openssl/build-openssl.sh x64
+./buildSrc/openssl/build-openssl.sh arm64
+
+# Build for both (requires QEMU for cross-arch)
+./buildSrc/openssl/build-openssl.sh all
 
 # Verify the build
 cat libs/openssl/linux-x64/VERSION
+cat libs/openssl/linux-arm64/VERSION
 ```
 
 The build process:
-1. Uses CentOS 7 Docker image (glibc 2.17)
-2. Downloads OpenSSL source with SHA256 verification
-3. Builds static libraries with `-fPIC`
-4. Outputs to `libs/openssl/linux-x64/`
+1. x64: Uses CentOS 7 Docker image (glibc 2.17) for K/N compatibility
+2. ARM64: Uses Debian 11 Docker image (glibc 2.31) with QEMU emulation
+3. Downloads OpenSSL source with SHA256 verification
+4. Builds static libraries with `-fPIC`
+5. Outputs to `libs/openssl/linux-{x64,arm64}/`
 
 Anyone can rebuild and verify the checksums match.
