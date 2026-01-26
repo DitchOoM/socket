@@ -95,9 +95,9 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     }
 }
 
-// OpenSSL version for Linux builds - must match buildSrc/openssl/Dockerfile
-val opensslVersion = "3.0.16"
-val opensslSha256 = "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86"
+// OpenSSL version for Linux builds - defined in gradle/libs.versions.toml
+val opensslVersion = libs.versions.openssl.get()
+val opensslSha256 = libs.versions.opensslSha256.get()
 val opensslDownloadDir = layout.buildDirectory.dir("openssl")
 val opensslIncludeDir = opensslDownloadDir.map { it.dir("openssl-$opensslVersion/include") }
 
@@ -157,8 +157,10 @@ val downloadOpenSslHeaders by tasks.registering {
 // Requires: sudo apt install liburing-dev
 // OpenSSL static libraries are pre-built and committed in libs/openssl/
 // To rebuild OpenSSL: ./buildSrc/openssl/build-openssl.sh
-fun KotlinNativeTarget.configureLinuxCinterop() {
-    val opensslLibDir = projectDir.resolve("libs/openssl/linux-x64/lib")
+fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
+    val opensslLibDir = projectDir.resolve("libs/openssl/linux-$arch/lib")
+    val systemLibDir = if (arch == "x64") "/usr/lib/x86_64-linux-gnu" else "/usr/lib/aarch64-linux-gnu"
+    val systemIncludeDir = if (arch == "x64") "/usr/include/x86_64-linux-gnu" else "/usr/include/aarch64-linux-gnu"
 
     compilations["main"].cinterops {
         create("LinuxSockets") {
@@ -166,7 +168,7 @@ fun KotlinNativeTarget.configureLinuxCinterop() {
             // Use system headers for liburing, downloaded headers for OpenSSL
             includeDirs(
                 "/usr/include",
-                "/usr/include/x86_64-linux-gnu",
+                systemIncludeDir,
                 opensslIncludeDir.get().asFile.absolutePath,
             )
             tasks.named(interopProcessingTaskName) {
@@ -178,7 +180,7 @@ fun KotlinNativeTarget.configureLinuxCinterop() {
     binaries.all {
         linkerOpts(
             "-L${opensslLibDir.absolutePath}",
-            "-L/usr/lib/x86_64-linux-gnu",
+            "-L$systemLibDir",
             "-L/usr/lib",
             "-lssl",
             "-lcrypto",
@@ -229,10 +231,10 @@ kotlin {
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
     linuxX64 {
-        configureLinuxCinterop()
+        configureLinuxCinterop("x64")
     }
     linuxArm64 {
-        configureLinuxCinterop()
+        configureLinuxCinterop("arm64")
     }
 
     applyDefaultHierarchyTemplate()

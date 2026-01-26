@@ -1,6 +1,9 @@
 
 [versions]
 kotlin = "2.3.0"
+# OpenSSL version for Linux native TLS (must match buildSrc/openssl/Dockerfile)
+openssl = "3.0.16"
+opensslSha256 = "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86"
 androidGradlePlugin = "8.13.2"
 ktlint = "14.0.1"
 mavenPublish = "0.35.0"

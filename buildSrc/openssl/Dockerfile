@@ -1,28 +1,41 @@
 # Reproducible OpenSSL Build for Kotlin/Native Compatibility
 #
-# This Dockerfile builds OpenSSL as a static library on CentOS 7 (glibc 2.17)
-# to ensure compatibility with Kotlin/Native's bundled glibc 2.19.
+# This Dockerfile builds OpenSSL as a static library with old glibc
+# to ensure compatibility with Kotlin/Native's bundled glibc.
+#
+# For x64: Uses CentOS 7 (glibc 2.17) for K/N compatibility with glibc 2.19
+# For ARM64: Uses Debian 11 (glibc 2.31) - K/N ARM64 has newer glibc requirements
+#
+# USAGE:
+#   # Build for x64 (default):
+#   podman build -t openssl-builder .
+#
+#   # Build for ARM64:
+#   podman build --platform linux/arm64 --build-arg TARGET_ARCH=arm64 -t openssl-builder-arm64 .
 #
 # VERIFICATION: Anyone can rebuild this and verify the output matches:
-#   podman build -t openssl-builder .
 #   podman create --name tmp openssl-builder
 #   podman cp tmp:/opt/openssl/lib/libssl.a .
 #   podman cp tmp:/opt/openssl/lib/libcrypto.a .
 #   sha256sum libssl.a libcrypto.a
 #
-# Build environment: CentOS 7 (glibc 2.17)
 # OpenSSL version: 3.0.16 (LTS, supported until 2026-09-07)
 # Source: https://github.com/openssl/openssl/releases/tag/openssl-3.0.16
 
-FROM centos:7
+# Target architecture: x64 or arm64
+ARG TARGET_ARCH=x64
 
-# CentOS 7 reached EOL 2024-06-30, use vault mirror
+# Use CentOS 7 for x64 (glibc 2.17), Debian 11 for ARM64 (has native ARM64 support)
+FROM centos:7 AS base-x64
 RUN sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-* && \
     sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
+RUN yum install -y gcc make perl-core zlib-devel wget ca-certificates && yum clean all
 
-# Install build dependencies
-RUN yum install -y gcc make perl-core zlib-devel wget ca-certificates && \
-    yum clean all
+FROM debian:11 AS base-arm64
+RUN apt-get update && apt-get install -y build-essential perl wget ca-certificates && rm -rf /var/lib/apt/lists/*
+
+FROM base-${TARGET_ARCH} AS builder
+ARG TARGET_ARCH=x64
 
 WORKDIR /build
 
@@ -54,7 +67,8 @@ RUN wget -q https://github.com/openssl/openssl/releases/download/openssl-${OPENS
 # - no-psk/srp/gost: Unused authentication methods
 # - no-cms/ts/ocsp/srtp: Unused protocols
 RUN cd openssl-${OPENSSL_VERSION} && \
-    ./Configure linux-x86_64 \
+    OPENSSL_TARGET=$(if [ "$TARGET_ARCH" = "arm64" ]; then echo "linux-aarch64"; else echo "linux-x86_64"; fi) && \
+    ./Configure $OPENSSL_TARGET \
         no-shared \
         no-tests \
         no-legacy \
@@ -96,9 +110,11 @@ RUN cd openssl-${OPENSSL_VERSION} && \
     make install_sw
 
 # Record build metadata
-RUN echo "OpenSSL ${OPENSSL_VERSION}" > /opt/openssl/VERSION && \
+RUN BASE_IMAGE=$(if [ "$TARGET_ARCH" = "arm64" ]; then echo "debian:11"; else echo "centos:7"; fi) && \
+    echo "OpenSSL ${OPENSSL_VERSION}" > /opt/openssl/VERSION && \
+    echo "Architecture: ${TARGET_ARCH}" >> /opt/openssl/VERSION && \
     echo "Built on: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> /opt/openssl/VERSION && \
-    echo "Base image: centos:7 (glibc 2.17)" >> /opt/openssl/VERSION && \
+    echo "Base image: $BASE_IMAGE" >> /opt/openssl/VERSION && \
     echo "Source SHA256: ${OPENSSL_SHA256}" >> /opt/openssl/VERSION && \
     sha256sum /opt/openssl/lib/libssl.a /opt/openssl/lib/libcrypto.a >> /opt/openssl/VERSION
 
