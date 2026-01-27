@@ -40,9 +40,13 @@ jobs:
       - name: Run checks and tests
         run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck
 
-  linux-arm64:
-    name: "Linux ARM64"
-    runs-on: ubuntu-24.04-arm
+  # NOTE: Linux ARM64 native compilation is not supported by Kotlin/Native.
+  # Kotlin/Native doesn't provide a prebuilt compiler for linux-aarch64.
+  # ARM64 builds must be cross-compiled from Linux x64.
+  # The linuxArm64 target is built and tested via cross-compilation on the x64 runner.
+  linux-arm64-cross:
+    name: "Linux ARM64 (cross-compiled)"
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -56,28 +60,30 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.konan
-          key: konan-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: konan-linux-arm64-
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
       - name: Cache OpenSSL
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-arm64
           key: openssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
-      - name: Build and run Linux ARM64 tests
+      - name: Install cross-compilation dependencies
         run: |
-          # Build the test executable
-          ./gradlew linkDebugTestLinuxArm64
-          # Find and run the test executable
+          sudo apt-get update
+          sudo apt-get install -y liburing-dev build-essential perl
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+      - name: Build Linux ARM64 (cross-compile)
+        run: ./gradlew linkDebugTestLinuxArm64
+      - name: Run Linux ARM64 tests via QEMU
+        run: |
+          # Find the test executable
           TEST_BIN=$(find build -name "*.kexe" -path "*linuxArm64*debugTest*" | head -1)
           if [ -n "$TEST_BIN" ]; then
-            echo "Running test executable: $TEST_BIN"
-            chmod +x "$TEST_BIN"
-            "$TEST_BIN"
+            echo "Running ARM64 test via QEMU: $TEST_BIN"
+            qemu-aarch64 -L /usr/aarch64-linux-gnu "$TEST_BIN"
           else
-            echo "Test executable not found"
-            find build -name "*.kexe" -o -name "test.kexe" 2>/dev/null || true
+            echo "Test executable not found, listing available:"
+            find build -name "*.kexe" 2>/dev/null || true
             exit 1
           fi
 

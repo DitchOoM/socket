@@ -375,35 +375,25 @@ kotlin {
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
-    // Register both targets on Linux but only configure cinterop if buildable
+    // NOTE: Kotlin/Native doesn't have a prebuilt compiler for linux-aarch64,
+    // so ARM64 must be cross-compiled from x64. Both targets are always registered
+    // on Linux x64 for proper source set resolution.
     if (isLinux) {
-        val osArch = System.getProperty("os.arch")
-        val isNativeX64 = osArch == "amd64" || osArch == "x86_64"
-        val isNativeArm64 = osArch == "aarch64" || osArch == "arm64"
-
-        println("Linux target config: os.arch=$osArch, isNativeX64=$isNativeX64, isNativeArm64=$isNativeArm64")
-
-        // Always register both targets on Linux for proper source set resolution
+        // x64 target - always available on Linux x64
         linuxX64 {
-            val canBuildX64 = isNativeX64 || File("/usr/include/x86_64-linux-gnu").exists()
-            println("  linuxX64: canBuild=$canBuildX64")
-            if (canBuildX64) {
-                configureLinuxCinterop("x64")
-            }
+            configureLinuxCinterop("x64")
         }
 
-        linuxArm64 {
-            val canBuildArm64 =
-                isNativeArm64 ||
-                    File("/usr/include/aarch64-linux-gnu").exists() ||
-                    File("/usr/aarch64-linux-gnu/include").exists()
-            println("  linuxArm64: canBuild=$canBuildArm64")
-            if (canBuildArm64) {
+        // ARM64 target - cross-compiled from x64
+        // Requires: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+        val hasArm64CrossCompile =
+            File("/usr/include/aarch64-linux-gnu").exists() ||
+                File("/usr/aarch64-linux-gnu/include").exists()
+        if (hasArm64CrossCompile) {
+            linuxArm64 {
                 configureLinuxCinterop("arm64")
             }
         }
-
-        println("  Registered targets: ${targets.names}")
     }
 
     applyDefaultHierarchyTemplate()
