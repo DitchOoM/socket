@@ -65,6 +65,8 @@ jobs:
           key: openssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
+      - name: List available tasks
+        run: ./gradlew tasks --all 2>&1 | grep -i "linuxarm64" || true
       - name: Run Linux ARM64 tests
         run: ./gradlew linuxArm64Test
 
