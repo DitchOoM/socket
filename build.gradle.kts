@@ -386,7 +386,10 @@ kotlin {
             println("linuxX64 config: os.arch=$osArch, isNativeX64=$isNativeX64, hasX64CrossCompileHeaders=$hasX64CrossCompileHeaders")
 
             if (isNativeX64 || hasX64CrossCompileHeaders) {
+                println("  Calling configureLinuxCinterop(x64)...")
                 configureLinuxCinterop("x64")
+                println("  configureLinuxCinterop(x64) completed")
+                println("  Binaries: ${binaries.names}")
             }
         }
     }
@@ -409,7 +412,10 @@ kotlin {
             println("  canBuild=$canBuild")
 
             if (canBuild) {
+                println("  Calling configureLinuxCinterop(arm64)...")
                 configureLinuxCinterop("arm64")
+                println("  configureLinuxCinterop(arm64) completed")
+                println("  Binaries: ${binaries.names}")
             }
         }
     }
