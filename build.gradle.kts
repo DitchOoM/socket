@@ -378,7 +378,20 @@ kotlin {
     // Always register targets (for Dokka), but only configure cinterop on Linux
     linuxX64 {
         if (isLinux) {
-            configureLinuxCinterop("x64")
+            // x64 requires either native x64 machine or cross-compilation headers
+            val osArch = System.getProperty("os.arch")
+            val isNativeX64 = osArch == "amd64" || osArch == "x86_64"
+            val hasX64CrossCompileHeaders = File("/usr/include/x86_64-linux-gnu").exists()
+
+            println("linuxX64 config: os.arch=$osArch, isNativeX64=$isNativeX64, hasX64CrossCompileHeaders=$hasX64CrossCompileHeaders")
+
+            if (isNativeX64 || hasX64CrossCompileHeaders) {
+                // Explicitly configure test binaries to ensure linuxX64Test task exists
+                binaries {
+                    test()
+                }
+                configureLinuxCinterop("x64")
+            }
         }
     }
     linuxArm64 {
@@ -391,14 +404,19 @@ kotlin {
             val crossInclude1 = File("/usr/include/aarch64-linux-gnu").exists()
             val crossInclude2 = File("/usr/aarch64-linux-gnu/include").exists()
             val hasCrossCompileHeaders = crossInclude1 || crossInclude2
+            val canBuild = isNativeArm64 || hasCrossCompileHeaders
 
             println("linuxArm64 config: os.arch=$osArch, isNativeArm64=$isNativeArm64")
             println("  crossInclude1(/usr/include/aarch64-linux-gnu)=$crossInclude1")
             println("  crossInclude2(/usr/aarch64-linux-gnu/include)=$crossInclude2")
             println("  hasCrossCompileHeaders=$hasCrossCompileHeaders")
-            println("  willConfigureCinterop=${isNativeArm64 || hasCrossCompileHeaders}")
+            println("  canBuild=$canBuild")
 
-            if (isNativeArm64 || hasCrossCompileHeaders) {
+            if (canBuild) {
+                // Explicitly configure test binaries to ensure linuxArm64Test task exists
+                binaries {
+                    test()
+                }
                 configureLinuxCinterop("arm64")
             }
         }
