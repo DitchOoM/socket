@@ -34,7 +34,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-x64
-          key: openssl-linux-x64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: openssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
       - name: Run checks and tests
@@ -62,7 +62,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-arm64
-          key: openssl-linux-arm64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: openssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
       - name: Run Linux ARM64 tests

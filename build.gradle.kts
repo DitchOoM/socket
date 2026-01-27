@@ -242,18 +242,17 @@ fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
                     opensslTarget,
                     "--prefix=/opt/openssl",
                     "--libdir=lib",
-                    "-fPIC",
-                    "-std=gnu11",
                 )
             crossCompile?.let { configureArgs.add(it) }
             configureArgs.addAll(opensslConfigureOptions)
 
-            val configureResult =
+            val configureProcess =
                 ProcessBuilder(configureArgs)
                     .directory(sourceDir)
                     .inheritIO()
-                    .start()
-                    .waitFor()
+            // Set CFLAGS to enforce C11 standard in environment
+            configureProcess.environment()["CFLAGS"] = "-fPIC -std=gnu11"
+            val configureResult = configureProcess.start().waitFor()
 
             if (configureResult != 0) {
                 throw GradleException("OpenSSL configure failed")
