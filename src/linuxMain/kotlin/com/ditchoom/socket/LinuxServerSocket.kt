@@ -29,6 +29,9 @@ class LinuxServerSocket : ServerSocket {
         host: String?,
         backlog: Int,
     ): Flow<ClientSocket> {
+        // Convert -1 (or any negative port) to 0 to let OS assign an ephemeral port
+        val effectivePort = if (port < 0) 0 else port
+
         memScoped {
             // Determine address family from host
             val isIPv6Host = host != null && host.contains(':')
@@ -64,7 +67,7 @@ class LinuxServerSocket : ServerSocket {
                     val addr = alloc<sockaddr_in6>()
                     memset(addr.ptr, 0, sizeOf<sockaddr_in6>().convert())
                     addr.sin6_family = AF_INET6.convert()
-                    addr.sin6_port = htons(port.toUShort())
+                    addr.sin6_port = htons(effectivePort.toUShort())
 
                     if (host != null && host != "::" && host != "0.0.0.0") {
                         val result = inet_pton(AF_INET6, host, addr.sin6_addr.ptr)
@@ -80,7 +83,7 @@ class LinuxServerSocket : ServerSocket {
                     val addr = alloc<sockaddr_in>()
                     memset(addr.ptr, 0, sizeOf<sockaddr_in>().convert())
                     addr.sin_family = AF_INET.convert()
-                    addr.sin_port = htons(port.toUShort())
+                    addr.sin_port = htons(effectivePort.toUShort())
 
                     if (host != null && host != "0.0.0.0") {
                         val result = inet_pton(AF_INET, host, addr.sin_addr.ptr)
