@@ -375,47 +375,26 @@ kotlin {
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
-    // Always register targets (for Dokka), but only configure cinterop on Linux
-    linuxX64 {
-        if (isLinux) {
-            // x64 requires either native x64 machine or cross-compilation headers
-            val osArch = System.getProperty("os.arch")
-            val isNativeX64 = osArch == "amd64" || osArch == "x86_64"
-            val hasX64CrossCompileHeaders = File("/usr/include/x86_64-linux-gnu").exists()
+    // Only register targets on Linux (requires liburing-dev and system headers)
+    if (isLinux) {
+        val osArch = System.getProperty("os.arch")
+        val isNativeX64 = osArch == "amd64" || osArch == "x86_64"
+        val isNativeArm64 = osArch == "aarch64" || osArch == "arm64"
 
-            println("linuxX64 config: os.arch=$osArch, isNativeX64=$isNativeX64, hasX64CrossCompileHeaders=$hasX64CrossCompileHeaders")
-
-            if (isNativeX64 || hasX64CrossCompileHeaders) {
-                println("  Calling configureLinuxCinterop(x64)...")
+        // x64 target - native x64 or cross-compile from ARM64
+        if (isNativeX64 || File("/usr/include/x86_64-linux-gnu").exists()) {
+            linuxX64 {
                 configureLinuxCinterop("x64")
-                println("  configureLinuxCinterop(x64) completed")
-                println("  Binaries configured: ${binaries.toList().map { it.name }}")
             }
         }
-    }
-    linuxArm64 {
-        if (isLinux) {
-            // ARM64 requires either native ARM64 machine or cross-compilation headers
-            // On x64, install: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-            val osArch = System.getProperty("os.arch")
-            // JVM may report "aarch64" or "arm64" depending on platform
-            val isNativeArm64 = osArch == "aarch64" || osArch == "arm64"
-            val crossInclude1 = File("/usr/include/aarch64-linux-gnu").exists()
-            val crossInclude2 = File("/usr/aarch64-linux-gnu/include").exists()
-            val hasCrossCompileHeaders = crossInclude1 || crossInclude2
-            val canBuild = isNativeArm64 || hasCrossCompileHeaders
 
-            println("linuxArm64 config: os.arch=$osArch, isNativeArm64=$isNativeArm64")
-            println("  crossInclude1(/usr/include/aarch64-linux-gnu)=$crossInclude1")
-            println("  crossInclude2(/usr/aarch64-linux-gnu/include)=$crossInclude2")
-            println("  hasCrossCompileHeaders=$hasCrossCompileHeaders")
-            println("  canBuild=$canBuild")
-
-            if (canBuild) {
-                println("  Calling configureLinuxCinterop(arm64)...")
+        // ARM64 target - native ARM64 or cross-compile from x64
+        val hasArm64CrossCompile =
+            File("/usr/include/aarch64-linux-gnu").exists() ||
+                File("/usr/aarch64-linux-gnu/include").exists()
+        if (isNativeArm64 || hasArm64CrossCompile) {
+            linuxArm64 {
                 configureLinuxCinterop("arm64")
-                println("  configureLinuxCinterop(arm64) completed")
-                println("  Binaries configured: ${binaries.toList().map { it.name }}")
             }
         }
     }
