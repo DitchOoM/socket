@@ -381,10 +381,17 @@ kotlin {
         val isNativeX64 = osArch == "amd64" || osArch == "x86_64"
         val isNativeArm64 = osArch == "aarch64" || osArch == "arm64"
 
+        println("Linux target config: os.arch=$osArch, isNativeX64=$isNativeX64, isNativeArm64=$isNativeArm64")
+
         // x64 target - native x64 or cross-compile from ARM64
-        if (isNativeX64 || File("/usr/include/x86_64-linux-gnu").exists()) {
+        val canBuildX64 = isNativeX64 || File("/usr/include/x86_64-linux-gnu").exists()
+        println("  canBuildX64=$canBuildX64")
+        if (canBuildX64) {
+            println("  Registering linuxX64...")
             linuxX64 {
+                println("  Configuring linuxX64 cinterop...")
                 configureLinuxCinterop("x64")
+                println("  linuxX64 binaries: ${binaries.toList().map { it.name }}")
             }
         }
 
@@ -392,11 +399,18 @@ kotlin {
         val hasArm64CrossCompile =
             File("/usr/include/aarch64-linux-gnu").exists() ||
                 File("/usr/aarch64-linux-gnu/include").exists()
-        if (isNativeArm64 || hasArm64CrossCompile) {
+        val canBuildArm64 = isNativeArm64 || hasArm64CrossCompile
+        println("  hasArm64CrossCompile=$hasArm64CrossCompile, canBuildArm64=$canBuildArm64")
+        if (canBuildArm64) {
+            println("  Registering linuxArm64...")
             linuxArm64 {
+                println("  Configuring linuxArm64 cinterop...")
                 configureLinuxCinterop("arm64")
+                println("  linuxArm64 binaries: ${binaries.toList().map { it.name }}")
             }
         }
+
+        println("  Registered targets: ${targets.names}")
     }
 
     applyDefaultHierarchyTemplate()
