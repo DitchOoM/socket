@@ -389,7 +389,7 @@ kotlin {
                 println("  Calling configureLinuxCinterop(x64)...")
                 configureLinuxCinterop("x64")
                 println("  configureLinuxCinterop(x64) completed")
-                println("  Binaries: ${binaries.names}")
+                println("  Binaries configured: ${binaries.toList().map { it.name }}")
             }
         }
     }
@@ -415,7 +415,7 @@ kotlin {
                 println("  Calling configureLinuxCinterop(arm64)...")
                 configureLinuxCinterop("arm64")
                 println("  configureLinuxCinterop(arm64) completed")
-                println("  Binaries: ${binaries.names}")
+                println("  Binaries configured: ${binaries.toList().map { it.name }}")
             }
         }
     }
