@@ -70,16 +70,11 @@ jobs:
       - name: Install cross-compilation dependencies
         run: |
           sudo apt-get update
-          # Add ARM64 architecture for multiarch package support
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          # Install native x64 dependencies
-          sudo apt-get install -y build-essential perl
+          # Install native dependencies (liburing headers are portable)
+          sudo apt-get install -y build-essential perl liburing-dev
           # Install ARM64 cross-compilation tools
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo apt-get install -y libc6-dev-arm64-cross
-          # Install ARM64 liburing (needed for io_uring headers)
-          sudo apt-get install -y liburing-dev:arm64 || echo "ARM64 liburing not available, using host headers"
           # Install QEMU for running ARM64 tests
           sudo apt-get install -y qemu-user qemu-user-static
       - name: Build Linux ARM64 (cross-compile)

@@ -302,21 +302,24 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
             listOf("/usr/include", "/usr/include/x86_64-linux-gnu") to "/usr/lib/x86_64-linux-gnu"
         } else {
             // ARM64 cross-compilation from x64
-            // Use aarch64 sysroot - do NOT include /usr/include (x64 headers)
+            // Use aarch64 sysroot headers but also include liburing headers from host
+            // (liburing headers are portable, just need io_uring.h and liburing.h)
             val crossRoot = "/usr/aarch64-linux-gnu"
             val crossInclude = "/usr/include/aarch64-linux-gnu"
+            // Include liburing headers from host (they're architecture-independent)
+            val liburingIncludes = listOf("/usr/include/liburing")
             when {
                 File(crossRoot).exists() -> {
                     // Full cross-compilation sysroot available
-                    listOf("$crossRoot/include") to "$crossRoot/lib"
+                    (listOf("$crossRoot/include") + liburingIncludes) to "$crossRoot/lib"
                 }
                 File(crossInclude).exists() -> {
                     // Multiarch headers available (libc6-dev-arm64-cross)
-                    listOf(crossInclude) to "/usr/lib/aarch64-linux-gnu"
+                    (listOf(crossInclude) + liburingIncludes) to "/usr/lib/aarch64-linux-gnu"
                 }
                 else -> {
                     // Fallback - may not work for cross-compilation
-                    listOf("/usr/include/aarch64-linux-gnu") to "/usr/lib/aarch64-linux-gnu"
+                    (listOf("/usr/include/aarch64-linux-gnu") + liburingIncludes) to "/usr/lib/aarch64-linux-gnu"
                 }
             }
         }

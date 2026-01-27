@@ -14,10 +14,9 @@ package = com.ditchoom.socket.linux
 
 headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h openssl/ssl.h openssl/err.h openssl/x509.h
 
-# Compiler flags - OpenSSL include path is added via build.gradle.kts includeDirs
-compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
-    -I/usr/include \
-    -I/usr/include/x86_64-linux-gnu
+# Compiler flags - include paths are set via build.gradle.kts includeDirs
+# to support both native compilation and cross-compilation
+compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
 
 # Linker flags - library paths are set in build.gradle.kts
 linkerOpts.linux = -lpthread -ldl
