@@ -233,6 +233,8 @@ fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
                 }
 
             // Configure
+            // Use C11 standard to avoid glibc 2.38+ C23 functions (e.g., __isoc23_strtol)
+            // that aren't available in Kotlin/Native's older sysroot (glibc 2.19)
             logger.lifecycle("Configuring OpenSSL $opensslVersion for $arch...")
             val configureArgs =
                 mutableListOf(
@@ -241,6 +243,7 @@ fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
                     "--prefix=/opt/openssl",
                     "--libdir=lib",
                     "-fPIC",
+                    "-std=gnu11",
                 )
             crossCompile?.let { configureArgs.add(it) }
             configureArgs.addAll(opensslConfigureOptions)
@@ -458,14 +461,8 @@ kotlin {
             }
         }
 
-        // Linux implementation using io_uring for async I/O
-        val linuxNativeImplDir = file("src/linuxNativeImpl/kotlin")
-        listOf(
-            "linuxX64Main",
-            "linuxArm64Main",
-        ).forEach { sourceSetName ->
-            findByName(sourceSetName)?.kotlin?.srcDir(linuxNativeImplDir)
-        }
+        // Linux implementation uses standard KMP hierarchy:
+        // src/linuxMain is automatically shared by linuxX64 and linuxArm64
     }
 }
 
