@@ -385,11 +385,20 @@ kotlin {
         if (isLinux) {
             // ARM64 requires either native ARM64 machine or cross-compilation headers
             // On x64, install: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-            val canBuildArm64 =
-                File("/usr/include/aarch64-linux-gnu").exists() ||
-                    File("/usr/aarch64-linux-gnu/include").exists() ||
-                    System.getProperty("os.arch") == "aarch64"
-            if (canBuildArm64) {
+            val osArch = System.getProperty("os.arch")
+            // JVM may report "aarch64" or "arm64" depending on platform
+            val isNativeArm64 = osArch == "aarch64" || osArch == "arm64"
+            val crossInclude1 = File("/usr/include/aarch64-linux-gnu").exists()
+            val crossInclude2 = File("/usr/aarch64-linux-gnu/include").exists()
+            val hasCrossCompileHeaders = crossInclude1 || crossInclude2
+
+            println("linuxArm64 config: os.arch=$osArch, isNativeArm64=$isNativeArm64")
+            println("  crossInclude1(/usr/include/aarch64-linux-gnu)=$crossInclude1")
+            println("  crossInclude2(/usr/aarch64-linux-gnu/include)=$crossInclude2")
+            println("  hasCrossCompileHeaders=$hasCrossCompileHeaders")
+            println("  willConfigureCinterop=${isNativeArm64 || hasCrossCompileHeaders}")
+
+            if (isNativeArm64 || hasCrossCompileHeaders) {
                 configureLinuxCinterop("arm64")
             }
         }
