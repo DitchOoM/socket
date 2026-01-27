@@ -375,7 +375,7 @@ kotlin {
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
-    // Only register targets on Linux (requires liburing-dev and system headers)
+    // Register both targets on Linux but only configure cinterop if buildable
     if (isLinux) {
         val osArch = System.getProperty("os.arch")
         val isNativeX64 = osArch == "amd64" || osArch == "x86_64"
@@ -383,30 +383,23 @@ kotlin {
 
         println("Linux target config: os.arch=$osArch, isNativeX64=$isNativeX64, isNativeArm64=$isNativeArm64")
 
-        // x64 target - native x64 or cross-compile from ARM64
-        val canBuildX64 = isNativeX64 || File("/usr/include/x86_64-linux-gnu").exists()
-        println("  canBuildX64=$canBuildX64")
-        if (canBuildX64) {
-            println("  Registering linuxX64...")
-            linuxX64 {
-                println("  Configuring linuxX64 cinterop...")
+        // Always register both targets on Linux for proper source set resolution
+        linuxX64 {
+            val canBuildX64 = isNativeX64 || File("/usr/include/x86_64-linux-gnu").exists()
+            println("  linuxX64: canBuild=$canBuildX64")
+            if (canBuildX64) {
                 configureLinuxCinterop("x64")
-                println("  linuxX64 binaries: ${binaries.toList().map { it.name }}")
             }
         }
 
-        // ARM64 target - native ARM64 or cross-compile from x64
-        val hasArm64CrossCompile =
-            File("/usr/include/aarch64-linux-gnu").exists() ||
-                File("/usr/aarch64-linux-gnu/include").exists()
-        val canBuildArm64 = isNativeArm64 || hasArm64CrossCompile
-        println("  hasArm64CrossCompile=$hasArm64CrossCompile, canBuildArm64=$canBuildArm64")
-        if (canBuildArm64) {
-            println("  Registering linuxArm64...")
-            linuxArm64 {
-                println("  Configuring linuxArm64 cinterop...")
+        linuxArm64 {
+            val canBuildArm64 =
+                isNativeArm64 ||
+                    File("/usr/include/aarch64-linux-gnu").exists() ||
+                    File("/usr/aarch64-linux-gnu/include").exists()
+            println("  linuxArm64: canBuild=$canBuildArm64")
+            if (canBuildArm64) {
                 configureLinuxCinterop("arm64")
-                println("  linuxArm64 binaries: ${binaries.toList().map { it.name }}")
             }
         }
 
