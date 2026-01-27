@@ -65,10 +65,21 @@ jobs:
           key: openssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
-      - name: List available tasks
-        run: ./gradlew tasks --all 2>&1 | grep -i "linuxarm64" || true
-      - name: Run Linux ARM64 tests
-        run: ./gradlew linuxArm64Test
+      - name: Build and run Linux ARM64 tests
+        run: |
+          # Build the test executable
+          ./gradlew linkDebugTestLinuxArm64
+          # Find and run the test executable
+          TEST_BIN=$(find build -name "*.kexe" -path "*linuxArm64*debugTest*" | head -1)
+          if [ -n "$TEST_BIN" ]; then
+            echo "Running test executable: $TEST_BIN"
+            chmod +x "$TEST_BIN"
+            "$TEST_BIN"
+          else
+            echo "Test executable not found"
+            find build -name "*.kexe" -o -name "test.kexe" 2>/dev/null || true
+            exit 1
+          fi
 
   apple:
     name: "Apple Targets"
