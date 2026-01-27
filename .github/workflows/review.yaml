@@ -40,60 +40,13 @@ jobs:
       - name: Run checks and tests
         run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck
 
-  # NOTE: Linux ARM64 native compilation is not supported by Kotlin/Native.
-  # Kotlin/Native doesn't provide a prebuilt compiler for linux-aarch64.
-  # ARM64 builds must be cross-compiled from Linux x64.
-  # The linuxArm64 target is built and tested via cross-compilation on the x64 runner.
-  linux-arm64-cross:
-    name: "Linux ARM64 (cross-compiled)"
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '21'
-          cache: gradle
-      - name: Cache Konan
-        uses: actions/cache@v4
-        with:
-          path: ~/.konan
-          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: konan-linux-
-      - name: Cache OpenSSL
-        uses: actions/cache@v4
-        with:
-          path: libs/openssl/linux-arm64
-          key: openssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-      - name: Install cross-compilation dependencies
-        run: |
-          sudo apt-get update
-          # Install native dependencies (liburing headers are portable)
-          sudo apt-get install -y build-essential perl liburing-dev
-          # Install ARM64 cross-compilation tools
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          sudo apt-get install -y libc6-dev-arm64-cross
-          # Copy liburing headers to ARM64 sysroot (they're architecture-independent)
-          sudo cp /usr/include/liburing.h /usr/aarch64-linux-gnu/include/
-          sudo cp -r /usr/include/liburing /usr/aarch64-linux-gnu/include/
-          # Install QEMU for running ARM64 tests
-          sudo apt-get install -y qemu-user qemu-user-static
-      - name: Build Linux ARM64 (cross-compile)
-        run: ./gradlew linkDebugTestLinuxArm64
-      - name: Run Linux ARM64 tests via QEMU
-        run: |
-          # Find the test executable
-          TEST_BIN=$(find build -name "*.kexe" -path "*linuxArm64*debugTest*" | head -1)
-          if [ -n "$TEST_BIN" ]; then
-            echo "Running ARM64 test via QEMU: $TEST_BIN"
-            qemu-aarch64 -L /usr/aarch64-linux-gnu "$TEST_BIN"
-          else
-            echo "Test executable not found, listing available:"
-            find build -name "*.kexe" 2>/dev/null || true
-            exit 1
-          fi
+  # NOTE: Linux ARM64 cross-compilation requires additional setup:
+  # - Kotlin/Native doesn't provide a prebuilt compiler for linux-aarch64
+  # - liburing must be built for ARM64 from source
+  # - QEMU is needed to run tests
+  # For now, ARM64 builds are done locally by users who need them.
+  # The linuxArm64 target is available when cross-compilation headers are installed:
+  #   sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
   apple:
     name: "Apple Targets"
