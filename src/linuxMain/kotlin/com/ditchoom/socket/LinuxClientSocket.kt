@@ -135,7 +135,14 @@ class LinuxClientSocket(
                 // Alpine/Arch
                 SSL_CTX_set_default_verify_paths(sslCtx) == 1
         if (!caLoaded) {
-            // Continue without verification - some systems may not have CA certs installed
+            throw SSLSocketException(
+                "Failed to load CA certificates. Tried: " +
+                    "/etc/ssl/certs/ca-certificates.crt, " +
+                    "/etc/pki/tls/certs/ca-bundle.crt, " +
+                    "/etc/ssl/ca-bundle.pem, " +
+                    "/etc/ssl/cert.pem, " +
+                    "and default paths"
+            )
         }
 
         // Create SSL connection

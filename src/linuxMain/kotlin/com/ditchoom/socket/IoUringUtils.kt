@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
 /**
@@ -23,6 +24,7 @@ import kotlin.time.TimeSource
 internal object IoUringManager {
     private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
     private const val QUEUE_DEPTH = 256
+    private val POLL_WAIT_TIMEOUT = 100.milliseconds
 
     // Unique ID generator for user_data
     private val nextUserData = AtomicLong(1L)
@@ -204,12 +206,7 @@ internal object IoUringManager {
                 }
 
             // Wait with a short timeout to allow other operations to proceed
-            val waitTimeout =
-                if (remainingTimeout != null) {
-                    minOf(remainingTimeout, kotlin.time.Duration.parse("100ms"))
-                } else {
-                    kotlin.time.Duration.parse("100ms")
-                }
+            val waitTimeout = remainingTimeout?.let { minOf(it, POLL_WAIT_TIMEOUT) } ?: POLL_WAIT_TIMEOUT
 
             val ts = alloc<__kernel_timespec>()
             ts.tv_sec = waitTimeout.inWholeSeconds

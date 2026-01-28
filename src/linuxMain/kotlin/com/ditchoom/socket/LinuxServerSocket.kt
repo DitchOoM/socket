@@ -213,15 +213,11 @@ class LinuxServerSocket : ServerSocket {
         val userData = pendingAcceptUserData.value
         if (userData == 0L) return
 
-        // Fire-and-forget cancel - we don't wait for completion
-        // The accept operation will return ECANCELED
-        memScoped {
-            val ring = IoUringManager.getRing()
-            val sqe = io_uring_get_sqe(ring) ?: return
-
-            // Cancel the pending accept by its user_data
-            io_uring_prep_cancel64(sqe, userData.toULong(), 0)
-            io_uring_submit(ring)
+        // Fire-and-forget cancel using existing mutex-protected helper
+        kotlinx.coroutines.runBlocking {
+            IoUringManager.submitNoWait { sqe ->
+                io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+            }
         }
     }
 
