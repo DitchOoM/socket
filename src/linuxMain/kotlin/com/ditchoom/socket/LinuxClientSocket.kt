@@ -1,11 +1,12 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.wrap
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import kotlin.time.Duration
@@ -16,6 +17,7 @@ import kotlin.time.TimeSource
  *
  * Uses NativeBuffer for true zero-copy I/O - no ByteArray intermediaries.
  * io_uring provides async I/O on Linux 5.1+.
+ * Uses IoUringManager for proper completion dispatch.
  */
 @OptIn(ExperimentalForeignApi::class)
 class LinuxClientSocket(
@@ -82,61 +84,33 @@ class LinuxClientSocket(
         }
     }
 
-    private fun connectWithIoUring(
+    private suspend fun connectWithIoUring(
         addr: CPointer<sockaddr>,
         addrLen: socklen_t,
         timeout: Duration,
     ) {
-        memScoped {
-            val ring = IoUringManager.getRing()
-
-            // Get submission queue entry
-            val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
-
-            // Prepare connect operation
-            io_uring_prep_connect(sqe, sockfd, addr, addrLen)
-
-            // Submit
-            val submitted = io_uring_submit(ring)
-            if (submitted < 0) {
-                throwFromResult(submitted, "io_uring_submit")
+        val fd = sockfd
+        val result =
+            IoUringManager.submitAndWait(timeout) { sqe, _ ->
+                io_uring_prep_connect(sqe, fd, addr, addrLen)
             }
 
-            // Wait for completion with timeout
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = timeout.inWholeSeconds
-            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-            if (waitRet < 0) {
-                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    throw SocketException("Connection timed out")
-                }
-                throwFromResult(waitRet, "io_uring_wait_cqe_timeout")
-            }
-
-            val cqeVal = cqe.value!!
-            val res = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
-
-            if (res < 0) {
-                val errorCode = -res
-                when (errorCode) {
-                    ECONNREFUSED -> throw SocketException("Connection refused")
-                    ETIMEDOUT -> throw SocketException("Connection timed out")
-                    ENETUNREACH -> throw SocketException("Network unreachable")
-                    EHOSTUNREACH -> throw SocketException("Host unreachable")
-                    else -> {
-                        val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                        throw SocketException("connect failed: $errorMessage (errno=$errorCode)")
-                    }
+        if (result < 0) {
+            val errorCode = -result
+            when (errorCode) {
+                ECONNREFUSED -> throw SocketException("Connection refused")
+                ETIMEDOUT, ETIME -> throw SocketException("Connection timed out")
+                ENETUNREACH -> throw SocketException("Network unreachable")
+                EHOSTUNREACH -> throw SocketException("Host unreachable")
+                else -> {
+                    val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
+                    throw SocketException("connect failed: $errorMessage (errno=$errorCode)")
                 }
             }
         }
     }
 
-    private fun initTls(
+    private suspend fun initTls(
         hostname: String,
         timeout: Duration,
     ) {
@@ -147,8 +121,29 @@ class LinuxClientSocket(
         val method = TLS_client_method() ?: throw SSLSocketException("Failed to get TLS method")
         sslCtx = SSL_CTX_new(method) ?: throw SSLSocketException("Failed to create SSL context")
 
-        // Set default verify paths for system CA certificates
-        SSL_CTX_set_default_verify_paths(sslCtx)
+        // Load system CA certificates
+        // Our static OpenSSL was built with /opt/openssl paths, but system certs vary by distro
+        // Try common Linux CA certificate locations in order of prevalence
+        val caLoaded =
+            SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/certs") == 1 ||
+                // Debian/Ubuntu
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs") == 1 ||
+                // RHEL/Fedora/CentOS
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/ca-bundle.pem", "/etc/ssl/certs") == 1 ||
+                // OpenSUSE
+                SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/cert.pem", "/etc/ssl/certs") == 1 ||
+                // Alpine/Arch
+                SSL_CTX_set_default_verify_paths(sslCtx) == 1
+        if (!caLoaded) {
+            throw SSLSocketException(
+                "Failed to load CA certificates. Tried: " +
+                    "/etc/ssl/certs/ca-certificates.crt, " +
+                    "/etc/pki/tls/certs/ca-bundle.crt, " +
+                    "/etc/ssl/ca-bundle.pem, " +
+                    "/etc/ssl/cert.pem, " +
+                    "and default paths",
+            )
+        }
 
         // Create SSL connection
         ssl = SSL_new(sslCtx) ?: throw SSLSocketException("Failed to create SSL object")
@@ -167,7 +162,7 @@ class LinuxClientSocket(
      * Non-blocking TLS handshake using io_uring poll.
      * Loops on SSL_connect() handling WANT_READ/WANT_WRITE with io_uring polling.
      */
-    private fun performTlsHandshake(timeout: Duration) {
+    private suspend fun performTlsHandshake(timeout: Duration) {
         val mark = TimeSource.Monotonic.markNow()
 
         while (true) {
@@ -206,119 +201,145 @@ class LinuxClientSocket(
     /**
      * Wait for socket to be ready for read or write using io_uring poll.
      */
-    private fun waitForPoll(
+    private suspend fun waitForPoll(
         events: Short,
         timeout: Duration,
     ) {
-        memScoped {
-            val ring = IoUringManager.getRing()
-
-            val sqe =
-                io_uring_get_sqe(ring)
-                    ?: throw SSLHandshakeFailedException(Exception("Failed to get SQE for poll"))
-            io_uring_prep_poll_add(sqe, sockfd, events.toUInt())
-
-            val submitted = io_uring_submit(ring)
-            if (submitted < 0) {
-                throw SSLHandshakeFailedException(Exception("Failed to submit poll: ${strerror(-submitted)?.toKString()}"))
+        val fd = sockfd
+        val result =
+            IoUringManager.submitAndWait(timeout) { sqe, _ ->
+                io_uring_prep_poll_add(sqe, fd, events.toUInt())
             }
 
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = timeout.inWholeSeconds
-            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-            if (waitRet < 0) {
-                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
-                }
-                throw SSLHandshakeFailedException(Exception("Poll wait failed: ${strerror(-waitRet)?.toKString()}"))
+        if (result < 0) {
+            val errorCode = -result
+            if (errorCode == ETIME || errorCode == ETIMEDOUT) {
+                throw SSLHandshakeFailedException(Exception("TLS handshake timed out"))
             }
-
-            val cqeVal = cqe.value!!
-            val res = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
-
-            if (res < 0) {
-                throw SSLHandshakeFailedException(Exception("Poll failed: ${strerror(-res)?.toKString()}"))
-            }
+            throw SSLHandshakeFailedException(Exception("Poll failed: ${strerror(errorCode)?.toKString()}"))
         }
     }
 
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (sockfd < 0) return EMPTY_BUFFER
 
-        // Read into a pinned byte array
+        // Allocate buffer with native memory for zero-copy io_uring read
         val bufferSize = 65536
-        val tempArray = ByteArray(bufferSize)
+        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
 
-        val bytesRead =
-            tempArray.usePinned { pinned ->
-                val ptr = pinned.addressOf(0)
+        // Get native memory pointer
+        val nativeAccess = buffer.nativeMemoryAccess
+        if (nativeAccess != null) {
+            val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
+            val bytesRead =
                 if (ssl != null) {
-                    // TLS read
-                    SSL_read(ssl, ptr, bufferSize).toLong()
+                    // TLS read with polling for non-blocking socket
+                    sslRead(ptr, bufferSize, timeout)
                 } else {
                     // io_uring async read
                     readWithIoUring(ptr, bufferSize, timeout)
                 }
-            }
 
-        return when {
-            bytesRead > 0 -> {
-                // Copy only the bytes we read and wrap them
-                val result = tempArray.copyOf(bytesRead.toInt())
-                PlatformBuffer.wrap(result)
-            }
-            bytesRead == 0L -> {
-                closeInternal()
-                throw SocketClosedException("Connection closed by peer")
-            }
-            else -> {
-                if (ssl != null) {
-                    handleSslReadError(bytesRead.toInt())
-                } else {
-                    handleReadError((-bytesRead).toInt())
+            return when {
+                bytesRead > 0 -> {
+                    buffer.position(bytesRead)
+                    buffer
                 }
+                bytesRead == 0 -> {
+                    closeInternal()
+                    throw SocketClosedException("Connection closed by peer")
+                }
+                else -> {
+                    if (ssl != null) {
+                        handleSslReadError(bytesRead)
+                    } else {
+                        handleReadError(-bytesRead)
+                    }
+                }
+            }
+        }
+
+        // Fallback for managed memory
+        val managedAccess = buffer.managedMemoryAccess
+        if (managedAccess != null) {
+            val array = managedAccess.backingArray
+            val bytesRead =
+                array.usePinned { pinned ->
+                    val ptr = pinned.addressOf(0)
+                    if (ssl != null) {
+                        sslRead(ptr, bufferSize, timeout)
+                    } else {
+                        readWithIoUring(ptr, bufferSize, timeout)
+                    }
+                }
+
+            return when {
+                bytesRead > 0 -> {
+                    buffer.position(bytesRead)
+                    buffer
+                }
+                bytesRead == 0 -> {
+                    closeInternal()
+                    throw SocketClosedException("Connection closed by peer")
+                }
+                else -> {
+                    if (ssl != null) {
+                        handleSslReadError(bytesRead)
+                    } else {
+                        handleReadError(-bytesRead)
+                    }
+                }
+            }
+        }
+
+        throw SocketException("Buffer has no accessible memory for io_uring read")
+    }
+
+    /**
+     * SSL read with io_uring polling for non-blocking sockets.
+     * Handles WANT_READ/WANT_WRITE by polling until data is available.
+     */
+    private suspend fun sslRead(
+        ptr: CPointer<ByteVar>,
+        size: Int,
+        timeout: Duration,
+    ): Int {
+        val mark = TimeSource.Monotonic.markNow()
+
+        while (true) {
+            val result = SSL_read(ssl, ptr, size)
+            if (result > 0) return result
+            if (result == 0) return 0 // Connection closed
+
+            val error = SSL_get_error(ssl, result)
+            when (error) {
+                SSL_ERROR_WANT_READ -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1 // Will trigger timeout error
+                    }
+                    waitForPoll(POLLIN.toShort(), remaining)
+                }
+                SSL_ERROR_WANT_WRITE -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1
+                    }
+                    waitForPoll(POLLOUT.toShort(), remaining)
+                }
+                else -> return result // Other error, let caller handle
             }
         }
     }
 
-    private fun readWithIoUring(
+    private suspend fun readWithIoUring(
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Long {
-        memScoped {
-            val ring = IoUringManager.getRing()
-
-            val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
-            io_uring_prep_recv(sqe, sockfd, ptr, size.convert(), 0)
-
-            val submitted = io_uring_submit(ring)
-            if (submitted < 0) {
-                throwFromResult(submitted, "io_uring_submit")
-            }
-
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = timeout.inWholeSeconds
-            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-            if (waitRet < 0) {
-                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    throw SocketException("Read timed out")
-                }
-                throwFromResult(waitRet, "io_uring_wait_cqe_timeout")
-            }
-
-            val cqeVal = cqe.value!!
-            val res = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
-
-            return if (res >= 0) res.toLong() else -(-res).toLong()
+    ): Int {
+        val fd = sockfd
+        return IoUringManager.submitAndWait(timeout) { sqe, _ ->
+            io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
         }
     }
 
@@ -340,7 +361,7 @@ class LinuxClientSocket(
 
     private fun handleReadError(errorCode: Int): Nothing {
         when (errorCode) {
-            EAGAIN, EWOULDBLOCK -> throw SocketException("Read timed out")
+            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Read timed out")
             ECONNRESET, ENOTCONN, EPIPE -> {
                 closeInternal()
                 throw SocketClosedException("Connection closed")
@@ -367,9 +388,9 @@ class LinuxClientSocket(
             val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    SSL_write(ssl, ptr, remaining).toLong()
+                    sslWrite(ptr, remaining, timeout).toLong()
                 } else {
-                    writeWithIoUring(ptr, remaining, timeout)
+                    writeWithIoUring(ptr, remaining, timeout).toLong()
                 }
             return handleWriteResult(buffer, bytesSent)
         }
@@ -383,9 +404,9 @@ class LinuxClientSocket(
                 val ptr = pinned.addressOf(offset)
                 val bytesSent =
                     if (ssl != null) {
-                        SSL_write(ssl, ptr, remaining).toLong()
+                        sslWrite(ptr, remaining, timeout).toLong()
                     } else {
-                        writeWithIoUring(ptr, remaining, timeout)
+                        writeWithIoUring(ptr, remaining, timeout).toLong()
                     }
                 handleWriteResult(buffer, bytesSent)
             }
@@ -397,9 +418,9 @@ class LinuxClientSocket(
             val ptr = pinned.addressOf(0)
             val bytesSent =
                 if (ssl != null) {
-                    SSL_write(ssl, ptr, bytes.size).toLong()
+                    sslWrite(ptr, bytes.size, timeout).toLong()
                 } else {
-                    writeWithIoUring(ptr, bytes.size, timeout)
+                    writeWithIoUring(ptr, bytes.size, timeout).toLong()
                 }
             when {
                 bytesSent >= 0 -> bytesSent.toInt()
@@ -430,40 +451,50 @@ class LinuxClientSocket(
                 }
         }
 
-    private fun writeWithIoUring(
+    private suspend fun writeWithIoUring(
         ptr: CPointer<ByteVar>,
         size: Int,
         timeout: Duration,
-    ): Long {
-        memScoped {
-            val ring = IoUringManager.getRing()
+    ): Int {
+        val fd = sockfd
+        return IoUringManager.submitAndWait(timeout) { sqe, _ ->
+            io_uring_prep_send(sqe, fd, ptr, size.convert(), 0)
+        }
+    }
 
-            val sqe = io_uring_get_sqe(ring) ?: throw SocketException("Failed to get SQE")
-            io_uring_prep_send(sqe, sockfd, ptr, size.convert(), 0)
+    /**
+     * SSL write with io_uring polling for non-blocking sockets.
+     * Handles WANT_READ/WANT_WRITE by polling until socket is ready.
+     */
+    private suspend fun sslWrite(
+        ptr: CPointer<ByteVar>,
+        size: Int,
+        timeout: Duration,
+    ): Int {
+        val mark = TimeSource.Monotonic.markNow()
 
-            val submitted = io_uring_submit(ring)
-            if (submitted < 0) {
-                throwFromResult(submitted, "io_uring_submit")
-            }
+        while (true) {
+            val result = SSL_write(ssl, ptr, size)
+            if (result > 0) return result
 
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = timeout.inWholeSeconds
-            ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
-
-            val waitRet = io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-            if (waitRet < 0) {
-                if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    throw SocketException("Write timed out")
+            val error = SSL_get_error(ssl, result)
+            when (error) {
+                SSL_ERROR_WANT_READ -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1 // Will trigger timeout error
+                    }
+                    waitForPoll(POLLIN.toShort(), remaining)
                 }
-                throwFromResult(waitRet, "io_uring_wait_cqe_timeout")
+                SSL_ERROR_WANT_WRITE -> {
+                    val remaining = timeout - mark.elapsedNow()
+                    if (remaining.isNegative()) {
+                        return -1
+                    }
+                    waitForPoll(POLLOUT.toShort(), remaining)
+                }
+                else -> return result // Other error, let caller handle
             }
-
-            val cqeVal = cqe.value!!
-            val res = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
-
-            return if (res >= 0) res.toLong() else -(-res).toLong()
         }
     }
 
@@ -481,7 +512,7 @@ class LinuxClientSocket(
 
     private fun handleWriteError(errorCode: Int): Nothing {
         when (errorCode) {
-            EAGAIN, EWOULDBLOCK -> throw SocketException("Write timed out")
+            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Write timed out")
             ECONNRESET, ENOTCONN, EPIPE -> {
                 closeInternal()
                 throw SocketClosedException("Connection closed")

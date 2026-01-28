@@ -8,10 +8,10 @@ on:
       - opened
 
 jobs:
-  check:
-    name: "JVM/JS/Android Tests"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  linux-x64:
+    name: "Linux x64 / JVM / JS / Android"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -24,12 +24,32 @@ jobs:
         uses: browser-actions/setup-chrome@v1
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
+      - name: Cache OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-x64
+          key: openssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
       - name: Run checks and tests
-        # Skip Android unit tests - they hang on Linux and are properly tested in emulator job
-        run: ./gradlew check --no-build-cache -x testDebugUnitTest -x testReleaseUnitTest
+        run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck
+
+  # NOTE: Linux ARM64 cross-compilation requires additional setup:
+  # - Kotlin/Native doesn't provide a prebuilt compiler for linux-aarch64
+  # - liburing must be built for ARM64 from source
+  # - QEMU is needed to run tests
+  # For now, ARM64 builds are done locally by users who need them.
+  # The linuxArm64 target is available when cross-compilation headers are installed:
+  #   sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
   apple:
-    name: "Apple Target Tests"
+    name: "Apple Targets"
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -46,10 +66,15 @@ jobs:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
-      - name: Run checks and tests
-        # Skip Android unit tests - they hang and are properly tested in emulator job
-        run: ./gradlew check --no-build-cache -x testDebugUnitTest -x testReleaseUnitTest
-
-  # Linux targets disabled due to glibc version incompatibility with OpenSSL.
-  # Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
-  # TODO: Re-enable with statically-linked OpenSSL or on older Ubuntu runners.
+      - name: Run Apple tests
+        run: ./gradlew macosX64Test macosArm64Test iosSimulatorArm64Test tvosSimulatorArm64Test watchosSimulatorArm64Test ktlintCheck
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs/package-lock.json
+      - name: Build documentation
+        run: |
+          ./gradlew copyDokkaToDocusaurus
+          cd docs && npm ci && npm run build

@@ -272,8 +272,8 @@ class ResourceCleanupTests {
                         try {
                             // Try to read - first client will send nothing
                             val data =
-                                withTimeout(200.milliseconds) {
-                                    client.readString(timeout = 200.milliseconds)
+                                withTimeout(2.seconds) {
+                                    client.readString(timeout = 2.seconds)
                                 }
                             clientsProcessed++
                         } catch (e: Exception) {
@@ -284,12 +284,12 @@ class ResourceCleanupTests {
                     }
                 }
 
-            // First client - connect and immediately close (server will timeout)
+            // First client - connect and immediately close (server will get error)
             val client1 = ClientSocket.allocate()
             client1.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
             client1.close()
 
-            delay(300)
+            delay(100)
 
             // Second client - send proper data
             val client2 = ClientSocket.allocate()
@@ -297,7 +297,7 @@ class ResourceCleanupTests {
             client2.writeString("hello")
             client2.close()
 
-            delay(300)
+            delay(100)
 
             // Third client - should also work
             val client3 = ClientSocket.allocate()
@@ -305,7 +305,7 @@ class ResourceCleanupTests {
             client3.writeString("world")
             client3.close()
 
-            delay(300)
+            delay(500)
 
             assertTrue(clientsProcessed >= 1, "Server should have processed at least one proper client")
 

@@ -12,7 +12,8 @@ import kotlin.coroutines.coroutineContext
  * Server socket implementation using io_uring for async accept operations.
  *
  * io_uring provides true async I/O with zero-copy support on Linux 5.1+.
- * Uses io_uring async cancel for immediate cancellation instead of timeout polling.
+ * Uses IoUringManager for proper completion dispatch and io_uring async cancel
+ * for immediate cancellation instead of timeout polling.
  */
 @OptIn(ExperimentalForeignApi::class)
 class LinuxServerSocket : ServerSocket {
@@ -21,14 +22,16 @@ class LinuxServerSocket : ServerSocket {
     private var listening: Boolean = false
 
     // Unique user_data for accept operations to enable cancellation
-    private val acceptUserData = AtomicLong(0L)
-    private var pendingAcceptUserData: Long = 0L
+    private val pendingAcceptUserData = AtomicLong(0L)
 
     override suspend fun bind(
         port: Int,
         host: String?,
         backlog: Int,
     ): Flow<ClientSocket> {
+        // Convert -1 (or any negative port) to 0 to let OS assign an ephemeral port
+        val effectivePort = if (port < 0) 0 else port
+
         memScoped {
             // Determine address family from host
             val isIPv6Host = host != null && host.contains(':')
@@ -64,7 +67,7 @@ class LinuxServerSocket : ServerSocket {
                     val addr = alloc<sockaddr_in6>()
                     memset(addr.ptr, 0, sizeOf<sockaddr_in6>().convert())
                     addr.sin6_family = AF_INET6.convert()
-                    addr.sin6_port = htons(port.toUShort())
+                    addr.sin6_port = htons(effectivePort.toUShort())
 
                     if (host != null && host != "::" && host != "0.0.0.0") {
                         val result = inet_pton(AF_INET6, host, addr.sin6_addr.ptr)
@@ -80,7 +83,7 @@ class LinuxServerSocket : ServerSocket {
                     val addr = alloc<sockaddr_in>()
                     memset(addr.ptr, 0, sizeOf<sockaddr_in>().convert())
                     addr.sin_family = AF_INET.convert()
-                    addr.sin_port = htons(port.toUShort())
+                    addr.sin_port = htons(effectivePort.toUShort())
 
                     if (host != null && host != "0.0.0.0") {
                         val result = inet_pton(AF_INET, host, addr.sin_addr.ptr)
@@ -125,62 +128,38 @@ class LinuxServerSocket : ServerSocket {
         }
     }
 
-    private fun acceptWithIoUring(): ClientSocket? {
+    private suspend fun acceptWithIoUring(): ClientSocket? {
         if (serverFd < 0 || !listening) return null
 
-        memScoped {
-            val ring = IoUringManager.getRing()
+        // Allocate storage that persists through the async operation
+        val clientAddr = nativeHeap.alloc<sockaddr_storage>()
+        val clientAddrLen = nativeHeap.alloc<socklen_tVar>()
+        clientAddrLen.value = sizeOf<sockaddr_storage>().convert()
 
-            // Use sockaddr_storage to handle both IPv4 and IPv6
-            val clientAddr = alloc<sockaddr_storage>()
-            val clientAddrLen = alloc<socklen_tVar>()
-            clientAddrLen.value = sizeOf<sockaddr_storage>().convert()
+        try {
+            val fd = serverFd
+            val addrPtr = clientAddr.ptr.reinterpret<sockaddr>()
+            val addrLenPtr = clientAddrLen.ptr
 
-            // Get submission queue entry
-            val sqe = io_uring_get_sqe(ring)
-            if (sqe == null) {
-                // Ring is full, try again later
-                return null
-            }
+            // Submit accept and wait for completion
+            val result =
+                IoUringManager.submitAndWait(timeout = null) { sqe, userData ->
+                    io_uring_prep_accept(sqe, fd, addrPtr, addrLenPtr, 0)
+                    // Store userData for potential cancellation
+                    pendingAcceptUserData.value = userData
+                }
 
-            // Assign unique user_data for cancellation support
-            val userData = acceptUserData.incrementAndGet()
-            pendingAcceptUserData = userData
-
-            // Prepare accept operation with user_data for cancellation
-            io_uring_prep_accept(sqe, serverFd, clientAddr.ptr.reinterpret(), clientAddrLen.ptr, 0)
-            io_uring_sqe_set_data64(sqe, userData.toULong())
-
-            // Submit
-            val submitted = io_uring_submit(ring)
-            if (submitted < 0) {
-                pendingAcceptUserData = 0L
-                return null
-            }
-
-            // Wait for completion (no timeout - relies on cancellation via close())
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val waitRet = io_uring_wait_cqe(ring, cqe.ptr)
-
-            pendingAcceptUserData = 0L
-
-            if (waitRet < 0) {
-                return null
-            }
-
-            val cqeVal = cqe.value!!
-            val clientFd = cqeVal.pointed.res
-            io_uring_cqe_seen(ring, cqeVal)
+            pendingAcceptUserData.value = 0L
 
             return when {
-                clientFd >= 0 -> {
+                result >= 0 -> {
                     // Successfully accepted a connection
                     val wrapper = LinuxSocketWrapper()
-                    wrapper.sockfd = clientFd
+                    wrapper.sockfd = result
                     wrapper
                 }
                 else -> {
-                    val err = -clientFd
+                    val err = -result
                     when (err) {
                         EAGAIN, EWOULDBLOCK, EINTR -> {
                             // No connection ready, return null
@@ -203,6 +182,9 @@ class LinuxServerSocket : ServerSocket {
                     }
                 }
             }
+        } finally {
+            nativeHeap.free(clientAddr)
+            nativeHeap.free(clientAddrLen)
         }
     }
 
@@ -228,26 +210,14 @@ class LinuxServerSocket : ServerSocket {
      * Cancel pending accept operation using io_uring async cancel.
      */
     private fun cancelPendingAccept() {
-        val userData = pendingAcceptUserData
+        val userData = pendingAcceptUserData.value
         if (userData == 0L) return
 
-        memScoped {
-            val ring = IoUringManager.getRing()
-            val sqe = io_uring_get_sqe(ring) ?: return
-
-            // Cancel the pending accept by its user_data
-            io_uring_prep_cancel64(sqe, userData.toULong(), 0)
-
-            io_uring_submit(ring)
-
-            // Wait briefly for the cancel to complete
-            val cqe = allocPointerTo<io_uring_cqe>()
-            val ts = alloc<__kernel_timespec>()
-            ts.tv_sec = 0
-            ts.tv_nsec = 100_000_000 // 100ms timeout for cancel
-
-            io_uring_wait_cqe_timeout(ring, cqe.ptr, ts.ptr)
-            cqe.value?.let { io_uring_cqe_seen(ring, it) }
+        // Fire-and-forget cancel using existing mutex-protected helper
+        kotlinx.coroutines.runBlocking {
+            IoUringManager.submitNoWait { sqe ->
+                io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+            }
         }
     }
 
