@@ -32,6 +32,14 @@ class NodeServerSocket : ServerSocket {
                         buffer.resetForRead()
                         nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
                     }
+                    clientSocket.on("close") { _ ->
+                        nodeSocket.incomingMessageChannel.close()
+                        nodeSocket.isClosed = true
+                    }
+                    clientSocket.on("error") { _ ->
+                        nodeSocket.incomingMessageChannel.close()
+                        nodeSocket.isClosed = true
+                    }
                     trySend(nodeSocket).getOrThrow()
                 }
                 server.on("close") {
