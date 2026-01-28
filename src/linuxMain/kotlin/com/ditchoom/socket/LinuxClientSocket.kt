@@ -141,7 +141,7 @@ class LinuxClientSocket(
                     "/etc/pki/tls/certs/ca-bundle.crt, " +
                     "/etc/ssl/ca-bundle.pem, " +
                     "/etc/ssl/cert.pem, " +
-                    "and default paths"
+                    "and default paths",
             )
         }
 
