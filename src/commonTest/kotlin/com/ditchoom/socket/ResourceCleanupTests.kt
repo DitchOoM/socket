@@ -13,6 +13,7 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Tests for resource cleanup and proper socket lifecycle management.
@@ -262,54 +263,92 @@ class ResourceCleanupTests {
     @Test
     fun serverAcceptsContinuesAfterClientError() =
         runTestNoTimeSkipping {
+            val startTime = TimeSource.Monotonic.markNow()
+
+            fun log(msg: String) = println("[${startTime.elapsedNow().inWholeMilliseconds}ms] $msg")
+
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
+            log("Server bound on port ${server.port()}")
+
             var clientsProcessed = 0
+            var clientsAttempted = 0
 
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
+                        val clientNum = ++clientsAttempted
+                        log("Server: accepted client #$clientNum")
                         try {
                             // Try to read - first client will send nothing
+                            log("Server: starting read for client #$clientNum")
                             val data =
-                                withTimeout(200.milliseconds) {
-                                    client.readString(timeout = 200.milliseconds)
+                                withTimeout(300.milliseconds) {
+                                    client.readString(timeout = 300.milliseconds)
                                 }
                             clientsProcessed++
+                            log("Server: successfully read '${data.take(20)}' from client #$clientNum (processed=$clientsProcessed)")
                         } catch (e: Exception) {
+                            log("Server: error reading client #$clientNum: ${e::class.simpleName}: ${e.message}")
                             // Client error - continue accepting
                         } finally {
                             client.close()
+                            log("Server: closed client #$clientNum")
                         }
                     }
                 }
 
             // First client - connect and immediately close (server will timeout)
+            log("Client1: connecting...")
             val client1 = ClientSocket.allocate()
             client1.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            log("Client1: connected, closing immediately")
             client1.close()
+            log("Client1: closed")
 
-            delay(300)
+            // Wait for server to finish processing client1 (needs 300ms timeout + processing)
+            log("Waiting 500ms for server to process client1...")
+            delay(500)
+            log("After delay: attempted=$clientsAttempted, processed=$clientsProcessed")
 
             // Second client - send proper data
+            log("Client2: connecting...")
             val client2 = ClientSocket.allocate()
             client2.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            log("Client2: connected, writing 'hello'")
             client2.writeString("hello")
+            log("Client2: wrote data, closing")
             client2.close()
+            log("Client2: closed")
 
-            delay(300)
+            // Wait for server to process client2
+            log("Waiting 500ms for server to process client2...")
+            delay(500)
+            log("After delay: attempted=$clientsAttempted, processed=$clientsProcessed")
 
             // Third client - should also work
+            log("Client3: connecting...")
             val client3 = ClientSocket.allocate()
             client3.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            log("Client3: connected, writing 'world'")
             client3.writeString("world")
+            log("Client3: wrote data, closing")
             client3.close()
+            log("Client3: closed")
 
-            delay(300)
+            // Wait for server to process client3, with extra buffer for CI environments
+            log("Waiting 500ms for server to process client3...")
+            delay(500)
+            log("Final state: attempted=$clientsAttempted, processed=$clientsProcessed")
 
-            assertTrue(clientsProcessed >= 1, "Server should have processed at least one proper client")
+            assertTrue(
+                clientsProcessed >= 1,
+                "Server should have processed at least one proper client " +
+                    "(processed=$clientsProcessed, attempted=$clientsAttempted)",
+            )
 
             server.close()
             serverJob.cancel()
+            log("Test complete")
         }
 }
