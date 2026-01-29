@@ -35,10 +35,22 @@ jobs:
         with:
           path: libs/openssl/linux-x64
           key: openssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache OpenSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liburing-dev build-essential perl
+          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Run checks and tests
         run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck
+      - name: Validate publish artifacts build
+        # Build all publishable artifacts to MavenLocal (same as deploy, without credentials)
+        run: ./gradlew publishToMavenLocal
 
   # NOTE: Linux ARM64 cross-compilation requires additional setup:
   # - Kotlin/Native doesn't provide a prebuilt compiler for linux-aarch64
@@ -68,6 +80,21 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
       - name: Run Apple tests
         run: ./gradlew macosX64Test macosArm64Test iosSimulatorArm64Test tvosSimulatorArm64Test watchosSimulatorArm64Test ktlintCheck
+      - name: Validate publish artifacts build
+        # Build all Apple publishable artifacts to MavenLocal (same as deploy, without credentials)
+        run: |
+          ./gradlew \
+            publishIosArm64PublicationToMavenLocal \
+            publishIosSimulatorArm64PublicationToMavenLocal \
+            publishIosX64PublicationToMavenLocal \
+            publishMacosArm64PublicationToMavenLocal \
+            publishMacosX64PublicationToMavenLocal \
+            publishTvosArm64PublicationToMavenLocal \
+            publishTvosSimulatorArm64PublicationToMavenLocal \
+            publishTvosX64PublicationToMavenLocal \
+            publishWatchosArm64PublicationToMavenLocal \
+            publishWatchosSimulatorArm64PublicationToMavenLocal \
+            publishWatchosX64PublicationToMavenLocal
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
