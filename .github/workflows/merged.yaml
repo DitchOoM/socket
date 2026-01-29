@@ -157,9 +157,9 @@ jobs:
             publishWatchosSimulatorArm64PublicationToMavenCentralRepository \
             publishWatchosX64PublicationToMavenCentralRepository
 
-  # Linux x64 publishes JVM, JS, Android, linuxX64, and kotlinMultiplatform metadata
-  draft-release-linux-x64:
-    name: Draft Release - JVM/JS/Android/Linux x64
+  # Linux x64 publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
+  draft-release-linux:
+    name: Draft Release - JVM/JS/Android/Linux
     needs: check-release
     if: needs.check-release.outputs.draft_release == 'true'
     runs-on: ubuntu-24.04
@@ -186,13 +186,22 @@ jobs:
           path: ~/.konan
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
-      - name: Cache OpenSSL
+      - name: Cache OpenSSL x64
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-x64
           key: openssl-linux-x64-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache OpenSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liburing-dev build-essential perl
+          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
       - name: Get version
@@ -206,51 +215,7 @@ jobs:
             echo "version=$(./gradlew -q nextVersion)" >> $GITHUB_OUTPUT
           fi
       - name: Publish to staging
-        # Publishes JVM, JS, Android, linuxX64, and kotlinMultiplatform metadata
-        run: |
-          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
-            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMajor=true
-          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
-            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMinor=true
-          else
-            ./gradlew publishToMavenCentral --no-configuration-cache
-          fi
-
-  draft-release-linux-arm64:
-    name: Draft Release - Linux ARM64 target
-    needs: check-release
-    if: needs.check-release.outputs.draft_release == 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    env:
-      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-      ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
-      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
-      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_KEY_CONTENTS }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '21'
-          cache: gradle
-      - name: Cache Konan
-        uses: actions/cache@v4
-        with:
-          path: ~/.konan
-          key: konan-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: konan-linux-arm64-
-      - name: Cache OpenSSL
-        uses: actions/cache@v4
-        with:
-          path: libs/openssl/linux-arm64
-          key: openssl-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
-      - name: Publish Linux ARM64 to staging
-        # publishToMavenCentral publishes all publications buildable on current platform
+        # Publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
         run: |
           if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
             ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMajor=true
@@ -262,7 +227,7 @@ jobs:
 
   draft-release-finalize:
     name: Create draft GitHub release
-    needs: [check-release, draft-release-macos, draft-release-linux-x64, draft-release-linux-arm64]
+    needs: [check-release, draft-release-macos, draft-release-linux]
     if: needs.check-release.outputs.draft_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -272,7 +237,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          version="${{ needs.draft-release-linux-x64.outputs.version }}"
+          version="${{ needs.draft-release-linux.outputs.version }}"
           staging_url="https://central.sonatype.com/publishing/deployments"
 
           # Create draft release without tag
@@ -333,9 +298,9 @@ jobs:
             publishWatchosSimulatorArm64PublicationToMavenCentralRepository \
             publishWatchosX64PublicationToMavenCentralRepository
 
-  # Linux x64 publishes JVM, JS, Android, linuxX64, and kotlinMultiplatform metadata
-  publish-linux-x64:
-    name: Publish JVM/JS/Android/Linux x64 to staging
+  # Linux x64 publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
+  publish-linux:
+    name: Publish JVM/JS/Android/Linux to staging
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
@@ -362,13 +327,22 @@ jobs:
           path: ~/.konan
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
-      - name: Cache OpenSSL
+      - name: Cache OpenSSL x64
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-x64
           key: openssl-linux-x64-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache OpenSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liburing-dev build-essential perl
+          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
       - name: Get version
@@ -382,51 +356,7 @@ jobs:
             echo "version=$(./gradlew -q nextVersion)" >> $GITHUB_OUTPUT
           fi
       - name: Publish to staging
-        # Publishes JVM, JS, Android, linuxX64, and kotlinMultiplatform metadata
-        run: |
-          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
-            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMajor=true
-          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
-            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMinor=true
-          else
-            ./gradlew publishToMavenCentral --no-configuration-cache
-          fi
-
-  publish-linux-arm64:
-    name: Publish Linux ARM64 to staging
-    needs: check-release
-    if: needs.check-release.outputs.should_release == 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
-    env:
-      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-      ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
-      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
-      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_KEY_CONTENTS }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '21'
-          cache: gradle
-      - name: Cache Konan
-        uses: actions/cache@v4
-        with:
-          path: ~/.konan
-          key: konan-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: konan-linux-arm64-
-      - name: Cache OpenSSL
-        uses: actions/cache@v4
-        with:
-          path: libs/openssl/linux-arm64
-          key: openssl-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y liburing-dev build-essential perl
-      - name: Publish Linux ARM64 to staging
-        # publishToMavenCentral publishes all publications buildable on current platform
+        # Publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
         run: |
           if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
             ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMajor=true
@@ -439,7 +369,7 @@ jobs:
   # Validate staged artifacts before releasing
   validate-staging:
     name: Validate staged artifacts
-    needs: [check-release, publish-macos, publish-linux-x64, publish-linux-arm64]
+    needs: [check-release, publish-macos, publish-linux]
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -462,7 +392,7 @@ jobs:
           ./gradlew publishJvmPublicationToMavenLocal publishKotlinMultiplatformPublicationToMavenLocal --no-configuration-cache $VERSION_FLAG
       - name: Validate artifacts exist in MavenLocal
         run: |
-          version="${{ needs.publish-linux-x64.outputs.version }}"
+          version="${{ needs.publish-linux.outputs.version }}"
           echo "Validating artifacts for version $version..."
 
           # Check that key artifacts were published to MavenLocal
@@ -489,7 +419,7 @@ jobs:
 
   release:
     name: Release to Maven Central
-    needs: [check-release, publish-linux-x64, validate-staging]
+    needs: [check-release, publish-linux, validate-staging]
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     env:
@@ -511,7 +441,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          version="${{ needs.publish-linux-x64.outputs.version }}"
+          version="${{ needs.publish-linux.outputs.version }}"
           tag="v${version}"
 
           # Check if tag already exists
