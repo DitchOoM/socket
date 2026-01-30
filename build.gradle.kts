@@ -292,6 +292,10 @@ fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
             sourceDir.resolve("libssl.a").copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
             sourceDir.resolve("libcrypto.a").copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
 
+            // Copy headers so they're cached along with libraries
+            val includeOutputDir = outputDir.resolve("include")
+            sourceDir.resolve("include").copyRecursively(includeOutputDir, overwrite = true)
+
             // Write marker file
             markerFile.writeText("OpenSSL $opensslVersion built on ${System.currentTimeMillis()}")
 
@@ -480,7 +484,9 @@ val buildLiburingArm64 = createBuildLiburingTask("arm64")
 // For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu
 // OpenSSL and liburing are built automatically by Gradle when needed
 fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
-    val opensslLibDir = projectDir.resolve("libs/openssl/linux-$arch/lib")
+    val opensslDir = projectDir.resolve("libs/openssl/linux-$arch")
+    val opensslLibDir = opensslDir.resolve("lib")
+    val opensslIncDir = opensslDir.resolve("include")
     val liburingDir = projectDir.resolve("libs/liburing/linux-$arch")
     val liburingLibDir = liburingDir.resolve("lib")
     val liburingIncludeDir = liburingDir.resolve("include")
@@ -509,7 +515,7 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
             val allIncludes =
                 systemIncludeDirs +
                     liburingIncludeDir.absolutePath +
-                    opensslIncludeDir.get().asFile.absolutePath
+                    opensslIncDir.absolutePath
             includeDirs(*allIncludes.toTypedArray())
             tasks.named(interopProcessingTaskName) {
                 dependsOn(buildOpenSslTask)

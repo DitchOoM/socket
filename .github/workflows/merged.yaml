@@ -190,12 +190,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-x64
-          key: openssl-linux-x64-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Cache OpenSSL ARM64
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-arm64
-          key: openssl-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Cache liburing x64
         uses: actions/cache@v4
         with:
@@ -341,12 +341,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-x64
-          key: openssl-linux-x64-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Cache OpenSSL ARM64
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-arm64
-          key: openssl-linux-arm64-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Cache liburing x64
         uses: actions/cache@v4
         with:
