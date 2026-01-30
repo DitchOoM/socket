@@ -28,8 +28,8 @@ suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) =
 /**
  * Performs [AsynchronousSocketChannel.connect] without blocking a thread and resumes when asynchronous operation completes.
  * This suspending function is cancellable.
- * If the [Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
- * *closes the underlying channel* and immediately resumes with [CancellationException].
+ * If the [kotlinx.coroutines.Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
+ * *closes the underlying channel* and immediately resumes with [kotlin.coroutines.cancellation.CancellationException].
  */
 suspend fun AsynchronousSocketChannel.aConnect(
     socketAddress: SocketAddress,
@@ -44,8 +44,8 @@ suspend fun AsynchronousSocketChannel.aConnect(
 /**
  * Performs [AsynchronousSocketChannel.read] without blocking a thread and resumes when asynchronous operation completes.
  * This suspending function is cancellable.
- * If the [Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
- * *closes the underlying channel* and immediately resumes with [CancellationException].
+ * If the [kotlinx.coroutines.Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
+ * *closes the underlying channel* and immediately resumes with [kotlin.coroutines.cancellation.CancellationException].
  */
 
 suspend fun AsynchronousSocketChannel.aRead(
@@ -69,8 +69,8 @@ suspend fun AsynchronousSocketChannel.aRead(
 /**
  * Performs [AsynchronousSocketChannel.write] without blocking a thread and resumes when asynchronous operation completes.
  * This suspending function is cancellable.
- * If the [Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
- * *closes the underlying channel* and immediately resumes with [CancellationException].
+ * If the [kotlinx.coroutines.Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
+ * *closes the underlying channel* and immediately resumes with [kotlin.coroutines.cancellation.CancellationException].
  */
 
 suspend fun AsynchronousSocketChannel.aWrite(
@@ -90,8 +90,8 @@ suspend fun AsynchronousSocketChannel.aWrite(
 
 /**
  * Performs [AsynchronousSocketChannel.close] without blocking a thread and resumes when asynchronous operation completes.
- * If the [Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
- * *closes the underlying channel* and immediately resumes with [CancellationException].
+ * If the [kotlinx.coroutines.Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
+ * *closes the underlying channel* and immediately resumes with [kotlin.coroutines.cancellation.CancellationException].
  */
 
 suspend fun AsynchronousSocketChannel.aClose() {
