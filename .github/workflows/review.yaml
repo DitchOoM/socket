@@ -56,12 +56,13 @@ jobs:
           sudo apt-get install -y build-essential perl qemu-user-static
           # ARM64 cross-compilation toolchain
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          # ARM64 runtime libraries for QEMU (multiarch setup)
-          sudo dpkg --add-architecture arm64
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          sudo apt-get update
-          sudo apt-get install -y libcrypt1:arm64
+          # ARM64 runtime libraries for QEMU - download and extract directly
+          mkdir -p /tmp/arm64-libs
+          cd /tmp/arm64-libs
+          curl -LO http://ports.ubuntu.com/pool/main/libx/libxcrypt/libcrypt1_4.4.36-4build1_arm64.deb
+          ar x libcrypt1_*.deb
+          tar xf data.tar.zst
+          sudo cp -r usr/lib/aarch64-linux-gnu/* /usr/aarch64-linux-gnu/lib/
       - name: Run checks and tests
         run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck
       - name: Build ARM64 test binary
