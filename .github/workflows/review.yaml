@@ -141,17 +141,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: maven-local-linux
-          path: ~/.m2/repository/com/ditchoom
+          path: maven-repo
       - name: Download Apple artifacts
         uses: actions/download-artifact@v4
         with:
           name: maven-local-apple
-          path: ~/.m2/repository/com/ditchoom
+          path: maven-repo
           merge-multiple: true
       - name: Validate all platform artifacts present
         run: |
           VERSION="0.0.0-PR"
-          MAVEN_LOCAL=~/.m2/repository/com/ditchoom
+          MAVEN_LOCAL=maven-repo
           MISSING=0
 
           check_artifact() {
