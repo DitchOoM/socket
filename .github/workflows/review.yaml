@@ -148,13 +148,6 @@ jobs:
           name: maven-local-apple
           path: maven-repo
           merge-multiple: true
-      - name: Debug - List downloaded artifacts
-        run: |
-          echo "=== Contents of maven-repo ==="
-          find maven-repo -type f -name "*.module" -o -name "*.jar" -o -name "*.klib" -o -name "*.aar" | head -30
-          echo "=== Directory structure ==="
-          ls -la maven-repo/ || true
-          ls -la maven-repo/socket/ 2>/dev/null || ls -la maven-repo/*/socket/ 2>/dev/null || echo "socket dir not found at expected locations"
       - name: Validate all platform artifacts present
         run: |
           VERSION="0.0.0-PR"

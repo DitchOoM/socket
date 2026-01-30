@@ -22,7 +22,10 @@ val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
-project.version = getNextVersion(!isRunningOnGithub).toString()
+// Only compute version if not explicitly provided via -Pversion
+if (!project.hasProperty("version") || project.version == "unspecified") {
+    project.version = getNextVersion(!isRunningOnGithub).toString()
+}
 
 // Only print version info when not in quiet mode (avoids polluting CI output)
 if (gradle.startParameter.logLevel != LogLevel.QUIET) {
