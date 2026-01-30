@@ -53,20 +53,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential perl
+          sudo apt-get install -y build-essential perl qemu-user-static
           # ARM64 cross-compilation toolchain
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Run checks and tests
         run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck
-      - name: Setup QEMU for ARM64 emulation
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
       - name: Build ARM64 test binary
         run: ./gradlew linkDebugTestLinuxArm64
       - name: Run ARM64 tests via QEMU (subset for validation)
         # LinuxTlsTests validates io_uring, OpenSSL, and static linking - all critical ARM64 dependencies
-        run: qemu-aarch64 -L /usr/aarch64-linux-gnu ./build/bin/linuxArm64/debugTest/test.kexe --ktest_filter=com.ditchoom.socket.LinuxTlsTests
+        run: qemu-aarch64-static -L /usr/aarch64-linux-gnu ./build/bin/linuxArm64/debugTest/test.kexe --ktest_filter=com.ditchoom.socket.LinuxTlsTests
       - name: Validate publish artifacts build
         # Build all publishable artifacts to MavenLocal with fixed version for artifact collection
         run: ./gradlew publishToMavenLocal -Pversion=0.0.0-PR
