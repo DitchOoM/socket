@@ -4,6 +4,9 @@ kotlin = "2.3.0"
 # OpenSSL version for Linux native TLS - built automatically by Gradle
 openssl = "3.0.16"
 opensslSha256 = "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86"
+# liburing version for Linux io_uring async I/O - built automatically by Gradle
+liburing = "2.9"
+liburingSha256 = "897b1153b55543e8b92a5a3eb9b906537a5fedcf8afaf241f8b8787940c79f8d"
 androidGradlePlugin = "8.13.2"
 ktlint = "14.0.1"
 mavenPublish = "0.35.0"

@@ -40,10 +40,20 @@ jobs:
         with:
           path: libs/openssl/linux-arm64
           key: openssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing x64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-x64
+          key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-arm64
+          key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y liburing-dev build-essential perl
+          sudo apt-get install -y build-essential perl
           # ARM64 cross-compilation toolchain
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Run checks and tests
