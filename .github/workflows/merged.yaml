@@ -552,43 +552,9 @@ jobs:
             ./gradlew publishToMavenCentral --no-configuration-cache
           fi
 
-  # Validate staged artifacts before releasing
-  # Note: We can't directly validate Maven Central staging, but we rebuild locally
-  # with the same version to ensure all artifacts would be present
-  validate-staging:
-    name: Validate staged artifacts
-    needs: [check-release, publish-macos, publish-linux]
-    if: needs.check-release.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Validate via Maven Central API
-        run: |
-          version="${{ needs.publish-linux.outputs.version }}"
-          echo "Validating staged artifacts for version $version..."
-          echo ""
-          echo "Note: Full artifact validation was performed during PR review."
-          echo "The publish-macos and publish-linux jobs have successfully uploaded"
-          echo "all platform artifacts to Maven Central staging."
-          echo ""
-          echo "Artifacts published by publish-linux:"
-          echo "  - socket (kotlinMultiplatform metadata)"
-          echo "  - socket-jvm"
-          echo "  - socket-js"
-          echo "  - socket-android"
-          echo "  - socket-linuxx64"
-          echo "  - socket-linuxarm64"
-          echo ""
-          echo "Artifacts published by publish-macos:"
-          echo "  - socket-iosarm64, socket-iossimulatorarm64, socket-iosx64"
-          echo "  - socket-macosarm64, socket-macosx64"
-          echo "  - socket-tvosarm64, socket-tvossimulatorarm64, socket-tvosx64"
-          echo "  - socket-watchosarm64, socket-watchossimulatorarm64, socket-watchosx64"
-          echo ""
-          echo "Version $version staged successfully. Proceeding to release."
-
   release:
     name: Release to Maven Central
-    needs: [check-release, publish-linux, validate-staging]
+    needs: [check-release, publish-macos, publish-linux]
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     env:
