@@ -9,6 +9,7 @@ import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -52,12 +53,34 @@ internal object IoUringManager {
     // Mutex for submission queue operations only
     private val submitMutex = Mutex()
 
-    // Dedicated poller thread - exactly one thread for all io_uring completions
+    // Dedicated poller thread - lazily initialized and reinitializable after cleanup
+    // Using AtomicReference to allow thread-safe reinitialization
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
-    private val pollerDispatcher = newSingleThreadContext("io_uring-poller")
-    private val pollerScope = CoroutineScope(pollerDispatcher + SupervisorJob())
-    private var pollerJob: Job? = null
+    private val pollerDispatcherRef = AtomicReference<CloseableCoroutineDispatcher?>(null)
+    private val pollerScopeRef = AtomicReference<CoroutineScope?>(null)
+    private val pollerJobRef = AtomicReference<Job?>(null)
     private val pollerStarted = AtomicInt(0) // 0 = not started, 1 = started
+
+    @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
+    private fun getOrCreatePollerDispatcher(): CloseableCoroutineDispatcher {
+        pollerDispatcherRef.value?.let { return it }
+        val newDispatcher = newSingleThreadContext("io_uring-poller")
+        if (!pollerDispatcherRef.compareAndSet(null, newDispatcher)) {
+            newDispatcher.close()
+        }
+        return pollerDispatcherRef.value!!
+    }
+
+    private fun getOrCreatePollerScope(): CoroutineScope {
+        pollerScopeRef.value?.let { return it }
+        val dispatcher = getOrCreatePollerDispatcher()
+        val newScope = CoroutineScope(dispatcher + SupervisorJob())
+        if (!pollerScopeRef.compareAndSet(null, newScope)) {
+            // Another thread created it first, cancel ours
+            newScope.cancel()
+        }
+        return pollerScopeRef.value!!
+    }
 
     fun getRing(): CPointer<io_uring> {
         // Try to get existing ring
@@ -92,10 +115,12 @@ internal object IoUringManager {
      */
     private fun ensurePollerStarted() {
         if (pollerStarted.compareAndSet(0, 1)) {
-            pollerJob =
-                pollerScope.launch {
+            val scope = getOrCreatePollerScope()
+            val job =
+                scope.launch {
                     pollerLoop()
                 }
+            pollerJobRef.value = job
         }
     }
 
@@ -194,6 +219,9 @@ internal object IoUringManager {
                     val userData = io_uring_cqe_get_data64(cqeVal).toLong()
                     val result = cqeVal.pointed.res
                     io_uring_cqe_seen(ring, cqeVal)
+
+                    // Skip wakeup NOPs (user_data = 0)
+                    if (userData == 0L) continue
 
                     // Dispatch to waiting coroutine
                     pendingOpsMutex.withLock {
@@ -297,14 +325,49 @@ internal object IoUringManager {
 
     /**
      * Cleanup resources. Call when shutting down.
+     *
+     * Submits a NOP operation to wake the poller thread immediately,
+     * avoiding up to DEFAULT_POLL_TIMEOUT delay on shutdown.
+     *
+     * After cleanup, the IoUringManager can be reused - new operations
+     * will reinitialize the ring and poller thread.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun cleanup() {
-        // Stop poller
-        pollerJob?.cancel()
-        pollerScope.cancel()
-        pollerDispatcher.close()
-        pollerStarted.value = 0
+        // Mark poller as stopping
+        val wasStarted = pollerStarted.getAndSet(0) == 1
+
+        if (wasStarted) {
+            // IMPORTANT: Cancel the job FIRST so isActive becomes false
+            // Then wake the poller so it exits immediately
+            val job = pollerJobRef.getAndSet(null)
+            job?.cancel()
+
+            // Wake up the poller immediately by submitting a NOP
+            // This causes io_uring_wait_cqe_timeout to return immediately
+            // The poller will check isActive (now false) and exit
+            wakePollerWithNop()
+
+            // Wait briefly for the poller to actually exit
+            // This ensures the poller thread has stopped before we close the dispatcher
+            runBlocking {
+                try {
+                    withTimeout(200.milliseconds) {
+                        job?.join()
+                    }
+                } catch (e: Exception) {
+                    // Timeout is fine, poller will exit eventually
+                }
+            }
+        }
+
+        // Cancel and reset scope
+        val scope = pollerScopeRef.getAndSet(null)
+        scope?.cancel()
+
+        // Close and reset dispatcher
+        val dispatcher = pollerDispatcherRef.getAndSet(null)
+        dispatcher?.close()
 
         // Cleanup ring
         val ptr = ringRef.getAndSet(null)
@@ -319,6 +382,30 @@ internal object IoUringManager {
                 pendingOps.values.forEach { it.deferred.complete(-ECANCELED) }
                 pendingOps.clear()
             }
+        }
+    }
+
+    /**
+     * Submit a NOP operation to wake the poller thread.
+     * Used during shutdown to avoid waiting for the poll timeout.
+     *
+     * This is safe to call even if the SQ is full - in that case,
+     * the poller will wake on the next completion anyway.
+     */
+    private fun wakePollerWithNop() {
+        val ring = ringRef.value ?: return
+
+        memScoped {
+            val sqe = io_uring_get_sqe(ring)
+            if (sqe != null) {
+                // Use user_data = 0 to indicate this is a wakeup NOP
+                // The poller will ignore completions with user_data = 0
+                io_uring_prep_nop(sqe)
+                io_uring_sqe_set_data64(sqe, 0UL)
+                io_uring_submit(ring)
+            }
+            // If sqe is null, the SQ is full which means there are pending
+            // operations that will complete and wake the poller anyway
         }
     }
 }

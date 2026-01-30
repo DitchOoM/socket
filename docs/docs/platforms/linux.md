@@ -83,6 +83,32 @@ System CA certificates are loaded from standard locations:
 - `/etc/ssl/ca-bundle.pem` (OpenSUSE)
 - `/etc/ssl/cert.pem` (Alpine/Arch)
 
+## Performance Tuning
+
+### Buffer Sizes
+
+The Linux implementation currently uses a fixed 64KB read buffer. For high-throughput applications, you can tune the system-level socket buffer sizes:
+
+```bash
+# View current settings
+sysctl net.core.rmem_default
+sysctl net.core.rmem_max
+
+# Increase receive buffer (requires root)
+sudo sysctl -w net.core.rmem_default=262144  # 256KB default
+sudo sysctl -w net.core.rmem_max=16777216    # 16MB max
+
+# Make persistent (add to /etc/sysctl.conf)
+echo "net.core.rmem_default = 262144" | sudo tee -a /etc/sysctl.conf
+echo "net.core.rmem_max = 16777216" | sudo tee -a /etc/sysctl.conf
+```
+
+**Note:** The library will respect `SO_RCVBUF` in a future version. Currently, the internal buffer is fixed at 64KB regardless of system settings.
+
+### io_uring Queue Depth
+
+The io_uring submission queue depth is set to 256 entries, which is sufficient for most applications. This allows up to 256 concurrent I/O operations before blocking.
+
 ## Graceful Degradation
 
 If io_uring is not available (kernel < 5.1), socket initialization will fail with a clear error message. There is currently no fallback to poll/select - io_uring is required.
