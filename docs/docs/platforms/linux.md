@@ -30,21 +30,7 @@ uname -r
 
 ### Runtime Dependencies
 
-Install the liburing library:
-
-```bash
-# Debian/Ubuntu
-sudo apt install liburing2
-
-# Fedora/RHEL
-sudo dnf install liburing
-
-# Arch Linux
-sudo pacman -S liburing
-
-# Alpine
-apk add liburing
-```
+**None** - both OpenSSL and liburing are statically linked into the library. You only need a compatible kernel (5.1+).
 
 ### Build Dependencies (for development only)
 

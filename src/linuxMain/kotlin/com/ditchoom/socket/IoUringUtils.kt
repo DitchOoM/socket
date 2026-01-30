@@ -47,7 +47,11 @@ internal object IoUringManager {
         if (ret < 0) {
             nativeHeap.free(ptr)
             val errorMsg = strerror(-ret)?.toKString() ?: "Unknown error"
-            throw SocketException("Failed to initialize io_uring: $errorMsg (errno=${-ret})")
+            throw SocketException(
+                "Failed to initialize io_uring: $errorMsg (errno=${-ret}). " +
+                    "This library requires Linux kernel 5.1+ with io_uring support. " +
+                    "Check your kernel version with 'uname -r'.",
+            )
         }
 
         // Try to set atomically - if another thread beat us, use theirs
