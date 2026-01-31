@@ -48,7 +48,7 @@ class DataIntegrityTests {
             client.write(sendBuffer, 5.seconds)
             client.close()
 
-            dataReceived.lock()
+            dataReceived.lockWithTimeout()
             assertContentEquals(binaryData, receivedData, "Binary data should be transferred intact")
 
             server.close()
@@ -135,7 +135,7 @@ class DataIntegrityTests {
         }
         client.close()
 
-        transferComplete.lock()
+        transferComplete.lockWithTimeout()
         assertEquals(size, receivedSize, "Should receive all $size bytes")
         assertTrue(checksumMatch, "Data checksum should match for $size byte transfer")
 
@@ -180,7 +180,7 @@ class DataIntegrityTests {
             clientReceivedCorrect = (received == serverToClientData)
 
             client.close()
-            testComplete.lock()
+            testComplete.lockWithTimeout()
 
             assertTrue(serverReceivedCorrect, "Server should receive correct data from client")
             assertTrue(clientReceivedCorrect, "Client should receive correct data from server")
@@ -238,7 +238,7 @@ class DataIntegrityTests {
             }
             client.close()
 
-            dataReceived.lock()
+            dataReceived.lockWithTimeout()
             assertEquals(expectedString, receivedData, "All small messages should be received in order")
 
             server.close()
@@ -268,7 +268,7 @@ class DataIntegrityTests {
 
             val client = ClientSocket.allocate()
             client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-            clientConnected.lock()
+            clientConnected.lockWithTimeout()
 
             // Read all data - may come in chunks
             val allData = StringBuilder()
@@ -320,7 +320,7 @@ class DataIntegrityTests {
             client.write(sendBuffer, 5.seconds)
             client.close()
 
-            dataReceived.lock()
+            dataReceived.lockWithTimeout()
             assertContentEquals(dataWithNulls, receivedData, "Data with null bytes should be transferred intact")
 
             server.close()

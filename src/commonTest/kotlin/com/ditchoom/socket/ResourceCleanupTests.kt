@@ -165,7 +165,7 @@ class ResourceCleanupTests {
                     val client = ClientSocket.allocate()
                     clientRef = client
                     client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-                    clientConnected.lock()
+                    clientConnected.lockWithTimeout()
 
                     // This should block and be cancelled
                     client.read(60.seconds)

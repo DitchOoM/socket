@@ -97,7 +97,7 @@ class SimpleSocketTests {
                 }
             }
             // Wait for server to finish processing all clients
-            processedClients.lock()
+            processedClients.lockWithTimeout()
             server.close()
             serverJob.cancel()
         }
@@ -180,7 +180,7 @@ Connection: close
             val clientToServer = ClientSocket.allocate()
             clientToServer.open(serverPort, 5.seconds)
             clientToServer.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
-            serverToClientMutex.lock()
+            serverToClientMutex.lockWithTimeout()
             val clientToServerPort = clientToServer.localPort()
             assertTrue(clientToServerPort > 0, "Invalid clientToServerPort local port.")
             clientToServer.close()
@@ -215,7 +215,7 @@ Connection: close
             val buffer = clientToServer.read(5.seconds)
             buffer.resetForRead()
             val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
-            serverToClientMutex.lock()
+            serverToClientMutex.lockWithTimeout()
             assertEquals(text, dataReceivedFromServer)
             val clientToServerPort = clientToServer.localPort()
             assertTrue(clientToServerPort > 0, "No port number: clientToServerPort")
@@ -259,7 +259,7 @@ Connection: close
         assertTrue(clientToServerPort > 0, "No port number from clientToServerPort")
         val inputStream = SuspendingSocketInputStream(1.seconds, clientToServer)
         var buffer = inputStream.ensureBufferSize(text.length)
-        serverToClientMutex.lock()
+        serverToClientMutex.lockWithTimeout()
         val utf8 = buffer.readString(text.length, Charset.UTF8)
         assertEquals(utf8, text)
         buffer = inputStream.ensureBufferSize(text2.length)
