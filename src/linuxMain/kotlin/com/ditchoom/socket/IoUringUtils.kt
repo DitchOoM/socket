@@ -1,8 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.linux.*
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -10,6 +8,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
