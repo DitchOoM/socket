@@ -1,6 +1,8 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.linux.*
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -276,6 +278,7 @@ internal object IoUringManager {
      * @param timeout Optional timeout for the operation
      * @return The result code from the CQE (positive for success, negative for error)
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     suspend fun submitAndWait(
         timeout: Duration? = null,
         prepareOp: (sqe: CPointer<io_uring_sqe>, userData: Long) -> Unit,
@@ -334,11 +337,32 @@ internal object IoUringManager {
             }
 
             // Suspend until poller dispatches our completion (or timeout)
-            return deferred.await()
+            // Use suspendCancellableCoroutine so we can cancel the io_uring operation
+            return suspendCancellableCoroutine { cont ->
+                cont.invokeOnCancellation {
+                    // Cancel the io_uring operation when the coroutine is cancelled
+                    // This is fire-and-forget - we don't wait for the cancel to complete
+                    submitNoWaitUnsafe { sqe ->
+                        io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+                    }
+                    // Complete the deferred so the poller doesn't try to complete it later
+                    deferred.complete(-ECANCELED)
+                }
+                // Resume when deferred completes
+                deferred.invokeOnCompletion { throwable ->
+                    if (throwable != null) {
+                        cont.resumeWithException(throwable)
+                    } else {
+                        cont.resume(deferred.getCompleted())
+                    }
+                }
+            }
         } finally {
-            // Clean up pending operation
-            pendingOpsMutex.withLock {
-                pendingOps.remove(userData)
+            // Clean up pending operation - use NonCancellable to ensure this runs
+            withContext(NonCancellable) {
+                pendingOpsMutex.withLock {
+                    pendingOps.remove(userData)
+                }
             }
         }
     }
@@ -368,6 +392,7 @@ internal object IoUringManager {
      * Submit a pre-registered operation. Use with [registerOperation] when you need
      * to know the userData before submission (e.g., for cancellation).
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     suspend fun submitRegistered(
         userData: Long,
         deferred: CompletableDeferred<Int>,
@@ -406,10 +431,28 @@ internal object IoUringManager {
                 }
             }
 
-            return deferred.await()
+            // Use suspendCancellableCoroutine so we can cancel the io_uring operation
+            return suspendCancellableCoroutine { cont ->
+                cont.invokeOnCancellation {
+                    // Cancel the io_uring operation when the coroutine is cancelled
+                    submitNoWaitUnsafe { sqe ->
+                        io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+                    }
+                    deferred.complete(-ECANCELED)
+                }
+                deferred.invokeOnCompletion { throwable ->
+                    if (throwable != null) {
+                        cont.resumeWithException(throwable)
+                    } else {
+                        cont.resume(deferred.getCompleted())
+                    }
+                }
+            }
         } finally {
-            pendingOpsMutex.withLock {
-                pendingOps.remove(userData)
+            withContext(NonCancellable) {
+                pendingOpsMutex.withLock {
+                    pendingOps.remove(userData)
+                }
             }
         }
     }
