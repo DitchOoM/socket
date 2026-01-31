@@ -124,13 +124,36 @@ PlatformSocketConfig.reset()
 | `ioQueueDepth` | 1024 | io_uring submission/completion queue size. Each entry uses ~64 bytes. |
 | `ioQueueRetries` | 10 | Max retries when queue is temporarily full. Uses exponential backoff. |
 | `ioRetryDelay` | 1ms | Base delay between retries. Actual delay is `ioRetryDelay * retryNumber`. |
-| `readBufferSize` | 64KB | Size of read buffer for recv operations. Larger values improve throughput. |
+| `readBufferSize` | 64KB* | Override for read buffer size. See hybrid behavior below. |
 
 **Note:** Changes take effect on next io_uring initialization. Configure before first socket use, or call `IoUringManager.cleanup()` to force reinitialization.
 
+### Read Buffer Size (Hybrid SO_RCVBUF)
+
+The library uses a **hybrid approach** for read buffer sizing, similar to JVM socket behavior:
+
+1. **By default**, the library queries the kernel's `SO_RCVBUF` socket option once at connect/accept time
+2. This respects system-level tuning (e.g., `net.core.rmem_default`) without additional configuration
+3. **If you explicitly set** `PlatformSocketConfig.readBufferSize` to a non-default value, it overrides the SO_RCVBUF query
+
+```kotlin
+// Option 1: Let the library use SO_RCVBUF (recommended)
+// No configuration needed - uses kernel's socket receive buffer size
+
+// Option 2: Explicit override
+PlatformSocketConfig.configure {
+    readBufferSize = 131072  // Forces 128KB buffers regardless of SO_RCVBUF
+}
+```
+
+This design provides:
+- **Zero-config optimization**: Applications automatically benefit from system-level socket tuning
+- **Explicit control**: Developers can override when specific buffer sizes are needed
+- **Efficiency**: SO_RCVBUF is queried once per socket (single `getsockopt` syscall at connect/accept time)
+
 ### System Buffer Sizes
 
-For high-throughput applications, you can also tune the system-level socket buffer sizes:
+For high-throughput applications, tune the system-level socket buffer sizes:
 
 ```bash
 # View current settings
@@ -146,7 +169,7 @@ echo "net.core.rmem_default = 262144" | sudo tee -a /etc/sysctl.conf
 echo "net.core.rmem_max = 16777216" | sudo tee -a /etc/sysctl.conf
 ```
 
-**Note:** These system settings are separate from `PlatformSocketConfig.readBufferSize`. The library buffer determines how much data is requested per read, while system buffers affect kernel-level buffering.
+With the hybrid approach, the library automatically picks up these system settings - no need to mirror them in `PlatformSocketConfig`.
 
 ## Graceful Degradation
 

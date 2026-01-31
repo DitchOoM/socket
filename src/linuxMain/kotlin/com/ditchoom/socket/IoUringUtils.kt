@@ -740,6 +740,41 @@ internal fun closeSocket(sockfd: Int) {
 }
 
 /**
+ * Get the socket receive buffer size (SO_RCVBUF).
+ *
+ * This queries the kernel's receive buffer size for the socket, which is typically
+ * set based on system defaults (net.core.rmem_default) or per-socket configuration.
+ * The kernel usually doubles the requested value to account for bookkeeping overhead,
+ * so the returned value may be larger than expected.
+ *
+ * @param sockfd The socket file descriptor
+ * @return The receive buffer size in bytes, or a default value if query fails
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal fun getSocketReceiveBufferSize(sockfd: Int): Int {
+    if (sockfd < 0) return DEFAULT_READ_BUFFER_SIZE
+
+    memScoped {
+        val optval = alloc<IntVar>()
+        val optlen = alloc<socklen_tVar>()
+        optlen.value = sizeOf<IntVar>().convert()
+
+        val result = getsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, optval.ptr, optlen.ptr)
+        if (result == 0 && optval.value > 0) {
+            // Kernel returns the doubled value, use it directly as it represents
+            // the actual buffer space available
+            return optval.value
+        }
+    }
+    return DEFAULT_READ_BUFFER_SIZE
+}
+
+/**
+ * Default read buffer size used when SO_RCVBUF query fails.
+ */
+internal const val DEFAULT_READ_BUFFER_SIZE = 65536
+
+/**
  * Get OpenSSL error string.
  */
 @OptIn(ExperimentalForeignApi::class)

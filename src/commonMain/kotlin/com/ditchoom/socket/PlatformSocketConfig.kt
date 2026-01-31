@@ -48,10 +48,22 @@ object PlatformSocketConfig {
         private set
 
     /**
-     * Default read buffer size in bytes.
-     * - Linux: Used for io_uring recv operations
-     * - Higher values may improve throughput for large transfers but use more memory
-     * - Default: 65536 (64KB)
+     * Override for read buffer size in bytes.
+     *
+     * **Hybrid behavior on Linux:**
+     * - By default (65536), the library queries SO_RCVBUF via getsockopt() once at
+     *   socket connect/accept time and uses that kernel-reported buffer size
+     * - If you set this to any other value, it overrides the SO_RCVBUF query and
+     *   uses your specified size for all read operations
+     *
+     * **Other platforms:**
+     * - Used directly as the read buffer size
+     *
+     * This allows the library to automatically use optimal buffer sizes based on
+     * system configuration (e.g., net.core.rmem_default), while still allowing
+     * explicit override when needed.
+     *
+     * Default: 65536 (64KB) - triggers SO_RCVBUF query on Linux
      */
     var readBufferSize: Int = 65536
         private set

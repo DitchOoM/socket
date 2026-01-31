@@ -21,6 +21,20 @@ import kotlin.time.Duration
 @OptIn(ExperimentalForeignApi::class)
 open class LinuxSocketWrapper : ClientSocket {
     internal var sockfd: Int = -1
+        set(value) {
+            field = value
+            // Cache the socket's receive buffer size when fd is set
+            if (value >= 0) {
+                cachedReadBufferSize = getSocketReceiveBufferSize(value)
+            }
+        }
+
+    /**
+     * Cached socket receive buffer size from SO_RCVBUF.
+     * Queried once when socket fd is set and reused for all read operations.
+     * Can be overridden by PlatformSocketConfig.readBufferSize if configured.
+     */
+    private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
 
     override fun isOpen(): Boolean = sockfd >= 0
 
@@ -32,7 +46,8 @@ open class LinuxSocketWrapper : ClientSocket {
         if (sockfd < 0) return EMPTY_BUFFER
 
         // Allocate buffer with native memory for zero-copy io_uring read
-        val bufferSize = 65536
+        // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
+        val bufferSize = getEffectiveReadBufferSize()
         val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
 
         // Get native memory pointer
@@ -181,6 +196,21 @@ open class LinuxSocketWrapper : ClientSocket {
                 throw SocketException("send failed: $errorMessage (errno=$errorCode)")
             }
         }
+    }
+
+    /**
+     * Get the effective read buffer size.
+     * Returns PlatformSocketConfig.readBufferSize if explicitly configured (non-default),
+     * otherwise returns the cached SO_RCVBUF value queried at accept time.
+     */
+    private fun getEffectiveReadBufferSize(): Int {
+        val configuredSize = PlatformSocketConfig.readBufferSize
+        // If user explicitly configured a different buffer size, use that
+        if (configuredSize != DEFAULT_READ_BUFFER_SIZE) {
+            return configuredSize
+        }
+        // Otherwise use the cached SO_RCVBUF value
+        return cachedReadBufferSize
     }
 
     private fun closeInternal() {

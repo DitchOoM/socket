@@ -27,6 +27,13 @@ class LinuxClientSocket(
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
 
+    /**
+     * Cached socket receive buffer size from SO_RCVBUF.
+     * Queried once at connect time and reused for all read operations.
+     * Can be overridden by PlatformSocketConfig.readBufferSize if configured.
+     */
+    private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
+
     override fun isOpen(): Boolean = sockfd >= 0
 
     override suspend fun localPort(): Int = getLocalPort(sockfd)
@@ -69,6 +76,9 @@ class LinuxClientSocket(
 
                 // Connect using io_uring
                 connectWithIoUring(addrInfo.pointed.ai_addr!!, addrInfo.pointed.ai_addrlen, timeout)
+
+                // Cache the socket's receive buffer size for efficient read operations
+                cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
 
                 // Initialize TLS if requested
                 if (useTls) {
@@ -224,7 +234,8 @@ class LinuxClientSocket(
         if (sockfd < 0) return EMPTY_BUFFER
 
         // Allocate buffer with native memory for zero-copy io_uring read
-        val bufferSize = PlatformSocketConfig.readBufferSize
+        // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
+        val bufferSize = getEffectiveReadBufferSize()
         val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
 
         // Get native memory pointer
@@ -526,6 +537,21 @@ class LinuxClientSocket(
                 throw SocketException("send failed: $errorMessage (errno=$errorCode)")
             }
         }
+    }
+
+    /**
+     * Get the effective read buffer size.
+     * Returns PlatformSocketConfig.readBufferSize if explicitly configured (non-default),
+     * otherwise returns the cached SO_RCVBUF value queried at connect time.
+     */
+    private fun getEffectiveReadBufferSize(): Int {
+        val configuredSize = PlatformSocketConfig.readBufferSize
+        // If user explicitly configured a different buffer size, use that
+        if (configuredSize != DEFAULT_READ_BUFFER_SIZE) {
+            return configuredSize
+        }
+        // Otherwise use the cached SO_RCVBUF value
+        return cachedReadBufferSize
     }
 
     private fun closeInternal() {
