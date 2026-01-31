@@ -242,6 +242,8 @@ class LinuxClientSocket(
 
             return when {
                 bytesRead > 0 -> {
+                    // Set position to bytesRead so resetForRead() works correctly
+                    // resetForRead() will set limit = position, then position = 0
                     buffer.position(bytesRead)
                     buffer
                 }
@@ -275,6 +277,8 @@ class LinuxClientSocket(
 
             return when {
                 bytesRead > 0 -> {
+                    // Set position to bytesRead so resetForRead() works correctly
+                    // resetForRead() will set limit = position, then position = 0
                     buffer.position(bytesRead)
                     buffer
                 }

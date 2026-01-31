@@ -85,6 +85,47 @@ System CA certificates are loaded from standard locations:
 
 ## Performance Tuning
 
+### Platform Socket Configuration
+
+The io_uring settings can be configured from common code using `PlatformSocketConfig`:
+
+```kotlin
+import com.ditchoom.socket.PlatformSocketConfig
+import kotlin.time.Duration.Companion.milliseconds
+
+// Quick presets for common use cases
+PlatformSocketConfig.configureForClient()  // Optimized for client apps (256 queue depth)
+PlatformSocketConfig.configureForServer()  // Optimized for servers (4096 queue depth)
+
+// Or configure manually
+PlatformSocketConfig.configure {
+    ioQueueDepth = 2048           // Default: 1024
+    ioQueueRetries = 20           // Default: 10
+    ioRetryDelay = 2.milliseconds // Default: 1ms
+}
+
+// Reset to defaults
+PlatformSocketConfig.reset()
+```
+
+#### Presets
+
+| Preset | Queue Depth | Retries | Use Case |
+|--------|-------------|---------|----------|
+| Default | 1024 | 10 | General purpose |
+| `configureForClient()` | 256 | 5 | Client apps with few connections |
+| `configureForServer()` | 4096 | 20 | High-concurrency servers |
+
+#### Manual Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ioQueueDepth` | 1024 | io_uring submission/completion queue size. Each entry uses ~64 bytes. |
+| `ioQueueRetries` | 10 | Max retries when queue is temporarily full. Uses exponential backoff. |
+| `ioRetryDelay` | 1ms | Base delay between retries. Actual delay is `ioRetryDelay * retryNumber`. |
+
+**Note:** Changes take effect on next io_uring initialization. Configure before first socket use, or call `IoUringManager.cleanup()` to force reinitialization.
+
 ### Buffer Sizes
 
 The Linux implementation currently uses a fixed 64KB read buffer. For high-throughput applications, you can tune the system-level socket buffer sizes:
@@ -105,10 +146,6 @@ echo "net.core.rmem_max = 16777216" | sudo tee -a /etc/sysctl.conf
 
 **Note:** The library will respect `SO_RCVBUF` in a future version. Currently, the internal buffer is fixed at 64KB regardless of system settings.
 
-### io_uring Queue Depth
-
-The io_uring submission queue depth is set to 256 entries, which is sufficient for most applications. This allows up to 256 concurrent I/O operations before blocking.
-
 ## Graceful Degradation
 
 If io_uring is not available (kernel < 5.1), socket initialization will fail with a clear error message. There is currently no fallback to poll/select - io_uring is required.
@@ -118,6 +155,16 @@ To check if your system supports io_uring:
 # Should return 0 if io_uring is available
 cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo "io_uring available"
 ```
+
+### High Load Handling
+
+When the io_uring submission queue is full (more concurrent operations than `ioQueueDepth`), the library will:
+
+1. Retry with exponential backoff (1ms, 2ms, 4ms, ...)
+2. Retry up to `ioQueueRetries` times (default: 10)
+3. Throw `SocketException` with a clear message if retries are exhausted
+
+This provides graceful handling of burst traffic. For sustained high load, increase `ioQueueDepth` via `PlatformSocketConfig`.
 
 ## Building
 

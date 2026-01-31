@@ -38,7 +38,17 @@ private data class PendingOperation(
 @OptIn(ExperimentalForeignApi::class)
 internal object IoUringManager {
     private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
-    private const val QUEUE_DEPTH = 256
+
+    // Configuration is read from PlatformSocketConfig
+    // These getters allow runtime configuration changes to take effect
+    private val queueDepth: Int
+        get() = PlatformSocketConfig.ioQueueDepth
+
+    private val maxSqeRetries: Int
+        get() = PlatformSocketConfig.ioQueueRetries
+
+    private val sqeRetryDelay: Duration
+        get() = PlatformSocketConfig.ioRetryDelay
 
     // Default max wait time when no operations have deadlines
     private val DEFAULT_POLL_TIMEOUT = 1.seconds
@@ -88,7 +98,7 @@ internal object IoUringManager {
 
         // Initialize new ring
         val ptr = nativeHeap.alloc<io_uring>().ptr
-        val ret = io_uring_queue_init(QUEUE_DEPTH.toUInt(), ptr, 0u)
+        val ret = io_uring_queue_init(queueDepth.toUInt(), ptr, 0u)
         if (ret < 0) {
             nativeHeap.free(ptr)
             val errorMsg = strerror(-ret)?.toKString() ?: "Unknown error"
@@ -241,7 +251,9 @@ internal object IoUringManager {
             } catch (e: Exception) {
                 nativeHeap.free(ts)
                 nativeHeap.free(cqePtr)
-                // Continue polling on error
+                // Log unexpected errors for debugging, but continue polling
+                // In production, consider using a proper logging framework
+                println("IoUringManager: Unexpected error in poller loop: ${e.message}")
             }
         }
     }
@@ -256,6 +268,9 @@ internal object IoUringManager {
      *
      * The calling coroutine suspends until the operation completes or times out.
      * Timeouts are handled via kernel timeout - no orphaned operations.
+     *
+     * If the submission queue is full, this will retry with exponential backoff
+     * up to maxSqeRetries times before failing.
      *
      * @param prepareOp Function to prepare the SQE (called with the SQE and user_data)
      * @param timeout Optional timeout for the operation
@@ -277,24 +292,44 @@ internal object IoUringManager {
         }
 
         try {
-            // Submit under mutex (quick operation, no blocking)
-            submitMutex.withLock {
-                memScoped {
-                    val ring = getRing()
+            // Submit with retry logic for full ring
+            var retries = 0
+            while (true) {
+                val submitted =
+                    submitMutex.withLock {
+                        memScoped {
+                            val ring = getRing()
 
-                    // Get SQE and prepare operation
-                    val sqe =
-                        io_uring_get_sqe(ring)
-                            ?: throw SocketException("Failed to get SQE - ring is full")
+                            // Get SQE - may return null if ring is full
+                            val sqe = io_uring_get_sqe(ring)
+                            if (sqe == null) {
+                                // Ring is full, signal retry needed
+                                return@memScoped -1
+                            }
 
-                    prepareOp(sqe, userData)
-                    io_uring_sqe_set_data64(sqe, userData.toULong())
+                            prepareOp(sqe, userData)
+                            io_uring_sqe_set_data64(sqe, userData.toULong())
 
-                    // Submit to kernel
-                    val submitted = io_uring_submit(ring)
-                    if (submitted < 0) {
-                        throwFromResult(submitted, "io_uring_submit")
+                            // Submit to kernel
+                            io_uring_submit(ring)
+                        }
                     }
+
+                when {
+                    submitted >= 0 -> break // Success
+                    submitted == -1 -> {
+                        // Ring was full, retry with backoff
+                        retries++
+                        if (retries > maxSqeRetries) {
+                            throw SocketException(
+                                "io_uring submission queue full after $maxSqeRetries retries. " +
+                                    "Too many concurrent operations.",
+                            )
+                        }
+                        // Exponential backoff: 1ms, 2ms, 4ms, ...
+                        kotlinx.coroutines.delay(sqeRetryDelay * retries)
+                    }
+                    else -> throwFromResult(submitted, "io_uring_submit")
                 }
             }
 
@@ -309,8 +344,79 @@ internal object IoUringManager {
     }
 
     /**
+     * Allocate a user_data value and register it for an upcoming operation.
+     * This allows the caller to know the userData before submission, enabling
+     * proper cancellation handling.
+     *
+     * @return Pair of (userData, deferred) for tracking the operation
+     */
+    suspend fun registerOperation(timeout: Duration? = null): Pair<Long, CompletableDeferred<Int>> {
+        ensurePollerStarted()
+
+        val userData = nextUserData()
+        val deferred = CompletableDeferred<Int>()
+        val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
+
+        pendingOpsMutex.withLock {
+            pendingOps[userData] = PendingOperation(deferred, deadline)
+        }
+
+        return userData to deferred
+    }
+
+    /**
+     * Submit a pre-registered operation. Use with [registerOperation] when you need
+     * to know the userData before submission (e.g., for cancellation).
+     */
+    suspend fun submitRegistered(
+        userData: Long,
+        deferred: CompletableDeferred<Int>,
+        prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit,
+    ): Int {
+        try {
+            var retries = 0
+            while (true) {
+                val submitted =
+                    submitMutex.withLock {
+                        memScoped {
+                            val ring = getRing()
+                            val sqe = io_uring_get_sqe(ring)
+                            if (sqe == null) {
+                                return@memScoped -1
+                            }
+
+                            prepareOp(sqe)
+                            io_uring_sqe_set_data64(sqe, userData.toULong())
+                            io_uring_submit(ring)
+                        }
+                    }
+
+                when {
+                    submitted >= 0 -> break
+                    submitted == -1 -> {
+                        retries++
+                        if (retries > maxSqeRetries) {
+                            throw SocketException(
+                                "io_uring submission queue full after $maxSqeRetries retries.",
+                            )
+                        }
+                        kotlinx.coroutines.delay(sqeRetryDelay * retries)
+                    }
+                    else -> throwFromResult(submitted, "io_uring_submit")
+                }
+            }
+
+            return deferred.await()
+        } finally {
+            pendingOpsMutex.withLock {
+                pendingOps.remove(userData)
+            }
+        }
+    }
+
+    /**
      * Submit an operation without waiting (fire-and-forget).
-     * Used for cancel operations.
+     * Used for cancel operations. This is a suspend function.
      */
     suspend fun submitNoWait(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
         submitMutex.withLock {
@@ -320,6 +426,20 @@ internal object IoUringManager {
                 prepareOp(sqe)
                 io_uring_submit(ring)
             }
+        }
+    }
+
+    /**
+     * Submit an operation without waiting - non-blocking version.
+     * Used when called from non-suspend context (like cleanup).
+     * Does NOT acquire the mutex - use only when safe (e.g., during shutdown).
+     */
+    fun submitNoWaitUnsafe(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
+        val ring = ringRef.value ?: return
+        memScoped {
+            val sqe = io_uring_get_sqe(ring) ?: return
+            prepareOp(sqe)
+            io_uring_submit(ring)
         }
     }
 

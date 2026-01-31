@@ -112,7 +112,12 @@ class LinuxServerSocket : ServerSocket {
 
                 listening = true
             } catch (e: Exception) {
-                closeInternal()
+                // Clean up on bind/listen failure
+                listening = false
+                if (serverFd >= 0) {
+                    closeSocket(serverFd)
+                    serverFd = -1
+                }
                 throw e
             }
         }
@@ -141,12 +146,17 @@ class LinuxServerSocket : ServerSocket {
             val addrPtr = clientAddr.ptr.reinterpret<sockaddr>()
             val addrLenPtr = clientAddrLen.ptr
 
-            // Submit accept and wait for completion
+            // Register operation FIRST to get userData for cancellation
+            // This fixes the race condition where cancel could miss the accept
+            val (userData, deferred) = IoUringManager.registerOperation(timeout = null)
+
+            // Store userData BEFORE submission so cancel can find it
+            pendingAcceptUserData.value = userData
+
+            // Now submit the accept operation
             val result =
-                IoUringManager.submitAndWait(timeout = null) { sqe, userData ->
+                IoUringManager.submitRegistered(userData, deferred) { sqe ->
                     io_uring_prep_accept(sqe, fd, addrPtr, addrLenPtr, 0)
-                    // Store userData for potential cancellation
-                    pendingAcceptUserData.value = userData
                 }
 
             pendingAcceptUserData.value = 0L
@@ -192,7 +202,21 @@ class LinuxServerSocket : ServerSocket {
 
     override fun port(): Int = boundPort
 
-    private fun closeInternal() {
+    /**
+     * Cancel pending accept operation using io_uring async cancel.
+     * This is a suspend function since it submits to io_uring.
+     */
+    private suspend fun cancelPendingAccept() {
+        val userData = pendingAcceptUserData.value
+        if (userData == 0L) return
+
+        // Fire-and-forget cancel
+        IoUringManager.submitNoWait { sqe ->
+            io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+        }
+    }
+
+    override suspend fun close() {
         if (!listening && serverFd < 0) return
 
         // Cancel any pending accept operation using io_uring async cancel
@@ -204,24 +228,5 @@ class LinuxServerSocket : ServerSocket {
             serverFd = -1
         }
         boundPort = -1
-    }
-
-    /**
-     * Cancel pending accept operation using io_uring async cancel.
-     */
-    private fun cancelPendingAccept() {
-        val userData = pendingAcceptUserData.value
-        if (userData == 0L) return
-
-        // Fire-and-forget cancel using existing mutex-protected helper
-        kotlinx.coroutines.runBlocking {
-            IoUringManager.submitNoWait { sqe ->
-                io_uring_prep_cancel64(sqe, userData.toULong(), 0)
-            }
-        }
-    }
-
-    override suspend fun close() {
-        closeInternal()
     }
 }
