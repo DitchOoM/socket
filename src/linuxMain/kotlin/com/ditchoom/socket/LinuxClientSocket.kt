@@ -224,7 +224,7 @@ class LinuxClientSocket(
         if (sockfd < 0) return EMPTY_BUFFER
 
         // Allocate buffer with native memory for zero-copy io_uring read
-        val bufferSize = 65536
+        val bufferSize = PlatformSocketConfig.readBufferSize
         val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
 
         // Get native memory pointer

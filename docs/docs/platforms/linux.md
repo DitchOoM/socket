@@ -102,6 +102,7 @@ PlatformSocketConfig.configure {
     ioQueueDepth = 2048           // Default: 1024
     ioQueueRetries = 20           // Default: 10
     ioRetryDelay = 2.milliseconds // Default: 1ms
+    readBufferSize = 131072       // Default: 64KB
 }
 
 // Reset to defaults
@@ -110,11 +111,11 @@ PlatformSocketConfig.reset()
 
 #### Presets
 
-| Preset | Queue Depth | Retries | Use Case |
-|--------|-------------|---------|----------|
-| Default | 1024 | 10 | General purpose |
-| `configureForClient()` | 256 | 5 | Client apps with few connections |
-| `configureForServer()` | 4096 | 20 | High-concurrency servers |
+| Preset | Queue Depth | Retries | Read Buffer | Use Case |
+|--------|-------------|---------|-------------|----------|
+| Default | 1024 | 10 | 64KB | General purpose |
+| `configureForClient()` | 256 | 5 | 32KB | Client apps with few connections |
+| `configureForServer()` | 4096 | 20 | 128KB | High-concurrency servers |
 
 #### Manual Settings
 
@@ -123,12 +124,13 @@ PlatformSocketConfig.reset()
 | `ioQueueDepth` | 1024 | io_uring submission/completion queue size. Each entry uses ~64 bytes. |
 | `ioQueueRetries` | 10 | Max retries when queue is temporarily full. Uses exponential backoff. |
 | `ioRetryDelay` | 1ms | Base delay between retries. Actual delay is `ioRetryDelay * retryNumber`. |
+| `readBufferSize` | 64KB | Size of read buffer for recv operations. Larger values improve throughput. |
 
 **Note:** Changes take effect on next io_uring initialization. Configure before first socket use, or call `IoUringManager.cleanup()` to force reinitialization.
 
-### Buffer Sizes
+### System Buffer Sizes
 
-The Linux implementation currently uses a fixed 64KB read buffer. For high-throughput applications, you can tune the system-level socket buffer sizes:
+For high-throughput applications, you can also tune the system-level socket buffer sizes:
 
 ```bash
 # View current settings
@@ -144,7 +146,7 @@ echo "net.core.rmem_default = 262144" | sudo tee -a /etc/sysctl.conf
 echo "net.core.rmem_max = 16777216" | sudo tee -a /etc/sysctl.conf
 ```
 
-**Note:** The library will respect `SO_RCVBUF` in a future version. Currently, the internal buffer is fixed at 64KB regardless of system settings.
+**Note:** These system settings are separate from `PlatformSocketConfig.readBufferSize`. The library buffer determines how much data is requested per read, while system buffers affect kernel-level buffering.
 
 ## Graceful Degradation
 

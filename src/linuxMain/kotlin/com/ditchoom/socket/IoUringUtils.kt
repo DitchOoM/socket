@@ -187,11 +187,12 @@ internal object IoUringManager {
     private suspend fun pollerLoop() {
         val ring = getRing()
 
-        while (currentCoroutineContext().isActive) {
-            val cqePtr = nativeHeap.alloc<CPointerVar<io_uring_cqe>>()
-            val ts = nativeHeap.alloc<__kernel_timespec>()
+        // Allocate once and reuse to avoid fragmentation in tight loop
+        val cqePtr = nativeHeap.alloc<CPointerVar<io_uring_cqe>>()
+        val ts = nativeHeap.alloc<__kernel_timespec>()
 
-            try {
+        try {
+            while (currentCoroutineContext().isActive) {
                 // Calculate timeout based on earliest deadline
                 val timeout =
                     pendingOpsMutex.withLock {
@@ -211,15 +212,11 @@ internal object IoUringManager {
 
                 if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
                     // Kernel timeout - we've already handled expired ops above
-                    nativeHeap.free(ts)
-                    nativeHeap.free(cqePtr)
                     continue
                 }
 
                 if (waitRet < 0) {
-                    // Other error - continue
-                    nativeHeap.free(ts)
-                    nativeHeap.free(cqePtr)
+                    // Other error - continue polling
                     continue
                 }
 
@@ -243,20 +240,11 @@ internal object IoUringManager {
                         }
                     }
                 } while (io_uring_peek_cqe(ring, cqePtr.ptr) >= 0)
-
-                nativeHeap.free(ts)
-                nativeHeap.free(cqePtr)
-            } catch (e: CancellationException) {
-                nativeHeap.free(ts)
-                nativeHeap.free(cqePtr)
-                throw e
-            } catch (e: Exception) {
-                nativeHeap.free(ts)
-                nativeHeap.free(cqePtr)
-                // Log unexpected errors for debugging, but continue polling
-                // In production, consider using a proper logging framework
-                println("IoUringManager: Unexpected error in poller loop: ${e.message}")
             }
+        } finally {
+            // Free allocations when loop exits
+            nativeHeap.free(ts)
+            nativeHeap.free(cqePtr)
         }
     }
 

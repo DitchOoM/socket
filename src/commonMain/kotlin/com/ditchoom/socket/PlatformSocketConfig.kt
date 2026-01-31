@@ -48,6 +48,15 @@ object PlatformSocketConfig {
         private set
 
     /**
+     * Default read buffer size in bytes.
+     * - Linux: Used for io_uring recv operations
+     * - Higher values may improve throughput for large transfers but use more memory
+     * - Default: 65536 (64KB)
+     */
+    var readBufferSize: Int = 65536
+        private set
+
+    /**
      * Configure platform socket settings.
      *
      * @param block Configuration block
@@ -57,6 +66,7 @@ object PlatformSocketConfig {
             this@PlatformSocketConfig.ioQueueDepth = ioQueueDepth
             this@PlatformSocketConfig.ioQueueRetries = ioQueueRetries
             this@PlatformSocketConfig.ioRetryDelay = ioRetryDelay
+            this@PlatformSocketConfig.readBufferSize = readBufferSize
         }
     }
 
@@ -67,6 +77,7 @@ object PlatformSocketConfig {
         ioQueueDepth = 1024
         ioQueueRetries = 10
         ioRetryDelay = 1.milliseconds
+        readBufferSize = 65536
     }
 
     /**
@@ -79,11 +90,13 @@ object PlatformSocketConfig {
      * - ioQueueDepth: 256 (supports ~250 concurrent operations)
      * - ioQueueRetries: 5
      * - ioRetryDelay: 1ms
+     * - readBufferSize: 32KB
      */
     fun configureForClient() {
         ioQueueDepth = 256
         ioQueueRetries = 5
         ioRetryDelay = 1.milliseconds
+        readBufferSize = 32768
     }
 
     /**
@@ -96,16 +109,19 @@ object PlatformSocketConfig {
      * - ioQueueDepth: 4096 (supports ~4000 concurrent operations)
      * - ioQueueRetries: 20
      * - ioRetryDelay: 1ms
+     * - readBufferSize: 128KB
      */
     fun configureForServer() {
         ioQueueDepth = 4096
         ioQueueRetries = 20
         ioRetryDelay = 1.milliseconds
+        readBufferSize = 131072
     }
 
     class ConfigBuilder {
         var ioQueueDepth: Int = PlatformSocketConfig.ioQueueDepth
         var ioQueueRetries: Int = PlatformSocketConfig.ioQueueRetries
         var ioRetryDelay: Duration = PlatformSocketConfig.ioRetryDelay
+        var readBufferSize: Int = PlatformSocketConfig.readBufferSize
     }
 }
