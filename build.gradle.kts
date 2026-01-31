@@ -514,25 +514,27 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
     // Generate .def file with library paths for static libraries
     val generatedDefFile = projectDir.resolve("build/generated/cinterop/LinuxSockets-$arch.def")
 
-    val generateDefTask = tasks.register("generateLinuxSocketsDef${arch.replaceFirstChar { it.uppercase() }}") {
-        inputs.file("src/nativeInterop/cinterop/LinuxSockets.def")
-        outputs.file(generatedDefFile)
-        doLast {
-            val baseDefContent = file("src/nativeInterop/cinterop/LinuxSockets.def").readText()
-            // Add libraryPaths and staticLibraries directives
-            // getentropy is referenced by OpenSSL but requires glibc 2.25+. Since io_uring
-            // requires Linux 5.1+ (which ships glibc 2.29+), getentropy is available at runtime.
-            // Use --unresolved-symbols=ignore-in-object-files to allow linking.
-            val modifiedContent = baseDefContent.replace(
-                "linkerOpts.linux = -lssl -lcrypto -luring -lpthread -ldl",
-                """libraryPaths.linux = ${opensslLibDir.absolutePath} ${liburingLibDir.absolutePath}
+    val generateDefTask =
+        tasks.register("generateLinuxSocketsDef${arch.replaceFirstChar { it.uppercase() }}") {
+            inputs.file("src/nativeInterop/cinterop/LinuxSockets.def")
+            outputs.file(generatedDefFile)
+            doLast {
+                val baseDefContent = file("src/nativeInterop/cinterop/LinuxSockets.def").readText()
+                // Add libraryPaths and staticLibraries directives
+                // getentropy is referenced by OpenSSL but requires glibc 2.25+. Since io_uring
+                // requires Linux 5.1+ (which ships glibc 2.29+), getentropy is available at runtime.
+                // Use --unresolved-symbols=ignore-in-object-files to allow linking.
+                val modifiedContent =
+                    baseDefContent.replace(
+                        "linkerOpts.linux = -lssl -lcrypto -luring -lpthread -ldl",
+                        """libraryPaths.linux = ${opensslLibDir.absolutePath} ${liburingLibDir.absolutePath}
 staticLibraries.linux = libssl.a libcrypto.a liburing.a
-linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files"""
-            )
-            generatedDefFile.parentFile.mkdirs()
-            generatedDefFile.writeText(modifiedContent)
+linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files""",
+                    )
+                generatedDefFile.parentFile.mkdirs()
+                generatedDefFile.writeText(modifiedContent)
+            }
         }
-    }
 
     compilations["main"].cinterops {
         create("LinuxSockets") {
