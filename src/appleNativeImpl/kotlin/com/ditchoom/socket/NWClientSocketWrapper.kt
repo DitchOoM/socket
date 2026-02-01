@@ -24,14 +24,18 @@ class NWClientSocketWrapper(
         port: Int,
         timeout: Duration,
         hostname: String?,
+        tlsOptions: TlsOptions,
     ) {
         val host = hostname ?: "localhost"
+        // Enable certificate verification by default, disable only if TlsOptions specifies insecure mode
+        val verifyCertificates = tlsOptions.verifyCertificates && !tlsOptions.allowSelfSigned
         val clientSocket =
             ClientSocketWrapper(
                 host = host,
                 port = port.toUShort(),
                 timeoutSeconds = timeout.inWholeSeconds.convert(),
                 useTLS = useTls,
+                verifyCertificates = verifyCertificates,
             )
         this.socket = clientSocket
         this.closedLocally = false

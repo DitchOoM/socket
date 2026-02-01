@@ -26,6 +26,7 @@ class LinuxClientSocket(
     private var sockfd: Int = -1
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
+    private var currentTlsOptions: TlsOptions = TlsOptions.DEFAULT
 
     /**
      * Cached socket receive buffer size from SO_RCVBUF.
@@ -44,8 +45,10 @@ class LinuxClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
+        tlsOptions: TlsOptions,
     ) {
         val host = hostname ?: "localhost"
+        this.currentTlsOptions = tlsOptions
 
         memScoped {
             // Resolve hostname
@@ -154,6 +157,11 @@ class LinuxClientSocket(
                     "and default paths",
             )
         }
+
+        // Configure certificate verification based on TlsOptions
+        // Enable peer verification by default, disable only if TlsOptions specifies insecure mode
+        val verifyCertificates = currentTlsOptions.verifyCertificates && !currentTlsOptions.allowSelfSigned
+        ssl_ctx_set_verify_peer(sslCtx, if (verifyCertificates) 1 else 0)
 
         // Create SSL connection
         ssl = SSL_new(sslCtx) ?: throw SSLSocketException("Failed to create SSL object")

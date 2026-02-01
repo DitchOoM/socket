@@ -118,7 +118,7 @@ import Network
 /// Client socket wrapper for outbound connections
 @objc public class ClientSocketWrapper: SocketWrapper {
 
-    @objc public init(host: String, port: UInt16, timeoutSeconds: Int, useTLS: Bool) {
+    @objc public init(host: String, port: UInt16, timeoutSeconds: Int, useTLS: Bool, verifyCertificates: Bool = true) {
         super.init()
 
         let nwHost = NWEndpoint.Host(host)
@@ -130,9 +130,10 @@ import Network
         let params: NWParameters
         if useTLS {
             let tlsOptions = NWProtocolTLS.Options()
-            // Disable peer authentication for flexibility (can be made configurable)
+            // Enable peer authentication by default for security
+            // Only disable when explicitly requested (e.g., for self-signed certificates)
             sec_protocol_options_set_peer_authentication_required(
-                tlsOptions.securityProtocolOptions, false
+                tlsOptions.securityProtocolOptions, verifyCertificates
             )
             params = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         } else {

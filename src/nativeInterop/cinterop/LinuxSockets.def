@@ -47,3 +47,9 @@ static inline int socket_accept(int sockfd, struct sockaddr *addr, socklen_t *ad
 static inline int ssl_set_hostname(SSL *ssl, const char *hostname) {
     return SSL_set_tlsext_host_name(ssl, hostname);
 }
+
+// OpenSSL wrapper for SSL_CTX_set_verify (to avoid callback parameter issues)
+// SSL_VERIFY_NONE = 0, SSL_VERIFY_PEER = 1
+static inline void ssl_ctx_set_verify_peer(SSL_CTX *ctx, int verify) {
+    SSL_CTX_set_verify(ctx, verify ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, NULL);
+}
