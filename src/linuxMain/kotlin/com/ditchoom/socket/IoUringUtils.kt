@@ -461,9 +461,17 @@ internal object IoUringManager {
     }
 
     /**
-     * Submit an operation without waiting - non-blocking version.
-     * Used when called from non-suspend context (like cleanup).
-     * Does NOT acquire the mutex - use only when safe (e.g., during shutdown).
+     * Submit an operation without waiting - non-blocking version for cancellation.
+     *
+     * This is called from [invokeOnCancellation] handlers which run synchronously
+     * during coroutine cancellation. At that point:
+     * - The cancelled coroutine is no longer submitting operations
+     * - We're only submitting a cancel request, which is idempotent
+     * - Even if multiple cancellations race, io_uring handles duplicate cancels gracefully
+     *
+     * Does NOT acquire [submitMutex] because:
+     * 1. Mutex.lock() is a suspend function, unusable in non-suspend context
+     * 2. The cancel operation is fire-and-forget and race-safe
      */
     fun submitNoWaitUnsafe(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
         val ring = ringRef.value ?: return
@@ -501,8 +509,7 @@ internal object IoUringManager {
 
             // Wait briefly for the poller to actually exit
             // This ensures the poller thread has stopped before we close the dispatcher
-            // Use Dispatchers.Default to avoid deadlock if cleanup() is called from a coroutine
-            runBlocking(kotlinx.coroutines.Dispatchers.Default) {
+            runBlocking {
                 try {
                     withTimeout(200.milliseconds) {
                         job?.join()
@@ -529,8 +536,7 @@ internal object IoUringManager {
         }
 
         // Complete any pending operations with error
-        // Use Dispatchers.Default to avoid deadlock if cleanup() is called from a coroutine
-        runBlocking(kotlinx.coroutines.Dispatchers.Default) {
+        runBlocking {
             pendingOpsMutex.withLock {
                 pendingOps.values.forEach { it.deferred.complete(-ECANCELED) }
                 pendingOps.clear()

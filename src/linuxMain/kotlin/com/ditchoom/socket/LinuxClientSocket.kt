@@ -88,12 +88,11 @@ class LinuxClientSocket(
                     initTls(host, timeout)
                 }
             } catch (e: Exception) {
-                freeaddrinfo(addrInfo)
                 closeInternal()
                 throw e
+            } finally {
+                freeaddrinfo(addrInfo)
             }
-
-            freeaddrinfo(addrInfo)
         }
     }
 
@@ -134,18 +133,18 @@ class LinuxClientSocket(
         val method = TLS_client_method() ?: throw SSLSocketException("Failed to get TLS method")
         sslCtx = SSL_CTX_new(method) ?: throw SSLSocketException("Failed to create SSL context")
 
-        // Load system CA certificates
-        // Our static OpenSSL was built with /opt/openssl paths, but system certs vary by distro
-        // Try common Linux CA certificate locations in order of prevalence
+        // Load system CA certificates from common Linux distribution paths.
+        // Supported distributions:
+        //   - Debian/Ubuntu: /etc/ssl/certs/ca-certificates.crt
+        //   - RHEL/Fedora/CentOS: /etc/pki/tls/certs/ca-bundle.crt
+        //   - OpenSUSE: /etc/ssl/ca-bundle.pem
+        //   - Alpine/Arch: /etc/ssl/cert.pem
+        //   - Fallback: OpenSSL default paths
         val caLoaded =
             SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/certs") == 1 ||
-                // Debian/Ubuntu
                 SSL_CTX_load_verify_locations(sslCtx, "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/tls/certs") == 1 ||
-                // RHEL/Fedora/CentOS
                 SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/ca-bundle.pem", "/etc/ssl/certs") == 1 ||
-                // OpenSUSE
                 SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/cert.pem", "/etc/ssl/certs") == 1 ||
-                // Alpine/Arch
                 SSL_CTX_set_default_verify_paths(sslCtx) == 1
         if (!caLoaded) {
             throw SSLSocketException(

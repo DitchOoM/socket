@@ -5,6 +5,7 @@ import kotlinx.cinterop.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.coroutines.coroutineContext
 
@@ -19,7 +20,9 @@ import kotlin.coroutines.coroutineContext
 class LinuxServerSocket : ServerSocket {
     private var serverFd: Int = -1
     private var boundPort: Int = -1
-    private var listening: Boolean = false
+
+    // Atomic flag for thread-safe listening state checks across coroutines
+    private val listening = AtomicInt(0) // 0 = not listening, 1 = listening
 
     // Unique user_data for accept operations to enable cancellation
     private val pendingAcceptUserData = AtomicLong(0L)
@@ -110,10 +113,10 @@ class LinuxServerSocket : ServerSocket {
                 val listenResult = listen(serverFd, effectiveBacklog)
                 checkSocketResult(listenResult, "listen")
 
-                listening = true
+                listening.value = 1
             } catch (e: Exception) {
                 // Clean up on bind/listen failure
-                listening = false
+                listening.value = 0
                 if (serverFd >= 0) {
                     closeSocket(serverFd)
                     serverFd = -1
@@ -124,7 +127,7 @@ class LinuxServerSocket : ServerSocket {
 
         // Return a flow that accepts connections using io_uring
         return flow {
-            while (coroutineContext.isActive && listening) {
+            while (coroutineContext.isActive && listening.value == 1) {
                 val clientSocket = acceptWithIoUring()
                 if (clientSocket != null) {
                     emit(clientSocket)
@@ -134,7 +137,7 @@ class LinuxServerSocket : ServerSocket {
     }
 
     private suspend fun acceptWithIoUring(): ClientSocket? {
-        if (serverFd < 0 || !listening) return null
+        if (serverFd < 0 || listening.value == 0) return null
 
         // Allocate storage that persists through the async operation
         val clientAddr = nativeHeap.alloc<sockaddr_storage>()
@@ -177,12 +180,12 @@ class LinuxServerSocket : ServerSocket {
                         }
                         ECANCELED -> {
                             // Operation was cancelled via close()
-                            listening = false
+                            listening.value = 0
                             null
                         }
                         EBADF, EINVAL -> {
                             // Socket closed
-                            listening = false
+                            listening.value = 0
                             null
                         }
                         else -> {
@@ -198,7 +201,7 @@ class LinuxServerSocket : ServerSocket {
         }
     }
 
-    override fun isListening(): Boolean = listening && serverFd >= 0
+    override fun isListening(): Boolean = listening.value == 1 && serverFd >= 0
 
     override fun port(): Int = boundPort
 
@@ -217,12 +220,12 @@ class LinuxServerSocket : ServerSocket {
     }
 
     override suspend fun close() {
-        if (!listening && serverFd < 0) return
+        if (listening.value == 0 && serverFd < 0) return
 
         // Cancel any pending accept operation using io_uring async cancel
         cancelPendingAccept()
 
-        listening = false
+        listening.value = 0
         if (serverFd >= 0) {
             closeSocket(serverFd)
             serverFd = -1
