@@ -385,4 +385,194 @@ class ServerCancellationTests {
         }
 }
 
+/**
+ * Tests for client socket read/write cancellation.
+ * Critical for WebSocket library which needs to cancel read operations when closing.
+ */
+class ClientCancellationTests {
+    /**
+     * Test that cancelling a coroutine blocked on socket.read() completes quickly.
+     * This verifies io_uring cancellation is working properly.
+     */
+    @Test
+    fun cancelReadCompletesQuickly() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val acceptedClientFlow = server.bind()
+            val clientConnected = Mutex(locked = true)
+
+            // Server accepts connection but never sends data
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { serverToClient ->
+                        clientConnected.unlock()
+                        // Hold connection open but don't send anything
+                        delay(10.seconds)
+                        serverToClient.close()
+                    }
+                }
+
+            val client = ClientSocket.allocate()
+            client.open(server.port())
+
+            // Wait for server to accept
+            clientConnected.lockWithTimeout()
+
+            // Start a read that will block (server isn't sending)
+            val readJob =
+                launch(Dispatchers.Default) {
+                    try {
+                        // Long timeout - we'll cancel before this fires
+                        client.read(30.seconds)
+                    } catch (_: kotlinx.coroutines.CancellationException) {
+                        // Expected when cancelled
+                    } catch (_: SocketClosedException) {
+                        // Also acceptable if socket was closed
+                    } catch (_: SocketException) {
+                        // May get this on some platforms
+                    }
+                }
+
+            // Let the read start
+            delay(100)
+
+            // Cancel the read - should complete quickly
+            val startTime = currentTimeMillis()
+            readJob.cancel()
+            readJob.join()
+            val elapsed = currentTimeMillis() - startTime
+
+            // Cancellation should complete well under 500ms
+            // (not waiting for the 30 second read timeout)
+            assertTrue(elapsed < 500, "Read cancellation took too long: ${elapsed}ms")
+
+            client.close()
+            server.close()
+            serverJob.cancel()
+        }
+
+    /**
+     * Test that cancelling a coroutine blocked on socket.write() completes quickly.
+     */
+    @Test
+    fun cancelWriteCompletesQuickly() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val acceptedClientFlow = server.bind()
+            val clientConnected = Mutex(locked = true)
+
+            // Server accepts connection but never reads data (causes write to block)
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { serverToClient ->
+                        clientConnected.unlock()
+                        // Hold connection open but don't read
+                        delay(10.seconds)
+                        serverToClient.close()
+                    }
+                }
+
+            val client = ClientSocket.allocate()
+            client.open(server.port())
+
+            // Wait for server to accept
+            clientConnected.lockWithTimeout()
+
+            // Start a write that may block if buffer fills
+            val writeJob =
+                launch(Dispatchers.Default) {
+                    try {
+                        // Write lots of data to fill the buffer and block
+                        val largeData = "x".repeat(1024 * 1024).toReadBuffer(Charset.UTF8, AllocationZone.Heap)
+                        repeat(100) {
+                            client.write(largeData, 30.seconds)
+                            largeData.resetForRead()
+                        }
+                    } catch (_: kotlinx.coroutines.CancellationException) {
+                        // Expected when cancelled
+                    } catch (_: SocketClosedException) {
+                        // Also acceptable
+                    } catch (_: SocketException) {
+                        // May get this on some platforms
+                    }
+                }
+
+            // Let writes start
+            delay(200)
+
+            // Cancel the write - should complete quickly
+            val startTime = currentTimeMillis()
+            writeJob.cancel()
+            writeJob.join()
+            val elapsed = currentTimeMillis() - startTime
+
+            // Cancellation should complete quickly
+            assertTrue(elapsed < 500, "Write cancellation took too long: ${elapsed}ms")
+
+            client.close()
+            server.close()
+            serverJob.cancel()
+        }
+
+    /**
+     * Test that multiple cancellations don't leak resources or crash.
+     * Note: On some platforms, cancelling a blocked read may close the socket.
+     * This test verifies the cancellation path itself is clean.
+     */
+    @Test
+    fun multipleCancellationsDontCrash() =
+        runTestNoTimeSkipping {
+            // Run multiple connect-read-cancel cycles to verify no resource leaks
+            repeat(3) { iteration ->
+                val server = ServerSocket.allocate()
+                val acceptedClientFlow = server.bind()
+                val clientConnected = Mutex(locked = true)
+
+                val serverJob =
+                    launch(Dispatchers.Default) {
+                        acceptedClientFlow.collect { serverToClient ->
+                            clientConnected.unlock()
+                            delay(10.seconds)
+                            serverToClient.close()
+                        }
+                    }
+
+                val client = ClientSocket.allocate()
+                client.open(server.port())
+                clientConnected.lockWithTimeout()
+
+                // Start and cancel a read
+                val readJob =
+                    launch(Dispatchers.Default) {
+                        try {
+                            client.read(30.seconds)
+                        } catch (_: Exception) {
+                            // Ignore
+                        }
+                    }
+                delay(50)
+
+                val startTime = currentTimeMillis()
+                readJob.cancel()
+                readJob.join()
+                val elapsed = currentTimeMillis() - startTime
+
+                // Cancellation should be fast
+                assertTrue(
+                    elapsed < 500,
+                    "Read cancellation took too long in iteration $iteration: ${elapsed}ms",
+                )
+
+                // Clean shutdown should not throw
+                try {
+                    client.close()
+                } catch (_: Exception) {
+                    // Acceptable if socket was already closed by cancellation
+                }
+                server.close()
+                serverJob.cancel()
+            }
+        }
+}
+
 expect fun currentTimeMillis(): Long

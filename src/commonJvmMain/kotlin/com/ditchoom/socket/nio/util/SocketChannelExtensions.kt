@@ -66,12 +66,20 @@ suspend fun AbstractSelectableChannel.suspendUntilReady(
     timeout: Duration,
 ) {
     val random = random()
-    suspendCancellableCoroutine<Double> {
+    suspendCancellableCoroutine<Double> { cont ->
+        // Wake the selector when cancelled so the blocking select() returns
+        cont.invokeOnCancellation {
+            try {
+                selector.wakeup()
+            } catch (_: Exception) {
+                // Selector may already be closed
+            }
+        }
         val key =
             try {
-                register(selector, ops, WrappedContinuation(it, random))
+                register(selector, ops, WrappedContinuation(cont, random))
             } catch (e: ClosedSelectorException) {
-                it.resumeWithException(SocketClosedException("Socket closed", e))
+                cont.resumeWithException(SocketClosedException("Socket closed", e))
                 return@suspendCancellableCoroutine
             }
         runBlocking {

@@ -23,8 +23,7 @@ internal class AsyncVoidIOHandler(
         ex: Throwable,
         cont: CancellableContinuation<Unit>,
     ) {
-        // just return if already cancelled and got an expected exception for that case
-        if (ex is AsynchronousCloseException && cont.isCancelled) return
+        // Always try to resume - if already cancelled, this is safely ignored
         cont.resumeWithException(ex)
     }
 }
@@ -42,8 +41,7 @@ internal object AsyncIOHandlerAny :
         ex: Throwable,
         cont: CancellableContinuation<Any>,
     ) {
-        // just return if already cancelled and got an expected exception for that case
-        if (ex is AsynchronousCloseException && cont.isCancelled) return
+        // Always try to resume - if already cancelled, this is safely ignored
         cont.resumeWithException(ex)
     }
 }
@@ -61,8 +59,7 @@ fun asyncIOIntHandler(): CompletionHandler<Int, CancellableContinuation<Int>> =
             ex: Throwable,
             cont: CancellableContinuation<Int>,
         ) {
-            // Just return if already cancelled and got an expected exception for that case
-            if (ex is AsynchronousCloseException && cont.isCancelled) return
+            // Always try to resume - if already cancelled, this is safely ignored
             val message = "Socket operation failed."
             if (ex is AsynchronousCloseException) {
                 cont.resumeWithException(SocketClosedException(message, ex))
