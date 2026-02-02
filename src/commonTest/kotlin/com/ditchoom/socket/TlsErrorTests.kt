@@ -76,7 +76,10 @@ class TlsErrorTests {
                 }
             } catch (e: SocketException) {
                 // Log the actual error for diagnosis, then fail with details
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"
+                println("ERROR: $errorMsg")
+                e.printStackTrace()
+                throw AssertionError(errorMsg, e)
             }
         }
 
@@ -104,7 +107,7 @@ class TlsErrorTests {
                     throw e
                 }
             } catch (e: SocketException) {
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                run { val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"; println("ERROR: $errorMsg"); e.printStackTrace(); throw AssertionError(errorMsg, e) }
             }
         }
 
@@ -130,7 +133,7 @@ class TlsErrorTests {
                     throw e
                 }
             } catch (e: SocketException) {
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                run { val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"; println("ERROR: $errorMsg"); e.printStackTrace(); throw AssertionError(errorMsg, e) }
             }
         }
 
@@ -238,7 +241,7 @@ class TlsErrorTests {
                     throw e
                 }
             } catch (e: SocketException) {
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                run { val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"; println("ERROR: $errorMsg"); e.printStackTrace(); throw AssertionError(errorMsg, e) }
             }
         }
 
@@ -273,7 +276,7 @@ class TlsErrorTests {
                     throw e
                 }
             } catch (e: SocketException) {
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                run { val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"; println("ERROR: $errorMsg"); e.printStackTrace(); throw AssertionError(errorMsg, e) }
             }
         }
 
@@ -305,7 +308,7 @@ class TlsErrorTests {
                     throw e
                 }
             } catch (e: SocketException) {
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                run { val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"; println("ERROR: $errorMsg"); e.printStackTrace(); throw AssertionError(errorMsg, e) }
             }
         }
 
@@ -336,7 +339,7 @@ class TlsErrorTests {
                     throw e
                 }
             } catch (e: SocketException) {
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                run { val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"; println("ERROR: $errorMsg"); e.printStackTrace(); throw AssertionError(errorMsg, e) }
             }
         }
 
@@ -550,7 +553,7 @@ class TlsErrorTests {
                     throw e
                 }
             } catch (e: SocketException) {
-                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
+                run { val errorMsg = "TLS connection failed: ${e::class.simpleName}: ${e.message}"; println("ERROR: $errorMsg"); e.printStackTrace(); throw AssertionError(errorMsg, e) }
             }
         }
 }
