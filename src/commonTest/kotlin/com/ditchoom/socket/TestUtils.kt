@@ -14,6 +14,12 @@ import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+/**
+ * Returns true if running in an iOS/tvOS/watchOS Simulator environment.
+ * iOS Simulators in CI often have restricted network access to external hosts.
+ */
+expect fun isRunningInSimulator(): Boolean
+
 internal fun runTestNoTimeSkipping(
     count: Int = 1,
     timeout: Duration = 30.seconds,

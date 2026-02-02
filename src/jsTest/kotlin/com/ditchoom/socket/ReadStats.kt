@@ -28,3 +28,5 @@ external class TcpPortUsed {
 actual fun supportsIPv6(): Boolean = false // JS/browser doesn't have direct socket access
 
 actual fun currentTimeMillis(): Long = Date.now().toLong()
+
+actual fun isRunningInSimulator(): Boolean = false

@@ -38,3 +38,5 @@ actual fun supportsIPv6(): Boolean =
     }
 
 actual fun currentTimeMillis(): Long = System.currentTimeMillis()
+
+actual fun isRunningInSimulator(): Boolean = false
