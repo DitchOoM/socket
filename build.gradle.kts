@@ -579,8 +579,21 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
     }
     js {
-        browser()
-        nodejs()
+        browser {
+            testTask {
+                useKarma {
+                    useChromeHeadless()
+                }
+            }
+        }
+        nodejs {
+            testTask {
+                useMocha {
+                    // Set timeout for async tests (30 seconds)
+                    timeout = "30000"
+                }
+            }
+        }
     }
 
     // Apple targets with Network.framework zero-copy socket implementation
