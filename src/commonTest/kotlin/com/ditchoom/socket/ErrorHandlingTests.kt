@@ -79,7 +79,7 @@ class ErrorHandlingTests {
 
             val client = ClientSocket.allocate()
             client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-            serverReady.lock()
+            serverReady.lockWithTimeout()
 
             // Try to read with a short timeout - should timeout since server sends nothing
             try {
@@ -116,7 +116,7 @@ class ErrorHandlingTests {
 
             val client = ClientSocket.allocate()
             client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-            clientConnected.lock()
+            clientConnected.lockWithTimeout()
 
             // Give server time to close
             kotlinx.coroutines.delay(200)
@@ -172,7 +172,7 @@ class ErrorHandlingTests {
 
             val client = ClientSocket.allocate()
             client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-            clientConnected.lock()
+            clientConnected.lockWithTimeout()
 
             // Read the data that was sent
             val data = client.readString(timeout = 1.seconds)
@@ -212,7 +212,7 @@ class ErrorHandlingTests {
 
             val client = ClientSocket.allocate()
             client.open(server.port(), timeout = 1.seconds, hostname = "127.0.0.1")
-            clientConnected.lock()
+            clientConnected.lockWithTimeout()
 
             // Server has handled the connection - close server
             server.close()
@@ -296,7 +296,7 @@ class ErrorHandlingTests {
             client.writeString("actual data")
             client.close()
 
-            dataReceived.lock()
+            dataReceived.lockWithTimeout()
             assertEquals("actual data", receivedData)
 
             server.close()

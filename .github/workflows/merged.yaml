@@ -17,6 +17,8 @@ jobs:
       should_release: ${{ steps.check.outputs.should_release }}
       skip_release: ${{ steps.check.outputs.skip_release }}
       draft_release: ${{ steps.check.outputs.draft_release }}
+      is_major: ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
+      is_minor: ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,11 +73,85 @@ jobs:
           echo "should_release=false" >> $GITHUB_OUTPUT
 
   # Dry-run build when skip-release label is present
-  dry-run:
-    name: Dry-run Build (skip-release)
+  # Split into Linux and macOS jobs to match review CI structure
+  dry-run-linux:
+    name: Dry-run Linux (skip-release)
+    needs: check-release
+    if: needs.check-release.outputs.skip_release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
+      - name: Cache OpenSSL
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-x64
+          key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache OpenSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing x64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-x64
+          key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-arm64
+          key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl qemu-user-static
+          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          # ARM64 runtime libraries for QEMU - download and extract directly
+          mkdir -p /tmp/arm64-libs
+          cd /tmp/arm64-libs
+          curl -LO http://ports.ubuntu.com/pool/main/libx/libxcrypt/libcrypt1_4.4.36-4build1_arm64.deb
+          ar x libcrypt1_*.deb
+          tar xf data.tar.zst
+          sudo cp -r usr/lib/aarch64-linux-gnu/* /usr/aarch64-linux-gnu/lib/
+      - name: Run checks and tests
+        run: ./gradlew jvmTest jsTest linuxX64Test ktlintCheck --no-configuration-cache
+      - name: Build ARM64 test binary
+        run: ./gradlew linkDebugTestLinuxArm64 --no-configuration-cache
+      - name: Run ARM64 tests via QEMU (subset for validation)
+        run: qemu-aarch64-static -L /usr/aarch64-linux-gnu ./build/bin/linuxArm64/debugTest/test.kexe --ktest_filter=com.ditchoom.socket.LinuxTlsTests
+      - name: Dry-run publish (build artifacts without deploying)
+        run: ./gradlew publishToMavenLocal --no-configuration-cache
+      - name: Upload Maven local artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-run-maven-local-linux
+          path: ~/.m2/repository/com/ditchoom
+          retention-days: 7
+
+  dry-run-apple:
+    name: Dry-run Apple (skip-release)
     needs: check-release
     if: needs.check-release.outputs.skip_release == 'true'
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -90,26 +166,119 @@ jobs:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
-      - name: Run all checks and tests
-        # Skip Android unit tests - they hang on macOS, tested in emulator job
-        run: ./gradlew check allTests --no-configuration-cache -x testDebugUnitTest -x testReleaseUnitTest
-      - name: Dry-run publish (build artifacts without deploying)
-        run: ./gradlew publishToMavenLocal --no-configuration-cache
-      - name: Upload dry-run artifacts
+      - name: Run Apple tests
+        run: ./gradlew macosX64Test macosArm64Test iosSimulatorArm64Test tvosSimulatorArm64Test watchosSimulatorArm64Test ktlintCheck --no-configuration-cache
+      - name: Dry-run publish Apple artifacts
+        run: |
+          ./gradlew --no-configuration-cache \
+            publishIosArm64PublicationToMavenLocal \
+            publishIosSimulatorArm64PublicationToMavenLocal \
+            publishIosX64PublicationToMavenLocal \
+            publishMacosArm64PublicationToMavenLocal \
+            publishMacosX64PublicationToMavenLocal \
+            publishTvosArm64PublicationToMavenLocal \
+            publishTvosSimulatorArm64PublicationToMavenLocal \
+            publishTvosX64PublicationToMavenLocal \
+            publishWatchosArm64PublicationToMavenLocal \
+            publishWatchosSimulatorArm64PublicationToMavenLocal \
+            publishWatchosX64PublicationToMavenLocal
+      - name: Upload Maven local artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dry-run-artifacts
-          path: |
-            **/build/libs/*.jar
-            **/build/outputs/aar/*.aar
+          name: dry-run-maven-local-apple
+          path: ~/.m2/repository/com/ditchoom
           retention-days: 7
+
+  dry-run-validate:
+    name: Validate Dry-run Artifacts
+    needs: [check-release, dry-run-linux, dry-run-apple]
+    if: needs.check-release.outputs.skip_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dry-run-maven-local-linux
+          path: maven-repo
+      - name: Download Apple artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dry-run-maven-local-apple
+          path: maven-repo
+          merge-multiple: true
+      - name: Validate all platform artifacts present
+        run: |
+          # Use computed version from published artifacts
+          VERSION=$(ls maven-repo/socket/ | grep -E '^[0-9]' | head -1)
+          MAVEN_LOCAL=maven-repo
+          MISSING=0
+
+          check_artifact() {
+            local name=$1
+            local ext=$2
+            local path="$MAVEN_LOCAL/$name/$VERSION/$name-$VERSION.$ext"
+            if [ -f "$path" ]; then
+              echo "✓ Found: $name ($ext)"
+            else
+              echo "✗ Missing: $name ($ext) - expected at $path"
+              MISSING=$((MISSING + 1))
+            fi
+          }
+
+          echo "=== Validating Multi-Platform Artifacts (version: $VERSION) ==="
+          echo ""
+
+          echo "--- KotlinMultiplatform Metadata ---"
+          check_artifact "socket" "module"
+
+          echo ""
+          echo "--- JVM / JS / Android ---"
+          check_artifact "socket-jvm" "jar"
+          check_artifact "socket-js" "klib"
+          check_artifact "socket-android" "aar"
+
+          echo ""
+          echo "--- Linux ---"
+          check_artifact "socket-linuxx64" "klib"
+          check_artifact "socket-linuxarm64" "klib"
+
+          echo ""
+          echo "--- iOS ---"
+          check_artifact "socket-iosarm64" "klib"
+          check_artifact "socket-iossimulatorarm64" "klib"
+          check_artifact "socket-iosx64" "klib"
+
+          echo ""
+          echo "--- macOS ---"
+          check_artifact "socket-macosarm64" "klib"
+          check_artifact "socket-macosx64" "klib"
+
+          echo ""
+          echo "--- tvOS ---"
+          check_artifact "socket-tvosarm64" "klib"
+          check_artifact "socket-tvossimulatorarm64" "klib"
+          check_artifact "socket-tvosx64" "klib"
+
+          echo ""
+          echo "--- watchOS ---"
+          check_artifact "socket-watchosarm64" "klib"
+          check_artifact "socket-watchossimulatorarm64" "klib"
+          check_artifact "socket-watchosx64" "klib"
+
+          echo ""
+          echo "=== Summary ==="
+          if [ $MISSING -eq 0 ]; then
+            echo "All platform artifacts validated successfully!"
+          else
+            echo "ERROR: $MISSING artifact(s) missing!"
+            exit 1
+          fi
 
   # Draft release - publishes to staging but doesn't release
   # Creates a draft GitHub release (no tag) for manual validation
-  draft-release:
-    name: Draft Release (staging only)
+  # macOS publishes only Apple targets
+  draft-release-macos:
+    name: Draft Release - Apple targets
     needs: check-release
     if: needs.check-release.outputs.draft_release == 'true'
     runs-on: macos-latest
@@ -133,39 +302,118 @@ jobs:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
+      - name: Publish Apple targets to staging
+        run: |
+          VERSION_FLAG=""
+          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
+            VERSION_FLAG="-PincrementMajor=true"
+          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
+            VERSION_FLAG="-PincrementMinor=true"
+          fi
+          ./gradlew --no-configuration-cache $VERSION_FLAG \
+            publishIosArm64PublicationToMavenCentralRepository \
+            publishIosSimulatorArm64PublicationToMavenCentralRepository \
+            publishIosX64PublicationToMavenCentralRepository \
+            publishMacosArm64PublicationToMavenCentralRepository \
+            publishMacosX64PublicationToMavenCentralRepository \
+            publishTvosArm64PublicationToMavenCentralRepository \
+            publishTvosSimulatorArm64PublicationToMavenCentralRepository \
+            publishTvosX64PublicationToMavenCentralRepository \
+            publishWatchosArm64PublicationToMavenCentralRepository \
+            publishWatchosSimulatorArm64PublicationToMavenCentralRepository \
+            publishWatchosX64PublicationToMavenCentralRepository
+
+  # Linux x64 publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
+  draft-release-linux:
+    name: Draft Release - JVM/JS/Android/Linux
+    needs: check-release
+    if: needs.check-release.outputs.draft_release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_KEY_CONTENTS }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
+      - name: Cache OpenSSL x64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-x64
+          key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache OpenSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing x64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-x64
+          key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-arm64
+          key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl qemu-user-static
+          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
-      - name: Get version (Major)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
-        id: version_major
-        run: echo "version=$(./gradlew -q nextVersion -PincrementMajor=true)" >> $GITHUB_OUTPUT
-      - name: Get version (Minor)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
-        id: version_minor
-        run: echo "version=$(./gradlew -q nextVersion -PincrementMinor=true)" >> $GITHUB_OUTPUT
-      - name: Get version (Patch)
-        if:  ${{ !contains(github.event.pull_request.labels.*.name, 'major') && !contains(github.event.pull_request.labels.*.name, 'minor') }}
-        id: version_patch
-        run: echo "version=$(./gradlew -q nextVersion)" >> $GITHUB_OUTPUT
-      - name: Set version output
+      - name: Get version
         id: version
-        run: echo "version=${{ steps.version_major.outputs.version }}${{ steps.version_minor.outputs.version }}${{ steps.version_patch.outputs.version }}" >> $GITHUB_OUTPUT
-      - name: Publish to staging (Major)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
-        run: ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMajor=true
-      - name: Publish to staging (Minor)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
-        run: ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMinor=true
-      - name: Publish to staging (Patch)
-        if:  ${{ !contains(github.event.pull_request.labels.*.name, 'major') && !contains(github.event.pull_request.labels.*.name, 'minor') }}
-        run: ./gradlew publishToMavenCentral --no-configuration-cache
+        run: |
+          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
+            echo "version=$(./gradlew -q nextVersion -PincrementMajor=true)" >> $GITHUB_OUTPUT
+          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
+            echo "version=$(./gradlew -q nextVersion -PincrementMinor=true)" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(./gradlew -q nextVersion)" >> $GITHUB_OUTPUT
+          fi
+      - name: Publish to staging
+        # Publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
+        run: |
+          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
+            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMajor=true
+          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
+            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMinor=true
+          else
+            ./gradlew publishToMavenCentral --no-configuration-cache
+          fi
+
+  draft-release-finalize:
+    name: Create draft GitHub release
+    needs: [check-release, draft-release-macos, draft-release-linux]
+    if: needs.check-release.outputs.draft_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
       - name: Create draft release (no tag)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          version="${{ steps.version.outputs.version }}"
+          version="${{ needs.draft-release-linux.outputs.version }}"
           staging_url="https://central.sonatype.com/publishing/deployments"
 
           # Create draft release without tag
@@ -176,8 +424,10 @@ jobs:
               --title="v${version}" \
               --notes="## [${PR_TITLE}](${PR_URL})"$'\n\n'"**Status:** Awaiting validation in [Maven Central Staging](${staging_url})"$'\n\n'"### To complete release:"$'\n'"1. Validate artifacts in Maven Central staging area"$'\n'"2. Run the 'Complete Release' workflow, or"$'\n'"3. Publish this draft release (will create tag and release to Maven Central)"$'\n\n'"### To cancel:"$'\n'"1. Drop the staging repository in Maven Central"$'\n'"2. Delete this draft release"$'\n'"   No tag or Maven Central artifacts will remain."
 
-  macos:
-    name: MacOS Build & Deploy to Maven Central
+  # Production release - all platforms publish to staging, then release
+  # macOS publishes only Apple targets (iOS, macOS, watchOS, tvOS)
+  publish-macos:
+    name: Publish Apple targets to staging
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true'
     runs-on: macos-latest
@@ -202,39 +452,131 @@ jobs:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
+      - name: Publish Apple targets to staging
+        # Only publish Apple-specific targets from macOS (iOS, macOS, watchOS, tvOS)
+        run: |
+          VERSION_FLAG=""
+          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
+            VERSION_FLAG="-PincrementMajor=true"
+          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
+            VERSION_FLAG="-PincrementMinor=true"
+          fi
+          ./gradlew --no-configuration-cache $VERSION_FLAG \
+            publishIosArm64PublicationToMavenCentralRepository \
+            publishIosSimulatorArm64PublicationToMavenCentralRepository \
+            publishIosX64PublicationToMavenCentralRepository \
+            publishMacosArm64PublicationToMavenCentralRepository \
+            publishMacosX64PublicationToMavenCentralRepository \
+            publishTvosArm64PublicationToMavenCentralRepository \
+            publishTvosSimulatorArm64PublicationToMavenCentralRepository \
+            publishTvosX64PublicationToMavenCentralRepository \
+            publishWatchosArm64PublicationToMavenCentralRepository \
+            publishWatchosSimulatorArm64PublicationToMavenCentralRepository \
+            publishWatchosX64PublicationToMavenCentralRepository
+
+  # Linux x64 publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
+  publish-linux:
+    name: Publish JVM/JS/Android/Linux to staging
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+      ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+      ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_KEY_CONTENTS }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
+      - name: Cache OpenSSL x64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-x64
+          key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache OpenSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing x64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-x64
+          key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Cache liburing ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-arm64
+          key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl qemu-user-static
+          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
-      - name: Get version (Major)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
-        id: version_major
-        run: echo "version=$(./gradlew -q nextVersion -PincrementMajor=true)" >> $GITHUB_OUTPUT
-      - name: Get version (Minor)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
-        id: version_minor
-        run: echo "version=$(./gradlew -q nextVersion -PincrementMinor=true)" >> $GITHUB_OUTPUT
-      - name: Get version (Patch)
-        if:  ${{ !contains(github.event.pull_request.labels.*.name, 'major') && !contains(github.event.pull_request.labels.*.name, 'minor') }}
-        id: version_patch
-        run: echo "version=$(./gradlew -q nextVersion)" >> $GITHUB_OUTPUT
-      - name: Set version output
+      - name: Get version
         id: version
-        run: echo "version=${{ steps.version_major.outputs.version }}${{ steps.version_minor.outputs.version }}${{ steps.version_patch.outputs.version }}" >> $GITHUB_OUTPUT
-      - name: Deploy to Maven Central (Major)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'major') }}
-        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache -PincrementMajor=true
-      - name: Deploy to Maven Central (Minor)
-        if:  ${{ contains(github.event.pull_request.labels.*.name, 'minor') }}
-        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache -PincrementMinor=true
-      - name: Deploy to Maven Central (Patch)
-        if:  ${{ !contains(github.event.pull_request.labels.*.name, 'major') && !contains(github.event.pull_request.labels.*.name, 'minor') }}
-        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache
-      - name: Create tag and release
+        run: |
+          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
+            echo "version=$(./gradlew -q nextVersion -PincrementMajor=true)" >> $GITHUB_OUTPUT
+          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
+            echo "version=$(./gradlew -q nextVersion -PincrementMinor=true)" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(./gradlew -q nextVersion)" >> $GITHUB_OUTPUT
+          fi
+      - name: Publish to staging
+        # Publishes JVM, JS, Android, linuxX64, linuxArm64 (cross-compiled), and kotlinMultiplatform metadata
+        run: |
+          if [ "${{ needs.check-release.outputs.is_major }}" = "true" ]; then
+            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMajor=true
+          elif [ "${{ needs.check-release.outputs.is_minor }}" = "true" ]; then
+            ./gradlew publishToMavenCentral --no-configuration-cache -PincrementMinor=true
+          else
+            ./gradlew publishToMavenCentral --no-configuration-cache
+          fi
+
+  release:
+    name: Release to Maven Central
+    needs: [check-release, publish-macos, publish-linux]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Release staging repository to Maven Central
+        run: ./gradlew releaseToMavenCentral --no-configuration-cache
+      - name: Create tag and GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          version="${{ steps.version.outputs.version }}"
+          version="${{ needs.publish-linux.outputs.version }}"
           tag="v${version}"
 
           # Check if tag already exists
@@ -252,4 +594,4 @@ jobs:
           gh release create "$tag" \
               --repo="$GITHUB_REPOSITORY" \
               --title="${tag}" \
-              --notes="## [${PR_TITLE}](${PR_URL})"$'\n\n'"**Maven Central:** [com.ditchoom:socket:${version}](${maven_url})"
+              --notes="## [${PR_TITLE}](${PR_URL})"$'\n\n'"**Maven Central:** [com.ditchoom:socket:${version}](${maven_url})"$'\n\n'"### Platforms"$'\n'"- JVM, JS, Android"$'\n'"- iOS, macOS, watchOS, tvOS"$'\n'"- Linux x64, Linux ARM64"

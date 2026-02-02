@@ -10,9 +10,12 @@ import com.ditchoom.socket.nio.ByteBufferClientSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.NoSuchAlgorithmException
+import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -28,6 +31,7 @@ class SSLClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
+        tlsOptions: TlsOptions,
     ) {
         val context =
             try {
@@ -35,12 +39,49 @@ class SSLClientSocket(
             } catch (e: NoSuchAlgorithmException) {
                 SSLContext.getInstance("TLSv1.2")
             }
-        context.init(null, null, null)
+
+        // Configure trust managers based on TlsOptions
+        val trustManagers: Array<TrustManager>? =
+            if (tlsOptions.isInsecure()) {
+                // Use a trust-all manager for insecure mode (development/testing only)
+                arrayOf(InsecureTrustManager())
+            } else {
+                // Use default trust managers (system trust store)
+                null
+            }
+
+        context.init(null, trustManagers, null)
         engine = context.createSSLEngine(hostname, port)
         engine.useClientMode = true
+
+        // Configure hostname verification based on TlsOptions
+        if (tlsOptions.verifyHostname && hostname != null) {
+            val sslParams = engine.sslParameters
+            sslParams.endpointIdentificationAlgorithm = "HTTPS"
+            engine.sslParameters = sslParams
+        }
+
         engine.beginHandshake()
-        underlyingSocket.open(port, timeout, hostname)
+        underlyingSocket.open(port, timeout, hostname, tlsOptions)
         doHandshake(timeout)
+    }
+
+    /**
+     * Trust manager that accepts all certificates.
+     * WARNING: Only use for development and testing.
+     */
+    private class InsecureTrustManager : X509TrustManager {
+        override fun checkClientTrusted(
+            chain: Array<out X509Certificate>?,
+            authType: String?,
+        ) {}
+
+        override fun checkServerTrusted(
+            chain: Array<out X509Certificate>?,
+            authType: String?,
+        ) {}
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
     }
 
     override fun isOpen(): Boolean = underlyingSocket.isOpen()

@@ -16,3 +16,5 @@ actual fun supportsIPv6(): Boolean = true // Linux supports IPv6
 private val startMark = TimeSource.Monotonic.markNow()
 
 actual fun currentTimeMillis(): Long = startMark.elapsedNow().inWholeMilliseconds
+
+actual fun isRunningInSimulator(): Boolean = false

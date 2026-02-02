@@ -3,6 +3,7 @@ package com.ditchoom.socket.nio
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.socket.ClientToServerSocket
 import com.ditchoom.socket.SocketException
+import com.ditchoom.socket.TlsOptions
 import com.ditchoom.socket.nio.util.aConfigureBlocking
 import com.ditchoom.socket.nio.util.buildInetAddress
 import com.ditchoom.socket.nio.util.connect
@@ -19,6 +20,7 @@ class NioClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
+        tlsOptions: TlsOptions,
     ) {
         val socketAddress = buildInetAddress(port, hostname)
         val socketChannel = openSocketChannel()

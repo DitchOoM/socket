@@ -94,8 +94,19 @@ class NodeClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
+        tlsOptions: TlsOptions,
     ) {
-        val options = Options(port, hostname, onread = null, rejectUnauthorized = false)
+        // Enable certificate validation by default, disable only if TlsOptions specifies insecure mode
+        val rejectUnauthorized = tlsOptions.verifyCertificates && !tlsOptions.allowSelfSigned
+        // Set servername explicitly for SNI (Server Name Indication)
+        val options =
+            Options(
+                port = port,
+                host = hostname,
+                onread = null,
+                rejectUnauthorized = rejectUnauthorized,
+                servername = hostname,
+            )
         val netSocket = connect(useTls, options, timeout)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
