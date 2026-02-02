@@ -15,6 +15,18 @@ kotlinx-io-native/repo/
 
 local.properties
 .claude/
+.vscode
+.mcp.json
+.gitmodules
+
+# Shell/user config files (shouldn't be in repo)
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.ripgreprc
 
 # Built OpenSSL static libraries (built by Gradle)
 libs/openssl/
