@@ -501,7 +501,8 @@ internal object IoUringManager {
 
             // Wait briefly for the poller to actually exit
             // This ensures the poller thread has stopped before we close the dispatcher
-            runBlocking {
+            // Use Dispatchers.Default to avoid deadlock if cleanup() is called from a coroutine
+            runBlocking(kotlinx.coroutines.Dispatchers.Default) {
                 try {
                     withTimeout(200.milliseconds) {
                         job?.join()
@@ -528,7 +529,8 @@ internal object IoUringManager {
         }
 
         // Complete any pending operations with error
-        runBlocking {
+        // Use Dispatchers.Default to avoid deadlock if cleanup() is called from a coroutine
+        runBlocking(kotlinx.coroutines.Dispatchers.Default) {
             pendingOpsMutex.withLock {
                 pendingOps.values.forEach { it.deferred.complete(-ECANCELED) }
                 pendingOps.clear()
