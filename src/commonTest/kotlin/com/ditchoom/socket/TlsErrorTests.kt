@@ -74,6 +74,9 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                // Log the actual error for diagnosis, then fail with details
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 
@@ -100,6 +103,8 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 
@@ -124,6 +129,8 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 
@@ -230,6 +237,8 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 
@@ -263,6 +272,8 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 
@@ -293,6 +304,8 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 
@@ -322,6 +335,8 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 
@@ -534,6 +549,8 @@ class TlsErrorTests {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
                 }
+            } catch (e: SocketException) {
+                throw AssertionError("TLS connection failed: ${e::class.simpleName}: ${e.message}", e)
             }
         }
 }
