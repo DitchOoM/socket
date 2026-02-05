@@ -328,12 +328,12 @@ internal object IoUringManager {
             // Use suspendCancellableCoroutine so we can cancel the io_uring operation
             return suspendCancellableCoroutine { cont ->
                 cont.invokeOnCancellation {
-                    // Cancel the io_uring operation when the coroutine is cancelled
-                    // This is fire-and-forget - we don't wait for the cancel to complete
-                    submitNoWaitUnsafe { sqe ->
-                        io_uring_prep_cancel64(sqe, userData.toULong(), 0)
-                    }
-                    // Complete the deferred so the poller doesn't try to complete it later
+                    // Complete the deferred immediately so the coroutine can resume.
+                    // We don't submit an io_uring cancel here because:
+                    // 1. submitNoWaitUnsafe would race with other submissions (no mutex)
+                    // 2. The socket.close() that follows cancellation will close the fd,
+                    //    causing the kernel to cancel pending operations automatically
+                    // 3. The poller will ignore the eventual CQE since deferred is completed
                     deferred.complete(-ECANCELED)
                 }
                 // Resume when deferred completes
@@ -422,10 +422,7 @@ internal object IoUringManager {
             // Use suspendCancellableCoroutine so we can cancel the io_uring operation
             return suspendCancellableCoroutine { cont ->
                 cont.invokeOnCancellation {
-                    // Cancel the io_uring operation when the coroutine is cancelled
-                    submitNoWaitUnsafe { sqe ->
-                        io_uring_prep_cancel64(sqe, userData.toULong(), 0)
-                    }
+                    // Complete immediately - socket.close() will handle kernel-side cleanup
                     deferred.complete(-ECANCELED)
                 }
                 deferred.invokeOnCompletion { throwable ->

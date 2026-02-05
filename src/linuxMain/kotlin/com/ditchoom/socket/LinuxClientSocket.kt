@@ -1,9 +1,12 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
+import com.ditchoom.buffer.ManagedMemoryAccess
+import com.ditchoom.buffer.NativeMemoryAccess
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
@@ -299,6 +302,90 @@ class LinuxClientSocket(
                     // resetForRead() will set limit = position, then position = 0
                     buffer.position(bytesRead)
                     buffer
+                }
+                bytesRead == 0 -> {
+                    closeInternal()
+                    throw SocketClosedException("Connection closed by peer")
+                }
+                else -> {
+                    if (ssl != null) {
+                        handleSslReadError(bytesRead)
+                    } else {
+                        handleReadError(-bytesRead)
+                    }
+                }
+            }
+        }
+
+        throw SocketException("Buffer has no accessible memory for io_uring read")
+    }
+
+    /**
+     * Zero-copy read into caller-provided buffer.
+     * Writes directly into the buffer using io_uring, avoiding allocations.
+     *
+     * @param buffer The buffer to write data into. Must have remaining capacity.
+     * @param timeout Read timeout duration.
+     * @return Number of bytes read, or throws on error/close.
+     */
+    override suspend fun read(
+        buffer: WriteBuffer,
+        timeout: Duration,
+    ): Int {
+        if (sockfd < 0) return 0
+
+        val capacity = buffer.remaining()
+        if (capacity == 0) return 0
+
+        // Zero-copy path: write directly into native memory
+        val nativeAccess = buffer.nativeMemoryAccess
+        if (nativeAccess != null) {
+            val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
+            val bytesRead =
+                if (ssl != null) {
+                    sslRead(ptr, capacity, timeout)
+                } else {
+                    readWithIoUring(ptr, capacity, timeout)
+                }
+
+            return when {
+                bytesRead > 0 -> {
+                    buffer.position(buffer.position() + bytesRead)
+                    bytesRead
+                }
+                bytesRead == 0 -> {
+                    closeInternal()
+                    throw SocketClosedException("Connection closed by peer")
+                }
+                else -> {
+                    if (ssl != null) {
+                        handleSslReadError(bytesRead)
+                    } else {
+                        handleReadError(-bytesRead)
+                    }
+                }
+            }
+        }
+
+        // Zero-copy path: write directly into managed array (pinned)
+        val managedAccess = buffer.managedMemoryAccess
+        if (managedAccess != null) {
+            val array = managedAccess.backingArray
+            val offset = managedAccess.arrayOffset + buffer.position()
+            val bytesRead =
+                array.usePinned { pinned ->
+                    val ptr = pinned.addressOf(offset)
+                    if (ssl != null) {
+                        sslRead(ptr, capacity, timeout)
+                    } else {
+                        readWithIoUring(ptr, capacity, timeout)
+                    }
+                }
+
+            return when {
+                bytesRead > 0 -> {
+                    buffer.position(buffer.position() + bytesRead)
+                    bytesRead
                 }
                 bytesRead == 0 -> {
                     closeInternal()
