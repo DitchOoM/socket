@@ -1,8 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.ManagedMemoryAccess
-import com.ditchoom.buffer.NativeMemoryAccess
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
