@@ -58,6 +58,32 @@ internal object IoUringManager {
     // Unique ID generator for user_data
     private val nextUserDataCounter = AtomicLong(1L)
 
+    // Reference counting for auto-cleanup when all sockets are closed.
+    // On Kotlin/Native, newSingleThreadContext creates a non-daemon thread
+    // that prevents process exit. By cleaning up when the last socket closes,
+    // we ensure the poller thread is stopped and the process can terminate.
+    private val activeSocketCount = AtomicInt(0)
+
+    /**
+     * Called when a socket is opened. Increments the active socket counter.
+     */
+    fun onSocketOpened() {
+        activeSocketCount.incrementAndGet()
+    }
+
+    /**
+     * Called when a socket is closed. Decrements the active socket counter.
+     * When the last socket closes, automatically cleans up the io_uring
+     * infrastructure (poller thread, ring, dispatcher) so the process can exit.
+     */
+    fun onSocketClosed() {
+        if (activeSocketCount.decrementAndGet() <= 0) {
+            // Reset to 0 in case of underflow from double-close
+            activeSocketCount.compareAndSet(-1, 0)
+            cleanup()
+        }
+    }
+
     // Pending operations waiting for completion (with optional deadlines)
     private val pendingOps = mutableMapOf<Long, PendingOperation>()
     private val pendingOpsMutex = Mutex()

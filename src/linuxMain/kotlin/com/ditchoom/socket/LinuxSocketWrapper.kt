@@ -22,10 +22,14 @@ import kotlin.time.Duration
 open class LinuxSocketWrapper : ClientSocket {
     internal var sockfd: Int = -1
         set(value) {
+            val wasOpen = field >= 0
             field = value
             // Cache the socket's receive buffer size when fd is set
             if (value >= 0) {
                 cachedReadBufferSize = getSocketReceiveBufferSize(value)
+                if (!wasOpen) {
+                    IoUringManager.onSocketOpened()
+                }
             }
         }
 
@@ -214,9 +218,13 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private fun closeInternal() {
+        val wasOpen = sockfd >= 0
         if (sockfd >= 0) {
             closeSocket(sockfd)
             sockfd = -1
+        }
+        if (wasOpen) {
+            IoUringManager.onSocketClosed()
         }
     }
 

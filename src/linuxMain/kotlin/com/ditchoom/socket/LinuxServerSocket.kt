@@ -114,6 +114,9 @@ class LinuxServerSocket : ServerSocket {
                 checkSocketResult(listenResult, "listen")
 
                 listening.value = 1
+
+                // Track active socket for IoUringManager auto-cleanup
+                IoUringManager.onSocketOpened()
             } catch (e: Exception) {
                 // Clean up on bind/listen failure
                 listening.value = 0
@@ -226,10 +229,14 @@ class LinuxServerSocket : ServerSocket {
         cancelPendingAccept()
 
         listening.value = 0
+        val wasOpen = serverFd >= 0
         if (serverFd >= 0) {
             closeSocket(serverFd)
             serverFd = -1
         }
         boundPort = -1
+        if (wasOpen) {
+            IoUringManager.onSocketClosed()
+        }
     }
 }

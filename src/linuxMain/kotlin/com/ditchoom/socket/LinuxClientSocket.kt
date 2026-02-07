@@ -88,6 +88,9 @@ class LinuxClientSocket(
                 if (useTls) {
                     initTls(host, timeout)
                 }
+
+                // Track active socket for IoUringManager auto-cleanup
+                IoUringManager.onSocketOpened()
             } catch (e: Exception) {
                 closeInternal()
                 throw e
@@ -647,6 +650,7 @@ class LinuxClientSocket(
     }
 
     private fun closeInternal() {
+        val wasOpen = sockfd >= 0
         ssl?.let {
             SSL_shutdown(it)
             SSL_free(it)
@@ -659,6 +663,11 @@ class LinuxClientSocket(
         if (sockfd >= 0) {
             closeSocket(sockfd)
             sockfd = -1
+        }
+        // Notify IoUringManager so it can auto-cleanup when last socket closes.
+        // Only decrement if the socket was actually open (avoid double-close underflow).
+        if (wasOpen) {
+            IoUringManager.onSocketClosed()
         }
     }
 
