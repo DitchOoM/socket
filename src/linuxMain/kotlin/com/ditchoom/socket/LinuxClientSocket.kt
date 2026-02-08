@@ -242,7 +242,7 @@ class LinuxClientSocket(
     }
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        if (sockfd < 0) return EMPTY_BUFFER
+        if (sockfd < 0) throw SocketClosedException("Socket is closed")
 
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
@@ -333,7 +333,7 @@ class LinuxClientSocket(
         buffer: WriteBuffer,
         timeout: Duration,
     ): Int {
-        if (sockfd < 0) return 0
+        if (sockfd < 0) throw SocketClosedException("Socket is closed")
 
         val capacity = buffer.remaining()
         if (capacity == 0) return 0
@@ -487,7 +487,7 @@ class LinuxClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        if (sockfd < 0) return -1
+        if (sockfd < 0) throw SocketClosedException("Socket is closed")
 
         val remaining = buffer.remaining()
         if (remaining == 0) return 0

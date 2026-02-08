@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -253,6 +254,39 @@ class ResourceCleanupTests {
 
                 client.close()
                 assertFalse(client.isOpen(), "Client should be closed after timeout")
+            }
+
+            server.close()
+            serverJob.cancel()
+        }
+
+    @Test
+    fun writeAfterCloseThrows() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val serverFlow = server.bind()
+
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    serverFlow.collect { client ->
+                        delay(60000)
+                        client.close()
+                    }
+                }
+
+            val client = ClientSocket.allocate()
+            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            assertTrue(client.isOpen(), "Socket should be open")
+
+            client.close()
+            assertFalse(client.isOpen(), "Socket should be closed")
+
+            assertFailsWith<SocketClosedException>("Write after close should throw") {
+                client.writeString("should fail")
+            }
+
+            assertFailsWith<SocketClosedException>("Read after close should throw") {
+                client.readString(timeout = 1.seconds)
             }
 
             server.close()

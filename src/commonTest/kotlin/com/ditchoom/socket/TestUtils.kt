@@ -1,14 +1,11 @@
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.ditchoom.socket
 
 import com.ditchoom.socket.NetworkCapabilities.FULL_SOCKET_ACCESS
 import com.ditchoom.socket.NetworkCapabilities.WEBSOCKETS_ONLY
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
@@ -23,14 +20,15 @@ expect fun isRunningInSimulator(): Boolean
 internal fun runTestNoTimeSkipping(
     count: Int = 1,
     timeout: Duration = 30.seconds,
-    block: suspend TestScope.() -> Unit,
-) = runTest(timeout = timeout) {
+    block: suspend CoroutineScope.() -> Unit,
+) = runBlocking {
     try {
-        withContext(Dispatchers.Default.limitedParallelism(count)) {
-            block()
+        withTimeout(timeout) {
+            withContext(Dispatchers.Default.limitedParallelism(count)) {
+                block()
+            }
         }
     } catch (e: UnsupportedOperationException) {
-        // ignore
         when (getNetworkCapabilities()) {
             FULL_SOCKET_ACCESS -> throw e
             WEBSOCKETS_ONLY -> {} // ignore, expected on browsers
