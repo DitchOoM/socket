@@ -5,27 +5,17 @@ import com.ditchoom.socket.nio.NioClientSocket
 import com.ditchoom.socket.nio2.AsyncClientSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
 
-actual fun ClientSocket.Companion.allocate(
-    tls: Boolean,
-    allocationZone: AllocationZone,
-): ClientToServerSocket {
-    val clientSocket =
-        if (useAsyncChannels) {
-            try {
-                AsyncClientSocket(allocationZone)
-            } catch (t: Throwable) {
-                // It's possible Android OS version is too old to support AsyncSocketChannel
-                NioClientSocket(allocationZone, useNioBlocking)
-            }
-        } else {
+actual fun ClientSocket.Companion.allocate(allocationZone: AllocationZone): ClientToServerSocket =
+    if (useAsyncChannels) {
+        try {
+            AsyncClientSocket(allocationZone)
+        } catch (t: Throwable) {
+            // It's possible Android OS version is too old to support AsyncSocketChannel
             NioClientSocket(allocationZone, useNioBlocking)
         }
-    return if (tls) {
-        SSLClientSocket(clientSocket)
     } else {
-        clientSocket
+        NioClientSocket(allocationZone, useNioBlocking)
     }
-}
 
 var useAsyncChannels = true
 var useNioBlocking = false

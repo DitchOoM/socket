@@ -122,8 +122,9 @@ class SimpleSocketTests {
     ) = runTestNoTimeSkipping {
         var localPort = 1
         val remotePort = if (tls) 443 else 80
+        val socketOptions = if (tls) SocketOptions.tlsDefault() else SocketOptions()
         val response =
-            ClientSocket.connect(remotePort, domain, tls = tls, timeout = 10.seconds) { socket ->
+            ClientSocket.connect(remotePort, domain, socketOptions = socketOptions, timeout = 10.seconds) { socket ->
                 val request =
                     """
 GET / HTTP/1.1

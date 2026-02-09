@@ -3,7 +3,6 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.managedMemoryAccess
@@ -21,13 +20,11 @@ import kotlin.time.TimeSource
  * Uses IoUringManager for proper completion dispatch.
  */
 @OptIn(ExperimentalForeignApi::class)
-class LinuxClientSocket(
-    private val useTls: Boolean,
-) : ClientToServerSocket {
+class LinuxClientSocket : ClientToServerSocket {
     private var sockfd: Int = -1
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
-    private var currentTlsOptions: TlsOptions = TlsOptions.DEFAULT
+    private var currentTlsConfig: TlsConfig = TlsConfig.DEFAULT
 
     /**
      * Cached socket receive buffer size from SO_RCVBUF.
@@ -46,10 +43,11 @@ class LinuxClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
-        tlsOptions: TlsOptions,
+        socketOptions: SocketOptions,
     ) {
         val host = hostname ?: "localhost"
-        this.currentTlsOptions = tlsOptions
+        val tlsConfig = socketOptions.tls
+        this.currentTlsConfig = tlsConfig ?: TlsConfig.DEFAULT
 
         memScoped {
             // Resolve hostname
@@ -78,10 +76,8 @@ class LinuxClientSocket(
                 // Set non-blocking for io_uring
                 setNonBlocking(sockfd)
 
-                // Disable Nagle's algorithm for low-latency WebSocket messaging.
-                // Without this, small echo responses are delayed ~200ms by the
-                // Nagle + delayed ACK interaction, causing 1000-message tests to timeout.
-                setTcpNoDelay(sockfd)
+                // Apply socket options
+                applySocketOptions(sockfd, socketOptions)
 
                 // Connect using io_uring
                 connectWithIoUring(addrInfo.pointed.ai_addr!!, addrInfo.pointed.ai_addrlen, timeout)
@@ -90,7 +86,7 @@ class LinuxClientSocket(
                 cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
 
                 // Initialize TLS if requested
-                if (useTls) {
+                if (tlsConfig != null) {
                     initTls(host, timeout)
                 }
 
@@ -166,9 +162,9 @@ class LinuxClientSocket(
             )
         }
 
-        // Configure certificate verification based on TlsOptions
-        // Enable peer verification by default, disable only if TlsOptions specifies insecure mode
-        val verifyCertificates = currentTlsOptions.verifyCertificates && !currentTlsOptions.allowSelfSigned
+        // Configure certificate verification based on TlsConfig
+        // Enable peer verification by default, disable only if TlsConfig specifies insecure mode
+        val verifyCertificates = currentTlsConfig.verifyCertificates && !currentTlsConfig.allowSelfSigned
         ssl_ctx_set_verify_peer(sslCtx, if (verifyCertificates) 1 else 0)
 
         // Create SSL connection

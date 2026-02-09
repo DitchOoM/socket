@@ -41,6 +41,10 @@ external class Server {
 
     fun close(callback: () -> Unit): Server
 
+    fun removeAllListeners(): Server
+
+    fun unref(): Server
+
     fun getConnections(callback: (err: Any, count: Int) -> Unit): Server
 
     fun listen(
@@ -85,6 +89,10 @@ external class Socket {
     fun end(callback: () -> Unit): Socket
 
     fun destroy(): Socket
+
+    fun removeAllListeners(): Socket
+
+    fun unref(): Socket
 }
 
 class OnRead(

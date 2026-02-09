@@ -581,7 +581,13 @@ kotlin {
     }
     js {
         browser()
-        nodejs()
+        nodejs {
+            testTask {
+                useMocha {
+                    timeout = "30s"
+                }
+            }
+        }
     }
 
     // Apple targets with Network.framework zero-copy socket implementation

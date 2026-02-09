@@ -12,6 +12,7 @@ import kotlin.coroutines.suspendCoroutine
 
 class NodeServerSocket : ServerSocket {
     private var server: Server? = null
+    private val acceptedConnections = mutableListOf<Socket>()
 
     override suspend fun bind(
         port: Int,
@@ -19,9 +20,11 @@ class NodeServerSocket : ServerSocket {
         backlog: Int,
     ): Flow<ClientSocket> {
         val server = Net.createServer()
+        val connections = acceptedConnections
         val flow =
             callbackFlow {
                 server.on<Socket>("connection") { clientSocket ->
+                    connections.add(clientSocket)
                     val nodeSocket = NodeSocket()
                     nodeSocket.isClosed = false
                     nodeSocket.netSocket = clientSocket
@@ -33,10 +36,14 @@ class NodeServerSocket : ServerSocket {
                         nodeSocket.incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
                     }
                     clientSocket.on("close") { _ ->
+                        connections.remove(clientSocket)
+                        clientSocket.removeAllListeners()
                         nodeSocket.incomingMessageChannel.close()
                         nodeSocket.isClosed = true
                     }
                     clientSocket.on("error") { _ ->
+                        connections.remove(clientSocket)
+                        clientSocket.removeAllListeners()
                         nodeSocket.incomingMessageChannel.close()
                         nodeSocket.isClosed = true
                     }
@@ -45,12 +52,26 @@ class NodeServerSocket : ServerSocket {
                 server.on("close") {
                     channel.close()
                 }
-                awaitClose { server.close { } }
+                awaitClose {
+                    destroyAllConnections()
+                    server.removeAllListeners()
+                    server.unref()
+                    server.close { }
+                }
             }
 
         server.listenSuspend(port, host, backlog)
         this@NodeServerSocket.server = server
         return flow
+    }
+
+    private fun destroyAllConnections() {
+        acceptedConnections.forEach { socket ->
+            socket.removeAllListeners()
+            socket.destroy()
+            socket.unref()
+        }
+        acceptedConnections.clear()
     }
 
     @Suppress("MemberVisibilityCanBePrivate")
@@ -76,9 +97,14 @@ class NodeServerSocket : ServerSocket {
     override suspend fun close() {
         val server = server ?: return
         if (!isListening()) return
+        destroyAllConnections()
         suspendCoroutine {
+            // Don't removeAllListeners before close — the callbackFlow's "close"
+            // handler needs to fire to close the channel and complete the flow.
             server.close { it.resume(Unit) }
         }
+        server.removeAllListeners()
+        server.unref()
     }
 }
 
@@ -121,6 +147,10 @@ suspend fun Server.listenSuspend(
                 }
             }
         }
-        cont.invokeOnCancellation { close { } }
+        cont.invokeOnCancellation {
+            removeAllListeners()
+            unref()
+            close { }
+        }
     }
 }

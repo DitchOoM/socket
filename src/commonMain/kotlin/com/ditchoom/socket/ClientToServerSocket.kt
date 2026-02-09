@@ -8,6 +8,6 @@ interface ClientToServerSocket : ClientSocket {
         port: Int,
         timeout: Duration = 15.seconds,
         hostname: String? = null,
-        tlsOptions: TlsOptions = TlsOptions.DEFAULT,
+        socketOptions: SocketOptions = SocketOptions(),
     )
 }

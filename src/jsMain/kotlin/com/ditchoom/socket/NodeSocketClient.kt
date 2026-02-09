@@ -60,7 +60,7 @@ open class NodeSocket : ClientSocket {
     ): Int {
         val socket = netSocket
         if (socket == null || !isOpen()) {
-            throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
+            throw SocketClosedException("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val jsBuffer = buffer as JsBuffer
         val array = jsBuffer.buffer
@@ -74,8 +74,10 @@ open class NodeSocket : ClientSocket {
 
     fun cleanSocket(socket: Socket) {
         incomingMessageChannel.close()
+        socket.removeAllListeners()
         socket.end {}
         socket.destroy()
+        socket.unref()
         isClosed = true
     }
 
@@ -86,7 +88,6 @@ open class NodeSocket : ClientSocket {
 }
 
 class NodeClientSocket(
-    private val useTls: Boolean,
     private val allocationZone: AllocationZone,
 ) : NodeSocket(),
     ClientToServerSocket {
@@ -94,10 +95,10 @@ class NodeClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
-        tlsOptions: TlsOptions,
+        socketOptions: SocketOptions,
     ) {
-        // Enable certificate validation by default, disable only if TlsOptions specifies insecure mode
-        val rejectUnauthorized = tlsOptions.verifyCertificates && !tlsOptions.allowSelfSigned
+        val useTls = socketOptions.tls != null
+        val rejectUnauthorized = socketOptions.tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
         // Set servername explicitly for SNI (Server Name Indication)
         val options =
             Options(

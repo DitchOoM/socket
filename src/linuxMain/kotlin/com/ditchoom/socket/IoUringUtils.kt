@@ -687,6 +687,63 @@ internal fun setReuseAddr(sockfd: Int) {
 }
 
 /**
+ * Apply SocketOptions to a socket fd.
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal fun applySocketOptions(
+    sockfd: Int,
+    options: SocketOptions,
+) {
+    if (options.tcpNoDelay == true) setTcpNoDelay(sockfd)
+    if (options.reuseAddress == true) setReuseAddr(sockfd)
+    if (options.keepAlive == true) setKeepAlive(sockfd)
+    options.receiveBuffer?.let { setSocketReceiveBuffer(sockfd, it) }
+    options.sendBuffer?.let { setSocketSendBuffer(sockfd, it) }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun setKeepAlive(sockfd: Int) {
+    memScoped {
+        val optval = alloc<IntVar>()
+        optval.value = 1
+        checkSocketResult(
+            setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, optval.ptr, sizeOf<IntVar>().convert()),
+            "setsockopt(SO_KEEPALIVE)",
+        )
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun setSocketReceiveBuffer(
+    sockfd: Int,
+    size: Int,
+) {
+    memScoped {
+        val optval = alloc<IntVar>()
+        optval.value = size
+        checkSocketResult(
+            setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, optval.ptr, sizeOf<IntVar>().convert()),
+            "setsockopt(SO_RCVBUF)",
+        )
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun setSocketSendBuffer(
+    sockfd: Int,
+    size: Int,
+) {
+    memScoped {
+        val optval = alloc<IntVar>()
+        optval.value = size
+        checkSocketResult(
+            setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, optval.ptr, sizeOf<IntVar>().convert()),
+            "setsockopt(SO_SNDBUF)",
+        )
+    }
+}
+
+/**
  * Get local port number from socket (supports both IPv4 and IPv6).
  */
 @OptIn(ExperimentalForeignApi::class)

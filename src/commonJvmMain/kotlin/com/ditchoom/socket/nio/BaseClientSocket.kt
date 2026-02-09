@@ -13,6 +13,7 @@ import com.ditchoom.socket.nio.util.write
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.net.InetSocketAddress
+import java.nio.channels.ClosedChannelException
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import kotlin.time.Duration
@@ -29,6 +30,8 @@ abstract class BaseClientSocket(
     override suspend fun remotePort() = (socket.remoteAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
+        if (!isOpen()) throw SocketClosedException("Socket is closed.")
+        tlsHandler?.let { return it.unwrap(timeout) }
         val buffer = PlatformBuffer.allocate(socket.socket().receiveBufferSize, allocationZone) as BaseJvmBuffer
         read(buffer, timeout)
         return buffer
@@ -38,7 +41,12 @@ abstract class BaseClientSocket(
         buffer: BaseJvmBuffer,
         timeout: Duration,
     ): Int {
-        val bytesRead = readMutex.withLock { socket.read(buffer.byteBuffer, selector, timeout) }
+        val bytesRead =
+            try {
+                readMutex.withLock { socket.read(buffer.byteBuffer, selector, timeout) }
+            } catch (e: ClosedChannelException) {
+                throw SocketClosedException("Socket is closed.", e)
+            }
         if (bytesRead < 0) {
             throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
         }
@@ -49,7 +57,21 @@ abstract class BaseClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val bytesWritten = writeMutex.withLock { socket.write((buffer as BaseJvmBuffer).byteBuffer, selector, timeout) }
+        if (!isOpen()) throw SocketClosedException("Socket is closed.")
+        tlsHandler?.let { return it.wrap(buffer as BaseJvmBuffer, timeout) }
+        return rawSocketWrite(buffer, timeout)
+    }
+
+    internal override suspend fun rawSocketWrite(
+        buffer: ReadBuffer,
+        timeout: Duration,
+    ): Int {
+        val bytesWritten =
+            try {
+                writeMutex.withLock { socket.write((buffer as BaseJvmBuffer).byteBuffer, selector, timeout) }
+            } catch (e: ClosedChannelException) {
+                throw SocketClosedException("Socket is closed.", e)
+            }
         if (bytesWritten < 0) {
             throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
         }

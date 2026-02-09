@@ -43,7 +43,7 @@ class TlsErrorTests {
                 ClientSocket.connect(
                     port = 80,
                     hostname = "example.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 10.seconds,
                 ) { socket ->
                     // If we get here, something is wrong
@@ -77,7 +77,7 @@ class TlsErrorTests {
                     ClientSocket.connect(
                         port = 443,
                         hostname = "www.google.com",
-                        tls = true,
+                        socketOptions = SocketOptions.tlsDefault(),
                         timeout = 10.seconds,
                     ) { socket ->
                         assertTrue(socket.isOpen(), "Socket should be open after TLS handshake")
@@ -105,7 +105,7 @@ class TlsErrorTests {
                         ClientSocket.connect(
                             port = 443,
                             hostname = "www.google.com",
-                            tls = true,
+                            socketOptions = SocketOptions.tlsDefault(),
                             timeout = 10.seconds,
                         ) { socket ->
                             assertTrue(socket.isOpen(), "Socket $i should be open")
@@ -132,7 +132,7 @@ class TlsErrorTests {
                     ClientSocket.connect(
                         port = 443,
                         hostname = "www.cloudflare.com",
-                        tls = true,
+                        socketOptions = SocketOptions.tlsDefault(),
                         timeout = 10.seconds,
                     ) { socket ->
                         assertTrue(socket.isOpen(), "Socket should be open with SNI")
@@ -159,7 +159,6 @@ class TlsErrorTests {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "www.google.com",
-                    tls = false,
                     timeout = 10.seconds,
                 ) { socket ->
                     // Send plain HTTP - server will likely close connection or send TLS alert
@@ -192,7 +191,7 @@ class TlsErrorTests {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "www.example.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 15.seconds,
                 ) { socket ->
                     assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to example.com")
@@ -216,7 +215,7 @@ class TlsErrorTests {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "nginx.org",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 15.seconds,
                 ) { socket ->
                     assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to nginx.org")
@@ -241,7 +240,7 @@ class TlsErrorTests {
                     ClientSocket.connect(
                         port = 443,
                         hostname = "httpbin.org",
-                        tls = true,
+                        socketOptions = SocketOptions.tlsDefault(),
                         timeout = 15.seconds,
                     ) { socket ->
                         assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to httpbin")
@@ -271,7 +270,7 @@ class TlsErrorTests {
                                     ClientSocket.connect(
                                         port = 443,
                                         hostname = "httpbin.org",
-                                        tls = true,
+                                        socketOptions = SocketOptions.tlsDefault(),
                                         timeout = 15.seconds,
                                     ) { socket ->
                                         socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
@@ -302,7 +301,7 @@ class TlsErrorTests {
                     ClientSocket.connect(
                         port = 443,
                         hostname = "www.google.com",
-                        tls = true,
+                        socketOptions = SocketOptions.tlsDefault(),
                         timeout = 15.seconds,
                     ) { socket ->
                         assertTrue(socket.isOpen(), "Socket should be open")
@@ -334,7 +333,7 @@ class TlsErrorTests {
                     ClientSocket.connect(
                         port = 443,
                         hostname = "httpbin.org",
-                        tls = true,
+                        socketOptions = SocketOptions.tlsDefault(),
                         timeout = 15.seconds,
                     ) { socket ->
                         assertTrue(socket.isOpen(), "Socket should be open")
@@ -366,7 +365,7 @@ class TlsErrorTests {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "expired.badssl.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 15.seconds,
                 ) { socket ->
                     // Some platforms (e.g., Linux native with certain OpenSSL configs) may not
@@ -396,7 +395,7 @@ class TlsErrorTests {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "wrong.host.badssl.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 15.seconds,
                 ) { socket ->
                     // Some platforms may not enforce hostname verification by default
@@ -426,7 +425,7 @@ class TlsErrorTests {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "self-signed.badssl.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 15.seconds,
                 ) { socket ->
                     // Some platforms may not enforce certificate validation by default
@@ -449,22 +448,21 @@ class TlsErrorTests {
             }
         }
 
-    // ==================== TlsOptions Tests ====================
+    // ==================== TlsConfig Tests ====================
 
     @Test
     fun tlsInsecureModeAllowsSelfSigned() =
         runTestNoTimeSkipping {
-            // With INSECURE TlsOptions, self-signed certs should be accepted
+            // With INSECURE TlsConfig, self-signed certs should be accepted
             try {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "self-signed.badssl.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsInsecure(),
                     timeout = 15.seconds,
-                    tlsOptions = TlsOptions.INSECURE,
                 ) { socket ->
                     // Connection should succeed with insecure mode
-                    assertTrue(socket.isOpen(), "Socket should be open with TlsOptions.INSECURE")
+                    assertTrue(socket.isOpen(), "Socket should be open with TlsConfig.INSECURE")
                 }
             } catch (e: UnsupportedOperationException) {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
@@ -479,17 +477,16 @@ class TlsErrorTests {
     @Test
     fun tlsInsecureModeAllowsExpired() =
         runTestNoTimeSkipping {
-            // With INSECURE TlsOptions, expired certs should be accepted
+            // With INSECURE TlsConfig, expired certs should be accepted
             try {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "expired.badssl.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsInsecure(),
                     timeout = 15.seconds,
-                    tlsOptions = TlsOptions.INSECURE,
                 ) { socket ->
                     // Connection should succeed with insecure mode
-                    assertTrue(socket.isOpen(), "Socket should be open with TlsOptions.INSECURE")
+                    assertTrue(socket.isOpen(), "Socket should be open with TlsConfig.INSECURE")
                 }
             } catch (e: UnsupportedOperationException) {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
@@ -503,14 +500,13 @@ class TlsErrorTests {
     @Test
     fun tlsDefaultOptionsRejectSelfSigned() =
         runTestNoTimeSkipping {
-            // With DEFAULT TlsOptions (strict), self-signed certs should be rejected
+            // With DEFAULT TlsConfig (strict), self-signed certs should be rejected
             try {
                 ClientSocket.connect(
                     port = 443,
                     hostname = "self-signed.badssl.com",
-                    tls = true,
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 15.seconds,
-                    tlsOptions = TlsOptions.DEFAULT,
                 ) { socket ->
                     // If we get here, the platform allows the connection (some platforms may be lenient)
                     assertTrue(socket.isOpen(), "Platform accepted self-signed cert with default options")
@@ -542,7 +538,7 @@ class TlsErrorTests {
                     ClientSocket.connect(
                         port = 443,
                         hostname = "httpbin.org",
-                        tls = true,
+                        socketOptions = SocketOptions.tlsDefault(),
                         timeout = 15.seconds,
                     ) { socket ->
                         assertTrue(socket.isOpen(), "First connection should be open")
@@ -555,7 +551,7 @@ class TlsErrorTests {
                     ClientSocket.connect(
                         port = 443,
                         hostname = "httpbin.org",
-                        tls = true,
+                        socketOptions = SocketOptions.tlsDefault(),
                         timeout = 15.seconds,
                     ) { socket ->
                         assertTrue(socket.isOpen(), "Reconnection should be open")

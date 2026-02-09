@@ -6,12 +6,9 @@ val isNodeJs = nodeJs()
 
 private fun nodeJs(): Boolean = js("global.window") == null
 
-actual fun ClientSocket.Companion.allocate(
-    tls: Boolean,
-    allocationZone: AllocationZone,
-): ClientToServerSocket =
+actual fun ClientSocket.Companion.allocate(allocationZone: AllocationZone): ClientToServerSocket =
     if (js("global.window") == null) {
-        NodeClientSocket(tls, allocationZone)
+        NodeClientSocket(allocationZone)
     } else {
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }

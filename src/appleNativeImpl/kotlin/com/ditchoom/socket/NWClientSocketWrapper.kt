@@ -14,21 +14,21 @@ import kotlin.time.Duration
  * Client socket implementation using Apple's Network.framework.
  *
  * Supports both plain TCP and TLS connections with zero-copy data transfer.
+ * TLS is derived from [SocketOptions.tls] in [open].
  */
 @OptIn(ExperimentalForeignApi::class, UnsafeNumber::class)
-class NWClientSocketWrapper(
-    private val useTls: Boolean,
-) : NWSocketWrapper(),
+class NWClientSocketWrapper : NWSocketWrapper(),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,
         timeout: Duration,
         hostname: String?,
-        tlsOptions: TlsOptions,
+        socketOptions: SocketOptions,
     ) {
         val host = hostname ?: "localhost"
-        // Enable certificate verification by default, disable only if TlsOptions specifies insecure mode
-        val verifyCertificates = tlsOptions.verifyCertificates && !tlsOptions.allowSelfSigned
+        val tlsConfig = socketOptions.tls
+        val useTls = tlsConfig != null
+        val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
         val clientSocket =
             ClientSocketWrapper(
                 host = host,

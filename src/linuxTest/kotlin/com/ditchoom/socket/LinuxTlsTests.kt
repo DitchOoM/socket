@@ -16,7 +16,7 @@ class LinuxTlsTests {
             ClientSocket.connect(
                 port = 443,
                 hostname = "www.google.com",
-                tls = true,
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 10.seconds,
             ) { socket ->
                 assertTrue(socket.isOpen(), "TLS socket should be open")
