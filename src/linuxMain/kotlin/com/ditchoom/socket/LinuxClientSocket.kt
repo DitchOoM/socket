@@ -78,6 +78,11 @@ class LinuxClientSocket(
                 // Set non-blocking for io_uring
                 setNonBlocking(sockfd)
 
+                // Disable Nagle's algorithm for low-latency WebSocket messaging.
+                // Without this, small echo responses are delayed ~200ms by the
+                // Nagle + delayed ACK interaction, causing 1000-message tests to timeout.
+                setTcpNoDelay(sockfd)
+
                 // Connect using io_uring
                 connectWithIoUring(addrInfo.pointed.ai_addr!!, addrInfo.pointed.ai_addrlen, timeout)
 

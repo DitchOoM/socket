@@ -33,6 +33,7 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
+    mavenLocal() // For local buffer library testing
     google()
     mavenCentral()
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }
@@ -617,14 +618,15 @@ kotlin {
 
         // ARM64 target - cross-compiled from x64
         // Requires: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-        val hasArm64CrossCompile =
-            File("/usr/include/aarch64-linux-gnu").exists() ||
-                File("/usr/aarch64-linux-gnu/include").exists()
-        if (hasArm64CrossCompile) {
-            linuxArm64 {
-                configureLinuxCinterop("arm64")
-            }
-        }
+        // Temporarily disabled - buffer library doesn't have linuxArm64 in local maven
+        // val hasArm64CrossCompile =
+        //     File("/usr/include/aarch64-linux-gnu").exists() ||
+        //         File("/usr/aarch64-linux-gnu/include").exists()
+        // if (hasArm64CrossCompile) {
+        //     linuxArm64 {
+        //         configureLinuxCinterop("arm64")
+        //     }
+        // }
     }
 
     applyDefaultHierarchyTemplate()

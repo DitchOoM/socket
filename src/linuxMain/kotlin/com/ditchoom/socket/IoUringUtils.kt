@@ -656,6 +656,22 @@ internal fun setNonBlocking(sockfd: Int) {
 }
 
 /**
+ * Disable Nagle's algorithm for low-latency sends.
+ * Without this, small writes are delayed ~200ms waiting for ACKs (Nagle + delayed ACK interaction).
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal fun setTcpNoDelay(sockfd: Int) {
+    memScoped {
+        val optval = alloc<IntVar>()
+        optval.value = 1
+        checkSocketResult(
+            setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, optval.ptr, sizeOf<IntVar>().convert()),
+            "setsockopt(TCP_NODELAY)",
+        )
+    }
+}
+
+/**
  * Enable SO_REUSEADDR on a socket.
  */
 @OptIn(ExperimentalForeignApi::class)
