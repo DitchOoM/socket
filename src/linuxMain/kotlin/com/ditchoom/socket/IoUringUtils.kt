@@ -3,8 +3,7 @@ package com.ditchoom.socket
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.channels.Channel
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
@@ -24,15 +23,34 @@ private data class PendingOperation(
 )
 
 /**
- * Shared io_uring instance with dedicated poller thread for completion dispatch.
+ * Request to submit an io_uring operation, sent from any thread to the event loop
+ * via a lock-free Channel.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private class SubmissionRequest(
+    val userData: Long,
+    val deferred: CompletableDeferred<Int>,
+    val deadline: TimeSource.Monotonic.ValueTimeMark?,
+    val prepareOp: (sqe: CPointer<io_uring_sqe>, userData: Long) -> Unit,
+)
+
+/**
+ * User_data value reserved for eventfd wakeup poll CQEs.
+ * The event loop ignores completions with this value.
+ */
+private const val EVENTFD_USER_DATA = 0L
+
+/**
+ * Shared io_uring instance with single-threaded event loop.
  *
  * io_uring provides async I/O with zero-copy support on Linux 5.1+.
  *
  * Architecture:
- * - Single poller thread blocks on io_uring_wait_cqe_timeout (efficient kernel wait)
- * - Coroutines submit operations and suspend via CompletableDeferred.await()
- * - Poller dispatches completions to waiting coroutines by user_data
- * - Timeouts are handled via kernel timeout, not coroutine timeout (no orphaned ops)
+ * - Single event loop thread owns the io_uring ring (no cross-thread submission)
+ * - Coroutines send SubmissionRequests via a lock-free Channel
+ * - eventfd wakes the event loop when new requests arrive while it's sleeping
+ * - Event loop processes CQEs and resumes waiting coroutines on the same thread
+ * - No Mutex, no futex overhead — all ring access is single-threaded
  *
  * This design uses exactly ONE thread for all socket I/O in the application,
  * regardless of how many concurrent operations are in flight.
@@ -42,26 +60,19 @@ internal object IoUringManager {
     private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
 
     // Configuration is read from PlatformSocketConfig
-    // These getters allow runtime configuration changes to take effect
     private val queueDepth: Int
         get() = PlatformSocketConfig.ioQueueDepth
-
-    private val maxSqeRetries: Int
-        get() = PlatformSocketConfig.ioQueueRetries
-
-    private val sqeRetryDelay: Duration
-        get() = PlatformSocketConfig.ioRetryDelay
 
     // Default max wait time when no operations have deadlines
     private val DEFAULT_POLL_TIMEOUT = 1.seconds
 
-    // Unique ID generator for user_data
+    // Unique ID generator for user_data (starts at 1; 0 is reserved for eventfd)
     private val nextUserDataCounter = AtomicLong(1L)
 
     // Reference counting for auto-cleanup when all sockets are closed.
     // On Kotlin/Native, newSingleThreadContext creates a non-daemon thread
     // that prevents process exit. By cleaning up when the last socket closes,
-    // we ensure the poller thread is stopped and the process can terminate.
+    // we ensure the event loop thread is stopped and the process can terminate.
     private val activeSocketCount = AtomicInt(0)
 
     /**
@@ -74,7 +85,7 @@ internal object IoUringManager {
     /**
      * Called when a socket is closed. Decrements the active socket counter.
      * When the last socket closes, automatically cleans up the io_uring
-     * infrastructure (poller thread, ring, dispatcher) so the process can exit.
+     * infrastructure (event loop thread, ring, dispatcher) so the process can exit.
      */
     fun onSocketClosed() {
         if (activeSocketCount.decrementAndGet() <= 0) {
@@ -84,15 +95,15 @@ internal object IoUringManager {
         }
     }
 
-    // Pending operations waiting for completion (with optional deadlines)
-    private val pendingOps = mutableMapOf<Long, PendingOperation>()
-    private val pendingOpsMutex = Mutex()
+    // Lock-free channel for submission requests from any thread to event loop
+    private val submissionChannel = Channel<SubmissionRequest>(Channel.UNLIMITED)
 
-    // Mutex for submission queue operations only
-    private val submitMutex = Mutex()
+    // eventfd for waking the event loop when it's sleeping in io_uring_wait_cqe_timeout
+    private val wakeupFd = AtomicInt(-1)
+    // 1 = event loop is about to sleep or sleeping in io_uring_wait_cqe_timeout
+    private val pollerSleeping = AtomicInt(0)
 
-    // Dedicated poller thread - lazily initialized and reinitializable after cleanup
-    // Using AtomicReference to allow thread-safe reinitialization
+    // Dedicated event loop thread - lazily initialized and reinitializable after cleanup
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     private val pollerDispatcherRef = AtomicReference<CloseableCoroutineDispatcher?>(null)
     private val pollerScopeRef = AtomicReference<CoroutineScope?>(null)
@@ -114,17 +125,65 @@ internal object IoUringManager {
         val dispatcher = getOrCreatePollerDispatcher()
         val newScope = CoroutineScope(dispatcher + SupervisorJob())
         if (!pollerScopeRef.compareAndSet(null, newScope)) {
-            // Another thread created it first, cancel ours
             newScope.cancel()
         }
         return pollerScopeRef.value!!
     }
 
-    fun getRing(): CPointer<io_uring> {
-        // Try to get existing ring
+    /**
+     * Initialize io_uring ring with progressive flag fallback.
+     *
+     * Tries SINGLE_ISSUER + COOP_TASKRUN + DEFER_TASKRUN first (best performance),
+     * falls back to fewer flags for older kernels.
+     *
+     * MUST be called on the event loop thread (SINGLE_ISSUER binds to creating thread).
+     */
+    private fun initRing(): CPointer<io_uring> {
         ringRef.value?.let { return it }
 
-        // Initialize new ring
+        val ptr = nativeHeap.alloc<io_uring>().ptr
+        val params = nativeHeap.alloc<io_uring_params>()
+
+        // Progressive fallback: best flags first, then fewer, then none
+        val flagSets = listOf(
+            IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN or IORING_SETUP_DEFER_TASKRUN,
+            IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN,
+            IORING_SETUP_SINGLE_ISSUER,
+            0u,
+        )
+
+        var lastError = 0
+        for (flags in flagSets) {
+            // Zero out params for each attempt
+            memset(params.ptr, 0, sizeOf<io_uring_params>().convert())
+            params.flags = flags
+
+            val ret = io_uring_queue_init_params(queueDepth.toUInt(), ptr, params.ptr)
+            if (ret >= 0) {
+                nativeHeap.free(params)
+                ringRef.value = ptr
+                return ptr
+            }
+            lastError = -ret
+        }
+
+        nativeHeap.free(params)
+        nativeHeap.free(ptr)
+        val errorMsg = strerror(lastError)?.toKString() ?: "Unknown error"
+        throw SocketException(
+            "Failed to initialize io_uring: $errorMsg (errno=$lastError). " +
+                "This library requires Linux kernel 5.1+ with io_uring support. " +
+                "Check your kernel version with 'uname -r'.",
+        )
+    }
+
+    /**
+     * Get the ring reference (for use by submitNoWaitUnsafe which runs from any thread).
+     * For normal operations, use initRing() on the event loop thread.
+     */
+    fun getRing(): CPointer<io_uring> {
+        ringRef.value?.let { return it }
+        // Fallback: init without SINGLE_ISSUER flags (called from non-event-loop thread)
         val ptr = nativeHeap.alloc<io_uring>().ptr
         val ret = io_uring_queue_init(queueDepth.toUInt(), ptr, 0u)
         if (ret < 0) {
@@ -136,43 +195,85 @@ internal object IoUringManager {
                     "Check your kernel version with 'uname -r'.",
             )
         }
-
-        // Try to set atomically - if another thread beat us, use theirs
         if (!ringRef.compareAndSet(null, ptr)) {
-            // Another thread initialized first, clean up ours
             io_uring_queue_exit(ptr)
             nativeHeap.free(ptr)
         }
-
         return ringRef.value!!
     }
 
     /**
-     * Ensure the poller thread is running.
+     * Create eventfd and register multi-shot poll on it.
+     * Called once during event loop startup, on the event loop thread.
+     */
+    private fun setupEventfd(ring: CPointer<io_uring>) {
+        val fd = eventfd(0u, EFD_NONBLOCK)
+        if (fd < 0) {
+            throw SocketException("Failed to create eventfd: errno=$errno")
+        }
+        wakeupFd.value = fd
+
+        // Register multi-shot poll on eventfd so any write wakes the event loop
+        val sqe = io_uring_get_sqe(ring)
+            ?: throw SocketException("Failed to get SQE for eventfd poll registration")
+        io_uring_prep_poll_multishot(sqe, fd, POLLIN.toUInt())
+        io_uring_sqe_set_data64(sqe, EVENTFD_USER_DATA.toULong())
+        io_uring_submit(ring)
+    }
+
+    /**
+     * Wake the event loop if it's sleeping in io_uring_wait_cqe_timeout.
+     * Uses eventfd_write which is a single syscall.
+     * Only writes if pollerSleeping == 1 to avoid unnecessary syscalls.
+     */
+    private fun wakePoller() {
+        if (pollerSleeping.value == 1) {
+            val fd = wakeupFd.value
+            if (fd >= 0) {
+                memScoped {
+                    val buf = alloc<eventfd_tVar>()
+                    buf.value = 1u
+                    eventfd_write(fd, buf.value)
+                }
+            }
+        }
+    }
+
+    /**
+     * Drain the eventfd counter (reset it after wakeup).
+     * Called on the event loop thread after processing a wakeup CQE.
+     */
+    private fun drainEventfd() {
+        val fd = wakeupFd.value
+        if (fd >= 0) {
+            memScoped {
+                val buf = alloc<eventfd_tVar>()
+                eventfd_read(fd, buf.ptr)
+            }
+        }
+    }
+
+    /**
+     * Ensure the event loop thread is running.
      * Called lazily on first operation.
      */
     private fun ensurePollerStarted() {
         if (pollerStarted.compareAndSet(0, 1)) {
             val scope = getOrCreatePollerScope()
-            val job =
-                scope.launch {
-                    pollerLoop()
-                }
+            val job = scope.launch { eventLoop() }
             pollerJobRef.value = job
         }
     }
 
     /**
      * Calculate time until the earliest deadline, or default timeout if none.
-     * Must be called while holding pendingOpsMutex.
+     * Only called from the event loop thread (no synchronization needed).
      */
-    private fun calculateNextTimeout(): Duration {
+    private fun calculateNextTimeout(pendingOps: HashMap<Long, PendingOperation>): Duration {
         var earliest: Duration? = null
 
         for ((_, op) in pendingOps) {
             val deadline = op.deadline ?: continue
-            // elapsedNow() returns negative if deadline is in the future
-            // So -elapsedNow() gives us time remaining until deadline
             val remaining = -deadline.elapsedNow()
             if (earliest == null || remaining < earliest) {
                 earliest = remaining
@@ -188,89 +289,151 @@ internal object IoUringManager {
 
     /**
      * Check for expired operations and complete them with -ETIMEDOUT.
-     * Must be called while holding pendingOpsMutex.
-     * Returns list of expired userData to remove.
+     * Only called from the event loop thread (no synchronization needed).
      */
-    private fun completeExpiredOperations(): List<Long> {
-        val expired = mutableListOf<Long>()
-
-        for ((userData, op) in pendingOps) {
+    private fun processExpiredOperations(pendingOps: HashMap<Long, PendingOperation>) {
+        val iterator = pendingOps.iterator()
+        while (iterator.hasNext()) {
+            val (_, op) = iterator.next()
             val deadline = op.deadline ?: continue
             if (deadline.hasPassedNow() && !op.deferred.isCompleted) {
                 op.deferred.complete(-ETIMEDOUT)
-                expired.add(userData)
+                iterator.remove()
             }
         }
-
-        return expired
     }
 
     /**
-     * Main poller loop - runs on dedicated thread.
-     * Blocks on io_uring_wait_cqe_timeout and dispatches completions.
-     * Timeout is calculated from earliest pending deadline.
+     * Drain submission channel and prepare SQEs.
+     * Only called from the event loop thread.
+     * Returns true if any requests were submitted.
      */
-    private suspend fun pollerLoop() {
-        val ring = getRing()
+    private fun drainSubmissionChannel(
+        ring: CPointer<io_uring>,
+        pendingOps: HashMap<Long, PendingOperation>,
+    ): Boolean {
+        var submitted = false
+        while (true) {
+            val request = submissionChannel.tryReceive().getOrNull() ?: break
 
-        // Allocate once and reuse to avoid fragmentation in tight loop
+            // If the deferred is already completed (e.g. cancelled), skip submission
+            if (request.deferred.isCompleted) continue
+
+            // Register in pendingOps
+            pendingOps[request.userData] = PendingOperation(request.deferred, request.deadline)
+
+            val sqe = io_uring_get_sqe(ring)
+            if (sqe == null) {
+                // Ring full — complete with error. Caller will see this as a failure.
+                request.deferred.complete(-EBUSY)
+                pendingOps.remove(request.userData)
+                continue
+            }
+
+            request.prepareOp(sqe, request.userData)
+            io_uring_sqe_set_data64(sqe, request.userData.toULong())
+            submitted = true
+        }
+        return submitted
+    }
+
+    /**
+     * Main event loop - runs on dedicated thread.
+     *
+     * All ring access happens on this single thread:
+     * 1. Drain submission channel → prepare SQEs
+     * 2. Batch submit to kernel
+     * 3. Sleep in io_uring_wait_cqe_timeout
+     * 4. Process CQEs → resume waiting coroutines
+     * 5. Check expired operations
+     */
+    private fun eventLoop() {
+        val ring = initRing()
+        setupEventfd(ring)
+
+        // Plain HashMap — only accessed from this thread, no synchronization needed
+        val pendingOps = HashMap<Long, PendingOperation>()
+
         val cqePtr = nativeHeap.alloc<CPointerVar<io_uring_cqe>>()
         val ts = nativeHeap.alloc<__kernel_timespec>()
 
         try {
-            while (currentCoroutineContext().isActive) {
-                // Calculate timeout based on earliest deadline
-                val timeout =
-                    pendingOpsMutex.withLock {
-                        calculateNextTimeout()
-                    }
+            while (pollerStarted.value == 1) {
+                // 1. Mark as sleeping FIRST — any request arriving after the drain
+                //    will see this flag and write to eventfd, waking us from step 4.
+                //    This eliminates the race between drain and sleep.
+                pollerSleeping.value = 1
 
+                // 2. Drain submission channel and prepare SQEs
+                val hasNewSubmissions = drainSubmissionChannel(ring, pendingOps)
+
+                // 3. Batch submit all prepared SQEs at once
+                if (hasNewSubmissions) {
+                    io_uring_submit(ring)
+                }
+
+                // 4. Calculate timeout from earliest deadline
+                val timeout = calculateNextTimeout(pendingOps)
                 ts.tv_sec = timeout.inWholeSeconds
                 ts.tv_nsec = ((timeout.inWholeMilliseconds % 1000) * 1_000_000)
 
+                // 5. Sleep in io_uring_wait_cqe_timeout — eventfd CQE wakes us if
+                //    new requests arrived after step 2
                 val waitRet = io_uring_wait_cqe_timeout(ring, cqePtr.ptr, ts.ptr)
+                pollerSleeping.value = 0
 
-                // Check for expired operations regardless of wait result
-                pendingOpsMutex.withLock {
-                    val expired = completeExpiredOperations()
-                    expired.forEach { pendingOps.remove(it) }
-                }
+                // 5. Process expired operations
+                processExpiredOperations(pendingOps)
 
                 if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
-                    // Kernel timeout - we've already handled expired ops above
                     continue
                 }
-
                 if (waitRet < 0) {
-                    // Other error - continue polling
+                    // EINTR or other error — drain channel on next iteration
                     continue
                 }
 
-                // Process all available CQEs
+                // 6. Process all available CQEs
                 do {
-                    val cqeVal = cqePtr.value
-                    if (cqeVal == null) break
-
+                    val cqeVal = cqePtr.value ?: break
                     val userData = io_uring_cqe_get_data64(cqeVal).toLong()
                     val result = cqeVal.pointed.res
+                    val flags = cqeVal.pointed.flags
                     io_uring_cqe_seen(ring, cqeVal)
 
-                    // Skip wakeup NOPs (user_data = 0)
-                    if (userData == 0L) continue
+                    if (userData == EVENTFD_USER_DATA) {
+                        // eventfd wakeup — drain the counter
+                        drainEventfd()
+                        // If IORING_CQE_F_MORE is NOT set, the multi-shot poll was terminated
+                        // and we need to re-register it
+                        if (flags.toInt() and IORING_CQE_F_MORE.toInt() == 0) {
+                            val pollSqe = io_uring_get_sqe(ring)
+                            if (pollSqe != null) {
+                                val fd = wakeupFd.value
+                                if (fd >= 0) {
+                                    io_uring_prep_poll_multishot(pollSqe, fd, POLLIN.toUInt())
+                                    io_uring_sqe_set_data64(pollSqe, EVENTFD_USER_DATA.toULong())
+                                    io_uring_submit(ring)
+                                }
+                            }
+                        }
+                        continue
+                    }
 
                     // Dispatch to waiting coroutine
-                    pendingOpsMutex.withLock {
-                        val op = pendingOps[userData]
-                        if (op != null && !op.deferred.isCompleted) {
-                            op.deferred.complete(result)
-                        }
+                    val op = pendingOps.remove(userData)
+                    if (op != null && !op.deferred.isCompleted) {
+                        op.deferred.complete(result)
                     }
                 } while (io_uring_peek_cqe(ring, cqePtr.ptr) >= 0)
             }
         } finally {
-            // Free allocations when loop exits
             nativeHeap.free(ts)
             nativeHeap.free(cqePtr)
+
+            // Complete any remaining pending ops
+            pendingOps.values.forEach { it.deferred.complete(-ECANCELED) }
+            pendingOps.clear()
         }
     }
 
@@ -283,12 +446,9 @@ internal object IoUringManager {
      * Submit an io_uring operation and wait for its completion.
      *
      * The calling coroutine suspends until the operation completes or times out.
-     * Timeouts are handled via kernel timeout - no orphaned operations.
+     * Submission happens via lock-free Channel + eventfd wakeup — no Mutex/futex.
      *
-     * If the submission queue is full, this will retry with exponential backoff
-     * up to maxSqeRetries times before failing.
-     *
-     * @param prepareOp Function to prepare the SQE (called with the SQE and user_data)
+     * @param prepareOp Function to prepare the SQE (called on the event loop thread)
      * @param timeout Optional timeout for the operation
      * @return The result code from the CQE (positive for success, negative for error)
      */
@@ -303,79 +463,21 @@ internal object IoUringManager {
         val deferred = CompletableDeferred<Int>()
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
 
-        // Register pending operation BEFORE submitting
-        pendingOpsMutex.withLock {
-            pendingOps[userData] = PendingOperation(deferred, deadline)
-        }
+        // Send request to event loop via lock-free channel
+        val request = SubmissionRequest(userData, deferred, deadline, prepareOp)
+        submissionChannel.trySend(request)
+        wakePoller()
 
-        try {
-            // Submit with retry logic for full ring
-            var retries = 0
-            while (true) {
-                val submitted =
-                    submitMutex.withLock {
-                        memScoped {
-                            val ring = getRing()
-
-                            // Get SQE - may return null if ring is full
-                            val sqe = io_uring_get_sqe(ring)
-                            if (sqe == null) {
-                                // Ring is full, signal retry needed
-                                return@memScoped -1
-                            }
-
-                            prepareOp(sqe, userData)
-                            io_uring_sqe_set_data64(sqe, userData.toULong())
-
-                            // Submit to kernel
-                            io_uring_submit(ring)
-                        }
-                    }
-
-                when {
-                    submitted >= 0 -> break // Success
-                    submitted == -1 -> {
-                        // Ring was full, retry with backoff
-                        retries++
-                        if (retries > maxSqeRetries) {
-                            throw SocketException(
-                                "io_uring submission queue full after $maxSqeRetries retries. " +
-                                    "Too many concurrent operations.",
-                            )
-                        }
-                        // Exponential backoff: 1ms, 2ms, 4ms, ...
-                        kotlinx.coroutines.delay(sqeRetryDelay * retries)
-                    }
-                    else -> throwFromResult(submitted, "io_uring_submit")
-                }
+        // Suspend until event loop dispatches our completion (or timeout)
+        return suspendCancellableCoroutine { cont ->
+            cont.invokeOnCancellation {
+                deferred.complete(-ECANCELED)
             }
-
-            // Suspend until poller dispatches our completion (or timeout)
-            // Use suspendCancellableCoroutine so we can cancel the io_uring operation
-            return suspendCancellableCoroutine { cont ->
-                cont.invokeOnCancellation {
-                    // Complete the deferred immediately so the coroutine can resume.
-                    // We don't submit an io_uring cancel here because:
-                    // 1. submitNoWaitUnsafe would race with other submissions (no mutex)
-                    // 2. The socket.close() that follows cancellation will close the fd,
-                    //    causing the kernel to cancel pending operations automatically
-                    // 3. The poller will ignore the eventual CQE since deferred is completed
-                    deferred.complete(-ECANCELED)
-                }
-                // Resume when deferred completes
-                deferred.invokeOnCompletion { throwable ->
-                    if (throwable != null) {
-                        cont.resumeWithException(throwable)
-                    } else {
-                        cont.resume(deferred.getCompleted())
-                    }
-                }
-            }
-        } finally {
-            // Clean up pending operation - use NonCancellable to ensure this runs
-            withContext(NonCancellable) {
-                pendingOpsMutex.withLock {
-                    pendingOps.remove(userData)
+            deferred.invokeOnCompletion { throwable ->
+                if (throwable != null) {
+                    cont.resumeWithException(throwable)
+                } else {
+                    cont.resume(deferred.getCompleted())
                 }
             }
         }
@@ -388,17 +490,12 @@ internal object IoUringManager {
      *
      * @return Pair of (userData, deferred) for tracking the operation
      */
-    suspend fun registerOperation(timeout: Duration? = null): Pair<Long, CompletableDeferred<Int>> {
+    fun registerOperation(timeout: Duration? = null): Pair<Long, CompletableDeferred<Int>> {
         ensurePollerStarted()
 
         val userData = nextUserData()
         val deferred = CompletableDeferred<Int>()
-        val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
-
-        pendingOpsMutex.withLock {
-            pendingOps[userData] = PendingOperation(deferred, deadline)
-        }
-
+        // Deadline is captured when the request is submitted via submitRegistered
         return userData to deferred
     }
 
@@ -410,59 +507,27 @@ internal object IoUringManager {
     suspend fun submitRegistered(
         userData: Long,
         deferred: CompletableDeferred<Int>,
+        timeout: Duration? = null,
         prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit,
     ): Int {
-        try {
-            var retries = 0
-            while (true) {
-                val submitted =
-                    submitMutex.withLock {
-                        memScoped {
-                            val ring = getRing()
-                            val sqe = io_uring_get_sqe(ring)
-                            if (sqe == null) {
-                                return@memScoped -1
-                            }
+        val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
 
-                            prepareOp(sqe)
-                            io_uring_sqe_set_data64(sqe, userData.toULong())
-                            io_uring_submit(ring)
-                        }
-                    }
+        // Wrap the single-arg prepareOp to match SubmissionRequest's two-arg signature
+        val request = SubmissionRequest(userData, deferred, deadline) { sqe, _ ->
+            prepareOp(sqe)
+        }
+        submissionChannel.trySend(request)
+        wakePoller()
 
-                when {
-                    submitted >= 0 -> break
-                    submitted == -1 -> {
-                        retries++
-                        if (retries > maxSqeRetries) {
-                            throw SocketException(
-                                "io_uring submission queue full after $maxSqeRetries retries.",
-                            )
-                        }
-                        kotlinx.coroutines.delay(sqeRetryDelay * retries)
-                    }
-                    else -> throwFromResult(submitted, "io_uring_submit")
-                }
+        return suspendCancellableCoroutine { cont ->
+            cont.invokeOnCancellation {
+                deferred.complete(-ECANCELED)
             }
-
-            // Use suspendCancellableCoroutine so we can cancel the io_uring operation
-            return suspendCancellableCoroutine { cont ->
-                cont.invokeOnCancellation {
-                    // Complete immediately - socket.close() will handle kernel-side cleanup
-                    deferred.complete(-ECANCELED)
-                }
-                deferred.invokeOnCompletion { throwable ->
-                    if (throwable != null) {
-                        cont.resumeWithException(throwable)
-                    } else {
-                        cont.resume(deferred.getCompleted())
-                    }
-                }
-            }
-        } finally {
-            withContext(NonCancellable) {
-                pendingOpsMutex.withLock {
-                    pendingOps.remove(userData)
+            deferred.invokeOnCompletion { throwable ->
+                if (throwable != null) {
+                    cont.resumeWithException(throwable)
+                } else {
+                    cont.resume(deferred.getCompleted())
                 }
             }
         }
@@ -473,65 +538,53 @@ internal object IoUringManager {
      * Used for cancel operations. This is a suspend function.
      */
     suspend fun submitNoWait(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
-        submitMutex.withLock {
-            memScoped {
-                val ring = getRing()
-                val sqe = io_uring_get_sqe(ring) ?: return
-                prepareOp(sqe)
-                io_uring_submit(ring)
-            }
+        val userData = nextUserData()
+        val deferred = CompletableDeferred<Int>()
+        val request = SubmissionRequest(userData, deferred, null) { sqe, _ ->
+            prepareOp(sqe)
         }
+        submissionChannel.trySend(request)
+        wakePoller()
+        // Fire-and-forget: don't wait for completion
     }
 
     /**
      * Submit an operation without waiting - non-blocking version for cancellation.
      *
      * This is called from [invokeOnCancellation] handlers which run synchronously
-     * during coroutine cancellation. At that point:
-     * - The cancelled coroutine is no longer submitting operations
-     * - We're only submitting a cancel request, which is idempotent
-     * - Even if multiple cancellations race, io_uring handles duplicate cancels gracefully
-     *
-     * Does NOT acquire [submitMutex] because:
-     * 1. Mutex.lock() is a suspend function, unusable in non-suspend context
-     * 2. The cancel operation is fire-and-forget and race-safe
+     * during coroutine cancellation. Uses Channel.trySend which is non-suspend safe.
      */
     fun submitNoWaitUnsafe(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
-        val ring = ringRef.value ?: return
-        memScoped {
-            val sqe = io_uring_get_sqe(ring) ?: return
+        if (pollerStarted.value != 1) return
+        val userData = nextUserData()
+        val deferred = CompletableDeferred<Int>()
+        val request = SubmissionRequest(userData, deferred, null) { sqe, _ ->
             prepareOp(sqe)
-            io_uring_submit(ring)
         }
+        submissionChannel.trySend(request)
+        wakePoller()
     }
 
     /**
      * Cleanup resources. Call when shutting down.
      *
-     * Submits a NOP operation to wake the poller thread immediately,
-     * avoiding up to DEFAULT_POLL_TIMEOUT delay on shutdown.
+     * Wakes the event loop via eventfd, waits for it to exit, then tears down
+     * the ring and dispatcher.
      *
      * After cleanup, the IoUringManager can be reused - new operations
-     * will reinitialize the ring and poller thread.
+     * will reinitialize the ring and event loop thread.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun cleanup() {
-        // Mark poller as stopping
         val wasStarted = pollerStarted.getAndSet(0) == 1
 
         if (wasStarted) {
-            // IMPORTANT: Cancel the job FIRST so isActive becomes false
-            // Then wake the poller so it exits immediately
             val job = pollerJobRef.getAndSet(null)
             job?.cancel()
 
-            // Wake up the poller immediately by submitting a NOP
-            // This causes io_uring_wait_cqe_timeout to return immediately
-            // The poller will check isActive (now false) and exit
-            wakePollerWithNop()
+            // Wake the event loop so it checks pollerStarted and exits
+            wakePoller()
 
-            // Wait briefly for the poller to actually exit
-            // This ensures the poller thread has stopped before we close the dispatcher
             runBlocking {
                 try {
                     withTimeout(200.milliseconds) {
@@ -551,6 +604,12 @@ internal object IoUringManager {
         val dispatcher = pollerDispatcherRef.getAndSet(null)
         dispatcher?.close()
 
+        // Close eventfd
+        val fd = wakeupFd.getAndSet(-1)
+        if (fd >= 0) {
+            close(fd)
+        }
+
         // Cleanup ring
         val ptr = ringRef.getAndSet(null)
         ptr?.let {
@@ -558,36 +617,10 @@ internal object IoUringManager {
             nativeHeap.free(it)
         }
 
-        // Complete any pending operations with error
-        runBlocking {
-            pendingOpsMutex.withLock {
-                pendingOps.values.forEach { it.deferred.complete(-ECANCELED) }
-                pendingOps.clear()
-            }
-        }
-    }
-
-    /**
-     * Submit a NOP operation to wake the poller thread.
-     * Used during shutdown to avoid waiting for the poll timeout.
-     *
-     * This is safe to call even if the SQ is full - in that case,
-     * the poller will wake on the next completion anyway.
-     */
-    private fun wakePollerWithNop() {
-        val ring = ringRef.value ?: return
-
-        memScoped {
-            val sqe = io_uring_get_sqe(ring)
-            if (sqe != null) {
-                // Use user_data = 0 to indicate this is a wakeup NOP
-                // The poller will ignore completions with user_data = 0
-                io_uring_prep_nop(sqe)
-                io_uring_sqe_set_data64(sqe, 0UL)
-                io_uring_submit(ring)
-            }
-            // If sqe is null, the SQ is full which means there are pending
-            // operations that will complete and wake the poller anyway
+        // Drain and cancel any remaining requests in the channel
+        while (true) {
+            val request = submissionChannel.tryReceive().getOrNull() ?: break
+            request.deferred.complete(-ECANCELED)
         }
     }
 }
