@@ -58,7 +58,7 @@ abstract class AsyncBaseClientSocket(
         timeout: Duration,
     ): Int {
         // Efficient JVM implementation using the existing method
-        return read(buffer as BaseJvmBuffer, timeout)
+        return read((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer, timeout)
     }
 
     override suspend fun write(
@@ -66,7 +66,7 @@ abstract class AsyncBaseClientSocket(
         timeout: Duration,
     ): Int {
         if (!isOpen()) throw SocketClosedException("Socket is closed.")
-        tlsHandler?.let { return it.wrap(buffer as BaseJvmBuffer, timeout) }
+        tlsHandler?.let { return it.wrap((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer, timeout) }
         return rawSocketWrite(buffer, timeout)
     }
 
@@ -77,7 +77,7 @@ abstract class AsyncBaseClientSocket(
         val bytesWritten =
             try {
                 writeMutex.withLock {
-                    socket.aWrite((buffer as BaseJvmBuffer).byteBuffer, timeout)
+                    socket.aWrite(((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer, timeout)
                 }
             } catch (e: ClosedChannelException) {
                 throw SocketClosedException("Socket is closed.", e)

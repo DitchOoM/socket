@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -62,11 +63,22 @@ open class NodeSocket : ClientSocket {
         if (socket == null || !isOpen()) {
             throw SocketClosedException("Socket is closed. transmissionError=$hadTransmissionError")
         }
-        val jsBuffer = buffer as JsBuffer
-        val array = jsBuffer.buffer
         val bytesToWrite = buffer.remaining()
-        // Create a view of only the bytes to write (from position to position + remaining)
-        val dataToWrite = Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+        val jsBuffer = when (buffer) {
+            is JsBuffer -> buffer
+            is PlatformBuffer -> buffer.unwrap() as JsBuffer
+            else -> null
+        }
+        val dataToWrite = if (jsBuffer != null) {
+            val array = jsBuffer.buffer
+            Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+        } else {
+            // Fallback for non-PlatformBuffer types (e.g. TrackedSlice)
+            val savedPos = buffer.position()
+            val bytes = buffer.readByteArray(bytesToWrite)
+            buffer.position(savedPos)
+            Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, bytesToWrite)
+        }
         writeMutex.withLock { socket.write(dataToWrite) }
         buffer.position(buffer.position() + bytesToWrite)
         return bytesToWrite

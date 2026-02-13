@@ -58,7 +58,7 @@ abstract class BaseClientSocket(
         timeout: Duration,
     ): Int {
         if (!isOpen()) throw SocketClosedException("Socket is closed.")
-        tlsHandler?.let { return it.wrap(buffer as BaseJvmBuffer, timeout) }
+        tlsHandler?.let { return it.wrap((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer, timeout) }
         return rawSocketWrite(buffer, timeout)
     }
 
@@ -68,7 +68,7 @@ abstract class BaseClientSocket(
     ): Int {
         val bytesWritten =
             try {
-                writeMutex.withLock { socket.write((buffer as BaseJvmBuffer).byteBuffer, selector, timeout) }
+                writeMutex.withLock { socket.write(((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer, selector, timeout) }
             } catch (e: ClosedChannelException) {
                 throw SocketClosedException("Socket is closed.", e)
             }
