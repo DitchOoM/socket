@@ -8,7 +8,6 @@ import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -178,29 +177,11 @@ internal object IoUringManager {
     }
 
     /**
-     * Get the ring reference (for use by submitNoWaitUnsafe which runs from any thread).
-     * For normal operations, use initRing() on the event loop thread.
+     * Get the ring reference. All operations go through the submission channel,
+     * so the ring is always initialized by the event loop thread via initRing().
      */
-    fun getRing(): CPointer<io_uring> {
-        ringRef.value?.let { return it }
-        // Fallback: init without SINGLE_ISSUER flags (called from non-event-loop thread)
-        val ptr = nativeHeap.alloc<io_uring>().ptr
-        val ret = io_uring_queue_init(queueDepth.toUInt(), ptr, 0u)
-        if (ret < 0) {
-            nativeHeap.free(ptr)
-            val errorMsg = strerror(-ret)?.toKString() ?: "Unknown error"
-            throw SocketException(
-                "Failed to initialize io_uring: $errorMsg (errno=${-ret}). " +
-                    "This library requires Linux kernel 5.1+ with io_uring support. " +
-                    "Check your kernel version with 'uname -r'.",
-            )
-        }
-        if (!ringRef.compareAndSet(null, ptr)) {
-            io_uring_queue_exit(ptr)
-            nativeHeap.free(ptr)
-        }
-        return ringRef.value!!
-    }
+    fun getRing(): CPointer<io_uring> =
+        ringRef.value ?: throw SocketException("IoUringManager not initialized")
 
     /**
      * Create eventfd and register multi-shot poll on it.
@@ -435,6 +416,24 @@ internal object IoUringManager {
             // Complete any remaining pending ops
             pendingOps.values.forEach { it.deferred.complete(-ECANCELED) }
             pendingOps.clear()
+
+            // Close eventfd (must happen on event loop thread before ring teardown)
+            val fd = wakeupFd.getAndSet(-1)
+            if (fd >= 0) close(fd)
+
+            // Destroy ring — MUST happen on event loop thread to avoid use-after-free
+            // race with io_uring_wait_cqe_timeout
+            val ptr = ringRef.getAndSet(null)
+            ptr?.let {
+                io_uring_queue_exit(it)
+                nativeHeap.free(it)
+            }
+
+            // Drain remaining channel requests so callers aren't left hanging
+            while (true) {
+                val request = submissionChannel.tryReceive().getOrNull() ?: break
+                request.deferred.complete(-ECANCELED)
+            }
         }
     }
 
@@ -591,51 +590,32 @@ internal object IoUringManager {
     @OptIn(ExperimentalCoroutinesApi::class)
     fun cleanup() {
         val wasStarted = pollerStarted.getAndSet(0) == 1
+        if (!wasStarted) return
 
-        if (wasStarted) {
-            val job = pollerJobRef.getAndSet(null)
-            job?.cancel()
-
-            // Wake the event loop so it checks pollerStarted and exits
-            wakePoller()
-
-            runBlocking {
-                try {
-                    withTimeout(200.milliseconds) {
-                        job?.join()
-                    }
-                } catch (e: Exception) {
-                    // Timeout is fine, poller will exit eventually
-                }
+        // Force-wake the event loop (bypass pollerSleeping check).
+        // After setting pollerStarted=0 above, the event loop will check the
+        // flag and exit. Ring, eventfd, and channel cleanup happen in the
+        // event loop's finally block — no cross-thread resource teardown.
+        val fd = wakeupFd.value
+        if (fd >= 0) {
+            memScoped {
+                val buf = alloc<eventfd_tVar>()
+                buf.value = 1u
+                eventfd_write(fd, buf.value)
             }
         }
 
-        // Cancel and reset scope
+        // Wait for event loop to fully exit (it handles ring/eventfd/channel cleanup)
+        val job = pollerJobRef.getAndSet(null)
+        if (job != null) {
+            runBlocking { job.join() }
+        }
+
+        // Safe now — event loop has exited and cleaned up ring resources
         val scope = pollerScopeRef.getAndSet(null)
         scope?.cancel()
-
-        // Close and reset dispatcher
         val dispatcher = pollerDispatcherRef.getAndSet(null)
         dispatcher?.close()
-
-        // Close eventfd
-        val fd = wakeupFd.getAndSet(-1)
-        if (fd >= 0) {
-            close(fd)
-        }
-
-        // Cleanup ring
-        val ptr = ringRef.getAndSet(null)
-        ptr?.let {
-            io_uring_queue_exit(it)
-            nativeHeap.free(it)
-        }
-
-        // Drain and cancel any remaining requests in the channel
-        while (true) {
-            val request = submissionChannel.tryReceive().getOrNull() ?: break
-            request.deferred.complete(-ECANCELED)
-        }
     }
 }
 
