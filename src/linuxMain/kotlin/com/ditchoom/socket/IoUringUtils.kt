@@ -180,8 +180,7 @@ internal object IoUringManager {
      * Get the ring reference. All operations go through the submission channel,
      * so the ring is always initialized by the event loop thread via initRing().
      */
-    fun getRing(): CPointer<io_uring> =
-        ringRef.value ?: throw SocketException("IoUringManager not initialized")
+    fun getRing(): CPointer<io_uring> = ringRef.value ?: throw SocketException("IoUringManager not initialized")
 
     /**
      * Create eventfd and register multi-shot poll on it.
