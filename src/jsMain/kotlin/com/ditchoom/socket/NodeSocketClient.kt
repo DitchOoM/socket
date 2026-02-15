@@ -75,12 +75,12 @@ open class NodeSocket : ClientSocket {
                 val array = jsBuffer.buffer
                 Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
             } else {
-            // Fallback for non-PlatformBuffer types (e.g. TrackedSlice)
-            val savedPos = buffer.position()
-            val bytes = buffer.readByteArray(bytesToWrite)
-            buffer.position(savedPos)
-            Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, bytesToWrite)
-        }
+                // Fallback for non-PlatformBuffer types (e.g. TrackedSlice)
+                val savedPos = buffer.position()
+                val bytes = buffer.readByteArray(bytesToWrite)
+                buffer.position(savedPos)
+                Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, bytesToWrite)
+            }
         writeMutex.withLock { socket.write(dataToWrite) }
         buffer.position(buffer.position() + bytesToWrite)
         return bytesToWrite

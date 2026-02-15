@@ -17,7 +17,8 @@ import kotlin.time.Duration
  * TLS is derived from [SocketOptions.tls] in [open].
  */
 @OptIn(ExperimentalForeignApi::class, UnsafeNumber::class)
-class NWClientSocketWrapper : NWSocketWrapper(),
+class NWClientSocketWrapper :
+    NWSocketWrapper(),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,

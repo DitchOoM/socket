@@ -98,6 +98,7 @@ internal object IoUringManager {
 
     // eventfd for waking the event loop when it's sleeping in io_uring_wait_cqe_timeout
     private val wakeupFd = AtomicInt(-1)
+
     // 1 = event loop is about to sleep or sleeping in io_uring_wait_cqe_timeout
     private val pollerSleeping = AtomicInt(0)
 
@@ -143,12 +144,13 @@ internal object IoUringManager {
         val params = nativeHeap.alloc<io_uring_params>()
 
         // Progressive fallback: best flags first, then fewer, then none
-        val flagSets = listOf(
-            IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN or IORING_SETUP_DEFER_TASKRUN,
-            IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN,
-            IORING_SETUP_SINGLE_ISSUER,
-            0u,
-        )
+        val flagSets =
+            listOf(
+                IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN or IORING_SETUP_DEFER_TASKRUN,
+                IORING_SETUP_SINGLE_ISSUER or IORING_SETUP_COOP_TASKRUN,
+                IORING_SETUP_SINGLE_ISSUER,
+                0u,
+            )
 
         var lastError = 0
         for (flags in flagSets) {
@@ -212,8 +214,9 @@ internal object IoUringManager {
         wakeupFd.value = fd
 
         // Register multi-shot poll on eventfd so any write wakes the event loop
-        val sqe = io_uring_get_sqe(ring)
-            ?: throw SocketException("Failed to get SQE for eventfd poll registration")
+        val sqe =
+            io_uring_get_sqe(ring)
+                ?: throw SocketException("Failed to get SQE for eventfd poll registration")
         io_uring_prep_poll_multishot(sqe, fd, POLLIN.toUInt())
         io_uring_sqe_set_data64(sqe, EVENTFD_USER_DATA.toULong())
         io_uring_submit(ring)
@@ -518,9 +521,10 @@ internal object IoUringManager {
         val deadline = timeout?.let { TimeSource.Monotonic.markNow() + it }
 
         // Wrap the single-arg prepareOp to match SubmissionRequest's two-arg signature
-        val request = SubmissionRequest(userData, deferred, deadline) { sqe, _ ->
-            prepareOp(sqe)
-        }
+        val request =
+            SubmissionRequest(userData, deferred, deadline) { sqe, _ ->
+                prepareOp(sqe)
+            }
         submissionChannel.trySend(request)
         wakePoller()
 
@@ -548,9 +552,10 @@ internal object IoUringManager {
     suspend fun submitNoWait(prepareOp: (sqe: CPointer<io_uring_sqe>) -> Unit) {
         val userData = nextUserData()
         val deferred = CompletableDeferred<Int>()
-        val request = SubmissionRequest(userData, deferred, null) { sqe, _ ->
-            prepareOp(sqe)
-        }
+        val request =
+            SubmissionRequest(userData, deferred, null) { sqe, _ ->
+                prepareOp(sqe)
+            }
         submissionChannel.trySend(request)
         wakePoller()
         // Fire-and-forget: don't wait for completion
@@ -566,9 +571,10 @@ internal object IoUringManager {
         if (pollerStarted.value != 1) return
         val userData = nextUserData()
         val deferred = CompletableDeferred<Int>()
-        val request = SubmissionRequest(userData, deferred, null) { sqe, _ ->
-            prepareOp(sqe)
-        }
+        val request =
+            SubmissionRequest(userData, deferred, null) { sqe, _ ->
+                prepareOp(sqe)
+            }
         submissionChannel.trySend(request)
         wakePoller()
     }
