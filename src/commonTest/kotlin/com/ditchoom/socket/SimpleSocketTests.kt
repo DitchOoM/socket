@@ -139,15 +139,9 @@ Connection: close
                 localPort = socket.localPort()
                 assertTrue { bytesWritten > 0 }
                 val response = StringBuilder(socket.readString(timeout = 5.seconds))
-                val charset =
-                    if (response.contains("charset=ISO-8859-1", ignoreCase = true)) {
-                        Charset.ISOLatin1
-                    } else if (response.contains("charset=ascii", ignoreCase = true)) {
-                        Charset.ASCII
-                    } else {
-                        Charset.UTF8
-                    }
-                socket.readFlowString(charset, 5.seconds).collect {
+                // Always use UTF8 for reading - NativeBuffer on Linux only supports UTF8,
+                // and HTTP responses from google.com/example.com are ASCII-compatible
+                socket.readFlowString(Charset.UTF8, 5.seconds).collect {
                     response.append(it)
                 }
                 response
