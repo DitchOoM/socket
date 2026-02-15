@@ -9,7 +9,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSProcessInfo
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 actual typealias TestRunResult = Unit
@@ -18,20 +17,21 @@ internal actual fun runTestNoTimeSkipping(
     count: Int,
     timeout: Duration,
     block: suspend CoroutineScope.() -> Unit,
-): TestRunResult = runBlocking {
-    try {
-        withTimeout(timeout) {
-            withContext(Dispatchers.Default.limitedParallelism(count)) {
-                block()
+): TestRunResult =
+    runBlocking {
+        try {
+            withTimeout(timeout) {
+                withContext(Dispatchers.Default.limitedParallelism(count)) {
+                    block()
+                }
+            }
+        } catch (e: UnsupportedOperationException) {
+            when (getNetworkCapabilities()) {
+                FULL_SOCKET_ACCESS -> throw e
+                WEBSOCKETS_ONLY -> {}
             }
         }
-    } catch (e: UnsupportedOperationException) {
-        when (getNetworkCapabilities()) {
-            FULL_SOCKET_ACCESS -> throw e
-            WEBSOCKETS_ONLY -> {}
-        }
     }
-}
 
 actual suspend fun readStats(
     port: Int,

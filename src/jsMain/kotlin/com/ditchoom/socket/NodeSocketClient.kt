@@ -64,15 +64,17 @@ open class NodeSocket : ClientSocket {
             throw SocketClosedException("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val bytesToWrite = buffer.remaining()
-        val jsBuffer = when (buffer) {
-            is JsBuffer -> buffer
-            is PlatformBuffer -> buffer.unwrap() as JsBuffer
-            else -> null
-        }
-        val dataToWrite = if (jsBuffer != null) {
-            val array = jsBuffer.buffer
-            Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
-        } else {
+        val jsBuffer =
+            when (buffer) {
+                is JsBuffer -> buffer
+                is PlatformBuffer -> buffer.unwrap() as JsBuffer
+                else -> null
+            }
+        val dataToWrite =
+            if (jsBuffer != null) {
+                val array = jsBuffer.buffer
+                Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+            } else {
             // Fallback for non-PlatformBuffer types (e.g. TrackedSlice)
             val savedPos = buffer.position()
             val bytes = buffer.readByteArray(bytesToWrite)
