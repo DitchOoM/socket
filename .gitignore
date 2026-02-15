@@ -28,8 +28,8 @@ local.properties
 .gitconfig
 .ripgreprc
 
-# Built OpenSSL static libraries (built by Gradle)
-libs/openssl/
+# Built native libraries (built by Gradle)
+libs/
 
 # Docusaurus
 docs/node_modules/

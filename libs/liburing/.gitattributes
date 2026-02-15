@@ -1,4 +1,0 @@
-# Mark liburing library files as generated
-# These are built by Gradle from upstream source
-*.h linguist-generated=true
-*.a binary
