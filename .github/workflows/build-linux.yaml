@@ -1,0 +1,113 @@
+name: "Build & Test (Linux)"
+
+on:
+  workflow_call:
+    inputs:
+      gradle-args:
+        description: "Extra Gradle arguments (e.g., -PincrementMinor=true)"
+        required: false
+        default: ""
+        type: string
+    outputs:
+      version:
+        description: "Computed next version"
+        value: ${{ jobs.build.outputs.version }}
+
+jobs:
+  build:
+    name: "Linux / JVM / JS / Android"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
+
+      - name: Cache OpenSSL x64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-x64
+          key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache OpenSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/openssl/linux-arm64
+          key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache liburing x64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-x64
+          key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache liburing ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/liburing/linux-arm64
+          key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Install ARM64 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl qemu-user-static
+          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          # ARM64 runtime libraries for QEMU - download and extract directly
+          mkdir -p /tmp/arm64-libs
+          cd /tmp/arm64-libs
+          curl -LO http://ports.ubuntu.com/pool/main/libx/libxcrypt/libcrypt1_4.4.36-4build1_arm64.deb
+          ar x libcrypt1_*.deb
+          tar xf data.tar.zst
+          sudo cp -r usr/lib/aarch64-linux-gnu/* /usr/aarch64-linux-gnu/lib/
+
+      - name: Get version
+        id: version
+        run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
+
+      - name: Run checks and tests
+        run: >-
+          ./gradlew jvmTest jsTest linuxX64Test testDebugUnitTest ktlintCheck
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Build ARM64 test binary
+        run: >-
+          ./gradlew linkDebugTestLinuxArm64
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Run ARM64 tests via QEMU (subset for validation)
+        # LinuxTlsTests validates io_uring, OpenSSL, and static linking - all critical ARM64 dependencies
+        run: >-
+          qemu-aarch64-static -L /usr/aarch64-linux-gnu
+          ./build/bin/linuxArm64/debugTest/test.kexe
+          --ktest_filter=com.ditchoom.socket.LinuxTlsTests
+
+      - name: Publish to Maven Local
+        run: ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Upload Maven local artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-local-linux
+          path: ~/.m2/repository/com/ditchoom
+          retention-days: 3

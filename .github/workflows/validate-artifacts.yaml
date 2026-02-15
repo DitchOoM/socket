@@ -1,0 +1,144 @@
+name: "Validate Merged Artifacts"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version string to validate"
+        required: true
+        type: string
+
+jobs:
+  validate:
+    name: "Validate Artifacts"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: maven-local-linux
+          path: /tmp/maven-local/com/ditchoom
+
+      - name: Download Apple artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: maven-local-apple
+          path: /tmp/maven-local/com/ditchoom
+
+      - name: Validate artifacts
+        run: |
+          version="${{ inputs.version }}"
+          FAILED=false
+          BASE="/tmp/maven-local/com/ditchoom"
+
+          echo "=== Validating v${version} Merged Artifacts ==="
+          echo ""
+
+          # 1. Root module metadata
+          echo "--- KotlinMultiplatform Metadata ---"
+          MODULE_FILE="${BASE}/socket/${version}/socket-${version}.module"
+          if [ ! -f "$MODULE_FILE" ]; then
+            echo "FAIL: ${MODULE_FILE} not found"
+            FAILED=true
+          else
+            echo "  socket module metadata present"
+          fi
+          echo ""
+
+          # 2. JVM / JS / Android
+          echo "--- JVM / JS / Android ---"
+          for artifact in socket-jvm:jar socket-js:klib socket-android:aar; do
+            name="${artifact%%:*}"
+            ext="${artifact##*:}"
+            path="${BASE}/${name}/${version}/${name}-${version}.${ext}"
+            if [ -f "$path" ]; then
+              echo "  ${name} (${ext}) present"
+            else
+              echo "  FAIL: ${name} (${ext}) not found at ${path}"
+              FAILED=true
+            fi
+          done
+          echo ""
+
+          # 3. Linux
+          echo "--- Linux ---"
+          for arch in linuxx64 linuxarm64; do
+            name="socket-${arch}"
+            path="${BASE}/${name}/${version}/${name}-${version}.klib"
+            if [ -f "$path" ]; then
+              echo "  ${name} klib present"
+            else
+              echo "  FAIL: ${name} klib not found at ${path}"
+              FAILED=true
+            fi
+          done
+          echo ""
+
+          # 4. Apple klibs
+          echo "--- Apple ---"
+          for target in iosarm64 iossimulatorarm64 iosx64 macosarm64 macosx64 tvosarm64 tvossimulatorarm64 tvosx64 watchosarm64 watchossimulatorarm64 watchosx64; do
+            name="socket-${target}"
+            path="${BASE}/${name}/${version}/${name}-${version}.klib"
+            if [ -f "$path" ]; then
+              echo "  ${name} klib present"
+            else
+              echo "  FAIL: ${name} klib not found at ${path}"
+              FAILED=true
+            fi
+          done
+          echo ""
+
+          # 5. Signing coverage check
+          echo "--- Signing Coverage Check ---"
+          KNOWN_SIGNABLE="jar klib pom module aar json"
+          KNOWN_METADATA="xml repositories"
+          UNCOVERED=0
+          while IFS= read -r file; do
+            ext="${file##*.}"
+            COVERED=false
+            for known in $KNOWN_SIGNABLE $KNOWN_METADATA; do
+              if [ "$ext" = "$known" ]; then
+                COVERED=true
+                break
+              fi
+            done
+            if [ "$COVERED" = "false" ]; then
+              REL=$(echo "$file" | sed "s|${BASE}/||")
+              echo "  FAIL: Unsignable file type '.${ext}': ${REL}"
+              UNCOVERED=$((UNCOVERED + 1))
+            fi
+          done < <(find "${BASE}" -type f ! -name "*.md5" ! -name "*.sha1" ! -name "*.asc")
+          if [ "$UNCOVERED" -gt 0 ]; then
+            echo "  ${UNCOVERED} files with types not covered by publish signing glob"
+            FAILED=true
+          else
+            echo "  All artifact file types covered by signing glob"
+          fi
+          echo ""
+
+          # 6. Android AAR and kotlin-tooling-metadata
+          echo "--- Android & Metadata Artifacts ---"
+          AAR_DIR="${BASE}/socket-android/${version}"
+          if [ -d "$AAR_DIR" ]; then
+            AAR=$(find "$AAR_DIR" -name "*.aar" | head -1)
+            if [ -z "$AAR" ]; then
+              echo "  FAIL: socket-android AAR not found in ${AAR_DIR}"
+              FAILED=true
+            else
+              echo "  socket-android AAR present"
+            fi
+          fi
+          METADATA="${BASE}/socket/${version}/socket-${version}-kotlin-tooling-metadata.json"
+          if [ -f "$METADATA" ]; then
+            echo "  socket kotlin-tooling-metadata.json present"
+          else
+            echo "  WARN: socket kotlin-tooling-metadata.json not found (may not be generated)"
+          fi
+          echo ""
+
+          if [ "$FAILED" = true ]; then
+            echo "=== VALIDATION FAILED ==="
+            exit 1
+          fi
+          echo "=== ALL VALIDATIONS PASSED ==="

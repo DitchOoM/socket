@@ -2,6 +2,9 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.allocate
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -509,6 +512,62 @@ class ClientCancellationTests {
 
             // Cancellation should complete quickly
             assertTrue(elapsed < 500, "Write cancellation took too long: ${elapsed}ms")
+
+            client.close()
+            server.close()
+            serverJob.cancel()
+        }
+
+    /**
+     * Verify that after cancelling a read with a caller-provided buffer,
+     * the buffer is safe to access and free. This validates the API contract:
+     * when read() throws (including CancellationException), the buffer is not
+     * being written to by the kernel.
+     */
+    @Test
+    fun cancelledReadBufferIsSafeToFree() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val acceptedClientFlow = server.bind()
+            val clientConnected = Mutex(locked = true)
+
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    acceptedClientFlow.collect { serverToClient ->
+                        clientConnected.unlock()
+                        delay(10.seconds)
+                        serverToClient.close()
+                    }
+                }
+
+            val client = ClientSocket.allocate()
+            client.open(server.port())
+            clientConnected.lockWithTimeout()
+
+            // Allocate a buffer and start a read into it
+            val buffer = PlatformBuffer.allocate(1024, AllocationZone.Direct)
+
+            val readJob =
+                launch(Dispatchers.Default) {
+                    try {
+                        client.read(buffer, 30.seconds)
+                    } catch (_: kotlinx.coroutines.CancellationException) {
+                        // Expected
+                    } catch (_: SocketClosedException) {
+                        // Also acceptable
+                    } catch (_: SocketException) {
+                        // May get this on some platforms
+                    }
+                }
+
+            delay(200)
+
+            readJob.cancel()
+            readJob.join()
+
+            // Buffer should be safe to access after cancellation
+            buffer.position(0)
+            buffer.freeIfNeeded()
 
             client.close()
             server.close()

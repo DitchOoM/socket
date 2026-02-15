@@ -9,6 +9,7 @@ import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 
@@ -250,76 +251,82 @@ class LinuxClientSocket : ClientToServerSocket {
         val bufferSize = getEffectiveReadBufferSize()
         val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
 
-        // Get native memory pointer
-        val nativeAccess = buffer.nativeMemoryAccess
-        if (nativeAccess != null) {
-            val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
-            val bytesRead =
-                if (ssl != null) {
-                    // TLS read with polling for non-blocking socket
-                    sslRead(ptr, bufferSize, timeout)
-                } else {
-                    // io_uring async read
-                    readWithIoUring(ptr, bufferSize, timeout)
-                }
-
-            return when {
-                bytesRead > 0 -> {
-                    // Set position to bytesRead so resetForRead() works correctly
-                    // resetForRead() will set limit = position, then position = 0
-                    buffer.position(bytesRead)
-                    buffer
-                }
-                bytesRead == 0 -> {
-                    closeInternal()
-                    throw SocketClosedException("Connection closed by peer")
-                }
-                else -> {
+        try {
+            // Get native memory pointer
+            val nativeAccess = buffer.nativeMemoryAccess
+            if (nativeAccess != null) {
+                val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
+                val bytesRead =
                     if (ssl != null) {
-                        handleSslReadError(bytesRead)
-                    } else {
-                        handleReadError(-bytesRead)
-                    }
-                }
-            }
-        }
-
-        // Fallback for managed memory
-        val managedAccess = buffer.managedMemoryAccess
-        if (managedAccess != null) {
-            val array = managedAccess.backingArray
-            val bytesRead =
-                array.usePinned { pinned ->
-                    val ptr = pinned.addressOf(0)
-                    if (ssl != null) {
+                        // TLS read with polling for non-blocking socket
                         sslRead(ptr, bufferSize, timeout)
                     } else {
+                        // io_uring async read
                         readWithIoUring(ptr, bufferSize, timeout)
                     }
-                }
 
-            return when {
-                bytesRead > 0 -> {
-                    // Set position to bytesRead so resetForRead() works correctly
-                    // resetForRead() will set limit = position, then position = 0
-                    buffer.position(bytesRead)
-                    buffer
-                }
-                bytesRead == 0 -> {
-                    closeInternal()
-                    throw SocketClosedException("Connection closed by peer")
-                }
-                else -> {
-                    if (ssl != null) {
-                        handleSslReadError(bytesRead)
-                    } else {
-                        handleReadError(-bytesRead)
+                return when {
+                    bytesRead > 0 -> {
+                        // Set position to bytesRead so resetForRead() works correctly
+                        // resetForRead() will set limit = position, then position = 0
+                        buffer.position(bytesRead)
+                        buffer
+                    }
+                    bytesRead == 0 -> {
+                        closeInternal()
+                        throw SocketClosedException("Connection closed by peer")
+                    }
+                    else -> {
+                        if (ssl != null) {
+                            handleSslReadError(bytesRead)
+                        } else {
+                            handleReadError(-bytesRead)
+                        }
                     }
                 }
             }
-        }
 
-        throw SocketException("Buffer has no accessible memory for io_uring read")
+            // Fallback for managed memory
+            val managedAccess = buffer.managedMemoryAccess
+            if (managedAccess != null) {
+                val array = managedAccess.backingArray
+                val bytesRead =
+                    array.usePinned { pinned ->
+                        val ptr = pinned.addressOf(0)
+                        if (ssl != null) {
+                            sslRead(ptr, bufferSize, timeout)
+                        } else {
+                            readWithIoUring(ptr, bufferSize, timeout)
+                        }
+                    }
+
+                return when {
+                    bytesRead > 0 -> {
+                        // Set position to bytesRead so resetForRead() works correctly
+                        // resetForRead() will set limit = position, then position = 0
+                        buffer.position(bytesRead)
+                        buffer
+                    }
+                    bytesRead == 0 -> {
+                        closeInternal()
+                        throw SocketClosedException("Connection closed by peer")
+                    }
+                    else -> {
+                        if (ssl != null) {
+                            handleSslReadError(bytesRead)
+                        } else {
+                            handleReadError(-bytesRead)
+                        }
+                    }
+                }
+            }
+
+            throw SocketException("Buffer has no accessible memory for io_uring read")
+        } catch (e: CancellationException) {
+            // Safe to free: submitAndWait ensures the kernel is done with the buffer
+            buffer.freeNativeMemory()
+            throw e
+        }
     }
 
     /**

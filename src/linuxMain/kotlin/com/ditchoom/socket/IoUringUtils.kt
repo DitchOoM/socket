@@ -7,8 +7,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -468,18 +466,25 @@ internal object IoUringManager {
         submissionChannel.trySend(request)
         wakePoller()
 
-        // Suspend until event loop dispatches our completion (or timeout)
-        return suspendCancellableCoroutine { cont ->
-            cont.invokeOnCancellation {
-                deferred.complete(-ECANCELED)
+        // Suspend until event loop dispatches our completion (or timeout).
+        // On cancellation, submit io_uring_prep_cancel64 and wait for the kernel
+        // to finish with any buffer pointers before letting CancellationException propagate.
+        try {
+            return deferred.await()
+        } catch (e: CancellationException) {
+            // Kernel op may still be in flight. Cancel it and wait for the CQE
+            // so any buffer pointers are no longer accessed by the kernel.
+            submitNoWaitUnsafe { sqe ->
+                io_uring_prep_cancel64(sqe, userData.toULong(), 0)
             }
-            deferred.invokeOnCompletion { throwable ->
-                if (throwable != null) {
-                    cont.resumeWithException(throwable)
-                } else {
-                    cont.resume(deferred.getCompleted())
+            withContext(NonCancellable) {
+                try {
+                    withTimeout(100) { deferred.await() }
+                } catch (_: Exception) {
+                    // Timeout or completion error — kernel op is done either way
                 }
             }
+            throw e
         }
     }
 
@@ -519,17 +524,20 @@ internal object IoUringManager {
         submissionChannel.trySend(request)
         wakePoller()
 
-        return suspendCancellableCoroutine { cont ->
-            cont.invokeOnCancellation {
-                deferred.complete(-ECANCELED)
+        try {
+            return deferred.await()
+        } catch (e: CancellationException) {
+            submitNoWaitUnsafe { sqe ->
+                io_uring_prep_cancel64(sqe, userData.toULong(), 0)
             }
-            deferred.invokeOnCompletion { throwable ->
-                if (throwable != null) {
-                    cont.resumeWithException(throwable)
-                } else {
-                    cont.resume(deferred.getCompleted())
+            withContext(NonCancellable) {
+                try {
+                    withTimeout(100) { deferred.await() }
+                } catch (_: Exception) {
+                    // Timeout or completion error — kernel op is done either way
                 }
             }
+            throw e
         }
     }
 

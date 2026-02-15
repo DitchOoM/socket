@@ -9,6 +9,7 @@ import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
@@ -54,53 +55,59 @@ open class LinuxSocketWrapper : ClientSocket {
         val bufferSize = getEffectiveReadBufferSize()
         val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
 
-        // Get native memory pointer
-        val nativeAccess = buffer.nativeMemoryAccess
-        if (nativeAccess != null) {
-            val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
-            val bytesRead = readWithIoUring(ptr, bufferSize, timeout)
+        try {
+            // Get native memory pointer
+            val nativeAccess = buffer.nativeMemoryAccess
+            if (nativeAccess != null) {
+                val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
+                val bytesRead = readWithIoUring(ptr, bufferSize, timeout)
 
-            return when {
-                bytesRead > 0 -> {
-                    // Set buffer position to bytesRead so remaining() returns correct value
-                    buffer.position(bytesRead)
-                    buffer
-                }
-                bytesRead == 0 -> {
-                    closeInternal()
-                    throw SocketClosedException("Connection closed by peer")
-                }
-                else -> {
-                    handleReadError(-bytesRead)
+                return when {
+                    bytesRead > 0 -> {
+                        // Set buffer position to bytesRead so remaining() returns correct value
+                        buffer.position(bytesRead)
+                        buffer
+                    }
+                    bytesRead == 0 -> {
+                        closeInternal()
+                        throw SocketClosedException("Connection closed by peer")
+                    }
+                    else -> {
+                        handleReadError(-bytesRead)
+                    }
                 }
             }
-        }
 
-        // Fallback for managed memory (shouldn't happen with AllocationZone.Direct on native)
-        val managedAccess = buffer.managedMemoryAccess
-        if (managedAccess != null) {
-            val array = managedAccess.backingArray
-            val bytesRead =
-                array.usePinned { pinned ->
-                    readWithIoUring(pinned.addressOf(0), bufferSize, timeout)
-                }
+            // Fallback for managed memory (shouldn't happen with AllocationZone.Direct on native)
+            val managedAccess = buffer.managedMemoryAccess
+            if (managedAccess != null) {
+                val array = managedAccess.backingArray
+                val bytesRead =
+                    array.usePinned { pinned ->
+                        readWithIoUring(pinned.addressOf(0), bufferSize, timeout)
+                    }
 
-            return when {
-                bytesRead > 0 -> {
-                    buffer.position(bytesRead)
-                    buffer
-                }
-                bytesRead == 0 -> {
-                    closeInternal()
-                    throw SocketClosedException("Connection closed by peer")
-                }
-                else -> {
-                    handleReadError(-bytesRead)
+                return when {
+                    bytesRead > 0 -> {
+                        buffer.position(bytesRead)
+                        buffer
+                    }
+                    bytesRead == 0 -> {
+                        closeInternal()
+                        throw SocketClosedException("Connection closed by peer")
+                    }
+                    else -> {
+                        handleReadError(-bytesRead)
+                    }
                 }
             }
-        }
 
-        throw SocketException("Buffer has no accessible memory for io_uring read")
+            throw SocketException("Buffer has no accessible memory for io_uring read")
+        } catch (e: CancellationException) {
+            // Safe to free: submitAndWait ensures the kernel is done with the buffer
+            buffer.freeNativeMemory()
+            throw e
+        }
     }
 
     private suspend fun readWithIoUring(
