@@ -11,7 +11,15 @@ const sidebars: SidebarsConfig = {
         'core-concepts/client-socket',
         'core-concepts/server-socket',
         'core-concepts/tls',
+        'core-concepts/tls-support-matrix',
         'core-concepts/socket-options',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Guides',
+      items: [
+        'guides/building-a-protocol',
       ],
     },
     {

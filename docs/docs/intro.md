@@ -14,7 +14,7 @@ Socket provides suspend-based async socket I/O with platform-native implementati
 
 - **Suspend-based API**: All I/O operations are coroutine-friendly suspend functions
 - **Zero-copy transfers**: Direct delegation to platform-native socket APIs
-- **TLS/SSL support**: Encrypted connections on all platforms with `tls = true`
+- **TLS/SSL support**: Encrypted connections on all platforms via `SocketOptions` and `TlsConfig`
 - **Server sockets**: Accept inbound connections as a `Flow<ClientToServerSocket>`
 - **Flow-based reading**: Stream data via `readFlow()` and `readFlowString()`
 
@@ -32,13 +32,14 @@ Socket provides suspend-based async socket I/O with platform-native implementati
 
 ```kotlin
 import com.ditchoom.socket.ClientSocket
+import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.connect
 
 // Connect, write, read, close
 val socket = ClientSocket.connect(
     port = 443,
     hostname = "example.com",
-    tls = true
+    socketOptions = SocketOptions.tlsDefault(),
 )
 socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
 val response = socket.readString()
@@ -61,3 +62,4 @@ dependencies {
 - [Client Socket](./core-concepts/client-socket) - Connect, read, write, and close
 - [Server Socket](./core-concepts/server-socket) - Accept inbound connections
 - [TLS](./core-concepts/tls) - Encrypted connections
+- [Recipe: Building a Protocol Client](./guides/building-a-protocol) - Full-stack example with TLS, buffer pools, and compression
