@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
+import com.ditchoom.buffer.pool.ThreadingMode
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -17,4 +18,5 @@ data class ConnectionOptions(
     val writeTimeout: Duration = 15.seconds,
     val defaultBufferSize: Int = 8192,
     val maxPoolSize: Int = 64,
+    val threadingMode: ThreadingMode = ThreadingMode.SingleThreaded,
 )
