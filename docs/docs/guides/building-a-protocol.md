@@ -210,23 +210,6 @@ The default is `SingleThreaded`, which avoids synchronization overhead when read
 - `maxPoolSize` caps memory usage
 - `readIntoStream()` uses zero-copy pooled reads: acquires a buffer from the pool, reads directly into it from the socket, and transfers ownership to the stream processor
 
-### Threading Mode
-
-By default, `SocketConnection` uses a `SingleThreaded` buffer pool, which is optimal when reads and writes happen from the same coroutine context. For protocols where reads and writes happen from different contexts (e.g., WebSocket read loop on `Dispatchers.Default` while writes come from the caller's context), use `MultiThreaded`:
-
-```kotlin
-SocketConnection.connect(
-    hostname = "example.com",
-    port = 443,
-    options = ConnectionOptions(
-        threadingMode = ThreadingMode.MultiThreaded,
-    ),
-) { conn ->
-    // Safe to read and write from different coroutines
-}
-```
-- `readIntoStream()` uses pooled zero-copy reads — buffers go directly from pool to socket to stream processor
-
 ## Layer 6: Large Data with Constant Memory
 
 Process millions of records with backpressure. A slow collector suspends `read()` — no unbounded buffering:
