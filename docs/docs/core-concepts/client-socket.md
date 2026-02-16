@@ -103,6 +103,34 @@ conn.readIntoStream()
 conn.close()
 ```
 
+## Compression
+
+For compression over socket connections, add the optional `buffer-compression` module:
+
+```kotlin
+dependencies {
+    implementation("com.ditchoom:buffer-compression:<version>")
+}
+```
+
+It supports Gzip and Deflate and works with any `ReadBuffer`:
+
+```kotlin
+import com.ditchoom.buffer.compression.*
+
+// Compress before writing
+val payload = "Hello, World!".toReadBuffer()
+val compressed = compress(payload, CompressionAlgorithm.Gzip).getOrThrow()
+socket.write(compressed)
+
+// Decompress after reading
+val received = socket.read()
+received.resetForRead()
+val decompressed = decompress(received, CompressionAlgorithm.Gzip).getOrThrow()
+```
+
+This works with any socket configuration (plaintext, TLS, pooled connections).
+
 ## Allocation
 
 For more control, allocate a socket manually and then open it:
