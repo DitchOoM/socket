@@ -182,11 +182,33 @@ socket.readFlow()
     .collect { line -> process(line) }
 ```
 
+### Threading Mode
+
+If your protocol reads and writes from different coroutine contexts (e.g., a read loop on `Dispatchers.Default` while writes come from the caller's context), use `ThreadingMode.MultiThreaded`:
+
+```kotlin
+SocketConnection.connect(
+    hostname = "broker.example.com",
+    port = 8883,
+    options = ConnectionOptions(
+        threadingMode = ThreadingMode.MultiThreaded,  // concurrent read + write
+    ),
+) { conn ->
+    // Read loop in one coroutine
+    launch { conn.readIntoStream(timeout) }
+    // Write from another
+    conn.write(buffer)
+}
+```
+
+The default is `SingleThreaded`, which avoids synchronization overhead when reads and writes happen sequentially.
+
 **What the buffer pool gives you:**
 - Buffers are allocated once and reused — no GC pressure on JVM, no malloc churn on native
 - `withBuffer` automatically returns the buffer to the pool
 - `StreamProcessor` accumulates partial reads for protocols with framed messages
 - `maxPoolSize` caps memory usage
+- `readIntoStream()` uses pooled zero-copy reads — buffers go directly from pool to socket to stream processor
 
 ## Layer 6: Large Data with Constant Memory
 
