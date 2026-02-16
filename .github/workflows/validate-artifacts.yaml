@@ -156,7 +156,7 @@ jobs:
           echo "--- Root Module Variant Coverage ---"
           MODULE_FILE="${BASE}/socket/${version}/socket-${version}.module"
           if [ -f "$MODULE_FILE" ]; then
-            for target in linuxx64 linuxarm64 macosarm64 macosx64 iosarm64 iossimulatorarm64 iosx64 tvosarm64 tvossimulatorarm64 tvosx64 watchosarm64 watchossimulatorarm64 watchosx64; do
+            for target in linuxX64 linuxArm64 macosArm64 macosX64 iosArm64 iosSimulatorArm64 iosX64 tvosArm64 tvosSimulatorArm64 tvosX64 watchosArm64 watchosSimulatorArm64 watchosX64; do
               if jq -e ".variants[] | select(.name == \"${target}ApiElements-published\")" "$MODULE_FILE" > /dev/null 2>&1; then
                 echo "  ${target} variant referenced in module metadata"
               else
