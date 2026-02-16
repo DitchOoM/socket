@@ -38,20 +38,45 @@ val response = ClientSocket.connect(443, hostname = "example.com", socketOptions
 }
 ```
 
+## Streaming over TLS
+
+TLS is a transparent layer — all streaming patterns work identically over encrypted connections:
+
+```kotlin
+ClientSocket.connect(8883, hostname = "broker.example.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
+    socket.writeString("SUBSCRIBE events\n")
+    socket.readFlowLines().collect { line ->
+        println(line)
+    }
+}
+```
+
+Streaming with decompression over TLS:
+
+```kotlin
+ClientSocket.connect(443, hostname = "data.example.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
+    socket.readFlow()
+        .mapBuffer { decompress(it, Gzip).getOrThrow() }
+        .asStringFlow()
+        .lines()
+        .collect { line -> process(line) }
+}
+```
+
 ## SocketConnection with TLS
 
 For protocol implementations that need a buffer pool and stream processor with TLS:
 
 ```kotlin
-val conn = SocketConnection.connect(
+SocketConnection.connect(
     hostname = "example.com",
     port = 443,
     options = ConnectionOptions(
         socketOptions = SocketOptions.tlsDefault(),
     ),
-)
-// conn.pool, conn.stream, and conn.socket are all available
-conn.close()
+) { conn ->
+    // conn.pool, conn.stream, and conn.socket are all available
+}
 ```
 
 ## Manual Allocation

@@ -6,17 +6,18 @@ title: Introduction
 
 # Socket
 
-**Kotlin Multiplatform library for cross-platform TCP socket networking**
+**Cross-platform TCP + TLS with streaming, compression, and buffer pooling — same Kotlin code on 6 platforms**
 
 Socket provides suspend-based async socket I/O with platform-native implementations, allowing you to write networking code once and run it across JVM, Android, iOS, macOS, Linux, and Node.js.
 
 ## Why Socket?
 
-- **Suspend-based API**: All I/O operations are coroutine-friendly suspend functions
-- **Zero-copy transfers**: Direct delegation to platform-native socket APIs
-- **TLS/SSL support**: Encrypted connections on all platforms via `SocketOptions` and `TlsConfig`
-- **Server sockets**: Accept inbound connections as a `Flow<ClientToServerSocket>`
-- **Flow-based reading**: Stream data via `readFlow()` and `readFlowString()`
+- **One-line TLS** — `SocketOptions.tlsDefault()` handles SSLEngine, Network.framework, OpenSSL, and Node tls module
+- **Streaming** — `readFlowLines()` with backpressure, cancellation, and constant memory
+- **Buffer pooling** — `SocketConnection` bundles pool + stream processor, no per-message allocations
+- **Compression** — compose `mapBuffer { decompress(it) }` into any read pipeline
+- **Lambda-scoped connections** — auto-cleanup, no try-finally
+- **Platform-native performance** — io_uring on Linux, NWConnection on Apple, NIO2 on JVM
 
 ## Platform Implementations
 
@@ -30,36 +31,70 @@ Socket provides suspend-based async socket I/O with platform-native implementati
 
 ## Quick Example
 
-```kotlin
-import com.ditchoom.socket.ClientSocket
-import com.ditchoom.socket.SocketOptions
-import com.ditchoom.socket.connect
+### Request/Response
 
-// Connect, write, read, close
-val socket = ClientSocket.connect(
-    port = 443,
-    hostname = "example.com",
-    socketOptions = SocketOptions.tlsDefault(),
-)
-socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
-val response = socket.readString()
-socket.close()
+```kotlin
+val response = ClientSocket.connect(443, hostname = "example.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
+    socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    socket.readString()
+} // socket closed automatically
+```
+
+### Persistent Streaming
+
+```kotlin
+ClientSocket.connect(8883, hostname = "broker.example.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
+    socket.writeString("SUBSCRIBE events\n")
+    socket.readFlowLines().collect { line ->
+        println(line)
+    }
+}
+```
+
+### Streaming with Compression
+
+```kotlin
+socket.readFlow()
+    .mapBuffer { decompress(it, Gzip).getOrThrow() }
+    .asStringFlow()
+    .lines()
+    .collect { line -> process(line) }
+```
+
+## Part of the DitchOoM Stack
+
+```
+┌──────────────────────────────────┐
+│  Your Protocol (MQTT, WS, ...)   │
+├──────────────────────────────────┤
+│  socket (TCP + TLS)              │  ← com.ditchoom:socket
+├──────────────────────────────────┤
+│  buffer-compression (optional)   │  ← com.ditchoom:buffer-compression
+├──────────────────────────────────┤
+│  buffer-flow                     │  ← com.ditchoom:buffer-flow
+├──────────────────────────────────┤
+│  buffer                          │  ← com.ditchoom:buffer
+└──────────────────────────────────┘
 ```
 
 ## Installation
 
-Add to your `build.gradle.kts` (see [Maven Central](https://central.sonatype.com/artifact/com.ditchoom/socket) for the latest version):
+Add to your `build.gradle.kts` (see [Maven Central](https://central.sonatype.com/search?q=com.ditchoom) for latest versions):
 
 ```kotlin
 dependencies {
     implementation("com.ditchoom:socket:<latest-version>")
+    // Optional: streaming transforms (mapBuffer, asStringFlow, lines)
+    implementation("com.ditchoom:buffer-flow:<latest-version>")
+    // Optional: compression
+    implementation("com.ditchoom:buffer-compression:<latest-version>")
 }
 ```
 
 ## Next Steps
 
-- [Getting Started](./getting-started) - Installation and first connection
-- [Client Socket](./core-concepts/client-socket) - Connect, read, write, and close
-- [Server Socket](./core-concepts/server-socket) - Accept inbound connections
-- [TLS](./core-concepts/tls) - Encrypted connections
-- [Recipe: Building a Protocol Client](./guides/building-a-protocol) - Full-stack example with TLS, buffer pools, and compression
+- [Getting Started](./getting-started) — Installation and first connection
+- [Client Socket](./core-concepts/client-socket) — Connect, read, write, stream, and close
+- [Server Socket](./core-concepts/server-socket) — Accept inbound connections
+- [TLS](./core-concepts/tls) — Encrypted connections
+- [Recipe: Building a Protocol Client](./guides/building-a-protocol) — Full-stack example with streaming, TLS, buffer pools, and compression

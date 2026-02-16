@@ -7,6 +7,19 @@ title: Socket Options
 
 The `SocketOptions` data class allows you to configure TCP socket behavior and TLS.
 
+## Presets
+
+```kotlin
+// TLS with low latency and default certificate validation
+SocketOptions.tlsDefault()
+
+// Low-latency plaintext (tcpNoDelay = true)
+SocketOptions.LOW_LATENCY
+
+// TLS with all validation disabled (development only)
+SocketOptions.tlsInsecure()
+```
+
 ## Available Options
 
 ```kotlin
@@ -37,19 +50,6 @@ val socket = ClientSocket.connect(
     hostname = "example.com",
     socketOptions = options,
 )
-```
-
-## Presets
-
-```kotlin
-// Low-latency plaintext (tcpNoDelay = true)
-SocketOptions.LOW_LATENCY
-
-// TLS with low latency and default certificate validation
-SocketOptions.tlsDefault()
-
-// TLS with all validation disabled (development only)
-SocketOptions.tlsInsecure()
 ```
 
 ## Option Details

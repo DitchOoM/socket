@@ -633,6 +633,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             implementation(libs.buffer)
+            api(libs.buffer.flow)
             implementation(libs.kotlinx.coroutines.core)
         }
         androidMain.dependencies {
