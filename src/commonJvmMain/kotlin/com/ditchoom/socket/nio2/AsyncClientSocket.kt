@@ -2,6 +2,7 @@ package com.ditchoom.socket.nio2
 
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.socket.ClientToServerSocket
+import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.nio.util.buildInetAddress
 import com.ditchoom.socket.nio2.util.aConnect
 import com.ditchoom.socket.nio2.util.asyncSocket
@@ -16,20 +17,25 @@ class AsyncClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
-    ) = withTimeout(timeout) {
-        val asyncSocket = asyncSocket()
-        // Assign socket immediately so close() can clean it up if connect fails
-        this@AsyncClientSocket.socket = asyncSocket
-        try {
-            asyncSocket.aConnect(buildInetAddress(port, hostname), timeout)
-        } catch (e: Throwable) {
-            // Ensure socket is closed on any failure during open
+        socketOptions: SocketOptions,
+    ) {
+        withTimeout(timeout) {
+            val asyncSocket = asyncSocket()
+            // Assign socket immediately so close() can clean it up if connect fails
+            this@AsyncClientSocket.socket = asyncSocket
             try {
-                asyncSocket.close()
-            } catch (_: Throwable) {
-                // Ignore close errors
+                asyncSocket.aConnect(buildInetAddress(port, hostname), timeout)
+                applySocketOptions(socketOptions)
+                socketOptions.tls?.let { initTls(hostname, port, it, timeout) }
+            } catch (e: Throwable) {
+                // Ensure socket is closed on any failure during open
+                try {
+                    asyncSocket.close()
+                } catch (_: Throwable) {
+                    // Ignore close errors
+                }
+                throw e
             }
-            throw e
         }
     }
 }

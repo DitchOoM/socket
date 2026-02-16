@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -165,7 +166,7 @@ class ResourceCleanupTests {
                     val client = ClientSocket.allocate()
                     clientRef = client
                     client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-                    clientConnected.lock()
+                    clientConnected.lockWithTimeout()
 
                     // This should block and be cancelled
                     client.read(60.seconds)
@@ -260,6 +261,39 @@ class ResourceCleanupTests {
         }
 
     @Test
+    fun writeAfterCloseThrows() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val serverFlow = server.bind()
+
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    serverFlow.collect { client ->
+                        delay(60000)
+                        client.close()
+                    }
+                }
+
+            val client = ClientSocket.allocate()
+            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            assertTrue(client.isOpen(), "Socket should be open")
+
+            client.close()
+            assertFalse(client.isOpen(), "Socket should be closed")
+
+            assertFailsWith<SocketClosedException>("Write after close should throw") {
+                client.writeString("should fail")
+            }
+
+            assertFailsWith<SocketClosedException>("Read after close should throw") {
+                client.readString(timeout = 1.seconds)
+            }
+
+            server.close()
+            serverJob.cancel()
+        }
+
+    @Test
     fun serverAcceptsContinuesAfterClientError() =
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
@@ -272,8 +306,8 @@ class ResourceCleanupTests {
                         try {
                             // Try to read - first client will send nothing
                             val data =
-                                withTimeout(200.milliseconds) {
-                                    client.readString(timeout = 200.milliseconds)
+                                withTimeout(2.seconds) {
+                                    client.readString(timeout = 2.seconds)
                                 }
                             clientsProcessed++
                         } catch (e: Exception) {
@@ -284,12 +318,12 @@ class ResourceCleanupTests {
                     }
                 }
 
-            // First client - connect and immediately close (server will timeout)
+            // First client - connect and immediately close (server will get error)
             val client1 = ClientSocket.allocate()
             client1.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
             client1.close()
 
-            delay(300)
+            delay(100)
 
             // Second client - send proper data
             val client2 = ClientSocket.allocate()
@@ -297,7 +331,7 @@ class ResourceCleanupTests {
             client2.writeString("hello")
             client2.close()
 
-            delay(300)
+            delay(100)
 
             // Third client - should also work
             val client3 = ClientSocket.allocate()
@@ -305,7 +339,7 @@ class ResourceCleanupTests {
             client3.writeString("world")
             client3.close()
 
-            delay(300)
+            delay(500)
 
             assertTrue(clientsProcessed >= 1, "Server should have processed at least one proper client")
 

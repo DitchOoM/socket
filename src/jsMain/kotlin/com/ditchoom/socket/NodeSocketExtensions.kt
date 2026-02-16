@@ -70,6 +70,7 @@ suspend fun connect(
             netSocket = socket
             cont.invokeOnCancellation { throwableLocal ->
                 if (timeoutHandle != null) jsClearTimeout(timeoutHandle)
+                socket.removeAllListeners()
                 socket.end { }
                 socket.destroy()
                 throwable = throwableLocal
@@ -92,6 +93,7 @@ suspend fun Socket.write(buffer: Uint8Array) {
             it.resume(Unit)
         }
         it.invokeOnCancellation {
+            removeAllListeners()
             end { }
             destroy()
         }

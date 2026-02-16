@@ -38,8 +38,8 @@ data class AcceptCompletionHandler(
 /**
  * Performs [AsynchronousServerSocketChannel.bind] without blocking a thread and resumes when asynchronous operation completes.
  * This suspending function is cancellable.
- * If the [Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
- * *closes the underlying channel* and immediately resumes with [CancellationException].
+ * If the [kotlinx.coroutines.Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
+ * *closes the underlying channel* and immediately resumes with [kotlin.coroutines.cancellation.CancellationException].
  */
 
 suspend fun AsynchronousServerSocketChannel.aBind(

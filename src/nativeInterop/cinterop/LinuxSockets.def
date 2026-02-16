@@ -1,13 +1,26 @@
 language = C
 package = com.ditchoom.socket.linux
 
-# Note: OpenSSL support disabled due to glibc version incompatibility with Kotlin/Native toolchain.
-# The K/N toolchain uses glibc 2.19, but Ubuntu 24.04's libssl requires glibc 2.33+.
-# TLS support can be added later with statically-linked OpenSSL.
-headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h
+# Linux socket implementation with io_uring async I/O and OpenSSL TLS support.
+#
+# Dependencies:
+#   - liburing: System package (sudo apt install liburing-dev)
+#   - OpenSSL: Pre-built static libraries in libs/openssl/linux-x64/
+#              Built on CentOS 7 (glibc 2.17) for K/N compatibility
+#              To rebuild: ./buildSrc/openssl/build-openssl.sh
+#
+# Why static OpenSSL? Kotlin/Native bundles glibc 2.19, but Ubuntu 24.04's
+# dynamic libssl requires glibc 2.33+. Our static build uses glibc 2.17.
 
-compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -I/usr/include -I/usr/include/x86_64-linux-gnu
-linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -luring -lpthread
+headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h openssl/ssl.h openssl/err.h openssl/x509.h
+
+# Compiler flags - include paths are set via build.gradle.kts includeDirs
+# to support both native compilation and cross-compilation
+compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
+
+# Linker flags - these propagate to consumers of this library
+# staticLibraries and libraryPaths are added by the generate task in build.gradle.kts
+linkerOpts.linux = -lssl -lcrypto -luring -lpthread -ldl
 
 ---
 
@@ -28,4 +41,15 @@ static inline int socket_bind(int sockfd, const struct sockaddr *addr, socklen_t
 
 static inline int socket_accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     return accept(sockfd, addr, addrlen);
+}
+
+// OpenSSL wrapper for setting SNI hostname (SSL_set_tlsext_host_name is a macro)
+static inline int ssl_set_hostname(SSL *ssl, const char *hostname) {
+    return SSL_set_tlsext_host_name(ssl, hostname);
+}
+
+// OpenSSL wrapper for SSL_CTX_set_verify (to avoid callback parameter issues)
+// SSL_VERIFY_NONE = 0, SSL_VERIFY_PEER = 1
+static inline void ssl_ctx_set_verify_peer(SSL_CTX *ctx, int verify) {
+    SSL_CTX_set_verify(ctx, verify ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, NULL);
 }

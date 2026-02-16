@@ -1,5 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import java.net.URI
+import java.security.MessageDigest
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -15,11 +17,15 @@ apply(from = "gradle/setup.gradle.kts")
 group = "com.ditchoom"
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
-val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any
-project.version = getNextVersion(!isRunningOnGithub).toString()
+// Only compute version if not explicitly provided via -Pversion
+if (!project.hasProperty("version") || project.version == "unspecified") {
+    project.version = getNextVersion(!isRunningOnGithub).toString()
+}
 
 // Only print version info when not in quiet mode (avoids polluting CI output)
 if (gradle.startParameter.logLevel != LogLevel.QUIET) {
@@ -27,6 +33,7 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
+    mavenLocal() // For local buffer library testing
     google()
     mavenCentral()
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }
@@ -93,6 +100,474 @@ fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
     }
 }
 
+// OpenSSL version for Linux builds - defined in gradle/libs.versions.toml
+val opensslVersion = libs.versions.openssl.get()
+val opensslSha256 = libs.versions.opensslSha256.get()
+val opensslBuildDir = layout.buildDirectory.dir("openssl")
+val opensslIncludeDir = opensslBuildDir.map { it.dir("openssl-$opensslVersion/include") }
+
+// OpenSSL configure options for minimal TLS build
+val opensslConfigureOptions =
+    listOf(
+        "no-shared",
+        "no-tests",
+        "no-legacy",
+        "no-engine",
+        "no-comp",
+        "no-dtls",
+        "no-dtls1",
+        "no-dtls1-method",
+        "no-ssl3",
+        "no-ssl3-method",
+        "no-idea",
+        "no-rc2",
+        "no-rc4",
+        "no-rc5",
+        "no-des",
+        "no-md4",
+        "no-mdc2",
+        "no-whirlpool",
+        "no-psk",
+        "no-srp",
+        "no-gost",
+        "no-cms",
+        "no-ts",
+        "no-ocsp",
+        "no-srtp",
+        "no-seed",
+        "no-bf",
+        "no-cast",
+        "no-camellia",
+        "no-aria",
+        "no-sm2",
+        "no-sm3",
+        "no-sm4",
+        "no-siphash",
+    )
+
+// Helper function to download and verify OpenSSL source
+fun downloadOpenSslSource(
+    buildDir: File,
+    version: String,
+    sha256: String,
+): File {
+    val tarball = File(buildDir, "openssl-$version.tar.gz")
+    val sourceDir = File(buildDir, "openssl-$version")
+
+    if (sourceDir.exists()) return sourceDir
+
+    buildDir.mkdirs()
+
+    // Download if not present
+    if (!tarball.exists()) {
+        println("Downloading OpenSSL $version...")
+        val url = URI("https://github.com/openssl/openssl/releases/download/openssl-$version/openssl-$version.tar.gz").toURL()
+        url.openStream().use { input ->
+            tarball.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+    }
+
+    // Verify SHA256
+    val digest = MessageDigest.getInstance("SHA-256")
+    tarball.inputStream().use { input ->
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (input.read(buffer).also { read = it } != -1) {
+            digest.update(buffer, 0, read)
+        }
+    }
+    val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    if (actualSha256 != sha256) {
+        tarball.delete()
+        throw GradleException("OpenSSL SHA256 mismatch: expected $sha256, got $actualSha256")
+    }
+
+    // Extract
+    println("Extracting OpenSSL source...")
+    ProcessBuilder("tar", "xzf", tarball.name)
+        .directory(buildDir)
+        .inheritIO()
+        .start()
+        .waitFor()
+
+    return sourceDir
+}
+
+// Task to build OpenSSL static libraries for a specific architecture
+fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
+    val taskName = "buildOpenSsl${arch.replaceFirstChar { it.uppercase() }}"
+    val opensslTarget = if (arch == "x64") "linux-x86_64" else "linux-aarch64"
+    val outputDir = projectDir.resolve("libs/openssl/linux-$arch")
+    val markerFile = outputDir.resolve("lib/.built-$opensslVersion")
+
+    return tasks.register(taskName) {
+        group = "build"
+        description = "Build OpenSSL static libraries for Linux $arch"
+
+        inputs.property("opensslVersion", opensslVersion)
+        inputs.property("opensslSha256", opensslSha256)
+        outputs.file(markerFile)
+
+        onlyIf {
+            !markerFile.exists()
+        }
+
+        doLast {
+            val buildDir = opensslBuildDir.get().asFile
+            val sourceDir = downloadOpenSslSource(buildDir, opensslVersion, opensslSha256)
+
+            // Check for cross-compiler if needed
+            val crossCompile =
+                if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
+                    val compiler = "aarch64-linux-gnu-gcc"
+                    val result = ProcessBuilder("which", compiler).start().waitFor()
+                    if (result != 0) {
+                        throw GradleException(
+                            """
+                            Cross-compiler not found for ARM64. Install with:
+                              sudo apt install gcc-aarch64-linux-gnu
+                            """.trimIndent(),
+                        )
+                    }
+                    "--cross-compile-prefix=aarch64-linux-gnu-"
+                } else {
+                    null
+                }
+
+            // Clean any previous build artifacts to avoid mixing architectures
+            logger.lifecycle("Cleaning previous OpenSSL build...")
+            ProcessBuilder("make", "clean")
+                .directory(sourceDir)
+                .inheritIO()
+                .start()
+                .waitFor()
+
+            // Configure
+            // Use C11 standard to avoid glibc 2.38+ C23 functions (e.g., __isoc23_strtol)
+            // that aren't available in Kotlin/Native's older sysroot (glibc 2.19)
+            logger.lifecycle("Configuring OpenSSL $opensslVersion for $arch...")
+            val configureArgs =
+                mutableListOf(
+                    "./Configure",
+                    opensslTarget,
+                    "--prefix=/opt/openssl",
+                    "--libdir=lib",
+                )
+            crossCompile?.let { configureArgs.add(it) }
+            configureArgs.addAll(opensslConfigureOptions)
+
+            val configureProcess =
+                ProcessBuilder(configureArgs)
+                    .directory(sourceDir)
+                    .inheritIO()
+            // Set CFLAGS to enforce C11 standard in environment
+            // For ARM64: disable outline atomics to avoid needing libgcc atomics helpers
+            val cflags =
+                if (arch == "arm64") {
+                    "-fPIC -std=gnu11 -mno-outline-atomics"
+                } else {
+                    "-fPIC -std=gnu11"
+                }
+            configureProcess.environment()["CFLAGS"] = cflags
+            val configureResult = configureProcess.start().waitFor()
+
+            if (configureResult != 0) {
+                throw GradleException("OpenSSL configure failed")
+            }
+
+            // Build
+            logger.lifecycle("Building OpenSSL (this may take a few minutes)...")
+            val cpuCount = Runtime.getRuntime().availableProcessors()
+            val makeResult =
+                ProcessBuilder("make", "-j$cpuCount")
+                    .directory(sourceDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
+
+            if (makeResult != 0) {
+                throw GradleException("OpenSSL build failed")
+            }
+
+            // Copy libraries
+            outputDir.resolve("lib").mkdirs()
+            sourceDir.resolve("libssl.a").copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
+            sourceDir.resolve("libcrypto.a").copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
+
+            // Copy headers so they're cached along with libraries
+            val includeOutputDir = outputDir.resolve("include")
+            sourceDir.resolve("include").copyRecursively(includeOutputDir, overwrite = true)
+
+            // Write marker file
+            markerFile.writeText("OpenSSL $opensslVersion built on ${System.currentTimeMillis()}")
+
+            logger.lifecycle("OpenSSL $opensslVersion built successfully for $arch")
+        }
+    }
+}
+
+val buildOpenSslX64 = createBuildOpenSslTask("x64")
+val buildOpenSslArm64 = createBuildOpenSslTask("arm64")
+
+// liburing version for Linux builds - defined in gradle/libs.versions.toml
+val liburingVersion = libs.versions.liburing.get()
+val liburingSha256 = libs.versions.liburingSha256.get()
+val liburingBuildDir = layout.buildDirectory.dir("liburing")
+
+// Helper function to download and verify liburing source
+fun downloadLiburingSource(
+    buildDir: File,
+    version: String,
+    sha256: String,
+): File {
+    val tarball = File(buildDir, "liburing-$version.tar.gz")
+    val sourceDir = File(buildDir, "liburing-liburing-$version")
+
+    if (sourceDir.exists()) return sourceDir
+
+    buildDir.mkdirs()
+
+    // Download if not present
+    if (!tarball.exists()) {
+        println("Downloading liburing $version...")
+        val url = URI("https://github.com/axboe/liburing/archive/refs/tags/liburing-$version.tar.gz").toURL()
+        url.openStream().use { input ->
+            tarball.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+    }
+
+    // Verify SHA256
+    val digest = MessageDigest.getInstance("SHA-256")
+    tarball.inputStream().use { input ->
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (input.read(buffer).also { read = it } != -1) {
+            digest.update(buffer, 0, read)
+        }
+    }
+    val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    if (actualSha256 != sha256) {
+        tarball.delete()
+        throw GradleException("liburing SHA256 mismatch: expected $sha256, got $actualSha256")
+    }
+
+    // Extract
+    println("Extracting liburing source...")
+    ProcessBuilder("tar", "xzf", tarball.name)
+        .directory(buildDir)
+        .inheritIO()
+        .start()
+        .waitFor()
+
+    return sourceDir
+}
+
+// Task to build liburing static library for a specific architecture
+fun createBuildLiburingTask(arch: String): TaskProvider<Task> {
+    val taskName = "buildLiburing${arch.replaceFirstChar { it.uppercase() }}"
+    val outputDir = projectDir.resolve("libs/liburing/linux-$arch")
+    val markerFile = outputDir.resolve("lib/.built-$liburingVersion")
+
+    return tasks.register(taskName) {
+        group = "build"
+        description = "Build liburing static library for Linux $arch"
+
+        inputs.property("liburingVersion", liburingVersion)
+        inputs.property("liburingSha256", liburingSha256)
+        outputs.file(markerFile)
+
+        onlyIf {
+            !markerFile.exists()
+        }
+
+        doLast {
+            val buildDir = liburingBuildDir.get().asFile
+            val sourceDir = downloadLiburingSource(buildDir, liburingVersion, liburingSha256)
+
+            // Determine compiler for cross-compilation
+            val (cc, cxx) =
+                if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
+                    val compiler = "aarch64-linux-gnu-gcc"
+                    val result = ProcessBuilder("which", compiler).start().waitFor()
+                    if (result != 0) {
+                        throw GradleException(
+                            """
+                            Cross-compiler not found for ARM64. Install with:
+                              sudo apt install gcc-aarch64-linux-gnu
+                            """.trimIndent(),
+                        )
+                    }
+                    "aarch64-linux-gnu-gcc" to "aarch64-linux-gnu-g++"
+                } else {
+                    "gcc" to "g++"
+                }
+
+            // Clean any previous build artifacts to avoid mixing architectures
+            logger.lifecycle("Cleaning previous liburing build...")
+            ProcessBuilder("make", "clean")
+                .directory(sourceDir)
+                .inheritIO()
+                .start()
+                .waitFor()
+
+            // Configure liburing
+            logger.lifecycle("Configuring liburing $liburingVersion for $arch...")
+            val configureArgs =
+                mutableListOf(
+                    "./configure",
+                    "--cc=$cc",
+                    "--cxx=$cxx",
+                    "--prefix=${outputDir.absolutePath}",
+                )
+
+            val configureResult =
+                ProcessBuilder(configureArgs)
+                    .directory(sourceDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
+
+            if (configureResult != 0) {
+                throw GradleException("liburing configure failed")
+            }
+
+            // Build only the static library (not shared library or tests)
+            logger.lifecycle("Building liburing...")
+            val cpuCount = Runtime.getRuntime().availableProcessors()
+            val makeResult =
+                ProcessBuilder("make", "-j$cpuCount", "-C", "src", "liburing.a")
+                    .directory(sourceDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
+
+            if (makeResult != 0) {
+                throw GradleException("liburing build failed")
+            }
+
+            // Copy library and headers
+            outputDir.resolve("lib").mkdirs()
+            outputDir.resolve("include").mkdirs()
+
+            // Copy static library
+            sourceDir.resolve("src/liburing.a").copyTo(
+                outputDir.resolve("lib/liburing.a"),
+                overwrite = true,
+            )
+
+            // Copy headers
+            sourceDir.resolve("src/include/liburing.h").copyTo(
+                outputDir.resolve("include/liburing.h"),
+                overwrite = true,
+            )
+            val liburingIncludeDir = sourceDir.resolve("src/include/liburing")
+            if (liburingIncludeDir.exists()) {
+                liburingIncludeDir.copyRecursively(
+                    outputDir.resolve("include/liburing"),
+                    overwrite = true,
+                )
+            }
+
+            // Write marker file
+            markerFile.writeText("liburing $liburingVersion built on ${System.currentTimeMillis()}")
+
+            logger.lifecycle("liburing $liburingVersion built successfully for $arch")
+        }
+    }
+}
+
+val buildLiburingX64 = createBuildLiburingTask("x64")
+val buildLiburingArm64 = createBuildLiburingTask("arm64")
+
+// Configure cinterop for Linux targets with static OpenSSL and liburing
+// Requires: sudo apt install build-essential perl
+// For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu
+// OpenSSL and liburing are built automatically by Gradle when needed
+fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
+    val opensslDir = projectDir.resolve("libs/openssl/linux-$arch")
+    val opensslLibDir = opensslDir.resolve("lib")
+    val opensslIncDir = opensslDir.resolve("include")
+    val liburingDir = projectDir.resolve("libs/liburing/linux-$arch")
+    val liburingLibDir = liburingDir.resolve("lib")
+    val liburingIncludeDir = liburingDir.resolve("include")
+    val buildOpenSslTask = if (arch == "x64") buildOpenSslX64 else buildOpenSslArm64
+    val buildLiburingTask = if (arch == "x64") buildLiburingX64 else buildLiburingArm64
+
+    // System include paths for standard headers (not liburing - we build that ourselves)
+    val systemIncludeDirs =
+        if (arch == "x64") {
+            listOf("/usr/include", "/usr/include/x86_64-linux-gnu")
+        } else {
+            // ARM64 cross-compilation from x64
+            val crossRoot = "/usr/aarch64-linux-gnu"
+            val crossInclude = "/usr/include/aarch64-linux-gnu"
+            when {
+                File(crossRoot).exists() -> listOf("$crossRoot/include")
+                File(crossInclude).exists() -> listOf(crossInclude)
+                else -> listOf("/usr/include/aarch64-linux-gnu")
+            }
+        }
+
+    // Generate .def file with library paths for static libraries
+    val generatedDefFile = projectDir.resolve("build/generated/cinterop/LinuxSockets-$arch.def")
+
+    val generateDefTask =
+        tasks.register("generateLinuxSocketsDef${arch.replaceFirstChar { it.uppercase() }}") {
+            inputs.file("src/nativeInterop/cinterop/LinuxSockets.def")
+            outputs.file(generatedDefFile)
+            doLast {
+                val baseDefContent = file("src/nativeInterop/cinterop/LinuxSockets.def").readText()
+                // Add libraryPaths and staticLibraries directives
+                // getentropy is referenced by OpenSSL but requires glibc 2.25+. Since io_uring
+                // requires Linux 5.1+ (which ships glibc 2.29+), getentropy is available at runtime.
+                // Use --unresolved-symbols=ignore-in-object-files to allow linking.
+                val modifiedContent =
+                    baseDefContent.replace(
+                        "linkerOpts.linux = -lssl -lcrypto -luring -lpthread -ldl",
+                        """libraryPaths.linux = ${opensslLibDir.absolutePath} ${liburingLibDir.absolutePath}
+staticLibraries.linux = libssl.a libcrypto.a liburing.a
+linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files""",
+                    )
+                generatedDefFile.parentFile.mkdirs()
+                generatedDefFile.writeText(modifiedContent)
+            }
+        }
+
+    compilations["main"].cinterops {
+        create("LinuxSockets") {
+            defFile(generatedDefFile)
+            // Include: system headers, our built liburing headers, and our built OpenSSL headers
+            val allIncludes =
+                systemIncludeDirs +
+                    liburingIncludeDir.absolutePath +
+                    opensslIncDir.absolutePath
+            includeDirs(*allIncludes.toTypedArray())
+
+            tasks.named(interopProcessingTaskName) {
+                dependsOn(generateDefTask)
+                dependsOn(buildOpenSslTask)
+                dependsOn(buildLiburingTask)
+            }
+        }
+    }
+    // Link against static OpenSSL and static liburing (for binaries built in this project)
+    binaries.all {
+        linkerOpts(
+            "-L${opensslLibDir.absolutePath}",
+            "-L${liburingLibDir.absolutePath}",
+            "-lssl",
+            "-lcrypto",
+            "-luring",
+            "-lpthread",
+            "-ldl",
+        )
+    }
+}
+
 kotlin {
     // Ensure consistent JDK version across all developer machines and CI
     jvmToolchain(21)
@@ -106,7 +581,13 @@ kotlin {
     }
     js {
         browser()
-        nodejs()
+        nodejs {
+            testTask {
+                useMocha {
+                    timeout = "30s"
+                }
+            }
+        }
     }
 
     // Apple targets with Network.framework zero-copy socket implementation
@@ -131,9 +612,22 @@ kotlin {
         watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
     }
 
-    // Linux targets disabled for now due to glibc version incompatibility with OpenSSL.
-    // Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
-    // TODO: Re-enable with statically-linked OpenSSL or on older Ubuntu runners.
+    // Linux targets with io_uring async I/O and statically-linked OpenSSL
+    // NOTE: Kotlin/Native doesn't have a prebuilt compiler for linux-aarch64,
+    // so ARM64 must be cross-compiled from x64. Both targets are always registered
+    // on Linux x64 for proper source set resolution.
+    if (isLinux) {
+        // x64 target - always available on Linux x64
+        linuxX64 {
+            configureLinuxCinterop("x64")
+        }
+
+        // ARM64 target - cross-compiled from x64
+        // Requires: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+        linuxArm64 {
+            configureLinuxCinterop("arm64")
+        }
+    }
 
     applyDefaultHierarchyTemplate()
     sourceSets {
@@ -179,6 +673,9 @@ kotlin {
             implementation(libs.kotlinx.coroutines.debug)
         }
         androidUnitTest.dependsOn(commonJvmTest)
+        androidUnitTest.dependencies {
+            implementation(libs.kotlinx.coroutines.debug)
+        }
 
         // Add shared Apple implementation to all Apple target source sets
         if (isMacOS) {
@@ -200,7 +697,8 @@ kotlin {
             }
         }
 
-        // Linux source sets disabled (see comment above about glibc incompatibility)
+        // Linux implementation uses standard KMP hierarchy:
+        // src/linuxMain is automatically shared by linuxX64 and linuxArm64
     }
 }
 

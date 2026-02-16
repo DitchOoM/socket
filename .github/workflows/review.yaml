@@ -8,30 +8,21 @@ on:
       - opened
 
 jobs:
-  check:
-    name: "JVM/JS/Android Tests"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '21'
-          cache: gradle
-      - name: Setup Chrome
-        uses: browser-actions/setup-chrome@v1
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
-      - name: Run checks and tests
-        # Skip Android unit tests - they hang on Linux and are properly tested in emulator job
-        run: ./gradlew check --no-build-cache -x testDebugUnitTest -x testReleaseUnitTest
+  build-linux:
+    uses: ./.github/workflows/build-linux.yaml
 
-  apple:
-    name: "Apple Target Tests"
+  build-apple:
+    uses: ./.github/workflows/build-apple.yaml
+
+  validate:
+    needs: [build-linux, build-apple]
+    uses: ./.github/workflows/validate-artifacts.yaml
+    with:
+      version: ${{ needs.build-linux.outputs.version }}
+
+  docs:
+    name: "Validate Docs Generation"
     runs-on: macos-latest
-    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Set up JDK 21
@@ -46,10 +37,17 @@ jobs:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
-      - name: Run checks and tests
-        # Skip Android unit tests - they hang and are properly tested in emulator job
-        run: ./gradlew check --no-build-cache -x testDebugUnitTest -x testReleaseUnitTest
-
-  # Linux targets disabled due to glibc version incompatibility with OpenSSL.
-  # Kotlin/Native uses glibc 2.19, but Ubuntu 24.04's OpenSSL requires glibc 2.33+.
-  # TODO: Re-enable with statically-linked OpenSSL or on older Ubuntu runners.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs/package-lock.json
+      - name: Generate API Documentation with Dokka
+        run: ./gradlew copyDokkaToDocusaurus
+      - name: Install docs dependencies
+        working-directory: docs
+        run: npm ci
+      - name: Build docs site
+        working-directory: docs
+        run: npm run build

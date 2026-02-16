@@ -26,6 +26,7 @@ socket.close()
 |----------|-------------------|
 | JVM/Android | `SSLEngine` wrapping NIO sockets |
 | Apple | Network.framework (native TLS in `NWConnection`) |
+| Linux Native | OpenSSL 3.0 (statically linked for glibc compatibility) |
 | Node.js | Node.js `tls` module |
 
 ## Lambda Variant

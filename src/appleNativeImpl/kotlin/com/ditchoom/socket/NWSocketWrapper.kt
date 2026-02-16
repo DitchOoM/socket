@@ -47,7 +47,8 @@ open class NWSocketWrapper : ClientSocket {
      * Returns a buffer backed by NSData received from Network.framework.
      */
     override suspend fun read(timeout: Duration): ReadBuffer {
-        val socket = socket ?: return EMPTY_BUFFER
+        if (closedLocally) throw SocketClosedException("Socket is closed")
+        val socket = socket ?: throw SocketClosedException("Socket is closed")
         return readMutex.withLock {
             withTimeout(timeout) {
                 suspendCancellableCoroutine { continuation ->
@@ -96,7 +97,8 @@ open class NWSocketWrapper : ClientSocket {
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val socket = socket ?: return -1
+        if (closedLocally) throw SocketClosedException("Socket is closed")
+        val socket = socket ?: throw SocketClosedException("Socket is closed")
         val nsData = buffer.toNSData()
 
         return writeMutex.withLock {

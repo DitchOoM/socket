@@ -75,7 +75,7 @@ import Network
             }
             let errorType = Self.mapError(effectiveError)
             // Data bridges to NSData without copying when passed to Obj-C
-            completion(data as NSData?, errorType, effectiveError?.debugDescription, effectiveIsComplete)
+            completion(data as NSData?, errorType, Self.getDetailedErrorDescription(effectiveError), effectiveIsComplete)
         }
     }
 
@@ -90,7 +90,7 @@ import Network
         // Data(referencing:) creates a view without copying
         connection.send(content: Data(referencing: data), completion: .contentProcessed { error in
             let errorType = Self.mapError(error)
-            completion(error == nil ? byteCount : 0, errorType, error?.debugDescription)
+            completion(error == nil ? byteCount : 0, errorType, Self.getDetailedErrorDescription(error))
         })
     }
 
@@ -111,6 +111,79 @@ import Network
         default: return .unknown
         }
     }
+
+    /// Get a detailed error description, especially for TLS errors
+    /// Error codes from Apple's Secure Transport Result Codes documentation:
+    /// https://developer.apple.com/documentation/security/secure_transport/1503828-secure_transport_result_codes
+    internal static func getDetailedErrorDescription(_ error: NWError?) -> String? {
+        guard let error = error else { return nil }
+        switch error {
+        case .posix(let posixCode):
+            return "POSIX error \(posixCode.rawValue): \(String(cString: strerror(posixCode.rawValue)))"
+        case .dns(let dnsCode):
+            return "DNS error \(dnsCode): \(error.debugDescription)"
+        case .tls(let tlsStatus):
+            // Map OSStatus TLS error codes per Apple's Secure Transport Result Codes
+            let message: String
+            switch tlsStatus {
+            case -9800: message = "errSSLProtocol: SSL protocol error"
+            case -9801: message = "errSSLNegotiation: Cipher suite negotiation failure"
+            case -9802: message = "errSSLFatalAlert: Fatal alert"
+            case -9803: message = "errSSLWouldBlock: I/O would block (not fatal)"
+            case -9804: message = "errSSLSessionNotFound: Attempt to restore unknown session"
+            case -9805: message = "errSSLClosedGraceful: Connection closed gracefully"
+            case -9806: message = "errSSLClosedAbort: Connection closed via error"
+            case -9807: message = "errSSLXCertChainInvalid: Invalid certificate chain"
+            case -9808: message = "errSSLBadCert: Bad certificate format"
+            case -9809: message = "errSSLCrypto: Underlying cryptographic error"
+            case -9810: message = "errSSLInternal: Internal error"
+            case -9811: message = "errSSLModuleAttach: Module attach failure"
+            case -9812: message = "errSSLUnknownRootCert: Valid cert chain, untrusted root"
+            case -9813: message = "errSSLNoRootCert: No root certificate for cert chain"
+            case -9814: message = "errSSLCertExpired: Chain had an expired cert"
+            case -9815: message = "errSSLCertNotYetValid: Chain had a cert not yet valid"
+            case -9816: message = "errSSLClosedNoNotify: Server closed session with no notification"
+            case -9817: message = "errSSLBufferOverflow: Insufficient buffer provided"
+            case -9818: message = "errSSLBadCipherSuite: Bad SSLCipherSuite"
+            case -9819: message = "errSSLPeerUnexpectedMsg: Unexpected message received"
+            case -9820: message = "errSSLPeerBadRecordMac: Bad MAC"
+            case -9821: message = "errSSLPeerDecryptionFail: Decryption failed"
+            case -9822: message = "errSSLPeerRecordOverflow: Record overflow"
+            case -9823: message = "errSSLPeerDecompressFail: Decompression failure"
+            case -9824: message = "errSSLPeerHandshakeFail: Handshake failure"
+            case -9825: message = "errSSLPeerBadCert: Misc. bad certificate"
+            case -9826: message = "errSSLPeerUnsupportedCert: Bad unsupported cert format"
+            case -9827: message = "errSSLPeerCertRevoked: Certificate revoked"
+            case -9828: message = "errSSLPeerCertExpired: Certificate expired"
+            case -9829: message = "errSSLPeerCertUnknown: Unknown certificate"
+            case -9830: message = "errSSLIllegalParam: Illegal parameter"
+            case -9831: message = "errSSLPeerUnknownCA: Unknown Cert Authority"
+            case -9832: message = "errSSLPeerAccessDenied: Access denied"
+            case -9833: message = "errSSLPeerDecodeError: Decoding error"
+            case -9834: message = "errSSLPeerDecryptError: Decryption error"
+            case -9835: message = "errSSLPeerExportRestriction: Export restriction"
+            case -9836: message = "errSSLPeerProtocolVersion: Bad protocol version"
+            case -9837: message = "errSSLPeerInsufficientSecurity: Insufficient security"
+            case -9838: message = "errSSLPeerInternalError: Internal error"
+            case -9839: message = "errSSLPeerUserCancelled: User canceled"
+            case -9840: message = "errSSLPeerNoRenegotiation: No renegotiation allowed"
+            case -9841: message = "errSSLPeerAuthCompleted: Peer cert is valid, or was ignored if verification disabled"
+            case -9842: message = "errSSLClientCertRequested: Server has requested a client cert"
+            case -9843: message = "errSSLHostNameMismatch: Peer host name mismatch"
+            case -9844: message = "errSSLConnectionRefused: Peer dropped connection before responding"
+            case -9845: message = "errSSLDecryptionFail: Decryption failure"
+            case -9846: message = "errSSLBadRecordMac: Bad MAC"
+            case -9847: message = "errSSLRecordOverflow: Record overflow"
+            case -9848: message = "errSSLBadConfiguration: Configuration error"
+            case -9849: message = "errSSLUnexpectedRecord: Unexpected (skipped) record in DTLS"
+            case -67843: message = "errSecNotTrusted: Certificate not trusted"
+            default: message = "OSStatus \(tlsStatus)"
+            }
+            return "TLS error \(tlsStatus): \(message)"
+        default:
+            return error.debugDescription
+        }
+    }
 }
 
 // MARK: - Client Socket
@@ -118,7 +191,7 @@ import Network
 /// Client socket wrapper for outbound connections
 @objc public class ClientSocketWrapper: SocketWrapper {
 
-    @objc public init(host: String, port: UInt16, timeoutSeconds: Int, useTLS: Bool) {
+    @objc public init(host: String, port: UInt16, timeoutSeconds: Int, useTLS: Bool, verifyCertificates: Bool = true) {
         super.init()
 
         let nwHost = NWEndpoint.Host(host)
@@ -130,9 +203,10 @@ import Network
         let params: NWParameters
         if useTLS {
             let tlsOptions = NWProtocolTLS.Options()
-            // Disable peer authentication for flexibility (can be made configurable)
+            // Enable peer authentication by default for security
+            // Only disable when explicitly requested (e.g., for self-signed certificates)
             sec_protocol_options_set_peer_authentication_required(
-                tlsOptions.securityProtocolOptions, false
+                tlsOptions.securityProtocolOptions, verifyCertificates
             )
             params = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         } else {
@@ -154,7 +228,7 @@ import Network
                 handler(self, stateString, .none, nil)
             case .failed(let error), .waiting(let error):
                 let errorType = Self.mapError(error)
-                handler(self, stateString, errorType, error.debugDescription)
+                handler(self, stateString, errorType, Self.getDetailedErrorDescription(error))
             case .setup, .preparing:
                 handler(self, stateString, .none, nil)
             case .cancelled:
@@ -200,7 +274,7 @@ import Network
                 self.readyHandler?(self)
             case .failed(let error), .waiting(let error):
                 let errorType = Self.mapError(error)
-                self.errorHandler?(self, errorType, error.debugDescription)
+                self.errorHandler?(self, errorType, Self.getDetailedErrorDescription(error))
                 self.close()
             case .setup, .preparing, .cancelled:
                 break
@@ -297,7 +371,7 @@ import Network
                 completion(true, .none, nil)
             case .failed(let error), .waiting(let error):
                 let errorType = SocketWrapper.mapError(error)
-                completion(false, errorType, error.debugDescription)
+                completion(false, errorType, SocketWrapper.getDetailedErrorDescription(error))
             case .cancelled:
                 self.acceptHandler = nil
                 self.pendingLock.lock()

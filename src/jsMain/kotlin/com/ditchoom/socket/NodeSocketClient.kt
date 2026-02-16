@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -60,13 +61,26 @@ open class NodeSocket : ClientSocket {
     ): Int {
         val socket = netSocket
         if (socket == null || !isOpen()) {
-            throw SocketException("Socket is closed. transmissionError=$hadTransmissionError")
+            throw SocketClosedException("Socket is closed. transmissionError=$hadTransmissionError")
         }
-        val jsBuffer = buffer as JsBuffer
-        val array = jsBuffer.buffer
         val bytesToWrite = buffer.remaining()
-        // Create a view of only the bytes to write (from position to position + remaining)
-        val dataToWrite = Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+        val jsBuffer =
+            when (buffer) {
+                is JsBuffer -> buffer
+                is PlatformBuffer -> buffer.unwrap() as JsBuffer
+                else -> null
+            }
+        val dataToWrite =
+            if (jsBuffer != null) {
+                val array = jsBuffer.buffer
+                Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+            } else {
+                // Fallback for non-PlatformBuffer types (e.g. TrackedSlice)
+                val savedPos = buffer.position()
+                val bytes = buffer.readByteArray(bytesToWrite)
+                buffer.position(savedPos)
+                Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, bytesToWrite)
+            }
         writeMutex.withLock { socket.write(dataToWrite) }
         buffer.position(buffer.position() + bytesToWrite)
         return bytesToWrite
@@ -74,8 +88,10 @@ open class NodeSocket : ClientSocket {
 
     fun cleanSocket(socket: Socket) {
         incomingMessageChannel.close()
+        socket.removeAllListeners()
         socket.end {}
         socket.destroy()
+        socket.unref()
         isClosed = true
     }
 
@@ -86,7 +102,6 @@ open class NodeSocket : ClientSocket {
 }
 
 class NodeClientSocket(
-    private val useTls: Boolean,
     private val allocationZone: AllocationZone,
 ) : NodeSocket(),
     ClientToServerSocket {
@@ -94,8 +109,19 @@ class NodeClientSocket(
         port: Int,
         timeout: Duration,
         hostname: String?,
+        socketOptions: SocketOptions,
     ) {
-        val options = Options(port, hostname, onread = null, rejectUnauthorized = false)
+        val useTls = socketOptions.tls != null
+        val rejectUnauthorized = socketOptions.tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
+        // Set servername explicitly for SNI (Server Name Indication)
+        val options =
+            Options(
+                port = port,
+                host = hostname,
+                onread = null,
+                rejectUnauthorized = rejectUnauthorized,
+                servername = hostname,
+            )
         val netSocket = connect(useTls, options, timeout)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
