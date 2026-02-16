@@ -33,62 +33,11 @@ jobs:
     outputs:
       deployment-id: ${{ steps.upload.outputs.deployment-id }}
     steps:
-      - name: Download Linux artifacts
+      - name: Download merged artifacts
         uses: actions/download-artifact@v4
         with:
-          name: maven-local-linux
-          path: /tmp/linux-repo/com/ditchoom
-
-      - name: Download Apple artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: maven-local-apple
-          path: /tmp/apple-repo/com/ditchoom
-
-      - name: Merge artifacts and module metadata
-        run: |
-          version="${{ inputs.version }}"
-          LINUX_BASE="/tmp/linux-repo/com/ditchoom"
-          APPLE_BASE="/tmp/apple-repo/com/ditchoom"
-          MERGED="/tmp/maven-repo/com/ditchoom"
-
-          # Start with Linux artifacts (has JVM, JS, Android, Linux variants)
-          cp -r "$LINUX_BASE" /tmp/maven-repo/com/
-
-          # Copy Apple per-target artifacts (socket-macosarm64/, socket-iosarm64/, etc.)
-          for dir in "$APPLE_BASE"/socket-*/; do
-            target_name=$(basename "$dir")
-            cp -r "$dir" "$MERGED/$target_name"
-          done
-
-          # Merge root .module metadata from both builds
-          LINUX_MODULE="$LINUX_BASE/socket/$version/socket-$version.module"
-          APPLE_MODULE="$APPLE_BASE/socket/$version/socket-$version.module"
-          MERGED_MODULE="$MERGED/socket/$version/socket-$version.module"
-
-          if [ -f "$LINUX_MODULE" ] && [ -f "$APPLE_MODULE" ]; then
-            echo "Merging root module metadata from Linux and Apple builds..."
-            jq -s '
-              .[0].variants = (
-                [.[0].variants[], .[1].variants[]]
-                | group_by(.name)
-                | map(.[0])
-              )
-              | .[0]
-            ' "$LINUX_MODULE" "$APPLE_MODULE" > "${MERGED_MODULE}.tmp"
-            mv "${MERGED_MODULE}.tmp" "$MERGED_MODULE"
-
-            VARIANT_COUNT=$(jq '.variants | length' "$MERGED_MODULE")
-            echo "Merged module has $VARIANT_COUNT variants"
-          elif [ -f "$LINUX_MODULE" ]; then
-            echo "WARNING: Apple module metadata not found, using Linux only"
-          elif [ -f "$APPLE_MODULE" ]; then
-            echo "WARNING: Linux module metadata not found, using Apple only"
-            cp "$APPLE_MODULE" "$MERGED_MODULE"
-          else
-            echo "ERROR: No root module metadata found!"
-            exit 1
-          fi
+          name: maven-local-merged
+          path: /tmp/maven-repo
 
       - name: Clean local metadata
         run: |
