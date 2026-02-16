@@ -1,6 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadWriteBuffer
 import com.ditchoom.buffer.SuspendCloseable
@@ -81,10 +80,11 @@ class SocketConnection private constructor(
         ): SocketConnection {
             val socket = ClientSocket.allocate(options.allocationZone)
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
-            val pool = BufferPool(
-                maxPoolSize = options.maxPoolSize,
-                threadingMode = options.threadingMode,
-            )
+            val pool =
+                BufferPool(
+                    maxPoolSize = options.maxPoolSize,
+                    threadingMode = options.threadingMode,
+                )
             val stream = StreamProcessor.builder(pool).buildSuspending()
             return SocketConnection(socket, pool, stream, options)
         }
@@ -107,10 +107,11 @@ class SocketConnection private constructor(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            val pool = BufferPool(
-                maxPoolSize = options.maxPoolSize,
-                threadingMode = options.threadingMode,
-            )
+            val pool =
+                BufferPool(
+                    maxPoolSize = options.maxPoolSize,
+                    threadingMode = options.threadingMode,
+                )
             val stream = StreamProcessor.builder(pool).buildSuspending()
             return SocketConnection(socket, pool, stream, options)
         }
