@@ -50,6 +50,7 @@ jobs:
       - name: Publish Apple targets to Maven Local
         run: >-
           ./gradlew --no-configuration-cache ${{ inputs.gradle-args }}
+          publishKotlinMultiplatformPublicationToMavenLocal
           publishIosArm64PublicationToMavenLocal
           publishIosSimulatorArm64PublicationToMavenLocal
           publishIosX64PublicationToMavenLocal

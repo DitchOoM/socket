@@ -18,13 +18,48 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: maven-local-linux
-          path: /tmp/maven-local/com/ditchoom
+          path: /tmp/linux-repo/com/ditchoom
 
       - name: Download Apple artifacts
         uses: actions/download-artifact@v4
         with:
           name: maven-local-apple
-          path: /tmp/maven-local/com/ditchoom
+          path: /tmp/apple-repo/com/ditchoom
+
+      - name: Merge artifacts and module metadata
+        run: |
+          version="${{ inputs.version }}"
+          LINUX_BASE="/tmp/linux-repo/com/ditchoom"
+          APPLE_BASE="/tmp/apple-repo/com/ditchoom"
+          MERGED="/tmp/maven-local/com/ditchoom"
+
+          # Start with Linux artifacts
+          mkdir -p /tmp/maven-local/com
+          cp -r "$LINUX_BASE" /tmp/maven-local/com/
+
+          # Copy Apple per-target artifacts
+          for dir in "$APPLE_BASE"/socket-*/; do
+            target_name=$(basename "$dir")
+            cp -r "$dir" "$MERGED/$target_name"
+          done
+
+          # Merge root module metadata
+          LINUX_MODULE="$LINUX_BASE/socket/$version/socket-$version.module"
+          APPLE_MODULE="$APPLE_BASE/socket/$version/socket-$version.module"
+          MERGED_MODULE="$MERGED/socket/$version/socket-$version.module"
+
+          if [ -f "$LINUX_MODULE" ] && [ -f "$APPLE_MODULE" ]; then
+            jq -s '
+              .[0].variants = (
+                [.[0].variants[], .[1].variants[]]
+                | group_by(.name)
+                | map(.[0])
+              )
+              | .[0]
+            ' "$LINUX_MODULE" "$APPLE_MODULE" > "${MERGED_MODULE}.tmp"
+            mv "${MERGED_MODULE}.tmp" "$MERGED_MODULE"
+            echo "Merged module metadata: $(jq '.variants | length' "$MERGED_MODULE") variants"
+          fi
 
       - name: Validate artifacts
         run: |
@@ -117,7 +152,36 @@ jobs:
           fi
           echo ""
 
-          # 6. Android AAR and kotlin-tooling-metadata
+          # 6. Root module metadata references all platform variants
+          echo "--- Root Module Variant Coverage ---"
+          MODULE_FILE="${BASE}/socket/${version}/socket-${version}.module"
+          if [ -f "$MODULE_FILE" ]; then
+            for target in linuxx64 linuxarm64 macosarm64 macosx64 iosarm64 iossimulatorarm64 iosx64 tvosarm64 tvossimulatorarm64 tvosx64 watchosarm64 watchossimulatorarm64 watchosx64; do
+              if jq -e ".variants[] | select(.name == \"${target}ApiElements-published\")" "$MODULE_FILE" > /dev/null 2>&1; then
+                echo "  ${target} variant referenced in module metadata"
+              else
+                echo "  FAIL: ${target} variant NOT found in root module metadata"
+                FAILED=true
+              fi
+            done
+            # Also check JVM, JS, Android
+            for variant in jvmApiElements jsApiElements releaseApiElements; do
+              if jq -e ".variants[] | select(.name == \"${variant}-published\")" "$MODULE_FILE" > /dev/null 2>&1; then
+                echo "  ${variant} variant referenced in module metadata"
+              else
+                echo "  FAIL: ${variant} variant NOT found in root module metadata"
+                FAILED=true
+              fi
+            done
+            TOTAL=$(jq '.variants | length' "$MODULE_FILE")
+            echo "  Total variants in module metadata: ${TOTAL}"
+          else
+            echo "  FAIL: Root module file not found"
+            FAILED=true
+          fi
+          echo ""
+
+          # 7. Android AAR and kotlin-tooling-metadata
           echo "--- Android & Metadata Artifacts ---"
           AAR_DIR="${BASE}/socket-android/${version}"
           if [ -d "$AAR_DIR" ]; then
