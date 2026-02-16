@@ -28,6 +28,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'platforms/jvm',
         'platforms/apple',
+        'platforms/linux',
         'platforms/nodejs',
       ],
     },
