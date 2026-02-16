@@ -40,6 +40,71 @@ socket.readFlow().collect { buffer ->
 socket.readFlowString().collect { value ->
     // process string
 }
+
+// Stream complete lines (handles \n and \r\n, splits across chunks)
+socket.readFlowLines().collect { line ->
+    // process line
+}
+```
+
+## Streaming Patterns
+
+### Persistent Streaming
+
+Keep a connection open and process data as it arrives:
+
+```kotlin
+ClientSocket.connect(8883, hostname = "broker.example.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
+    socket.writeString("SUBSCRIBE events\n")
+    socket.readFlowLines().collect { line ->
+        println(line)
+    }
+}
+```
+
+### Returning a Flow
+
+Wrap a connection in a cold Flow — the socket opens when collection starts and closes when done:
+
+```kotlin
+fun streamEvents(host: String): Flow<String> = flow {
+    ClientSocket.connect(8883, hostname = host, socketOptions = SocketOptions.tlsDefault()) { socket ->
+        socket.writeString("SUBSCRIBE events\n")
+        emitAll(socket.readFlowLines())
+    }
+}
+
+// Compose with Flow operators
+streamEvents("broker.example.com")
+    .filter { "critical" in it }
+    .take(100) // auto-closes socket after 100 lines
+    .collect { alert(it) }
+```
+
+### Streaming with Compression
+
+Compose `mapBuffer`, `asStringFlow`, and `lines` from `buffer-flow`:
+
+```kotlin
+socket.readFlow()
+    .mapBuffer { decompress(it, Gzip).getOrThrow() }
+    .asStringFlow()
+    .lines()
+    .collect { line -> process(line) }
+```
+
+### Large Data with Constant Memory
+
+Process millions of records without accumulating them in memory. Backpressure is built into Flow — a slow collector suspends `read()`:
+
+```kotlin
+ClientSocket.connect(port, hostname = host) { socket ->
+    socket.readFlowLines()
+        .take(1_000_000)  // stop after N records, socket auto-closes
+        .collect { line ->
+            db.insert(parseLine(line))
+        }
+}
 ```
 
 ## Writing
@@ -80,7 +145,7 @@ val result = ClientSocket.connect(port, hostname) { socket ->
 For protocol implementations that need a buffer pool and stream processor, use `SocketConnection`:
 
 ```kotlin
-val conn = SocketConnection.connect(
+SocketConnection.connect(
     hostname = "example.com",
     port = 443,
     options = ConnectionOptions(
@@ -88,19 +153,17 @@ val conn = SocketConnection.connect(
         maxPoolSize = 64,
         readTimeout = 10.seconds,
     ),
-)
+) { conn ->
+    // Use the buffer pool
+    conn.withBuffer { buffer ->
+        buffer.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+        buffer.resetForRead()
+        conn.write(buffer)
+    }
 
-// Use the buffer pool
-conn.withBuffer { buffer ->
-    buffer.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
-    buffer.resetForRead()
-    conn.write(buffer)
+    // Read into the stream processor
+    conn.readIntoStream()
 }
-
-// Read into the stream processor
-conn.readIntoStream()
-
-conn.close()
 ```
 
 ## Compression

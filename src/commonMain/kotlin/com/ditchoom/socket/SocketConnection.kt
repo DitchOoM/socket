@@ -67,6 +67,20 @@ class SocketConnection private constructor(
             return SocketConnection(socket, pool, stream, options)
         }
 
+        suspend fun <T> connect(
+            hostname: String,
+            port: Int,
+            options: ConnectionOptions = ConnectionOptions(),
+            block: suspend (SocketConnection) -> T,
+        ): T {
+            val connection = connect(hostname, port, options)
+            return try {
+                block(connection)
+            } finally {
+                connection.close()
+            }
+        }
+
         fun wrap(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),

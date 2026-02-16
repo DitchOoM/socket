@@ -13,11 +13,12 @@ mavenPublish = "0.35.0"
 dokka = "2.1.0"
 kotlinxCoroutines = "1.10.2"
 kotlinWrappers = "2025.12.6"
-buffer = "3.0.1"
+buffer = "3.1.0"
 androidxCore = "1.17.0"
 
 [libraries]
 buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
+buffer-flow = { module = "com.ditchoom:buffer-flow", version.ref = "buffer" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "kotlinxCoroutines" }

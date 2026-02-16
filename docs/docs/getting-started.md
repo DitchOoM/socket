@@ -12,10 +12,14 @@ Add the socket dependency to your `build.gradle.kts`:
 ```kotlin
 dependencies {
     implementation("com.ditchoom:socket:<latest-version>")
+    // Optional: streaming transforms (mapBuffer, asStringFlow, lines)
+    implementation("com.ditchoom:buffer-flow:<latest-version>")
+    // Optional: compression
+    implementation("com.ditchoom:buffer-compression:<latest-version>")
 }
 ```
 
-Find the latest version on [Maven Central](https://central.sonatype.com/artifact/com.ditchoom/socket).
+Find the latest versions on [Maven Central](https://central.sonatype.com/search?q=com.ditchoom).
 
 ## Requirements
 
@@ -25,18 +29,18 @@ Find the latest version on [Maven Central](https://central.sonatype.com/artifact
 
 ## Your First Connection
 
-```kotlin
-import com.ditchoom.socket.ClientSocket
-import com.ditchoom.socket.connect
+### Request/Response
 
-// Simple client connection
+Connect, send a request, read the response, close:
+
+```kotlin
 val socket = ClientSocket.connect(port = 80, hostname = "example.com")
 socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
 val response = socket.readString()
 socket.close()
 ```
 
-## Lambda-Scoped Connections
+### Lambda-Scoped Connections
 
 For automatic resource cleanup, use the lambda variant:
 
@@ -47,14 +51,39 @@ val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
 } // socket closed automatically
 ```
 
-## Echo Server Example
+## Streaming
+
+For connections that stay open and emit data continuously, use `readFlowLines()`:
 
 ```kotlin
-import com.ditchoom.socket.ClientSocket
-import com.ditchoom.socket.ServerSocket
-import com.ditchoom.socket.connect
-import kotlinx.coroutines.launch
+ClientSocket.connect(8883, hostname = "broker.example.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
+    socket.writeString("SUBSCRIBE events\n")
+    socket.readFlowLines().collect { line ->
+        println(line)
+    }
+}
+```
 
+Or return a cold Flow — the socket opens when collection starts:
+
+```kotlin
+fun streamEvents(host: String): Flow<String> = flow {
+    ClientSocket.connect(8883, hostname = host, socketOptions = SocketOptions.tlsDefault()) { socket ->
+        socket.writeString("SUBSCRIBE events\n")
+        emitAll(socket.readFlowLines())
+    }
+}
+
+// Compose with Flow operators
+streamEvents("broker.example.com")
+    .filter { "critical" in it }
+    .take(100) // auto-closes socket after 100 lines
+    .collect { alert(it) }
+```
+
+## Echo Server
+
+```kotlin
 val server = ServerSocket.allocate()
 val clients = server.bind()
 
@@ -75,7 +104,8 @@ server.close()
 
 ## Next Steps
 
-- [Client Socket](./core-concepts/client-socket) - Detailed client API
-- [Server Socket](./core-concepts/server-socket) - Server bind and accept
-- [TLS](./core-concepts/tls) - Encrypted connections
-- [Socket Options](./core-concepts/socket-options) - TCP tuning
+- [Client Socket](./core-concepts/client-socket) — Detailed client API with streaming patterns
+- [Server Socket](./core-concepts/server-socket) — Server bind and accept
+- [TLS](./core-concepts/tls) — Encrypted connections
+- [Socket Options](./core-concepts/socket-options) — TCP tuning
+- [Recipe: Building a Protocol Client](./guides/building-a-protocol) — Full-stack example

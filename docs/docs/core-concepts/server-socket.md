@@ -46,7 +46,7 @@ val port: Int = server.port() // -1 if not bound
 server.close() // stops accepting new connections
 ```
 
-## Echo Server Example
+## Echo Server
 
 ```kotlin
 val server = ServerSocket.allocate()
@@ -66,4 +66,22 @@ client.writeString("Hello!")
 assertEquals("Hello!", client.readString())
 client.close()
 server.close()
+```
+
+## Streaming Echo Server
+
+An echo server that streams lines back to each client:
+
+```kotlin
+val server = ServerSocket.allocate()
+val clients = server.bind(port = 9000)
+
+clients.collect { client ->
+    launch {
+        client.readFlowLines().collect { line ->
+            client.writeString("Echo: $line\n")
+        }
+        client.close()
+    }
+}
 ```

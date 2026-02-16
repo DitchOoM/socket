@@ -3,6 +3,7 @@ package com.ditchoom.data
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.flow.lines
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -32,6 +33,11 @@ interface Reader {
         it.resetForRead()
         it.readString(it.remaining(), charset)
     }
+
+    fun readFlowLines(
+        charset: Charset = Charset.UTF8,
+        timeout: Duration = 15.seconds,
+    ): Flow<String> = readFlowString(charset, timeout).lines()
 
     @Throws(CancellationException::class, SocketClosedException::class)
     suspend fun read(timeout: Duration = 15.seconds): ReadBuffer
