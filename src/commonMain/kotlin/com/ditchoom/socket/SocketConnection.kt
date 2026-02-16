@@ -1,8 +1,10 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadWriteBuffer
 import com.ditchoom.buffer.SuspendCloseable
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.buffer.stream.SuspendingStreamProcessor
@@ -25,12 +27,29 @@ class SocketConnection private constructor(
 ) : SuspendCloseable {
     val isOpen: Boolean get() = socket.isOpen()
 
+    /**
+     * Reads data from socket into the stream processor using a pooled buffer.
+     *
+     * Uses zero-copy path: acquires a buffer from the pool, reads directly into it,
+     * then transfers ownership to the stream processor. The buffer is freed if the
+     * read fails or returns no data.
+     */
     suspend fun readIntoStream(timeout: Duration = options.readTimeout): Int {
-        val buffer = socket.read(timeout)
-        buffer.resetForRead()
-        val bytesRead = buffer.remaining()
-        if (bytesRead > 0) stream.append(buffer)
-        return bytesRead
+        val buffer = pool.acquire(options.defaultBufferSize)
+        try {
+            val bytesRead = socket.read(buffer, timeout)
+            if (bytesRead > 0) {
+                buffer.setLimit(buffer.position())
+                buffer.position(0)
+                stream.append(buffer)
+            } else {
+                buffer.freeIfNeeded()
+            }
+            return bytesRead
+        } catch (e: Exception) {
+            buffer.freeIfNeeded()
+            throw e
+        }
     }
 
     suspend fun write(
@@ -62,7 +81,10 @@ class SocketConnection private constructor(
         ): SocketConnection {
             val socket = ClientSocket.allocate(options.allocationZone)
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
-            val pool = BufferPool(maxPoolSize = options.maxPoolSize)
+            val pool = BufferPool(
+                maxPoolSize = options.maxPoolSize,
+                threadingMode = options.threadingMode,
+            )
             val stream = StreamProcessor.builder(pool).buildSuspending()
             return SocketConnection(socket, pool, stream, options)
         }
@@ -85,7 +107,10 @@ class SocketConnection private constructor(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            val pool = BufferPool(maxPoolSize = options.maxPoolSize)
+            val pool = BufferPool(
+                maxPoolSize = options.maxPoolSize,
+                threadingMode = options.threadingMode,
+            )
             val stream = StreamProcessor.builder(pool).buildSuspending()
             return SocketConnection(socket, pool, stream, options)
         }
