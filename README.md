@@ -14,7 +14,7 @@ It provides suspend-based async socket I/O with platform-native implementations:
 
 - **Suspend-based API**: All I/O operations are coroutine-friendly suspend functions
 - **Zero-copy transfers**: Direct delegation to platform-native socket APIs
-- **TLS/SSL support**: Pass `tls = true` for encrypted connections on all platforms
+- **TLS/SSL support**: Encrypted connections on all platforms via `SocketOptions` and `TlsConfig`
 - **Server sockets**: Accept inbound connections as a `Flow<ClientToServerSocket>`
 - **Flow-based reading**: Stream data via `readFlow()` and `readFlowString()`
 
@@ -34,7 +34,11 @@ Find the latest version on [Maven Central](https://central.sonatype.com/artifact
 
 ```kotlin
 // Client: connect, write, read, close
-val socket = ClientSocket.connect(port = 443, hostname = "example.com", tls = true)
+val socket = ClientSocket.connect(
+    port = 443,
+    hostname = "example.com",
+    socketOptions = SocketOptions.tlsDefault(),
+)
 socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
 val response = socket.readString()
 socket.close()
@@ -80,6 +84,7 @@ val response = ClientSocket.connect(80, hostname = "example.com") { socket ->
 | JVM 1.8+ | `AsynchronousSocketChannel` / `SocketChannel` |
 | Android | Same as JVM (shared source set) |
 | iOS/macOS/tvOS/watchOS | `NWConnection` (Network.framework) |
+| Linux (x64/arm64) | `io_uring` (kernel 5.1+, static OpenSSL) |
 | Node.js | `net.Socket` |
 | Browser | Not supported (throws `UnsupportedOperationException`) |
 

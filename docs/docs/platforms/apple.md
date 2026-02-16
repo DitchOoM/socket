@@ -26,7 +26,7 @@ Data is passed as `NSData` between Kotlin and Swift without copying.
 
 ## TLS
 
-TLS is handled natively by Network.framework. When `tls = true`, `NWProtocolTLS.Options` is configured on the connection parameters.
+TLS is handled natively by Network.framework. When `SocketOptions` includes a non-null `TlsConfig`, `NWProtocolTLS.Options` is configured on the connection parameters.
 
 ## Building
 

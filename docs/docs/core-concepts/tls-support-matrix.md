@@ -18,19 +18,20 @@ This document details the TLS/SSL support levels across different platforms in t
 | Certificate Validation | ✅ Default | ✅ Configurable | ✅ Configurable | ✅ Configurable | N/A |
 | Hostname Verification | ✅ | ✅ | ✅ | ✅ | N/A |
 
-## TLS Options
+## TLS Configuration
 
-The library provides configurable TLS options through the `TlsOptions` class:
+TLS is configured through `SocketOptions` with a `TlsConfig`:
 
 ```kotlin
 val socket = ClientSocket.connect(
     port = 443,
     hostname = "example.com",
-    tls = true,
-    tlsOptions = TlsOptions(
-        verifyCertificates = true,  // Verify against trusted CAs
-        verifyHostname = true,       // Verify hostname matches certificate
-    )
+    socketOptions = SocketOptions(
+        tls = TlsConfig(
+            verifyCertificates = true,  // Verify against trusted CAs
+            verifyHostname = true,       // Verify hostname matches certificate
+        )
+    ),
 )
 ```
 
@@ -45,17 +46,20 @@ val socket = ClientSocket.connect(
 
 ### Presets
 
-For convenience, two presets are available:
+For convenience, presets are available on both `SocketOptions` and `TlsConfig`:
 
 ```kotlin
-// Production: All validation enabled (default)
-val strictOptions = TlsOptions.DEFAULT
+// Production: TLS with all validation enabled
+val strictOptions = SocketOptions.tlsDefault()
 
-// Development/Testing: Validation disabled
-val devOptions = TlsOptions.INSECURE
+// Development/Testing: TLS with validation disabled
+val devOptions = SocketOptions.tlsInsecure()
+
+// Or use TlsConfig directly for custom SocketOptions
+val custom = SocketOptions(tcpNoDelay = true, tls = TlsConfig.DEFAULT)
 ```
 
-**Warning:** Only use `TlsOptions.INSECURE` for development and testing. Never use in production.
+**Warning:** Only use `SocketOptions.tlsInsecure()` / `TlsConfig.INSECURE` for development and testing. Never use in production.
 
 ## Platform Implementation Details
 
@@ -117,14 +121,14 @@ The library includes comprehensive TLS tests against public endpoints:
 
 ```kotlin
 // Test against well-known HTTPS sites
-ClientSocket.connect(443, "www.google.com", tls = true) { socket ->
+ClientSocket.connect(443, "www.google.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
     socket.writeString("GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
     val response = socket.readString()
     assertTrue(response.startsWith("HTTP/"))
 }
 
-// Test certificate validation with badssl.com
-ClientSocket.connect(443, "expired.badssl.com", tls = true) { socket ->
+// Test certificate validation with badssl.com (should throw with default options)
+ClientSocket.connect(443, "expired.badssl.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
     // Should throw SSLHandshakeFailedException with default options
 }
 ```
@@ -141,7 +145,7 @@ ClientSocket.connect(443, "expired.badssl.com", tls = true) { socket ->
 
 ## Security Recommendations
 
-1. **Always use `TlsOptions.DEFAULT`** in production (certificate validation enabled)
+1. **Always use `SocketOptions.tlsDefault()`** in production (certificate validation enabled)
 2. **Never disable certificate validation** in production code
 3. **Pin certificates** for high-security applications (not yet supported by this library)
 4. **Keep dependencies updated** for security patches

@@ -5,7 +5,7 @@ title: Socket Options
 
 # Socket Options
 
-The `SocketOptions` data class allows you to configure TCP socket behavior.
+The `SocketOptions` data class allows you to configure TCP socket behavior and TLS.
 
 ## Available Options
 
@@ -16,12 +16,13 @@ data class SocketOptions(
     val keepAlive: Boolean? = null,      // enable TCP keep-alive
     val receiveBuffer: Int? = null,      // receive buffer size in bytes
     val sendBuffer: Int? = null,         // send buffer size in bytes
+    val tls: TlsConfig? = null,         // TLS configuration (null = plaintext)
 )
 ```
 
 ## Usage
 
-Pass `SocketOptions` when configuring sockets that need TCP tuning:
+Pass `SocketOptions` when connecting:
 
 ```kotlin
 val options = SocketOptions(
@@ -30,6 +31,25 @@ val options = SocketOptions(
     receiveBuffer = 65536,   // 64KB receive buffer
     sendBuffer = 65536,      // 64KB send buffer
 )
+
+val socket = ClientSocket.connect(
+    port = 80,
+    hostname = "example.com",
+    socketOptions = options,
+)
+```
+
+## Presets
+
+```kotlin
+// Low-latency plaintext (tcpNoDelay = true)
+SocketOptions.LOW_LATENCY
+
+// TLS with low latency and default certificate validation
+SocketOptions.tlsDefault()
+
+// TLS with all validation disabled (development only)
+SocketOptions.tlsInsecure()
 ```
 
 ## Option Details
@@ -49,3 +69,7 @@ Enables TCP keep-alive probes. The OS will periodically send probes on idle conn
 ### `receiveBuffer` / `sendBuffer`
 
 Sets the OS-level socket buffer sizes. Larger buffers can improve throughput for high-bandwidth connections but use more memory.
+
+### `tls`
+
+Configures TLS for the connection. Set to a `TlsConfig` to enable TLS, or leave as `null` (the default) for plaintext. See [TLS/SSL](./tls.md) and [TLS Support Matrix](./tls-support-matrix.md) for details.
