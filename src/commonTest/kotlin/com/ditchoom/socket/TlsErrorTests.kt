@@ -1,8 +1,13 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
@@ -13,28 +18,12 @@ import kotlin.time.Duration.Companion.seconds
  * NOTE: These tests require external network access to verify TLS behavior
  * with real certificates and SNI. They connect to well-known HTTPS sites.
  *
- * Some tests are skipped on iOS Simulator because the CI environment
- * has restricted network access to external hosts.
- *
  * Exception hierarchy:
  * - SocketException (base)
  *   - SSLSocketException
  *     - SSLHandshakeFailedException
  */
 class TlsErrorTests {
-    /**
-     * Skips the test on iOS Simulator where external network access is restricted.
-     * This allows the same TLS code path to be tested on macOS (which has full network access)
-     * while avoiding failures in the iOS Simulator CI environment.
-     */
-    private inline fun skipOnSimulator(block: () -> Unit) {
-        if (isRunningInSimulator()) {
-            println("Skipping test on iOS Simulator (external network restricted)")
-            return
-        }
-        block()
-    }
-
     @Test
     fun tlsToNonTlsPort() =
         runTestNoTimeSkipping {
@@ -71,26 +60,24 @@ class TlsErrorTests {
     @Test
     fun tlsWithValidCertificate() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                // Connect to a well-known HTTPS site - should succeed
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "www.google.com",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 10.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Socket should be open after TLS handshake")
-                        // Send a simple HTTP request
-                        socket.writeString("GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
-                        val response = socket.readString(timeout = 5.seconds)
-                        assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response")
-                    }
-                } catch (e: UnsupportedOperationException) {
-                    // Skip on platforms that don't support TLS (browser)
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+            // Connect to a well-known HTTPS site - should succeed
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "www.google.com",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 10.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open after TLS handshake")
+                    // Send a simple HTTP request
+                    socket.writeString("GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
+                    val response = socket.readString(timeout = 5.seconds)
+                    assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response")
+                }
+            } catch (e: UnsupportedOperationException) {
+                // Skip on platforms that don't support TLS (browser)
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -98,27 +85,25 @@ class TlsErrorTests {
     @Test
     fun tlsConnectionReuse() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                // Test that we can make multiple TLS connections
-                try {
-                    repeat(3) { i ->
-                        ClientSocket.connect(
-                            port = 443,
-                            hostname = "www.google.com",
-                            socketOptions = SocketOptions.tlsDefault(),
-                            timeout = 10.seconds,
-                        ) { socket ->
-                            assertTrue(socket.isOpen(), "Socket $i should be open")
-                            socket.writeString("GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
-                            val response = socket.readString(timeout = 5.seconds)
-                            assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response for connection $i")
-                        }
+            // Test that we can make multiple TLS connections
+            try {
+                repeat(3) { i ->
+                    ClientSocket.connect(
+                        port = 443,
+                        hostname = "www.google.com",
+                        socketOptions = SocketOptions.tlsDefault(),
+                        timeout = 10.seconds,
+                    ) { socket ->
+                        assertTrue(socket.isOpen(), "Socket $i should be open")
+                        socket.writeString("GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
+                        val response = socket.readString(timeout = 5.seconds)
+                        assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response for connection $i")
                     }
-                } catch (e: UnsupportedOperationException) {
-                    // Skip on platforms that don't support TLS (browser)
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+                }
+            } catch (e: UnsupportedOperationException) {
+                // Skip on platforms that don't support TLS (browser)
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -126,25 +111,23 @@ class TlsErrorTests {
     @Test
     fun tlsWithSni() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                // Test Server Name Indication (SNI) by connecting to a site that requires it
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "www.cloudflare.com",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 10.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Socket should be open with SNI")
-                        socket.writeString("GET / HTTP/1.1\r\nHost: www.cloudflare.com\r\nConnection: close\r\n\r\n")
-                        val response = socket.readString(timeout = 5.seconds)
-                        assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response with SNI")
-                    }
-                } catch (e: UnsupportedOperationException) {
-                    // Skip on platforms that don't support TLS (browser)
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+            // Test Server Name Indication (SNI) by connecting to a site that requires it
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "www.cloudflare.com",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 10.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open with SNI")
+                    socket.writeString("GET / HTTP/1.1\r\nHost: www.cloudflare.com\r\nConnection: close\r\n\r\n")
+                    val response = socket.readString(timeout = 5.seconds)
+                    assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response with SNI")
+                }
+            } catch (e: UnsupportedOperationException) {
+                // Skip on platforms that don't support TLS (browser)
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -199,8 +182,6 @@ class TlsErrorTests {
                     val response = socket.readString(timeout = 10.seconds)
                     assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response from example.com")
                 }
-            } catch (e: SocketException) {
-                // Some platforms may have TLS handshake issues with certain sites
             } catch (e: UnsupportedOperationException) {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
@@ -223,8 +204,6 @@ class TlsErrorTests {
                     val response = socket.readString(timeout = 10.seconds)
                     assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response from nginx.org")
                 }
-            } catch (e: SocketException) {
-                // Some platforms may have TLS handshake issues with certain sites
             } catch (e: UnsupportedOperationException) {
                 if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
                     throw e
@@ -235,23 +214,21 @@ class TlsErrorTests {
     @Test
     fun tlsToHttpbin() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "httpbin.org",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to httpbin")
-                        socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
-                        val response = socket.readString(timeout = 10.seconds)
-                        assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response from httpbin")
-                    }
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "httpbin.org",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 15.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to httpbin")
+                    socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
+                    val response = socket.readString(timeout = 10.seconds)
+                    assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response from httpbin")
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -261,32 +238,30 @@ class TlsErrorTests {
     @Test
     fun tlsConcurrentConnections() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                try {
-                    coroutineScope {
-                        val results =
-                            (1..5).map { i ->
-                                async {
-                                    ClientSocket.connect(
-                                        port = 443,
-                                        hostname = "httpbin.org",
-                                        socketOptions = SocketOptions.tlsDefault(),
-                                        timeout = 15.seconds,
-                                    ) { socket ->
-                                        socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
-                                        socket.readString(timeout = 10.seconds)
-                                    }
+            try {
+                coroutineScope {
+                    val results =
+                        (1..5).map { i ->
+                            async {
+                                ClientSocket.connect(
+                                    port = 443,
+                                    hostname = "httpbin.org",
+                                    socketOptions = SocketOptions.tlsDefault(),
+                                    timeout = 15.seconds,
+                                ) { socket ->
+                                    socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
+                                    socket.readString(timeout = 10.seconds)
                                 }
                             }
-                        results.forEach { deferred ->
-                            val response = deferred.await()
-                            assertTrue(response.startsWith("HTTP/"), "Concurrent connection should receive valid HTTP response")
                         }
+                    results.forEach { deferred ->
+                        val response = deferred.await()
+                        assertTrue(response.startsWith("HTTP/"), "Concurrent connection should receive valid HTTP response")
                     }
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -296,29 +271,27 @@ class TlsErrorTests {
     @Test
     fun tlsLargerResponse() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "www.google.com",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Socket should be open")
-                        // Request the full page to get a larger response
-                        socket.writeString(
-                            "GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n" +
-                                "Accept: text/html\r\nUser-Agent: Mozilla/5.0\r\n\r\n",
-                        )
-                        val response = socket.readString(timeout = 10.seconds)
-                        assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response")
-                        // Verify we received a substantial response (Google homepage varies in size)
-                        assertTrue(response.length > 1_000, "Response should be larger than 1KB, got ${response.length} bytes")
-                    }
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "www.google.com",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 15.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open")
+                    // Request the full page to get a larger response
+                    socket.writeString(
+                        "GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n" +
+                            "Accept: text/html\r\nUser-Agent: Mozilla/5.0\r\n\r\n",
+                    )
+                    val response = socket.readString(timeout = 10.seconds)
+                    assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response")
+                    // Verify we received a substantial response (Google homepage varies in size)
+                    assertTrue(response.length > 1_000, "Response should be larger than 1KB, got ${response.length} bytes")
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -328,30 +301,28 @@ class TlsErrorTests {
     @Test
     fun tlsJsonApi() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "httpbin.org",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Socket should be open")
-                        socket.writeString(
-                            "GET /json HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\nAccept: application/json\r\n\r\n",
-                        )
-                        val response = socket.readString(timeout = 10.seconds)
-                        assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response")
-                        // The first read may only contain headers; verify we got a valid HTTP response with JSON content-type
-                        assertTrue(
-                            response.contains("application/json") || response.contains("{"),
-                            "Response should indicate JSON content type or contain JSON data",
-                        )
-                    }
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "httpbin.org",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 15.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open")
+                    socket.writeString(
+                        "GET /json HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\nAccept: application/json\r\n\r\n",
+                    )
+                    val response = socket.readString(timeout = 10.seconds)
+                    assertTrue(response.startsWith("HTTP/"), "Should receive valid HTTP response")
+                    // The first read may only contain headers; verify we got a valid HTTP response with JSON content-type
+                    assertTrue(
+                        response.contains("application/json") || response.contains("{"),
+                        "Response should indicate JSON content type or contain JSON data",
+                    )
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -532,37 +503,217 @@ class TlsErrorTests {
     @Test
     fun tlsReconnectAfterClose() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                try {
-                    // First connection
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "httpbin.org",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "First connection should be open")
-                        socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
-                        val response1 = socket.readString(timeout = 10.seconds)
-                        assertTrue(response1.startsWith("HTTP/"), "First connection should receive valid response")
-                    }
+            try {
+                // First connection
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "httpbin.org",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 15.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "First connection should be open")
+                    socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
+                    val response1 = socket.readString(timeout = 10.seconds)
+                    assertTrue(response1.startsWith("HTTP/"), "First connection should receive valid response")
+                }
 
-                    // Second connection to same host after close
+                // Second connection to same host after close
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "httpbin.org",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 15.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Reconnection should be open")
+                    socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
+                    val response2 = socket.readString(timeout = 10.seconds)
+                    assertTrue(response2.startsWith("HTTP/"), "Reconnection should receive valid response")
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
+                }
+            }
+        }
+
+    /**
+     * Tests that read(WriteBuffer, timeout) returns correct TLS-decrypted data.
+     *
+     * This is a regression test for a bug where AsyncBaseClientSocket.read(WriteBuffer, timeout)
+     * bypassed TLS decryption entirely, returning raw encrypted bytes instead of plaintext.
+     */
+    @Test
+    fun tlsReadIntoWriteBuffer() =
+        runTestNoTimeSkipping {
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "example.com",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 10.seconds,
+                ) { socket ->
+                    socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+
+                    // Use the read(WriteBuffer, timeout) overload — the path that was broken
+                    val writeBuffer = PlatformBuffer.allocate(65536) as WriteBuffer
+                    val bytesRead = socket.read(writeBuffer, 10.seconds)
+                    assertTrue(bytesRead > 0, "Should read data via WriteBuffer path")
+
+                    val readBuffer = writeBuffer as PlatformBuffer
+                    readBuffer.setLimit(readBuffer.position())
+                    readBuffer.position(0)
+                    val text = readBuffer.readString(readBuffer.remaining(), Charset.UTF8)
+                    assertTrue(
+                        text.startsWith("HTTP/"),
+                        "WriteBuffer path should return decrypted HTTP response, got: ${text.take(50)}",
+                    )
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
+                }
+            }
+        }
+
+    /**
+     * Tests that TLS 1.3 connections work correctly on first read.
+     *
+     * TLS 1.3 servers send post-handshake messages (e.g. NewSessionTicket) that produce
+     * 0 application bytes when unwrapped. The TLS handler must retry rather than returning
+     * empty, which callers would interpret as end-of-stream.
+     *
+     * Uses a server known to negotiate TLS 1.3 on modern JVMs.
+     */
+    @Test
+    fun tlsFirstReadReturnsData() =
+        runTestNoTimeSkipping {
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "example.com",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 10.seconds,
+                ) { socket ->
+                    socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+
+                    // First read must return data even if TLS 1.3 NewSessionTicket arrives first
+                    val response = socket.read(10.seconds)
+                    response.resetForRead()
+                    val remaining = response.remaining()
+                    assertTrue(remaining > 0, "First read should return data (not empty from NewSessionTicket)")
+                    val text = response.readString(remaining, Charset.UTF8)
+                    assertTrue(text.startsWith("HTTP/"), "First read should be the HTTP response")
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
+                }
+            }
+        }
+
+    /**
+     * Tests that both read overloads return equivalent data over TLS.
+     *
+     * Ensures read(timeout) and read(WriteBuffer, timeout) produce the same plaintext
+     * when talking to a TLS server. Both paths must correctly decrypt through the TLS handler.
+     */
+    @Test
+    fun tlsBothReadOverloadsReturnSameData() =
+        runTestNoTimeSkipping {
+            try {
+                // Test read(timeout) path
+                val socket1 =
                     ClientSocket.connect(
                         port = 443,
-                        hostname = "httpbin.org",
+                        hostname = "example.com",
                         socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Reconnection should be open")
-                        socket.writeString("GET /get HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n")
-                        val response2 = socket.readString(timeout = 10.seconds)
-                        assertTrue(response2.startsWith("HTTP/"), "Reconnection should receive valid response")
+                        timeout = 10.seconds,
+                    )
+                val response1: String
+                try {
+                    socket1.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+                    response1 = socket1.readString(timeout = 10.seconds)
+                } finally {
+                    socket1.close()
+                }
+
+                // Test read(WriteBuffer, timeout) path
+                val socket2 =
+                    ClientSocket.connect(
+                        port = 443,
+                        hostname = "example.com",
+                        socketOptions = SocketOptions.tlsDefault(),
+                        timeout = 10.seconds,
+                    )
+                try {
+                    socket2.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+                    val writeBuffer = PlatformBuffer.allocate(65536) as WriteBuffer
+                    val bytesRead = socket2.read(writeBuffer, 10.seconds)
+                    assertTrue(bytesRead > 0, "WriteBuffer read should return data")
+                    val readBuffer = writeBuffer as PlatformBuffer
+                    readBuffer.setLimit(readBuffer.position())
+                    readBuffer.position(0)
+                    val response2 = readBuffer.readString(readBuffer.remaining(), Charset.UTF8)
+
+                    // Both should start with HTTP/ and contain the same status line
+                    assertTrue(response1.startsWith("HTTP/"), "read(timeout) should return HTTP response")
+                    assertTrue(response2.startsWith("HTTP/"), "read(WriteBuffer) should return HTTP response")
+                    // Extract first line from each
+                    val statusLine1 = response1.substringBefore("\r\n")
+                    val statusLine2 = response2.substringBefore("\r\n")
+                    assertEquals(statusLine1, statusLine2, "Both read paths should get same HTTP status line")
+                } finally {
+                    socket2.close()
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
+                }
+            }
+        }
+
+    /**
+     * Tests multiple sequential reads over a single TLS connection.
+     *
+     * Ensures the TLS session state is maintained correctly across reads, handling
+     * any interleaved TLS protocol messages (key updates, session tickets, etc.).
+     */
+    @Test
+    fun tlsMultipleSequentialReads() =
+        runTestNoTimeSkipping {
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "www.google.com",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 10.seconds,
+                ) { socket ->
+                    // Request a page that returns enough data for multiple reads
+                    socket.writeString("GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
+
+                    var totalBytes = 0
+                    var readCount = 0
+                    // Read until connection closes (Connection: close)
+                    while (socket.isOpen() && readCount < 10) {
+                        try {
+                            val buf = PlatformBuffer.allocate(65536) as WriteBuffer
+                            val n = socket.read(buf, 5.seconds)
+                            if (n <= 0) break
+                            totalBytes += n
+                            readCount++
+                        } catch (e: SocketClosedException) {
+                            break
+                        }
                     }
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+                    assertTrue(
+                        totalBytes > 100,
+                        "Should have read substantial data across multiple reads, got $totalBytes bytes in $readCount reads",
+                    )
+                    assertTrue(readCount >= 1, "Should have done at least 1 read")
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }

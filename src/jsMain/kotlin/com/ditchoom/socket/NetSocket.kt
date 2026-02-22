@@ -114,4 +114,6 @@ class Options(
     val rejectUnauthorized: Boolean = true,
     @JsName("servername")
     val servername: String? = null,
+    @JsName("ca")
+    val ca: Array<String>? = null,
 )
