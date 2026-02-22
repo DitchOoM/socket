@@ -170,23 +170,21 @@ class TlsErrorTests {
     @Test
     fun tlsToExampleDotCom() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "www.example.com",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to example.com")
-                        socket.writeString("GET / HTTP/1.1\r\nHost: www.example.com\r\nConnection: close\r\n\r\n")
-                        val response = socket.readString(timeout = 10.seconds)
-                        assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response from example.com")
-                    }
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "www.example.com",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 15.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to example.com")
+                    socket.writeString("GET / HTTP/1.1\r\nHost: www.example.com\r\nConnection: close\r\n\r\n")
+                    val response = socket.readString(timeout = 10.seconds)
+                    assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response from example.com")
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
@@ -194,23 +192,21 @@ class TlsErrorTests {
     @Test
     fun tlsToNginx() =
         runTestNoTimeSkipping {
-            skipOnSimulator {
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "nginx.org",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to nginx.org")
-                        socket.writeString("GET / HTTP/1.1\r\nHost: nginx.org\r\nConnection: close\r\n\r\n")
-                        val response = socket.readString(timeout = 10.seconds)
-                        assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response from nginx.org")
-                    }
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
-                        throw e
-                    }
+            try {
+                ClientSocket.connect(
+                    port = 443,
+                    hostname = "nginx.org",
+                    socketOptions = SocketOptions.tlsDefault(),
+                    timeout = 15.seconds,
+                ) { socket ->
+                    assertTrue(socket.isOpen(), "Socket should be open after TLS handshake to nginx.org")
+                    socket.writeString("GET / HTTP/1.1\r\nHost: nginx.org\r\nConnection: close\r\n\r\n")
+                    val response = socket.readString(timeout = 10.seconds)
+                    assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response from nginx.org")
+                }
+            } catch (e: UnsupportedOperationException) {
+                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                    throw e
                 }
             }
         }
