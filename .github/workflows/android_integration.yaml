@@ -7,7 +7,7 @@ on:
       - synchronize
       - opened
 jobs:
-  test:
+  android-emulator:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

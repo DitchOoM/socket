@@ -13,6 +13,80 @@ import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
 
+/**
+ * System CA certificate paths for common Linux distributions.
+ * Same paths used by LinuxClientSocket for native TLS.
+ */
+private val SYSTEM_CA_PATHS =
+    arrayOf(
+        "/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt", // RHEL/Fedora/CentOS
+        "/etc/ssl/ca-bundle.pem", // OpenSUSE
+        "/etc/ssl/cert.pem", // Alpine/Arch
+    )
+
+// Dynamic require() calls to avoid webpack trying to bundle Node.js-only modules.
+// These are only called at runtime on Node.js (guarded by isNodeJs / TLS checks).
+private fun fsExistsSync(path: String): Boolean = js("require('fs').existsSync(path)") as Boolean
+
+private fun fsReadFileSync(
+    path: String,
+    encoding: String,
+): String = js("require('fs').readFileSync(path, encoding)") as String
+
+@Suppress("UNCHECKED_CAST")
+private fun tlsRootCertificates(): Array<String> = js("require('tls').rootCertificates") as Array<String>
+
+/**
+ * Lazily loads system CA certificates combined with Node's built-in root certificates.
+ * Returns null if no system CA file is found (falls back to Node's built-in bundle).
+ */
+private val systemCaCertificates: Array<String>? by lazy {
+    // Find the first existing system CA bundle
+    val systemCaPath =
+        SYSTEM_CA_PATHS.firstOrNull { path ->
+            try {
+                fsExistsSync(path)
+            } catch (_: Throwable) {
+                false
+            }
+        } ?: return@lazy null
+
+    // Read and parse the PEM file into individual certificates
+    val pemContent =
+        try {
+            fsReadFileSync(systemCaPath, "utf8")
+        } catch (_: Throwable) {
+            return@lazy null
+        }
+
+    val systemCerts =
+        pemContent
+            .split("-----END CERTIFICATE-----")
+            .map { it.trim() }
+            .filter { it.contains("-----BEGIN CERTIFICATE-----") }
+            .map { it.substringFrom("-----BEGIN CERTIFICATE-----") + "\n-----END CERTIFICATE-----" }
+
+    // Combine with Node's built-in root certificates, deduplicate
+    val nodeCerts =
+        try {
+            tlsRootCertificates().toSet()
+        } catch (_: Throwable) {
+            emptySet()
+        }
+
+    val combined = LinkedHashSet<String>(nodeCerts.size + systemCerts.size)
+    combined.addAll(nodeCerts)
+    combined.addAll(systemCerts)
+    combined.toTypedArray()
+}
+
+/** Helper to extract from a marker within a string */
+private fun String.substringFrom(marker: String): String {
+    val idx = indexOf(marker)
+    return if (idx >= 0) substring(idx) else this
+}
+
 open class NodeSocket : ClientSocket {
     internal var isClosed = true
     internal var netSocket: Socket? = null
@@ -113,6 +187,8 @@ class NodeClientSocket(
     ) {
         val useTls = socketOptions.tls != null
         val rejectUnauthorized = socketOptions.tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
+        // Load system CAs when connecting with TLS and certificate verification is enabled
+        val caCerts = if (useTls && rejectUnauthorized) systemCaCertificates else null
         // Set servername explicitly for SNI (Server Name Indication)
         val options =
             Options(
@@ -121,6 +197,7 @@ class NodeClientSocket(
                 onread = null,
                 rejectUnauthorized = rejectUnauthorized,
                 servername = hostname,
+                ca = caCerts,
             )
         val netSocket = connect(useTls, options, timeout)
         isClosed = false

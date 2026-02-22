@@ -57,7 +57,16 @@ abstract class AsyncBaseClientSocket(
         buffer: WriteBuffer,
         timeout: Duration,
     ): Int {
-        // Efficient JVM implementation using the existing method
+        tlsHandler?.let { tls ->
+            val decrypted = tls.unwrap(timeout)
+            // unwrap returns buffer in write-mode (position = data end)
+            val bytesAvailable = decrypted.position()
+            if (bytesAvailable > 0) {
+                decrypted.resetForRead()
+                buffer.write(decrypted)
+            }
+            return bytesAvailable
+        }
         return read((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer, timeout)
     }
 

@@ -95,40 +95,49 @@ internal class JvmTlsHandler(
     }
 
     suspend fun unwrap(timeout: Duration): ReadBuffer {
-        val encryptedReadBuffer =
-            overflowEncryptedReadBuffer
-                ?: bufferFactory(engine.session.packetBufferSize).also {
-                    val bytesRead = rawRead(it, timeout)
-                    if (bytesRead < 1) {
-                        return EMPTY_BUFFER
-                    }
-                    it.resetForRead()
-                }
         val plainTextReadBuffer = bufferFactory(engine.session.applicationBufferSize)
-        while (encryptedReadBuffer.hasRemaining()) {
-            val result =
-                engine.unwrap(encryptedReadBuffer.byteBuffer, plainTextReadBuffer.byteBuffer)
-            when (checkNotNull(result.status)) {
-                SSLEngineResult.Status.BUFFER_OVERFLOW -> {
-                    overflowEncryptedReadBuffer = encryptedReadBuffer
-                    return slicePlainText(plainTextReadBuffer)
-                }
-                SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
-                    encryptedReadBuffer.byteBuffer.compact()
-                    rawRead(encryptedReadBuffer, timeout)
-                    encryptedReadBuffer.resetForRead()
-                    overflowEncryptedReadBuffer = encryptedReadBuffer
-                }
-                SSLEngineResult.Status.OK -> {
-                    overflowEncryptedReadBuffer = null
-                }
-                SSLEngineResult.Status.CLOSED -> {
-                    overflowEncryptedReadBuffer = null
-                    return slicePlainText(plainTextReadBuffer)
+        // Loop until we produce application data. TLS 1.3 may send post-handshake
+        // messages (e.g. NewSessionTicket) that unwrap to 0 application bytes.
+        // We must retry rather than returning empty, which callers treat as EOF.
+        while (true) {
+            val encryptedReadBuffer =
+                overflowEncryptedReadBuffer
+                    ?: bufferFactory(engine.session.packetBufferSize).also {
+                        val bytesRead = rawRead(it, timeout)
+                        if (bytesRead < 1) {
+                            return EMPTY_BUFFER
+                        }
+                        it.resetForRead()
+                    }
+            while (encryptedReadBuffer.hasRemaining()) {
+                val result =
+                    engine.unwrap(encryptedReadBuffer.byteBuffer, plainTextReadBuffer.byteBuffer)
+                when (checkNotNull(result.status)) {
+                    SSLEngineResult.Status.BUFFER_OVERFLOW -> {
+                        overflowEncryptedReadBuffer = encryptedReadBuffer
+                        return slicePlainText(plainTextReadBuffer)
+                    }
+                    SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
+                        encryptedReadBuffer.byteBuffer.compact()
+                        rawRead(encryptedReadBuffer, timeout)
+                        encryptedReadBuffer.resetForRead()
+                        overflowEncryptedReadBuffer = encryptedReadBuffer
+                    }
+                    SSLEngineResult.Status.OK -> {
+                        overflowEncryptedReadBuffer = null
+                    }
+                    SSLEngineResult.Status.CLOSED -> {
+                        overflowEncryptedReadBuffer = null
+                        return slicePlainText(plainTextReadBuffer)
+                    }
                 }
             }
+            // If we produced application data, return it
+            if (plainTextReadBuffer.position() > 0) {
+                return slicePlainText(plainTextReadBuffer)
+            }
+            // No application data produced (e.g. TLS 1.3 NewSessionTicket) — read more
         }
-        return slicePlainText(plainTextReadBuffer)
     }
 
     fun closeOutbound() {
