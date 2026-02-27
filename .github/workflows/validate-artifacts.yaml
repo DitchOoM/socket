@@ -39,8 +39,14 @@ jobs:
 
           # Copy Apple per-target artifacts
           for dir in "$APPLE_BASE"/socket-*/; do
+            [ -d "$dir" ] || continue
             target_name=$(basename "$dir")
+            if [ -d "$MERGED/$target_name" ]; then
+              echo "Skipping $target_name (already from Linux)"
+              continue
+            fi
             cp -r "$dir" "$MERGED/$target_name"
+            echo "Copied $target_name"
           done
 
           # Merge root module metadata
@@ -58,7 +64,66 @@ jobs:
               | .[0]
             ' "$LINUX_MODULE" "$APPLE_MODULE" > "${MERGED_MODULE}.tmp"
             mv "${MERGED_MODULE}.tmp" "$MERGED_MODULE"
-            echo "Merged module metadata: $(jq '.variants | length' "$MERGED_MODULE") variants"
+            echo "Merged .module: $(jq '.variants | length' "$MERGED_MODULE") variants"
+          fi
+
+          # Merge metadata JAR (kotlin-project-structure-metadata.json + klib dirs)
+          LINUX_JAR="$LINUX_BASE/socket/$version/socket-$version.jar"
+          APPLE_JAR="$APPLE_BASE/socket/$version/socket-$version.jar"
+          MERGED_JAR="$MERGED/socket/$version/socket-$version.jar"
+
+          if [ -f "$LINUX_JAR" ] && [ -f "$APPLE_JAR" ]; then
+            WORK="/tmp/merge-metadata-jar"
+            mkdir -p "$WORK/linux" "$WORK/apple" "$WORK/merged"
+
+            unzip -qo "$LINUX_JAR" -d "$WORK/linux"
+            unzip -qo "$APPLE_JAR" -d "$WORK/apple"
+
+            # Start with Linux as base
+            cp -r "$WORK/linux/"* "$WORK/merged/"
+
+            # Copy Apple klib directories
+            if [ -d "$WORK/apple" ]; then
+              for klib_dir in "$WORK/apple"/*/; do
+                dir_name=$(basename "$klib_dir")
+                [ "$dir_name" = "META-INF" ] && continue
+                if [ ! -d "$WORK/merged/$dir_name" ]; then
+                  cp -r "$klib_dir" "$WORK/merged/$dir_name"
+                  echo "Copied klib dir: $dir_name"
+                fi
+              done
+            fi
+
+            # Merge kotlin-project-structure-metadata.json
+            LINUX_PSM="$WORK/linux/META-INF/kotlin-project-structure-metadata.json"
+            APPLE_PSM="$WORK/apple/META-INF/kotlin-project-structure-metadata.json"
+            MERGED_PSM="$WORK/merged/META-INF/kotlin-project-structure-metadata.json"
+
+            if [ -f "$LINUX_PSM" ] && [ -f "$APPLE_PSM" ]; then
+              jq -s '
+                .[0].projectStructure.variants = (
+                  [.[0].projectStructure.variants[], .[1].projectStructure.variants[]]
+                  | group_by(.name)
+                  | map(.[0])
+                )
+                | .[0].projectStructure.sourceSets = (
+                  [.[0].projectStructure.sourceSets[], .[1].projectStructure.sourceSets[]]
+                  | group_by(.name)
+                  | map(.[0])
+                )
+                | .[0]
+              ' "$LINUX_PSM" "$APPLE_PSM" > "${MERGED_PSM}.tmp"
+              mv "${MERGED_PSM}.tmp" "$MERGED_PSM"
+              echo "Merged kotlin-project-structure-metadata.json:"
+              echo "  variants: $(jq '.projectStructure.variants | length' "$MERGED_PSM")"
+              echo "  sourceSets: $(jq '.projectStructure.sourceSets | length' "$MERGED_PSM")"
+            fi
+
+            # Re-create the merged JAR
+            (cd "$WORK/merged" && zip -qr "$MERGED_JAR" .)
+            echo "Rebuilt metadata JAR"
+
+            rm -rf "$WORK"
           fi
 
       - name: Upload merged artifacts
@@ -101,3 +166,35 @@ jobs:
             exit 1
           fi
           echo "Android AAR present"
+
+      - name: Validate metadata JAR Apple source sets
+        run: |
+          version="${{ inputs.version }}"
+          METADATA_JAR="/tmp/maven-local/com/ditchoom/socket/${version}/socket-${version}.jar"
+          FAILED=false
+
+          if [ ! -f "$METADATA_JAR" ]; then
+            echo "FAIL: metadata JAR not found"
+            exit 1
+          fi
+
+          PSM_JSON=$(unzip -p "$METADATA_JAR" META-INF/kotlin-project-structure-metadata.json 2>/dev/null)
+          if [ -z "$PSM_JSON" ]; then
+            echo "FAIL: kotlin-project-structure-metadata.json not found in JAR"
+            exit 1
+          fi
+
+          for ss in appleMain iosMain macosMain tvosMain watchosMain; do
+            if echo "$PSM_JSON" | jq -e ".projectStructure.sourceSets[] | select(.name == \"$ss\")" > /dev/null 2>&1; then
+              echo "${ss} present"
+            else
+              echo "FAIL: metadata JAR missing sourceSet '${ss}'"
+              FAILED=true
+            fi
+          done
+
+          if [ "$FAILED" = true ]; then
+            echo "=== VALIDATION FAILED ==="
+            exit 1
+          fi
+          echo "All Apple source sets present in metadata JAR"
