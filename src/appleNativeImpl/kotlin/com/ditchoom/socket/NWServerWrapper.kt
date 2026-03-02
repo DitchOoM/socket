@@ -39,8 +39,9 @@ class NWServerWrapper : ServerSocket {
         host: String?,
         backlog: Int,
     ): Flow<ClientSocket> {
-        val nwListener = nw_helper_create_listener(port, backlog)
-            ?: throw SocketException("Failed to configure server listener")
+        val nwListener =
+            nw_helper_create_listener(port, backlog)
+                ?: throw SocketException("Failed to configure server listener")
 
         val channel = Channel<ClientSocket>(Channel.UNLIMITED)
         acceptChannel = channel
@@ -106,9 +107,10 @@ class NWServerWrapper : ServerSocket {
 
     override fun isListening(): Boolean = listenerReady
 
-    override fun port(): Int = listener?.let {
-        nw_helper_listener_port(it).toInt()
-    } ?: -1
+    override fun port(): Int =
+        listener?.let {
+            nw_helper_listener_port(it).toInt()
+        } ?: -1
 
     override suspend fun close() {
         acceptChannel?.close()

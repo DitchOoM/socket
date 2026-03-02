@@ -15,7 +15,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
-import platform.Foundation.NSData
 import platform.Network.nw_connection_t
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
@@ -42,13 +41,15 @@ open class NWSocketWrapper : ClientSocket {
 
     override fun isOpen(): Boolean = !closedLocally && connectionReady
 
-    override suspend fun localPort(): Int = connection?.let {
-        nw_helper_local_port(it).toInt()
-    } ?: -1
+    override suspend fun localPort(): Int =
+        connection?.let {
+            nw_helper_local_port(it).toInt()
+        } ?: -1
 
-    override suspend fun remotePort(): Int = connection?.let {
-        nw_helper_remote_port(it).toInt()
-    } ?: -1
+    override suspend fun remotePort(): Int =
+        connection?.let {
+            nw_helper_remote_port(it).toInt()
+        } ?: -1
 
     /**
      * Zero-copy read operation.

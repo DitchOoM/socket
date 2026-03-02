@@ -21,7 +21,6 @@ import kotlin.time.Duration
 class NWClientSocketWrapper :
     NWSocketWrapper(),
     ClientToServerSocket {
-
     // C API nw_connection_state_t values:
     // 0=invalid/setup, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
     override suspend fun open(
@@ -35,13 +34,14 @@ class NWClientSocketWrapper :
         val useTls = tlsConfig != null
         val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
 
-        val conn = nw_helper_create_tcp_connection(
-            host = host,
-            port = port.toUShort(),
-            use_tls = NSNumber(bool = useTls),
-            verify_certs = NSNumber(bool = verifyCertificates),
-            timeout_seconds = timeout.inWholeSeconds.toInt(),
-        ) ?: throw SocketException("Failed to create NW connection")
+        val conn =
+            nw_helper_create_tcp_connection(
+                host = host,
+                port = port.toUShort(),
+                use_tls = NSNumber(bool = useTls),
+                verify_certs = NSNumber(bool = verifyCertificates),
+                timeout_seconds = timeout.inWholeSeconds.toInt(),
+            ) ?: throw SocketException("Failed to create NW connection")
 
         this.connection = conn
         this.closedLocally = false

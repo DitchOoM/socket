@@ -41,13 +41,14 @@ internal class NWWebSocketConnectionImpl(
                         SocketException(error.localizedDescription),
                     )
                 } else {
-                    val buffer = if (data != null && data.length.toInt() > 0) {
-                        val buf = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
-                        buf.position(data.length.toInt())
-                        buf
-                    } else {
-                        null
-                    }
+                    val buffer =
+                        if (data != null && data.length.toInt() > 0) {
+                            val buf = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
+                            buf.position(data.length.toInt())
+                            buf
+                        } else {
+                            null
+                        }
                     continuation.resume(
                         NativeWebSocketMessage(
                             data = buffer,
@@ -113,14 +114,15 @@ actual suspend fun connectNativeWebSocket(
     subprotocols: List<String>?,
     timeoutSeconds: Int,
 ): NativeWebSocketConnection {
-    val conn = nw_helper_create_ws_connection(
-        url = url,
-        use_tls = NSNumber(bool = tls),
-        verify_certs = NSNumber(bool = verifyCertificates),
-        auto_reply_ping = NSNumber(bool = autoReplyPing),
-        subprotocols = subprotocols,
-        timeout_seconds = timeoutSeconds,
-    ) ?: throw IllegalArgumentException("Failed to create WebSocket connection for URL: $url")
+    val conn =
+        nw_helper_create_ws_connection(
+            url = url,
+            use_tls = NSNumber(bool = tls),
+            verify_certs = NSNumber(bool = verifyCertificates),
+            auto_reply_ping = NSNumber(bool = autoReplyPing),
+            subprotocols = subprotocols,
+            timeout_seconds = timeoutSeconds,
+        ) ?: throw IllegalArgumentException("Failed to create WebSocket connection for URL: $url")
 
     val impl = NWWebSocketConnectionImpl(conn)
 
