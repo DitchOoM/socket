@@ -7,5 +7,4 @@ actual suspend fun connectNativeWebSocket(
     autoReplyPing: Boolean,
     subprotocols: List<String>?,
     timeoutSeconds: Int,
-): NativeWebSocketConnection =
-    throw UnsupportedOperationException("NativeWebSocketConnection is only supported on Apple platforms")
+): NativeWebSocketConnection = throw UnsupportedOperationException("NativeWebSocketConnection is only supported on Apple platforms")
