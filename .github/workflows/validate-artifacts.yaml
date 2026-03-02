@@ -187,9 +187,9 @@ jobs:
             fi
           done
 
-          # MetadataElements-published: Apple + Linux targets
-          for v in linuxX64 linuxArm64 \
-            macosArm64 macosX64 \
+          # MetadataElements-published: Apple targets (enables IDE resolution for
+          # intermediate source sets like iosMain, tvosMain, watchosMain, appleMain)
+          for v in macosArm64 macosX64 \
             iosArm64 iosSimulatorArm64 iosX64 \
             tvosArm64 tvosSimulatorArm64 tvosX64 \
             watchosArm64 watchosSimulatorArm64 watchosX64; do
