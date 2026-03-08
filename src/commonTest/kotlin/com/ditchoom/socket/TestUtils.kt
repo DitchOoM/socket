@@ -30,6 +30,15 @@ internal expect fun runTestNoTimeSkipping(
 ): TestRunResult
 
 /**
+ * Skip the block if running in a simulator environment (e.g., iOS Simulator in CI).
+ */
+internal inline fun skipOnSimulator(block: () -> Unit) {
+    if (!isRunningInSimulator()) {
+        block()
+    }
+}
+
+/**
  * Wait for a mutex to be unlocked with a timeout.
  * This prevents tests from hanging indefinitely if the unlock never happens.
  */

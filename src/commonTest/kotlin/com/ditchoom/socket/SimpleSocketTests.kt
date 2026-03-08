@@ -1,9 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.CoroutineScope
@@ -134,7 +132,7 @@ GET / HTTP/1.1
 Host: www.$domain
 Connection: close
 
-""".toReadBuffer(Charset.UTF8, AllocationZone.Heap)
+""".toReadBuffer(Charset.UTF8)
                 val bytesWritten = socket.write(request, 5.seconds)
                 localPort = socket.localPort()
                 assertTrue { bytesWritten > 0 }
@@ -481,7 +479,7 @@ class ClientCancellationTests {
                 launch(Dispatchers.Default) {
                     try {
                         // Write lots of data to fill the buffer and block
-                        val largeData = "x".repeat(1024 * 1024).toReadBuffer(Charset.UTF8, AllocationZone.Heap)
+                        val largeData = "x".repeat(1024 * 1024).toReadBuffer(Charset.UTF8)
                         repeat(100) {
                             client.write(largeData, 30.seconds)
                             largeData.resetForRead()
@@ -539,7 +537,7 @@ class ClientCancellationTests {
             clientConnected.lockWithTimeout()
 
             // Allocate a buffer and start a read into it
-            val buffer = PlatformBuffer.allocate(1024, AllocationZone.Direct)
+            val buffer = PlatformBuffer.allocate(1024)
 
             val readJob =
                 launch(Dispatchers.Default) {

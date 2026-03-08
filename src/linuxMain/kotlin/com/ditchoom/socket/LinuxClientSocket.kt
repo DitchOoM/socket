@@ -1,10 +1,8 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
-import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -249,7 +247,7 @@ class LinuxClientSocket : ClientToServerSocket {
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
-        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
+        val buffer = PlatformBuffer.allocate(bufferSize)
 
         try {
             // Get native memory pointer

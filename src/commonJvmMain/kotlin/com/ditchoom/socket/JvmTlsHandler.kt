@@ -1,11 +1,9 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.NoSuchAlgorithmException
@@ -190,7 +188,7 @@ internal class JvmTlsHandler(
         }
     }
 
-    private fun bufferFactory(size: Int): BaseJvmBuffer = PlatformBuffer.allocate(size, AllocationZone.Direct) as BaseJvmBuffer
+    private fun bufferFactory(size: Int): BaseJvmBuffer = PlatformBuffer.allocate(size) as BaseJvmBuffer
 
     private fun slicePlainText(plainText: BaseJvmBuffer): PlatformBuffer {
         val position = plainText.position()

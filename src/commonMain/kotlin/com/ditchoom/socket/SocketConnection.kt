@@ -2,7 +2,6 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadWriteBuffer
-import com.ditchoom.buffer.SuspendCloseable
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
@@ -23,7 +22,7 @@ class SocketConnection private constructor(
     val pool: BufferPool,
     val stream: SuspendingStreamProcessor,
     private val options: ConnectionOptions,
-) : SuspendCloseable {
+) {
     val isOpen: Boolean get() = socket.isOpen()
 
     /**
@@ -68,7 +67,7 @@ class SocketConnection private constructor(
         }
     }
 
-    override suspend fun close() {
+    suspend fun close() {
         socket.close()
     }
 
@@ -78,7 +77,7 @@ class SocketConnection private constructor(
             port: Int,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            val socket = ClientSocket.allocate(options.allocationZone)
+            val socket = ClientSocket.allocate()
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
             val pool =
                 BufferPool(

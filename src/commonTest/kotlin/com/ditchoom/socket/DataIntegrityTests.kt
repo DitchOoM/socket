@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex

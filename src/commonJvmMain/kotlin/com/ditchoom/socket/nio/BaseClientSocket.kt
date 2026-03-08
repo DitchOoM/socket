@@ -1,10 +1,8 @@
 package com.ditchoom.socket.nio
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocate
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
@@ -19,7 +17,6 @@ import java.nio.channels.SocketChannel
 import kotlin.time.Duration
 
 abstract class BaseClientSocket(
-    private val allocationZone: AllocationZone,
     protected val blocking: Boolean = false,
 ) : ByteBufferClientSocket<SocketChannel>() {
     val selector = if (!blocking) Selector.open()!! else null
@@ -32,7 +29,7 @@ abstract class BaseClientSocket(
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (!isOpen()) throw SocketClosedException("Socket is closed.")
         tlsHandler?.let { return it.unwrap(timeout) }
-        val buffer = PlatformBuffer.allocate(socket.socket().receiveBufferSize, allocationZone) as BaseJvmBuffer
+        val buffer = PlatformBuffer.allocate(socket.socket().receiveBufferSize) as BaseJvmBuffer
         read(buffer, timeout)
         return buffer
     }

@@ -622,11 +622,10 @@ kotlin {
             configureLinuxCinterop("x64")
         }
 
-        // ARM64 target - cross-compiled from x64
-        // Requires: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-        linuxArm64 {
-            configureLinuxCinterop("arm64")
-        }
+        // ARM64 target disabled until buffer publishes linuxArm64 SNAPSHOT
+        // linuxArm64 {
+        //     configureLinuxCinterop("arm64")
+        // }
     }
 
     applyDefaultHierarchyTemplate()
