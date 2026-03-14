@@ -55,6 +55,11 @@ class SocketConnection private constructor(
         timeout: Duration = options.writeTimeout,
     ): Int = socket.write(buffer, timeout)
 
+    suspend fun writeGathered(
+        buffers: List<ReadBuffer>,
+        timeout: Duration = options.writeTimeout,
+    ): Int = socket.writeGathered(buffers, timeout)
+
     inline fun <T> withBuffer(
         minSize: Int = 0,
         block: (ReadWriteBuffer) -> T,
