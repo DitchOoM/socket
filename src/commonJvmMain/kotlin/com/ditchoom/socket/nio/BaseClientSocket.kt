@@ -63,16 +63,22 @@ abstract class BaseClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val bytesWritten =
-            try {
-                writeMutex.withLock { socket.write(((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer, selector, timeout) }
-            } catch (e: ClosedChannelException) {
-                throw SocketClosedException("Socket is closed.", e)
+        val byteBuffer = ((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer
+        var totalWritten = 0
+        try {
+            writeMutex.withLock {
+                while (byteBuffer.hasRemaining()) {
+                    val bytesWritten = socket.write(byteBuffer, selector, timeout)
+                    if (bytesWritten < 0) {
+                        throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
+                    }
+                    totalWritten += bytesWritten
+                }
             }
-        if (bytesWritten < 0) {
-            throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
+        } catch (e: ClosedChannelException) {
+            throw SocketClosedException("Socket is closed.", e)
         }
-        return bytesWritten
+        return totalWritten
     }
 
     override suspend fun close() {
