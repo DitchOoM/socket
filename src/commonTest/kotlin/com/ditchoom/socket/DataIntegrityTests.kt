@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -41,7 +42,7 @@ class DataIntegrityTests {
             val client = ClientSocket.allocate()
             client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
 
-            val sendBuffer = PlatformBuffer.allocate(binaryData.size)
+            val sendBuffer = BufferFactory.Default.allocate(binaryData.size)
             sendBuffer.writeBytes(binaryData)
             sendBuffer.resetForRead()
             client.write(sendBuffer, 5.seconds)
@@ -120,7 +121,7 @@ class DataIntegrityTests {
         val chunkSize = 8192
         while (offset < size) {
             val remaining = minOf(chunkSize, size - offset)
-            val chunk = PlatformBuffer.allocate(remaining)
+            val chunk = BufferFactory.Default.allocate(remaining)
             chunk.writeBytes(testData, offset, remaining)
             chunk.resetForRead()
 
@@ -313,7 +314,7 @@ class DataIntegrityTests {
             val client = ClientSocket.allocate()
             client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
 
-            val sendBuffer = PlatformBuffer.allocate(dataWithNulls.size)
+            val sendBuffer = BufferFactory.Default.allocate(dataWithNulls.size)
             sendBuffer.writeBytes(dataWithNulls)
             sendBuffer.resetForRead()
             client.write(sendBuffer, 5.seconds)

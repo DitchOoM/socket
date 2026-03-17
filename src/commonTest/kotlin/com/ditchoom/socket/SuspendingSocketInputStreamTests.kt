@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.data.Reader
@@ -20,7 +21,7 @@ class SuspendingSocketInputStreamTests {
                     override fun isOpen(): Boolean = true
 
                     override suspend fun read(timeout: Duration): ReadBuffer {
-                        val buffer = PlatformBuffer.allocate(1)
+                        val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(0.toByte())
                         return buffer
                     }
@@ -44,7 +45,7 @@ class SuspendingSocketInputStreamTests {
                     override fun isOpen(): Boolean = true
 
                     override suspend fun read(timeout: Duration): ReadBuffer {
-                        val buffer = PlatformBuffer.allocate(1)
+                        val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
                         return buffer
                     }
@@ -69,13 +70,13 @@ class SuspendingSocketInputStreamTests {
                     override fun isOpen(): Boolean = true
 
                     override suspend fun read(timeout: Duration): ReadBuffer {
-                        val buffer = PlatformBuffer.allocate(1)
+                        val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
                         return buffer
                     }
                 }
             val inputStream = SuspendingSocketInputStream(100.seconds, reader)
-            inputStream.currentBuffer = PlatformBuffer.wrap(byteArrayOf(0))
+            inputStream.currentBuffer = BufferFactory.Default.wrap(byteArrayOf(0))
             assertEquals(EMPTY_BUFFER, inputStream.ensureBufferSize(0))
             val twoByteBuffer = inputStream.ensureBufferSize(2)
             assertEquals(0, twoByteBuffer.position())
@@ -94,13 +95,13 @@ class SuspendingSocketInputStreamTests {
                     override fun isOpen(): Boolean = true
 
                     override suspend fun read(timeout: Duration): ReadBuffer {
-                        val buffer = PlatformBuffer.allocate(1)
+                        val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
                         return buffer
                     }
                 }
             val inputStream = SuspendingSocketInputStream(100.seconds, reader)
-            inputStream.currentBuffer = PlatformBuffer.wrap(byteArrayOf(0))
+            inputStream.currentBuffer = BufferFactory.Default.wrap(byteArrayOf(0))
             assertEquals(EMPTY_BUFFER, inputStream.ensureBufferSize(0))
             assertEquals(0, inputStream.readByte())
             assertEquals(1, inputStream.readByte())
@@ -118,13 +119,13 @@ class SuspendingSocketInputStreamTests {
                     override fun isOpen(): Boolean = true
 
                     override suspend fun read(timeout: Duration): ReadBuffer {
-                        val buffer = PlatformBuffer.allocate(1)
+                        val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
                         return buffer
                     }
                 }
             val inputStream = SuspendingSocketInputStream(100.seconds, reader)
-            inputStream.currentBuffer = PlatformBuffer.wrap(byteArrayOf(0))
+            inputStream.currentBuffer = BufferFactory.Default.wrap(byteArrayOf(0))
             assertEquals(EMPTY_BUFFER, inputStream.ensureBufferSize(0))
             assertEquals(0, inputStream.readByte())
             assertEquals(1, inputStream.readByte())

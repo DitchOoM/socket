@@ -83,6 +83,7 @@ class SocketConnection private constructor(
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
             val socket = ClientSocket.allocate()
+            socket.bufferFactory = options.bufferFactory
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
             val pool =
                 BufferPool(
@@ -111,6 +112,7 @@ class SocketConnection private constructor(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
+            socket.bufferFactory = options.bufferFactory
             val pool =
                 BufferPool(
                     maxPoolSize = options.maxPoolSize,

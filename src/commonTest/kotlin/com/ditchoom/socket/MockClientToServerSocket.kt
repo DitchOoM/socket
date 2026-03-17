@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import kotlinx.coroutines.channels.Channel
@@ -27,7 +28,7 @@ class MockClientToServerSocket : ClientToServerSocket {
     }
 
     fun enqueueReadBytes(vararg bytes: Byte) {
-        val buffer = PlatformBuffer.allocate(bytes.size)
+        val buffer = BufferFactory.Default.allocate(bytes.size)
         for (b in bytes) buffer.writeByte(b)
         // Leave position at end of written data (like a real socket read).
         // Caller should call resetForRead() on the result of read().
@@ -82,7 +83,7 @@ class MockClientToServerSocket : ClientToServerSocket {
         if (!open) throw SocketClosedException("Mock socket is closed")
         val bytes = buffer.remaining()
         // Copy the buffer content so the original can be reused
-        val copy = PlatformBuffer.allocate(bytes)
+        val copy = BufferFactory.Default.allocate(bytes)
         copy.write(buffer)
         copy.resetForRead()
         writtenBuffers.add(copy)

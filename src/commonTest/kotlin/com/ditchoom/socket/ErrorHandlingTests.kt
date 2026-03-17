@@ -1,7 +1,8 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -287,7 +288,7 @@ class ErrorHandlingTests {
             client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
 
             // Write empty buffer - should succeed without error
-            val emptyBuffer = PlatformBuffer.allocate(0)
+            val emptyBuffer = BufferFactory.Default.allocate(0)
             val bytesWritten = client.write(emptyBuffer, 1.seconds)
             assertEquals(0, bytesWritten)
 

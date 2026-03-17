@@ -26,7 +26,7 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
         if (!isOpen()) throw SocketClosedException("Socket is closed.")
         tlsHandler?.let { return it.unwrap(timeout) }
         val receiveBuffer = socket.getOption(StandardSocketOptions.SO_RCVBUF)
-        val buffer = PlatformBuffer.allocate(receiveBuffer) as BaseJvmBuffer
+        val buffer = bufferFactory.allocate(receiveBuffer) as BaseJvmBuffer
         read(buffer, timeout)
         return buffer
     }

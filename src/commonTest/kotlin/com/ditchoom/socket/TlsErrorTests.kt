@@ -1,6 +1,8 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.WriteBuffer
 import kotlinx.coroutines.async
@@ -558,7 +560,7 @@ class TlsErrorTests {
                     socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
 
                     // Use the read(WriteBuffer, timeout) overload — the path that was broken
-                    val writeBuffer = PlatformBuffer.allocate(65536) as WriteBuffer
+                    val writeBuffer = BufferFactory.Default.allocate(65536) as WriteBuffer
                     val bytesRead = socket.read(writeBuffer, 10.seconds)
                     assertTrue(bytesRead > 0, "Should read data via WriteBuffer path")
 
@@ -650,7 +652,7 @@ class TlsErrorTests {
                     )
                 try {
                     socket2.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
-                    val writeBuffer = PlatformBuffer.allocate(65536) as WriteBuffer
+                    val writeBuffer = BufferFactory.Default.allocate(65536) as WriteBuffer
                     val bytesRead = socket2.read(writeBuffer, 10.seconds)
                     assertTrue(bytesRead > 0, "WriteBuffer read should return data")
                     val readBuffer = writeBuffer as PlatformBuffer
@@ -699,7 +701,7 @@ class TlsErrorTests {
                     // Read until connection closes (Connection: close)
                     while (socket.isOpen() && readCount < 10) {
                         try {
-                            val buf = PlatformBuffer.allocate(65536) as WriteBuffer
+                            val buf = BufferFactory.Default.allocate(65536) as WriteBuffer
                             val n = socket.read(buf, 5.seconds)
                             if (n <= 0) break
                             totalBytes += n

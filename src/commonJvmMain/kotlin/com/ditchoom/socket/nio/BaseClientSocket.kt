@@ -29,7 +29,7 @@ abstract class BaseClientSocket(
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (!isOpen()) throw SocketClosedException("Socket is closed.")
         tlsHandler?.let { return it.unwrap(timeout) }
-        val buffer = PlatformBuffer.allocate(socket.socket().receiveBufferSize) as BaseJvmBuffer
+        val buffer = bufferFactory.allocate(socket.socket().receiveBufferSize) as BaseJvmBuffer
         read(buffer, timeout)
         return buffer
     }

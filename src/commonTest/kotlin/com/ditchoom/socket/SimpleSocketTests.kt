@@ -1,7 +1,8 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.CoroutineScope
@@ -537,7 +538,7 @@ class ClientCancellationTests {
             clientConnected.lockWithTimeout()
 
             // Allocate a buffer and start a read into it
-            val buffer = PlatformBuffer.allocate(1024)
+            val buffer = BufferFactory.Default.allocate(1024)
 
             val readJob =
                 launch(Dispatchers.Default) {

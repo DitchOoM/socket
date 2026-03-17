@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.buffer.managedMemoryAccess
@@ -19,6 +20,9 @@ import kotlin.time.Duration
  */
 @OptIn(ExperimentalForeignApi::class)
 open class LinuxSocketWrapper : ClientSocket {
+
+    /** Controls how internal read buffers are allocated. Set before first read. */
+    override var bufferFactory: BufferFactory = BufferFactory.deterministic()
     internal var sockfd: Int = -1
         set(value) {
             val wasOpen = field >= 0
@@ -51,7 +55,7 @@ open class LinuxSocketWrapper : ClientSocket {
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
-        val buffer = PlatformBuffer.allocate(bufferSize)
+        val buffer = bufferFactory.allocate(bufferSize)
 
         try {
             // Get native memory pointer

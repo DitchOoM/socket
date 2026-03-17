@@ -1,5 +1,7 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.data.Reader
 import com.ditchoom.data.Writer
 import kotlin.time.Duration
@@ -13,6 +15,15 @@ interface ClientSocket :
     SocketController,
     Reader,
     Writer {
+    /**
+     * Controls how internal read buffers are allocated.
+     * Set before first read to inject pooled, shared memory, or managed allocation strategies.
+     * Platforms that use zero-copy reads (Apple, JS) ignore this property.
+     */
+    var bufferFactory: BufferFactory
+        get() = BufferFactory.deterministic()
+        set(_) {} // No-op default; overridden by JVM/Linux
+
     companion object
 }
 

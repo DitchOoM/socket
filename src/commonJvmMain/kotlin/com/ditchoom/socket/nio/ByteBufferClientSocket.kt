@@ -1,6 +1,8 @@
 package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.BaseJvmBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.JvmTlsHandler
@@ -16,6 +18,9 @@ import kotlin.time.Duration
 abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
     internal var tlsHandler: JvmTlsHandler? = null
+
+    /** Controls how internal read buffers are allocated. Set before first read. */
+    override var bufferFactory: BufferFactory = BufferFactory.deterministic()
 
     protected val isSocketInitialized: Boolean
         get() = ::socket.isInitialized
@@ -56,6 +61,7 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
                 port = port,
                 rawRead = { buf, t -> this.read(buf, t) },
                 rawWrite = { buf, t -> this.rawSocketWrite(buf, t) },
+                bufferFactory = bufferFactory,
             )
         handler.handshake(timeout)
         this.tlsHandler = handler
