@@ -20,7 +20,7 @@ kotlin {
 
     // Linux
     linuxX64()
-    linuxArm64()
+    // linuxArm64() — disabled until target is re-enabled in root build.gradle.kts
 
     // Apple – macOS
     macosArm64()
