@@ -1,4 +1,5 @@
 config.resolve.alias = {
+    "fs": false,
     "net": false,
     "util": false,
     "tls": false,
