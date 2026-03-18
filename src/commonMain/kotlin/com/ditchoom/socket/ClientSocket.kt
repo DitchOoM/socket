@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.Default
 import com.ditchoom.data.Reader
 import com.ditchoom.data.Writer
 import kotlin.time.Duration
@@ -21,7 +21,7 @@ interface ClientSocket :
      * Platforms that use zero-copy reads (Apple, JS) ignore this property.
      */
     var bufferFactory: BufferFactory
-        get() = BufferFactory.deterministic()
+        get() = BufferFactory.Default
         set(_) {} // No-op default; overridden by JVM/Linux
 
     companion object
@@ -32,7 +32,7 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     timeout: Duration = 15.seconds,
     socketOptions: SocketOptions = SocketOptions(),
-    bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    bufferFactory: BufferFactory = BufferFactory.Default,
 ): ClientToServerSocket {
     val socket = ClientSocket.allocate()
     socket.bufferFactory = bufferFactory
@@ -45,7 +45,7 @@ suspend fun <T> ClientSocket.Companion.connect(
     hostname: String? = null,
     timeout: Duration = 15.seconds,
     socketOptions: SocketOptions = SocketOptions(),
-    bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    bufferFactory: BufferFactory = BufferFactory.Default,
     lambda: suspend (ClientSocket) -> T,
 ): T {
     val socket = ClientSocket.allocate()

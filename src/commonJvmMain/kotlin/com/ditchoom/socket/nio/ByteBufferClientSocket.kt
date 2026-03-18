@@ -2,8 +2,8 @@ package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.JvmTlsHandler
 import com.ditchoom.socket.SocketOptions
@@ -20,7 +20,7 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     internal var tlsHandler: JvmTlsHandler? = null
 
     /** Controls how internal read buffers are allocated. Set before first read. */
-    override var bufferFactory: BufferFactory = BufferFactory.deterministic()
+    override var bufferFactory: BufferFactory = BufferFactory.Default
 
     protected val isSocketInitialized: Boolean
         get() = ::socket.isInitialized
