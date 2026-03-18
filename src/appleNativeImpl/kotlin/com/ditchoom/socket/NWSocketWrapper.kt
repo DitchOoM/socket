@@ -4,18 +4,18 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.socket.native.SocketErrorType
-import com.ditchoom.socket.native.SocketErrorTypeDns
-import com.ditchoom.socket.native.SocketErrorTypeNone
-import com.ditchoom.socket.native.SocketErrorTypePosix
-import com.ditchoom.socket.native.SocketErrorTypeTls
-import com.ditchoom.socket.native.SocketWrapper
+import com.ditchoom.socket.nwhelpers.nw_helper_cancel
+import com.ditchoom.socket.nwhelpers.nw_helper_force_cancel
+import com.ditchoom.socket.nwhelpers.nw_helper_local_port
+import com.ditchoom.socket.nwhelpers.nw_helper_remote_port
+import com.ditchoom.socket.nwhelpers.nw_helper_send_tcp
+import com.ditchoom.socket.nwhelpers.nw_helper_tcp_receive
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
-import platform.Foundation.NSData
+import platform.Network.nw_connection_t
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -29,18 +29,27 @@ import kotlin.time.Duration
  */
 @OptIn(ExperimentalForeignApi::class)
 open class NWSocketWrapper : ClientSocket {
-    internal var socket: SocketWrapper? = null
+    internal var connection: nw_connection_t = null
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
 
     @Volatile
     internal var closedLocally = false
 
-    override fun isOpen(): Boolean = !closedLocally && (socket?.isOpen() ?: false)
+    @Volatile
+    internal var connectionReady = false
 
-    override suspend fun localPort(): Int = socket?.localPort()?.toInt() ?: -1
+    override fun isOpen(): Boolean = !closedLocally && connectionReady
 
-    override suspend fun remotePort(): Int = socket?.remotePort()?.toInt() ?: -1
+    override suspend fun localPort(): Int =
+        connection?.let {
+            nw_helper_local_port(it).toInt()
+        } ?: -1
+
+    override suspend fun remotePort(): Int =
+        connection?.let {
+            nw_helper_remote_port(it).toInt()
+        } ?: -1
 
     /**
      * Zero-copy read operation.
@@ -48,32 +57,28 @@ open class NWSocketWrapper : ClientSocket {
      */
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (closedLocally) throw SocketClosedException("Socket is closed")
-        val socket = socket ?: throw SocketClosedException("Socket is closed")
+        val conn = connection ?: throw SocketClosedException("Socket is closed")
         return readMutex.withLock {
             withTimeout(timeout) {
                 suspendCancellableCoroutine { continuation ->
-                    socket.readWithCompletion { data: NSData?, errorType, errorString, isComplete ->
+                    nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
                         when {
                             data != null && data.length.toInt() > 0 -> {
                                 // Zero-copy: wrap NSData directly using NSDataBuffer
                                 val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
-                                // Set position to end of data so resetForRead() works correctly
-                                // resetForRead() will set limit = position, then position = 0
                                 buffer.position(data.length.toInt())
                                 continuation.resume(buffer)
                             }
-                            isComplete -> {
-                                // Connection closed by peer - treat as EOF
+                            isComplete?.boolValue == true -> {
                                 closeInternal()
                                 continuation.resumeWithException(
                                     SocketClosedException("Connection closed by peer"),
                                 )
                             }
-                            errorType != SocketErrorTypeNone -> {
-                                // Only throw error if not a clean close
+                            errorDomain != 0 -> {
                                 closeInternal()
                                 continuation.resumeWithException(
-                                    mapSocketException(errorType, errorString),
+                                    mapSocketException(errorDomain, errorDesc),
                                 )
                             }
                             else -> {
@@ -98,22 +103,19 @@ open class NWSocketWrapper : ClientSocket {
         timeout: Duration,
     ): Int {
         if (closedLocally) throw SocketClosedException("Socket is closed")
-        val socket = socket ?: throw SocketClosedException("Socket is closed")
+        val conn = connection ?: throw SocketClosedException("Socket is closed")
         val nsData = buffer.toNSData()
 
         return writeMutex.withLock {
             withTimeout(timeout) {
                 suspendCancellableCoroutine { continuation ->
-                    socket.writeWithData(nsData) { bytesWritten, errorType, errorString ->
-                        when {
-                            errorType != SocketErrorTypeNone -> {
-                                continuation.resumeWithException(
-                                    mapSocketException(errorType, errorString),
-                                )
-                            }
-                            else -> {
-                                continuation.resume(bytesWritten.toInt())
-                            }
+                    nw_helper_send_tcp(conn, nsData) { error ->
+                        if (error != null) {
+                            continuation.resumeWithException(
+                                SocketException(error.localizedDescription),
+                            )
+                        } else {
+                            continuation.resume(nsData.length.toInt())
                         }
                     }
                     continuation.invokeOnCancellation {
@@ -124,12 +126,13 @@ open class NWSocketWrapper : ClientSocket {
         }
     }
 
-    private fun closeInternal() {
+    internal fun closeInternal() {
         if (closedLocally) return
         closedLocally = true
-        val socket = socket ?: return
-        socket.close()
-        socket.forceClose()
+        connectionReady = false
+        val conn = connection ?: return
+        nw_helper_cancel(conn)
+        nw_helper_force_cancel(conn)
     }
 
     override suspend fun close() {
@@ -138,14 +141,14 @@ open class NWSocketWrapper : ClientSocket {
 
     companion object {
         internal fun mapSocketException(
-            errorType: SocketErrorType,
+            errorDomain: Int,
             errorString: String?,
         ): SocketException {
             val message = errorString ?: "Socket error"
-            return when (errorType) {
-                SocketErrorTypeDns -> SocketUnknownHostException(null, message)
-                SocketErrorTypeTls -> SSLSocketException(message)
-                SocketErrorTypePosix -> SocketException(message)
+            return when (errorDomain) {
+                2 -> SocketUnknownHostException(null, message) // DNS
+                3 -> SSLSocketException(message) // TLS
+                1 -> SocketException(message) // POSIX
                 else -> SocketException(message)
             }
         }

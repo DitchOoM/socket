@@ -1,0 +1,516 @@
+language = Objective-C
+package = com.ditchoom.socket.nwhelpers
+headers = nw_helpers.h
+headerFilter = nw_helpers.h
+linkerOpts = -framework Network -framework Foundation -framework Security
+---
+#include <Network/Network.h>
+#include <Foundation/Foundation.h>
+#include <Security/Security.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+// ============================================================
+// TCP receive/send helpers
+// ============================================================
+
+void nw_helper_receive(
+    nw_connection_t _Nonnull connection,
+    uint32_t minimum_incomplete_length,
+    uint32_t maximum_length,
+    nw_receive_nsdata_handler_t _Nonnull handler)
+{
+    nw_connection_receive(connection, minimum_incomplete_length, maximum_length,
+        ^(dispatch_data_t _Nullable content, nw_content_context_t _Nullable context,
+          bool is_complete, nw_error_t _Nullable error) {
+            handler((NSData *)content, context, @(is_complete), error);
+        });
+}
+
+void nw_helper_receive_message(
+    nw_connection_t _Nonnull connection,
+    nw_receive_nsdata_handler_t _Nonnull handler)
+{
+    nw_connection_receive_message(connection, ^(dispatch_data_t _Nullable content,
+        nw_content_context_t _Nullable context, bool is_complete, nw_error_t _Nullable error) {
+            handler((NSData *)content, context, @(is_complete), error);
+        });
+}
+
+void nw_helper_send(
+    nw_connection_t _Nonnull connection,
+    NSData * _Nullable data,
+    nw_content_context_t _Nonnull context,
+    bool is_complete,
+    nw_helper_send_callback_t _Nonnull completion)
+{
+    dispatch_data_t dispatch_data = NULL;
+    if (data != nil && data.length > 0) {
+        dispatch_data = dispatch_data_create(data.bytes, data.length,
+            dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    }
+    nw_connection_send(connection, dispatch_data, context, is_complete,
+        ^(nw_error_t _Nullable error) {
+            if (error == NULL) {
+                completion(nil);
+            } else {
+                int code = nw_error_get_error_code(error);
+                int domain = nw_error_get_error_domain(error);
+                NSString *desc = [NSString stringWithFormat:@"NW send error domain=%d code=%d", domain, code];
+                NSError *nsError = [[NSError alloc] initWithDomain:@"NWError"
+                    code:code userInfo:@{NSLocalizedDescriptionKey: desc}];
+                completion(nsError);
+            }
+        });
+}
+
+// ============================================================
+// TLS configuration helper (internal)
+// ============================================================
+
+static nw_parameters_t _Nonnull create_tcp_parameters(
+    bool use_tls, bool verify_certs, int32_t timeout_seconds)
+{
+    nw_parameters_t params;
+    if (use_tls) {
+        params = nw_parameters_create_secure_tcp(
+            ^(nw_protocol_options_t _Nonnull tls_options) {
+                sec_protocol_options_t sec_options =
+                    nw_tls_copy_sec_protocol_options(tls_options);
+                if (verify_certs) {
+                    // Custom verify block with iOS Simulator workaround.
+                    //
+                    // On macOS and real iOS devices, the default TLS verification
+                    // works correctly. On the iOS Simulator, SecTrustEvaluateWithError
+                    // returns errSecInternal (-26276) for all trust evaluations from
+                    // non-app processes spawned via `xcrun simctl spawn`.
+                    //
+                    // Workaround: when we get -26276, verify that a non-empty peer
+                    // certificate chain was received and accept the connection.
+                    sec_protocol_options_set_verify_block(sec_options,
+                        ^(sec_protocol_metadata_t _Nonnull metadata,
+                          sec_trust_t _Nonnull trust,
+                          sec_protocol_verify_complete_t _Nonnull completion) {
+                            SecTrustRef secTrust = sec_trust_copy_ref(trust);
+                            CFErrorRef cfError = NULL;
+                            bool result = SecTrustEvaluateWithError(secTrust, &cfError);
+                            CFRelease(secTrust);
+                            if (result) {
+                                completion(true);
+                                return;
+                            }
+                            // Check for errSecInternal (-26276) — iOS Simulator limitation
+                            if (cfError != NULL && CFErrorGetCode(cfError) == -26276) {
+                                __block bool has_peer_certs = false;
+                                sec_protocol_metadata_access_peer_certificate_chain(metadata,
+                                    ^(sec_certificate_t _Nonnull cert) {
+                                        has_peer_certs = true;
+                                    });
+                                if (cfError) CFRelease(cfError);
+                                completion(has_peer_certs);
+                                return;
+                            }
+                            if (cfError) CFRelease(cfError);
+                            completion(false);
+                        },
+                        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+                } else {
+                    sec_protocol_options_set_peer_authentication_required(sec_options, false);
+                }
+            },
+            ^(nw_protocol_options_t _Nonnull tcp_options) {
+                nw_tcp_options_set_connection_timeout(tcp_options, timeout_seconds);
+            });
+    } else {
+        params = nw_parameters_create_secure_tcp(
+            NW_PARAMETERS_DISABLE_PROTOCOL,
+            ^(nw_protocol_options_t _Nonnull tcp_options) {
+                nw_tcp_options_set_connection_timeout(tcp_options, timeout_seconds);
+            });
+    }
+    return params;
+}
+
+// ============================================================
+// Connection creation
+// ============================================================
+
+nw_connection_t _Nullable nw_helper_create_tcp_connection(
+    const char * _Nonnull host,
+    uint16_t port,
+    NSNumber * _Nonnull use_tls,
+    NSNumber * _Nonnull verify_certs,
+    int32_t timeout_seconds)
+{
+    nw_endpoint_t endpoint = nw_endpoint_create_host(host,
+        [[NSString stringWithFormat:@"%u", port] UTF8String]);
+    nw_parameters_t params = create_tcp_parameters(
+        use_tls.boolValue, verify_certs.boolValue, timeout_seconds);
+    return nw_connection_create(endpoint, params);
+}
+
+nw_connection_t _Nullable nw_helper_create_ws_connection(
+    const char * _Nonnull url,
+    NSNumber * _Nonnull use_tls,
+    NSNumber * _Nonnull verify_certs,
+    NSNumber * _Nonnull auto_reply_ping,
+    NSArray * _Nullable subprotocols,
+    int32_t timeout_seconds)
+{
+    nw_endpoint_t endpoint = nw_endpoint_create_url(url);
+    if (endpoint == NULL) return NULL;
+
+    nw_parameters_t params = create_tcp_parameters(
+        use_tls.boolValue, verify_certs.boolValue, timeout_seconds);
+
+    // Add WebSocket protocol to the stack
+    nw_protocol_options_t ws_options = nw_ws_create_options(nw_ws_version_13);
+    nw_ws_options_set_auto_reply_ping(ws_options, auto_reply_ping.boolValue);
+
+    if (subprotocols != nil) {
+        for (NSString *proto in subprotocols) {
+            nw_ws_options_add_subprotocol(ws_options, proto.UTF8String);
+        }
+    }
+
+    nw_protocol_stack_t stack = nw_parameters_copy_default_protocol_stack(params);
+    nw_protocol_stack_prepend_application_protocol(stack, ws_options);
+
+    return nw_connection_create(endpoint, params);
+}
+
+// ============================================================
+// Error description helper (internal)
+// ============================================================
+
+static void describe_nw_error(nw_error_t _Nullable error,
+    int32_t *out_domain, int32_t *out_code, NSString * __autoreleasing *out_desc)
+{
+    if (error == NULL) {
+        *out_domain = 0;
+        *out_code = 0;
+        *out_desc = nil;
+        return;
+    }
+    int code = nw_error_get_error_code(error);
+    nw_error_domain_t domain = nw_error_get_error_domain(error);
+
+    if (domain == nw_error_domain_posix) {
+        *out_domain = 1;
+        *out_code = code;
+        *out_desc = [NSString stringWithFormat:@"POSIX error %d: %s", code, strerror(code)];
+    } else if (domain == nw_error_domain_dns) {
+        *out_domain = 2;
+        *out_code = code;
+        *out_desc = [NSString stringWithFormat:@"DNS error %d", code];
+    } else if (domain == nw_error_domain_tls) {
+        *out_domain = 3;
+        *out_code = code;
+        *out_desc = [NSString stringWithFormat:@"TLS error %d", code];
+    } else {
+        *out_domain = 4;
+        *out_code = code;
+        *out_desc = [NSString stringWithFormat:@"Network error domain=%d code=%d",
+            (int)domain, code];
+    }
+}
+
+// ============================================================
+// Connection state handler + lifecycle
+// ============================================================
+
+void nw_helper_set_state_handler(
+    nw_connection_t _Nonnull conn,
+    nw_helper_state_handler_t _Nonnull handler)
+{
+    // C API enum values:
+    // nw_connection_state_invalid = 0 (Swift .setup)
+    // nw_connection_state_waiting = 1
+    // nw_connection_state_preparing = 2
+    // nw_connection_state_ready = 3
+    // nw_connection_state_failed = 4
+    // nw_connection_state_cancelled = 5
+    // We pass these directly as int32_t to Kotlin.
+    nw_connection_set_state_changed_handler(conn,
+        ^(nw_connection_state_t state, nw_error_t _Nullable error) {
+            int32_t error_domain = 0, error_code = 0;
+            NSString *error_desc = nil;
+            describe_nw_error(error, &error_domain, &error_code, &error_desc);
+            handler((int32_t)state, error_domain, error_code, error_desc);
+        });
+}
+
+void nw_helper_start(nw_connection_t _Nonnull conn)
+{
+    nw_connection_set_queue(conn,
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    nw_connection_start(conn);
+}
+
+void nw_helper_cancel(nw_connection_t _Nonnull conn)
+{
+    nw_connection_cancel(conn);
+}
+
+void nw_helper_force_cancel(nw_connection_t _Nonnull conn)
+{
+    nw_connection_force_cancel(conn);
+}
+
+// ============================================================
+// Connection info
+// ============================================================
+
+int32_t nw_helper_local_port(nw_connection_t _Nonnull conn)
+{
+    nw_path_t path = nw_connection_copy_current_path(conn);
+    if (path == NULL) return -1;
+    nw_endpoint_t endpoint = nw_path_copy_effective_local_endpoint(path);
+    if (endpoint == NULL) return -1;
+    return (int32_t)nw_endpoint_get_port(endpoint);
+}
+
+int32_t nw_helper_remote_port(nw_connection_t _Nonnull conn)
+{
+    nw_path_t path = nw_connection_copy_current_path(conn);
+    if (path == NULL) return -1;
+    nw_endpoint_t endpoint = nw_path_copy_effective_remote_endpoint(path);
+    if (endpoint == NULL) return -1;
+    return (int32_t)nw_endpoint_get_port(endpoint);
+}
+
+// Note: nw_connection_get_state() is not in the public C API.
+// Connection readiness is tracked in Kotlin via the state handler callback.
+
+void nw_helper_tcp_receive(
+    nw_connection_t _Nonnull connection,
+    uint32_t minimum_incomplete_length,
+    uint32_t maximum_length,
+    nw_helper_tcp_receive_handler_t _Nonnull handler)
+{
+    nw_connection_receive(connection, minimum_incomplete_length, maximum_length,
+        ^(dispatch_data_t _Nullable content, nw_content_context_t _Nullable context,
+          bool is_complete, nw_error_t _Nullable error) {
+            int32_t error_domain = 0, error_code = 0;
+            NSString *error_desc = nil;
+            // Check for POSIX ENODATA (96) — peer closed connection
+            if (error != NULL) {
+                int code = nw_error_get_error_code(error);
+                nw_error_domain_t domain = nw_error_get_error_domain(error);
+                if (domain == nw_error_domain_posix && code == 96) {
+                    // Treat ENODATA as is_complete=true, no error
+                    handler((NSData *)content, @(YES), 0, 0, nil);
+                    return;
+                }
+                describe_nw_error(error, &error_domain, &error_code, &error_desc);
+            }
+            handler((NSData *)content, @(is_complete), error_domain, error_code, error_desc);
+        });
+}
+
+void nw_helper_send_tcp(
+    nw_connection_t _Nonnull connection,
+    NSData * _Nullable data,
+    nw_helper_send_callback_t _Nonnull completion)
+{
+    dispatch_data_t dispatch_data = NULL;
+    if (data != nil && data.length > 0) {
+        dispatch_data = dispatch_data_create(data.bytes, data.length,
+            dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    }
+    nw_connection_send(connection, dispatch_data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true,
+        ^(nw_error_t _Nullable error) {
+            if (error == NULL) {
+                completion(nil);
+            } else {
+                int code = nw_error_get_error_code(error);
+                int domain = nw_error_get_error_domain(error);
+                NSString *desc = [NSString stringWithFormat:@"NW send error domain=%d code=%d", domain, code];
+                NSError *nsError = [[NSError alloc] initWithDomain:@"NWError"
+                    code:code userInfo:@{NSLocalizedDescriptionKey: desc}];
+                completion(nsError);
+            }
+        });
+}
+
+// ============================================================
+// Server listener
+// ============================================================
+
+nw_listener_t _Nullable nw_helper_create_listener(int32_t port, int32_t backlog)
+{
+    nw_parameters_t params = nw_parameters_create_secure_tcp(
+        NW_PARAMETERS_DISABLE_PROTOCOL,
+        NW_PARAMETERS_DEFAULT_CONFIGURATION);
+
+    nw_listener_t listener;
+    if (port < 0) {
+        listener = nw_listener_create(params);
+    } else {
+        char port_str[8];
+        snprintf(port_str, sizeof(port_str), "%d", port);
+        listener = nw_listener_create_with_port(port_str, params);
+    }
+    if (listener == NULL) return NULL;
+
+    if (backlog < 1) {
+        nw_listener_set_new_connection_limit(listener, NW_LISTENER_INFINITE_CONNECTION_LIMIT);
+    } else {
+        nw_listener_set_new_connection_limit(listener, backlog);
+    }
+
+    return listener;
+}
+
+void nw_helper_listener_set_new_connection_handler(
+    nw_listener_t _Nonnull listener,
+    nw_helper_listener_new_connection_t _Nonnull handler)
+{
+    nw_listener_set_new_connection_handler(listener, ^(nw_connection_t _Nonnull connection) {
+        handler(connection);
+    });
+}
+
+void nw_helper_listener_set_state_handler(
+    nw_listener_t _Nonnull listener,
+    nw_helper_listener_state_handler_t _Nonnull handler)
+{
+    // C API enum values:
+    // nw_listener_state_invalid = 0
+    // nw_listener_state_waiting = 1
+    // nw_listener_state_ready = 2
+    // nw_listener_state_failed = 3
+    // nw_listener_state_cancelled = 4
+    nw_listener_set_state_changed_handler(listener,
+        ^(nw_listener_state_t state, nw_error_t _Nullable error) {
+            int32_t error_domain = 0, error_code = 0;
+            NSString *error_desc = nil;
+            describe_nw_error(error, &error_domain, &error_code, &error_desc);
+            handler((int32_t)state, error_domain, error_code, error_desc);
+        });
+}
+
+void nw_helper_listener_start(nw_listener_t _Nonnull listener)
+{
+    nw_listener_set_queue(listener,
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    nw_listener_start(listener);
+}
+
+void nw_helper_listener_cancel(nw_listener_t _Nonnull listener)
+{
+    nw_listener_cancel(listener);
+}
+
+int32_t nw_helper_listener_port(nw_listener_t _Nonnull listener)
+{
+    return (int32_t)nw_listener_get_port(listener);
+}
+
+// Note: nw_listener_get_state() is not in the public C API.
+// Listener readiness is tracked in Kotlin via the state handler callback.
+
+// ============================================================
+// WebSocket send/receive
+// ============================================================
+
+void nw_helper_ws_receive_message(
+    nw_connection_t _Nonnull connection,
+    nw_ws_receive_handler_t _Nonnull handler)
+{
+    nw_connection_receive_message(connection, ^(dispatch_data_t _Nullable content,
+        nw_content_context_t _Nullable context, bool is_complete, nw_error_t _Nullable error) {
+
+            __block int32_t opcode = -1;
+            __block int32_t close_code = 0;
+
+            if (context != NULL) {
+                nw_content_context_foreach_protocol_metadata(context,
+                    ^(nw_protocol_definition_t _Nonnull definition,
+                      nw_protocol_metadata_t _Nonnull metadata) {
+                        if (nw_protocol_metadata_is_ws(metadata)) {
+                            opcode = (int32_t)nw_ws_metadata_get_opcode(metadata);
+                            if (opcode == nw_ws_opcode_close) {
+                                close_code = (int32_t)nw_ws_metadata_get_close_code(metadata);
+                            }
+                        }
+                    });
+            }
+
+            NSError *nsErr = nil;
+            if (error != NULL) {
+                int code = nw_error_get_error_code(error);
+                int domain = nw_error_get_error_domain(error);
+                NSString *desc = [NSString stringWithFormat:@"NW receive error domain=%d code=%d",
+                    domain, code];
+                nsErr = [[NSError alloc] initWithDomain:@"NWError" code:code
+                    userInfo:@{NSLocalizedDescriptionKey: desc}];
+            }
+
+            handler((NSData *)content, opcode, close_code, @(is_complete), nsErr);
+        });
+}
+
+void nw_helper_ws_send(
+    nw_connection_t _Nonnull connection,
+    NSData * _Nullable data,
+    int32_t opcode,
+    int32_t close_code,
+    nw_helper_send_completion_t _Nonnull completion)
+{
+    nw_protocol_metadata_t metadata = nw_ws_create_metadata((nw_ws_opcode_t)opcode);
+    if (close_code != 0) {
+        nw_ws_metadata_set_close_code(metadata, (nw_ws_close_code_t)close_code);
+    }
+
+    nw_content_context_t context = nw_content_context_create("ws");
+    nw_content_context_set_metadata_for_protocol(context, metadata);
+
+    dispatch_data_t dispatch_data = NULL;
+    if (data != nil && data.length > 0) {
+        dispatch_data = dispatch_data_create(data.bytes, data.length,
+            dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    }
+
+    nw_connection_send(connection, dispatch_data, context, true,
+        ^(nw_error_t _Nullable error) {
+            if (error == NULL) {
+                completion(nil);
+            } else {
+                int code = nw_error_get_error_code(error);
+                int domain = nw_error_get_error_domain(error);
+                NSString *desc = [NSString stringWithFormat:@"NW send error domain=%d code=%d",
+                    domain, code];
+                NSError *nsError = [[NSError alloc] initWithDomain:@"NWError"
+                    code:code userInfo:@{NSLocalizedDescriptionKey: desc}];
+                completion(nsError);
+            }
+        });
+}
+
+// ============================================================
+// Port availability check
+// ============================================================
+
+NSNumber * _Nonnull nw_helper_is_port_available(int32_t port)
+{
+    int socketFD = socket(AF_INET, SOCK_STREAM, 0);
+    if (socketFD == -1) return @(NO);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = inet_addr("0.0.0.0");
+
+    int result = bind(socketFD, (struct sockaddr *)&addr, sizeof(addr));
+    if (result == -1) {
+        close(socketFD);
+        return @(NO);
+    }
+    result = listen(socketFD, SOMAXCONN);
+    close(socketFD);
+    return @(result != -1);
+}

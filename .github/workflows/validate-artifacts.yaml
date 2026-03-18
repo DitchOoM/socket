@@ -39,8 +39,14 @@ jobs:
 
           # Copy Apple per-target artifacts
           for dir in "$APPLE_BASE"/socket-*/; do
+            [ -d "$dir" ] || continue
             target_name=$(basename "$dir")
+            if [ -d "$MERGED/$target_name" ]; then
+              echo "Skipping $target_name (already from Linux)"
+              continue
+            fi
             cp -r "$dir" "$MERGED/$target_name"
+            echo "Copied $target_name"
           done
 
           # Merge root module metadata
@@ -58,7 +64,66 @@ jobs:
               | .[0]
             ' "$LINUX_MODULE" "$APPLE_MODULE" > "${MERGED_MODULE}.tmp"
             mv "${MERGED_MODULE}.tmp" "$MERGED_MODULE"
-            echo "Merged module metadata: $(jq '.variants | length' "$MERGED_MODULE") variants"
+            echo "Merged .module: $(jq '.variants | length' "$MERGED_MODULE") variants"
+          fi
+
+          # Merge metadata JAR (kotlin-project-structure-metadata.json + klib dirs)
+          LINUX_JAR="$LINUX_BASE/socket/$version/socket-$version.jar"
+          APPLE_JAR="$APPLE_BASE/socket/$version/socket-$version.jar"
+          MERGED_JAR="$MERGED/socket/$version/socket-$version.jar"
+
+          if [ -f "$LINUX_JAR" ] && [ -f "$APPLE_JAR" ]; then
+            WORK="/tmp/merge-metadata-jar"
+            mkdir -p "$WORK/linux" "$WORK/apple" "$WORK/merged"
+
+            unzip -qo "$LINUX_JAR" -d "$WORK/linux"
+            unzip -qo "$APPLE_JAR" -d "$WORK/apple"
+
+            # Start with Linux as base
+            cp -r "$WORK/linux/"* "$WORK/merged/"
+
+            # Copy Apple klib directories
+            if [ -d "$WORK/apple" ]; then
+              for klib_dir in "$WORK/apple"/*/; do
+                dir_name=$(basename "$klib_dir")
+                [ "$dir_name" = "META-INF" ] && continue
+                if [ ! -d "$WORK/merged/$dir_name" ]; then
+                  cp -r "$klib_dir" "$WORK/merged/$dir_name"
+                  echo "Copied klib dir: $dir_name"
+                fi
+              done
+            fi
+
+            # Merge kotlin-project-structure-metadata.json
+            LINUX_PSM="$WORK/linux/META-INF/kotlin-project-structure-metadata.json"
+            APPLE_PSM="$WORK/apple/META-INF/kotlin-project-structure-metadata.json"
+            MERGED_PSM="$WORK/merged/META-INF/kotlin-project-structure-metadata.json"
+
+            if [ -f "$LINUX_PSM" ] && [ -f "$APPLE_PSM" ]; then
+              jq -s '
+                .[0].projectStructure.variants = (
+                  [.[0].projectStructure.variants[], .[1].projectStructure.variants[]]
+                  | group_by(.name)
+                  | map(.[0])
+                )
+                | .[0].projectStructure.sourceSets = (
+                  [.[0].projectStructure.sourceSets[], .[1].projectStructure.sourceSets[]]
+                  | group_by(.name)
+                  | map(.[0])
+                )
+                | .[0]
+              ' "$LINUX_PSM" "$APPLE_PSM" > "${MERGED_PSM}.tmp"
+              mv "${MERGED_PSM}.tmp" "$MERGED_PSM"
+              echo "Merged kotlin-project-structure-metadata.json:"
+              echo "  variants: $(jq '.projectStructure.variants | length' "$MERGED_PSM")"
+              echo "  sourceSets: $(jq '.projectStructure.sourceSets | length' "$MERGED_PSM")"
+            fi
+
+            # Re-create the merged JAR
+            (cd "$WORK/merged" && zip -qr "$MERGED_JAR" .)
+            echo "Rebuilt metadata JAR"
+
+            rm -rf "$WORK"
           fi
 
       - name: Upload merged artifacts
@@ -92,12 +157,112 @@ jobs:
             -PmavenRepoPath=/tmp/maven-local \
             --no-daemon
 
-      - name: Validate Android AAR present
+      - name: Validate artifacts
         run: |
           version="${{ inputs.version }}"
-          AAR="/tmp/maven-local/com/ditchoom/socket-android/${version}/socket-android-${version}.aar"
-          if [ ! -f "$AAR" ]; then
-            echo "FAIL: Android AAR not found at ${AAR}"
+          MERGED="/tmp/maven-local/com/ditchoom"
+          FAILED=false
+
+          # ── 1. Root module metadata — platform variants ──
+          MODULE="$MERGED/socket/${version}/socket-${version}.module"
+          if [ ! -f "$MODULE" ]; then
+            echo "FAIL: root .module file not found"
             exit 1
           fi
-          echo "Android AAR present"
+
+          VARIANTS=$(jq -r '.variants[].name' "$MODULE")
+
+          # ApiElements-published: jvm, js, linuxX64, linuxArm64 + 11 Apple
+          for v in jvm js \
+            linuxX64 linuxArm64 \
+            macosArm64 macosX64 \
+            iosArm64 iosSimulatorArm64 iosX64 \
+            tvosArm64 tvosSimulatorArm64 tvosX64 \
+            watchosArm64 watchosSimulatorArm64 watchosX64; do
+            if echo "$VARIANTS" | grep -q "^${v}ApiElements-published$"; then
+              echo "ApiElements OK: $v"
+            else
+              echo "FAIL: missing ${v}ApiElements-published variant"
+              FAILED=true
+            fi
+          done
+
+          # MetadataElements-published: Apple targets (enables IDE resolution for
+          # intermediate source sets like iosMain, tvosMain, watchosMain, appleMain)
+          for v in macosArm64 macosX64 \
+            iosArm64 iosSimulatorArm64 iosX64 \
+            tvosArm64 tvosSimulatorArm64 tvosX64 \
+            watchosArm64 watchosSimulatorArm64 watchosX64; do
+            if echo "$VARIANTS" | grep -q "^${v}MetadataElements-published$"; then
+              echo "MetadataElements OK: $v"
+            else
+              echo "FAIL: missing ${v}MetadataElements-published variant"
+              FAILED=true
+            fi
+          done
+
+          # ── 2. Apple klib presence ──
+          for target in macosarm64 macosx64 \
+            iosarm64 iossimulatorarm64 iosx64 \
+            tvosarm64 tvossimulatorarm64 tvosx64 \
+            watchosarm64 watchossimulatorarm64 watchosx64; do
+            KLIB="$MERGED/socket-${target}/${version}/socket-${target}-${version}.klib"
+            if [ -f "$KLIB" ]; then
+              echo "klib OK: $target"
+            else
+              echo "FAIL: missing klib for $target"
+              FAILED=true
+            fi
+          done
+
+          # ── 3. Android AAR presence ──
+          AAR="$MERGED/socket-android/${version}/socket-android-${version}.aar"
+          if [ -f "$AAR" ]; then
+            echo "Android AAR present"
+          else
+            echo "FAIL: Android AAR not found"
+            FAILED=true
+          fi
+
+          # ── 4. Metadata JAR Apple source sets ──
+          METADATA_JAR="$MERGED/socket/${version}/socket-${version}.jar"
+          if [ ! -f "$METADATA_JAR" ]; then
+            echo "FAIL: metadata JAR not found"
+            FAILED=true
+          else
+            PSM_JSON=$(unzip -p "$METADATA_JAR" META-INF/kotlin-project-structure-metadata.json 2>/dev/null)
+            if [ -z "$PSM_JSON" ]; then
+              echo "FAIL: kotlin-project-structure-metadata.json not found in JAR"
+              FAILED=true
+            else
+              for ss in appleMain iosMain tvosMain watchosMain; do
+                if echo "$PSM_JSON" | jq -e ".projectStructure.sourceSets[] | select(.name == \"$ss\")" > /dev/null 2>&1; then
+                  echo "sourceSet OK: $ss"
+                else
+                  echo "FAIL: metadata JAR missing sourceSet '$ss'"
+                  FAILED=true
+                fi
+              done
+            fi
+          fi
+
+          # ── 5. Signing coverage — detect uncovered file types ──
+          SIGNED_EXTENSIONS="jar klib pom module aar json"
+          UNCOVERED=$(find /tmp/maven-local -type f \
+            ! -name "*.asc" ! -name "*.md5" ! -name "*.sha1" \
+            $(for ext in $SIGNED_EXTENSIONS; do echo "! -name *.${ext}"; done) \
+            2>/dev/null || true)
+          if [ -n "$UNCOVERED" ]; then
+            echo ""
+            echo "WARNING: file types not covered by signing glob:"
+            echo "$UNCOVERED" | sed 's/.*\./  ./' | sort -u
+          fi
+
+          # ── Result ──
+          if [ "$FAILED" = true ]; then
+            echo ""
+            echo "=== VALIDATION FAILED ==="
+            exit 1
+          fi
+          echo ""
+          echo "=== ALL VALIDATIONS PASSED ==="
