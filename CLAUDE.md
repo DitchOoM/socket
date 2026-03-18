@@ -65,7 +65,7 @@ The library uses Kotlin's `expect`/`actual` mechanism for platform-specific sock
 |----------|---------------|------------|
 | JVM | `AsynchronousSocketChannel` (NIO2), fallback to `SocketChannel` (NIO) | `commonJvmMain` |
 | Android | Same as JVM (shared via `commonJvmMain` source set) | `commonJvmMain` + `androidMain` |
-| Apple | `NWConnection` via Swift wrapper built with `buildSwift.sh` | `appleNativeImpl` |
+| Apple | `NWConnection` via C helpers in `nw_helpers.h` | `appleNativeImpl` |
 | Node.js | `net.Socket` API | `jsMain` |
 
 ### Source Set Hierarchy
@@ -81,9 +81,9 @@ commonMain
 
 The `commonJvmMain`/`commonJvmTest` source sets are manually created (not part of the default hierarchy template) to share NIO/NIO2 code between JVM and Android.
 
-### Apple/Swift Interop
+### Apple/C Interop
 
-Apple targets use a Swift wrapper library built by `buildSwift.sh`. The cinterop is configured per-target in `build.gradle.kts` via `configureSocketWrapperCinterop()`. Swift source lives in `src/nativeInterop/cinterop/swift/`.
+Apple targets use C helper functions in `src/nativeInterop/cinterop/nw_helpers.h` that bridge Network.framework's Objective-C/dispatch APIs to K/N-safe types. The cinterop is configured per-target in `build.gradle.kts` via `configureNWHelpersCinterop()`.
 
 ### TLS/SSL
 

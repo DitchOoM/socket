@@ -140,7 +140,7 @@ open class NWSocketWrapper : ClientSocket {
     }
 
     companion object {
-        internal fun mapSocketException(
+        fun mapSocketException(
             errorDomain: Int,
             errorString: String?,
         ): SocketException {
