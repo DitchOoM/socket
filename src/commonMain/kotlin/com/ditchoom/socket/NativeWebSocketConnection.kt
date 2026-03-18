@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.SuspendCloseable
 
 /**
  * Platform-native WebSocket connection interface.
@@ -9,7 +8,7 @@ import com.ditchoom.buffer.SuspendCloseable
  * On Apple platforms, implemented using NWConnection with NWProtocolWebSocket.
  * Use [connectNativeWebSocket] (available in Apple source sets) to create an instance.
  */
-interface NativeWebSocketConnection : SuspendCloseable {
+interface NativeWebSocketConnection {
     val isOpen: Boolean
 
     suspend fun receiveMessage(): NativeWebSocketMessage
@@ -19,6 +18,8 @@ interface NativeWebSocketConnection : SuspendCloseable {
         opcode: Int,
         closeCode: Int = 0,
     )
+
+    suspend fun close()
 
     companion object {
         const val OPCODE_TEXT = 1

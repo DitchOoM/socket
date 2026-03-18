@@ -32,8 +32,10 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     timeout: Duration = 15.seconds,
     socketOptions: SocketOptions = SocketOptions(),
+    bufferFactory: BufferFactory = BufferFactory.deterministic(),
 ): ClientToServerSocket {
     val socket = ClientSocket.allocate()
+    socket.bufferFactory = bufferFactory
     socket.open(port, timeout, hostname, socketOptions)
     return socket
 }
@@ -43,9 +45,11 @@ suspend fun <T> ClientSocket.Companion.connect(
     hostname: String? = null,
     timeout: Duration = 15.seconds,
     socketOptions: SocketOptions = SocketOptions(),
+    bufferFactory: BufferFactory = BufferFactory.deterministic(),
     lambda: suspend (ClientSocket) -> T,
 ): T {
     val socket = ClientSocket.allocate()
+    socket.bufferFactory = bufferFactory
     return try {
         socket.open(port, timeout, hostname, socketOptions)
         lambda(socket)
