@@ -2,8 +2,8 @@ package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.JvmTlsHandler
 import com.ditchoom.socket.SocketOptions

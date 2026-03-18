@@ -2,10 +2,10 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.deterministic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.NoSuchAlgorithmException
