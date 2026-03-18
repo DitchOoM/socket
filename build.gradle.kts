@@ -571,10 +571,9 @@ kotlin {
             configureLinuxCinterop("x64")
         }
 
-        // ARM64 target disabled until buffer publishes linuxArm64 SNAPSHOT
-        // linuxArm64 {
-        //     configureLinuxCinterop("arm64")
-        // }
+        linuxArm64 {
+            configureLinuxCinterop("arm64")
+        }
     }
 
     applyDefaultHierarchyTemplate()

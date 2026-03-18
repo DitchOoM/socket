@@ -90,17 +90,17 @@ jobs:
           ./gradlew jvmTest jsTest linuxX64Test testDebugUnitTest ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # ARM64 build/test disabled until linuxArm64 target is re-enabled in build.gradle.kts
-      # - name: Build ARM64 test binary
-      #   run: >-
-      #     ./gradlew linkDebugTestLinuxArm64
-      #     --no-configuration-cache ${{ inputs.gradle-args }}
-      #
-      # - name: Run ARM64 tests via QEMU (subset for validation)
-      #   run: >-
-      #     qemu-aarch64-static -L /usr/aarch64-linux-gnu
-      #     ./build/bin/linuxArm64/debugTest/test.kexe
-      #     --ktest_filter=com.ditchoom.socket.LinuxTlsTests
+      - name: Build ARM64 test binary
+        run: >-
+          ./gradlew linkDebugTestLinuxArm64
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Run ARM64 tests via QEMU (subset for validation)
+        # LinuxTlsTests validates io_uring, OpenSSL, and static linking - all critical ARM64 dependencies
+        run: >-
+          qemu-aarch64-static -L /usr/aarch64-linux-gnu
+          ./build/bin/linuxArm64/debugTest/test.kexe
+          --ktest_filter=com.ditchoom.socket.LinuxTlsTests
 
       - name: Publish to Maven Local
         run: ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
