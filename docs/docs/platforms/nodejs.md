@@ -12,7 +12,7 @@ On Node.js, socket uses the built-in `net.Socket` API for TCP connections.
 The JavaScript target wraps Node.js `net.Socket`:
 
 - Async connect/read/write via Node.js event-driven API
-- Buffer data bridged between Kotlin `ReadBuffer`/`WriteBuffer` and Node.js `Buffer`
+- Buffer data bridged between Kotlin `PlatformBuffer` and Node.js `Buffer`
 
 ## Browser
 

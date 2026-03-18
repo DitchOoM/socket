@@ -13,16 +13,16 @@ This guide walks through building a real protocol client using the full DitchOoM
 ┌──────────────────────────────────┐
 │  Your Protocol (MQTT, WS, ...)   │
 ├──────────────────────────────────┤
-│  buffer-compression (optional)   │  compress()/decompress() on ReadBuffer
+│  buffer-compression (optional)   │  compress()/decompress() on PlatformBuffer
 ├──────────────────────────────────┤
 │  buffer-flow                     │  mapBuffer(), asStringFlow(), lines()
 ├──────────────────────────────────┤
 │  SocketConnection                │  socket + pool + stream processor
 │  ├─ BufferPool     ← reuse buffers, no GC pressure
 │  ├─ StreamProcessor ← accumulate partial reads for framing
-│  └─ ClientSocket    ← platform-native I/O
+│  └─ ClientSocket    ← platform-native I/O (BufferFactory.deterministic())
 ├──────────────────────────────────┤
-│  ReadBuffer / WriteBuffer        │  same types everywhere
+│  PlatformBuffer                  │  same types everywhere
 └──────────────────────────────────┘
 ```
 
@@ -32,7 +32,7 @@ This guide walks through building a real protocol client using the full DitchOoM
 // build.gradle.kts
 dependencies {
     implementation("com.ditchoom:socket:<version>")
-    implementation("com.ditchoom:buffer:<version>")
+    implementation("com.ditchoom:buffer:4.0.0") // or latest 4.x
     // Optional: streaming transforms
     implementation("com.ditchoom:buffer-flow:<version>")
     // Optional: compression
@@ -145,6 +145,30 @@ ClientSocket.connect(port, hostname = host, socketOptions = SocketOptions.tlsDef
 }
 ```
 
+### Scatter-Gather I/O
+
+When your protocol has a header + payload pattern, use `writeGathered()` to write multiple buffers in a single operation:
+
+```kotlin
+val header = BufferFactory.Default.allocate(8)
+header.writeInt(messageType)
+header.writeInt(payload.remaining())
+header.resetForRead()
+
+socket.writeGathered(listOf(header, payload))
+```
+
+On JVM this maps to `GatheringByteChannel`, on Linux to `writev` -- avoiding the overhead of copying buffers together before writing.
+
+### Internal Buffer Allocation
+
+The socket library uses `BufferFactory.deterministic()` internally for I/O paths. This is because TLS handlers, NIO channels, and io_uring all require native memory access (`nativeAddress`). The `ClientSocket.bufferFactory` property defaults to `BufferFactory.deterministic()` and can be overridden if needed:
+
+```kotlin
+val socket = ClientSocket.connect(port, hostname = host)
+// socket.bufferFactory defaults to BufferFactory.deterministic()
+```
+
 ## Layer 5: Full Stack — Buffer Pool + Stream Processor + Compression
 
 For protocols that exchange many messages (MQTT, WebSocket, custom binary protocols), `SocketConnection` bundles a socket with a reusable `BufferPool` and `StreamProcessor`:
@@ -250,7 +274,7 @@ The key value of this stack is what you **don't** have to write:
 |---------|---------------------|---------------------|
 | **Platform I/O** | Separate implementations for NIO, NWConnection, io_uring, net.Socket | One `ClientSocket.connect()` call |
 | **TLS** | Configure SSLEngine, SecureTransport, OpenSSL, and Node tls module separately | `SocketOptions.tlsDefault()` |
-| **Buffer management** | Platform-specific ByteBuffer / NSData / Uint8Array | `ReadBuffer` / `WriteBuffer` everywhere |
+| **Buffer management** | Platform-specific ByteBuffer / NSData / Uint8Array | `PlatformBuffer` everywhere |
 | **Memory** | Manual pool management or GC pressure | `BufferPool` with `withBuffer` |
 | **Stream parsing** | Roll your own accumulator for partial reads | `StreamProcessor` built in |
 | **Compression** | Platform-specific zlib bindings | `compress()` / `decompress()` |
@@ -258,7 +282,7 @@ The key value of this stack is what you **don't** have to write:
 | **Streaming transforms** | Manual resetForRead + map boilerplate | `mapBuffer()`, `asStringFlow()` |
 | **Backpressure** | Manual flow control | Built into Flow |
 | **Coroutines** | Wrap callbacks in `suspendCancellableCoroutine` | Native suspend functions |
-| **Resource cleanup** | Try-finally everywhere | Lambda-scoped connections, `SuspendCloseable` |
+| **Resource cleanup** | Try-finally everywhere | Lambda-scoped connections, auto-close on exit |
 
 ## Platform-Native Performance
 
@@ -266,5 +290,5 @@ Each platform uses its fastest available I/O primitive — no abstraction penalt
 
 - **Linux**: `io_uring` for kernel-level async I/O with zero-copy buffer submission. OpenSSL 3.0 statically linked for glibc compatibility.
 - **Apple**: `NWConnection` via Network.framework — the same API that Safari and system services use. Zero-copy NSData buffer integration.
-- **JVM/Android**: NIO2 `AsynchronousSocketChannel` with NIO `SocketChannel` fallback. Direct `ByteBuffer` allocation for zero-copy transfers.
+- **JVM/Android**: NIO2 `AsynchronousSocketChannel` with NIO `SocketChannel` fallback. Uses `BufferFactory.deterministic()` for direct `ByteBuffer` allocation with explicit cleanup.
 - **Node.js**: Native `net.Socket` and `tls` module with proper backpressure handling.

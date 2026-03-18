@@ -11,8 +11,8 @@ Cross-platform TCP + TLS with streaming, compression, and buffer pooling — sam
 |---------|---------|---------------------|
 | **Platform I/O** | Separate NIO, NWConnection, io_uring, net.Socket | `ClientSocket.connect()` |
 | **TLS** | Configure SSLEngine, SecureTransport, OpenSSL, tls separately | `SocketOptions.tlsDefault()` |
-| **Buffer management** | Platform-specific ByteBuffer / NSData / Uint8Array | `ReadBuffer` / `WriteBuffer` everywhere |
-| **Memory** | Manual pool or GC pressure | `BufferPool` with `withBuffer` |
+| **Buffer management** | Platform-specific ByteBuffer / NSData / Uint8Array | `ReadBuffer` / `WriteBuffer` everywhere via `BufferFactory` |
+| **Memory** | Manual pool or GC pressure | `BufferPool` with `withBuffer`, `BufferFactory.deterministic()` for I/O |
 | **Stream parsing** | Roll your own accumulator | `StreamProcessor` |
 | **Compression** | Platform-specific zlib | `compress()` / `decompress()` on ReadBuffer |
 | **Line splitting** | Manual StringBuilder accumulator | `readFlowLines()` |
@@ -28,6 +28,8 @@ Cross-platform TCP + TLS with streaming, compression, and buffer pooling — sam
 ```kotlin
 dependencies {
     implementation("com.ditchoom:socket:<latest-version>")
+    // Buffer v4 — required (BufferFactory API, deterministic allocation, scatter-gather)
+    implementation("com.ditchoom:buffer:4.0.0")
     // Optional: streaming transforms (mapBuffer, asStringFlow, lines)
     implementation("com.ditchoom:buffer-flow:<latest-version>")
     // Optional: compression
@@ -49,6 +51,30 @@ val socket = ClientSocket.connect(
 socket.writeString("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
 val response = socket.readString()
 socket.close()
+```
+
+### Injecting a Buffer Allocation Strategy
+
+`ClientSocket` exposes a `bufferFactory` property so you can control how internal read buffers are allocated. By default, I/O paths (TLS, NIO, io_uring) use `BufferFactory.deterministic()` for native memory with explicit cleanup. You can override this before the first read:
+
+```kotlin
+val socket = ClientSocket.connect(port = 9000, hostname = "localhost")
+// Use managed (heap) buffers instead of native memory
+socket.bufferFactory = BufferFactory.managed()
+```
+
+For `SocketConnection`, pass the factory via `ConnectionOptions`:
+
+```kotlin
+SocketConnection.connect(
+    hostname = "broker.example.com",
+    port = 8883,
+    options = ConnectionOptions(
+        bufferFactory = BufferFactory.deterministic(), // default — native memory, explicit cleanup
+    ),
+) { conn ->
+    // ...
+}
 ```
 
 ## Real-Time Streaming over TLS
@@ -89,6 +115,18 @@ socket.readFlow()
     .asStringFlow()
     .lines()
     .collect { line -> process(line) }
+```
+
+## Scatter-Gather Writes
+
+`writeGathered()` writes multiple buffers in a single call. Platforms may use true scatter-gather I/O under the hood (e.g., `GatheringByteChannel` on JVM NIO, `writev` on Linux):
+
+```kotlin
+val header = BufferFactory.Default.allocate(4)
+header.writeInt(payload.remaining())
+header.resetForRead()
+
+socket.writeGathered(listOf(header, payload))
 ```
 
 ## Buffer Pooling with SocketConnection
@@ -141,7 +179,7 @@ server.close()
 
 ## Part of the DitchOoM Stack
 
-Socket builds on the [buffer](https://github.com/DitchOoM/buffer) library for zero-copy memory management:
+Socket builds on the [buffer v4](https://github.com/DitchOoM/buffer) library for zero-copy memory management. Buffer v4 introduces the `BufferFactory` API (replacing the old `AllocationZone` enum), `BufferFactory.deterministic()` for native memory with explicit cleanup, and `ScopedBuffer` for FFI/JNI-friendly allocation:
 
 ```
 ┌──────────────────────────────────┐
@@ -153,9 +191,18 @@ Socket builds on the [buffer](https://github.com/DitchOoM/buffer) library for ze
 ├──────────────────────────────────┤
 │  buffer-flow                     │  ← com.ditchoom:buffer-flow
 ├──────────────────────────────────┤
-│  buffer                          │  ← com.ditchoom:buffer
+│  buffer v4                       │  ← com.ditchoom:buffer:4.0.0
 └──────────────────────────────────┘
 ```
+
+**Buffer allocation strategies used by socket internally:**
+
+| Path | Factory | Why |
+|------|---------|-----|
+| TLS handshake/unwrap (JVM) | `BufferFactory.deterministic()` | SSLEngine needs direct ByteBuffers with explicit cleanup |
+| NIO read buffers (JVM) | `BufferFactory.deterministic()` | Channel reads require native memory |
+| io_uring I/O (Linux) | `BufferFactory.deterministic()` | Kernel requires stable native addresses |
+| General-purpose | `BufferFactory.Default` | Platform-optimal allocation, GC-managed |
 
 ## Platform Support
 

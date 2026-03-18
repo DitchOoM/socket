@@ -73,7 +73,7 @@ socket.readFlow()
 ├──────────────────────────────────┤
 │  buffer-flow                     │  ← com.ditchoom:buffer-flow
 ├──────────────────────────────────┤
-│  buffer                          │  ← com.ditchoom:buffer
+│  buffer (v4.0.0+)                │  ← com.ditchoom:buffer
 └──────────────────────────────────┘
 ```
 
