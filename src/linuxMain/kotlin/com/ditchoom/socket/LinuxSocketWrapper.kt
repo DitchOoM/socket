@@ -1,9 +1,9 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -20,7 +20,6 @@ import kotlin.time.Duration
  */
 @OptIn(ExperimentalForeignApi::class)
 open class LinuxSocketWrapper : ClientSocket {
-
     /** Controls how internal read buffers are allocated. Set before first read. */
     override var bufferFactory: BufferFactory = BufferFactory.deterministic()
     internal var sockfd: Int = -1
