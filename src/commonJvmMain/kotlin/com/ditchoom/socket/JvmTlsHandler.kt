@@ -63,7 +63,13 @@ internal class JvmTlsHandler(
         }
 
         engine.beginHandshake()
-        doHandshake(timeout)
+        try {
+            doHandshake(timeout)
+        } catch (e: javax.net.ssl.SSLHandshakeException) {
+            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+        } catch (e: javax.net.ssl.SSLException) {
+            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
+        }
     }
 
     suspend fun wrap(
@@ -71,7 +77,14 @@ internal class JvmTlsHandler(
         timeout: Duration,
     ): Int {
         val encrypted = bufferFactory(engine.session.packetBufferSize)
-        val result = engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
+        val result =
+            try {
+                engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
+            } catch (e: javax.net.ssl.SSLHandshakeException) {
+                throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+            } catch (e: javax.net.ssl.SSLException) {
+                throw SSLProtocolException(e.message ?: "TLS wrap error", e)
+            }
         when (result.status!!) {
             SSLEngineResult.Status.BUFFER_UNDERFLOW ->
                 throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
@@ -111,7 +124,13 @@ internal class JvmTlsHandler(
                     }
             while (encryptedReadBuffer.hasRemaining()) {
                 val result =
-                    engine.unwrap(encryptedReadBuffer.byteBuffer, plainTextReadBuffer.byteBuffer)
+                    try {
+                        engine.unwrap(encryptedReadBuffer.byteBuffer, plainTextReadBuffer.byteBuffer)
+                    } catch (e: javax.net.ssl.SSLHandshakeException) {
+                        throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+                    } catch (e: javax.net.ssl.SSLException) {
+                        throw SSLProtocolException(e.message ?: "TLS unwrap error", e)
+                    }
                 when (checkNotNull(result.status)) {
                     SSLEngineResult.Status.BUFFER_OVERFLOW -> {
                         overflowEncryptedReadBuffer = encryptedReadBuffer

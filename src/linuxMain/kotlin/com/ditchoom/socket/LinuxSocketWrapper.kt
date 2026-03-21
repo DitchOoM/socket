@@ -41,6 +41,12 @@ open class LinuxSocketWrapper : ClientSocket {
      */
     private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
 
+    override fun applyOptions(options: SocketOptions) {
+        if (sockfd >= 0) {
+            applySocketOptions(sockfd, options)
+        }
+    }
+
     override fun isOpen(): Boolean = sockfd >= 0
 
     override suspend fun localPort(): Int = getLocalPort(sockfd)
@@ -70,7 +76,7 @@ open class LinuxSocketWrapper : ClientSocket {
                     }
                     bytesRead == 0 -> {
                         closeInternal()
-                        throw SocketClosedException("Connection closed by peer")
+                        throw SocketClosedException.EndOfStream()
                     }
                     else -> {
                         handleReadError(-bytesRead)
@@ -94,7 +100,7 @@ open class LinuxSocketWrapper : ClientSocket {
                     }
                     bytesRead == 0 -> {
                         closeInternal()
-                        throw SocketClosedException("Connection closed by peer")
+                        throw SocketClosedException.EndOfStream()
                     }
                     else -> {
                         handleReadError(-bytesRead)
@@ -102,7 +108,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 }
             }
 
-            throw SocketException("Buffer has no accessible memory for io_uring read")
+            throw SocketIOException("Buffer has no accessible memory for io_uring read")
         } catch (e: CancellationException) {
             // Safe to free: submitAndWait ensures the kernel is done with the buffer
             buffer.freeNativeMemory()
@@ -125,14 +131,18 @@ open class LinuxSocketWrapper : ClientSocket {
 
     private fun handleReadError(errorCode: Int): Nothing {
         when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Read timed out")
-            ECONNRESET, ENOTCONN, EPIPE -> {
+            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketTimeoutException("Read timed out")
+            ECONNRESET -> {
                 closeInternal()
-                throw SocketClosedException("Connection closed")
+                throw SocketClosedException.ConnectionReset("Connection reset")
+            }
+            ENOTCONN, EPIPE -> {
+                closeInternal()
+                throw SocketClosedException.BrokenPipe("Broken pipe")
             }
             else -> {
                 val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketException("recv failed: $errorMessage (errno=$errorCode)")
+                throw SocketIOException("recv failed: $errorMessage (errno=$errorCode)")
             }
         }
     }
@@ -179,7 +189,7 @@ open class LinuxSocketWrapper : ClientSocket {
             }
         }
 
-        throw SocketException("Buffer has no accessible memory for io_uring write")
+        throw SocketIOException("Buffer has no accessible memory for io_uring write")
     }
 
     private suspend fun writeWithIoUring(
@@ -197,14 +207,18 @@ open class LinuxSocketWrapper : ClientSocket {
 
     private fun handleWriteError(errorCode: Int): Nothing {
         when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Write timed out")
-            ECONNRESET, ENOTCONN, EPIPE -> {
+            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketTimeoutException("Write timed out")
+            ECONNRESET -> {
                 closeInternal()
-                throw SocketClosedException("Connection closed")
+                throw SocketClosedException.ConnectionReset("Connection reset")
+            }
+            ENOTCONN, EPIPE -> {
+                closeInternal()
+                throw SocketClosedException.BrokenPipe("Broken pipe")
             }
             else -> {
                 val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketException("send failed: $errorMessage (errno=$errorCode)")
+                throw SocketIOException("send failed: $errorMessage (errno=$errorCode)")
             }
         }
     }

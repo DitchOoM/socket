@@ -29,9 +29,13 @@ data class AcceptCompletionHandler(
         exc: Throwable,
         attachment: CancellableContinuation<AsynchronousSocketChannel>,
     ) {
-        // just return if already cancelled and got an expected exception for that case
-//        if (exc is AsynchronousCloseException && continuation.isCancelled) return
-        continuation.resumeWithException(exc)
+        // Pass through AsynchronousCloseException unwrapped — callers (AsyncServerSocket)
+        // catch it specifically to detect server socket shutdown.
+        if (exc is java.nio.channels.AsynchronousCloseException) {
+            continuation.resumeWithException(exc)
+        } else {
+            continuation.resumeWithException(com.ditchoom.socket.wrapJvmException(exc))
+        }
     }
 }
 

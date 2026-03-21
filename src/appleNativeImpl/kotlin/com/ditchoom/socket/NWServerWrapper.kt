@@ -31,7 +31,7 @@ class NWServerWrapper : ServerSocket {
         val serverListener = ServerListenerWrapper()
 
         if (!serverListener.configureWithPort(port.convert(), backlog.convert())) {
-            throw SocketException("Failed to configure server listener")
+            throw SocketIOException("Failed to configure server listener")
         }
 
         // Create a channel to receive accepted connections

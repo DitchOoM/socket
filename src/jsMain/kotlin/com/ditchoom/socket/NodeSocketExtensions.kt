@@ -50,7 +50,13 @@ suspend fun connect(
                     jsSetTimeout({
                         if (!cont.isCompleted) {
                             socket.destroy()
-                            cont.resumeWithException(SocketException("Connection timeout after $timeout"))
+                            cont.resumeWithException(
+                                SocketTimeoutException(
+                                    "Connection timeout after $timeout",
+                                    tcpOptions.host,
+                                    tcpOptions.port,
+                                ),
+                            )
                         }
                     }, timeout.inWholeMilliseconds.toInt())
             }
@@ -58,13 +64,7 @@ suspend fun connect(
             socket.on("error") { e ->
                 if (timeoutHandle != null) jsClearTimeout(timeoutHandle)
                 if (!cont.isCompleted) {
-                    if (e.toString().contains("getaddrinfo")) {
-                        cont.resumeWithException(
-                            SocketUnknownHostException(tcpOptions.host ?: "unknown host"),
-                        )
-                    } else {
-                        cont.resumeWithException(SocketException("Failed to connect: $e"))
-                    }
+                    cont.resumeWithException(wrapNodeError(e, tcpOptions.host))
                 }
             }
             netSocket = socket
@@ -97,5 +97,42 @@ suspend fun Socket.write(buffer: Uint8Array) {
             end { }
             destroy()
         }
+    }
+}
+
+/**
+ * Maps a Node.js error object to the appropriate [SocketException] subtype.
+ */
+internal fun wrapNodeError(
+    e: dynamic,
+    host: String?,
+): SocketException {
+    val errorStr = e.toString() as String
+    val code =
+        try {
+            e.code as? String
+        } catch (_: Throwable) {
+            null
+        }
+
+    return when {
+        code == "ECONNREFUSED" ->
+            SocketConnectionException.Refused(host, 0, platformError = errorStr)
+        code == "ETIMEDOUT" ->
+            SocketTimeoutException("Connection timed out: $errorStr", host)
+        code == "ECONNRESET" ->
+            SocketClosedException.ConnectionReset("Connection reset: $errorStr")
+        code == "EPIPE" ->
+            SocketClosedException.BrokenPipe("Broken pipe: $errorStr")
+        code == "ENETUNREACH" ->
+            SocketConnectionException.NetworkUnreachable(errorStr)
+        code == "EHOSTUNREACH" ->
+            SocketConnectionException.HostUnreachable(errorStr)
+        errorStr.contains("getaddrinfo") ->
+            SocketUnknownHostException(host ?: "unknown host")
+        errorStr.contains("ERR_TLS") || errorStr.contains("SSL") ->
+            SSLProtocolException(errorStr)
+        else ->
+            SocketIOException("Failed to connect: $errorStr")
     }
 }

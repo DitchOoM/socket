@@ -1,7 +1,6 @@
 package com.ditchoom.socket.nio2.util
 
-import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.socket.SocketException
+import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellableContinuation
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.CompletionHandler
@@ -23,8 +22,10 @@ internal class AsyncVoidIOHandler(
         ex: Throwable,
         cont: CancellableContinuation<Unit>,
     ) {
-        // Always try to resume - if already cancelled, this is safely ignored
-        cont.resumeWithException(ex)
+        // AsynchronousCloseException during cancellation is expected — the closeOnCancel
+        // handler closed the channel. Don't wrap it; let the cancellation propagate.
+        if (ex is AsynchronousCloseException && !cont.isActive) return
+        cont.resumeWithException(wrapJvmException(ex))
     }
 }
 
@@ -41,8 +42,8 @@ internal object AsyncIOHandlerAny :
         ex: Throwable,
         cont: CancellableContinuation<Any>,
     ) {
-        // Always try to resume - if already cancelled, this is safely ignored
-        cont.resumeWithException(ex)
+        if (ex is AsynchronousCloseException && !cont.isActive) return
+        cont.resumeWithException(wrapJvmException(ex))
     }
 }
 
@@ -59,13 +60,8 @@ fun asyncIOIntHandler(): CompletionHandler<Int, CancellableContinuation<Int>> =
             ex: Throwable,
             cont: CancellableContinuation<Int>,
         ) {
-            // Always try to resume - if already cancelled, this is safely ignored
-            val message = "Socket operation failed."
-            if (ex is AsynchronousCloseException) {
-                cont.resumeWithException(SocketClosedException(message, ex))
-            } else {
-                cont.resumeWithException(SocketException(message, ex))
-            }
+            if (ex is AsynchronousCloseException && !cont.isActive) return
+            cont.resumeWithException(wrapJvmException(ex))
         }
     }
 

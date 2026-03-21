@@ -2,7 +2,7 @@ package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.socket.ClientToServerSocket
-import com.ditchoom.socket.SocketException
+import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.nio.util.aConfigureBlocking
 import com.ditchoom.socket.nio.util.buildInetAddress
@@ -29,7 +29,7 @@ class NioClientSocket(
         try {
             socketChannel.aConfigureBlocking(blocking)
             if (!socketChannel.connect(socketAddress, selector, timeout)) {
-                throw SocketException("Failed to connect client ${(socketAddress as? InetSocketAddress)?.port} $socketChannel")
+                throw SocketIOException("Failed to connect client ${(socketAddress as? InetSocketAddress)?.port} $socketChannel")
             }
             applySocketOptions(socketOptions)
             socketOptions.tls?.let { initTls(hostname, port, it, timeout) }

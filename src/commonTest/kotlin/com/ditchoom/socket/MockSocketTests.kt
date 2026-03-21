@@ -72,7 +72,7 @@ class MockSocketTests {
             val mock = MockClientToServerSocket()
             mock.open(80, 1.seconds, "localhost")
 
-            mock.enqueueReadError(SocketException("test error"))
+            mock.enqueueReadError(SocketIOException("test error"))
 
             assertFailsWith<SocketException> {
                 mock.read(1.seconds)

@@ -29,7 +29,7 @@ class LinuxTlsTests {
     @Test
     fun sslSocketExceptionContainsUsefulMessage() {
         // Verify SSLSocketException can be constructed with descriptive message
-        val exception = SSLSocketException("Failed to load CA certificates")
+        val exception = SSLProtocolException("Failed to load CA certificates")
         val msg = exception.message
         assertTrue(msg != null && msg.contains("CA certificates"))
     }

@@ -169,7 +169,7 @@ internal object IoUringManager {
         nativeHeap.free(params)
         nativeHeap.free(ptr)
         val errorMsg = strerror(lastError)?.toKString() ?: "Unknown error"
-        throw SocketException(
+        throw SocketIOException(
             "Failed to initialize io_uring: $errorMsg (errno=$lastError). " +
                 "This library requires Linux kernel 5.1+ with io_uring support. " +
                 "Check your kernel version with 'uname -r'.",
@@ -180,7 +180,7 @@ internal object IoUringManager {
      * Get the ring reference. All operations go through the submission channel,
      * so the ring is always initialized by the event loop thread via initRing().
      */
-    fun getRing(): CPointer<io_uring> = ringRef.value ?: throw SocketException("IoUringManager not initialized")
+    fun getRing(): CPointer<io_uring> = ringRef.value ?: throw SocketIOException("IoUringManager not initialized")
 
     /**
      * Create eventfd and register multi-shot poll on it.
@@ -189,14 +189,14 @@ internal object IoUringManager {
     private fun setupEventfd(ring: CPointer<io_uring>) {
         val fd = eventfd(0u, EFD_NONBLOCK)
         if (fd < 0) {
-            throw SocketException("Failed to create eventfd: errno=$errno")
+            throw SocketIOException("Failed to create eventfd: errno=$errno")
         }
         wakeupFd.value = fd
 
         // Register multi-shot poll on eventfd so any write wakes the event loop
         val sqe =
             io_uring_get_sqe(ring)
-                ?: throw SocketException("Failed to get SQE for eventfd poll registration")
+                ?: throw SocketIOException("Failed to get SQE for eventfd poll registration")
         io_uring_prep_poll_multishot(sqe, fd, POLLIN.toUInt())
         io_uring_sqe_set_data64(sqe, EVENTFD_USER_DATA.toULong())
         io_uring_submit(ring)
@@ -628,11 +628,13 @@ internal fun throwSocketException(operation: String): Nothing {
     val message = "$operation failed: $errorMessage (errno=$errorCode)"
 
     throw when (errorCode) {
-        ECONNREFUSED, ECONNRESET, ECONNABORTED -> SocketException(message)
-        ETIMEDOUT -> SocketException("$operation timed out")
-        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException(message)
-        EHOSTUNREACH, ENETUNREACH -> SocketException(message)
-        else -> SocketException(message)
+        ECONNREFUSED -> SocketConnectionException.Refused(null, 0, platformError = message)
+        ECONNRESET, ECONNABORTED -> SocketClosedException.ConnectionReset(message)
+        ETIMEDOUT -> SocketTimeoutException("$operation timed out")
+        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException.BrokenPipe(message)
+        ENETUNREACH -> SocketConnectionException.NetworkUnreachable(message)
+        EHOSTUNREACH -> SocketConnectionException.HostUnreachable(message)
+        else -> SocketIOException(message)
     }
 }
 
@@ -649,11 +651,13 @@ internal fun throwFromResult(
     val message = "$operation failed: $errorMessage (errno=$errorCode)"
 
     throw when (errorCode) {
-        ECONNREFUSED, ECONNRESET, ECONNABORTED -> SocketException(message)
-        ETIMEDOUT -> SocketException("$operation timed out")
-        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException(message)
-        EHOSTUNREACH, ENETUNREACH -> SocketException(message)
-        else -> SocketException(message)
+        ECONNREFUSED -> SocketConnectionException.Refused(null, 0, platformError = message)
+        ECONNRESET, ECONNABORTED -> SocketClosedException.ConnectionReset(message)
+        ETIMEDOUT -> SocketTimeoutException("$operation timed out")
+        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException.BrokenPipe(message)
+        ENETUNREACH -> SocketConnectionException.NetworkUnreachable(message)
+        EHOSTUNREACH -> SocketConnectionException.HostUnreachable(message)
+        else -> SocketIOException(message)
     }
 }
 
@@ -725,6 +729,27 @@ internal fun applySocketOptions(
     if (options.keepAlive == true) setKeepAlive(sockfd)
     options.receiveBuffer?.let { setSocketReceiveBuffer(sockfd, it) }
     options.sendBuffer?.let { setSocketSendBuffer(sockfd, it) }
+    options.soLinger?.let { setSocketLinger(sockfd, it) }
+}
+
+/**
+ * Set SO_LINGER on a socket.
+ * timeout=0 forces RST on close instead of graceful FIN.
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal fun setSocketLinger(
+    sockfd: Int,
+    timeout: Int,
+) {
+    memScoped {
+        val lingerVal = alloc<linger>()
+        lingerVal.l_onoff = 1
+        lingerVal.l_linger = timeout
+        checkSocketResult(
+            setsockopt(sockfd, SOL_SOCKET, SO_LINGER, lingerVal.ptr, sizeOf<linger>().convert()),
+            "setsockopt(SO_LINGER)",
+        )
+    }
 }
 
 @OptIn(ExperimentalForeignApi::class)

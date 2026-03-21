@@ -27,7 +27,7 @@ abstract class AsyncBaseClientSocket(
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        if (!isOpen()) throw SocketClosedException("Socket is closed.")
+        if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
         tlsHandler?.let { return it.unwrap(timeout) }
         val receiveBuffer = socket.getOption(StandardSocketOptions.SO_RCVBUF)
         val buffer = PlatformBuffer.allocate(receiveBuffer, allocationZone) as BaseJvmBuffer
@@ -45,10 +45,10 @@ abstract class AsyncBaseClientSocket(
                     socket.aRead(buffer.byteBuffer, timeout)
                 }
             } catch (e: ClosedChannelException) {
-                throw SocketClosedException("Socket is closed.", e)
+                throw SocketClosedException.General("Socket is closed.", e)
             }
         if (bytesRead < 0) {
-            throw SocketClosedException("Received $bytesRead from server indicating a socket close.")
+            throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
         }
         return bytesRead
     }
@@ -74,7 +74,7 @@ abstract class AsyncBaseClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        if (!isOpen()) throw SocketClosedException("Socket is closed.")
+        if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
         tlsHandler?.let { return it.wrap((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer, timeout) }
         return rawSocketWrite(buffer, timeout)
     }
@@ -89,10 +89,10 @@ abstract class AsyncBaseClientSocket(
                     socket.aWrite(((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer, timeout)
                 }
             } catch (e: ClosedChannelException) {
-                throw SocketClosedException("Socket is closed.", e)
+                throw SocketClosedException.General("Socket is closed.", e)
             }
         if (bytesWritten < 0) {
-            throw SocketClosedException("Received $bytesWritten from server indicating a socket close.")
+            throw SocketClosedException.EndOfStream("Received $bytesWritten from server indicating a socket close.")
         }
         return bytesWritten
     }

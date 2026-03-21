@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.nio.util
 
+import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.isActive
@@ -41,6 +42,6 @@ suspend fun Selector.aClose() =
         try {
             it.resume(close())
         } catch (e: Throwable) {
-            it.resumeWithException(e)
+            it.resumeWithException(wrapJvmException(e))
         }
     }

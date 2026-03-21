@@ -794,6 +794,30 @@ mavenPublishing {
     }
 }
 
+if (isLinux) {
+    // Exclude NetworkNamespaceTests from normal test runs — they require an isolated
+    // network namespace and will fail without it. Run via linuxNetNamespaceTest task.
+    tasks.matching { it.name == "linuxX64Test" }.configureEach {
+        (this as? org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest)?.apply {
+            filter.excludeTestsMatching("com.ditchoom.socket.NetworkNamespaceTests")
+        }
+    }
+
+    tasks.register<Exec>("linuxNetNamespaceTest") {
+        description = "Run ENETUNREACH/EHOSTUNREACH tests in an isolated network namespace"
+        group = "verification"
+        dependsOn("linkDebugTestLinuxX64")
+        val testBinary = layout.buildDirectory.file("bin/linuxX64/debugTest/test.kexe")
+        commandLine(
+            "unshare",
+            "--user",
+            "--net",
+            testBinary.get().asFile.absolutePath,
+            "--ktest_filter=com.ditchoom.socket.NetworkNamespaceTests",
+        )
+    }
+}
+
 ktlint {
     verbose.set(true)
     outputToConsole.set(true)

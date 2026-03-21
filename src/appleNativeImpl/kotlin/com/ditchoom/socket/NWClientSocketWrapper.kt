@@ -62,7 +62,7 @@ class NWClientSocketWrapper :
                     state?.startsWith("failed") == true || state?.startsWith("cancelled") == true -> {
                         resumed = true
                         continuation.resumeWithException(
-                            SocketException(errorString ?: "Connection failed: $state"),
+                            SocketIOException(errorString ?: "Connection failed: $state"),
                         )
                     }
                 }

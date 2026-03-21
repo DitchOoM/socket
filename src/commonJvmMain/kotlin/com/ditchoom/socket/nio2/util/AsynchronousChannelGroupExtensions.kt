@@ -10,7 +10,7 @@ suspend fun openAsyncServerSocketChannel(group: AsynchronousChannelGroup? = null
     suspendCoroutine { continuation ->
         try {
             continuation.resume(AsynchronousServerSocketChannel.open(group))
-        } catch (e: Exception) {
-            continuation.resumeWithException(e)
+        } catch (e: Throwable) {
+            continuation.resumeWithException(com.ditchoom.socket.wrapJvmException(e))
         }
     }

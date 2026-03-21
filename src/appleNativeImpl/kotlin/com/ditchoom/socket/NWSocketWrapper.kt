@@ -36,6 +36,12 @@ open class NWSocketWrapper : ClientSocket {
     @Volatile
     internal var closedLocally = false
 
+    override fun applyOptions(options: SocketOptions) {
+        // Network.framework NWConnection doesn't expose the underlying fd,
+        // so SO_LINGER cannot be set. Other options (TCP_NODELAY, etc.) are
+        // configured via NWParameters at connection creation time.
+    }
+
     override fun isOpen(): Boolean = !closedLocally && (socket?.isOpen() ?: false)
 
     override suspend fun localPort(): Int = socket?.localPort()?.toInt() ?: -1
@@ -47,8 +53,8 @@ open class NWSocketWrapper : ClientSocket {
      * Returns a buffer backed by NSData received from Network.framework.
      */
     override suspend fun read(timeout: Duration): ReadBuffer {
-        if (closedLocally) throw SocketClosedException("Socket is closed")
-        val socket = socket ?: throw SocketClosedException("Socket is closed")
+        if (closedLocally) throw SocketClosedException.General("Socket is closed")
+        val socket = socket ?: throw SocketClosedException.General("Socket is closed")
         return readMutex.withLock {
             withTimeout(timeout) {
                 suspendCancellableCoroutine { continuation ->
@@ -66,7 +72,7 @@ open class NWSocketWrapper : ClientSocket {
                                 // Connection closed by peer - treat as EOF
                                 closeInternal()
                                 continuation.resumeWithException(
-                                    SocketClosedException("Connection closed by peer"),
+                                    SocketClosedException.EndOfStream(),
                                 )
                             }
                             errorType != SocketErrorTypeNone -> {
@@ -97,8 +103,8 @@ open class NWSocketWrapper : ClientSocket {
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        if (closedLocally) throw SocketClosedException("Socket is closed")
-        val socket = socket ?: throw SocketClosedException("Socket is closed")
+        if (closedLocally) throw SocketClosedException.General("Socket is closed")
+        val socket = socket ?: throw SocketClosedException.General("Socket is closed")
         val nsData = buffer.toNSData()
 
         return writeMutex.withLock {
@@ -142,11 +148,40 @@ open class NWSocketWrapper : ClientSocket {
             errorString: String?,
         ): SocketException {
             val message = errorString ?: "Socket error"
+            val msgLower = message.lowercase()
             return when (errorType) {
                 SocketErrorTypeDns -> SocketUnknownHostException(null, message)
-                SocketErrorTypeTls -> SSLSocketException(message)
-                SocketErrorTypePosix -> SocketException(message)
-                else -> SocketException(message)
+                SocketErrorTypeTls -> {
+                    if (msgLower.contains("handshake") || msgLower.contains("certificate") ||
+                        msgLower.contains("cert") || msgLower.contains("trust")
+                    ) {
+                        SSLHandshakeFailedException(message)
+                    } else {
+                        SSLProtocolException(message)
+                    }
+                }
+                SocketErrorTypePosix -> {
+                    when {
+                        msgLower.contains("connection refused") || msgLower.contains("econnrefused") ->
+                            SocketConnectionException.Refused(null, 0, platformError = message)
+                        msgLower.contains("timed out") || msgLower.contains("timeout") ->
+                            SocketTimeoutException(message)
+                        msgLower.contains("reset") ->
+                            SocketClosedException.ConnectionReset(message)
+                        msgLower.contains("broken pipe") ->
+                            SocketClosedException.BrokenPipe(message)
+                        msgLower.contains("not connected") ->
+                            SocketClosedException.BrokenPipe(message)
+                        msgLower.contains("network") && msgLower.contains("unreachable") ->
+                            SocketConnectionException.NetworkUnreachable(message)
+                        msgLower.contains("host") && msgLower.contains("unreachable") ->
+                            SocketConnectionException.HostUnreachable(message)
+                        msgLower.contains("unreachable") ->
+                            SocketConnectionException.NetworkUnreachable(message)
+                        else -> SocketIOException(message)
+                    }
+                }
+                else -> SocketIOException(message)
             }
         }
     }

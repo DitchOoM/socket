@@ -75,7 +75,7 @@ class LinuxServerSocket : ServerSocket {
                     if (host != null && host != "::" && host != "0.0.0.0") {
                         val result = inet_pton(AF_INET6, host, addr.sin6_addr.ptr)
                         if (result != 1) {
-                            throw SocketException("Invalid IPv6 address: $host")
+                            throw SocketIOException("Invalid IPv6 address: $host")
                         }
                     }
                     // sin6_addr is already zeroed (in6addr_any equivalent)
@@ -91,7 +91,7 @@ class LinuxServerSocket : ServerSocket {
                     if (host != null && host != "0.0.0.0") {
                         val result = inet_pton(AF_INET, host, addr.sin_addr.ptr)
                         if (result != 1) {
-                            throw SocketException("Invalid IPv4 address: $host")
+                            throw SocketIOException("Invalid IPv4 address: $host")
                         }
                     } else {
                         addr.sin_addr.s_addr = htonl(INADDR_ANY.convert())
