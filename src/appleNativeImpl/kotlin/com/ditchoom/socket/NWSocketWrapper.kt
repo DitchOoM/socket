@@ -36,12 +36,6 @@ open class NWSocketWrapper : ClientSocket {
     @Volatile
     internal var closedLocally = false
 
-    override fun applyOptions(options: SocketOptions) {
-        // Network.framework NWConnection doesn't expose the underlying fd,
-        // so SO_LINGER cannot be set. Other options (TCP_NODELAY, etc.) are
-        // configured via NWParameters at connection creation time.
-    }
-
     override fun isOpen(): Boolean = !closedLocally && (socket?.isOpen() ?: false)
 
     override suspend fun localPort(): Int = socket?.localPort()?.toInt() ?: -1

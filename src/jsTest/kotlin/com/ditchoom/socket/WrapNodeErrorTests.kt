@@ -15,6 +15,7 @@ import kotlin.time.Duration.Companion.seconds
  * Integration tests for Node.js socket error wrapping via [wrapNodeError].
  *
  * Exercises the full error path through actual socket operations on Node.js.
+ * Each test catches ONE sealed exception type.
  */
 class WrapNodeErrorTests {
     @Test
@@ -44,15 +45,11 @@ class WrapNodeErrorTests {
                     val socket = ClientSocket.allocate()
                     socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
                     socket.close()
-                    null
+                    fail("Should have thrown for connection refused")
                 } catch (e: SocketConnectionException.Refused) {
                     e
-                } catch (e: SocketTimeoutException) {
-                    null // timeout instead of refused — acceptable
                 }
-            if (ex != null) {
-                assertIs<SocketConnectionException.Refused>(ex)
-            }
+            assertIs<SocketConnectionException.Refused>(ex)
         }
 
     @Test
@@ -87,11 +84,7 @@ class WrapNodeErrorTests {
                 } catch (e: SocketClosedException) {
                     e
                 }
-            // Node.js graceful close produces EndOfStream
-            assertTrue(
-                ex is SocketClosedException.EndOfStream || ex is SocketClosedException.General,
-                "Expected EndOfStream or General, got: ${ex::class.simpleName}",
-            )
+            assertIs<SocketClosedException>(ex)
 
             client.close()
             server.close()
@@ -120,31 +113,20 @@ class WrapNodeErrorTests {
             clientConnected.lockWithTimeout()
             kotlinx.coroutines.delay(200)
 
-            var caughtException: SocketException? = null
-            try {
-                repeat(50) {
-                    client.write(
-                        "test data".toReadBuffer(Charset.UTF8),
-                        1.seconds,
-                    )
-                    kotlinx.coroutines.delay(10)
+            val ex =
+                try {
+                    repeat(100) {
+                        client.write(
+                            "x".repeat(8192).toReadBuffer(Charset.UTF8),
+                            1.seconds,
+                        )
+                        kotlinx.coroutines.delay(5)
+                    }
+                    fail("Should have thrown when writing to closed connection")
+                } catch (e: SocketClosedException) {
+                    e
                 }
-            } catch (e: SocketClosedException) {
-                caughtException = e
-            } catch (e: SocketIOException) {
-                caughtException = e
-            }
-
-            if (caughtException != null) {
-                // Node.js write-after-close produces ECONNRESET or EPIPE
-                assertTrue(
-                    caughtException is SocketClosedException.ConnectionReset ||
-                        caughtException is SocketClosedException.BrokenPipe ||
-                        caughtException is SocketClosedException.General ||
-                        caughtException is SocketIOException,
-                    "Expected ConnectionReset, BrokenPipe, General, or SocketIOException, got: ${caughtException::class.simpleName}",
-                )
-            }
+            assertIs<SocketClosedException>(ex)
 
             client.close()
             server.close()
@@ -160,17 +142,17 @@ class WrapNodeErrorTests {
                     val socket = ClientSocket.allocate()
                     socket.open(port = 80, timeout = 1.seconds, hostname = "10.255.255.1")
                     socket.close()
-                    null
+                    fail("Should have thrown")
                 } catch (e: SocketTimeoutException) {
                     e
-                } catch (e: SocketIOException) {
-                    null // also acceptable
+                } catch (e: SocketConnectionException) {
+                    // Some environments route 10.255.255.1 and get immediate failure
+                    return@runTestNoTimeSkipping
                 } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                    null // also acceptable
+                    // Coroutine-level timeout may fire before socket-level timeout
+                    return@runTestNoTimeSkipping
                 }
-            if (ex != null) {
-                assertIs<SocketTimeoutException>(ex)
-                assertTrue(ex.message.isNotBlank())
-            }
+            assertIs<SocketTimeoutException>(ex)
+            assertTrue(ex.message.isNotBlank())
         }
 }

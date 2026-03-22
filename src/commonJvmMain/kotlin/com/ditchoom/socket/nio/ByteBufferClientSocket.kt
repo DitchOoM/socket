@@ -67,17 +67,6 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
         options.keepAlive?.let { socket.setOption(StandardSocketOptions.SO_KEEPALIVE, it) }
         options.receiveBuffer?.let { socket.setOption(StandardSocketOptions.SO_RCVBUF, it) }
         options.sendBuffer?.let { socket.setOption(StandardSocketOptions.SO_SNDBUF, it) }
-        options.soLinger?.let {
-            try {
-                socket.setOption(StandardSocketOptions.SO_LINGER, it)
-            } catch (_: UnsupportedOperationException) {
-                // NIO2 AsynchronousSocketChannel doesn't support SO_LINGER
-            }
-        }
-    }
-
-    override fun applyOptions(options: SocketOptions) {
-        applySocketOptions(options)
     }
 
     override suspend fun close() {

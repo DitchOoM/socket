@@ -619,46 +619,44 @@ internal object IoUringManager {
 }
 
 /**
- * Maps POSIX errno values to appropriate socket exceptions.
+ * Maps a POSIX errno value to the appropriate [SocketException] subtype.
+ *
+ * This is the single source of truth for errno → exception mapping on Linux.
+ * All call sites (throwSocketException, throwFromResult, handleReadError,
+ * handleWriteError, connectWithIoUring) delegate here.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal fun throwSocketException(operation: String): Nothing {
-    val errorCode = errno
+internal fun mapErrnoToException(errorCode: Int, operation: String): SocketException {
     val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
     val message = "$operation failed: $errorMessage (errno=$errorCode)"
-
-    throw when (errorCode) {
+    return when (errorCode) {
         ECONNREFUSED -> SocketConnectionException.Refused(null, 0, platformError = message)
         ECONNRESET, ECONNABORTED -> SocketClosedException.ConnectionReset(message)
-        ETIMEDOUT -> SocketTimeoutException("$operation timed out")
         ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException.BrokenPipe(message)
         ENETUNREACH -> SocketConnectionException.NetworkUnreachable(message)
         EHOSTUNREACH -> SocketConnectionException.HostUnreachable(message)
+        ETIMEDOUT, ETIME -> SocketTimeoutException("$operation timed out")
+        EAGAIN, EWOULDBLOCK -> SocketTimeoutException("$operation timed out")
         else -> SocketIOException(message)
     }
 }
 
 /**
- * Throw exception from a negative result code.
+ * Maps POSIX errno values to appropriate socket exceptions.
  */
 @OptIn(ExperimentalForeignApi::class)
+internal fun throwSocketException(operation: String): Nothing {
+    throw mapErrnoToException(errno, operation)
+}
+
+/**
+ * Throw exception from a negative result code.
+ */
 internal fun throwFromResult(
     result: Int,
     operation: String,
 ): Nothing {
-    val errorCode = -result
-    val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-    val message = "$operation failed: $errorMessage (errno=$errorCode)"
-
-    throw when (errorCode) {
-        ECONNREFUSED -> SocketConnectionException.Refused(null, 0, platformError = message)
-        ECONNRESET, ECONNABORTED -> SocketClosedException.ConnectionReset(message)
-        ETIMEDOUT -> SocketTimeoutException("$operation timed out")
-        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException.BrokenPipe(message)
-        ENETUNREACH -> SocketConnectionException.NetworkUnreachable(message)
-        EHOSTUNREACH -> SocketConnectionException.HostUnreachable(message)
-        else -> SocketIOException(message)
-    }
+    throw mapErrnoToException(-result, operation)
 }
 
 /**
@@ -729,27 +727,6 @@ internal fun applySocketOptions(
     if (options.keepAlive == true) setKeepAlive(sockfd)
     options.receiveBuffer?.let { setSocketReceiveBuffer(sockfd, it) }
     options.sendBuffer?.let { setSocketSendBuffer(sockfd, it) }
-    options.soLinger?.let { setSocketLinger(sockfd, it) }
-}
-
-/**
- * Set SO_LINGER on a socket.
- * timeout=0 forces RST on close instead of graceful FIN.
- */
-@OptIn(ExperimentalForeignApi::class)
-internal fun setSocketLinger(
-    sockfd: Int,
-    timeout: Int,
-) {
-    memScoped {
-        val lingerVal = alloc<linger>()
-        lingerVal.l_onoff = 1
-        lingerVal.l_linger = timeout
-        checkSocketResult(
-            setsockopt(sockfd, SOL_SOCKET, SO_LINGER, lingerVal.ptr, sizeOf<linger>().convert()),
-            "setsockopt(SO_LINGER)",
-        )
-    }
 }
 
 @OptIn(ExperimentalForeignApi::class)

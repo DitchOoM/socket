@@ -97,4 +97,5 @@ dependencies {
 - [Client Socket](./core-concepts/client-socket) — Connect, read, write, stream, and close
 - [Server Socket](./core-concepts/server-socket) — Accept inbound connections
 - [TLS](./core-concepts/tls) — Encrypted connections
+- [Error Handling](./core-concepts/error-handling) — Sealed exception hierarchy and platform mapping
 - [Recipe: Building a Protocol Client](./guides/building-a-protocol) — Full-stack example with streaming, TLS, buffer pools, and compression

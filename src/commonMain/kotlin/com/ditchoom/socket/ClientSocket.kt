@@ -16,9 +16,6 @@ interface ClientSocket :
     Reader,
     Writer,
     SuspendCloseable {
-    /** Apply socket options to an already-connected socket. */
-    fun applyOptions(options: SocketOptions) {}
-
     companion object
 }
 

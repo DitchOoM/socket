@@ -1,121 +1,136 @@
 package com.ditchoom.socket
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
+import com.ditchoom.socket.linux.*
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
-import kotlin.test.fail
-import kotlin.time.Duration.Companion.seconds
 
 /**
- * Linux-specific exception mapping tests.
+ * Unit tests for [mapErrnoToException] — the single errno → exception mapping function on Linux.
  *
- * Tests that Linux io_uring error codes are correctly mapped to
- * the sealed SocketException subtypes through actual socket operations.
+ * Each test passes a synthetic errno and verifies the returned exception subtype.
+ * No real I/O, no sockets, no network — pure mapping logic.
  */
+@OptIn(ExperimentalForeignApi::class)
 class LinuxExceptionMappingTests {
     @Test
-    fun connectionRefused_producesSocketConnectionRefusedException() =
-        runTestNoTimeSkipping {
-            val port = 59300 + kotlin.random.Random.nextInt(699)
-            try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
-                socket.close()
-            } catch (e: SocketConnectionException.Refused) {
-                // Expected — Linux maps ECONNREFUSED
-                assertIs<SocketConnectionException.Refused>(e)
-            } catch (e: SocketTimeoutException) {
-                // Also acceptable
-            }
-        }
+    fun econnrefused_producesRefused() {
+        val ex = mapErrnoToException(ECONNREFUSED, "connect")
+        assertIs<SocketConnectionException.Refused>(ex)
+    }
 
     @Test
-    fun dnsFailure_producesSocketUnknownHostException() =
-        runTestNoTimeSkipping {
-            try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = 80, timeout = 5.seconds, hostname = "this.host.does.not.exist.invalid")
-                socket.close()
-                fail("Should have thrown for invalid hostname")
-            } catch (e: SocketUnknownHostException) {
-                assertTrue(e.message.contains("this.host.does.not.exist.invalid"))
-            }
-        }
+    fun econnreset_producesConnectionReset() {
+        val ex = mapErrnoToException(ECONNRESET, "recv")
+        assertIs<SocketClosedException.ConnectionReset>(ex)
+    }
 
     @Test
-    fun readFromClosedConnection_producesSocketClosedException() =
-        runTestNoTimeSkipping {
-            val server = ServerSocket.allocate()
-            val serverFlow = server.bind()
-            val serverReady = Mutex(locked = true)
-
-            val serverJob =
-                launch(Dispatchers.Default) {
-                    serverFlow.collect { serverClient ->
-                        serverReady.unlock()
-                        serverClient.writeString("hello")
-                        serverClient.close()
-                    }
-                }
-
-            val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
-            serverReady.lockWithTimeout()
-
-            val data = client.readString(timeout = 2.seconds)
-            assertTrue(data == "hello")
-
-            try {
-                client.read(2.seconds)
-                fail("Should have thrown")
-            } catch (e: SocketClosedException) {
-                // Expected — Linux maps ECONNRESET/EOF → SocketClosedException
-            }
-
-            client.close()
-            server.close()
-            serverJob.cancel()
-        }
+    fun econnaborted_producesConnectionReset() {
+        val ex = mapErrnoToException(ECONNABORTED, "recv")
+        assertIs<SocketClosedException.ConnectionReset>(ex)
+    }
 
     @Test
-    fun tlsHandshakeFailure_producesSSLHandshakeFailedException() =
-        runTestNoTimeSkipping {
-            try {
-                ClientSocket.connect(
-                    port = 443,
-                    hostname = "self-signed.badssl.com",
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 15.seconds,
-                ) { socket ->
-                    assertTrue(socket.isOpen())
-                }
-            } catch (e: SSLHandshakeFailedException) {
-                // Expected — Linux OpenSSL
-                assertTrue(e.message.isNotBlank())
-            } catch (e: SSLProtocolException) {
-                // Also acceptable
-            } catch (e: SocketException) {
-                // Fallback acceptable
-            }
-        }
+    fun epipe_producesBrokenPipe() {
+        val ex = mapErrnoToException(EPIPE, "send")
+        assertIs<SocketClosedException.BrokenPipe>(ex)
+    }
 
     @Test
-    fun connectTimeout_producesSocketTimeoutException() =
-        runTestNoTimeSkipping {
-            try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = 80, timeout = 1.seconds, hostname = "10.255.255.1")
-                socket.close()
-            } catch (e: SocketTimeoutException) {
-                // Expected — Linux maps ETIMEDOUT
-                assertTrue(e.message.lowercase().contains("timed out") || e.message.lowercase().contains("timeout"))
-            } catch (e: SocketIOException) {
-                // Also acceptable — unreachable
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                // Also acceptable
-            }
-        }
+    fun enotconn_producesBrokenPipe() {
+        val ex = mapErrnoToException(ENOTCONN, "send")
+        assertIs<SocketClosedException.BrokenPipe>(ex)
+    }
+
+    @Test
+    fun eshutdown_producesBrokenPipe() {
+        val ex = mapErrnoToException(ESHUTDOWN, "send")
+        assertIs<SocketClosedException.BrokenPipe>(ex)
+    }
+
+    @Test
+    fun enetunreach_producesNetworkUnreachable() {
+        val ex = mapErrnoToException(ENETUNREACH, "connect")
+        assertIs<SocketConnectionException.NetworkUnreachable>(ex)
+    }
+
+    @Test
+    fun ehostunreach_producesHostUnreachable() {
+        val ex = mapErrnoToException(EHOSTUNREACH, "connect")
+        assertIs<SocketConnectionException.HostUnreachable>(ex)
+    }
+
+    @Test
+    fun etimedout_producesSocketTimeoutException() {
+        val ex = mapErrnoToException(ETIMEDOUT, "read")
+        assertIs<SocketTimeoutException>(ex)
+    }
+
+    @Test
+    fun etime_producesSocketTimeoutException() {
+        val ex = mapErrnoToException(ETIME, "read")
+        assertIs<SocketTimeoutException>(ex)
+    }
+
+    @Test
+    fun eagain_producesSocketTimeoutException() {
+        val ex = mapErrnoToException(EAGAIN, "recv")
+        assertIs<SocketTimeoutException>(ex)
+    }
+
+    @Test
+    fun unknownErrno_producesSocketIOException() {
+        val ex = mapErrnoToException(999, "op")
+        assertIs<SocketIOException>(ex)
+    }
+
+    @Test
+    fun message_containsOperationAndErrno() {
+        val ex = mapErrnoToException(ECONNREFUSED, "connect")
+        assertTrue(ex.message.contains("connect"), "message should contain operation name")
+        assertTrue(ex.message.contains("errno="), "message should contain errno")
+    }
+
+    // ── throwFromResult wiring tests ──────────────────────────────────
+    // These call the actual production entry point that connectWithIoUring,
+    // handleReadError, and handleWriteError delegate to, proving the
+    // wiring is correct end-to-end with real platform errno constants.
+
+    @Test
+    fun throwFromResult_econnrefused() {
+        val ex = try { throwFromResult(-ECONNREFUSED, "connect") } catch (e: SocketException) { e }
+        assertIs<SocketConnectionException.Refused>(ex)
+    }
+
+    @Test
+    fun throwFromResult_enetunreach() {
+        val ex = try { throwFromResult(-ENETUNREACH, "connect") } catch (e: SocketException) { e }
+        assertIs<SocketConnectionException.NetworkUnreachable>(ex)
+    }
+
+    @Test
+    fun throwFromResult_ehostunreach() {
+        val ex = try { throwFromResult(-EHOSTUNREACH, "connect") } catch (e: SocketException) { e }
+        assertIs<SocketConnectionException.HostUnreachable>(ex)
+    }
+
+    @Test
+    fun throwFromResult_econnreset() {
+        val ex = try { throwFromResult(-ECONNRESET, "recv") } catch (e: SocketException) { e }
+        assertIs<SocketClosedException.ConnectionReset>(ex)
+    }
+
+    @Test
+    fun throwFromResult_epipe() {
+        val ex = try { throwFromResult(-EPIPE, "send") } catch (e: SocketException) { e }
+        assertIs<SocketClosedException.BrokenPipe>(ex)
+    }
+
+    @Test
+    fun throwFromResult_etimedout() {
+        val ex = try { throwFromResult(-ETIMEDOUT, "read") } catch (e: SocketException) { e }
+        assertIs<SocketTimeoutException>(ex)
+    }
 }

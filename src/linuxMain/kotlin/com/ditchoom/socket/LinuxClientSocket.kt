@@ -114,15 +114,7 @@ class LinuxClientSocket : ClientToServerSocket {
             }
 
         if (result < 0) {
-            val errorCode = -result
-            val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-            when (errorCode) {
-                ECONNREFUSED -> throw SocketConnectionException.Refused(null, 0, platformError = errorMessage)
-                ETIMEDOUT, ETIME -> throw SocketTimeoutException("Connection timed out")
-                ENETUNREACH -> throw SocketConnectionException.NetworkUnreachable("Network unreachable: $errorMessage")
-                EHOSTUNREACH -> throw SocketConnectionException.HostUnreachable("Host unreachable: $errorMessage")
-                else -> throw SocketIOException("connect failed: $errorMessage (errno=$errorCode)")
-            }
+            throw mapErrnoToException(-result, "connect")
         }
     }
 
@@ -476,21 +468,9 @@ class LinuxClientSocket : ClientToServerSocket {
     }
 
     private fun handleReadError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketTimeoutException("Read timed out")
-            ECONNRESET -> {
-                closeInternal()
-                throw SocketClosedException.ConnectionReset("Connection reset")
-            }
-            ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException.BrokenPipe("Broken pipe")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketIOException("recv failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "recv")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     override suspend fun write(
@@ -631,21 +611,9 @@ class LinuxClientSocket : ClientToServerSocket {
     }
 
     private fun handleWriteError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketTimeoutException("Write timed out")
-            ECONNRESET -> {
-                closeInternal()
-                throw SocketClosedException.ConnectionReset("Connection reset")
-            }
-            ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException.BrokenPipe("Broken pipe")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketIOException("send failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "send")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     /**

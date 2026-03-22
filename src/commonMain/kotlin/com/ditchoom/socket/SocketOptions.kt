@@ -28,8 +28,6 @@ data class SocketOptions(
     val receiveBuffer: Int? = null,
     /** SO_SNDBUF size in bytes. */
     val sendBuffer: Int? = null,
-    /** SO_LINGER timeout in seconds. 0 = force RST on close. null = OS default. */
-    val soLinger: Int? = null,
     /** TLS configuration. null = plaintext. */
     val tls: TlsConfig? = null,
 ) {

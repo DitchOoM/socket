@@ -14,8 +14,8 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Integration tests that verify the full OS error → platform wrapping → exception type path.
  *
- * All tests use localhost with [ServerSocket.allocate()], no external network dependencies.
- * Tests are strict where behavior is deterministic, lenient only where platforms genuinely differ.
+ * Each test catches exactly ONE sealed exception type. If a platform produces a different
+ * type, that's a mapping bug — the test should fail, not silently pass.
  */
 class ExceptionIntegrationTests {
     // ──────────────────────────────────────────────────────────────────
@@ -25,6 +25,7 @@ class ExceptionIntegrationTests {
     @Test
     fun dnsFailure_producesSocketUnknownHostException() =
         runTestNoTimeSkipping {
+            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
@@ -33,11 +34,7 @@ class ExceptionIntegrationTests {
                     fail("Should have thrown for invalid hostname")
                 } catch (e: SocketUnknownHostException) {
                     e
-                } catch (e: UnsupportedOperationException) {
-                    if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) throw e
-                    return@runTestNoTimeSkipping
                 }
-            assertIs<SocketUnknownHostException>(ex)
             assertTrue(ex.message.contains("this.host.does.not.exist.invalid"), "got: ${ex.message}")
         }
 
@@ -46,23 +43,20 @@ class ExceptionIntegrationTests {
     // ──────────────────────────────────────────────────────────────────
 
     @Test
-    fun connectionRefused_producesSocketConnectionExceptionOrTimeout() =
+    fun connectionRefused_producesSocketConnectionException() =
         runTestNoTimeSkipping {
+            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
             val port = 59000 + kotlin.random.Random.nextInt(999)
-            try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
-                socket.close()
-            } catch (e: SocketConnectionException) {
-                // Preferred — refused, unreachable, etc.
-                assertIs<SocketConnectionException>(e)
-            } catch (e: SocketTimeoutException) {
-                // Some platforms timeout instead of refusing
-            } catch (e: SocketClosedException) {
-                // Channel may close during connect attempt on some platforms
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                // Coroutine-level timeout
-            }
+            val ex =
+                try {
+                    val socket = ClientSocket.allocate()
+                    socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
+                    socket.close()
+                    fail("Should have thrown for connection refused")
+                } catch (e: SocketConnectionException) {
+                    e
+                }
+            assertIs<SocketConnectionException>(ex)
         }
 
     // ──────────────────────────────────────────────────────────────────
@@ -92,7 +86,6 @@ class ExceptionIntegrationTests {
             val data = client.readString(timeout = 2.seconds)
             assertTrue(data == "hello", "Should read 'hello', got: $data")
 
-            // Second read — peer has closed. This MUST be SocketClosedException.
             val ex =
                 try {
                     client.read(2.seconds)
@@ -100,8 +93,6 @@ class ExceptionIntegrationTests {
                 } catch (e: SocketClosedException) {
                     e
                 }
-            // All platforms produce SocketClosedException for this case.
-            // Most should produce EndOfStream specifically, but we accept any SocketClosedException subtype.
             assertIs<SocketClosedException>(ex)
 
             client.close()
@@ -124,7 +115,6 @@ class ExceptionIntegrationTests {
                 launch(Dispatchers.Default) {
                     serverFlow.collect { serverClient ->
                         serverReady.unlock()
-                        // Close immediately without sending — may produce RST on some platforms
                         serverClient.close()
                     }
                 }
@@ -135,13 +125,14 @@ class ExceptionIntegrationTests {
 
             kotlinx.coroutines.delay(100)
 
-            try {
-                client.read(2.seconds)
-                // Some platforms may return empty instead of throwing
-            } catch (e: SocketClosedException) {
-                // Expected — EndOfStream or ConnectionReset depending on platform/timing
-                assertIs<SocketClosedException>(e)
-            }
+            val ex =
+                try {
+                    client.read(2.seconds)
+                    fail("Should have thrown on reading from closed connection")
+                } catch (e: SocketClosedException) {
+                    e
+                }
+            assertIs<SocketClosedException>(ex)
 
             client.close()
             server.close()
@@ -171,35 +162,67 @@ class ExceptionIntegrationTests {
             client.open(server.port(), 5.seconds, "127.0.0.1")
             clientConnected.lockWithTimeout()
 
-            // Wait for server-side close to propagate
             kotlinx.coroutines.delay(200)
 
-            // Write repeatedly — eventually triggers BrokenPipe or ConnectionReset
-            var caughtException: SocketException? = null
-            try {
-                repeat(100) {
-                    client.write(
-                        "test data that should eventually fail".toReadBuffer(Charset.UTF8),
-                        1.seconds,
-                    )
-                    kotlinx.coroutines.delay(5)
+            // Write enough data to overflow the kernel send buffer and trigger the error.
+            // Kernel send buffer is typically ~128 KB; 100 × 8 KB = 800 KB guarantees overflow.
+            val ex =
+                try {
+                    repeat(100) {
+                        client.write(
+                            "x".repeat(8192).toReadBuffer(Charset.UTF8),
+                            1.seconds,
+                        )
+                        kotlinx.coroutines.delay(5)
+                    }
+                    fail("Should have thrown when writing to closed connection")
+                } catch (e: SocketClosedException) {
+                    e
                 }
-            } catch (e: SocketClosedException) {
-                caughtException = e
-            } catch (e: SocketIOException) {
-                // Some platforms (JVM NIO) may produce SocketIOException for write failures
-                caughtException = e
-            }
-
-            if (caughtException != null) {
-                // When we DO get an exception, it should indicate connection loss
-                assertTrue(
-                    caughtException is SocketClosedException || caughtException is SocketIOException,
-                    "Expected SocketClosedException or SocketIOException, got: ${caughtException!!::class.simpleName}",
-                )
-            }
+            assertIs<SocketClosedException>(ex)
 
             client.close()
+            server.close()
+            serverJob.cancel()
+        }
+
+    // ──────────────────────────────────────────────────────────────────
+    // TLS — handshake failure (local, no external network)
+    // ──────────────────────────────────────────────────────────────────
+
+    @Test
+    fun tlsToNonTlsServer_producesSSLSocketException() =
+        runTestNoTimeSkipping {
+            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            val server = ServerSocket.allocate()
+            val serverFlow = server.bind()
+
+            val serverJob =
+                launch(Dispatchers.Default) {
+                    serverFlow.collect { serverClient ->
+                        // Send non-TLS data — client expects ServerHello, gets garbage → immediate TLS error
+                        serverClient.writeString("NOT A TLS RESPONSE\r\n")
+                        kotlinx.coroutines.delay(200)
+                        serverClient.close()
+                    }
+                }
+
+            val ex =
+                try {
+                    val socket = ClientSocket.allocate()
+                    socket.open(
+                        port = server.port(),
+                        timeout = 5.seconds,
+                        hostname = "127.0.0.1",
+                        socketOptions = SocketOptions.tlsDefault(),
+                    )
+                    socket.close()
+                    fail("TLS handshake should have failed on non-TLS server")
+                } catch (e: SSLSocketException) {
+                    e
+                }
+            assertIs<SSLSocketException>(ex)
+
             server.close()
             serverJob.cancel()
         }
@@ -211,33 +234,36 @@ class ExceptionIntegrationTests {
     @Test
     fun connectionRefused_exceptionHasUsefulMessage() =
         runTestNoTimeSkipping {
+            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
             val port = 59100 + kotlin.random.Random.nextInt(899)
-            try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
-                socket.close()
-            } catch (e: SocketException) {
-                assertTrue(e.message.isNotBlank(), "Exception message should not be blank")
-            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                // Acceptable
-            }
+            val ex =
+                try {
+                    val socket = ClientSocket.allocate()
+                    socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
+                    socket.close()
+                    fail("Should have thrown")
+                } catch (e: SocketConnectionException) {
+                    e
+                }
+            assertTrue(ex.message.isNotBlank(), "Exception message should not be blank")
         }
 
     @Test
     fun dnsFailure_hostnamePreservedInException() =
         runTestNoTimeSkipping {
-            try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = 80, timeout = 5.seconds, hostname = "nonexistent.test.invalid")
-                socket.close()
-                fail("Should have thrown")
-            } catch (e: SocketUnknownHostException) {
-                assertTrue(
-                    e.hostname == "nonexistent.test.invalid" || e.message.contains("nonexistent.test.invalid"),
-                    "Hostname should be preserved, got hostname=${e.hostname}, message=${e.message}",
-                )
-            } catch (e: UnsupportedOperationException) {
-                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) throw e
-            }
+            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            val ex =
+                try {
+                    val socket = ClientSocket.allocate()
+                    socket.open(port = 80, timeout = 5.seconds, hostname = "nonexistent.test.invalid")
+                    socket.close()
+                    fail("Should have thrown")
+                } catch (e: SocketUnknownHostException) {
+                    e
+                }
+            assertTrue(
+                ex.hostname == "nonexistent.test.invalid" || ex.message.contains("nonexistent.test.invalid"),
+                "Hostname should be preserved, got hostname=${ex.hostname}, message=${ex.message}",
+            )
         }
 }

@@ -41,12 +41,6 @@ open class LinuxSocketWrapper : ClientSocket {
      */
     private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
 
-    override fun applyOptions(options: SocketOptions) {
-        if (sockfd >= 0) {
-            applySocketOptions(sockfd, options)
-        }
-    }
-
     override fun isOpen(): Boolean = sockfd >= 0
 
     override suspend fun localPort(): Int = getLocalPort(sockfd)
@@ -130,21 +124,9 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private fun handleReadError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketTimeoutException("Read timed out")
-            ECONNRESET -> {
-                closeInternal()
-                throw SocketClosedException.ConnectionReset("Connection reset")
-            }
-            ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException.BrokenPipe("Broken pipe")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketIOException("recv failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "recv")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     override suspend fun write(
@@ -206,21 +188,9 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private fun handleWriteError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketTimeoutException("Write timed out")
-            ECONNRESET -> {
-                closeInternal()
-                throw SocketClosedException.ConnectionReset("Connection reset")
-            }
-            ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException.BrokenPipe("Broken pipe")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketIOException("send failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "send")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     /**

@@ -13,8 +13,8 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Linux-specific tests that strictly assert sealed exception subtypes.
  *
- * Linux io_uring produces deterministic errno values, so we can assert
- * the exact subtype for each error condition.
+ * Linux io_uring produces deterministic errno values, so we assert
+ * the exact subtype for each error condition. Each test catches ONE type.
  */
 class LinuxExceptionSubtypeTests {
     @Test
@@ -26,17 +26,12 @@ class LinuxExceptionSubtypeTests {
                     val socket = ClientSocket.allocate()
                     socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
                     socket.close()
-                    null
+                    fail("Should have thrown for connection refused")
                 } catch (e: SocketConnectionException.Refused) {
                     e
-                } catch (e: SocketTimeoutException) {
-                    null // timeout instead of refused
                 }
-            if (ex != null) {
-                assertIs<SocketConnectionException.Refused>(ex)
-                // Linux provides errno description in platformError
-                assertTrue(ex.platformError != null, "platformError should be set on Linux")
-            }
+            assertIs<SocketConnectionException.Refused>(ex)
+            assertTrue(ex.platformError != null, "platformError should be set on Linux")
         }
 
     @Test
@@ -96,27 +91,26 @@ class LinuxExceptionSubtypeTests {
             clientConnected.lockWithTimeout()
             kotlinx.coroutines.delay(200)
 
-            var caughtException: SocketClosedException? = null
-            try {
-                repeat(200) {
-                    client.write(
-                        "x".repeat(4096).toReadBuffer(com.ditchoom.buffer.Charset.UTF8),
-                        1.seconds,
-                    )
-                    kotlinx.coroutines.delay(2)
+            val ex =
+                try {
+                    repeat(200) {
+                        client.write(
+                            "x".repeat(4096).toReadBuffer(com.ditchoom.buffer.Charset.UTF8),
+                            1.seconds,
+                        )
+                        kotlinx.coroutines.delay(2)
+                    }
+                    fail("Should have thrown when writing to closed connection")
+                } catch (e: SocketClosedException) {
+                    e
                 }
-            } catch (e: SocketClosedException) {
-                caughtException = e
-            }
 
-            if (caughtException != null) {
-                // Linux io_uring maps ECONNRESET → ConnectionReset, EPIPE → BrokenPipe
-                assertTrue(
-                    caughtException is SocketClosedException.ConnectionReset ||
-                        caughtException is SocketClosedException.BrokenPipe,
-                    "Expected ConnectionReset or BrokenPipe, got: ${caughtException!!::class.simpleName}",
-                )
-            }
+            // Linux io_uring maps ECONNRESET → ConnectionReset, EPIPE → BrokenPipe
+            assertTrue(
+                ex is SocketClosedException.ConnectionReset ||
+                    ex is SocketClosedException.BrokenPipe,
+                "Expected ConnectionReset or BrokenPipe, got: ${ex::class.simpleName}",
+            )
 
             client.close()
             server.close()
@@ -136,40 +130,10 @@ class LinuxExceptionSubtypeTests {
                     e
                 }
             assertIs<SocketUnknownHostException>(ex)
-            // Linux getaddrinfo wrapping preserves hostname
             assertTrue(
                 ex.hostname == "nonexistent.linux.test.invalid",
                 "hostname should be preserved, got: ${ex.hostname}",
             )
         }
 
-    @Test
-    fun sslHandshakeToSelfSigned_isSSLHandshakeFailedException() =
-        runTestNoTimeSkipping {
-            val ex =
-                try {
-                    ClientSocket.connect(
-                        port = 443,
-                        hostname = "self-signed.badssl.com",
-                        socketOptions = SocketOptions.tlsDefault(),
-                        timeout = 15.seconds,
-                    ) { socket ->
-                        socket.close()
-                        null
-                    }
-                } catch (e: SSLHandshakeFailedException) {
-                    e
-                } catch (e: SSLProtocolException) {
-                    e
-                } catch (e: SocketException) {
-                    e
-                }
-            if (ex != null) {
-                // Linux OpenSSL should produce SSLHandshakeFailedException specifically
-                assertIs<SSLHandshakeFailedException>(
-                    ex,
-                    "Linux should produce SSLHandshakeFailedException, got: ${ex::class.simpleName}: ${ex.message}",
-                )
-            }
-        }
 }
