@@ -62,6 +62,15 @@ nw_connection_t _Nullable nw_helper_create_ws_connection(
     int32_t timeout_seconds);
 
 // ============================================================
+// Socket error type constants (error_domain values)
+// ============================================================
+
+static const int32_t SocketErrorTypeNone  = 0;
+static const int32_t SocketErrorTypePosix = 1;
+static const int32_t SocketErrorTypeDns   = 2;
+static const int32_t SocketErrorTypeTls   = 3;
+
+// ============================================================
 // Connection state handler + lifecycle
 // ============================================================
 

@@ -4,6 +4,9 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.socket.nwhelpers.SocketErrorTypeDns
+import com.ditchoom.socket.nwhelpers.SocketErrorTypePosix
+import com.ditchoom.socket.nwhelpers.SocketErrorTypeTls
 import com.ditchoom.socket.nwhelpers.nw_helper_cancel
 import com.ditchoom.socket.nwhelpers.nw_helper_force_cancel
 import com.ditchoom.socket.nwhelpers.nw_helper_local_port
@@ -147,8 +150,8 @@ open class NWSocketWrapper : ClientSocket {
             val message = errorString ?: "Socket error"
             val msgLower = message.lowercase()
             return when (errorDomain) {
-                2 -> SocketUnknownHostException(null, message) // DNS
-                3 -> { // TLS
+                SocketErrorTypeDns -> SocketUnknownHostException(null, message)
+                SocketErrorTypeTls -> {
                     if (msgLower.contains("handshake") || msgLower.contains("certificate") ||
                         msgLower.contains("cert") || msgLower.contains("trust")
                     ) {
@@ -157,7 +160,7 @@ open class NWSocketWrapper : ClientSocket {
                         SSLProtocolException(message)
                     }
                 }
-                1 -> { // POSIX
+                SocketErrorTypePosix -> {
                     when {
                         msgLower.contains("connection refused") || msgLower.contains("econnrefused") ->
                             SocketConnectionException.Refused(null, 0, platformError = message)

@@ -1,8 +1,8 @@
 package com.ditchoom.socket
 
-import com.ditchoom.socket.native.SocketErrorTypeDns
-import com.ditchoom.socket.native.SocketErrorTypePosix
-import com.ditchoom.socket.native.SocketErrorTypeTls
+import com.ditchoom.socket.nwhelpers.SocketErrorTypeDns
+import com.ditchoom.socket.nwhelpers.SocketErrorTypePosix
+import com.ditchoom.socket.nwhelpers.SocketErrorTypeTls
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.test.Test
 import kotlin.test.assertIs
