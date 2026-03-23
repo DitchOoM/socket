@@ -95,6 +95,17 @@ class AppleExceptionMappingTests {
         assertIs<SocketIOException>(result)
     }
 
+    // ==================== POSIX DNS errors (macOS reports DNS failures as POSIX) ====================
+
+    @Test
+    fun posixError_nodename_mapsToSocketUnknownHostException() {
+        val result = NWSocketWrapper.mapSocketException(
+            SocketErrorTypePosix,
+            "POSIX error 8: nodename nor servname provided, or not known",
+        )
+        assertIs<SocketUnknownHostException>(result)
+    }
+
     // ==================== Unknown errors ====================
 
     @Test
@@ -117,5 +128,26 @@ class AppleExceptionMappingTests {
     fun posixError_bareUnreachable_mapsToNetworkUnreachable() {
         val result = NWSocketWrapper.mapSocketException(SocketErrorTypePosix, "POSIX error 65: Destination unreachable")
         assertIs<SocketConnectionException.NetworkUnreachable>(result)
+    }
+
+    // ==================== Send error mapping ====================
+
+    @Test
+    fun sendError_epipe_mapsToSocketClosedBrokenPipe() {
+        val result = NWSocketWrapper.mapSendError("NW send error domain=1 code=32")
+        assertIs<SocketClosedException.BrokenPipe>(result)
+    }
+
+    @Test
+    fun sendError_econnreset_mapsToSocketClosedConnectionReset() {
+        val result = NWSocketWrapper.mapSendError("NW send error domain=1 code=54")
+        assertIs<SocketClosedException.ConnectionReset>(result)
+    }
+
+    @Test
+    fun sendError_withPosixDomain_routesThroughMapSocketException() {
+        val result = NWSocketWrapper.mapSendError("NW send error domain=1 code=32")
+        // domain=1 (POSIX) routes through mapSocketException which checks the message string
+        assertIs<SocketClosedException>(result)
     }
 }

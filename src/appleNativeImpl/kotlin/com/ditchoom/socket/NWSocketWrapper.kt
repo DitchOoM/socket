@@ -115,7 +115,7 @@ open class NWSocketWrapper : ClientSocket {
                     nw_helper_send_tcp(conn, nsData) { error ->
                         if (error != null) {
                             continuation.resumeWithException(
-                                SocketIOException(error.localizedDescription),
+                                mapSendError(error.localizedDescription),
                             )
                         } else {
                             continuation.resume(nsData.length.toInt())
@@ -162,15 +162,21 @@ open class NWSocketWrapper : ClientSocket {
                 }
                 SocketErrorTypePosix -> {
                     when {
+                        // DNS failures can arrive as POSIX errors on macOS
+                        // (e.g., EAI_NONAME = "nodename nor servname provided")
+                        msgLower.contains("nodename") || msgLower.contains("servname") ||
+                            msgLower.contains("name or service not known") ||
+                            msgLower.contains("host not found") ->
+                            SocketUnknownHostException(null, message)
                         msgLower.contains("connection refused") || msgLower.contains("econnrefused") ->
                             SocketConnectionException.Refused(null, 0, platformError = message)
                         msgLower.contains("timed out") || msgLower.contains("timeout") ->
                             SocketTimeoutException(message)
-                        msgLower.contains("reset") ->
+                        msgLower.contains("reset") || msgLower.contains("connection abort") ->
                             SocketClosedException.ConnectionReset(message)
                         msgLower.contains("broken pipe") ->
                             SocketClosedException.BrokenPipe(message)
-                        msgLower.contains("not connected") ->
+                        msgLower.contains("not connected") || msgLower.contains("socket is not connected") ->
                             SocketClosedException.BrokenPipe(message)
                         msgLower.contains("network") && msgLower.contains("unreachable") ->
                             SocketConnectionException.NetworkUnreachable(message)
@@ -182,6 +188,34 @@ open class NWSocketWrapper : ClientSocket {
                     }
                 }
                 else -> SocketIOException(message)
+            }
+        }
+
+        /**
+         * Maps send errors from nw_helper_send_tcp.
+         *
+         * The C callback produces `"NW send error domain=D code=C"`.
+         * We parse the domain to route through [mapSocketException], falling back
+         * to POSIX-code-based mapping for common write-after-close errors.
+         */
+        fun mapSendError(description: String): SocketException {
+            // Try to extract domain and code from "NW send error domain=D code=C"
+            val domainMatch = Regex("""domain=(\d+)""").find(description)
+            val codeMatch = Regex("""code=(\d+)""").find(description)
+            val domain = domainMatch?.groupValues?.get(1)?.toIntOrNull()
+            val code = codeMatch?.groupValues?.get(1)?.toIntOrNull()
+
+            if (domain != null && domain > 0) {
+                // Route through the standard mapping if we have a meaningful domain
+                return mapSocketException(domain, description)
+            }
+
+            // Fallback: map common POSIX codes for send errors
+            return when (code) {
+                32 -> SocketClosedException.BrokenPipe(description) // EPIPE
+                54 -> SocketClosedException.ConnectionReset(description) // ECONNRESET (macOS)
+                57 -> SocketClosedException.BrokenPipe(description) // ENOTCONN
+                else -> SocketIOException(description)
             }
         }
     }
