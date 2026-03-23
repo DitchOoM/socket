@@ -1,11 +1,12 @@
 package com.ditchoom.socket
 
-import com.ditchoom.socket.native.ClientSocketWrapper
-import com.ditchoom.socket.native.SocketErrorTypeNone
+import com.ditchoom.socket.nwhelpers.nw_helper_create_tcp_connection
+import com.ditchoom.socket.nwhelpers.nw_helper_force_cancel
+import com.ditchoom.socket.nwhelpers.nw_helper_set_state_handler
+import com.ditchoom.socket.nwhelpers.nw_helper_start
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.UnsafeNumber
-import kotlinx.cinterop.convert
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.Foundation.NSNumber
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
@@ -16,10 +17,12 @@ import kotlin.time.Duration
  * Supports both plain TCP and TLS connections with zero-copy data transfer.
  * TLS is derived from [SocketOptions.tls] in [open].
  */
-@OptIn(ExperimentalForeignApi::class, UnsafeNumber::class)
+@OptIn(ExperimentalForeignApi::class)
 class NWClientSocketWrapper :
     NWSocketWrapper(),
     ClientToServerSocket {
+    // C API nw_connection_state_t values:
+    // 0=invalid/setup, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
     override suspend fun open(
         port: Int,
         timeout: Duration,
@@ -30,49 +33,53 @@ class NWClientSocketWrapper :
         val tlsConfig = socketOptions.tls
         val useTls = tlsConfig != null
         val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
-        val clientSocket =
-            ClientSocketWrapper(
+
+        val conn =
+            nw_helper_create_tcp_connection(
                 host = host,
                 port = port.toUShort(),
-                timeoutSeconds = timeout.inWholeSeconds.convert(),
-                useTLS = useTls,
-                verifyCertificates = verifyCertificates,
-            )
-        this.socket = clientSocket
+                use_tls = NSNumber(bool = useTls),
+                verify_certs = NSNumber(bool = verifyCertificates),
+                timeout_seconds = timeout.inWholeSeconds.toInt(),
+            ) ?: throw SocketIOException("Failed to create NW connection")
+
+        this.connection = conn
         this.closedLocally = false
 
         // Wait for connection to be established
         suspendCancellableCoroutine { continuation ->
             var resumed = false
 
-            clientSocket.setStateHandlerWithHandler { _, state, errorType, errorString ->
-                if (resumed) return@setStateHandlerWithHandler
+            nw_helper_set_state_handler(conn) { state, errorDomain, _, errorDesc ->
+                if (resumed) return@nw_helper_set_state_handler
 
-                when {
-                    state?.startsWith("ready") == true -> {
+                when (state) {
+                    3 -> { // ready
                         resumed = true
+                        connectionReady = true
                         continuation.resume(Unit)
                     }
-                    errorType != SocketErrorTypeNone -> {
+                    1, 4 -> { // waiting or failed
                         resumed = true
                         continuation.resumeWithException(
-                            mapSocketException(errorType, errorString),
+                            mapSocketException(errorDomain, errorDesc),
                         )
                     }
-                    state?.startsWith("failed") == true || state?.startsWith("cancelled") == true -> {
+                    5 -> { // cancelled
                         resumed = true
+                        connectionReady = false
                         continuation.resumeWithException(
-                            SocketIOException(errorString ?: "Connection failed: $state"),
+                            SocketIOException(errorDesc ?: "Connection cancelled"),
                         )
                     }
                 }
             }
 
-            clientSocket.start()
+            nw_helper_start(conn)
 
             continuation.invokeOnCancellation {
                 if (!resumed) {
-                    clientSocket.forceClose()
+                    nw_helper_force_cancel(conn)
                 }
             }
         }

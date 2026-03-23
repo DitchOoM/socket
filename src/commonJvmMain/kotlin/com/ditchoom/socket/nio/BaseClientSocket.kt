@@ -1,10 +1,8 @@
 package com.ditchoom.socket.nio
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocate
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
@@ -19,7 +17,6 @@ import java.nio.channels.SocketChannel
 import kotlin.time.Duration
 
 abstract class BaseClientSocket(
-    private val allocationZone: AllocationZone,
     protected val blocking: Boolean = false,
 ) : ByteBufferClientSocket<SocketChannel>() {
     val selector = if (!blocking) Selector.open()!! else null
@@ -32,7 +29,7 @@ abstract class BaseClientSocket(
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
         tlsHandler?.let { return it.unwrap(timeout) }
-        val buffer = PlatformBuffer.allocate(socket.socket().receiveBufferSize, allocationZone) as BaseJvmBuffer
+        val buffer = bufferFactory.allocate(socket.socket().receiveBufferSize) as BaseJvmBuffer
         read(buffer, timeout)
         return buffer
     }
@@ -66,16 +63,22 @@ abstract class BaseClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val bytesWritten =
-            try {
-                writeMutex.withLock { socket.write(((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer, selector, timeout) }
-            } catch (e: ClosedChannelException) {
-                throw SocketClosedException.General("Socket is closed.", e)
+        val byteBuffer = ((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer
+        var totalWritten = 0
+        try {
+            writeMutex.withLock {
+                while (byteBuffer.hasRemaining()) {
+                    val bytesWritten = socket.write(byteBuffer, selector, timeout)
+                    if (bytesWritten < 0) {
+                        throw SocketClosedException.EndOfStream("Received $bytesWritten from server indicating a socket close.")
+                    }
+                    totalWritten += bytesWritten
+                }
             }
-        if (bytesWritten < 0) {
-            throw SocketClosedException.EndOfStream("Received $bytesWritten from server indicating a socket close.")
+        } catch (e: ClosedChannelException) {
+            throw SocketClosedException.General("Socket is closed.", e)
         }
-        return bytesWritten
+        return totalWritten
     }
 
     override suspend fun close() {

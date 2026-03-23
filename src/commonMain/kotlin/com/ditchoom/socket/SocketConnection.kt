@@ -2,7 +2,6 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadWriteBuffer
-import com.ditchoom.buffer.SuspendCloseable
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
@@ -23,7 +22,7 @@ class SocketConnection private constructor(
     val pool: BufferPool,
     val stream: SuspendingStreamProcessor,
     private val options: ConnectionOptions,
-) : SuspendCloseable {
+) {
     val isOpen: Boolean get() = socket.isOpen()
 
     /**
@@ -56,6 +55,11 @@ class SocketConnection private constructor(
         timeout: Duration = options.writeTimeout,
     ): Int = socket.write(buffer, timeout)
 
+    suspend fun writeGathered(
+        buffers: List<ReadBuffer>,
+        timeout: Duration = options.writeTimeout,
+    ): Int = socket.writeGathered(buffers, timeout)
+
     inline fun <T> withBuffer(
         minSize: Int = 0,
         block: (ReadWriteBuffer) -> T,
@@ -68,7 +72,7 @@ class SocketConnection private constructor(
         }
     }
 
-    override suspend fun close() {
+    suspend fun close() {
         socket.close()
     }
 
@@ -78,7 +82,8 @@ class SocketConnection private constructor(
             port: Int,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            val socket = ClientSocket.allocate(options.allocationZone)
+            val socket = ClientSocket.allocate()
+            socket.bufferFactory = options.bufferFactory
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
             val pool =
                 BufferPool(
@@ -107,6 +112,7 @@ class SocketConnection private constructor(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
+            socket.bufferFactory = options.bufferFactory
             val pool =
                 BufferPool(
                     maxPoolSize = options.maxPoolSize,

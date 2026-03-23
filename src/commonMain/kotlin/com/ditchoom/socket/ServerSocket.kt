@@ -1,10 +1,8 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.SuspendCloseable
 import kotlinx.coroutines.flow.Flow
 
-interface ServerSocket : SuspendCloseable {
+interface ServerSocket {
     suspend fun bind(
         port: Int = -1,
         host: String? = null,
@@ -15,7 +13,9 @@ interface ServerSocket : SuspendCloseable {
 
     fun port(): Int
 
+    suspend fun close()
+
     companion object
 }
 
-expect fun ServerSocket.Companion.allocate(allocationZone: AllocationZone = AllocationZone.Direct): ServerSocket
+expect fun ServerSocket.Companion.allocate(): ServerSocket

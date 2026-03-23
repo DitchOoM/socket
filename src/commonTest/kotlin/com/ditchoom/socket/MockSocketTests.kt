@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.allocate
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,7 +17,7 @@ class MockSocketTests {
             val mock = MockClientToServerSocket()
             mock.open(80, 1.seconds, "localhost")
 
-            val expected = PlatformBuffer.allocate(3)
+            val expected = BufferFactory.Default.allocate(3)
             expected.writeByte(1)
             expected.writeByte(2)
             expected.writeByte(3)
@@ -38,7 +38,7 @@ class MockSocketTests {
             val mock = MockClientToServerSocket()
             mock.open(80, 1.seconds, "localhost")
 
-            val buffer = PlatformBuffer.allocate(2)
+            val buffer = BufferFactory.Default.allocate(2)
             buffer.writeByte(42)
             buffer.writeByte(43)
             buffer.resetForRead()

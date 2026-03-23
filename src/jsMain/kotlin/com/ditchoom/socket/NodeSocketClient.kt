@@ -1,6 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
@@ -175,9 +174,8 @@ open class NodeSocket : ClientSocket {
     }
 }
 
-class NodeClientSocket(
-    private val allocationZone: AllocationZone,
-) : NodeSocket(),
+class NodeClientSocket :
+    NodeSocket(),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,

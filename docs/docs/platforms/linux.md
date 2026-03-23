@@ -56,7 +56,7 @@ The Linux implementation uses io_uring, a modern async I/O interface that:
 
 - Provides kernel-level async operations without syscall overhead per operation
 - Supports batching multiple I/O operations
-- Enables true zero-copy data transfer with proper buffer management
+- Enables true zero-copy data transfer via `BufferFactory.deterministic()` buffers with native memory access
 
 Key components:
 - `IoUringManager` - manages the shared io_uring ring and completion dispatch

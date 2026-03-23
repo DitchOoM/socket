@@ -5,7 +5,7 @@ title: Client Socket
 
 # Client Socket
 
-The `ClientSocket` interface is the primary API for connecting to remote servers. It extends `Reader`, `Writer`, and `SuspendCloseable`.
+The `ClientSocket` interface is the primary API for connecting to remote servers. It extends `Reader` and `Writer`.
 
 ## Connecting
 
@@ -23,7 +23,7 @@ val socket = ClientSocket.connect(
 ## Reading
 
 ```kotlin
-// Read raw bytes as a ReadBuffer
+// Read raw bytes as a PlatformBuffer
 val buffer = socket.read()
 buffer.resetForRead()
 
@@ -115,6 +115,40 @@ val bytesWritten = socket.write(buffer)
 
 // Write a string (UTF-8 default)
 val bytesWritten = socket.writeString("Hello, server!")
+
+// Write multiple buffers at once (scatter-gather I/O)
+val totalWritten = socket.writeGathered(listOf(headerBuffer, payloadBuffer))
+```
+
+The `writeGathered()` method writes multiple buffers in a single operation. On platforms that support it (e.g., `GatheringByteChannel` on JVM NIO, `writev` on Linux), this maps to true scatter-gather I/O for better performance. On other platforms it falls back to sequential writes.
+
+## Buffer Factory
+
+`ClientSocket` exposes a `bufferFactory` property that controls how internal read buffers are allocated. The default is `BufferFactory.deterministic()`, which provides native memory with explicit cleanup -- required for I/O paths that need `nativeAddress` (TLS handler, NIO channels, io_uring).
+
+```kotlin
+val socket = ClientSocket.connect(port = 80, hostname = "example.com")
+
+// Check the default factory (deterministic for I/O paths)
+println(socket.bufferFactory) // BufferFactory.deterministic()
+
+// Override with a custom factory before first read
+socket.bufferFactory = BufferFactory.Default
+```
+
+You can also set the factory via `ConnectionOptions`:
+
+```kotlin
+SocketConnection.connect(
+    hostname = "example.com",
+    port = 443,
+    options = ConnectionOptions(
+        socketOptions = SocketOptions.tlsDefault(),
+        bufferFactory = BufferFactory.deterministic(), // default
+    ),
+) { conn ->
+    // ...
+}
 ```
 
 ## Connection State
@@ -176,7 +210,7 @@ dependencies {
 }
 ```
 
-It supports Gzip and Deflate and works with any `ReadBuffer`:
+It supports Gzip and Deflate and works with any `PlatformBuffer`:
 
 ```kotlin
 import com.ditchoom.buffer.compression.*
