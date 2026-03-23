@@ -194,6 +194,5 @@ open class NWSocketWrapper : ClientSocket {
                 else -> SocketIOException(message)
             }
         }
-
     }
 }
