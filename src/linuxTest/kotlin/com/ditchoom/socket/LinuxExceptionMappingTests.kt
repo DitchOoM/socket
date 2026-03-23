@@ -100,37 +100,67 @@ class LinuxExceptionMappingTests {
 
     @Test
     fun throwFromResult_econnrefused() {
-        val ex = try { throwFromResult(-ECONNREFUSED, "connect") } catch (e: SocketException) { e }
+        val ex =
+            try {
+                throwFromResult(-ECONNREFUSED, "connect")
+            } catch (e: SocketException) {
+                e
+            }
         assertIs<SocketConnectionException.Refused>(ex)
     }
 
     @Test
     fun throwFromResult_enetunreach() {
-        val ex = try { throwFromResult(-ENETUNREACH, "connect") } catch (e: SocketException) { e }
+        val ex =
+            try {
+                throwFromResult(-ENETUNREACH, "connect")
+            } catch (e: SocketException) {
+                e
+            }
         assertIs<SocketConnectionException.NetworkUnreachable>(ex)
     }
 
     @Test
     fun throwFromResult_ehostunreach() {
-        val ex = try { throwFromResult(-EHOSTUNREACH, "connect") } catch (e: SocketException) { e }
+        val ex =
+            try {
+                throwFromResult(-EHOSTUNREACH, "connect")
+            } catch (e: SocketException) {
+                e
+            }
         assertIs<SocketConnectionException.HostUnreachable>(ex)
     }
 
     @Test
     fun throwFromResult_econnreset() {
-        val ex = try { throwFromResult(-ECONNRESET, "recv") } catch (e: SocketException) { e }
+        val ex =
+            try {
+                throwFromResult(-ECONNRESET, "recv")
+            } catch (e: SocketException) {
+                e
+            }
         assertIs<SocketClosedException.ConnectionReset>(ex)
     }
 
     @Test
     fun throwFromResult_epipe() {
-        val ex = try { throwFromResult(-EPIPE, "send") } catch (e: SocketException) { e }
+        val ex =
+            try {
+                throwFromResult(-EPIPE, "send")
+            } catch (e: SocketException) {
+                e
+            }
         assertIs<SocketClosedException.BrokenPipe>(ex)
     }
 
     @Test
     fun throwFromResult_etimedout() {
-        val ex = try { throwFromResult(-ETIMEDOUT, "read") } catch (e: SocketException) { e }
+        val ex =
+            try {
+                throwFromResult(-ETIMEDOUT, "read")
+            } catch (e: SocketException) {
+                e
+            }
         assertIs<SocketTimeoutException>(ex)
     }
 }

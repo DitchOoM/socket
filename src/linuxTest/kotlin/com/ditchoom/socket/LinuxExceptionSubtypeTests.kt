@@ -135,5 +135,4 @@ class LinuxExceptionSubtypeTests {
                 "hostname should be preserved, got: ${ex.hostname}",
             )
         }
-
 }

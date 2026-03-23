@@ -626,7 +626,10 @@ internal object IoUringManager {
  * handleWriteError, connectWithIoUring) delegate here.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal fun mapErrnoToException(errorCode: Int, operation: String): SocketException {
+internal fun mapErrnoToException(
+    errorCode: Int,
+    operation: String,
+): SocketException {
     val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
     val message = "$operation failed: $errorMessage (errno=$errorCode)"
     return when (errorCode) {
@@ -645,9 +648,7 @@ internal fun mapErrnoToException(errorCode: Int, operation: String): SocketExcep
  * Maps POSIX errno values to appropriate socket exceptions.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal fun throwSocketException(operation: String): Nothing {
-    throw mapErrnoToException(errno, operation)
-}
+internal fun throwSocketException(operation: String): Nothing = throw mapErrnoToException(errno, operation)
 
 /**
  * Throw exception from a negative result code.
@@ -655,9 +656,7 @@ internal fun throwSocketException(operation: String): Nothing {
 internal fun throwFromResult(
     result: Int,
     operation: String,
-): Nothing {
-    throw mapErrnoToException(-result, operation)
-}
+): Nothing = throw mapErrnoToException(-result, operation)
 
 /**
  * Check if an operation succeeded, throw exception if not.
