@@ -153,8 +153,10 @@ open class NWSocketWrapper : ClientSocket {
             return when (errorDomain) {
                 SocketErrorTypeDns -> SocketUnknownHostException(hostname, message)
                 SocketErrorTypeTls -> {
-                    if (msgLower.contains("handshake") || msgLower.contains("certificate") ||
-                        msgLower.contains("cert") || msgLower.contains("trust")
+                    if (msgLower.contains("handshake") ||
+                        msgLower.contains("certificate") ||
+                        msgLower.contains("cert") ||
+                        msgLower.contains("trust")
                     ) {
                         SSLHandshakeFailedException(message)
                     } else {
@@ -165,7 +167,8 @@ open class NWSocketWrapper : ClientSocket {
                     when {
                         // DNS failures can arrive as POSIX errors on macOS
                         // (e.g., EAI_NONAME = "nodename nor servname provided")
-                        msgLower.contains("nodename") || msgLower.contains("servname") ||
+                        msgLower.contains("nodename") ||
+                            msgLower.contains("servname") ||
                             msgLower.contains("name or service not known") ||
                             msgLower.contains("host not found") ->
                             SocketUnknownHostException(hostname, message)
