@@ -146,11 +146,12 @@ open class NWSocketWrapper : ClientSocket {
         fun mapSocketException(
             errorDomain: Int,
             errorString: String?,
+            hostname: String? = null,
         ): SocketException {
             val message = errorString ?: "Socket error"
             val msgLower = message.lowercase()
             return when (errorDomain) {
-                SocketErrorTypeDns -> SocketUnknownHostException(null, message)
+                SocketErrorTypeDns -> SocketUnknownHostException(hostname, message)
                 SocketErrorTypeTls -> {
                     if (msgLower.contains("handshake") || msgLower.contains("certificate") ||
                         msgLower.contains("cert") || msgLower.contains("trust")
@@ -167,7 +168,7 @@ open class NWSocketWrapper : ClientSocket {
                         msgLower.contains("nodename") || msgLower.contains("servname") ||
                             msgLower.contains("name or service not known") ||
                             msgLower.contains("host not found") ->
-                            SocketUnknownHostException(null, message)
+                            SocketUnknownHostException(hostname, message)
                         msgLower.contains("connection refused") || msgLower.contains("econnrefused") ->
                             SocketConnectionException.Refused(null, 0, platformError = message)
                         msgLower.contains("timed out") || msgLower.contains("timeout") ->

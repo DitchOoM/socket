@@ -62,7 +62,7 @@ class NWClientSocketWrapper :
                     1, 4 -> { // waiting or failed
                         resumed = true
                         continuation.resumeWithException(
-                            mapSocketException(errorDomain, errorDesc),
+                            mapSocketException(errorDomain, errorDesc, hostname = host),
                         )
                     }
                     5 -> { // cancelled
