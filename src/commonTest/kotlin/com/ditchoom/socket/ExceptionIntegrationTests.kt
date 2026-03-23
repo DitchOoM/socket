@@ -32,10 +32,10 @@ class ExceptionIntegrationTests {
                     socket.open(port = 80, timeout = 5.seconds, hostname = "this.host.does.not.exist.invalid")
                     socket.close()
                     fail("Should have thrown for invalid hostname")
-                } catch (e: SocketUnknownHostException) {
+                } catch (e: SocketException) {
                     e
                 }
-            assertTrue(ex.message.contains("this.host.does.not.exist.invalid"), "got: ${ex.message}")
+            assertIs<SocketUnknownHostException>(ex, "Expected SocketUnknownHostException but got ${ex::class.simpleName}: ${ex.message}")
         }
 
     // ──────────────────────────────────────────────────────────────────
@@ -258,9 +258,10 @@ class ExceptionIntegrationTests {
                     socket.open(port = 80, timeout = 5.seconds, hostname = "nonexistent.test.invalid")
                     socket.close()
                     fail("Should have thrown")
-                } catch (e: SocketUnknownHostException) {
+                } catch (e: SocketException) {
                     e
                 }
+            assertIs<SocketUnknownHostException>(ex, "Expected SocketUnknownHostException but got ${ex::class.simpleName}: ${ex.message}")
             assertTrue(
                 ex.hostname == "nonexistent.test.invalid" || ex.message.contains("nonexistent.test.invalid"),
                 "Hostname should be preserved, got hostname=${ex.hostname}, message=${ex.message}",
