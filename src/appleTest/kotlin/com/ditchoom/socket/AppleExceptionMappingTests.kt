@@ -99,10 +99,11 @@ class AppleExceptionMappingTests {
 
     @Test
     fun posixError_nodename_mapsToSocketUnknownHostException() {
-        val result = NWSocketWrapper.mapSocketException(
-            SocketErrorTypePosix,
-            "POSIX error 8: nodename nor servname provided, or not known",
-        )
+        val result =
+            NWSocketWrapper.mapSocketException(
+                SocketErrorTypePosix,
+                "POSIX error 8: nodename nor servname provided, or not known",
+            )
         assertIs<SocketUnknownHostException>(result)
     }
 
