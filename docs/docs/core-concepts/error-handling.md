@@ -118,6 +118,50 @@ Each platform maps its native errors to the same sealed hierarchy:
 | **Node.js** | `ECONNREFUSED` | `ECONNRESET` | `EPIPE` | `ETIMEDOUT` | `getaddrinfo` | `ERR_TLS` |
 | **Apple** | POSIX "refused" | POSIX "reset" | POSIX "broken pipe" | POSIX "timed out" | DNS error type | TLS error type |
 
+## Reconnection
+
+The library provides composable reconnection primitives for protocol libraries (WebSocket, MQTT) and application code.
+
+### ReconnectionClassifier
+
+A `fun interface` that classifies errors as recoverable or non-recoverable:
+
+```kotlin
+val classifier = DefaultReconnectionClassifier()
+when (val decision = classifier.classify(error)) {
+    is ReconnectDecision.RetryAfter -> delay(decision.delay)
+    is ReconnectDecision.GiveUp -> break
+}
+```
+
+### DefaultReconnectionClassifier
+
+Provides exponential backoff (100ms → 15s, 2x factor) and classifies these errors as non-recoverable:
+
+- `SSLHandshakeFailedException` — certificate or handshake failure
+- `SSLProtocolException` — TLS misconfiguration
+- `SocketUnknownHostException` — DNS resolution failed
+
+All other errors (connection refused, reset, timeout, I/O) are recoverable. Call `reset()` when a connection succeeds to restart the backoff sequence.
+
+### Custom Classifiers
+
+Protocol libraries add domain-specific knowledge by delegating to `DefaultReconnectionClassifier`:
+
+```kotlin
+class MyProtocolClassifier(
+    private val delegate: DefaultReconnectionClassifier = DefaultReconnectionClassifier(),
+) : ReconnectionClassifier {
+    override suspend fun classify(error: Throwable) = when (error) {
+        is MyProtocolException.AuthFailed -> ReconnectDecision.GiveUp
+        is MyProtocolException.TransportFailed -> delegate.classify(error.cause!!)
+        else -> delegate.classify(error)
+    }
+}
+```
+
+The `suspend` modifier enables network-aware reconnection — a classifier can suspend until connectivity changes before returning `RetryAfter`.
+
 ## JVM Interop
 
 On JVM and Android, `SocketException` extends `java.io.IOException` (via `PlatformIOException`), so existing `catch (e: IOException)` blocks will catch socket errors — matching standard Java convention.
