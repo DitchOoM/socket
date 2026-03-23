@@ -131,24 +131,27 @@ class AppleExceptionMappingTests {
         assertIs<SocketConnectionException.NetworkUnreachable>(result)
     }
 
-    // ==================== Send error mapping ====================
+    // ==================== Send error mapping (uses same mapSocketException path) ====================
 
     @Test
-    fun sendError_epipe_mapsToSocketClosedBrokenPipe() {
-        val result = NWSocketWrapper.mapSendError("NW send error domain=1 code=32")
+    fun posixError_epipe_mapsToSocketClosedBrokenPipe() {
+        // Send errors now go through describe_nw_error → mapSocketException,
+        // producing "POSIX error 32: Broken pipe" instead of raw domain/code.
+        val result =
+            NWSocketWrapper.mapSocketException(
+                SocketErrorTypePosix,
+                "POSIX error 32: Broken pipe",
+            )
         assertIs<SocketClosedException.BrokenPipe>(result)
     }
 
     @Test
-    fun sendError_econnreset_mapsToSocketClosedConnectionReset() {
-        val result = NWSocketWrapper.mapSendError("NW send error domain=1 code=54")
+    fun posixError_econnreset_macOS_mapsToConnectionReset() {
+        val result =
+            NWSocketWrapper.mapSocketException(
+                SocketErrorTypePosix,
+                "POSIX error 54: Connection reset by peer",
+            )
         assertIs<SocketClosedException.ConnectionReset>(result)
-    }
-
-    @Test
-    fun sendError_withPosixDomain_routesThroughMapSocketException() {
-        val result = NWSocketWrapper.mapSendError("NW send error domain=1 code=32")
-        // domain=1 (POSIX) routes through mapSocketException which checks the message string
-        assertIs<SocketClosedException>(result)
     }
 }

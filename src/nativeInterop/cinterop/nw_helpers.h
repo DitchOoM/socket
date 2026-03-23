@@ -118,11 +118,18 @@ void nw_helper_tcp_receive(
     uint32_t maximum_length,
     nw_helper_tcp_receive_handler_t _Nonnull handler);
 
+// TCP send callback — K/N-safe types, same error decomposition as receive.
+// error_domain: 0=none (success), 1=posix, 2=dns, 3=tls, 4=unknown
+typedef void (^nw_helper_tcp_send_handler_t)(
+    int32_t error_domain,
+    int32_t error_code,
+    NSString * _Nullable error_desc);
+
 // TCP send — wraps nw_connection_send with default message context
 void nw_helper_send_tcp(
     nw_connection_t _Nonnull connection,
     NSData * _Nullable data,
-    nw_helper_send_callback_t _Nonnull completion);
+    nw_helper_tcp_send_handler_t _Nonnull completion);
 
 // ============================================================
 // Server listener

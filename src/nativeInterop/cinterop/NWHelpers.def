@@ -312,7 +312,7 @@ void nw_helper_tcp_receive(
 void nw_helper_send_tcp(
     nw_connection_t _Nonnull connection,
     NSData * _Nullable data,
-    nw_helper_send_callback_t _Nonnull completion)
+    nw_helper_tcp_send_handler_t _Nonnull completion)
 {
     dispatch_data_t dispatch_data = NULL;
     if (data != nil && data.length > 0) {
@@ -321,16 +321,12 @@ void nw_helper_send_tcp(
     }
     nw_connection_send(connection, dispatch_data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true,
         ^(nw_error_t _Nullable error) {
-            if (error == NULL) {
-                completion(nil);
-            } else {
-                int code = nw_error_get_error_code(error);
-                int domain = nw_error_get_error_domain(error);
-                NSString *desc = [NSString stringWithFormat:@"NW send error domain=%d code=%d", domain, code];
-                NSError *nsError = [[NSError alloc] initWithDomain:@"NWError"
-                    code:code userInfo:@{NSLocalizedDescriptionKey: desc}];
-                completion(nsError);
+            int32_t error_domain = 0, error_code = 0;
+            NSString *error_desc = nil;
+            if (error != NULL) {
+                describe_nw_error(error, &error_domain, &error_code, &error_desc);
             }
+            completion(error_domain, error_code, error_desc);
         });
 }
 
