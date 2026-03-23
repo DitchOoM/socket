@@ -266,6 +266,30 @@ clients.collect { client ->
 }
 ```
 
+## Layer 7: Reconnection
+
+For long-lived connections, use `ReconnectionClassifier` to decide when to retry:
+
+```kotlin
+val classifier = DefaultReconnectionClassifier()
+
+while (scope.isActive) {
+    try {
+        ClientSocket.connect(port, hostname, socketOptions) { socket ->
+            classifier.reset() // connected — reset backoff
+            socket.readFlowLines().collect { process(it) }
+        }
+    } catch (e: SocketException) {
+        when (val decision = classifier.classify(e)) {
+            is ReconnectDecision.RetryAfter -> delay(decision.delay)
+            is ReconnectDecision.GiveUp -> break
+        }
+    }
+}
+```
+
+`DefaultReconnectionClassifier` provides exponential backoff (100ms → 15s) and gives up on non-recoverable errors (TLS failures, DNS failures). Protocol libraries layer domain-specific classifiers on top — see [Error Handling: Custom Classifiers](../core-concepts/error-handling.md#custom-classifiers).
+
 ## What You Get for Free
 
 The key value of this stack is what you **don't** have to write:
