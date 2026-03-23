@@ -195,28 +195,39 @@ open class NWSocketWrapper : ClientSocket {
          * Maps send errors from nw_helper_send_tcp.
          *
          * The C callback produces `"NW send error domain=D code=C"`.
-         * We parse the domain to route through [mapSocketException], falling back
-         * to POSIX-code-based mapping for common write-after-close errors.
+         * For POSIX domain, maps by error code directly since the message
+         * doesn't contain human-readable strings like "broken pipe".
          */
         fun mapSendError(description: String): SocketException {
-            // Try to extract domain and code from "NW send error domain=D code=C"
             val domainMatch = Regex("""domain=(\d+)""").find(description)
             val codeMatch = Regex("""code=(\d+)""").find(description)
             val domain = domainMatch?.groupValues?.get(1)?.toIntOrNull()
             val code = codeMatch?.groupValues?.get(1)?.toIntOrNull()
 
-            if (domain != null && domain > 0) {
-                // Route through the standard mapping if we have a meaningful domain
+            // For non-POSIX domains (DNS, TLS), route through string-based mapping
+            if (domain != null && domain != SocketErrorTypePosix && domain > 0) {
                 return mapSocketException(domain, description)
             }
 
-            // Fallback: map common POSIX codes for send errors
-            return when (code) {
-                32 -> SocketClosedException.BrokenPipe(description) // EPIPE
-                54 -> SocketClosedException.ConnectionReset(description) // ECONNRESET (macOS)
-                57 -> SocketClosedException.BrokenPipe(description) // ENOTCONN
-                else -> SocketIOException(description)
+            // POSIX domain: map by error code directly
+            if (code != null) {
+                return when (code) {
+                    32 -> SocketClosedException.BrokenPipe(description) // EPIPE
+                    54 -> SocketClosedException.ConnectionReset(description) // ECONNRESET (macOS)
+                    57 -> SocketClosedException.BrokenPipe(description) // ENOTCONN
+                    61 -> SocketConnectionException.Refused(null, 0, platformError = description) // ECONNREFUSED (macOS)
+                    64 -> SocketClosedException.ConnectionReset(description) // EHOSTDOWN (macOS)
+                    60 -> SocketTimeoutException(description) // ETIMEDOUT (macOS)
+                    51 -> SocketConnectionException.NetworkUnreachable(description) // ENETUNREACH (macOS)
+                    65 -> SocketConnectionException.HostUnreachable(description) // EHOSTUNREACH (macOS)
+                    104 -> SocketClosedException.ConnectionReset(description) // ECONNRESET (Linux-style)
+                    111 -> SocketConnectionException.Refused(null, 0, platformError = description) // ECONNREFUSED (Linux-style)
+                    110 -> SocketTimeoutException(description) // ETIMEDOUT (Linux-style)
+                    else -> SocketIOException(description)
+                }
             }
+
+            return SocketIOException(description)
         }
     }
 }
