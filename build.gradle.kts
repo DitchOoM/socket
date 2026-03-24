@@ -538,6 +538,10 @@ kotlin {
             }
         }
     }
+    wasmJs {
+        browser()
+        nodejs()
+    }
 
     // Apple targets with Network.framework zero-copy socket implementation
     if (isMacOS) {
