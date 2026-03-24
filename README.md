@@ -39,6 +39,50 @@ dependencies {
 
 Find the latest versions on [Maven Central](https://central.sonatype.com/search?q=com.ditchoom).
 
+## Error Handling
+
+All socket errors are thrown as subtypes of the `SocketException` sealed hierarchy — catch broad categories or specific failure modes:
+
+```kotlin
+try {
+    ClientSocket.connect(443, "example.com", socketOptions = SocketOptions.tlsDefault()) { socket ->
+        socket.writeString("hello")
+        socket.readString()
+    }
+} catch (e: SocketClosedException) {
+    // Connection lost (reset, broken pipe, EOF)
+} catch (e: SocketConnectionException.Refused) {
+    // Nothing listening on that port
+} catch (e: SocketUnknownHostException) {
+    println("Cannot resolve: ${e.hostname}")
+} catch (e: SSLSocketException) {
+    // TLS certificate or protocol failure
+}
+```
+
+## Reconnection
+
+`ReconnectionClassifier` decides whether to retry or give up, with exponential backoff:
+
+```kotlin
+val classifier = DefaultReconnectionClassifier()
+while (scope.isActive) {
+    try {
+        ClientSocket.connect(port, hostname, socketOptions) { socket ->
+            classifier.reset() // connected — reset backoff
+            socket.readFlowLines().collect { process(it) }
+        }
+    } catch (e: SocketException) {
+        when (val decision = classifier.classify(e)) {
+            is ReconnectDecision.RetryAfter -> delay(decision.delay)
+            is ReconnectDecision.GiveUp -> break // TLS failure, DNS failure — won't recover
+        }
+    }
+}
+```
+
+Protocol libraries (WebSocket, MQTT) layer domain-specific classifiers on top — see the [docs][docs].
+
 ## Quick Example
 
 ```kotlin
