@@ -39,64 +39,13 @@ repositories {
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }
 }
 
-// Swift library paths
-val swiftBuildDir = layout.buildDirectory.dir("swift")
-val swiftHeaderDir = swiftBuildDir.map { it.dir("include") }
-val swiftLibDir = swiftBuildDir.map { it.dir("lib") }
-
-// Task to build Swift libraries (only on macOS)
-val buildSwiftTask =
-    tasks.register<Exec>("buildSwift") {
-        onlyIf { isMacOS }
-        workingDir = projectDir
-        commandLine("./buildSwift.sh")
-        outputs.dir(swiftBuildDir)
-        inputs.files(fileTree("src/nativeInterop/cinterop/swift") { include("**/*.swift") })
-    }
-
-// Map our library subdirs to Swift platform names
-fun swiftPlatformForLibSubdir(libSubdir: String): String =
-    when (libSubdir) {
-        "macos" -> "macosx"
-        "ios" -> "iphoneos"
-        "ios-simulator" -> "iphonesimulator"
-        "tvos" -> "appletvos"
-        "tvos-simulator" -> "appletvsimulator"
-        "watchos" -> "watchos"
-        "watchos-simulator" -> "watchsimulator"
-        else -> "macosx"
-    }
-
-// Configure cinterop for Apple targets
-fun KotlinNativeTarget.configureSocketWrapperCinterop(libSubdir: String) {
-    val libPath =
-        swiftLibDir
-            .get()
-            .dir(libSubdir)
-            .asFile.absolutePath
-    val swiftPlatform = swiftPlatformForLibSubdir(libSubdir)
+// Configure cinterop for NW helpers (C bridge for dispatch_data_t → NSData, connection creation, WS support)
+fun KotlinNativeTarget.configureNWHelpersCinterop() {
     compilations["main"].cinterops {
-        create("SocketWrapper") {
-            defFile("src/nativeInterop/cinterop/SocketWrapper.def")
-            includeDirs(swiftHeaderDir)
-            // Embed the static library in the klib so consumers link it automatically
-            extraOpts("-libraryPath", libPath)
-            extraOpts("-staticLibrary", "libSocketWrapper.a")
-            tasks.named(interopProcessingTaskName) {
-                dependsOn(buildSwiftTask)
-            }
+        create("NWHelpers") {
+            defFile("src/nativeInterop/cinterop/NWHelpers.def")
+            includeDirs("src/nativeInterop/cinterop")
         }
-    }
-    compilations["main"].compileTaskProvider.configure {
-        dependsOn(buildSwiftTask)
-    }
-    // Link Swift runtime libraries (platform-specific) for all binaries
-    // Note: libSocketWrapper.a is now embedded in the klib via -staticLibrary
-    binaries.all {
-        linkerOpts(
-            "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$swiftPlatform",
-            "-L/usr/lib/swift",
-        )
     }
 }
 
@@ -589,27 +538,31 @@ kotlin {
             }
         }
     }
+    wasmJs {
+        browser()
+        nodejs()
+    }
 
     // Apple targets with Network.framework zero-copy socket implementation
     if (isMacOS) {
         // macOS
-        macosArm64 { configureSocketWrapperCinterop("macos") }
-        macosX64 { configureSocketWrapperCinterop("macos") }
+        macosArm64 { configureNWHelpersCinterop() }
+        macosX64 { configureNWHelpersCinterop() }
 
         // iOS
-        iosArm64 { configureSocketWrapperCinterop("ios") }
-        iosSimulatorArm64 { configureSocketWrapperCinterop("ios-simulator") }
-        iosX64 { configureSocketWrapperCinterop("ios-simulator") }
+        iosArm64 { configureNWHelpersCinterop() }
+        iosSimulatorArm64 { configureNWHelpersCinterop() }
+        iosX64 { configureNWHelpersCinterop() }
 
         // tvOS
-        tvosArm64 { configureSocketWrapperCinterop("tvos") }
-        tvosSimulatorArm64 { configureSocketWrapperCinterop("tvos-simulator") }
-        tvosX64 { configureSocketWrapperCinterop("tvos-simulator") }
+        tvosArm64 { configureNWHelpersCinterop() }
+        tvosSimulatorArm64 { configureNWHelpersCinterop() }
+        tvosX64 { configureNWHelpersCinterop() }
 
         // watchOS (watchosArm32 not supported by buffer library)
-        watchosArm64 { configureSocketWrapperCinterop("watchos") }
-        watchosSimulatorArm64 { configureSocketWrapperCinterop("watchos-simulator") }
-        watchosX64 { configureSocketWrapperCinterop("watchos-simulator") }
+        watchosArm64 { configureNWHelpersCinterop() }
+        watchosSimulatorArm64 { configureNWHelpersCinterop() }
+        watchosX64 { configureNWHelpersCinterop() }
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
@@ -622,8 +575,6 @@ kotlin {
             configureLinuxCinterop("x64")
         }
 
-        // ARM64 target - cross-compiled from x64
-        // Requires: sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross
         linuxArm64 {
             configureLinuxCinterop("arm64")
         }
@@ -678,7 +629,9 @@ kotlin {
             implementation(libs.kotlinx.coroutines.debug)
         }
 
-        // Add shared Apple implementation to all Apple target source sets
+        // Add shared Apple implementation to all Apple target source sets.
+        // Cannot use appleMain directly because compileAppleMainKotlinMetadata
+        // can't resolve Apple-specific types (NSDataBuffer, NSData, etc.) from dependencies.
         if (isMacOS) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(

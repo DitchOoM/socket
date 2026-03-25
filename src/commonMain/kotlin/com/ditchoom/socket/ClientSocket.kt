@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.SuspendCloseable
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.data.Reader
 import com.ditchoom.data.Writer
 import kotlin.time.Duration
@@ -14,8 +14,16 @@ import kotlin.time.Duration.Companion.seconds
 interface ClientSocket :
     SocketController,
     Reader,
-    Writer,
-    SuspendCloseable {
+    Writer {
+    /**
+     * Controls how internal read buffers are allocated.
+     * Set before first read to inject pooled, shared memory, or managed allocation strategies.
+     * Platforms that use zero-copy reads (Apple, JS) ignore this property.
+     */
+    var bufferFactory: BufferFactory
+        get() = BufferFactory.Default
+        set(_) {} // No-op default; overridden by JVM/Linux
+
     companion object
 }
 
@@ -24,9 +32,10 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     timeout: Duration = 15.seconds,
     socketOptions: SocketOptions = SocketOptions(),
-    zone: AllocationZone = AllocationZone.Direct,
+    bufferFactory: BufferFactory = BufferFactory.Default,
 ): ClientToServerSocket {
-    val socket = ClientSocket.allocate(zone)
+    val socket = ClientSocket.allocate()
+    socket.bufferFactory = bufferFactory
     socket.open(port, timeout, hostname, socketOptions)
     return socket
 }
@@ -36,9 +45,11 @@ suspend fun <T> ClientSocket.Companion.connect(
     hostname: String? = null,
     timeout: Duration = 15.seconds,
     socketOptions: SocketOptions = SocketOptions(),
+    bufferFactory: BufferFactory = BufferFactory.Default,
     lambda: suspend (ClientSocket) -> T,
 ): T {
     val socket = ClientSocket.allocate()
+    socket.bufferFactory = bufferFactory
     return try {
         socket.open(port, timeout, hostname, socketOptions)
         lambda(socket)
@@ -47,4 +58,4 @@ suspend fun <T> ClientSocket.Companion.connect(
     }
 }
 
-expect fun ClientSocket.Companion.allocate(allocationZone: AllocationZone = AllocationZone.Direct): ClientToServerSocket
+expect fun ClientSocket.Companion.allocate(): ClientToServerSocket

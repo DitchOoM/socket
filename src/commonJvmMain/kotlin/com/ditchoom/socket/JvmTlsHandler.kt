@@ -1,11 +1,11 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.BaseJvmBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.buffer.allocate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.NoSuchAlgorithmException
@@ -32,6 +32,7 @@ internal class JvmTlsHandler(
     private val port: Int,
     private val rawRead: suspend (BaseJvmBuffer, Duration) -> Int,
     private val rawWrite: suspend (ReadBuffer, Duration) -> Int,
+    private val bufferFactory: BufferFactory = BufferFactory.Default,
 ) {
     private lateinit var engine: SSLEngine
     private var overflowEncryptedReadBuffer: BaseJvmBuffer? = null
@@ -63,15 +64,28 @@ internal class JvmTlsHandler(
         }
 
         engine.beginHandshake()
-        doHandshake(timeout)
+        try {
+            doHandshake(timeout)
+        } catch (e: javax.net.ssl.SSLHandshakeException) {
+            throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+        } catch (e: javax.net.ssl.SSLException) {
+            throw SSLProtocolException(e.message ?: "TLS error during handshake", e)
+        }
     }
 
     suspend fun wrap(
         plainText: BaseJvmBuffer,
         timeout: Duration,
     ): Int {
-        val encrypted = bufferFactory(engine.session.packetBufferSize)
-        val result = engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
+        val encrypted = allocateBuffer(engine.session.packetBufferSize)
+        val result =
+            try {
+                engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
+            } catch (e: javax.net.ssl.SSLHandshakeException) {
+                throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+            } catch (e: javax.net.ssl.SSLException) {
+                throw SSLProtocolException(e.message ?: "TLS wrap error", e)
+            }
         when (result.status!!) {
             SSLEngineResult.Status.BUFFER_UNDERFLOW ->
                 throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
@@ -95,14 +109,14 @@ internal class JvmTlsHandler(
     }
 
     suspend fun unwrap(timeout: Duration): ReadBuffer {
-        val plainTextReadBuffer = bufferFactory(engine.session.applicationBufferSize)
+        val plainTextReadBuffer = allocateBuffer(engine.session.applicationBufferSize)
         // Loop until we produce application data. TLS 1.3 may send post-handshake
         // messages (e.g. NewSessionTicket) that unwrap to 0 application bytes.
         // We must retry rather than returning empty, which callers treat as EOF.
         while (true) {
             val encryptedReadBuffer =
                 overflowEncryptedReadBuffer
-                    ?: bufferFactory(engine.session.packetBufferSize).also {
+                    ?: allocateBuffer(engine.session.packetBufferSize).also {
                         val bytesRead = rawRead(it, timeout)
                         if (bytesRead < 1) {
                             return EMPTY_BUFFER
@@ -111,7 +125,13 @@ internal class JvmTlsHandler(
                     }
             while (encryptedReadBuffer.hasRemaining()) {
                 val result =
-                    engine.unwrap(encryptedReadBuffer.byteBuffer, plainTextReadBuffer.byteBuffer)
+                    try {
+                        engine.unwrap(encryptedReadBuffer.byteBuffer, plainTextReadBuffer.byteBuffer)
+                    } catch (e: javax.net.ssl.SSLHandshakeException) {
+                        throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+                    } catch (e: javax.net.ssl.SSLException) {
+                        throw SSLProtocolException(e.message ?: "TLS unwrap error", e)
+                    }
                 when (checkNotNull(result.status)) {
                     SSLEngineResult.Status.BUFFER_OVERFLOW -> {
                         overflowEncryptedReadBuffer = encryptedReadBuffer
@@ -160,7 +180,7 @@ internal class JvmTlsHandler(
                             cachedBuffer
                         } else {
                             val plainTextReadBuffer =
-                                bufferFactory(engine.session.applicationBufferSize)
+                                allocateBuffer(engine.session.applicationBufferSize)
                             rawRead(plainTextReadBuffer, timeout)
                             plainTextReadBuffer.resetForRead()
                             plainTextReadBuffer
@@ -190,7 +210,7 @@ internal class JvmTlsHandler(
         }
     }
 
-    private fun bufferFactory(size: Int): BaseJvmBuffer = PlatformBuffer.allocate(size, AllocationZone.Direct) as BaseJvmBuffer
+    private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size) as BaseJvmBuffer
 
     private fun slicePlainText(plainText: BaseJvmBuffer): PlatformBuffer {
         val position = plainText.position()

@@ -67,19 +67,11 @@ jobs:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
-      - name: Install ARM64 dependencies
+      - name: Install ARM64 cross-compilation toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential perl qemu-user-static
-          # ARM64 cross-compilation toolchain
+          sudo apt-get install -y build-essential perl
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          # ARM64 runtime libraries for QEMU - download and extract directly
-          mkdir -p /tmp/arm64-libs
-          cd /tmp/arm64-libs
-          curl -LO http://ports.ubuntu.com/pool/main/libx/libxcrypt/libcrypt1_4.4.36-4build1_arm64.deb
-          ar x libcrypt1_*.deb
-          tar xf data.tar.zst
-          sudo cp -r usr/lib/aarch64-linux-gnu/* /usr/aarch64-linux-gnu/lib/
 
       - name: Get version
         id: version
@@ -95,12 +87,12 @@ jobs:
           ./gradlew linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      - name: Run ARM64 tests via QEMU (subset for validation)
-        # LinuxTlsTests validates io_uring, OpenSSL, and static linking - all critical ARM64 dependencies
-        run: >-
-          qemu-aarch64-static -L /usr/aarch64-linux-gnu
-          ./build/bin/linuxArm64/debugTest/test.kexe
-          --ktest_filter=com.ditchoom.socket.LinuxTlsTests
+      - name: Upload ARM64 test binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-test-binary
+          path: build/bin/linuxArm64/debugTest/test.kexe
+          retention-days: 1
 
       - name: Publish to Maven Local
         run: ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
@@ -111,3 +103,19 @@ jobs:
           name: maven-local-linux
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
+
+  test-arm64:
+    name: "Linux ARM64 (native)"
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Download ARM64 test binary
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-arm64-test-binary
+
+      - name: Run ARM64 tests
+        run: |
+          chmod +x test.kexe
+          ./test.kexe

@@ -13,6 +13,7 @@ The JVM and Android targets share code via a custom `commonJvmMain` source set:
 
 - **Primary**: `AsynchronousSocketChannel` (NIO2) - fully async, callback-based
 - **Fallback**: `SocketChannel` (NIO) - for environments where NIO2 is unavailable
+- **Buffer allocation**: Uses `BufferFactory.deterministic()` by default for I/O buffers, providing direct `ByteBuffer` with explicit cleanup. This is required because the TLS handler (`SSLEngine`) and NIO channels need native memory access via `nativeAddress`.
 
 ## TLS
 

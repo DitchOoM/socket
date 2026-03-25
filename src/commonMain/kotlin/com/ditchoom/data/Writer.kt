@@ -15,6 +15,20 @@ interface Writer {
         timeout: Duration = 15.seconds,
     ): Int
 
+    /**
+     * Writes multiple buffers sequentially. Platforms may override with true scatter-gather
+     * (e.g., GatheringByteChannel on JVM NIO, writev on Linux).
+     */
+    @Throws(CancellationException::class, SocketClosedException::class)
+    suspend fun writeGathered(
+        buffers: List<ReadBuffer>,
+        timeout: Duration = 15.seconds,
+    ): Int {
+        var total = 0
+        for (buf in buffers) total += write(buf, timeout)
+        return total
+    }
+
     @Throws(CancellationException::class, SocketClosedException::class)
     suspend fun writeString(
         string: String,

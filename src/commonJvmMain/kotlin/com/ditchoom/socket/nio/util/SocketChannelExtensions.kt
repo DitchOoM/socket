@@ -1,7 +1,8 @@
 package com.ditchoom.socket.nio.util
 
 import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.socket.SocketException
+import com.ditchoom.socket.SocketTimeoutException
+import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -11,7 +12,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.lang.Math.random
 import java.net.SocketAddress
-import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.channels.ClosedSelectorException
 import java.nio.channels.NetworkChannel
@@ -40,7 +40,7 @@ suspend fun openSocketChannel(remote: SocketAddress? = null) =
                 },
             )
         } catch (e: Throwable) {
-            it.resumeWithException(e)
+            it.resumeWithException(wrapJvmException(e))
         }
     }
 
@@ -79,7 +79,7 @@ suspend fun AbstractSelectableChannel.suspendUntilReady(
             try {
                 register(selector, ops, WrappedContinuation(cont, random))
             } catch (e: ClosedSelectorException) {
-                cont.resumeWithException(SocketClosedException("Socket closed", e))
+                cont.resumeWithException(SocketClosedException.General("Socket closed", e))
                 return@suspendCancellableCoroutine
             }
         runBlocking {
@@ -96,7 +96,7 @@ suspend fun Selector.select(
     val startTime = System.currentTimeMillis()
     val selectedCount = aSelect(timeout)
     if (selectedCount == 0) {
-        throw SocketException("Selector timed out after waiting $timeout for ${selectionKey.isConnectable}")
+        throw SocketTimeoutException("Selector timed out after waiting $timeout for ${selectionKey.isConnectable}")
     }
     while (isOpen && timeout - (System.currentTimeMillis() - startTime).milliseconds > 0.milliseconds) {
         if (selectedKeys().remove(selectionKey)) {
@@ -125,8 +125,8 @@ suspend fun SocketChannel.aConnect(
         withContext(Dispatchers.IO) {
             socket.connect(remote, timeout.inWholeMilliseconds.toInt())
         }
-    } catch (e: SocketTimeoutException) {
-        throw SocketException("Socket Connect timeout", e)
+    } catch (e: java.net.SocketTimeoutException) {
+        throw SocketTimeoutException("Socket Connect timeout", cause = e)
     }
 } else {
     suspendConnect(remote)
@@ -137,7 +137,7 @@ private suspend fun SocketChannel.suspendConnect(remote: SocketAddress) {
         try {
             it.resume(connect(remote))
         } catch (e: Throwable) {
-            it.resumeWithException(e)
+            it.resumeWithException(wrapJvmException(e))
         }
         closeOnCancel(it)
     }
@@ -168,7 +168,7 @@ suspend fun SocketChannel.aFinishConnecting() =
                 }
                 it.resume(true)
             } catch (e: Throwable) {
-                it.resumeWithException(e)
+                it.resumeWithException(wrapJvmException(e))
             }
         }
     }
@@ -178,7 +178,7 @@ suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) =
         try {
             it.resume(configureBlocking(block))
         } catch (e: Throwable) {
-            it.resumeWithException(e)
+            it.resumeWithException(wrapJvmException(e))
         }
     }
 
@@ -239,6 +239,12 @@ private suspend fun ReadableByteChannel.suspendRead(buffer: ByteBuffer) =
             if (this is NetworkChannel) {
                 closeOnCancel(it)
             }
+            // Resume with the original exception if continuation is still active.
+            // Don't wrap here — callers (BaseClientSocket.read) catch ClosedChannelException
+            // and wrap to SocketClosedException themselves.
+            if (it.isActive) {
+                it.resumeWithException(ex)
+            }
         }
     }
 
@@ -250,6 +256,9 @@ private suspend fun WritableByteChannel.suspendWrite(buffer: ByteBuffer) =
         } catch (ex: Throwable) {
             if (this is NetworkChannel) {
                 closeOnCancel(it)
+            }
+            if (it.isActive) {
+                it.resumeWithException(ex)
             }
         }
     }

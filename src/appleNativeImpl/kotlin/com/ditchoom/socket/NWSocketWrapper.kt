@@ -4,18 +4,21 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.socket.native.SocketErrorType
-import com.ditchoom.socket.native.SocketErrorTypeDns
-import com.ditchoom.socket.native.SocketErrorTypeNone
-import com.ditchoom.socket.native.SocketErrorTypePosix
-import com.ditchoom.socket.native.SocketErrorTypeTls
-import com.ditchoom.socket.native.SocketWrapper
+import com.ditchoom.socket.nwhelpers.SocketErrorTypeDns
+import com.ditchoom.socket.nwhelpers.SocketErrorTypePosix
+import com.ditchoom.socket.nwhelpers.SocketErrorTypeTls
+import com.ditchoom.socket.nwhelpers.nw_helper_cancel
+import com.ditchoom.socket.nwhelpers.nw_helper_force_cancel
+import com.ditchoom.socket.nwhelpers.nw_helper_local_port
+import com.ditchoom.socket.nwhelpers.nw_helper_remote_port
+import com.ditchoom.socket.nwhelpers.nw_helper_send_tcp
+import com.ditchoom.socket.nwhelpers.nw_helper_tcp_receive
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
-import platform.Foundation.NSData
+import platform.Network.nw_connection_t
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -29,51 +32,56 @@ import kotlin.time.Duration
  */
 @OptIn(ExperimentalForeignApi::class)
 open class NWSocketWrapper : ClientSocket {
-    internal var socket: SocketWrapper? = null
+    internal var connection: nw_connection_t = null
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
 
     @Volatile
     internal var closedLocally = false
 
-    override fun isOpen(): Boolean = !closedLocally && (socket?.isOpen() ?: false)
+    @Volatile
+    internal var connectionReady = false
 
-    override suspend fun localPort(): Int = socket?.localPort()?.toInt() ?: -1
+    override fun isOpen(): Boolean = !closedLocally && connectionReady
 
-    override suspend fun remotePort(): Int = socket?.remotePort()?.toInt() ?: -1
+    override suspend fun localPort(): Int =
+        connection?.let {
+            nw_helper_local_port(it).toInt()
+        } ?: -1
+
+    override suspend fun remotePort(): Int =
+        connection?.let {
+            nw_helper_remote_port(it).toInt()
+        } ?: -1
 
     /**
      * Zero-copy read operation.
      * Returns a buffer backed by NSData received from Network.framework.
      */
     override suspend fun read(timeout: Duration): ReadBuffer {
-        if (closedLocally) throw SocketClosedException("Socket is closed")
-        val socket = socket ?: throw SocketClosedException("Socket is closed")
+        if (closedLocally) throw SocketClosedException.General("Socket is closed")
+        val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         return readMutex.withLock {
             withTimeout(timeout) {
                 suspendCancellableCoroutine { continuation ->
-                    socket.readWithCompletion { data: NSData?, errorType, errorString, isComplete ->
+                    nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
                         when {
                             data != null && data.length.toInt() > 0 -> {
                                 // Zero-copy: wrap NSData directly using NSDataBuffer
                                 val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
-                                // Set position to end of data so resetForRead() works correctly
-                                // resetForRead() will set limit = position, then position = 0
                                 buffer.position(data.length.toInt())
                                 continuation.resume(buffer)
                             }
-                            isComplete -> {
-                                // Connection closed by peer - treat as EOF
+                            isComplete?.boolValue == true -> {
                                 closeInternal()
                                 continuation.resumeWithException(
-                                    SocketClosedException("Connection closed by peer"),
+                                    SocketClosedException.EndOfStream(),
                                 )
                             }
-                            errorType != SocketErrorTypeNone -> {
-                                // Only throw error if not a clean close
+                            errorDomain != 0 -> {
                                 closeInternal()
                                 continuation.resumeWithException(
-                                    mapSocketException(errorType, errorString),
+                                    mapSocketException(errorDomain, errorDesc),
                                 )
                             }
                             else -> {
@@ -97,23 +105,20 @@ open class NWSocketWrapper : ClientSocket {
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        if (closedLocally) throw SocketClosedException("Socket is closed")
-        val socket = socket ?: throw SocketClosedException("Socket is closed")
+        if (closedLocally) throw SocketClosedException.General("Socket is closed")
+        val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         val nsData = buffer.toNSData()
 
         return writeMutex.withLock {
             withTimeout(timeout) {
                 suspendCancellableCoroutine { continuation ->
-                    socket.writeWithData(nsData) { bytesWritten, errorType, errorString ->
-                        when {
-                            errorType != SocketErrorTypeNone -> {
-                                continuation.resumeWithException(
-                                    mapSocketException(errorType, errorString),
-                                )
-                            }
-                            else -> {
-                                continuation.resume(bytesWritten.toInt())
-                            }
+                    nw_helper_send_tcp(conn, nsData) { errorDomain, _, errorDesc ->
+                        if (errorDomain != 0) {
+                            continuation.resumeWithException(
+                                mapSocketException(errorDomain, errorDesc),
+                            )
+                        } else {
+                            continuation.resume(nsData.length.toInt())
                         }
                     }
                     continuation.invokeOnCancellation {
@@ -124,12 +129,13 @@ open class NWSocketWrapper : ClientSocket {
         }
     }
 
-    private fun closeInternal() {
+    internal fun closeInternal() {
         if (closedLocally) return
         closedLocally = true
-        val socket = socket ?: return
-        socket.close()
-        socket.forceClose()
+        connectionReady = false
+        val conn = connection ?: return
+        nw_helper_cancel(conn)
+        nw_helper_force_cancel(conn)
     }
 
     override suspend fun close() {
@@ -137,16 +143,55 @@ open class NWSocketWrapper : ClientSocket {
     }
 
     companion object {
-        internal fun mapSocketException(
-            errorType: SocketErrorType,
+        fun mapSocketException(
+            errorDomain: Int,
             errorString: String?,
+            hostname: String? = null,
         ): SocketException {
             val message = errorString ?: "Socket error"
-            return when (errorType) {
-                SocketErrorTypeDns -> SocketUnknownHostException(null, message)
-                SocketErrorTypeTls -> SSLSocketException(message)
-                SocketErrorTypePosix -> SocketException(message)
-                else -> SocketException(message)
+            val msgLower = message.lowercase()
+            return when (errorDomain) {
+                SocketErrorTypeDns -> SocketUnknownHostException(hostname, message)
+                SocketErrorTypeTls -> {
+                    if (msgLower.contains("handshake") ||
+                        msgLower.contains("certificate") ||
+                        msgLower.contains("cert") ||
+                        msgLower.contains("trust")
+                    ) {
+                        SSLHandshakeFailedException(message)
+                    } else {
+                        SSLProtocolException(message)
+                    }
+                }
+                SocketErrorTypePosix -> {
+                    when {
+                        // DNS failures can arrive as POSIX errors on macOS
+                        // (e.g., EAI_NONAME = "nodename nor servname provided")
+                        msgLower.contains("nodename") ||
+                            msgLower.contains("servname") ||
+                            msgLower.contains("name or service not known") ||
+                            msgLower.contains("host not found") ->
+                            SocketUnknownHostException(hostname, message)
+                        msgLower.contains("connection refused") || msgLower.contains("econnrefused") ->
+                            SocketConnectionException.Refused(null, 0, platformError = message)
+                        msgLower.contains("timed out") || msgLower.contains("timeout") ->
+                            SocketTimeoutException(message)
+                        msgLower.contains("reset") || msgLower.contains("connection abort") ->
+                            SocketClosedException.ConnectionReset(message)
+                        msgLower.contains("broken pipe") ->
+                            SocketClosedException.BrokenPipe(message)
+                        msgLower.contains("not connected") || msgLower.contains("socket is not connected") ->
+                            SocketClosedException.BrokenPipe(message)
+                        msgLower.contains("network") && msgLower.contains("unreachable") ->
+                            SocketConnectionException.NetworkUnreachable(message)
+                        msgLower.contains("host") && msgLower.contains("unreachable") ->
+                            SocketConnectionException.HostUnreachable(message)
+                        msgLower.contains("unreachable") ->
+                            SocketConnectionException.NetworkUnreachable(message)
+                        else -> SocketIOException(message)
+                    }
+                }
+                else -> SocketIOException(message)
             }
         }
     }

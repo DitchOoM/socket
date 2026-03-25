@@ -1,10 +1,9 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.buffer.allocate
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -21,6 +20,8 @@ import kotlin.time.Duration
  */
 @OptIn(ExperimentalForeignApi::class)
 open class LinuxSocketWrapper : ClientSocket {
+    /** Controls how internal read buffers are allocated. Set before first read. */
+    override var bufferFactory: BufferFactory = BufferFactory.deterministic()
     internal var sockfd: Int = -1
         set(value) {
             val wasOpen = field >= 0
@@ -53,7 +54,7 @@ open class LinuxSocketWrapper : ClientSocket {
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
-        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
+        val buffer = bufferFactory.allocate(bufferSize)
 
         try {
             // Get native memory pointer
@@ -70,7 +71,7 @@ open class LinuxSocketWrapper : ClientSocket {
                     }
                     bytesRead == 0 -> {
                         closeInternal()
-                        throw SocketClosedException("Connection closed by peer")
+                        throw SocketClosedException.EndOfStream()
                     }
                     else -> {
                         handleReadError(-bytesRead)
@@ -78,7 +79,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 }
             }
 
-            // Fallback for managed memory (shouldn't happen with AllocationZone.Direct on native)
+            // Fallback for managed memory (shouldn't happen with Direct allocation on native)
             val managedAccess = buffer.managedMemoryAccess
             if (managedAccess != null) {
                 val array = managedAccess.backingArray
@@ -94,7 +95,7 @@ open class LinuxSocketWrapper : ClientSocket {
                     }
                     bytesRead == 0 -> {
                         closeInternal()
-                        throw SocketClosedException("Connection closed by peer")
+                        throw SocketClosedException.EndOfStream()
                     }
                     else -> {
                         handleReadError(-bytesRead)
@@ -102,7 +103,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 }
             }
 
-            throw SocketException("Buffer has no accessible memory for io_uring read")
+            throw SocketIOException("Buffer has no accessible memory for io_uring read")
         } catch (e: CancellationException) {
             // Safe to free: submitAndWait ensures the kernel is done with the buffer
             buffer.freeNativeMemory()
@@ -124,17 +125,9 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private fun handleReadError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Read timed out")
-            ECONNRESET, ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException("Connection closed")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketException("recv failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "recv")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     override suspend fun write(
@@ -179,7 +172,7 @@ open class LinuxSocketWrapper : ClientSocket {
             }
         }
 
-        throw SocketException("Buffer has no accessible memory for io_uring write")
+        throw SocketIOException("Buffer has no accessible memory for io_uring write")
     }
 
     private suspend fun writeWithIoUring(
@@ -196,17 +189,9 @@ open class LinuxSocketWrapper : ClientSocket {
     }
 
     private fun handleWriteError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Write timed out")
-            ECONNRESET, ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException("Connection closed")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketException("send failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "send")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     /**

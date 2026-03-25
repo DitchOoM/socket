@@ -118,7 +118,7 @@ suspend fun Server.listenSuspend(
         on<Any>("error") { error ->
             if (!cont.isCompleted) {
                 val message = error.asDynamic().message as? String ?: "Server error"
-                cont.resumeWithException(SocketException(message))
+                cont.resumeWithException(SocketIOException(message))
             }
         }
 

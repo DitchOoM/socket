@@ -10,6 +10,7 @@ import kotlin.time.measureTimedValue
 /**
  * Non blocking, suspending socket input stream.
  */
+@Suppress("DEPRECATION")
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
     private val reader: Reader,

@@ -16,6 +16,8 @@ Socket provides suspend-based async socket I/O with platform-native implementati
 - **Streaming** — `readFlowLines()` with backpressure, cancellation, and constant memory
 - **Buffer pooling** — `SocketConnection` bundles pool + stream processor, no per-message allocations
 - **Compression** — compose `mapBuffer { decompress(it) }` into any read pipeline
+- **Sealed exception hierarchy** — `SocketClosedException`, `SocketConnectionException`, `SSLSocketException`, etc. — deterministic error types across all platforms
+- **Reconnection** — `ReconnectionClassifier` with exponential backoff, composable for protocol libraries
 - **Lambda-scoped connections** — auto-cleanup, no try-finally
 - **Platform-native performance** — io_uring on Linux, NWConnection on Apple, NIO2 on JVM
 
@@ -73,7 +75,7 @@ socket.readFlow()
 ├──────────────────────────────────┤
 │  buffer-flow                     │  ← com.ditchoom:buffer-flow
 ├──────────────────────────────────┤
-│  buffer                          │  ← com.ditchoom:buffer
+│  buffer (v4.0.0+)                │  ← com.ditchoom:buffer
 └──────────────────────────────────┘
 ```
 
@@ -97,4 +99,5 @@ dependencies {
 - [Client Socket](./core-concepts/client-socket) — Connect, read, write, stream, and close
 - [Server Socket](./core-concepts/server-socket) — Accept inbound connections
 - [TLS](./core-concepts/tls) — Encrypted connections
+- [Error Handling](./core-concepts/error-handling) — Sealed exception hierarchy and platform mapping
 - [Recipe: Building a Protocol Client](./guides/building-a-protocol) — Full-stack example with streaming, TLS, buffer pools, and compression

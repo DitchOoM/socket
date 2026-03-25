@@ -169,7 +169,7 @@ internal object IoUringManager {
         nativeHeap.free(params)
         nativeHeap.free(ptr)
         val errorMsg = strerror(lastError)?.toKString() ?: "Unknown error"
-        throw SocketException(
+        throw SocketIOException(
             "Failed to initialize io_uring: $errorMsg (errno=$lastError). " +
                 "This library requires Linux kernel 5.1+ with io_uring support. " +
                 "Check your kernel version with 'uname -r'.",
@@ -180,7 +180,7 @@ internal object IoUringManager {
      * Get the ring reference. All operations go through the submission channel,
      * so the ring is always initialized by the event loop thread via initRing().
      */
-    fun getRing(): CPointer<io_uring> = ringRef.value ?: throw SocketException("IoUringManager not initialized")
+    fun getRing(): CPointer<io_uring> = ringRef.value ?: throw SocketIOException("IoUringManager not initialized")
 
     /**
      * Create eventfd and register multi-shot poll on it.
@@ -189,14 +189,14 @@ internal object IoUringManager {
     private fun setupEventfd(ring: CPointer<io_uring>) {
         val fd = eventfd(0u, EFD_NONBLOCK)
         if (fd < 0) {
-            throw SocketException("Failed to create eventfd: errno=$errno")
+            throw SocketIOException("Failed to create eventfd: errno=$errno")
         }
         wakeupFd.value = fd
 
         // Register multi-shot poll on eventfd so any write wakes the event loop
         val sqe =
             io_uring_get_sqe(ring)
-                ?: throw SocketException("Failed to get SQE for eventfd poll registration")
+                ?: throw SocketIOException("Failed to get SQE for eventfd poll registration")
         io_uring_prep_poll_multishot(sqe, fd, POLLIN.toUInt())
         io_uring_sqe_set_data64(sqe, EVENTFD_USER_DATA.toULong())
         io_uring_submit(ring)
@@ -619,43 +619,44 @@ internal object IoUringManager {
 }
 
 /**
- * Maps POSIX errno values to appropriate socket exceptions.
+ * Maps a POSIX errno value to the appropriate [SocketException] subtype.
+ *
+ * This is the single source of truth for errno → exception mapping on Linux.
+ * All call sites (throwSocketException, throwFromResult, handleReadError,
+ * handleWriteError, connectWithIoUring) delegate here.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal fun throwSocketException(operation: String): Nothing {
-    val errorCode = errno
+internal fun mapErrnoToException(
+    errorCode: Int,
+    operation: String,
+): SocketException {
     val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
     val message = "$operation failed: $errorMessage (errno=$errorCode)"
-
-    throw when (errorCode) {
-        ECONNREFUSED, ECONNRESET, ECONNABORTED -> SocketException(message)
-        ETIMEDOUT -> SocketException("$operation timed out")
-        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException(message)
-        EHOSTUNREACH, ENETUNREACH -> SocketException(message)
-        else -> SocketException(message)
+    return when (errorCode) {
+        ECONNREFUSED -> SocketConnectionException.Refused(null, 0, platformError = message)
+        ECONNRESET, ECONNABORTED -> SocketClosedException.ConnectionReset(message)
+        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException.BrokenPipe(message)
+        ENETUNREACH -> SocketConnectionException.NetworkUnreachable(message)
+        EHOSTUNREACH -> SocketConnectionException.HostUnreachable(message)
+        ETIMEDOUT, ETIME -> SocketTimeoutException("$operation timed out")
+        EAGAIN, EWOULDBLOCK -> SocketTimeoutException("$operation timed out")
+        else -> SocketIOException(message)
     }
 }
 
 /**
- * Throw exception from a negative result code.
+ * Maps POSIX errno values to appropriate socket exceptions.
  */
 @OptIn(ExperimentalForeignApi::class)
+internal fun throwSocketException(operation: String): Nothing = throw mapErrnoToException(errno, operation)
+
+/**
+ * Throw exception from a negative result code.
+ */
 internal fun throwFromResult(
     result: Int,
     operation: String,
-): Nothing {
-    val errorCode = -result
-    val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-    val message = "$operation failed: $errorMessage (errno=$errorCode)"
-
-    throw when (errorCode) {
-        ECONNREFUSED, ECONNRESET, ECONNABORTED -> SocketException(message)
-        ETIMEDOUT -> SocketException("$operation timed out")
-        ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException(message)
-        EHOSTUNREACH, ENETUNREACH -> SocketException(message)
-        else -> SocketException(message)
-    }
-}
+): Nothing = throw mapErrnoToException(-result, operation)
 
 /**
  * Check if an operation succeeded, throw exception if not.

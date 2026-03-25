@@ -1,10 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
-import com.ditchoom.buffer.allocate
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -114,17 +111,7 @@ class LinuxClientSocket : ClientToServerSocket {
             }
 
         if (result < 0) {
-            val errorCode = -result
-            when (errorCode) {
-                ECONNREFUSED -> throw SocketException("Connection refused")
-                ETIMEDOUT, ETIME -> throw SocketException("Connection timed out")
-                ENETUNREACH -> throw SocketException("Network unreachable")
-                EHOSTUNREACH -> throw SocketException("Host unreachable")
-                else -> {
-                    val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                    throw SocketException("connect failed: $errorMessage (errno=$errorCode)")
-                }
-            }
+            throw mapErrnoToException(-result, "connect")
         }
     }
 
@@ -136,8 +123,8 @@ class LinuxClientSocket : ClientToServerSocket {
         OPENSSL_init_ssl(0u, null)
 
         // Create SSL context
-        val method = TLS_client_method() ?: throw SSLSocketException("Failed to get TLS method")
-        sslCtx = SSL_CTX_new(method) ?: throw SSLSocketException("Failed to create SSL context")
+        val method = TLS_client_method() ?: throw SSLProtocolException("Failed to get TLS method")
+        sslCtx = SSL_CTX_new(method) ?: throw SSLProtocolException("Failed to create SSL context")
 
         // Load system CA certificates from common Linux distribution paths.
         // Supported distributions:
@@ -153,7 +140,7 @@ class LinuxClientSocket : ClientToServerSocket {
                 SSL_CTX_load_verify_locations(sslCtx, "/etc/ssl/cert.pem", "/etc/ssl/certs") == 1 ||
                 SSL_CTX_set_default_verify_paths(sslCtx) == 1
         if (!caLoaded) {
-            throw SSLSocketException(
+            throw SSLProtocolException(
                 "Failed to load CA certificates. Tried: " +
                     "/etc/ssl/certs/ca-certificates.crt, " +
                     "/etc/pki/tls/certs/ca-bundle.crt, " +
@@ -169,7 +156,7 @@ class LinuxClientSocket : ClientToServerSocket {
         ssl_ctx_set_verify_peer(sslCtx, if (verifyCertificates) 1 else 0)
 
         // Create SSL connection
-        ssl = SSL_new(sslCtx) ?: throw SSLSocketException("Failed to create SSL object")
+        ssl = SSL_new(sslCtx) ?: throw SSLProtocolException("Failed to create SSL object")
 
         // Set hostname for SNI
         ssl_set_hostname(ssl, hostname)
@@ -244,12 +231,12 @@ class LinuxClientSocket : ClientToServerSocket {
     }
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        if (sockfd < 0) throw SocketClosedException("Socket is closed")
+        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
 
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
-        val buffer = PlatformBuffer.allocate(bufferSize, AllocationZone.Direct)
+        val buffer = bufferFactory.allocate(bufferSize)
 
         try {
             // Get native memory pointer
@@ -274,7 +261,7 @@ class LinuxClientSocket : ClientToServerSocket {
                     }
                     bytesRead == 0 -> {
                         closeInternal()
-                        throw SocketClosedException("Connection closed by peer")
+                        throw SocketClosedException.EndOfStream()
                     }
                     else -> {
                         if (ssl != null) {
@@ -309,7 +296,7 @@ class LinuxClientSocket : ClientToServerSocket {
                     }
                     bytesRead == 0 -> {
                         closeInternal()
-                        throw SocketClosedException("Connection closed by peer")
+                        throw SocketClosedException.EndOfStream()
                     }
                     else -> {
                         if (ssl != null) {
@@ -321,7 +308,7 @@ class LinuxClientSocket : ClientToServerSocket {
                 }
             }
 
-            throw SocketException("Buffer has no accessible memory for io_uring read")
+            throw SocketIOException("Buffer has no accessible memory for io_uring read")
         } catch (e: CancellationException) {
             // Safe to free: submitAndWait ensures the kernel is done with the buffer
             buffer.freeNativeMemory()
@@ -341,7 +328,7 @@ class LinuxClientSocket : ClientToServerSocket {
         buffer: WriteBuffer,
         timeout: Duration,
     ): Int {
-        if (sockfd < 0) throw SocketClosedException("Socket is closed")
+        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
 
         val capacity = buffer.remaining()
         if (capacity == 0) return 0
@@ -364,7 +351,7 @@ class LinuxClientSocket : ClientToServerSocket {
                 }
                 bytesRead == 0 -> {
                     closeInternal()
-                    throw SocketClosedException("Connection closed by peer")
+                    throw SocketClosedException.EndOfStream()
                 }
                 else -> {
                     if (ssl != null) {
@@ -398,7 +385,7 @@ class LinuxClientSocket : ClientToServerSocket {
                 }
                 bytesRead == 0 -> {
                     closeInternal()
-                    throw SocketClosedException("Connection closed by peer")
+                    throw SocketClosedException.EndOfStream()
                 }
                 else -> {
                     if (ssl != null) {
@@ -410,7 +397,7 @@ class LinuxClientSocket : ClientToServerSocket {
             }
         }
 
-        throw SocketException("Buffer has no accessible memory for io_uring read")
+        throw SocketIOException("Buffer has no accessible memory for io_uring read")
     }
 
     /**
@@ -465,37 +452,29 @@ class LinuxClientSocket : ClientToServerSocket {
         val error = SSL_get_error(ssl, result)
         when (error) {
             SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE -> {
-                throw SocketException("Read timed out")
+                throw SocketTimeoutException("Read timed out")
             }
             SSL_ERROR_ZERO_RETURN -> {
                 closeInternal()
-                throw SocketClosedException("Connection closed by peer")
+                throw SocketClosedException.EndOfStream()
             }
             else -> {
-                throw SocketException("SSL read error: ${getOpenSSLError()}")
+                throw SSLProtocolException("SSL read error: ${getOpenSSLError()}")
             }
         }
     }
 
     private fun handleReadError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Read timed out")
-            ECONNRESET, ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException("Connection closed")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketException("recv failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "recv")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     override suspend fun write(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        if (sockfd < 0) throw SocketClosedException("Socket is closed")
+        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
 
         val remaining = buffer.remaining()
         if (remaining == 0) return 0
@@ -620,26 +599,18 @@ class LinuxClientSocket : ClientToServerSocket {
         val error = SSL_get_error(ssl, result)
         when (error) {
             SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE -> {
-                throw SocketException("Write timed out")
+                throw SocketTimeoutException("Write timed out")
             }
             else -> {
-                throw SocketException("SSL write error: ${getOpenSSLError()}")
+                throw SSLProtocolException("SSL write error: ${getOpenSSLError()}")
             }
         }
     }
 
     private fun handleWriteError(errorCode: Int): Nothing {
-        when (errorCode) {
-            EAGAIN, EWOULDBLOCK, ETIME, ETIMEDOUT -> throw SocketException("Write timed out")
-            ECONNRESET, ENOTCONN, EPIPE -> {
-                closeInternal()
-                throw SocketClosedException("Connection closed")
-            }
-            else -> {
-                val errorMessage = strerror(errorCode)?.toKString() ?: "Unknown error"
-                throw SocketException("send failed: $errorMessage (errno=$errorCode)")
-            }
-        }
+        val ex = mapErrnoToException(errorCode, "send")
+        if (ex is SocketClosedException) closeInternal()
+        throw ex
     }
 
     /**

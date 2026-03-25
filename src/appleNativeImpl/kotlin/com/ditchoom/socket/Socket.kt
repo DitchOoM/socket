@@ -1,17 +1,15 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
-
 /**
  * Allocates a client socket using Apple's Network.framework.
  *
  * Supports zero-copy data transfer with native NSData buffers.
  */
-actual fun ClientSocket.Companion.allocate(allocationZone: AllocationZone): ClientToServerSocket = NWClientSocketWrapper()
+actual fun ClientSocket.Companion.allocate(): ClientToServerSocket = NWClientSocketWrapper()
 
 /**
  * Allocates a server socket using Apple's Network.framework.
  *
  * Returns zero-copy socket wrappers for accepted connections.
  */
-actual fun ServerSocket.Companion.allocate(allocationZone: AllocationZone): ServerSocket = NWServerWrapper()
+actual fun ServerSocket.Companion.allocate(): ServerSocket = NWServerWrapper()

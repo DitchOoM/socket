@@ -1,6 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.AllocationZone
 import com.ditchoom.buffer.JsBuffer
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
@@ -106,7 +105,7 @@ open class NodeSocket : ClientSocket {
     override suspend fun read(timeout: Duration): ReadBuffer {
         val socket = netSocket
         if (socket == null || !isOpen()) {
-            throw SocketClosedException("Socket closed. transmissionError=$hadTransmissionError")
+            throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
         }
         socket.resume()
         val message =
@@ -114,14 +113,14 @@ open class NodeSocket : ClientSocket {
                 try {
                     incomingMessageChannel.receive()
                 } catch (e: ClosedReceiveChannelException) {
-                    throw SocketClosedException(
+                    throw SocketClosedException.General(
                         "Socket is already closed. transmissionError=$hadTransmissionError",
                         e,
                     )
                 }
             }
         if (message.bytesRead < 0 || !isOpen()) {
-            throw SocketClosedException(
+            throw SocketClosedException.General(
                 "Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError",
             )
         }
@@ -135,7 +134,7 @@ open class NodeSocket : ClientSocket {
     ): Int {
         val socket = netSocket
         if (socket == null || !isOpen()) {
-            throw SocketClosedException("Socket is closed. transmissionError=$hadTransmissionError")
+            throw SocketClosedException.General("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val bytesToWrite = buffer.remaining()
         val jsBuffer =
@@ -175,9 +174,8 @@ open class NodeSocket : ClientSocket {
     }
 }
 
-class NodeClientSocket(
-    private val allocationZone: AllocationZone,
-) : NodeSocket(),
+class NodeClientSocket :
+    NodeSocket(),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,

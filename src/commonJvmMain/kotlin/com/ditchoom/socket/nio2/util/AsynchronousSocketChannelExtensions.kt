@@ -21,7 +21,7 @@ suspend fun asyncSocket(group: AsynchronousChannelGroup? = null) =
         try {
             it.resume(AsynchronousSocketChannel.open(group))
         } catch (e: Throwable) {
-            it.resumeWithException(e)
+            it.resumeWithException(com.ditchoom.socket.wrapJvmException(e))
         }
     }
 
