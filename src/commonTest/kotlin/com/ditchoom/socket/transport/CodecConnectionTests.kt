@@ -322,45 +322,82 @@ class CodecConnectionTests {
     // ── impossible state guards ──
 
     @Test
-    fun receiveCanOnlyBeCalledOnce() =
+    fun sequentialReceiveIsAllowed() =
         runTest {
-            val (stream, _) = MemoryTransport.createPair()
-            val conn =
+            val (clientStream, serverStream) = MemoryTransport.createPair()
+            val client =
                 CodecConnection(
-                    stream = stream,
+                    stream = clientStream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+            val server =
+                CodecConnection(
+                    stream = serverStream,
                     codec = TestStringCodec,
                     peekFrameSize = TestStringCodec::peekFrameSize,
                     pool = BufferPool(),
                     options = testOptions,
                 )
 
-            conn.receive() // first call ok
-            assertFailsWith<IllegalStateException> {
-                conn.receive() // second call throws
-            }
+            // First collection (simulates handshake)
+            client.send("handshake")
+            val ack = server.receive().first()
+            assertEquals("handshake", ack)
 
-            conn.close()
+            // Second collection (simulates streaming) — should work
+            client.send("stream-msg")
+            client.close()
+            val messages = server.receive().toList()
+            assertEquals(listOf("stream-msg"), messages)
+
+            server.close()
         }
 
     @Test
-    fun preSeedAfterReceiveThrows() =
+    fun preSeedBetweenReceiveCollectionsIsAllowed() =
         runTest {
-            val (stream, _) = MemoryTransport.createPair()
-            val conn =
+            val (clientStream, serverStream) = MemoryTransport.createPair()
+            val server =
                 CodecConnection(
-                    stream = stream,
+                    stream = serverStream,
                     codec = TestStringCodec,
                     peekFrameSize = TestStringCodec::peekFrameSize,
                     pool = BufferPool(),
                     options = testOptions,
                 )
 
-            conn.receive() // marks as receiving
-            assertFailsWith<IllegalStateException> {
-                conn.preSeed(BufferFactory.Default.allocate(1))
-            }
+            // preSeed before first receive — allowed
+            val buf1 = BufferFactory.Default.allocate(32)
+            TestStringCodec.encode(buf1, "seed1")
+            buf1.resetForRead()
+            server.preSeed(buf1)
 
-            conn.close()
+            val msg1 = server.receive().first()
+            assertEquals("seed1", msg1)
+
+            // preSeed after receive completes — also allowed
+            val buf2 = BufferFactory.Default.allocate(32)
+            TestStringCodec.encode(buf2, "seed2")
+            buf2.resetForRead()
+            server.preSeed(buf2)
+
+            val client =
+                CodecConnection(
+                    stream = clientStream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+            client.close()
+
+            val remaining = server.receive().toList()
+            assertEquals(listOf("seed2"), remaining)
+
+            server.close()
         }
 
     @Test

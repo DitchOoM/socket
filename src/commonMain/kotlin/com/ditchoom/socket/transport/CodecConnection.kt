@@ -10,6 +10,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 
 /**
@@ -44,29 +45,34 @@ class CodecConnection<T>(
      */
     fun preSeed(buffer: ReadBuffer) {
         check(!closed) { "CodecConnection is closed" }
-        check(!receiving) { "preSeed() must be called before receive()" }
+        check(!receiving) { "preSeed() cannot be called while receive() is being collected" }
         streamProcessor.append(buffer)
     }
 
     /**
      * Returns a flow of decoded messages from the transport.
-     * Can only be collected once — multiple collectors would corrupt frame parsing.
+     *
+     * Sequential collection is allowed (e.g., handshake then streaming),
+     * but concurrent collection throws — two collectors would corrupt the stream processor.
      */
     fun receive(): Flow<T> {
         check(!closed) { "CodecConnection is closed" }
-        check(!receiving) { "receive() can only be called once" }
-        receiving = true
         return flow {
-            while (true) {
-                // Drain all complete frames from buffered data
-                while (true) {
-                    val message = drainFrame() ?: break
-                    emit(message)
+            check(!receiving) { "receive() is already being collected concurrently" }
+            receiving = true
+            try {
+                emitDrainedFrames()
+                while (fillFromTransport()) {
+                    emitDrainedFrames()
                 }
-                // Fill from transport — returns false on stream end
-                if (!fillFromTransport()) return@flow
+            } finally {
+                receiving = false
             }
         }
+    }
+
+    private suspend fun FlowCollector<T>.emitDrainedFrames() {
+        generateSequence { drainFrame() }.forEach { emit(it) }
     }
 
     suspend fun send(message: T) {
