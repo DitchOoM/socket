@@ -1,0 +1,280 @@
+package com.ditchoom.socket.transport
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.codec.Codec
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.MockClientToServerSocket
+import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.SocketTimeoutException
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.runTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * Simple length-prefixed string codec for testing.
+ * Wire format: [2-byte length (Short)] [UTF-8 string bytes]
+ */
+object TestStringCodec : Codec<String> {
+    override fun decode(buffer: ReadBuffer): String {
+        val length = buffer.readShort().toInt() and 0xFFFF
+        return buffer.readString(length)
+    }
+
+    override fun encode(
+        buffer: WriteBuffer,
+        value: String,
+    ) {
+        val bytes = value.encodeToByteArray()
+        buffer.writeShort(bytes.size.toShort())
+        buffer.writeBytes(bytes)
+    }
+
+    override fun sizeOf(value: String): Int = 2 + value.encodeToByteArray().size
+
+    fun peekFrameSize(
+        stream: StreamProcessor,
+        baseOffset: Int,
+    ): Int? {
+        if (stream.available() < baseOffset + 2) return null
+        val length = stream.peekShort(baseOffset).toInt() and 0xFFFF
+        return 2 + length
+    }
+}
+
+class CodecConnectionTests {
+    private val testOptions = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
+
+    private fun createPairCodecConnections(): Pair<CodecConnection<String>, CodecConnection<String>> {
+        val (aStream, bStream) = MemoryTransport.createPair()
+        val a =
+            CodecConnection(
+                stream = aStream,
+                codec = TestStringCodec,
+                peekFrameSize = TestStringCodec::peekFrameSize,
+                pool = BufferPool(),
+                options = testOptions,
+            )
+        val b =
+            CodecConnection(
+                stream = bStream,
+                codec = TestStringCodec,
+                peekFrameSize = TestStringCodec::peekFrameSize,
+                pool = BufferPool(),
+                options = testOptions,
+            )
+        return a to b
+    }
+
+    // ── send() + receive() round-trip ──
+
+    @Test
+    fun sendAndReceiveRoundTrip() =
+        runTest {
+            val (client, server) = createPairCodecConnections()
+
+            client.send("hello world")
+            val received = server.receive().first()
+            assertEquals("hello world", received)
+
+            client.close()
+            server.close()
+        }
+
+    @Test
+    fun multipleMessagesInSequence() =
+        runTest {
+            val (client, server) = createPairCodecConnections()
+
+            client.send("msg1")
+            client.send("msg2")
+            client.send("msg3")
+            client.close()
+
+            val messages = server.receive().toList()
+            assertEquals(listOf("msg1", "msg2", "msg3"), messages)
+
+            server.close()
+        }
+
+    @Test
+    fun emptyStringMessage() =
+        runTest {
+            val (client, server) = createPairCodecConnections()
+
+            client.send("")
+            val received = server.receive().first()
+            assertEquals("", received)
+
+            client.close()
+            server.close()
+        }
+
+    @Test
+    fun largeMessage() =
+        runTest {
+            val (client, server) = createPairCodecConnections()
+
+            val large = "x".repeat(10_000)
+            client.send(large)
+            val received = server.receive().first()
+            assertEquals(large, received)
+
+            client.close()
+            server.close()
+        }
+
+    // ── receive() completes on stream end ──
+
+    @Test
+    fun receiveCompletesOnStreamEnd() =
+        runTest {
+            val (client, server) = createPairCodecConnections()
+
+            client.close()
+            val messages = server.receive().toList()
+            assertEquals(emptyList(), messages)
+
+            server.close()
+        }
+
+    @Test
+    fun receiveCompletesAfterLastMessage() =
+        runTest {
+            val (client, server) = createPairCodecConnections()
+
+            client.send("only-one")
+            client.close()
+
+            val messages = server.receive().toList()
+            assertEquals(listOf("only-one"), messages)
+
+            server.close()
+        }
+
+    // ── bidirectional ──
+
+    @Test
+    fun bidirectionalCodecCommunication() =
+        runTest {
+            val (a, b) = createPairCodecConnections()
+
+            a.send("ping")
+            val received = b.receive().first()
+            assertEquals("ping", received)
+
+            b.send("pong")
+            val response = a.receive().first()
+            assertEquals("pong", response)
+
+            a.close()
+            b.close()
+        }
+
+    // ── receive() throws on Reset ──
+
+    @Test
+    fun receiveThrowsOnStreamReset() =
+        runTest {
+            val mock = MockClientToServerSocket()
+            mock.open(80, 5.seconds, "test")
+            mock.enqueueReadError(SocketClosedException.ConnectionReset("peer reset"))
+
+            val stream = TcpByteStream(mock)
+            val codec =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            assertFailsWith<SocketClosedException.ConnectionReset> {
+                codec.receive().toList()
+            }
+
+            codec.close()
+        }
+
+    // ── error propagation through CodecConnection ──
+
+    @Test
+    fun receiveThrowsOnSocketTimeout() =
+        runTest {
+            val mock = MockClientToServerSocket()
+            mock.open(80, 5.seconds, "test")
+            mock.enqueueReadError(SocketTimeoutException("timed out"))
+
+            val stream = TcpByteStream(mock)
+            val codec =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            assertFailsWith<SocketTimeoutException> {
+                codec.receive().toList()
+            }
+
+            codec.close()
+        }
+
+    // ── send() uses pool for buffers ──
+
+    @Test
+    fun sendUsesPoolForEncoding() =
+        runTest {
+            val pool = BufferPool()
+            val (aStream, _) = MemoryTransport.createPair()
+
+            val codec =
+                CodecConnection(
+                    stream = aStream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = pool,
+                    options = testOptions,
+                )
+
+            codec.send("test1")
+            codec.send("test2")
+
+            val stats = pool.stats()
+            assertTrue(stats.totalAllocations >= 2, "Expected at least 2 pool allocations for 2 sends")
+
+            codec.close()
+        }
+
+    // ── CodecConnection.connect() with PooledBufferFactory ──
+
+    @Test
+    fun connectFactoryInjectsPooledFactory() =
+        runTest {
+            val transport = MemoryTransport()
+            val conn =
+                CodecConnection.connect(
+                    hostname = "localhost",
+                    port = 8080,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    transport = transport,
+                    options = testOptions,
+                )
+
+            assertTrue(conn.stream.isOpen)
+            conn.close()
+        }
+}

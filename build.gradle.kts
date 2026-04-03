@@ -585,6 +585,7 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.buffer)
             api(libs.buffer.flow)
+            api(libs.buffer.codec)
             implementation(libs.kotlinx.coroutines.core)
         }
         androidMain.dependencies {
