@@ -30,7 +30,9 @@ class MemoryByteStreamTests {
         runTest {
             val (a, b) = MemoryTransport.createPair()
             val bytes = byteArrayOf(0x00, 0x01, 0x02, 0xFF.toByte())
-            val buf = com.ditchoom.buffer.BufferFactory.Default.allocate(bytes.size)
+            val buf =
+                com.ditchoom.buffer.BufferFactory.Default
+                    .allocate(bytes.size)
             buf.writeBytes(bytes)
             buf.resetForRead()
             b.write(buf, 5.seconds)
@@ -84,7 +86,9 @@ class MemoryByteStreamTests {
     fun writeDoesNotAliasOriginalBuffer() =
         runTest {
             val (a, b) = MemoryTransport.createPair()
-            val original = com.ditchoom.buffer.BufferFactory.Default.allocate(4)
+            val original =
+                com.ditchoom.buffer.BufferFactory.Default
+                    .allocate(4)
             original.writeInt(42)
             original.resetForRead()
             a.write(original, 5.seconds)

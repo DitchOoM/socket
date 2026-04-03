@@ -1,7 +1,5 @@
 package com.ditchoom.socket.transport
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.toReadBuffer
 import com.ditchoom.socket.MockClientToServerSocket
 import com.ditchoom.socket.SSLHandshakeFailedException
