@@ -1,5 +1,7 @@
 package com.ditchoom.socket.transport
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.Codec
@@ -254,6 +256,47 @@ class CodecConnectionTests {
             assertTrue(stats.totalAllocations >= 2, "Expected at least 2 pool allocations for 2 sends")
 
             codec.close()
+        }
+
+    // ── preSeed() for protocol upgrades ──
+
+    @Test
+    fun preSeedFeedsLeftoverBytesIntoStreamProcessor() =
+        runTest {
+            val (clientStream, serverStream) = MemoryTransport.createPair()
+
+            // Simulate: handshake parser read "msg1" bytes but they belong to the framing phase
+            val preSeeded = BufferFactory.Default.allocate(32)
+            TestStringCodec.encode(preSeeded, "pre-seeded")
+            preSeeded.resetForRead()
+
+            val server =
+                CodecConnection(
+                    stream = serverStream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+            server.preSeed(preSeeded)
+
+            // Also send a normal message through the stream
+            val client =
+                CodecConnection(
+                    stream = clientStream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+            client.send("after-upgrade")
+            client.close()
+
+            // Server should see pre-seeded message first, then the streamed one
+            val messages = server.receive().toList()
+            assertEquals(listOf("pre-seeded", "after-upgrade"), messages)
+
+            server.close()
         }
 
     // ── CodecConnection.connect() with PooledBufferFactory ──

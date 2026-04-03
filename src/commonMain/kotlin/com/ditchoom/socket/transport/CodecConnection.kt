@@ -1,5 +1,6 @@
 package com.ditchoom.socket.transport
 
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
@@ -31,6 +32,17 @@ class CodecConnection<T>(
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) {
     private val streamProcessor: StreamProcessor = StreamProcessor.create(pool)
+
+    /**
+     * Pre-seeds the stream processor with leftover bytes from a prior protocol phase.
+     *
+     * Use this after a protocol upgrade (e.g., HTTP handshake → WebSocket framing)
+     * where the handshake parser may have over-read into the next protocol's data.
+     * Call before [receive] to ensure no bytes are lost during the transition.
+     */
+    fun preSeed(buffer: ReadBuffer) {
+        streamProcessor.append(buffer)
+    }
 
     fun receive(): Flow<T> =
         flow {
