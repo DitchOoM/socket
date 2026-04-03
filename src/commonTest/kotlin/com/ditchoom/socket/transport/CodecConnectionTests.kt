@@ -318,4 +318,122 @@ class CodecConnectionTests {
             assertTrue(conn.stream.isOpen)
             conn.close()
         }
+
+    // ── impossible state guards ──
+
+    @Test
+    fun receiveCanOnlyBeCalledOnce() =
+        runTest {
+            val (stream, _) = MemoryTransport.createPair()
+            val conn =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            conn.receive() // first call ok
+            assertFailsWith<IllegalStateException> {
+                conn.receive() // second call throws
+            }
+
+            conn.close()
+        }
+
+    @Test
+    fun preSeedAfterReceiveThrows() =
+        runTest {
+            val (stream, _) = MemoryTransport.createPair()
+            val conn =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            conn.receive() // marks as receiving
+            assertFailsWith<IllegalStateException> {
+                conn.preSeed(BufferFactory.Default.allocate(1))
+            }
+
+            conn.close()
+        }
+
+    @Test
+    fun sendAfterCloseThrows() =
+        runTest {
+            val (stream, _) = MemoryTransport.createPair()
+            val conn =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            conn.close()
+            assertFailsWith<IllegalStateException> {
+                conn.send("should fail")
+            }
+        }
+
+    @Test
+    fun preSeedAfterCloseThrows() =
+        runTest {
+            val (stream, _) = MemoryTransport.createPair()
+            val conn =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            conn.close()
+            assertFailsWith<IllegalStateException> {
+                conn.preSeed(BufferFactory.Default.allocate(1))
+            }
+        }
+
+    @Test
+    fun receiveAfterCloseThrows() =
+        runTest {
+            val (stream, _) = MemoryTransport.createPair()
+            val conn =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            conn.close()
+            assertFailsWith<IllegalStateException> {
+                conn.receive()
+            }
+        }
+
+    @Test
+    fun closeIsIdempotent() =
+        runTest {
+            val (stream, _) = MemoryTransport.createPair()
+            val conn =
+                CodecConnection(
+                    stream = stream,
+                    codec = TestStringCodec,
+                    peekFrameSize = TestStringCodec::peekFrameSize,
+                    pool = BufferPool(),
+                    options = testOptions,
+                )
+
+            conn.close()
+            conn.close() // should not throw
+        }
 }

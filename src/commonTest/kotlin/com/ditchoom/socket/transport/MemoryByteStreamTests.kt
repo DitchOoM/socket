@@ -3,9 +3,11 @@ package com.ditchoom.socket.transport
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -163,6 +165,27 @@ class MemoryByteStreamTests {
             a.close()
             val result = b.read(5.seconds)
             assertIs<ReadResult.End>(result)
+        }
+
+    // ── impossible state guards ──
+
+    @Test
+    fun readAfterOwnCloseReturnsEnd() =
+        runTest {
+            val (a, _) = MemoryTransport.createPair()
+            a.close()
+            val result = a.read(5.seconds)
+            assertIs<ReadResult.End>(result)
+        }
+
+    @Test
+    fun writeAfterCloseThrowsSocketClosed() =
+        runTest {
+            val (a, _) = MemoryTransport.createPair()
+            a.close()
+            assertFailsWith<SocketClosedException> {
+                a.write("fail".toReadBuffer(), 5.seconds)
+            }
         }
 
     // ── MemoryTransport.connect() ──

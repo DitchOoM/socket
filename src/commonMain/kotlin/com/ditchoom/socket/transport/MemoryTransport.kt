@@ -4,9 +4,12 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 class MemoryTransport : Transport {
@@ -40,6 +43,12 @@ class MemoryByteStream(
             ReadResult.Data(buffer)
         } catch (_: ClosedReceiveChannelException) {
             ReadResult.End
+        } catch (e: CancellationException) {
+            if (readChannel.isClosedForReceive) {
+                ReadResult.End
+            } else {
+                throw e
+            }
         }
 
     override suspend fun write(
@@ -50,7 +59,11 @@ class MemoryByteStream(
         val copy = bufferFactory.allocate(remaining)
         copy.write(buffer)
         copy.resetForRead()
-        writeChannel.send(copy)
+        try {
+            writeChannel.send(copy)
+        } catch (_: ClosedSendChannelException) {
+            throw SocketClosedException.General("Stream is closed")
+        }
         return BytesWritten(remaining)
     }
 

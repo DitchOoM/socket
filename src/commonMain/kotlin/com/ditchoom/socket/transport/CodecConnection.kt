@@ -25,27 +25,38 @@ typealias PeekFrameSize = (stream: StreamProcessor, baseOffset: Int) -> Int?
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
-    private val peekFrameSize: PeekFrameSize? = null,
+    private val peekFrameSize: PeekFrameSize,
     val pool: BufferPool,
     private val options: ConnectionOptions = ConnectionOptions(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) {
     private val streamProcessor: StreamProcessor = StreamProcessor.create(pool)
+    private var closed = false
+    private var receiving = false
 
     /**
      * Pre-seeds the stream processor with leftover bytes from a prior protocol phase.
      *
      * Use this after a protocol upgrade (e.g., HTTP handshake → WebSocket framing)
      * where the handshake parser may have over-read into the next protocol's data.
-     * Call before [receive] to ensure no bytes are lost during the transition.
+     * Must be called before [receive].
      */
     fun preSeed(buffer: ReadBuffer) {
+        check(!closed) { "CodecConnection is closed" }
+        check(!receiving) { "preSeed() must be called before receive()" }
         streamProcessor.append(buffer)
     }
 
-    fun receive(): Flow<T> =
-        flow {
+    /**
+     * Returns a flow of decoded messages from the transport.
+     * Can only be collected once — multiple collectors would corrupt frame parsing.
+     */
+    fun receive(): Flow<T> {
+        check(!closed) { "CodecConnection is closed" }
+        check(!receiving) { "receive() can only be called once" }
+        receiving = true
+        return flow {
             while (true) {
                 // Drain all complete frames from buffered data
                 while (true) {
@@ -56,8 +67,10 @@ class CodecConnection<T>(
                 if (!fillFromTransport()) return@flow
             }
         }
+    }
 
     suspend fun send(message: T) {
+        check(!closed) { "CodecConnection is closed" }
         val size = codec.sizeOf(message) ?: options.defaultBufferSize
         val buffer = pool.acquire(size)
         try {
@@ -70,8 +83,7 @@ class CodecConnection<T>(
     }
 
     private fun drainFrame(): T? {
-        val peekFn = peekFrameSize ?: return null
-        val frameSize = peekFn(streamProcessor, 0) ?: return null
+        val frameSize = peekFrameSize(streamProcessor, 0) ?: return null
         if (streamProcessor.available() < frameSize) return null
         return streamProcessor.readBufferScoped(frameSize) { codec.decode(this, decodeContext) }
     }
@@ -88,6 +100,8 @@ class CodecConnection<T>(
         }
 
     suspend fun close() {
+        if (closed) return
+        closed = true
         stream.close()
         streamProcessor.release()
         pool.clear()
@@ -98,7 +112,7 @@ class CodecConnection<T>(
             hostname: String,
             port: Int,
             codec: Codec<T>,
-            peekFrameSize: PeekFrameSize? = null,
+            peekFrameSize: PeekFrameSize,
             transport: Transport = TcpTransport(),
             options: ConnectionOptions = ConnectionOptions(),
             decodeContext: DecodeContext = DecodeContext.Empty,
