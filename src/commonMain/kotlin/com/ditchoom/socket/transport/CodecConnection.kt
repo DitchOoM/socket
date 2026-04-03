@@ -31,7 +31,7 @@ class CodecConnection<T>(
     private val options: ConnectionOptions = ConnectionOptions(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
-) {
+) : MessageConnection<T> {
     private val streamProcessor: StreamProcessor = StreamProcessor.create(pool)
     private var closed = false
     private var receiving = false
@@ -55,7 +55,7 @@ class CodecConnection<T>(
      * Sequential collection is allowed (e.g., handshake then streaming),
      * but concurrent collection throws — two collectors would corrupt the stream processor.
      */
-    fun receive(): Flow<T> {
+    override fun receive(): Flow<T> {
         check(!closed) { "CodecConnection is closed" }
         return flow {
             check(!receiving) { "receive() is already being collected concurrently" }
@@ -75,7 +75,7 @@ class CodecConnection<T>(
         generateSequence { drainFrame() }.forEach { emit(it) }
     }
 
-    suspend fun send(message: T) {
+    override suspend fun send(message: T) {
         check(!closed) { "CodecConnection is closed" }
         val size = codec.sizeOf(message) ?: options.defaultBufferSize
         val buffer = pool.acquire(size)
@@ -105,7 +105,7 @@ class CodecConnection<T>(
                 throw SocketClosedException.ConnectionReset("Stream reset by peer")
         }
 
-    suspend fun close() {
+    override suspend fun close() {
         if (closed) return
         closed = true
         stream.close()
