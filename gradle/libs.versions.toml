@@ -7,6 +7,9 @@ opensslSha256 = "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef8
 # liburing version for Linux io_uring async I/O - built automatically by Gradle
 liburing = "2.9"
 liburingSha256 = "897b1153b55543e8b92a5a3eb9b906537a5fedcf8afaf241f8b8787940c79f8d"
+# quiche (Cloudflare QUIC) for socket-quic module - built from source via Cargo
+quiche = "0.28.0"
+quicheSha256 = "2adb185e8557b3057cee76ba73d8afb20c25e3143a6296a5891ddc9b1fd81192"
 androidGradlePlugin = "8.13.2"
 ktlint = "14.0.1"
 mavenPublish = "0.35.0"

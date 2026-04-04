@@ -41,10 +41,34 @@ jobs:
         id: version
         run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action/setup@v1
+
+      - name: Cache quiche macOS
+        uses: actions/cache@v4
+        with:
+          path: |
+            socket-quic/libs/quiche/macos-x64
+            socket-quic/libs/quiche/macos-arm64
+          key: quiche-macos-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Build quiche native libraries (macOS shared for JVM)
+        run: ./gradlew :socket-quic:buildQuicheAll --no-configuration-cache
+
       - name: Run Apple tests
         run: >-
           ./gradlew macosX64Test macosArm64Test iosSimulatorArm64Test
           tvosSimulatorArm64Test watchosSimulatorArm64Test ktlintCheck
+          :socket-quic:macosArm64Test :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Publish Apple targets to Maven Local

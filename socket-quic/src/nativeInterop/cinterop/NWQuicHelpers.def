@@ -1,0 +1,5 @@
+language = Objective-C
+package = com.ditchoom.socket.quic.nwhelpers
+headers = nw_quic_helpers.h
+headerFilter = nw_quic_helpers.h
+linkerOpts = -framework Network -framework Foundation -framework Security

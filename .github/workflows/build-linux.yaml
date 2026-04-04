@@ -73,13 +73,44 @@ jobs:
           sudo apt-get install -y build-essential perl
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action/setup@v1
+
+      - name: Add Rust ARM64 target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: Cache quiche Linux x64
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/libs/quiche/linux-x64
+          key: quiche-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache quiche Linux ARM64
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/libs/quiche/linux-arm64
+          key: quiche-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
       - name: Get version
         id: version
         run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
 
+      - name: Build quiche native libraries
+        run: ./gradlew :socket-quic:buildQuicheAll --no-configuration-cache
+
       - name: Run checks and tests
         run: >-
           ./gradlew jvmTest jsTest linuxX64Test testDebugUnitTest ktlintCheck
+          :socket-quic:jvmTest :socket-quic:jsNodeTest :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Build ARM64 test binary
