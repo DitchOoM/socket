@@ -411,6 +411,14 @@ kotlin {
                 implementation(kotlin("test"))
             }
         }
+        val androidInstrumentedTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.test)
+                implementation("androidx.test:runner:1.6.2")
+                implementation("androidx.test.ext:junit:1.2.1")
+            }
+        }
         androidUnitTest.dependsOn(commonJvmTest)
     }
 }
@@ -453,6 +461,7 @@ android {
     sourceSets["main"].jniLibs.srcDirs("src/androidMain/jniLibs")
     defaultConfig {
         minSdk = 21
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     namespace = "com.ditchoom.socket.quic"
 
