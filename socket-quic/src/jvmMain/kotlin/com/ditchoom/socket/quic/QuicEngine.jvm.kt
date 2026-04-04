@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.use
 import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -8,7 +9,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withTimeout
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
-import java.security.SecureRandom
 import kotlin.time.Duration
 
 actual fun defaultQuicEngine(): QuicEngine = JvmQuicEngine()
@@ -16,7 +16,6 @@ actual fun defaultQuicEngine(): QuicEngine = JvmQuicEngine()
 private class JvmQuicEngine : QuicEngine {
     private val api: QuicheApi = loadQuicheApi()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val random = SecureRandom()
 
     override suspend fun connect(
         hostname: String,
@@ -28,101 +27,91 @@ private class JvmQuicEngine : QuicEngine {
         withTimeout(timeout) {
             val bufferFactory = connectionOptions.bufferFactory
 
-            // 1. Create quiche config from QuicOptions
+            // 1. Create quiche config
             val config = api.configNew(QUICHE_PROTOCOL_VERSION)
+            try {
+                // ALPN — @ProtocolMessage generated codec, writes directly into buffer (zero-copy)
+                encodeAlpnList(quicOptions.alpnProtocols, bufferFactory).use { alpnBuf ->
+                    val alpnAddr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+                    api.configSetApplicationProtos(config, alpnAddr, alpnBuf.remaining())
+                }
 
-            // Set ALPN protocols (allocated via bufferFactory — zero-copy)
-            val alpnBytes = QuicheApi.encodeAlpnProtos(quicOptions.alpnProtocols)
-            val alpnBuf = bufferFactory.allocate(alpnBytes.size)
-            alpnBuf.writeBytes(alpnBytes)
-            alpnBuf.resetForRead()
-            val alpnAddr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-            api.configSetApplicationProtos(config, alpnAddr, alpnBytes.size)
-            alpnBuf.freeNativeMemory()
+                api.configSetMaxIdleTimeout(config, quicOptions.idleTimeout.inWholeMilliseconds)
+                api.configSetMaxRecvUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
+                api.configSetMaxSendUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
+                api.configSetInitialMaxData(config, quicOptions.initialMaxData)
+                api.configSetInitialMaxStreamDataBidiLocal(config, quicOptions.initialMaxStreamDataBidiLocal)
+                api.configSetInitialMaxStreamDataBidiRemote(config, quicOptions.initialMaxStreamDataBidiRemote)
+                api.configSetInitialMaxStreamDataUni(config, quicOptions.initialMaxStreamDataUni)
+                api.configSetInitialMaxStreamsBidi(config, quicOptions.initialMaxStreamsBidi)
+                api.configSetInitialMaxStreamsUni(config, quicOptions.initialMaxStreamsUni)
+                api.configSetDisableActiveMigration(config, quicOptions.disableActiveMigration)
+                api.configVerifyPeer(config, quicOptions.verifyPeer)
 
-            api.configSetMaxIdleTimeout(config, quicOptions.idleTimeout.inWholeMilliseconds)
-            api.configSetMaxRecvUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
-            api.configSetMaxSendUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
-            api.configSetInitialMaxData(config, quicOptions.initialMaxData)
-            api.configSetInitialMaxStreamDataBidiLocal(config, quicOptions.initialMaxStreamDataBidiLocal)
-            api.configSetInitialMaxStreamDataBidiRemote(config, quicOptions.initialMaxStreamDataBidiRemote)
-            api.configSetInitialMaxStreamDataUni(config, quicOptions.initialMaxStreamDataUni)
-            api.configSetInitialMaxStreamsBidi(config, quicOptions.initialMaxStreamsBidi)
-            api.configSetInitialMaxStreamsUni(config, quicOptions.initialMaxStreamsUni)
-            api.configSetDisableActiveMigration(config, quicOptions.disableActiveMigration)
-            api.configVerifyPeer(config, quicOptions.verifyPeer)
+                // 2. Open UDP channel
+                val channel = DatagramChannel.open()
+                channel.configureBlocking(false)
+                channel.connect(InetSocketAddress(hostname, port))
+                val localAddr = channel.localAddress as InetSocketAddress
 
-            // 2. Open UDP channel
-            val channel = DatagramChannel.open()
-            channel.configureBlocking(false)
-            channel.connect(InetSocketAddress(hostname, port))
-            val localAddr = channel.localAddress as InetSocketAddress
+                // 3. Server name — write directly into buffer (null-terminated UTF-8)
+                val serverNameBuf = bufferFactory.allocate(hostname.length + 1)
+                serverNameBuf.writeString(hostname, com.ditchoom.buffer.Charset.UTF8)
+                serverNameBuf.writeByte(0) // null terminator
+                serverNameBuf.resetForRead()
+                val serverNameAddr = serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
-            // 3. Generate source connection ID (RFC 9000 §7.2: max 20 bytes)
-            val scid = ByteArray(QUICHE_MAX_CONN_ID_LEN)
-            random.nextBytes(scid)
+                // 4. SCID — bulk random writes (2 longs + 1 int = 20 bytes in 3 ops)
+                val scidBuf = generateScid(bufferFactory)
+                val scidAddr = scidBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
-            // 4. Create quiche connection
-            // Allocate server name + SCID via bufferFactory for zero-copy
-            val serverNameBytes = hostname.toByteArray(Charsets.UTF_8)
-            val serverNameBuf = bufferFactory.allocate(serverNameBytes.size + 1)
-            serverNameBuf.writeBytes(serverNameBytes)
-            serverNameBuf.writeByte(0) // null terminator
-            serverNameBuf.resetForRead()
-            val serverNameAddr = serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+                // 5. Sockaddr structs via buffer factory
+                val peerSockAddr = InetSocketAddress(hostname, port).toNativeSockAddr(bufferFactory)
+                val localSockAddr = localAddr.toNativeSockAddr(bufferFactory)
 
-            val scidBuf = bufferFactory.allocate(scid.size)
-            scidBuf.writeBytes(scid)
-            scidBuf.resetForRead()
-            val scidAddr = scidBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+                val conn =
+                    try {
+                        api.connect(
+                            serverNameAddr,
+                            hostname.length,
+                            scidAddr,
+                            QUIC_MAX_CONN_ID_LEN,
+                            localSockAddr.address,
+                            localSockAddr.length,
+                            peerSockAddr.address,
+                            peerSockAddr.length,
+                            config,
+                        )
+                    } finally {
+                        // Free all config-phase buffers immediately
+                        serverNameBuf.freeNativeMemory()
+                        scidBuf.freeNativeMemory()
+                        localSockAddr.free()
+                        peerSockAddr.free()
+                    }
 
-            // Allocate native sockaddr structs via buffer factory (zero-copy)
-            val peerSockAddr = (InetSocketAddress(hostname, port)).toNativeSockAddr(bufferFactory)
-            val localSockAddr = localAddr.toNativeSockAddr(bufferFactory)
-
-            val conn =
-                api.connect(
-                    serverNameAddr,
-                    serverNameBytes.size,
-                    scidAddr,
-                    scid.size,
-                    localSockAddr.address,
-                    localSockAddr.length,
-                    peerSockAddr.address,
-                    peerSockAddr.length,
-                    config,
-                )
-
-            serverNameBuf.freeNativeMemory()
-            scidBuf.freeNativeMemory()
-            localSockAddr.free()
-            peerSockAddr.free()
-            api.configFree(config)
-
-            // 5. Create connection wrapper and start event loop
-            val quicConnection =
-                JvmQuicConnection(
-                    api = api,
-                    conn = conn,
-                    channel = channel,
-                    bufferFactory = bufferFactory,
-                    localAddr = localAddr,
-                    peerAddr = InetSocketAddress(hostname, port),
-                    scope = scope,
-                )
-            quicConnection.start()
-
-            // 6. Wait for QUIC handshake to complete
-            quicConnection.awaitEstablished(timeout)
-            quicConnection
+                // 6. Create connection and start event loop
+                val quicConnection =
+                    JvmQuicConnection(
+                        api = api,
+                        conn = conn,
+                        channel = channel,
+                        bufferFactory = bufferFactory,
+                        localAddr = localAddr,
+                        peerAddr = InetSocketAddress(hostname, port),
+                        scope = scope,
+                    )
+                quicConnection.start()
+                quicConnection.awaitEstablished(timeout)
+                quicConnection
+            } finally {
+                api.configFree(config)
+            }
         }
 
-    override fun close() {
-        // Scope cleanup handled by SupervisorJob cancellation
-    }
+    override fun close() {}
 
     companion object {
         private const val QUICHE_PROTOCOL_VERSION = 0x00000001
-        private const val QUICHE_MAX_CONN_ID_LEN = 20
     }
 }

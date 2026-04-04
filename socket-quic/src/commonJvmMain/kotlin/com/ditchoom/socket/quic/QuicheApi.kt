@@ -163,23 +163,7 @@ interface QuicheApi {
 
     fun sendInfoToAddrLen(info: QuicheSendInfo): Int
 
-    companion object {
-        /**
-         * Encode ALPN protocol list into wire format (length-prefixed per RFC 7301).
-         * Caller writes this into a [com.ditchoom.buffer.BufferFactory]-allocated buffer.
-         */
-        fun encodeAlpnProtos(protocols: List<String>): ByteArray {
-            val totalSize = protocols.sumOf { 1 + it.length }
-            val buf = ByteArray(totalSize)
-            var offset = 0
-            for (proto in protocols) {
-                buf[offset++] = proto.length.toByte()
-                proto.toByteArray(Charsets.US_ASCII).copyInto(buf, offset)
-                offset += proto.length
-            }
-            return buf
-        }
-    }
+    // ALPN encoding moved to AlpnCodec (commonMain) — writes directly into BufferFactory buffers
 }
 
 /**
