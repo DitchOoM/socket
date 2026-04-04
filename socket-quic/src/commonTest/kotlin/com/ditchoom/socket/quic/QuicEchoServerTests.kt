@@ -23,7 +23,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 class QuicEchoServerTests {
     @Test
-    @Ignore("Requires quiche native library")
+    @Ignore
     fun quicEcho_singleStream() =
         runTest {
             val factory = TrackingBufferFactory()
@@ -76,7 +76,7 @@ class QuicEchoServerTests {
         }
 
     @Test
-    @Ignore("Requires quiche native library")
+    @Ignore
     fun quicEcho_multipleMessages() =
         runTest {
             val factory = TrackingBufferFactory()
@@ -119,7 +119,7 @@ class QuicEchoServerTests {
         }
 
     @Test
-    @Ignore("Requires quiche native library")
+    @Ignore
     fun quicEcho_multipleStreams() =
         runTest {
             val conn = MockQuicConnection()

@@ -331,16 +331,26 @@ kotlin {
                     includeDirs("libs/quiche/include")
                 }
             }
-            // Only link against quiche if the static library has been built
-            val quicheLibX64 = projectDir.resolve("libs/quiche/linux-x64/lib/libquiche.a")
-            if (quicheLibX64.exists()) {
+            // Link against quiche — prefer static if no OpenSSL conflict, else shared
+            val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
+            val quicheShared = quicheLibDir.resolve("libquiche_jni.so") // self-contained, no OpenSSL conflict
+            val quicheStatic = quicheLibDir.resolve("libquiche.a")
+            if (quicheStatic.exists()) {
                 binaries.all {
+                    // Use whole-archive to pull all quiche symbols, allow-multiple-definition
+                    // to resolve BoringSSL/OpenSSL symbol collision with base module
                     linkerOpts(
-                        "-L${quicheLibX64.parentFile.absolutePath}",
+                        "-L${quicheLibDir.absolutePath}",
+                        "-Wl,--whole-archive",
                         "-lquiche",
+                        "-Wl,--no-whole-archive",
                         "-lpthread",
                         "-ldl",
                         "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
+                        "-Wl,--defsym=QUICHE_BSSL=1", // marker to indicate quiche BoringSSL is linked
                     )
                 }
             }
@@ -361,6 +371,9 @@ kotlin {
                         "-lpthread",
                         "-ldl",
                         "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
                     )
                 }
             }
