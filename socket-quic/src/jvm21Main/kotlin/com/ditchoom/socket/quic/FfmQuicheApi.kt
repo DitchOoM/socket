@@ -292,37 +292,70 @@ class FfmQuicheApi private constructor(
         reasonLen: Int,
     ): Int = hConnClose.invokeExact(seg(conn.ptr), app, err, seg(reasonAddr), reasonLen.toLong()) as Int
 
-    // --- RecvInfo / SendInfo ---
+    // --- RecvInfo / SendInfo via FFM Arena-allocated structs ---
+    //
+    // quiche_recv_info layout (64-bit):
+    //   [0..7]   from: sockaddr*     (ADDRESS)
+    //   [8..11]  from_len: socklen_t (JAVA_INT) + 4 bytes padding
+    //   [16..23] to: sockaddr*       (ADDRESS)
+    //   [24..27] to_len: socklen_t   (JAVA_INT) + 4 bytes padding
+    //   Total: 32 bytes
+    //
+    // quiche_send_info layout (64-bit):
+    //   [0..127]   from: sockaddr_storage (128 bytes)
+    //   [128..131] from_len: socklen_t    + padding to 136
+    //   [136..263] to: sockaddr_storage   (128 bytes)
+    //   [264..267] to_len: socklen_t      + padding to 272
+    //   [272..287] at: timespec           (16 bytes)
+    //   Total: 288 bytes
+
+    private val recvInfoArena = Arena.ofAuto()
+    private val sendInfoArena = Arena.ofAuto()
+
     override fun recvInfoNew(
         fromAddr: Long,
         fromAddrLen: Int,
         toAddr: Long,
         toAddrLen: Int,
     ): QuicheRecvInfo {
-        TODO("recvInfoNew — FFM struct layout for quiche_recv_info")
+        val info = recvInfoArena.allocate(RECV_INFO_SIZE.toLong(), 8)
+        info.set(ADDRESS, 0, seg(fromAddr)) // from
+        info.set(JAVA_INT, 8, fromAddrLen) // from_len
+        info.set(ADDRESS, 16, seg(toAddr)) // to
+        info.set(JAVA_INT, 24, toAddrLen) // to_len
+        return QuicheRecvInfo(info.address())
     }
 
     override fun recvInfoFree(info: QuicheRecvInfo) {
-        TODO("recvInfoFree via FFM")
+        // Arena.ofAuto manages lifecycle — no manual free needed
     }
 
     override fun sendInfoNew(): QuicheSendInfo {
-        TODO("sendInfoNew via FFM")
+        val info = sendInfoArena.allocate(SEND_INFO_SIZE.toLong(), 8)
+        return QuicheSendInfo(info.address())
     }
 
     override fun sendInfoFree(info: QuicheSendInfo) {
-        TODO("sendInfoFree via FFM")
+        // Arena.ofAuto manages lifecycle
     }
 
     override fun sendInfoToAddr(info: QuicheSendInfo): Long {
-        TODO("sendInfoToAddr via FFM")
+        // to field starts at offset 136 (after from sockaddr_storage 128 + from_len 4 + padding 4)
+        val segment = MemorySegment.ofAddress(info.ptr).reinterpret(SEND_INFO_SIZE.toLong())
+        return segment.get(ADDRESS, SEND_INFO_TO_OFFSET.toLong()).address()
     }
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo): Int {
-        TODO("sendInfoToAddrLen via FFM")
+        val segment = MemorySegment.ofAddress(info.ptr).reinterpret(SEND_INFO_SIZE.toLong())
+        return segment.get(JAVA_INT, SEND_INFO_TO_LEN_OFFSET.toLong())
     }
 
     companion object {
+        private const val RECV_INFO_SIZE = 32
+        private const val SEND_INFO_SIZE = 288
+        private const val SEND_INFO_TO_OFFSET = 136 // after sockaddr_storage(128) + socklen_t(4) + pad(4)
+        private const val SEND_INFO_TO_LEN_OFFSET = 264 // after to sockaddr_storage(128)
+
         fun create(libraryPath: String): FfmQuicheApi {
             val arena = Arena.ofAuto()
             val lookup = SymbolLookup.libraryLookup(libraryPath, arena)
