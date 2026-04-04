@@ -91,8 +91,7 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                         "1",
                         "https://github.com/google/boringssl.git",
                         sourceDir.name,
-                    )
-                        .directory(buildDir)
+                    ).directory(buildDir)
                         .inheritIO()
                         .start()
                         .waitFor()
@@ -116,7 +115,8 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                     // Use ASM if Go is available (faster, smaller), otherwise disable ASM
                     if (ProcessBuilder("which", "go").start().waitFor() != 0) "-DOPENSSL_NO_ASM=1" else "-DOPENSSL_NO_ASM=0",
                     "-DBUILD_SHARED_LIBS=OFF",
-                    "-G", "Unix Makefiles",
+                    "-G",
+                    "Unix Makefiles",
                 )
 
             // Cross-compilation for ARM64
@@ -155,10 +155,12 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
 
             // Copy libraries — search for them (cmake may put them in ssl/ and crypto/ subdirs or flat)
             outputDir.resolve("lib").mkdirs()
-            val sslLib = cmakeBuildDir.walk().firstOrNull { it.name == "libssl.a" }
-                ?: throw GradleException("libssl.a not found under ${cmakeBuildDir.absolutePath}")
-            val cryptoLib = cmakeBuildDir.walk().firstOrNull { it.name == "libcrypto.a" }
-                ?: throw GradleException("libcrypto.a not found under ${cmakeBuildDir.absolutePath}")
+            val sslLib =
+                cmakeBuildDir.walk().firstOrNull { it.name == "libssl.a" }
+                    ?: throw GradleException("libssl.a not found under ${cmakeBuildDir.absolutePath}")
+            val cryptoLib =
+                cmakeBuildDir.walk().firstOrNull { it.name == "libcrypto.a" }
+                    ?: throw GradleException("libcrypto.a not found under ${cmakeBuildDir.absolutePath}")
             sslLib.copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
             cryptoLib.copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
             logger.lifecycle("Copied ${sslLib.absolutePath} and ${cryptoLib.absolutePath}")
