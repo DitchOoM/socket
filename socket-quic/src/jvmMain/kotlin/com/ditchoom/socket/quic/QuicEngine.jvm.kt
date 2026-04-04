@@ -103,6 +103,9 @@ private class JvmQuicEngine : QuicEngine {
                     scope = scope,
                 )
             quicConnection.start()
+
+            // 6. Wait for QUIC handshake to complete
+            quicConnection.awaitEstablished(timeout)
             quicConnection
         }
 
