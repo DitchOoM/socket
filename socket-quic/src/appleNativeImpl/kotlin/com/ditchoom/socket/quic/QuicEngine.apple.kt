@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
 import com.ditchoom.socket.transport.ByteStream
 import com.ditchoom.socket.transport.BytesWritten
 import com.ditchoom.socket.transport.ReadResult
+import kotlinx.cinterop.convert
 import kotlinx.cinterop.toCPointer
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -249,7 +250,7 @@ private fun ReadBuffer.toNSData(): NSData {
         if (addr != null) {
             // bytesNoCopy: NSData wraps our buffer's memory without copying.
             // freeWhenDone=false: we manage the buffer lifecycle, not NSData.
-            return NSData.create(bytesNoCopy = addr, length = remaining().toULong(), freeWhenDone = false)
+            return NSData.create(bytesNoCopy = addr, length = remaining().convert(), freeWhenDone = false)
         }
     }
 

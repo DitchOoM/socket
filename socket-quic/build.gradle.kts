@@ -113,7 +113,9 @@ fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
             // Use pre-built BoringSSL from the base module (avoids rebuilding inside quiche)
             val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
             val env = mutableMapOf<String, String>()
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols -C embed-bitcode=yes -C lto=thin"
+            // Note: avoid -C lto=thin / -C embed-bitcode=yes here — they conflict with
+            // pre-built BoringSSL objects that lack LTO bitcode.
+            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
             if (boringsslDir.resolve("lib/libssl.a").exists()) {
                 env["QUICHE_BSSL_PATH"] = boringsslDir.absolutePath
                 logger.lifecycle("Using pre-built BoringSSL from ${boringsslDir.absolutePath}")
@@ -136,16 +138,18 @@ fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
                     if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi" else "ffi,boringssl-vendored",
                 )
 
-            val result =
+            val process =
                 ProcessBuilder(cargoArgs)
                     .directory(sourceDir)
                     .also { pb -> pb.environment().putAll(env) }
-                    .inheritIO()
+                    .redirectErrorStream(true)
                     .start()
-                    .waitFor()
+            // Stream cargo output through Gradle logger so it appears in CI logs
+            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            val result = process.waitFor()
 
             if (result != 0) {
-                throw GradleException("quiche cargo build failed for $arch")
+                throw GradleException("quiche cargo build failed for $arch (exit $result)")
             }
 
             // Copy static library
@@ -204,7 +208,9 @@ fun createBuildQuicheSharedTask(
             // Use pre-built BoringSSL if available
             val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
             val env = mutableMapOf<String, String>()
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols -C embed-bitcode=yes -C lto=thin"
+            // Note: avoid -C lto=thin / -C embed-bitcode=yes — they conflict with
+            // pre-built BoringSSL objects that lack LTO bitcode.
+            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
             if (boringsslDir.resolve("lib/libssl.a").exists()) {
                 env["QUICHE_BSSL_PATH"] = boringsslDir.absolutePath
                 logger.lifecycle("Using pre-built BoringSSL from ${boringsslDir.absolutePath}")
@@ -216,7 +222,7 @@ fun createBuildQuicheSharedTask(
             val quicheFeatures =
                 if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi" else "ffi,boringssl-vendored"
 
-            val result =
+            val process =
                 ProcessBuilder(
                     cargoBin,
                     "build",
@@ -230,12 +236,14 @@ fun createBuildQuicheSharedTask(
                     quicheFeatures,
                 ).directory(sourceDir)
                     .also { pb -> pb.environment().putAll(env) }
-                    .inheritIO()
+                    .redirectErrorStream(true)
                     .start()
-                    .waitFor()
+            // Stream cargo output through Gradle logger so it appears in CI logs
+            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            val result = process.waitFor()
 
             if (result != 0) {
-                throw GradleException("quiche cargo build failed for $os-$arch")
+                throw GradleException("quiche cargo build failed for $os-$arch (exit $result)")
             }
 
             outputDir.resolve("lib").mkdirs()

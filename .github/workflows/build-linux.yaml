@@ -96,19 +96,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: socket-quic/libs/quiche/linux-x64
-          key: quiche-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: quiche-linux-x64-v2-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v4
         with:
           path: socket-quic/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      - name: Cache quiche static x64
-        uses: actions/cache@v4
-        with:
-          path: socket-quic/libs/quiche/linux-x64
-          key: quiche-static-linux-x64-v2-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: quiche-linux-arm64-v2-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
