@@ -153,10 +153,15 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                     .waitFor()
             if (makeResult != 0) throw GradleException("BoringSSL make failed for $arch (exit $makeResult)")
 
-            // Copy libraries
+            // Copy libraries — search for them (cmake may put them in ssl/ and crypto/ subdirs or flat)
             outputDir.resolve("lib").mkdirs()
-            cmakeBuildDir.resolve("ssl/libssl.a").copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
-            cmakeBuildDir.resolve("crypto/libcrypto.a").copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
+            val sslLib = cmakeBuildDir.walk().firstOrNull { it.name == "libssl.a" }
+                ?: throw GradleException("libssl.a not found under ${cmakeBuildDir.absolutePath}")
+            val cryptoLib = cmakeBuildDir.walk().firstOrNull { it.name == "libcrypto.a" }
+                ?: throw GradleException("libcrypto.a not found under ${cmakeBuildDir.absolutePath}")
+            sslLib.copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
+            cryptoLib.copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
+            logger.lifecycle("Copied ${sslLib.absolutePath} and ${cryptoLib.absolutePath}")
 
             // Copy headers (same paths as OpenSSL: openssl/ssl.h, openssl/err.h, etc.)
             val includeOutputDir = outputDir.resolve("include")
