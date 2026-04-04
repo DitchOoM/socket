@@ -133,9 +133,13 @@ jobs:
           # Build quiche static (Linux K/Native) + shared (Linux JVM)
           ./gradlew :socket-quic:buildQuicheStaticX64 :socket-quic:buildQuicheStaticArm64 :socket-quic:buildQuicheSharedLinuxX64 --no-configuration-cache || true
 
-          # Find quiche source dir
-          QUICHE_DIR=$(find socket-quic/build/quiche -maxdepth 1 -name "quiche-*" -type d | head -1)
-          [ -z "$QUICHE_DIR" ] && echo "No quiche source" && exit 0
+          # Ensure quiche source exists for JNI builds (Gradle may skip download on cache hit)
+          QUICHE_DIR=$(find socket-quic/build/quiche -maxdepth 1 -name "quiche-*" -type d 2>/dev/null | head -1)
+          if [ -z "$QUICHE_DIR" ]; then
+            QUICHE_DIR="/tmp/quiche-src"
+            git clone --recursive --depth 1 --branch 0.28.0 \
+              https://github.com/cloudflare/quiche.git "$QUICHE_DIR"
+          fi
 
           build_jni() {
             local TARGET=$1 CC=$2 STRIP=$3 DEST=$4 NAME=$5 EXTRA_LIBS=$6
