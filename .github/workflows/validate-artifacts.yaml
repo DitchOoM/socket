@@ -142,16 +142,17 @@ jobs:
 
           if [ -f "$QUIC_JAR" ] && [ -d "$NATIVES" ]; then
             echo "Injecting macOS native libs into socket-quic JVM JAR..."
-            # Add macOS dylibs to the JAR (alongside linux natives already there)
+            # Re-nest under META-INF/native/ so paths match NativeLibLoader expectations
+            INJECT_DIR="/tmp/inject-natives"
+            mkdir -p "$INJECT_DIR/META-INF/native"
             for dir in "$NATIVES"/macos-*/; do
               [ -d "$dir" ] || continue
               platform=$(basename "$dir")
-              for lib in "$dir"/*.dylib; do
-                [ -f "$lib" ] || continue
-                echo "  Adding $platform/$(basename $lib)"
-                (cd "$NATIVES" && zip -u "$QUIC_JAR" "$platform/$(basename $lib)")
-              done
+              cp -r "$dir" "$INJECT_DIR/META-INF/native/$platform"
+              echo "  Staged META-INF/native/$platform/"
             done
+            (cd "$INJECT_DIR" && zip -ur "$QUIC_JAR" META-INF/native/)
+            rm -rf "$INJECT_DIR"
             echo "socket-quic JVM JAR native libs:"
             unzip -l "$QUIC_JAR" | grep "META-INF/native" || true
           else
@@ -282,25 +283,13 @@ jobs:
           QUIC_JAR="$MERGED/socket-quic-jvm/${version}/socket-quic-jvm-${version}.jar"
           if [ -f "$QUIC_JAR" ]; then
             echo "socket-quic JVM JAR found"
-            for platform in linux-x64 linux-arm64; do
-              if unzip -l "$QUIC_JAR" | grep -q "META-INF/native/$platform/libquiche_jni"; then
+            for platform in linux-x64 linux-arm64 windows-x64 macos-arm64 macos-x64; do
+              LIB_PATTERN="META-INF/native/$platform/"
+              if unzip -l "$QUIC_JAR" | grep -q "$LIB_PATTERN"; then
                 echo "  native OK: $platform"
               else
-                echo "  WARN: missing native lib for $platform"
-              fi
-            done
-            for platform in windows-x64; do
-              if unzip -l "$QUIC_JAR" | grep -q "META-INF/native/$platform/quiche_jni"; then
-                echo "  native OK: $platform"
-              else
-                echo "  INFO: Windows native $platform not present (cross-compiled on Linux)"
-              fi
-            done
-            for platform in macos-arm64 macos-x64; do
-              if unzip -l "$QUIC_JAR" | grep -q "META-INF/native/$platform/libquiche_jni"; then
-                echo "  native OK: $platform"
-              else
-                echo "  INFO: macOS native $platform not present (built on Apple runner)"
+                echo "  FAIL: missing native libs for $platform"
+                FAILED=true
               fi
             done
           else

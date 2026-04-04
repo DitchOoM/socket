@@ -65,46 +65,47 @@ jobs:
         continue-on-error: true
         run: |
           set -x
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "arm64" ]; then
-            RUST_TARGET="aarch64-apple-darwin"
-            DEST="socket-quic/src/jvmMain/resources/META-INF/native/macos-arm64"
-          else
-            RUST_TARGET="x86_64-apple-darwin"
-            DEST="socket-quic/src/jvmMain/resources/META-INF/native/macos-x64"
-          fi
+          RESOURCE_BASE="socket-quic/src/jvmMain/resources/META-INF/native"
 
-          # Clone and build quiche
+          # Clone quiche once, build for both architectures
           git clone --recursive --depth 1 --branch 0.28.0 \
             https://github.com/cloudflare/quiche.git /tmp/quiche-src
 
-          cd /tmp/quiche-src
-          cargo build --release --package quiche --target $RUST_TARGET \
-            --no-default-features --features ffi,boringssl-vendored
-          cd ${{ github.workspace }}
+          # Add the cross-compile target (ARM64 runner needs x64 target and vice versa)
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
-          # Build JNI shim that dynamically links to quiche cdylib
-          # (static linking Rust .a into C .so breaks Rust runtime init → panic)
-          QUICHE_DYLIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.dylib"
-          if [ -f "$QUICHE_DYLIB" ]; then
-            mkdir -p $DEST
-            # Copy the quiche cdylib (has proper Rust runtime) alongside the JNI shim
-            cp "$QUICHE_DYLIB" "$DEST/libquiche.dylib"
-            strip -x "$DEST/libquiche.dylib"
-            # Build thin JNI shim that links to quiche dynamically
-            cc -shared -fPIC -Wall \
-              -o $DEST/libquiche_jni.dylib \
-              socket-quic/src/jni/quiche_jni.c \
-              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/darwin \
-              -I socket-quic/libs/quiche/include \
-              -L$DEST -lquiche \
-              -Wl,-rpath,@loader_path \
-              && strip -x $DEST/libquiche_jni.dylib \
-              && echo "Built $DEST/libquiche_jni.dylib ($(du -h $DEST/libquiche_jni.dylib | cut -f1))" \
-              && echo "With $DEST/libquiche.dylib ($(du -h $DEST/libquiche.dylib | cut -f1))"
-          else
-            echo "WARN: libquiche.dylib not found at $QUICHE_DYLIB"
-          fi
+          for pair in "aarch64-apple-darwin macos-arm64" "x86_64-apple-darwin macos-x64"; do
+            RUST_TARGET="${pair%% *}"
+            PLATFORM="${pair##* }"
+            DEST="$RESOURCE_BASE/$PLATFORM"
+
+            cd /tmp/quiche-src
+            cargo build --release --package quiche --target $RUST_TARGET \
+              --no-default-features --features ffi,boringssl-vendored
+            cd ${{ github.workspace }}
+
+            QUICHE_DYLIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.dylib"
+            if [ -f "$QUICHE_DYLIB" ]; then
+              mkdir -p $DEST
+              cp "$QUICHE_DYLIB" "$DEST/libquiche.dylib"
+              strip -x "$DEST/libquiche.dylib"
+              # Build thin JNI shim that links to quiche dynamically
+              # (static linking Rust .a into C .so breaks Rust runtime init → panic)
+              cc -shared -fPIC -Wall \
+                -o $DEST/libquiche_jni.dylib \
+                socket-quic/src/jni/quiche_jni.c \
+                -I${JAVA_HOME}/include -I${JAVA_HOME}/include/darwin \
+                -I socket-quic/libs/quiche/include \
+                -L$DEST -lquiche \
+                -Wl,-rpath,@loader_path \
+                -target $(echo $RUST_TARGET | sed 's/aarch64/arm64/;s/x86_64/x86_64/') \
+                && strip -x $DEST/libquiche_jni.dylib \
+                && echo "Built $DEST/libquiche_jni.dylib ($(du -h $DEST/libquiche_jni.dylib | cut -f1))" \
+                && echo "With $DEST/libquiche.dylib ($(du -h $DEST/libquiche.dylib | cut -f1))"
+            else
+              echo "WARN: libquiche.dylib not found at $QUICHE_DYLIB"
+            fi
+          done
 
       - name: Run Apple tests
         run: >-
