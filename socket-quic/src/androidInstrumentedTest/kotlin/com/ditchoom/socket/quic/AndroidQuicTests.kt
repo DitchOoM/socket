@@ -7,8 +7,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Android instrumented tests — runs on real device/emulator.
- * Validates that the JNI native lib loads and the QUIC engine creates.
+ * Android instrumented tests — runs on real device/emulator (API 24+).
+ * Validates JNI native lib loads and QUIC engine works.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicTests {

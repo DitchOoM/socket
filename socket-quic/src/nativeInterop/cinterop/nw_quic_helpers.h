@@ -65,16 +65,8 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
 
     if (!params) return NULL;
 
-    // Set idle timeout via QUIC protocol options
-    if (idle_timeout_seconds > 0) {
-        nw_protocol_stack_t stack = nw_parameters_copy_default_protocol_stack(params);
-        if (stack) {
-            nw_protocol_options_t quic_options = nw_protocol_stack_copy_transport_protocol(stack);
-            if (quic_options) {
-                nw_quic_set_idle_timeout(quic_options, (uint64_t)idle_timeout_seconds * 1000);
-            }
-        }
-    }
+    // Note: QUIC idle timeout is managed by Network.framework internally.
+    // The idle_timeout_seconds parameter is reserved for future use.
 
     nw_connection_t connection = nw_connection_create(endpoint, params);
     return connection;
