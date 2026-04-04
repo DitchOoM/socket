@@ -64,30 +64,40 @@ jobs:
       - name: Build quiche + JNI shim for macOS
         continue-on-error: true
         run: |
-          # Build quiche shared libs for macOS
-          ./gradlew :socket-quic:buildQuicheAll --no-configuration-cache || true
-
-          # Build JNI shim for macOS arm64 (self-contained, static-link quiche)
-          QUICHE_SRC=socket-quic/build/quiche/quiche-*/target
+          set -x
           ARCH=$(uname -m)
           if [ "$ARCH" = "arm64" ]; then
-            QUICHE_LIB=$(find $QUICHE_SRC -path "*aarch64-apple-darwin/release/libquiche.a" | head -1)
-            DEST=socket-quic/src/jvmMain/resources/META-INF/native/macos-arm64
+            RUST_TARGET="aarch64-apple-darwin"
+            DEST="socket-quic/src/jvmMain/resources/META-INF/native/macos-arm64"
           else
-            QUICHE_LIB=$(find $QUICHE_SRC -path "*x86_64-apple-darwin/release/libquiche.a" | head -1)
-            DEST=socket-quic/src/jvmMain/resources/META-INF/native/macos-x64
+            RUST_TARGET="x86_64-apple-darwin"
+            DEST="socket-quic/src/jvmMain/resources/META-INF/native/macos-x64"
           fi
-          if [ -n "$QUICHE_LIB" ]; then
+
+          # Clone and build quiche
+          git clone --recursive --depth 1 --branch 0.28.0 \
+            https://github.com/cloudflare/quiche.git /tmp/quiche-src
+
+          cd /tmp/quiche-src
+          cargo build --release --package quiche --target $RUST_TARGET \
+            --no-default-features --features ffi,boringssl-vendored
+          cd ${{ github.workspace }}
+
+          # Build self-contained JNI shim (static-link quiche + BoringSSL)
+          QUICHE_LIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.a"
+          if [ -f "$QUICHE_LIB" ]; then
             mkdir -p $DEST
             cc -shared -fPIC -Wall \
               -o $DEST/libquiche_jni.dylib \
               socket-quic/src/jni/quiche_jni.c \
               -I${JAVA_HOME}/include -I${JAVA_HOME}/include/darwin \
               -I socket-quic/libs/quiche/include \
-              -Wl,-all_load $QUICHE_LIB -Wl,-noall_load \
+              -Wl,-force_load,$QUICHE_LIB \
               -lpthread -ldl -lm -lc++ \
               && strip -x $DEST/libquiche_jni.dylib \
               && echo "Built $DEST/libquiche_jni.dylib ($(du -h $DEST/libquiche_jni.dylib | cut -f1))"
+          else
+            echo "WARN: libquiche.a not found at $QUICHE_LIB"
           fi
 
       - name: Run Apple tests
