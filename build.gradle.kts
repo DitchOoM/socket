@@ -78,29 +78,25 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
             val buildDir = boringsslBuildDir.get().asFile
             val sourceDir = File(buildDir, "boringssl")
 
-            // Clone if not present
+            // Clone if not present — shallow clone of default branch
+            // (BoringSSL API surface we use is stable across commits)
             if (!sourceDir.exists()) {
                 buildDir.mkdirs()
-                logger.lifecycle("Cloning BoringSSL ($boringsslCommit)...")
+                logger.lifecycle("Cloning BoringSSL...")
                 val cloneResult =
-                    ProcessBuilder("git", "clone", "--depth", "1", "https://github.com/google/boringssl.git", sourceDir.name)
+                    ProcessBuilder(
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "https://github.com/google/boringssl.git",
+                        sourceDir.name,
+                    )
                         .directory(buildDir)
                         .inheritIO()
                         .start()
                         .waitFor()
                 if (cloneResult != 0) throw GradleException("Failed to clone BoringSSL")
-
-                // Checkout specific commit
-                ProcessBuilder("git", "fetch", "--depth", "1", "origin", boringsslCommit)
-                    .directory(sourceDir)
-                    .inheritIO()
-                    .start()
-                    .waitFor()
-                ProcessBuilder("git", "checkout", boringsslCommit)
-                    .directory(sourceDir)
-                    .inheritIO()
-                    .start()
-                    .waitFor()
             }
 
             // CMake configure
