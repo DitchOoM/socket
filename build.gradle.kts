@@ -89,7 +89,7 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                         .waitFor()
                 if (cloneResult != 0) throw GradleException("Failed to clone quiche $quicheVersion")
             }
-            val sourceDir = File(quicheDir, "deps/boringssl")
+            val sourceDir = File(quicheDir, "quiche/deps/boringssl")
 
             // CMake configure — clean build dir to avoid stale state
             val cmakeBuildDir = File(sourceDir, "build-$arch")
