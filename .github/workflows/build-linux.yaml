@@ -137,16 +137,19 @@ jobs:
           :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      - name: Build ARM64 test binary
+      - name: Build ARM64 test binaries
         run: >-
           ./gradlew linkDebugTestLinuxArm64
+          :socket-quic:linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      - name: Upload ARM64 test binary
+      - name: Upload ARM64 test binaries
         uses: actions/upload-artifact@v4
         with:
           name: linux-arm64-test-binary
-          path: build/bin/linuxArm64/debugTest/test.kexe
+          path: |
+            build/bin/linuxArm64/debugTest/test.kexe
+            socket-quic/build/bin/linuxArm64/debugTest/test.kexe
           retention-days: 1
 
       - name: Publish to Maven Local
@@ -170,7 +173,16 @@ jobs:
         with:
           name: linux-arm64-test-binary
 
-      - name: Run ARM64 tests
+      - name: Run ARM64 tests (base module)
         run: |
-          chmod +x test.kexe
-          ./test.kexe
+          chmod +x build/bin/linuxArm64/debugTest/test.kexe
+          ./build/bin/linuxArm64/debugTest/test.kexe
+
+      - name: Run ARM64 tests (socket-quic)
+        run: |
+          if [ -f socket-quic/build/bin/linuxArm64/debugTest/test.kexe ]; then
+            chmod +x socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+            ./socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+          else
+            echo "socket-quic ARM64 binary not found — skipping"
+          fi
