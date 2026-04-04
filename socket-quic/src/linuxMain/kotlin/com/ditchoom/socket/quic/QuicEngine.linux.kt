@@ -108,7 +108,7 @@ private class LinuxQuicEngine : QuicEngine {
                     ?: throw SocketConnectionException.Refused("Failed to create quiche config")
 
             // ALPN — encode directly into buffer factory buffer (zero-copy, no ByteArray)
-            val alpnBuf = AlpnCodec.encodeToBuffer(quicOptions.alpnProtocols, bufferFactory)
+            val alpnBuf = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
             val alpnPtr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
             quiche_config_set_application_protos(config, alpnPtr, alpnBuf.remaining().convert())
             alpnBuf.freeNativeMemory()

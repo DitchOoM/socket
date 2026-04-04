@@ -1,0 +1,5 @@
+root = true
+
+# Disable all ktlint rules for KSP-generated codec files
+[build/generated/**/*.kt]
+ktlint = disabled

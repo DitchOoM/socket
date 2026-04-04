@@ -3,9 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
-    // KSP disabled until buffer-codec-processor emits @file:Suppress("ktlint")
-    // See ../buffer/CODEC_PROCESSOR_FIXES.md
-    // alias(libs.plugins.ksp)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
 }
 
@@ -395,14 +393,19 @@ kotlin {
             }
         }
         androidUnitTest.dependsOn(commonJvmTest)
+    }
+}
 
-        // KSP codec processor wiring — enable when processor emits ktlint-clean code:
-        // kotlin.targets.configureEach {
-        //     if (name != "metadata") {
-        //         dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec.processor)
-        //         dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec)
-        //     }
-        // }
+// Wire KSP codec processor for all targets
+kotlin.targets.configureEach {
+    if (name != "metadata") {
+        dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec.processor)
+        dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec)
+    }
+}
+
+kotlin {
+    sourceSets {
 
         if (isMacOS) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
