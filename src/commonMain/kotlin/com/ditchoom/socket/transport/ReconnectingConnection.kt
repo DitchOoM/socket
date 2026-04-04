@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -27,7 +28,7 @@ import kotlin.time.TimeSource
  * A [MessageConnection] that automatically reconnects on failure.
  *
  * The [connect] factory is called on each (re)connect attempt. It should create a fresh
- * [CodecConnection], perform any protocol handshake (e.g., MQTT CONNECT/CONNACK),
+ * [MessageConnection], perform any protocol handshake (e.g., MQTT CONNECT/CONNACK),
  * and return the ready-to-use connection. Protocol state that must survive reconnects
  * (persistence, subscriptions) should be captured in the [connect] closure.
  *
@@ -52,7 +53,7 @@ import kotlin.time.TimeSource
  * ```
  */
 class ReconnectingConnection<T>(
-    private val connect: suspend () -> CodecConnection<T>,
+    private val connect: suspend () -> MessageConnection<T>,
     private val classifier: ReconnectionClassifier = DefaultReconnectionClassifier(),
     private val networkMonitor: NetworkMonitor = NetworkMonitor.AlwaysAvailable,
 ) : MessageConnection<T> {
@@ -64,16 +65,12 @@ class ReconnectingConnection<T>(
     /** Timestamp of the most recent decoded message, or `null` if none received yet. */
     val lastMessageReceived: StateFlow<TimeSource.Monotonic.ValueTimeMark?> = _lastMessageReceived.asStateFlow()
 
-    private val _lastDataReceived = MutableStateFlow<TimeSource.Monotonic.ValueTimeMark?>(null)
-
-    /** Timestamp of the most recent raw data from the transport, forwarded from the current [CodecConnection]. */
-    val lastDataReceived: StateFlow<TimeSource.Monotonic.ValueTimeMark?> = _lastDataReceived.asStateFlow()
-
-    private var currentConnection: CodecConnection<T>? = null
+    private var currentConnection: MessageConnection<T>? = null
 
     @kotlin.concurrent.Volatile
     private var backoffReset = false
     private var closed = false
+    private var receiving = false
 
     /**
      * Resets the backoff delay so the next reconnect attempt happens immediately.
@@ -88,6 +85,8 @@ class ReconnectingConnection<T>(
     override fun receive(): Flow<T> {
         check(!closed) { "ReconnectingConnection is closed" }
         return flow {
+            check(!receiving) { "receive() is already being collected" }
+            receiving = true
             var retryDelay = Duration.ZERO
 
             // Auto-reset backoff when network becomes available
@@ -105,8 +104,6 @@ class ReconnectingConnection<T>(
                         currentConnection = conn
                         _state.value = ConnectionState.Connected
                         conn.receive().collect {
-                            // Forward raw data timestamp from the underlying CodecConnection
-                            conn.lastDataReceived.value?.let { _lastDataReceived.value = it }
                             _lastMessageReceived.value = TimeSource.Monotonic.markNow()
                             emit(it)
                         }
@@ -125,15 +122,42 @@ class ReconnectingConnection<T>(
                     }
                 }
             } finally {
+                receiving = false
                 monitorJob?.cancel()
             }
         }
     }
 
+    /**
+     * Send a message, suspending during reconnection until connected.
+     *
+     * If the connection is currently reconnecting, this suspends until
+     * [ConnectionState.Connected] is reached, then sends. Message ordering is preserved —
+     * blocked writes resume after the connect lambda finishes (handshake + session prep done).
+     *
+     * Throws [IllegalStateException] if the connection is closed.
+     */
     override suspend fun send(message: T) {
         check(!closed) { "ReconnectingConnection is closed" }
-        val conn = currentConnection ?: throw IllegalStateException("Not connected")
-        conn.send(message)
+        check(receiving) { "send() requires receive() to be collected (it drives reconnection)" }
+        while (currentCoroutineContext().isActive && !closed) {
+            val conn = currentConnection
+            if (conn == null) {
+                // Wait for reconnection to complete
+                state.first { it == ConnectionState.Connected || closed }
+                if (closed) throw IllegalStateException("ReconnectingConnection is closed")
+                continue
+            }
+            try {
+                conn.send(message)
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Connection dropped during send — wait for reconnect
+            }
+        }
+        throw IllegalStateException("ReconnectingConnection is closed")
     }
 
     override suspend fun close() {

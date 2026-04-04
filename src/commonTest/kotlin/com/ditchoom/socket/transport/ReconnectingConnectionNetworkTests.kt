@@ -188,30 +188,6 @@ class ReconnectingConnectionNetworkTests {
             assertNull(conn.lastMessageReceived.value)
         }
 
-    // ── lastDataReceived tracking ──
-
-    @Test
-    fun lastDataReceivedUpdatesOnRawData() =
-        runTest {
-            val conn =
-                ReconnectingConnection(
-                    connect = {
-                        val (client, server) = MemoryTransport.createPair()
-                        val codec = createCodecConnection(client)
-                        val serverCodec = createCodecConnection(server)
-                        serverCodec.send("data")
-                        serverCodec.close()
-                        codec
-                    },
-                )
-
-            assertNull(conn.lastDataReceived.value)
-
-            conn.receive().toList()
-
-            assertNotNull(conn.lastDataReceived.value, "Should be set after data was received")
-        }
-
     // ── state observable with network monitor ──
 
     @Test
