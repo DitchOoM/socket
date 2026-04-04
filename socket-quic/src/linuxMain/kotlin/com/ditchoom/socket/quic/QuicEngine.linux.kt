@@ -8,9 +8,9 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.IoUringManager
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketConnectionException
-import com.ditchoom.socket.quic.native.QUICHE_ERR_DONE
 import com.ditchoom.socket.quic.native.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.native.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.native.quiche_config_free
@@ -42,6 +42,7 @@ import com.ditchoom.socket.quic.native.quiche_connect
 import com.ditchoom.socket.quic.native.quiche_recv_info
 import com.ditchoom.socket.quic.native.quiche_send_info
 import com.ditchoom.socket.transport.ReadResult
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
@@ -68,26 +69,28 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import platform.linux.io_uring_prep_recv
+import platform.linux.io_uring_prep_send
 import platform.posix.AF_INET
 import platform.posix.SOCK_DGRAM
 import platform.posix.close
 import platform.posix.connect
 import platform.posix.getaddrinfo
-import platform.posix.recv
-import platform.posix.send
 import platform.posix.sockaddr_in
 import platform.posix.socket
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 actual fun defaultQuicEngine(): QuicEngine = LinuxQuicEngine()
 
 /**
- * Linux QUIC engine using quiche via cinterop + POSIX UDP sockets.
+ * Linux QUIC engine using quiche via cinterop + io_uring for UDP I/O.
  *
  * Zero-copy: buffer native addresses from [BufferFactory.deterministic]
  * are passed directly to quiche C functions via cinterop pointers.
+ * UDP I/O uses io_uring (same [IoUringManager] as TCP sockets in base module).
  */
 private class LinuxQuicEngine : QuicEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -107,7 +110,6 @@ private class LinuxQuicEngine : QuicEngine {
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
                     ?: throw SocketConnectionException.Refused("Failed to create quiche config")
 
-            // Set ALPN — write into a buffer from the factory, pass native address
             val alpnBytes = QuicheApi.encodeAlpnProtos(quicOptions.alpnProtocols)
             val alpnBuf = bufferFactory.allocate(alpnBytes.size)
             alpnBuf.writeBytes(alpnBytes)
@@ -128,22 +130,16 @@ private class LinuxQuicEngine : QuicEngine {
             quiche_config_set_disable_active_migration(config, quicOptions.disableActiveMigration)
             quiche_config_verify_peer(config, quicOptions.verifyPeer)
 
-            // 2. Resolve address and create UDP socket
+            // 2. Create UDP socket and connect
             memScoped {
-                val localAddr = alloc<sockaddr_in>()
-                val peerAddr = alloc<sockaddr_in>()
-
-                // Create UDP socket
                 val fd = socket(AF_INET, SOCK_DGRAM, 0)
                 if (fd < 0) throw SocketConnectionException.Refused("Failed to create UDP socket")
 
-                // Resolve and connect to peer
                 val hints = alloc<platform.posix.addrinfo>()
                 hints.ai_family = AF_INET
                 hints.ai_socktype = SOCK_DGRAM
                 val resultPtr = alloc<kotlinx.cinterop.CPointerVar<platform.posix.addrinfo>>()
-                val resolveResult = getaddrinfo(hostname, port.toString(), hints.ptr, resultPtr.ptr)
-                if (resolveResult != 0) {
+                if (getaddrinfo(hostname, port.toString(), hints.ptr, resultPtr.ptr) != 0) {
                     close(fd)
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused("DNS resolution failed for $hostname")
@@ -154,9 +150,8 @@ private class LinuxQuicEngine : QuicEngine {
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused("UDP connect failed for $hostname:$port")
                 }
-                platform.posix.freeaddrinfo(resultPtr.value)
 
-                // 3. Generate SCID via buffer factory
+                // 3. Generate SCID via buffer factory (zero-copy)
                 val scid = ByteArray(MAX_CONN_ID_LEN)
                 Random.nextBytes(scid)
                 val scidBuf = bufferFactory.allocate(scid.size)
@@ -173,7 +168,7 @@ private class LinuxQuicEngine : QuicEngine {
                         addrInfo.ai_addr,
                         addrInfo.ai_addrlen,
                         addrInfo.ai_addr,
-                        addrInfo.ai_addrlen, // local = peer for now (connected UDP)
+                        addrInfo.ai_addrlen,
                         config,
                     ) ?: run {
                         scidBuf.freeNativeMemory()
@@ -183,13 +178,12 @@ private class LinuxQuicEngine : QuicEngine {
                     }
 
                 scidBuf.freeNativeMemory()
+                platform.posix.freeaddrinfo(resultPtr.value)
                 quiche_config_free(config)
 
-                // 5. Create connection and start event loop
+                // 5. Create connection with io_uring event loop
                 val quicConn = LinuxQuicConnection(conn, fd, bufferFactory, scope)
                 quicConn.start()
-
-                // 6. Wait for handshake
                 quicConn.awaitEstablished(timeout)
                 quicConn
             }
@@ -203,11 +197,14 @@ private class LinuxQuicEngine : QuicEngine {
 }
 
 /**
- * Linux QUIC connection backed by quiche cinterop + POSIX UDP.
+ * Linux QUIC connection: quiche cinterop + io_uring UDP I/O.
  *
- * Zero-copy data path:
- *   recv(fd, nativePtr, ...) → quiche_conn_recv(conn, nativePtr, ...) → decrypts in-place
- *   quiche_conn_stream_recv(conn, streamId, nativePtr, ...) → app buffer (one copy for reassembly)
+ * Uses [IoUringManager.submitAndWait] for async UDP recv/send — same event loop
+ * as TCP sockets in the base module. No POSIX blocking calls on the data path.
+ *
+ * Zero-copy:
+ *   io_uring recv → nativePtr → quiche_conn_recv (same buffer)
+ *   quiche_conn_stream_recv → nativePtr → app ReadBuffer (same buffer)
  */
 private class LinuxQuicConnection(
     private val conn: CPointer<quiche_conn>,
@@ -241,30 +238,32 @@ private class LinuxQuicConnection(
     }
 
     private suspend fun eventLoop() {
-        val recvPtr = udpBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<kotlinx.cinterop.ByteVar>()!!
-        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<kotlinx.cinterop.ByteVar>()!!
+        val recvPtr = udpBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
+        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
 
         while (!closed) {
-            // 1. Receive UDP packet
-            val received = recv(udpFd, recvPtr, MAX_DATAGRAM_SIZE.convert(), 0)
+            // 1. Receive UDP packet via io_uring
+            val received =
+                try {
+                    IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
+                        io_uring_prep_recv(sqe, udpFd, recvPtr, MAX_DATAGRAM_SIZE.convert(), 0)
+                    }
+                } catch (_: Exception) {
+                    if (closed) break
+                    -1
+                }
 
             if (received > 0) {
                 connMutex.withLock {
                     memScoped {
                         val recvInfo = alloc<quiche_recv_info>()
-                        // For connected UDP socket, from/to can be minimal
                         val dummyAddr = alloc<sockaddr_in>()
                         recvInfo.from = dummyAddr.ptr.reinterpret()
                         recvInfo.from_len = sizeOf<sockaddr_in>().convert()
                         recvInfo.to = dummyAddr.ptr.reinterpret()
                         recvInfo.to_len = sizeOf<sockaddr_in>().convert()
 
-                        quiche_conn_recv(
-                            conn,
-                            recvPtr.reinterpret(),
-                            received.convert(),
-                            recvInfo.ptr,
-                        )
+                        quiche_conn_recv(conn, recvPtr.reinterpret(), received.convert(), recvInfo.ptr)
                     }
                 }
             }
@@ -272,7 +271,7 @@ private class LinuxQuicConnection(
             // 2. Update state
             connMutex.withLock {
                 if (quiche_conn_is_established(conn) && _state.value is QuicConnectionState.Handshaking) {
-                    _state.value = QuicConnectionState.Established("h3") // TODO: read negotiated ALPN
+                    _state.value = QuicConnectionState.Established("h3")
                 }
                 if (quiche_conn_is_closed(conn)) {
                     _state.value = QuicConnectionState.Closed(null)
@@ -280,41 +279,36 @@ private class LinuxQuicConnection(
                 }
             }
 
-            // 3. Flush outgoing packets
+            // 3. Flush outgoing via io_uring
             flushOutgoing(sendPtr)
 
-            // 4. Handle timeout
+            // 4. Handle quiche timeout
             connMutex.withLock {
-                val timeoutNanos = quiche_conn_timeout_as_nanos(conn)
-                if (timeoutNanos == 0UL) {
+                if (quiche_conn_timeout_as_nanos(conn) == 0UL) {
                     quiche_conn_on_timeout(conn)
                 }
             }
-
-            if (received <= 0) delay(1.milliseconds)
         }
     }
 
-    private suspend fun flushOutgoing(sendPtr: CPointer<kotlinx.cinterop.ByteVar>) {
+    private suspend fun flushOutgoing(sendPtr: CPointer<ByteVar>) {
         connMutex.withLock {
             memScoped {
                 val sendInfo = alloc<quiche_send_info>()
                 while (true) {
-                    val written =
-                        quiche_conn_send(
-                            conn,
-                            sendPtr.reinterpret(),
-                            MAX_DATAGRAM_SIZE.convert(),
-                            sendInfo.ptr,
-                        )
+                    val written = quiche_conn_send(conn, sendPtr.reinterpret(), MAX_DATAGRAM_SIZE.convert(), sendInfo.ptr)
                     if (written <= 0) break
-                    send(udpFd, sendPtr, written.convert(), 0)
+
+                    // Send via io_uring
+                    IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
+                        io_uring_prep_send(sqe, udpFd, sendPtr, written.convert(), 0)
+                    }
                 }
             }
         }
     }
 
-    // --- QuicConnection interface ---
+    // --- QuicConnection ---
 
     override suspend fun openStream(): QuicByteStream {
         check(!closed) { "LinuxQuicConnection is closed" }
@@ -323,8 +317,7 @@ private class LinuxQuicConnection(
         }
         val streamId = QuicStreamId(nextClientStreamId)
         nextClientStreamId += 4
-        val byteStream = QuicheStreamByteStream(streamId, this, bufferFactory)
-        return QuicByteStream(streamId, byteStream)
+        return QuicByteStream(streamId, QuicheStreamByteStream(streamId, this, bufferFactory))
     }
 
     override suspend fun acceptStream(): QuicByteStream {
@@ -342,7 +335,7 @@ private class LinuxQuicConnection(
         connMutex.withLock {
             quiche_conn_close(conn, error is QuicError.ApplicationError, error.code.convert(), null, 0.convert())
         }
-        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<kotlinx.cinterop.ByteVar>()!!
+        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         flushOutgoing(sendPtr)
 
         eventLoopJob?.cancel()
@@ -389,12 +382,10 @@ private class LinuxQuicConnection(
         if (bytesRead < 0) {
             buffer.freeNativeMemory()
             return when (bytesRead.toInt()) {
-                QUICHE_ERR_DONE -> if (fin) ReadResult.End else ReadResult.End
                 QUICHE_ERR_STREAM_RESET -> ReadResult.Reset
                 else -> ReadResult.End
             }
         }
-
         if (bytesRead.toInt() == 0 && fin) {
             buffer.freeNativeMemory()
             return ReadResult.End
@@ -415,7 +406,6 @@ private class LinuxQuicConnection(
                 ?: throw IllegalArgumentException("Buffer must have native memory for zero-copy write")
         val addr = nma.nativeAddress + buffer.position().toULong()
         val ptr = addr.toCPointer<UByteVar>()!!
-        val remaining = buffer.remaining()
 
         val written =
             withTimeout(timeout) {
@@ -426,7 +416,7 @@ private class LinuxQuicConnection(
                             conn,
                             streamId.id.convert(),
                             ptr,
-                            remaining.convert(),
+                            buffer.remaining().convert(),
                             false,
                             errorCode.ptr,
                         )
@@ -434,14 +424,10 @@ private class LinuxQuicConnection(
                 }
             }
 
-        if (written < 0) {
-            throw SocketClosedException.General("quiche stream write error: $written")
-        }
+        if (written < 0) throw SocketClosedException.General("quiche stream write error: $written")
 
-        // Flush after write
-        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<kotlinx.cinterop.ByteVar>()!!
+        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         flushOutgoing(sendPtr)
-
         return written.toInt()
     }
 
@@ -452,7 +438,7 @@ private class LinuxQuicConnection(
                 quiche_conn_stream_send(conn, streamId.id.convert(), null, 0.convert(), true, errorCode.ptr)
             }
         }
-        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<kotlinx.cinterop.ByteVar>()!!
+        val sendPtr = sendBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         flushOutgoing(sendPtr)
     }
 

@@ -53,7 +53,7 @@ private const val EVENTFD_USER_DATA = 0L
  * regardless of how many concurrent operations are in flight.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal object IoUringManager {
+object IoUringManager {
     private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
 
     // Configuration is read from PlatformSocketConfig
