@@ -99,8 +99,9 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                 if (cloneResult != 0) throw GradleException("Failed to clone BoringSSL")
             }
 
-            // CMake configure
+            // CMake configure — clean build dir to avoid stale state
             val cmakeBuildDir = File(sourceDir, "build-$arch")
+            if (cmakeBuildDir.exists()) cmakeBuildDir.deleteRecursively()
             cmakeBuildDir.mkdirs()
 
             logger.lifecycle("Configuring BoringSSL for $arch...")
@@ -131,13 +132,17 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
 
             cmakeArgs.add("..")
 
-            val configResult =
+            val configProcess =
                 ProcessBuilder(cmakeArgs)
                     .directory(cmakeBuildDir)
-                    .inheritIO()
+                    .redirectErrorStream(true)
                     .start()
-                    .waitFor()
-            if (configResult != 0) throw GradleException("BoringSSL cmake configure failed for $arch")
+            val configOutput = configProcess.inputStream.bufferedReader().readText()
+            val configResult = configProcess.waitFor()
+            if (configResult != 0) {
+                logger.error("BoringSSL cmake output:\n${configOutput.takeLast(2000)}")
+                throw GradleException("BoringSSL cmake configure failed for $arch (exit code $configResult)")
+            }
 
             // Build ssl and crypto targets only
             logger.lifecycle("Building BoringSSL (this may take a few minutes)...")
