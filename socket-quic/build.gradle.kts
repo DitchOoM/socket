@@ -1,6 +1,4 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import java.net.URI
-import java.security.MessageDigest
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -46,46 +44,36 @@ val cargoBin: String by lazy {
 fun downloadQuicheSource(
     buildDir: File,
     version: String,
-    sha256: String,
+    @Suppress("UNUSED_PARAMETER") sha256: String,
 ): File {
-    val tarball = File(buildDir, "quiche-$version.tar.gz")
     val sourceDir = File(buildDir, "quiche-$version")
 
     if (sourceDir.exists()) return sourceDir
 
     buildDir.mkdirs()
 
-    if (!tarball.exists()) {
-        logger.lifecycle("Downloading quiche $version...")
-        val url = URI("https://github.com/cloudflare/quiche/archive/refs/tags/$version.tar.gz").toURL()
-        url.openStream().use { input ->
-            tarball.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-    }
+    // git clone with --recursive to include BoringSSL submodule
+    // (GitHub tarballs don't include submodules)
+    logger.lifecycle("Cloning quiche $version (with BoringSSL submodule)...")
+    val result =
+        ProcessBuilder(
+            "git",
+            "clone",
+            "--recursive",
+            "--depth",
+            "1",
+            "--branch",
+            version,
+            "https://github.com/cloudflare/quiche.git",
+            sourceDir.name,
+        ).directory(buildDir)
+            .inheritIO()
+            .start()
+            .waitFor()
 
-    // Verify SHA256
-    val digest = MessageDigest.getInstance("SHA-256")
-    tarball.inputStream().use { input ->
-        val buffer = ByteArray(8192)
-        var read: Int
-        while (input.read(buffer).also { read = it } != -1) {
-            digest.update(buffer, 0, read)
-        }
+    if (result != 0) {
+        throw GradleException("Failed to clone quiche $version")
     }
-    val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-    if (actualSha256 != sha256) {
-        tarball.delete()
-        throw GradleException("quiche SHA256 mismatch: expected $sha256, got $actualSha256")
-    }
-
-    logger.lifecycle("Extracting quiche source...")
-    ProcessBuilder("tar", "xzf", tarball.name)
-        .directory(buildDir)
-        .inheritIO()
-        .start()
-        .waitFor()
 
     return sourceDir
 }
