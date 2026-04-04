@@ -342,10 +342,12 @@ kotlin {
                     includeDirs("libs/quiche/include")
                 }
             }
-            buildQuicheStaticX64?.let { task ->
+            // Only link against quiche if the static library has been built
+            val quicheLibX64 = projectDir.resolve("libs/quiche/linux-x64/lib/libquiche.a")
+            if (quicheLibX64.exists()) {
                 binaries.all {
                     linkerOpts(
-                        "-L${projectDir.resolve("libs/quiche/linux-x64/lib").absolutePath}",
+                        "-L${quicheLibX64.parentFile.absolutePath}",
                         "-lquiche",
                         "-lpthread",
                         "-ldl",
@@ -361,10 +363,11 @@ kotlin {
                     includeDirs("libs/quiche/include")
                 }
             }
-            buildQuicheStaticArm64?.let { task ->
+            val quicheLibArm64 = projectDir.resolve("libs/quiche/linux-arm64/lib/libquiche.a")
+            if (quicheLibArm64.exists()) {
                 binaries.all {
                     linkerOpts(
-                        "-L${projectDir.resolve("libs/quiche/linux-arm64/lib").absolutePath}",
+                        "-L${quicheLibArm64.parentFile.absolutePath}",
                         "-lquiche",
                         "-lpthread",
                         "-ldl",

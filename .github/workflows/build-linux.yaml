@@ -110,7 +110,7 @@ jobs:
 
       - name: Run checks and tests
         run: >-
-          ./gradlew jvmTest jsTest linuxX64Test testDebugUnitTest ktlintCheck
+          ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
           :socket-quic:jvmTest :socket-quic:jsNodeTest :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
