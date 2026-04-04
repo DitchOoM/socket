@@ -69,7 +69,7 @@ jobs:
         run: >-
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
-          :socket-quic:macosArm64Test
+          :socket-quic:jvmTest :socket-quic:macosArm64Test :socket-quic:testDebugUnitTest
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Publish Apple targets to Maven Local
