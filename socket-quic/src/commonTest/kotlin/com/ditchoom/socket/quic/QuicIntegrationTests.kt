@@ -22,7 +22,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 class QuicIntegrationTests {
     @Test
-    @Ignore("Requires quiche native library and network access")
+    @Ignore("Pending: JVM sockaddr allocation for quiche_connect")
     fun connectToCloudflareQuic_handshakeCompletes() =
         runTest {
             val engine = defaultQuicEngine()

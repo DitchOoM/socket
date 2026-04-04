@@ -446,6 +446,7 @@ kotlin
 // Configure JVM JAR after evaluation (task created by KMP plugin)
 afterEvaluate {
     tasks.named<Jar>("jvmJar") {
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
         // Multi-release JAR: JDK 21+ gets FFM quiche bindings
         manifest {
             attributes("Multi-Release" to "true")
@@ -459,19 +460,20 @@ afterEvaluate {
                     .allOutputs,
             )
         }
-        // Bundle quiche shared libraries (included if built, not forced)
-        val nativeLibDirs =
+        // Bundle quiche native libraries (shared lib + JNI shim, included if built)
+        val nativeLibs =
             mapOf(
-                "linux-x64" to "libquiche.so",
-                "linux-arm64" to "libquiche.so",
-                "macos-x64" to "libquiche.dylib",
-                "macos-arm64" to "libquiche.dylib",
+                "linux-x64" to listOf("libquiche.so", "libquiche_jni.so"),
+                "linux-arm64" to listOf("libquiche.so", "libquiche_jni.so"),
+                "macos-x64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
+                "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
             )
-        for ((platform, libName) in nativeLibDirs) {
+        for ((platform, libs) in nativeLibs) {
             val libDir = projectDir.resolve("libs/quiche/$platform/lib")
-            if (libDir.resolve(libName).exists()) {
+            val existingLibs = libs.filter { libDir.resolve(it).exists() }
+            if (existingLibs.isNotEmpty()) {
                 into("META-INF/native/$platform") {
-                    from(libDir) { include(libName) }
+                    from(libDir) { include(*existingLibs.toTypedArray()) }
                 }
             }
         }

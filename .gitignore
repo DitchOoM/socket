@@ -35,4 +35,4 @@ libs/
 docs/node_modules/
 docs/build/
 docs/.docusaurus/
-docs/static/api/
+docs/static/api/socket-quic/hs_err_pid*.log
