@@ -3,7 +3,9 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
-    alias(libs.plugins.ksp)
+    // KSP available but not applied — @ProtocolMessage is a marker annotation.
+    // Consumers who want generated codecs can apply KSP + buffer-codec-processor themselves.
+    // alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
     signing
@@ -413,13 +415,13 @@ kotlin {
     }
 }
 
-// Wire KSP codec processor for all targets
-kotlin.targets.configureEach {
-    if (name != "metadata") {
-        dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec.processor)
-        dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec)
-    }
-}
+// KSP codec processor wiring (disabled — see alias above)
+// kotlin.targets.configureEach {
+//     if (name != "metadata") {
+//         dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec.processor)
+//         dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec)
+//     }
+// }
 
 kotlin {
     sourceSets {
