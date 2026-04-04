@@ -67,10 +67,10 @@ jobs:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
-      - name: Install ARM64 cross-compilation toolchain
+      - name: Install ARM64 cross-compilation toolchain and build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential perl
+          sudo apt-get install -y build-essential perl pkg-config cmake
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Install Rust toolchain
