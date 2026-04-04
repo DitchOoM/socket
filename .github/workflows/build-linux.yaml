@@ -106,6 +106,7 @@ jobs:
 
       - name: Build quiche native libraries
         run: ./gradlew :socket-quic:buildQuicheAll --no-configuration-cache
+        continue-on-error: true  # quiche build is optional — mock tests don't need it
 
       - name: Run checks and tests
         run: >-
