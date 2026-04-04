@@ -11,7 +11,11 @@ import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlin.time.TimeSource
 
 /**
  * Peek function type for determining frame size from buffered stream data.
@@ -35,6 +39,11 @@ class CodecConnection<T>(
     private val streamProcessor: StreamProcessor = StreamProcessor.create(pool)
     private var closed = false
     private var receiving = false
+
+    private val _lastDataReceived = MutableStateFlow<TimeSource.Monotonic.ValueTimeMark?>(null)
+
+    /** Timestamp of the most recent raw data read from the transport, or `null` if none yet. */
+    val lastDataReceived: StateFlow<TimeSource.Monotonic.ValueTimeMark?> = _lastDataReceived.asStateFlow()
 
     /**
      * Pre-seeds the stream processor with leftover bytes from a prior protocol phase.
@@ -97,6 +106,7 @@ class CodecConnection<T>(
     private suspend fun fillFromTransport(): Boolean =
         when (val result = stream.read(options.readTimeout)) {
             is ReadResult.Data -> {
+                _lastDataReceived.value = TimeSource.Monotonic.markNow()
                 streamProcessor.append(result.buffer)
                 true
             }

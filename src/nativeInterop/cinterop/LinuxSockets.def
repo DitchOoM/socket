@@ -12,7 +12,7 @@ package = com.ditchoom.socket.linux
 # Why static OpenSSL? Kotlin/Native bundles glibc 2.19, but Ubuntu 24.04's
 # dynamic libssl requires glibc 2.33+. Our static build uses glibc 2.17.
 
-headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h openssl/ssl.h openssl/err.h openssl/x509.h
+headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h openssl/ssl.h openssl/err.h openssl/x509.h linux/netlink.h linux/rtnetlink.h ifaddrs.h net/if.h
 
 # Compiler flags - include paths are set via build.gradle.kts includeDirs
 # to support both native compilation and cross-compilation

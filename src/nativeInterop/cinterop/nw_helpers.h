@@ -193,4 +193,21 @@ void nw_helper_ws_send(
 
 NSNumber * _Nonnull nw_helper_is_port_available(int32_t port);
 
+// ============================================================
+// Network path monitor
+// ============================================================
+
+// Path update handler — receives nw_path_status_t as int32_t.
+// Status values: 0=invalid, 1=satisfied, 2=unsatisfied, 3=requiresConnection
+typedef void (^nw_helper_path_update_handler_t)(int32_t status);
+
+nw_path_monitor_t _Nonnull nw_helper_create_path_monitor(void);
+
+void nw_helper_path_monitor_set_update_handler(
+    nw_path_monitor_t _Nonnull monitor,
+    nw_helper_path_update_handler_t _Nonnull handler);
+
+void nw_helper_path_monitor_start(nw_path_monitor_t _Nonnull monitor);
+void nw_helper_path_monitor_cancel(nw_path_monitor_t _Nonnull monitor);
+
 #endif /* NW_HELPERS_H */
