@@ -113,7 +113,8 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                     "-DCMAKE_C_FLAGS=-fPIC",
                     "-DCMAKE_CXX_FLAGS=-fPIC",
                     "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-                    "-DOPENSSL_NO_ASM=1", // Avoids needing Go for ASM generation
+                    // Use ASM if Go is available (faster, smaller), otherwise disable ASM
+                    if (ProcessBuilder("which", "go").start().waitFor() != 0) "-DOPENSSL_NO_ASM=1" else "-DOPENSSL_NO_ASM=0",
                     "-DBUILD_SHARED_LIBS=OFF",
                     "-GUnix Makefiles",
                 )
@@ -132,32 +133,24 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
 
             cmakeArgs.add("..")
 
-            val configProcess =
+            val configResult =
                 ProcessBuilder(cmakeArgs)
                     .directory(cmakeBuildDir)
-                    .redirectErrorStream(true)
+                    .inheritIO()
                     .start()
-            val configOutput = configProcess.inputStream.bufferedReader().readText()
-            val configResult = configProcess.waitFor()
-            if (configResult != 0) {
-                logger.error("BoringSSL cmake output:\n${configOutput.takeLast(2000)}")
-                throw GradleException("BoringSSL cmake configure failed for $arch (exit code $configResult)")
-            }
+                    .waitFor()
+            if (configResult != 0) throw GradleException("BoringSSL cmake configure failed for $arch (exit $configResult)")
 
             // Build ssl and crypto targets only
             logger.lifecycle("Building BoringSSL (this may take a few minutes)...")
             val cpuCount = Runtime.getRuntime().availableProcessors()
-            val makeProcess =
+            val makeResult =
                 ProcessBuilder("make", "-j$cpuCount", "ssl", "crypto")
                     .directory(cmakeBuildDir)
-                    .redirectErrorStream(true)
+                    .inheritIO()
                     .start()
-            val makeOutput = makeProcess.inputStream.bufferedReader().readText()
-            val makeResult = makeProcess.waitFor()
-            if (makeResult != 0) {
-                logger.error("BoringSSL make output:\n${makeOutput.takeLast(2000)}")
-                throw GradleException("BoringSSL build failed for $arch (exit code $makeResult)")
-            }
+                    .waitFor()
+            if (makeResult != 0) throw GradleException("BoringSSL make failed for $arch (exit $makeResult)")
 
             // Copy libraries
             outputDir.resolve("lib").mkdirs()
