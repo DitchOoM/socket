@@ -4,8 +4,12 @@ import java.io.File
 import java.nio.file.Files
 
 /**
- * Loads platform-specific native libraries bundled in JAR resources.
- * Libraries are at `META-INF/native/{os}-{arch}/lib{name}.{ext}`.
+ * Loads the quiche JNI native library.
+ *
+ * - **Android**: Uses [System.loadLibrary] which finds the `.so` in the APK's `lib/` dir
+ *   (populated from `src/androidMain/jniLibs/{abi}/`).
+ * - **JVM**: Extracts from `META-INF/native/{os}-{arch}/` JAR resources to a temp dir
+ *   and loads via [System.load].
  */
 internal object NativeLibLoader {
     private val loaded = mutableSetOf<String>()
@@ -14,6 +18,16 @@ internal object NativeLibLoader {
     fun load(name: String) {
         if (name in loaded) return
 
+        // Try Android path first (System.loadLibrary uses the APK's lib/ directory)
+        try {
+            System.loadLibrary(name)
+            loaded.add(name)
+            return
+        } catch (_: UnsatisfiedLinkError) {
+            // Not on Android or lib not in APK — fall through to JVM path
+        }
+
+        // JVM path: extract from JAR resources
         val osName = System.getProperty("os.name").lowercase()
         val archName = System.getProperty("os.arch").lowercase()
 

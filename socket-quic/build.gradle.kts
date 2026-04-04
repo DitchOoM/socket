@@ -450,6 +450,7 @@ kotlin {
 android {
     compileSdk = 36
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
+    sourceSets["main"].jniLibs.srcDirs("src/androidMain/jniLibs")
     defaultConfig {
         minSdk = 21
     }
