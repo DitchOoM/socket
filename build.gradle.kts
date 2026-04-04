@@ -169,8 +169,12 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
             logger.lifecycle("Copied ${sslLib.absolutePath} and ${cryptoLib.absolutePath}")
 
             // Copy headers (same paths as OpenSSL: openssl/ssl.h, openssl/err.h, etc.)
+            // BoringSSL headers are under src/include/ (not top-level include/)
             val includeOutputDir = outputDir.resolve("include")
-            sourceDir.resolve("include").copyRecursively(includeOutputDir, overwrite = true)
+            val srcInclude = sourceDir.resolve("src/include")
+            val topInclude = sourceDir.resolve("include")
+            val includeSource = if (srcInclude.exists()) srcInclude else topInclude
+            includeSource.copyRecursively(includeOutputDir, overwrite = true)
 
             markerFile.writeText("BoringSSL from quiche $quicheVersion built on ${System.currentTimeMillis()}")
             logger.lifecycle("BoringSSL (from quiche $quicheVersion) built successfully for $arch")
