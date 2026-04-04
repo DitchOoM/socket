@@ -78,8 +78,13 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                 logger.lifecycle("Cloning quiche $quicheVersion (to get vendored BoringSSL)...")
                 val cloneResult =
                     ProcessBuilder(
-                        "git", "clone", "--recursive", "--depth", "1",
-                        "--branch", quicheVersion,
+                        "git",
+                        "clone",
+                        "--recursive",
+                        "--depth",
+                        "1",
+                        "--branch",
+                        quicheVersion,
                         "https://github.com/cloudflare/quiche.git",
                         quicheDir.name,
                     ).directory(buildDir)
