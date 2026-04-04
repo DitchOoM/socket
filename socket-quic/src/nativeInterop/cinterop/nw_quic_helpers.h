@@ -65,12 +65,14 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
 
     if (!params) return NULL;
 
-    // Set idle timeout
+    // Set idle timeout via QUIC protocol options
     if (idle_timeout_seconds > 0) {
         nw_protocol_stack_t stack = nw_parameters_copy_default_protocol_stack(params);
-        nw_protocol_options_t quic_options = nw_protocol_stack_copy_transport_protocol(stack);
-        if (quic_options) {
-            nw_quic_set_idle_timeout(quic_options, (uint32_t)idle_timeout_seconds);
+        if (stack) {
+            nw_protocol_options_t quic_options = nw_protocol_stack_copy_transport_protocol(stack);
+            if (quic_options) {
+                nw_quic_set_idle_timeout(quic_options, (uint64_t)idle_timeout_seconds * 1000);
+            }
         }
     }
 
@@ -217,7 +219,8 @@ static inline void nw_helper_quic_send(
 #pragma mark - QUIC Connection Start/Cancel
 
 static inline void nw_helper_quic_start(nw_connection_t _Nonnull connection) {
-    nw_connection_start(connection, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    nw_connection_set_queue(connection, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    nw_connection_start(connection);
 }
 
 static inline void nw_helper_quic_cancel(nw_connection_t _Nonnull connection) {
