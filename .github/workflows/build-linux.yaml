@@ -123,7 +123,7 @@ jobs:
       - name: Run checks and tests
         run: >-
           ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
-          :socket-quic:jvmTest :socket-quic:ktlintCheck
+          :socket-quic:jvmTest :socket-quic:linuxX64Test :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Build ARM64 test binary
