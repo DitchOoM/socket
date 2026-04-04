@@ -5,10 +5,14 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
+    alias(libs.plugins.maven.publish)
+    signing
 }
 
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
+val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 // quiche version — centralized in gradle/libs.versions.toml
 val quicheVersion = libs.versions.quiche.get()
@@ -503,6 +507,71 @@ afterEvaluate {
                     from(libDir) { include(*existingLibs.toTypedArray()) }
                 }
             }
+        }
+    }
+}
+
+// --- Publishing ---
+
+val publishedGroupId: String by project
+val libraryName: String by project
+val artifactName: String by project
+val libraryDescription: String by project
+val siteUrl: String by project
+val gitUrl: String by project
+val licenseName: String by project
+val licenseUrl: String by project
+val developerOrg: String by project
+val developerName: String by project
+val developerEmail: String by project
+val developerId: String by project
+
+project.group = publishedGroupId
+project.version = rootProject.version
+
+val signingInMemoryKey = project.findProperty("signingInMemoryKey")
+val signingInMemoryKeyPassword = project.findProperty("signingInMemoryKeyPassword")
+val shouldSignAndPublish = isMainBranchGithub && signingInMemoryKey is String && signingInMemoryKeyPassword is String
+
+if (shouldSignAndPublish) {
+    signing {
+        useInMemoryPgpKeys(signingInMemoryKey as String, signingInMemoryKeyPassword as String)
+        sign(publishing.publications)
+    }
+}
+
+mavenPublishing {
+    if (shouldSignAndPublish) {
+        publishToMavenCentral()
+        signAllPublications()
+    }
+
+    coordinates(publishedGroupId, artifactName, project.version.toString())
+
+    pom {
+        name.set(libraryName)
+        description.set(libraryDescription)
+        url.set(siteUrl)
+        licenses {
+            license {
+                name.set(licenseName)
+                url.set(licenseUrl)
+            }
+        }
+        developers {
+            developer {
+                id.set(developerId)
+                name.set(developerName)
+                email.set(developerEmail)
+            }
+        }
+        organization {
+            name.set(developerOrg)
+        }
+        scm {
+            connection.set(gitUrl)
+            developerConnection.set(gitUrl)
+            url.set(siteUrl)
         }
     }
 }
