@@ -105,7 +105,7 @@ private class LinuxQuicEngine : QuicEngine {
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
-                    ?: throw SocketConnectionException.Refused("Failed to create quiche config")
+                    ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create quiche config")
 
             // ALPN — encode directly into buffer factory buffer (zero-copy, no ByteArray)
             val alpnBuf = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
@@ -134,7 +134,7 @@ private class LinuxQuicEngine : QuicEngine {
             // Resolve and create connected UDP socket
             memScoped {
                 val fd = socket(AF_INET, SOCK_DGRAM, 0)
-                if (fd < 0) throw SocketConnectionException.Refused("Failed to create UDP socket")
+                if (fd < 0) throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create UDP socket")
 
                 val hints = alloc<addrinfo>()
                 hints.ai_family = AF_INET
@@ -143,7 +143,7 @@ private class LinuxQuicEngine : QuicEngine {
                 if (getaddrinfo(hostname, port.toString(), hints.ptr, resultPtr.ptr) != 0) {
                     close(fd)
                     quiche_config_free(config)
-                    throw SocketConnectionException.Refused("DNS resolution failed for $hostname")
+                    throw SocketConnectionException.Refused(hostname, port, platformError = "DNS resolution failed")
                 }
                 val addrInfo = resultPtr.value!!.pointed
                 val peerSockAddr: CPointer<sockaddr> = addrInfo.ai_addr!!
@@ -153,7 +153,7 @@ private class LinuxQuicEngine : QuicEngine {
                     freeaddrinfo(resultPtr.value)
                     close(fd)
                     quiche_config_free(config)
-                    throw SocketConnectionException.Refused("UDP connect failed for $hostname:$port")
+                    throw SocketConnectionException.Refused(hostname, port, platformError = "UDP connect failed")
                 }
 
                 // Get local address after connect
@@ -189,7 +189,7 @@ private class LinuxQuicEngine : QuicEngine {
                         freeaddrinfo(resultPtr.value)
                         close(fd)
                         quiche_config_free(config)
-                        throw SocketConnectionException.Refused("quiche_connect failed for $hostname:$port")
+                        throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
                     }
 
                 scidBuf.freeNativeMemory()
@@ -437,7 +437,7 @@ private class LinuxQuicConnection(
         val nma =
             buffer.nativeMemoryAccess
                 ?: throw IllegalArgumentException("Buffer must have native memory for zero-copy write")
-        val addr = nma.nativeAddress + buffer.position().toULong()
+        val addr = nma.nativeAddress + buffer.position().toLong()
         val ptr = addr.toCPointer<UByteVar>()!!
 
         val written =

@@ -68,7 +68,7 @@ private class AppleQuicEngine : QuicEngine {
                 NSNumber(bool = quicOptions.verifyPeer),
                 quicOptions.idleTimeout.inWholeSeconds.toInt(),
                 timeout.inWholeSeconds.toInt(),
-            ) ?: throw SocketConnectionException.Refused("Failed to create QUIC connection to $hostname:$port")
+            ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection")
 
             // Wait for handshake completion
             suspendCancellableCoroutine { cont ->
@@ -81,7 +81,9 @@ private class AppleQuicEngine : QuicEngine {
                             if (cont.isActive) {
                                 cont.resumeWithException(
                                     SocketConnectionException.Refused(
-                                        "QUIC handshake failed: code=$errorCode ${errorDesc ?: ""}",
+                                        hostname,
+                                        port,
+                                        platformError = "QUIC handshake failed: code=$errorCode ${errorDesc ?: ""}",
                                     ),
                                 )
                             }
