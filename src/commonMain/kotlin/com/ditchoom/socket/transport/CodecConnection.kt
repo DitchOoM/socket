@@ -97,6 +97,17 @@ class CodecConnection<T>(
         }
     }
 
+    /**
+     * Sends multiple pre-encoded buffers in a single gathered write.
+     *
+     * Use this when you already have encoded [ReadBuffer]s and want to avoid
+     * per-buffer write syscall overhead (e.g., batching multiple protocol frames).
+     */
+    suspend fun sendGathered(buffers: List<ReadBuffer>) {
+        check(!closed) { "CodecConnection is closed" }
+        stream.writeGathered(buffers, options.writeTimeout)
+    }
+
     private fun drainFrame(): T? {
         val frameSize = peekFrameSize(streamProcessor, 0) ?: return null
         if (streamProcessor.available() < frameSize) return null

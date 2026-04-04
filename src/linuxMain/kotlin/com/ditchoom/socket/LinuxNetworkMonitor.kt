@@ -69,7 +69,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 addr.nl_pid = 0u
                 addr.nl_groups = (RTMGRP_LINK or RTMGRP_IPV4_IFADDR).toUInt()
 
-                val bindResult = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_nl>().toUInt())
+                val bindResult = socket_bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_nl>().toUInt())
                 if (bindResult < 0) {
                     close(fd)
                     return -1
