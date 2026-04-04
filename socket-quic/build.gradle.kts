@@ -116,7 +116,7 @@ fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
             logger.lifecycle("Building quiche $quicheVersion (static, $arch)...")
 
             val env = mutableMapOf<String, String>()
-            env["RUSTFLAGS"] = "-C lto=fat -C opt-level=s -C codegen-units=1 -C strip=symbols"
+            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols -C embed-bitcode=yes -C lto=thin"
             // Cross-compile ARM64 from x64
             if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
                 env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
@@ -200,7 +200,7 @@ fun createBuildQuicheSharedTask(
             logger.lifecycle("Building quiche $quicheVersion (shared, $os-$arch)...")
 
             val env = mutableMapOf<String, String>()
-            env["RUSTFLAGS"] = "-C lto=fat -C opt-level=s -C codegen-units=1 -C strip=symbols"
+            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols -C embed-bitcode=yes -C lto=thin"
             if (os == "linux" && arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
                 env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
             }
