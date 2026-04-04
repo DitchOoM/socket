@@ -257,28 +257,36 @@ object JniQuicheApi : QuicheApi {
 
     // Hot path — @FastNative for ~3x faster JNI transitions on Android 8+
     // (no-op on JVM, annotation resolved by ART at runtime)
-    @FastNative @JvmStatic private external fun nConnRecv(
+    @FastNative
+    @JvmStatic
+    private external fun nConnRecv(
         conn: Long,
         buf: Long,
         bufLen: Int,
         recvInfo: Long,
     ): Int
 
-    @FastNative @JvmStatic private external fun nConnSend(
+    @FastNative
+    @JvmStatic
+    private external fun nConnSend(
         conn: Long,
         buf: Long,
         bufLen: Int,
         sendInfo: Long,
     ): Int
 
-    @FastNative @JvmStatic private external fun nConnStreamRecv(
+    @FastNative
+    @JvmStatic
+    private external fun nConnStreamRecv(
         conn: Long,
         streamId: Long,
         buf: Long,
         bufLen: Int,
     ): Long
 
-    @FastNative @JvmStatic private external fun nConnStreamSend(
+    @FastNative
+    @JvmStatic
+    private external fun nConnStreamSend(
         conn: Long,
         streamId: Long,
         buf: Long,
@@ -286,7 +294,9 @@ object JniQuicheApi : QuicheApi {
         fin: Boolean,
     ): Int
 
-    @FastNative @JvmStatic private external fun nConnIsEstablished(conn: Long): Boolean
+    @FastNative
+    @JvmStatic
+    private external fun nConnIsEstablished(conn: Long): Boolean
 
     @JvmStatic private external fun nConnIsClosed(conn: Long): Boolean
 
