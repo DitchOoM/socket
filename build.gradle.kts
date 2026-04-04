@@ -127,6 +127,10 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                         "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
                         "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
                         "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
+                        // Disable outline atomics to avoid __aarch64_cas* symbols
+                        // (K/N linker doesn't have libgcc atomics helpers)
+                        "-DCMAKE_C_FLAGS=-fPIC -mno-outline-atomics",
+                        "-DCMAKE_CXX_FLAGS=-fPIC -mno-outline-atomics",
                     ),
                 )
             }
