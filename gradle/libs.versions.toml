@@ -1,9 +1,6 @@
 
 [versions]
 kotlin = "2.3.0"
-# BoringSSL for Linux native TLS — shared with quiche (no symbol collision)
-# Pinned to the same commit quiche 0.28.0 uses
-boringsslCommit = "f1c75347daa2ea81a941e953f2263e0a4d970c8d"
 # liburing version for Linux io_uring async I/O - built automatically by Gradle
 liburing = "2.9"
 liburingSha256 = "897b1153b55543e8b92a5a3eb9b906537a5fedcf8afaf241f8b8787940c79f8d"

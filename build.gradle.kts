@@ -49,54 +49,47 @@ fun KotlinNativeTarget.configureNWHelpersCinterop() {
     }
 }
 
-// BoringSSL for Linux TLS — shared with quiche (no symbol collision)
-val boringsslCommit = libs.versions.boringsslCommit.get()
+// BoringSSL for Linux TLS — built from quiche's vendored submodule so the exact
+// same commit is shared between the base socket module and quiche (no symbol collision).
+val quicheVersion = libs.versions.quiche.get()
 val boringsslBuildDir = layout.buildDirectory.dir("boringssl")
-
-// --- BoringSSL build ---
-//
-// Replaces OpenSSL for Linux TCP TLS. Same API surface (ssl.h, err.h, x509.h).
-// Shared with quiche — both link against the same BoringSSL, no symbol collision.
-//
-// OpenSSL code removed — all 18 API functions used in LinuxClientSocket.kt
-// (SSL_CTX_new, SSL_connect, SSL_read, SSL_write, etc.) are identical in BoringSSL.
-//
 
 fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
     val taskName = "buildBoringssl${arch.replaceFirstChar { it.uppercase() }}"
     val outputDir = projectDir.resolve("libs/boringssl/linux-$arch")
-    val markerFile = outputDir.resolve("lib/.built-$boringsslCommit")
+    val markerFile = outputDir.resolve("lib/.built-quiche-$quicheVersion")
 
     return tasks.register(taskName) {
         group = "build"
         description = "Build BoringSSL static libraries for Linux $arch"
-        inputs.property("boringsslCommit", boringsslCommit)
+        inputs.property("quicheVersion", quicheVersion)
         outputs.file(markerFile)
         onlyIf { !markerFile.exists() }
 
         doLast {
             val buildDir = boringsslBuildDir.get().asFile
-            val sourceDir = File(buildDir, "boringssl")
 
-            // Clone if not present — shallow clone of default branch
-            // (BoringSSL API surface we use is stable across commits)
-            if (!sourceDir.exists()) {
+            // Clone quiche (with --recursive) to get the exact BoringSSL submodule it vendors.
+            // This is the single source of truth — bumping the quiche version automatically
+            // updates BoringSSL to the matching commit.
+            val quicheDir = File(buildDir, "quiche-$quicheVersion")
+            if (!quicheDir.exists()) {
                 buildDir.mkdirs()
-                logger.lifecycle("Cloning BoringSSL...")
+                logger.lifecycle("Cloning quiche $quicheVersion (to get vendored BoringSSL)...")
                 val cloneResult =
                     ProcessBuilder(
-                        "git",
-                        "clone",
-                        "--depth",
-                        "1",
-                        "https://github.com/google/boringssl.git",
-                        sourceDir.name,
+                        "git", "clone", "--recursive", "--depth", "1",
+                        "--branch", quicheVersion,
+                        "https://github.com/cloudflare/quiche.git",
+                        quicheDir.name,
                     ).directory(buildDir)
-                        .inheritIO()
+                        .redirectErrorStream(true)
                         .start()
+                        .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
                         .waitFor()
-                if (cloneResult != 0) throw GradleException("Failed to clone BoringSSL")
+                if (cloneResult != 0) throw GradleException("Failed to clone quiche $quicheVersion")
             }
+            val sourceDir = File(quicheDir, "deps/boringssl")
 
             // CMake configure — clean build dir to avoid stale state
             val cmakeBuildDir = File(sourceDir, "build-$arch")
@@ -139,8 +132,9 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
             val configResult =
                 ProcessBuilder(cmakeArgs)
                     .directory(cmakeBuildDir)
-                    .inheritIO()
+                    .redirectErrorStream(true)
                     .start()
+                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
                     .waitFor()
             if (configResult != 0) throw GradleException("BoringSSL cmake configure failed for $arch (exit $configResult)")
             logger.lifecycle("BoringSSL cmake configured successfully for $arch")
@@ -151,8 +145,9 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
             val makeResult =
                 ProcessBuilder("make", "-j$cpuCount", "ssl", "crypto")
                     .directory(cmakeBuildDir)
-                    .inheritIO()
+                    .redirectErrorStream(true)
                     .start()
+                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
                     .waitFor()
             if (makeResult != 0) throw GradleException("BoringSSL make failed for $arch (exit $makeResult)")
 
@@ -172,8 +167,8 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
             val includeOutputDir = outputDir.resolve("include")
             sourceDir.resolve("include").copyRecursively(includeOutputDir, overwrite = true)
 
-            markerFile.writeText("BoringSSL $boringsslCommit built on ${System.currentTimeMillis()}")
-            logger.lifecycle("BoringSSL built successfully for $arch")
+            markerFile.writeText("BoringSSL from quiche $quicheVersion built on ${System.currentTimeMillis()}")
+            logger.lifecycle("BoringSSL (from quiche $quicheVersion) built successfully for $arch")
         }
     }
 }

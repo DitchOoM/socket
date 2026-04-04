@@ -47,13 +47,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: libs/boringssl/linux-x64
-          key: boringssl-linux-x64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache BoringSSL ARM64
         uses: actions/cache@v4
         with:
           path: libs/boringssl/linux-arm64
-          key: boringssl-linux-arm64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache OpenSSL x64 (legacy fallback)
         uses: actions/cache@v4
