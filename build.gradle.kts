@@ -142,13 +142,17 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
             // Build ssl and crypto targets only
             logger.lifecycle("Building BoringSSL (this may take a few minutes)...")
             val cpuCount = Runtime.getRuntime().availableProcessors()
-            val makeResult =
+            val makeProcess =
                 ProcessBuilder("make", "-j$cpuCount", "ssl", "crypto")
                     .directory(cmakeBuildDir)
-                    .inheritIO()
+                    .redirectErrorStream(true)
                     .start()
-                    .waitFor()
-            if (makeResult != 0) throw GradleException("BoringSSL build failed for $arch")
+            val makeOutput = makeProcess.inputStream.bufferedReader().readText()
+            val makeResult = makeProcess.waitFor()
+            if (makeResult != 0) {
+                logger.error("BoringSSL make output:\n${makeOutput.takeLast(2000)}")
+                throw GradleException("BoringSSL build failed for $arch (exit code $makeResult)")
+            }
 
             // Copy libraries
             outputDir.resolve("lib").mkdirs()
