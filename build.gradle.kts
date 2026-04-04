@@ -116,7 +116,7 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                     // Use ASM if Go is available (faster, smaller), otherwise disable ASM
                     if (ProcessBuilder("which", "go").start().waitFor() != 0) "-DOPENSSL_NO_ASM=1" else "-DOPENSSL_NO_ASM=0",
                     "-DBUILD_SHARED_LIBS=OFF",
-                    "-GUnix Makefiles",
+                    "-G", "Unix Makefiles",
                 )
 
             // Cross-compilation for ARM64
@@ -140,6 +140,7 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                     .start()
                     .waitFor()
             if (configResult != 0) throw GradleException("BoringSSL cmake configure failed for $arch (exit $configResult)")
+            logger.lifecycle("BoringSSL cmake configured successfully for $arch")
 
             // Build ssl and crypto targets only
             logger.lifecycle("Building BoringSSL (this may take a few minutes)...")
