@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -36,6 +37,8 @@ class JvmQuicConnection internal constructor(
     private val conn: QuicheConn,
     private val channel: DatagramChannel,
     private val bufferFactory: BufferFactory,
+    private val localAddr: InetSocketAddress,
+    private val peerAddr: InetSocketAddress,
     private val scope: CoroutineScope,
 ) : QuicConnection,
     QuicheStreamAdapter {
@@ -50,11 +53,12 @@ class JvmQuicConnection internal constructor(
     private val udpRecvBuf: PlatformBuffer = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
     private val udpSendBuf: PlatformBuffer = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
 
-    // recvInfo/sendInfo structs allocated as native buffers (reused per event loop iteration)
-    // quiche_recv_info: from(ptr+len) + to(ptr+len) = ~32 bytes
-    // quiche_send_info: from(sockaddr_storage 128 + len) + to(sockaddr_storage 128 + len) + timespec = ~280 bytes
-    private val recvInfoBuf: PlatformBuffer = bufferFactory.allocate(RECV_INFO_SIZE)
-    private val sendInfoBuf: PlatformBuffer = bufferFactory.allocate(SEND_INFO_SIZE)
+    // Persistent sockaddr buffers for recvInfo (reused every recv call)
+    private val fromSockAddr = peerAddr.toNativeSockAddr(bufferFactory)
+    private val toSockAddr = localAddr.toNativeSockAddr(bufferFactory)
+    private val recvInfo: QuicheRecvInfo =
+        api.recvInfoNew(fromSockAddr.address, fromSockAddr.length, toSockAddr.address, toSockAddr.length)
+    private val sendInfo: QuicheSendInfo = api.sendInfoNew()
 
     private var eventLoopJob: Job? = null
 
@@ -72,8 +76,6 @@ class JvmQuicConnection internal constructor(
 
     private suspend fun eventLoop() {
         val recvByteBuffer = (udpRecvBuf.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-        val recvInfoAddr = recvInfoBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-        val sendInfoAddr = sendInfoBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
         while (kotlin.coroutines.coroutineContext[kotlinx.coroutines.Job]?.isActive != false && !closed) {
             // 1. Receive UDP packet → feed to quiche
@@ -89,9 +91,7 @@ class JvmQuicConnection internal constructor(
             if (received > 0) {
                 connMutex.withLock {
                     val recvAddr = udpRecvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-                    // recvInfoBuf is pre-zeroed — from/to sockaddrs are set by caller
-                    // For connected UDP, the kernel fills the source already
-                    api.connRecv(conn, recvAddr, received, QuicheRecvInfo(recvInfoAddr))
+                    api.connRecv(conn, recvAddr, received, recvInfo)
                 }
             }
 
@@ -107,7 +107,7 @@ class JvmQuicConnection internal constructor(
             }
 
             // 3. Flush outgoing packets
-            flushOutgoing(sendInfoAddr)
+            flushOutgoing()
 
             // 4. Handle quiche timeout
             connMutex.withLock {
@@ -121,13 +121,13 @@ class JvmQuicConnection internal constructor(
         }
     }
 
-    private suspend fun flushOutgoing(sendInfoAddr: Long) {
+    private suspend fun flushOutgoing() {
         connMutex.withLock {
             val sendAddr = udpSendBuf.nativeMemoryAccess!!.nativeAddress.toLong()
             val sendByteBuffer = (udpSendBuf.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
 
             while (true) {
-                val written = api.connSend(conn, sendAddr, MAX_DATAGRAM_SIZE, QuicheSendInfo(sendInfoAddr))
+                val written = api.connSend(conn, sendAddr, MAX_DATAGRAM_SIZE, sendInfo)
                 if (written <= 0) break
 
                 sendByteBuffer.clear()
@@ -164,16 +164,18 @@ class JvmQuicConnection internal constructor(
         connMutex.withLock {
             api.connClose(conn, error is QuicError.ApplicationError, error.code, 0L, 0)
         }
-        val sendInfoAddr = sendInfoBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-        flushOutgoing(sendInfoAddr)
+        flushOutgoing()
 
         eventLoopJob?.cancel()
         channel.close()
+
         api.connFree(conn)
+        api.recvInfoFree(recvInfo)
+        api.sendInfoFree(sendInfo)
+        fromSockAddr.free()
+        toSockAddr.free()
         udpRecvBuf.freeNativeMemory()
         udpSendBuf.freeNativeMemory()
-        recvInfoBuf.freeNativeMemory()
-        sendInfoBuf.freeNativeMemory()
         incomingStreams.close()
 
         _state.value = QuicConnectionState.Closed(error)
@@ -234,9 +236,7 @@ class JvmQuicConnection internal constructor(
             throw SocketClosedException.General("quiche stream write error: $written")
         }
 
-        val sendInfoAddr = sendInfoBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-        flushOutgoing(sendInfoAddr)
-
+        flushOutgoing()
         return written
     }
 
@@ -244,15 +244,10 @@ class JvmQuicConnection internal constructor(
         connMutex.withLock {
             api.connStreamSend(conn, streamId.id, 0L, 0, true)
         }
-        val sendInfoAddr = sendInfoBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-        flushOutgoing(sendInfoAddr)
+        flushOutgoing()
     }
 
     companion object {
         private const val MAX_DATAGRAM_SIZE = 1350
-
-        // Conservative sizes for quiche struct allocation
-        private const val RECV_INFO_SIZE = 64 // quiche_recv_info: 2x(sockaddr* + socklen_t)
-        private const val SEND_INFO_SIZE = 512 // quiche_send_info: 2x(sockaddr_storage + socklen_t) + timespec
     }
 }

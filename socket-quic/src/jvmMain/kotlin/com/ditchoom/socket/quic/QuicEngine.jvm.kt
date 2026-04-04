@@ -76,21 +76,27 @@ private class JvmQuicEngine : QuicEngine {
             scidBuf.resetForRead()
             val scidAddr = scidBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
+            // Allocate native sockaddr structs via buffer factory (zero-copy)
+            val peerSockAddr = (InetSocketAddress(hostname, port)).toNativeSockAddr(bufferFactory)
+            val localSockAddr = localAddr.toNativeSockAddr(bufferFactory)
+
             val conn =
                 api.connect(
                     serverNameAddr,
                     serverNameBytes.size,
                     scidAddr,
                     scid.size,
-                    0L,
-                    0, // TODO: local sockaddr from channel
-                    0L,
-                    0, // TODO: peer sockaddr from channel
+                    localSockAddr.address,
+                    localSockAddr.length,
+                    peerSockAddr.address,
+                    peerSockAddr.length,
                     config,
                 )
 
             serverNameBuf.freeNativeMemory()
             scidBuf.freeNativeMemory()
+            localSockAddr.free()
+            peerSockAddr.free()
             api.configFree(config)
 
             // 5. Create connection wrapper and start event loop
@@ -100,6 +106,8 @@ private class JvmQuicEngine : QuicEngine {
                     conn = conn,
                     channel = channel,
                     bufferFactory = bufferFactory,
+                    localAddr = localAddr,
+                    peerAddr = InetSocketAddress(hostname, port),
                     scope = scope,
                 )
             quicConnection.start()
