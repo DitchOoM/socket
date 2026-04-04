@@ -1,80 +1,82 @@
 package com.ditchoom.socket.quic
 
 import java.io.File
+import java.nio.channels.Channels
+import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.StandardOpenOption
 
 /**
- * Loads the quiche JNI native library.
+ * Loads quiche JNI native library.
  *
- * - **Android**: Uses [System.loadLibrary] which finds the `.so` in the APK's `lib/` dir
- *   (populated from `src/androidMain/jniLibs/{abi}/`).
- * - **JVM**: Extracts from `META-INF/native/{os}-{arch}/` JAR resources to a temp dir
- *   and loads via [System.load].
+ * Android: `System.loadLibrary` (from APK).
+ * JVM: extracts from JAR to temp dir, then `System.load`.
  */
 internal object NativeLibLoader {
-    private val loaded = mutableSetOf<String>()
+    @Volatile
+    private var loaded = false
 
     @Synchronized
-    fun load(name: String) {
-        if (name in loaded) return
+    fun load(
+        @Suppress("UNUSED_PARAMETER") name: String,
+    ) {
+        if (loaded) return
 
-        // Try Android path first (System.loadLibrary uses the APK's lib/ directory)
+        // Android
         try {
-            System.loadLibrary(name)
-            loaded.add(name)
+            System.loadLibrary("quiche_jni")
+            loaded = true
             return
         } catch (_: UnsatisfiedLinkError) {
-            // Not on Android or lib not in APK — fall through to JVM path
         }
-
-        // JVM path: extract from JAR resources
-        val osName = System.getProperty("os.name").lowercase()
-        val archName = System.getProperty("os.arch").lowercase()
 
         val os =
-            when {
-                osName.contains("linux") -> "linux"
-                osName.contains("mac") || osName.contains("darwin") -> "macos"
-                osName.contains("windows") -> "windows"
-                else -> error("Unsupported OS: $osName")
+            System.getProperty("os.name").lowercase().let {
+                when {
+                    "linux" in it -> "linux"
+                    "mac" in it || "darwin" in it -> "macos"
+                    "windows" in it -> "windows"
+                    else -> error("Unsupported OS: $it")
+                }
             }
-
         val arch =
-            when {
-                archName == "amd64" || archName == "x86_64" -> "x64"
-                archName == "aarch64" || archName == "arm64" -> "arm64"
-                else -> error("Unsupported architecture: $archName")
+            System.getProperty("os.arch").lowercase().let {
+                when (it) {
+                    "amd64", "x86_64" -> "x64"
+                    "aarch64", "arm64" -> "arm64"
+                    else -> error("Unsupported arch: $it")
+                }
             }
+        val dir = Files.createTempDirectory("quiche").toFile().apply { deleteOnExit() }
 
-        val ext =
+        // macOS: quiche cdylib (Rust runtime) must load before the JNI shim
+        if (os == "macos") extract(dir, "META-INF/native/macos-$arch/libquiche.dylib")
+
+        val jni =
             when (os) {
-                "linux" -> "so"
-                "macos" -> "dylib"
-                "windows" -> "dll"
-                else -> "so"
+                "linux" -> extract(dir, "META-INF/native/linux-$arch/libquiche_jni.so")
+                "macos" -> extract(dir, "META-INF/native/macos-$arch/libquiche_jni.dylib")
+                "windows" -> extract(dir, "META-INF/native/windows-$arch/quiche_jni.dll")
+                else -> error("Unsupported OS: $os")
             }
+        System.load(jni.absolutePath)
+        loaded = true
+    }
 
-        val prefix = if (os == "windows") "" else "lib"
-        val resourcePath = "META-INF/native/$os-$arch/$prefix$name.$ext"
+    private fun extract(
+        dir: File,
+        resource: String,
+    ): File {
+        val name = resource.substringAfterLast('/')
+        val dest = File(dir, name).apply { deleteOnExit() }
         val stream =
-            NativeLibLoader::class.java.classLoader?.getResourceAsStream(resourcePath)
-                ?: error(
-                    "Native library not found: $resourcePath. " +
-                        "Ensure the quiche native library is built for $os-$arch.",
-                )
-
-        val tempDir = Files.createTempDirectory("quiche-native").toFile()
-        tempDir.deleteOnExit()
-        val tempFile = File(tempDir, "$prefix$name.$ext")
-        tempFile.deleteOnExit()
-
-        stream.use { input ->
-            tempFile.outputStream().use { output ->
-                input.copyTo(output)
+            NativeLibLoader::class.java.classLoader?.getResourceAsStream(resource)
+                ?: error("Not found in JAR: $resource")
+        Channels.newChannel(stream).use { src ->
+            FileChannel.open(dest.toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { dst ->
+                dst.transferFrom(src, 0, Long.MAX_VALUE)
             }
         }
-
-        System.load(tempFile.absolutePath)
-        loaded.add(name)
+        return dest
     }
 }
