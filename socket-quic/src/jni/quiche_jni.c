@@ -142,7 +142,7 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnStreamRecv)(
     if (result < 0) return (jlong)result;
     /* Pack fin flag into high bit of result */
     jlong packed = (jlong)result;
-    if (fin) packed |= (1L << 63);
+    if (fin) packed |= (1LL << 63);
     return packed;
 }
 

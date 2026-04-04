@@ -112,8 +112,7 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                     "-DCMAKE_C_FLAGS=-fPIC",
                     "-DCMAKE_CXX_FLAGS=-fPIC",
                     "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-                    // Use ASM if Go is available (faster, smaller), otherwise disable ASM
-                    if (ProcessBuilder("which", "go").start().waitFor() != 0) "-DOPENSSL_NO_ASM=1" else "-DOPENSSL_NO_ASM=0",
+                    // Go generates optimized ASM for BoringSSL crypto
                     "-DBUILD_SHARED_LIBS=OFF",
                     "-G",
                     "Unix Makefiles",

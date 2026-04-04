@@ -82,7 +82,7 @@ jobs:
       - name: Install cross-compilation toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential perl pkg-config cmake
+          sudo apt-get install -y build-essential perl pkg-config cmake nasm
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
 
@@ -126,35 +126,98 @@ jobs:
       - name: Build BoringSSL (shared with quiche)
         run: ./gradlew :buildBoringsslX64 :buildBoringsslArm64 --no-configuration-cache
 
-      - name: Build quiche static lib (Linux x64, for K/Native)
-        run: ./gradlew :socket-quic:buildQuicheStaticX64 --no-configuration-cache
-        continue-on-error: true
-
-      - name: Build quiche shared lib (Linux x64, for JVM)
-        run: ./gradlew :socket-quic:buildQuicheSharedLinuxX64 --no-configuration-cache
-        continue-on-error: true
-
-      - name: Build quiche JNI for Windows x64 (cross-compile via MinGW)
+      - name: Build quiche native libs (all platforms from Linux)
         continue-on-error: true
         run: |
-          cd socket-quic/build/quiche/quiche-*/ 2>/dev/null || exit 0
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
-            cargo build --release --package quiche --target x86_64-pc-windows-gnu \
-            --no-default-features --features ffi,boringssl-vendored || exit 0
-          QUICHE_LIB=$(find target -path "*windows*release*" \( -name "libquiche.a" -o -name "quiche.lib" \) | head -1)
-          if [ -n "$QUICHE_LIB" ]; then
-            DEST=${{ github.workspace }}/socket-quic/src/jvmMain/resources/META-INF/native/windows-x64
-            mkdir -p $DEST
-            x86_64-w64-mingw32-gcc -shared -Wall \
-              -o $DEST/quiche_jni.dll \
-              ${{ github.workspace }}/socket-quic/src/jni/quiche_jni.c \
+          set -e
+          WS="${{ github.workspace }}"
+          JNI_SRC="$WS/socket-quic/src/jni/quiche_jni.c"
+          QUICHE_H="$WS/socket-quic/libs/quiche/include"
+          JVM_NATIVE="$WS/socket-quic/src/jvmMain/resources/META-INF/native"
+          ANDROID_JNI="$WS/socket-quic/src/androidMain/jniLibs"
+
+          # Build quiche static (Linux K/Native) + shared (Linux JVM)
+          ./gradlew :socket-quic:buildQuicheStaticX64 :socket-quic:buildQuicheSharedLinuxX64 --no-configuration-cache || true
+
+          # Find quiche source dir
+          QUICHE_DIR=$(find socket-quic/build/quiche -maxdepth 1 -name "quiche-*" -type d | head -1)
+          [ -z "$QUICHE_DIR" ] && echo "No quiche source" && exit 0
+
+          build_jni() {
+            local TARGET=$1 CC=$2 STRIP=$3 DEST=$4 NAME=$5 EXTRA_LIBS=$6
+            local LIB=$(find "$QUICHE_DIR/target/$TARGET/release" -name "libquiche.a" 2>/dev/null | head -1)
+            [ -z "$LIB" ] && echo "No libquiche.a for $TARGET" && return
+            mkdir -p "$DEST"
+            $CC -shared -fPIC -Wall \
+              -o "$DEST/$NAME" "$JNI_SRC" \
               -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
-              -I ${{ github.workspace }}/socket-quic/libs/quiche/include \
-              -Wl,--whole-archive $QUICHE_LIB -Wl,--no-whole-archive \
-              -lws2_32 -lpthread -lm -lstdc++ \
-              && x86_64-w64-mingw32-strip --strip-all $DEST/quiche_jni.dll \
-              && echo "Built Windows x64: $(du -h $DEST/quiche_jni.dll | cut -f1)"
+              -I"$QUICHE_H" \
+              -Wl,--whole-archive "$LIB" -Wl,--no-whole-archive \
+              -lpthread -ldl -lm -lstdc++ $EXTRA_LIBS \
+              && $STRIP "$DEST/$NAME" \
+              && echo "Built $DEST/$NAME ($(du -h "$DEST/$NAME" | cut -f1))"
+          }
+
+          # Linux x64 JNI shim
+          echo "=== Linux x64 JNI ==="
+          BSSL="$WS/libs/boringssl/linux-x64"
+          QUICHE_BSSL_PATH=$BSSL cargo build --release --package quiche \
+            --target x86_64-unknown-linux-gnu --no-default-features --features ffi \
+            --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+          build_jni "x86_64-unknown-linux-gnu" "gcc" "strip --strip-all" "$JVM_NATIVE/linux-x64" "libquiche_jni.so" ""
+
+          # Linux arm64 JNI shim
+          echo "=== Linux arm64 JNI ==="
+          BSSL_ARM="$WS/libs/boringssl/linux-arm64"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+          QUICHE_BSSL_PATH=$BSSL_ARM cargo build --release --package quiche \
+            --target aarch64-unknown-linux-gnu --no-default-features --features ffi \
+            --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+          build_jni "aarch64-unknown-linux-gnu" "aarch64-linux-gnu-gcc" "aarch64-linux-gnu-strip --strip-all" "$JVM_NATIVE/linux-arm64" "libquiche_jni.so" ""
+
+          # Windows x64 JNI shim (cross-compile via MinGW)
+          echo "=== Windows x64 JNI ==="
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+            cargo build --release --package quiche \
+            --target x86_64-pc-windows-gnu --no-default-features --features ffi,boringssl-vendored \
+            --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+          WIN_LIB=$(find "$QUICHE_DIR/target/x86_64-pc-windows-gnu/release" -name "libquiche.a" 2>/dev/null | head -1)
+          if [ -n "$WIN_LIB" ]; then
+            mkdir -p "$JVM_NATIVE/windows-x64"
+            x86_64-w64-mingw32-gcc -shared -Wall \
+              -o "$JVM_NATIVE/windows-x64/quiche_jni.dll" "$JNI_SRC" \
+              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
+              -I"$QUICHE_H" \
+              -Wl,--whole-archive "$WIN_LIB" -Wl,--no-whole-archive \
+              -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lpthread -lm -lstdc++ \
+              && x86_64-w64-mingw32-strip --strip-all "$JVM_NATIVE/windows-x64/quiche_jni.dll" \
+              && echo "Built Windows x64: $(du -h "$JVM_NATIVE/windows-x64/quiche_jni.dll" | cut -f1)"
           fi
+
+          # Android arm64 JNI shim (via cargo-ndk)
+          echo "=== Android arm64 JNI ==="
+          if command -v cargo-ndk &>/dev/null && [ -d "$ANDROID_NDK_HOME" ]; then
+            cargo ndk --target arm64-v8a --platform 24 -- build --release --package quiche \
+              --no-default-features --features ffi,boringssl-vendored \
+              --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+            NDK_CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+            NDK_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+            AND_LIB=$(find "$QUICHE_DIR/target/aarch64-linux-android/release" -name "libquiche.a" 2>/dev/null | head -1)
+            if [ -n "$AND_LIB" ]; then
+              mkdir -p "$ANDROID_JNI/arm64-v8a"
+              $NDK_CC -shared -fPIC -Wall \
+                -o "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" "$JNI_SRC" \
+                -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
+                -I"$QUICHE_H" \
+                -Wl,--whole-archive "$AND_LIB" -Wl,--no-whole-archive \
+                -lm -ldl -llog \
+                && $NDK_STRIP --strip-all "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" \
+                && echo "Built Android arm64: $(du -h "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" | cut -f1)"
+            fi
+          fi
+
+          echo "=== Done ==="
+          find "$JVM_NATIVE" "$ANDROID_JNI" -name "*.so" -o -name "*.dll" -o -name "*.dylib" 2>/dev/null
 
       - name: Run checks and tests
         run: >-
