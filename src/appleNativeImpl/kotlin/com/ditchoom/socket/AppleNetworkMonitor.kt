@@ -25,11 +25,12 @@ class AppleNetworkMonitor : NetworkMonitor {
     init {
         nw_helper_path_monitor_set_update_handler(monitor) { status ->
             // nw_path_status_t: 0=invalid, 1=satisfied, 2=unsatisfied, 3=requiresConnection
-            _availability.value = when (status) {
-                1 -> NetworkAvailability.AVAILABLE
-                2, 3 -> NetworkAvailability.UNAVAILABLE
-                else -> NetworkAvailability.UNKNOWN
-            }
+            _availability.value =
+                when (status) {
+                    1 -> NetworkAvailability.AVAILABLE
+                    2, 3 -> NetworkAvailability.UNAVAILABLE
+                    else -> NetworkAvailability.UNKNOWN
+                }
         }
         nw_helper_path_monitor_start(monitor)
     }
