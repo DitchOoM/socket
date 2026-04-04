@@ -131,7 +131,7 @@ jobs:
           ANDROID_JNI="$WS/socket-quic/src/androidMain/jniLibs"
 
           # Build quiche static (Linux K/Native) + shared (Linux JVM)
-          ./gradlew :socket-quic:buildQuicheStaticX64 :socket-quic:buildQuicheSharedLinuxX64 --no-configuration-cache || true
+          ./gradlew :socket-quic:buildQuicheStaticX64 :socket-quic:buildQuicheStaticArm64 :socket-quic:buildQuicheSharedLinuxX64 --no-configuration-cache || true
 
           # Find quiche source dir
           QUICHE_DIR=$(find socket-quic/build/quiche -maxdepth 1 -name "quiche-*" -type d | head -1)
