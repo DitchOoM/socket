@@ -61,9 +61,34 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Build quiche native libraries (macOS shared for JVM)
-        run: ./gradlew :socket-quic:buildQuicheAll --no-configuration-cache
-        continue-on-error: true  # quiche build is optional — mock tests don't need it
+      - name: Build quiche + JNI shim for macOS
+        continue-on-error: true
+        run: |
+          # Build quiche shared libs for macOS
+          ./gradlew :socket-quic:buildQuicheAll --no-configuration-cache || true
+
+          # Build JNI shim for macOS arm64 (self-contained, static-link quiche)
+          QUICHE_SRC=socket-quic/build/quiche/quiche-*/target
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            QUICHE_LIB=$(find $QUICHE_SRC -path "*aarch64-apple-darwin/release/libquiche.a" | head -1)
+            DEST=socket-quic/src/jvmMain/resources/META-INF/native/macos-arm64
+          else
+            QUICHE_LIB=$(find $QUICHE_SRC -path "*x86_64-apple-darwin/release/libquiche.a" | head -1)
+            DEST=socket-quic/src/jvmMain/resources/META-INF/native/macos-x64
+          fi
+          if [ -n "$QUICHE_LIB" ]; then
+            mkdir -p $DEST
+            cc -shared -fPIC -Wall \
+              -o $DEST/libquiche_jni.dylib \
+              socket-quic/src/jni/quiche_jni.c \
+              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/darwin \
+              -I socket-quic/libs/quiche/include \
+              -Wl,-all_load $QUICHE_LIB -Wl,-noall_load \
+              -lpthread -ldl -lm -lc++ \
+              && strip -x $DEST/libquiche_jni.dylib \
+              && echo "Built $DEST/libquiche_jni.dylib ($(du -h $DEST/libquiche_jni.dylib | cut -f1))"
+          fi
 
       - name: Run Apple tests
         run: >-
@@ -71,6 +96,15 @@ jobs:
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
           :socket-quic:jvmTest :socket-quic:macosArm64Test
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Upload macOS quiche native libs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiche-macos-natives
+          path: socket-quic/src/jvmMain/resources/META-INF/native/macos-*/
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Publish Apple targets to Maven Local
         run: >-

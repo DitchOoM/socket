@@ -26,6 +26,13 @@ jobs:
           name: maven-local-apple
           path: /tmp/apple-repo/com/ditchoom
 
+      - name: Download macOS quiche native libs
+        uses: actions/download-artifact@v4
+        with:
+          name: quiche-macos-natives
+          path: /tmp/quiche-macos-natives
+        continue-on-error: true  # may not exist if quiche build failed
+
       - name: Merge artifacts and module metadata
         run: |
           version="${{ inputs.version }}"
@@ -124,6 +131,31 @@ jobs:
             echo "Rebuilt metadata JAR"
 
             rm -rf "$WORK"
+          fi
+
+      - name: Inject macOS native libs into socket-quic JVM JAR
+        run: |
+          version="${{ inputs.version }}"
+          MERGED="/tmp/maven-local/com/ditchoom"
+          QUIC_JAR="$MERGED/socket-quic-jvm/$version/socket-quic-jvm-$version.jar"
+          NATIVES="/tmp/quiche-macos-natives"
+
+          if [ -f "$QUIC_JAR" ] && [ -d "$NATIVES" ]; then
+            echo "Injecting macOS native libs into socket-quic JVM JAR..."
+            # Add macOS dylibs to the JAR (alongside linux natives already there)
+            for dir in "$NATIVES"/macos-*/; do
+              [ -d "$dir" ] || continue
+              platform=$(basename "$dir")
+              for lib in "$dir"/*.dylib; do
+                [ -f "$lib" ] || continue
+                echo "  Adding $platform/$(basename $lib)"
+                (cd "$NATIVES" && zip -u "$QUIC_JAR" "$platform/$(basename $lib)")
+              done
+            done
+            echo "socket-quic JVM JAR native libs:"
+            unzip -l "$QUIC_JAR" | grep "META-INF/native" || true
+          else
+            echo "Skipping macOS native injection (JAR or natives not found)"
           fi
 
       - name: Upload merged artifacts
@@ -246,7 +278,36 @@ jobs:
             fi
           fi
 
-          # ── 5. Signing coverage — detect uncovered file types ──
+          # ── 5. socket-quic JVM JAR native libs ──
+          QUIC_JAR="$MERGED/socket-quic-jvm/${version}/socket-quic-jvm-${version}.jar"
+          if [ -f "$QUIC_JAR" ]; then
+            echo "socket-quic JVM JAR found"
+            for platform in linux-x64 linux-arm64; do
+              if unzip -l "$QUIC_JAR" | grep -q "META-INF/native/$platform/libquiche_jni"; then
+                echo "  native OK: $platform"
+              else
+                echo "  WARN: missing native lib for $platform"
+              fi
+            done
+            for platform in windows-x64; do
+              if unzip -l "$QUIC_JAR" | grep -q "META-INF/native/$platform/quiche_jni"; then
+                echo "  native OK: $platform"
+              else
+                echo "  INFO: Windows native $platform not present (cross-compiled on Linux)"
+              fi
+            done
+            for platform in macos-arm64 macos-x64; do
+              if unzip -l "$QUIC_JAR" | grep -q "META-INF/native/$platform/libquiche_jni"; then
+                echo "  native OK: $platform"
+              else
+                echo "  INFO: macOS native $platform not present (built on Apple runner)"
+              fi
+            done
+          else
+            echo "INFO: socket-quic JVM JAR not found (expected if not published)"
+          fi
+
+          # ── 6. Signing coverage — detect uncovered file types ──
           SIGNED_EXTENSIONS="jar klib pom module aar json"
           UNCOVERED=$(find /tmp/maven-local -type f \
             ! -name "*.asc" ! -name "*.md5" ! -name "*.sha1" \

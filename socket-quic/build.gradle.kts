@@ -110,9 +110,14 @@ fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
 
             logger.lifecycle("Building quiche $quicheVersion (static, $arch)...")
 
+            // Use pre-built BoringSSL from the base module (avoids rebuilding inside quiche)
+            val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
             val env = mutableMapOf<String, String>()
             env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols -C embed-bitcode=yes -C lto=thin"
-            // Cross-compile ARM64 from x64
+            if (boringsslDir.resolve("lib/libssl.a").exists()) {
+                env["QUICHE_BSSL_PATH"] = boringsslDir.absolutePath
+                logger.lifecycle("Using pre-built BoringSSL from ${boringsslDir.absolutePath}")
+            }
             if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
                 env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
             }
@@ -128,7 +133,7 @@ fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
                     cargoTarget,
                     "--no-default-features",
                     "--features",
-                    "ffi,boringssl-vendored",
+                    if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi" else "ffi,boringssl-vendored",
                 )
 
             val result =
@@ -196,11 +201,20 @@ fun createBuildQuicheSharedTask(
 
             logger.lifecycle("Building quiche $quicheVersion (shared, $os-$arch)...")
 
+            // Use pre-built BoringSSL if available
+            val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
             val env = mutableMapOf<String, String>()
             env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols -C embed-bitcode=yes -C lto=thin"
+            if (boringsslDir.resolve("lib/libssl.a").exists()) {
+                env["QUICHE_BSSL_PATH"] = boringsslDir.absolutePath
+                logger.lifecycle("Using pre-built BoringSSL from ${boringsslDir.absolutePath}")
+            }
             if (os == "linux" && arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
                 env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
             }
+
+            val quicheFeatures =
+                if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi" else "ffi,boringssl-vendored"
 
             val result =
                 ProcessBuilder(
@@ -213,7 +227,7 @@ fun createBuildQuicheSharedTask(
                     cargoTarget,
                     "--no-default-features",
                     "--features",
-                    "ffi,boringssl-vendored",
+                    quicheFeatures,
                 ).directory(sourceDir)
                     .also { pb -> pb.environment().putAll(env) }
                     .inheritIO()

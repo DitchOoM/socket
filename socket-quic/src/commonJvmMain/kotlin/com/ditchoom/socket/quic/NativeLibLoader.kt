@@ -54,7 +54,8 @@ internal object NativeLibLoader {
                 else -> "so"
             }
 
-        val resourcePath = "META-INF/native/$os-$arch/lib$name.$ext"
+        val prefix = if (os == "windows") "" else "lib"
+        val resourcePath = "META-INF/native/$os-$arch/$prefix$name.$ext"
         val stream =
             NativeLibLoader::class.java.classLoader?.getResourceAsStream(resourcePath)
                 ?: error(
@@ -64,7 +65,7 @@ internal object NativeLibLoader {
 
         val tempDir = Files.createTempDirectory("quiche-native").toFile()
         tempDir.deleteOnExit()
-        val tempFile = File(tempDir, "lib$name.$ext")
+        val tempFile = File(tempDir, "$prefix$name.$ext")
         tempFile.deleteOnExit()
 
         stream.use { input ->
