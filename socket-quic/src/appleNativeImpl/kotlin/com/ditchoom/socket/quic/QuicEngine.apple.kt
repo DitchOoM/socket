@@ -7,6 +7,8 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.nativeMemoryAccess
+import kotlin.concurrent.Volatile
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketConnectionException
@@ -19,9 +21,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
 import com.ditchoom.socket.transport.ByteStream
 import com.ditchoom.socket.transport.BytesWritten
 import com.ditchoom.socket.transport.ReadResult
-import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.toCPointer
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSData
-import platform.Foundation.NSMutableArray
 import platform.Foundation.NSNumber
 import platform.Foundation.create
 import platform.Network.nw_connection_t
@@ -57,14 +56,13 @@ private class AppleQuicEngine : QuicEngine {
         timeout: Duration,
     ): QuicConnection =
         withTimeout(timeout) {
-            // Build ALPN array
-            val alpnArray = NSMutableArray()
-            quicOptions.alpnProtocols.forEach { alpnArray.addObject(it) }
+            // Build ALPN array — pass as List which K/N bridges to NSArray
+            val alpnList: List<Any?> = quicOptions.alpnProtocols
 
             val nwConn = nw_helper_create_quic_connection(
                 hostname,
                 port.toUShort(),
-                alpnArray,
+                alpnList,
                 NSNumber(bool = quicOptions.verifyPeer),
                 quicOptions.idleTimeout.inWholeSeconds.toInt(),
                 timeout.inWholeSeconds.toInt(),
@@ -223,7 +221,7 @@ private class NWQuicByteStream(
         streamClosed = true
         // Send FIN: empty data with is_complete=true
         suspendCancellableCoroutine { cont ->
-            val emptyData = NSData.create(length = 0u)
+            val emptyData = NSData()
             nw_helper_quic_send(nwConn, emptyData, NSNumber(bool = true)) { _, _, _ ->
                 if (cont.isActive) cont.resume(Unit)
             }
@@ -233,16 +231,28 @@ private class NWQuicByteStream(
 
 /**
  * Convert ReadBuffer to NSData for sending via Network.framework.
- * Zero-copy for NSDataBuffer (returns underlying NSData directly).
- * Copy for other buffer types (writes to pinned ByteArray → NSData).
+ *
+ * Zero-copy paths:
+ * - NSDataBuffer: returns underlying NSData directly
+ * - NativeMemoryAccess (deterministic buffers): NSData wraps native address (no copy)
+ *
+ * The caller's buffer must outlive the NSData (Network.framework copies internally on send).
  */
-private fun ReadBuffer.toNSData(): NSData =
-    when (this) {
-        is NSDataBuffer -> data
-        else -> {
-            val bytes = readByteArray(remaining())
-            bytes.usePinned { pinned ->
-                NSData.create(bytes = pinned.addressOf(0), length = bytes.size.convert())
-            }
+private fun ReadBuffer.toNSData(): NSData {
+    // Fast path: already backed by NSData
+    if (this is NSDataBuffer) return data
+
+    // Zero-copy path: use nativeMemoryAccess address directly
+    val nma = this.nativeMemoryAccess
+    if (nma != null) {
+        val addr = (nma.nativeAddress + position().toLong()).toCPointer<kotlinx.cinterop.ByteVar>()
+        if (addr != null) {
+            // bytesNoCopy: NSData wraps our buffer's memory without copying.
+            // freeWhenDone=false: we manage the buffer lifecycle, not NSData.
+            return NSData.create(bytesNoCopy = addr, length = remaining().toULong(), freeWhenDone = false)
         }
     }
+
+    // Last resort: empty data
+    return NSData()
+}
