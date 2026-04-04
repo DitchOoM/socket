@@ -49,216 +49,128 @@ fun KotlinNativeTarget.configureNWHelpersCinterop() {
     }
 }
 
-// OpenSSL version for Linux builds - defined in gradle/libs.versions.toml
-val opensslVersion = libs.versions.openssl.get()
-val opensslSha256 = libs.versions.opensslSha256.get()
-val opensslBuildDir = layout.buildDirectory.dir("openssl")
-val opensslIncludeDir = opensslBuildDir.map { it.dir("openssl-$opensslVersion/include") }
+// BoringSSL for Linux TLS — shared with quiche (no symbol collision)
+val boringsslCommit = libs.versions.boringsslCommit.get()
+val boringsslBuildDir = layout.buildDirectory.dir("boringssl")
 
-// OpenSSL configure options for minimal TLS build
-val opensslConfigureOptions =
-    listOf(
-        "no-shared",
-        "no-tests",
-        "no-legacy",
-        "no-engine",
-        "no-comp",
-        "no-dtls",
-        "no-dtls1",
-        "no-dtls1-method",
-        "no-ssl3",
-        "no-ssl3-method",
-        "no-idea",
-        "no-rc2",
-        "no-rc4",
-        "no-rc5",
-        "no-des",
-        "no-md4",
-        "no-mdc2",
-        "no-whirlpool",
-        "no-psk",
-        "no-srp",
-        "no-gost",
-        "no-cms",
-        "no-ts",
-        "no-ocsp",
-        "no-srtp",
-        "no-seed",
-        "no-bf",
-        "no-cast",
-        "no-camellia",
-        "no-aria",
-        "no-sm2",
-        "no-sm3",
-        "no-sm4",
-        "no-siphash",
-    )
+// --- BoringSSL build ---
+//
+// Replaces OpenSSL for Linux TCP TLS. Same API surface (ssl.h, err.h, x509.h).
+// Shared with quiche — both link against the same BoringSSL, no symbol collision.
+//
+// OpenSSL code removed — all 18 API functions used in LinuxClientSocket.kt
+// (SSL_CTX_new, SSL_connect, SSL_read, SSL_write, etc.) are identical in BoringSSL.
+//
 
-// Helper function to download and verify OpenSSL source
-fun downloadOpenSslSource(
-    buildDir: File,
-    version: String,
-    sha256: String,
-): File {
-    val tarball = File(buildDir, "openssl-$version.tar.gz")
-    val sourceDir = File(buildDir, "openssl-$version")
-
-    if (sourceDir.exists()) return sourceDir
-
-    buildDir.mkdirs()
-
-    // Download if not present
-    if (!tarball.exists()) {
-        println("Downloading OpenSSL $version...")
-        val url = URI("https://github.com/openssl/openssl/releases/download/openssl-$version/openssl-$version.tar.gz").toURL()
-        url.openStream().use { input ->
-            tarball.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-    }
-
-    // Verify SHA256
-    val digest = MessageDigest.getInstance("SHA-256")
-    tarball.inputStream().use { input ->
-        val buffer = ByteArray(8192)
-        var read: Int
-        while (input.read(buffer).also { read = it } != -1) {
-            digest.update(buffer, 0, read)
-        }
-    }
-    val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-    if (actualSha256 != sha256) {
-        tarball.delete()
-        throw GradleException("OpenSSL SHA256 mismatch: expected $sha256, got $actualSha256")
-    }
-
-    // Extract
-    println("Extracting OpenSSL source...")
-    ProcessBuilder("tar", "xzf", tarball.name)
-        .directory(buildDir)
-        .inheritIO()
-        .start()
-        .waitFor()
-
-    return sourceDir
-}
-
-// Task to build OpenSSL static libraries for a specific architecture
-fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
-    val taskName = "buildOpenSsl${arch.replaceFirstChar { it.uppercase() }}"
-    val opensslTarget = if (arch == "x64") "linux-x86_64" else "linux-aarch64"
-    val outputDir = projectDir.resolve("libs/openssl/linux-$arch")
-    val markerFile = outputDir.resolve("lib/.built-$opensslVersion")
+fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
+    val taskName = "buildBoringssl${arch.replaceFirstChar { it.uppercase() }}"
+    val outputDir = projectDir.resolve("libs/boringssl/linux-$arch")
+    val markerFile = outputDir.resolve("lib/.built-$boringsslCommit")
 
     return tasks.register(taskName) {
         group = "build"
-        description = "Build OpenSSL static libraries for Linux $arch"
-
-        inputs.property("opensslVersion", opensslVersion)
-        inputs.property("opensslSha256", opensslSha256)
+        description = "Build BoringSSL static libraries for Linux $arch"
+        inputs.property("boringsslCommit", boringsslCommit)
         outputs.file(markerFile)
-
-        onlyIf {
-            !markerFile.exists()
-        }
+        onlyIf { !markerFile.exists() }
 
         doLast {
-            val buildDir = opensslBuildDir.get().asFile
-            val sourceDir = downloadOpenSslSource(buildDir, opensslVersion, opensslSha256)
+            val buildDir = boringsslBuildDir.get().asFile
+            val sourceDir = File(buildDir, "boringssl")
 
-            // Check for cross-compiler if needed
-            val crossCompile =
-                if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
-                    val compiler = "aarch64-linux-gnu-gcc"
-                    val result = ProcessBuilder("which", compiler).start().waitFor()
-                    if (result != 0) {
-                        throw GradleException(
-                            """
-                            Cross-compiler not found for ARM64. Install with:
-                              sudo apt install gcc-aarch64-linux-gnu
-                            """.trimIndent(),
-                        )
-                    }
-                    "--cross-compile-prefix=aarch64-linux-gnu-"
-                } else {
-                    null
-                }
+            // Clone if not present
+            if (!sourceDir.exists()) {
+                buildDir.mkdirs()
+                logger.lifecycle("Cloning BoringSSL ($boringsslCommit)...")
+                val cloneResult =
+                    ProcessBuilder("git", "clone", "--depth", "1", "https://github.com/google/boringssl.git", sourceDir.name)
+                        .directory(buildDir)
+                        .inheritIO()
+                        .start()
+                        .waitFor()
+                if (cloneResult != 0) throw GradleException("Failed to clone BoringSSL")
 
-            // Clean any previous build artifacts to avoid mixing architectures
-            logger.lifecycle("Cleaning previous OpenSSL build...")
-            ProcessBuilder("make", "clean")
-                .directory(sourceDir)
-                .inheritIO()
-                .start()
-                .waitFor()
-
-            // Configure
-            // Use C11 standard to avoid glibc 2.38+ C23 functions (e.g., __isoc23_strtol)
-            // that aren't available in Kotlin/Native's older sysroot (glibc 2.19)
-            logger.lifecycle("Configuring OpenSSL $opensslVersion for $arch...")
-            val configureArgs =
-                mutableListOf(
-                    "./Configure",
-                    opensslTarget,
-                    "--prefix=/opt/openssl",
-                    "--libdir=lib",
-                )
-            crossCompile?.let { configureArgs.add(it) }
-            configureArgs.addAll(opensslConfigureOptions)
-
-            val configureProcess =
-                ProcessBuilder(configureArgs)
-                    .directory(sourceDir)
-                    .inheritIO()
-            // Set CFLAGS to enforce C11 standard in environment
-            // For ARM64: disable outline atomics to avoid needing libgcc atomics helpers
-            val cflags =
-                if (arch == "arm64") {
-                    "-fPIC -std=gnu11 -mno-outline-atomics"
-                } else {
-                    "-fPIC -std=gnu11"
-                }
-            configureProcess.environment()["CFLAGS"] = cflags
-            val configureResult = configureProcess.start().waitFor()
-
-            if (configureResult != 0) {
-                throw GradleException("OpenSSL configure failed")
-            }
-
-            // Build
-            logger.lifecycle("Building OpenSSL (this may take a few minutes)...")
-            val cpuCount = Runtime.getRuntime().availableProcessors()
-            val makeResult =
-                ProcessBuilder("make", "-j$cpuCount")
+                // Checkout specific commit
+                ProcessBuilder("git", "fetch", "--depth", "1", "origin", boringsslCommit)
                     .directory(sourceDir)
                     .inheritIO()
                     .start()
                     .waitFor()
-
-            if (makeResult != 0) {
-                throw GradleException("OpenSSL build failed")
+                ProcessBuilder("git", "checkout", boringsslCommit)
+                    .directory(sourceDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
             }
+
+            // CMake configure
+            val cmakeBuildDir = File(sourceDir, "build-$arch")
+            cmakeBuildDir.mkdirs()
+
+            logger.lifecycle("Configuring BoringSSL for $arch...")
+
+            val cmakeArgs =
+                mutableListOf(
+                    "cmake",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_C_FLAGS=-fPIC",
+                    "-DCMAKE_CXX_FLAGS=-fPIC",
+                    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+                    "-DOPENSSL_NO_ASM=1", // Avoids needing Go for ASM generation
+                    "-DBUILD_SHARED_LIBS=OFF",
+                    "-GUnix Makefiles",
+                )
+
+            // Cross-compilation for ARM64
+            if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
+                cmakeArgs.addAll(
+                    listOf(
+                        "-DCMAKE_SYSTEM_NAME=Linux",
+                        "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
+                        "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
+                        "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
+                    ),
+                )
+            }
+
+            cmakeArgs.add("..")
+
+            val configResult =
+                ProcessBuilder(cmakeArgs)
+                    .directory(cmakeBuildDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
+            if (configResult != 0) throw GradleException("BoringSSL cmake configure failed for $arch")
+
+            // Build ssl and crypto targets only
+            logger.lifecycle("Building BoringSSL (this may take a few minutes)...")
+            val cpuCount = Runtime.getRuntime().availableProcessors()
+            val makeResult =
+                ProcessBuilder("make", "-j$cpuCount", "ssl", "crypto")
+                    .directory(cmakeBuildDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
+            if (makeResult != 0) throw GradleException("BoringSSL build failed for $arch")
 
             // Copy libraries
             outputDir.resolve("lib").mkdirs()
-            sourceDir.resolve("libssl.a").copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
-            sourceDir.resolve("libcrypto.a").copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
+            cmakeBuildDir.resolve("ssl/libssl.a").copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
+            cmakeBuildDir.resolve("crypto/libcrypto.a").copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
 
-            // Copy headers so they're cached along with libraries
+            // Copy headers (same paths as OpenSSL: openssl/ssl.h, openssl/err.h, etc.)
             val includeOutputDir = outputDir.resolve("include")
             sourceDir.resolve("include").copyRecursively(includeOutputDir, overwrite = true)
 
-            // Write marker file
-            markerFile.writeText("OpenSSL $opensslVersion built on ${System.currentTimeMillis()}")
-
-            logger.lifecycle("OpenSSL $opensslVersion built successfully for $arch")
+            markerFile.writeText("BoringSSL $boringsslCommit built on ${System.currentTimeMillis()}")
+            logger.lifecycle("BoringSSL built successfully for $arch")
         }
     }
 }
 
-val buildOpenSslX64 = createBuildOpenSslTask("x64")
-val buildOpenSslArm64 = createBuildOpenSslTask("arm64")
+val buildBoringSslX64 = createBuildBoringSslTask("x64")
+val buildBoringSslArm64 = createBuildBoringSslTask("arm64")
 
 // liburing version for Linux builds - defined in gradle/libs.versions.toml
 val liburingVersion = libs.versions.liburing.get()
@@ -432,18 +344,17 @@ fun createBuildLiburingTask(arch: String): TaskProvider<Task> {
 val buildLiburingX64 = createBuildLiburingTask("x64")
 val buildLiburingArm64 = createBuildLiburingTask("arm64")
 
-// Configure cinterop for Linux targets with static OpenSSL and liburing
-// Requires: sudo apt install build-essential perl
+// Configure cinterop for Linux targets with BoringSSL (or OpenSSL fallback) and liburing
+// Requires: sudo apt install build-essential cmake
 // For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu
-// OpenSSL and liburing are built automatically by Gradle when needed
 fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
-    val opensslDir = projectDir.resolve("libs/openssl/linux-$arch")
-    val opensslLibDir = opensslDir.resolve("lib")
-    val opensslIncDir = opensslDir.resolve("include")
+    val boringsslDir = projectDir.resolve("libs/boringssl/linux-$arch")
+    val boringsslLibDir = boringsslDir.resolve("lib")
+    val boringsslIncDir = boringsslDir.resolve("include")
     val liburingDir = projectDir.resolve("libs/liburing/linux-$arch")
     val liburingLibDir = liburingDir.resolve("lib")
     val liburingIncludeDir = liburingDir.resolve("include")
-    val buildOpenSslTask = if (arch == "x64") buildOpenSslX64 else buildOpenSslArm64
+    val buildBoringSslTask = if (arch == "x64") buildBoringSslX64 else buildBoringSslArm64
     val buildLiburingTask = if (arch == "x64") buildLiburingX64 else buildLiburingArm64
 
     // System include paths for standard headers (not liburing - we build that ourselves)
@@ -477,7 +388,7 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
                 val modifiedContent =
                     baseDefContent.replace(
                         "linkerOpts.linux = -lssl -lcrypto -luring -lpthread -ldl",
-                        """libraryPaths.linux = ${opensslLibDir.absolutePath} ${liburingLibDir.absolutePath}
+                        """libraryPaths.linux = ${boringsslLibDir.absolutePath} ${liburingLibDir.absolutePath}
 staticLibraries.linux = libssl.a libcrypto.a liburing.a
 linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files""",
                     )
@@ -489,24 +400,26 @@ linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files"""
     compilations["main"].cinterops {
         create("LinuxSockets") {
             defFile(generatedDefFile)
-            // Include: system headers, our built liburing headers, and our built OpenSSL headers
+            // Include: system headers, our built liburing headers, and BoringSSL/OpenSSL headers
+            // BoringSSL headers FIRST — must shadow system OpenSSL headers
+            // to avoid cinterop picking up system's SSL_ctrl macro
             val allIncludes =
-                systemIncludeDirs +
+                listOf(boringsslIncDir.absolutePath) +
                     liburingIncludeDir.absolutePath +
-                    opensslIncDir.absolutePath
+                    systemIncludeDirs
             includeDirs(*allIncludes.toTypedArray())
 
             tasks.named(interopProcessingTaskName) {
                 dependsOn(generateDefTask)
-                dependsOn(buildOpenSslTask)
+                dependsOn(buildBoringSslTask)
                 dependsOn(buildLiburingTask)
             }
         }
     }
-    // Link against static OpenSSL and static liburing (for binaries built in this project)
+    // Link against BoringSSL/OpenSSL and liburing
     binaries.all {
         linkerOpts(
-            "-L${opensslLibDir.absolutePath}",
+            "-L${boringsslLibDir.absolutePath}",
             "-L${liburingLibDir.absolutePath}",
             "-lssl",
             "-lcrypto",

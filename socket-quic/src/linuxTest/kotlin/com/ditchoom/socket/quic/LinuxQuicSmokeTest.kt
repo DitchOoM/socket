@@ -22,7 +22,6 @@ import com.ditchoom.socket.quic.quiche.quiche_version
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
@@ -30,6 +29,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
+import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import platform.posix.AF_INET
 import platform.posix.SOCK_DGRAM
@@ -135,25 +135,32 @@ class LinuxQuicSmokeTest {
             val localAddr = alloc<sockaddr_in>()
             val localAddrLen = alloc<kotlinx.cinterop.UIntVar>()
             localAddrLen.value = kotlinx.cinterop.sizeOf<sockaddr_in>().convert()
-            com.ditchoom.socket.linux.socket_getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
+            com.ditchoom.socket.linux
+                .socket_getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
             println("Local addr obtained")
 
             // Generate SCID via ByteArray + pin
-            val scidBytes = ByteArray(QUIC_MAX_CONN_ID_LEN) { kotlin.random.Random.nextInt(256).toByte() }
+            val scidBytes =
+                ByteArray(QUIC_MAX_CONN_ID_LEN) {
+                    kotlin.random.Random
+                        .nextInt(256)
+                        .toByte()
+                }
 
             println("Calling quiche_connect...")
-            val conn = scidBytes.usePinned { pinned ->
-                quiche_connect(
-                    "cloudflare-quic.com",
-                    pinned.addressOf(0).reinterpret(),
-                    QUIC_MAX_CONN_ID_LEN.convert(),
-                    localAddr.ptr.reinterpret(),
-                    kotlinx.cinterop.sizeOf<sockaddr_in>().convert(),
-                    addrInfo.ai_addr,
-                    addrInfo.ai_addrlen,
-                    config,
-                )
-            }
+            val conn =
+                scidBytes.usePinned { pinned ->
+                    quiche_connect(
+                        "cloudflare-quic.com",
+                        pinned.addressOf(0).reinterpret(),
+                        QUIC_MAX_CONN_ID_LEN.convert(),
+                        localAddr.ptr.reinterpret(),
+                        kotlinx.cinterop.sizeOf<sockaddr_in>().convert(),
+                        addrInfo.ai_addr,
+                        addrInfo.ai_addrlen,
+                        config,
+                    )
+                }
             println("quiche_connect returned: $conn")
             assertNotNull(conn, "quiche_connect returned null")
             println("quiche_connect succeeded, conn is established: ${quiche_conn_is_established(conn)}")

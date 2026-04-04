@@ -911,7 +911,7 @@ internal const val DEFAULT_READ_BUFFER_SIZE = 65536
 @OptIn(ExperimentalForeignApi::class)
 internal fun getOpenSSLError(): String {
     val errorCode = ERR_get_error()
-    if (errorCode == 0UL) return "Unknown SSL error"
+    if (errorCode == 0u) return "Unknown SSL error"
 
     memScoped {
         val buffer = allocArray<ByteVar>(256)
