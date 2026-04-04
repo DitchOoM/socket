@@ -29,20 +29,10 @@ class QuicIntegrationTests {
     private val quicOptions = QuicOptions(alpnProtocols = listOf("h3"))
     private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
 
-    private fun isQuicSupported(): Boolean =
-        try {
-            defaultQuicEngine()
-            true
-        } catch (_: NotImplementedError) {
-            false // JS/wasmJs throws TODO
-        } catch (_: UnsupportedOperationException) {
-            false // Browser throws UnsupportedOperationException
-        }
-
     @Test
     fun handshake_completesSuccessfully() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
@@ -55,7 +45,7 @@ class QuicIntegrationTests {
     @Test
     fun openStream_returnsOpenStream() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
@@ -72,7 +62,7 @@ class QuicIntegrationTests {
     @Test
     fun multipleStreams_haveDistinctIds() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
@@ -95,7 +85,7 @@ class QuicIntegrationTests {
     @Test
     fun writeToStream_succeeds() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
@@ -115,7 +105,7 @@ class QuicIntegrationTests {
     @Test
     fun writeAndRead_serverResponds() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
@@ -145,7 +135,7 @@ class QuicIntegrationTests {
     @Test
     fun close_transitionsThroughDrainingToClosed() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
@@ -161,7 +151,7 @@ class QuicIntegrationTests {
     @Test
     fun close_withApplicationError_preservesError() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
@@ -176,7 +166,7 @@ class QuicIntegrationTests {
     @Test
     fun connectionTimeout_onUnreachableHost() =
         runTest(timeout = 30.seconds) {
-            if (!isQuicSupported()) return@runTest
+
             withContext(Dispatchers.Default) {
                 val engine = defaultQuicEngine()
                 try {
