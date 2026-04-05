@@ -50,7 +50,13 @@ jobs:
           path: |
             socket-quic/libs/quiche/macos-x64
             socket-quic/libs/quiche/macos-arm64
-          key: quiche-macos-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: quiche-macos-v2-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache built JNI shims (macOS)
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/src/jvmMain/resources/META-INF/native/macos-*
+          key: quiche-jni-macos-v1-${{ hashFiles('socket-quic/src/jni/quiche_jni.c', 'gradle/libs.versions.toml') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -107,11 +113,15 @@ jobs:
             fi
           done
 
+      - name: Verify macOS JNI shims exist
+        run: |
+          find socket-quic/src/jvmMain/resources/META-INF/native/macos-* -type f 2>/dev/null || echo "WARN: no macOS JNI shims"
+
       - name: Run Apple tests
         run: >-
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
-          :socket-quic:jvmTest
+          :socket-quic:jvmProcessResources :socket-quic:jvmTest
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Run socket-quic Apple native tests (Network.framework)

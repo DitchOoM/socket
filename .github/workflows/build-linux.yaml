@@ -96,13 +96,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: socket-quic/libs/quiche/linux-x64
-          key: quiche-linux-x64-v2-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: quiche-linux-x64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v4
         with:
           path: socket-quic/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v2-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: quiche-linux-arm64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache built JNI shims
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/src/jvmMain/resources/META-INF/native
+          key: quiche-jni-shims-v1-${{ hashFiles('socket-quic/src/jni/quiche_jni.c', 'gradle/libs.versions.toml') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -217,10 +223,17 @@ jobs:
           echo "=== Done ==="
           find "$JVM_NATIVE" "$ANDROID_JNI" -name "*.so" -o -name "*.dll" -o -name "*.dylib" 2>/dev/null
 
+      - name: Verify JNI shims exist
+        run: |
+          echo "=== JVM native libs ==="
+          find socket-quic/src/jvmMain/resources/META-INF/native -type f 2>/dev/null || echo "WARN: no JNI shims found"
+          echo "=== Android native libs ==="
+          find socket-quic/src/androidMain/jniLibs -type f 2>/dev/null || echo "No Android JNI (expected on Linux)"
+
       - name: Run checks and tests
         run: >-
           ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
-          :socket-quic:jvmTest :socket-quic:ktlintCheck
+          :socket-quic:jvmProcessResources :socket-quic:jvmTest :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Run socket-quic native tests (quiche cinterop)
