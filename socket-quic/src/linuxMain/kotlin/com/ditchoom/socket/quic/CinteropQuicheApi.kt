@@ -70,7 +70,6 @@ import kotlin.time.Duration.Companion.nanoseconds
  * All `memScoped` blocks use stack allocation — fast, no GC pressure.
  */
 internal object CinteropQuicheApi : QuicheApi {
-
     private fun Long.toNativePtr(): NativePtr = requireNotNull(this.toCPointer<ByteVar>()) { "null pointer" }.rawValue
 
     // --- Config ---
@@ -78,101 +77,151 @@ internal object CinteropQuicheApi : QuicheApi {
     override fun configNew(version: Int): QuicheConfig =
         QuicheConfig(quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())!!.rawValue.toLong())
 
-    override fun configFree(config: QuicheConfig) =
-        quiche_config_free(config.handle.toCPointer()!!)
+    override fun configFree(config: QuicheConfig) = quiche_config_free(config.handle.toCPointer()!!)
 
-    override fun configSetApplicationProtos(config: QuicheConfig, protosAddr: Long, protosLen: Int): Int =
-        quiche_config_set_application_protos(config.handle.toCPointer()!!, protosAddr.toCPointer()!!, protosLen.convert())
+    override fun configSetApplicationProtos(
+        config: QuicheConfig,
+        protosAddr: Long,
+        protosLen: Int,
+    ): Int = quiche_config_set_application_protos(config.handle.toCPointer()!!, protosAddr.toCPointer()!!, protosLen.convert())
 
-    override fun configSetMaxIdleTimeout(config: QuicheConfig, timeout: Long) =
-        quiche_config_set_max_idle_timeout(config.handle.toCPointer()!!, timeout.convert())
+    override fun configSetMaxIdleTimeout(
+        config: QuicheConfig,
+        timeout: Long,
+    ) = quiche_config_set_max_idle_timeout(config.handle.toCPointer()!!, timeout.convert())
 
-    override fun configSetMaxRecvUdpPayloadSize(config: QuicheConfig, size: Long) =
-        quiche_config_set_max_recv_udp_payload_size(config.handle.toCPointer()!!, size.convert())
+    override fun configSetMaxRecvUdpPayloadSize(
+        config: QuicheConfig,
+        size: Long,
+    ) = quiche_config_set_max_recv_udp_payload_size(config.handle.toCPointer()!!, size.convert())
 
-    override fun configSetMaxSendUdpPayloadSize(config: QuicheConfig, size: Long) =
-        quiche_config_set_max_send_udp_payload_size(config.handle.toCPointer()!!, size.convert())
+    override fun configSetMaxSendUdpPayloadSize(
+        config: QuicheConfig,
+        size: Long,
+    ) = quiche_config_set_max_send_udp_payload_size(config.handle.toCPointer()!!, size.convert())
 
-    override fun configSetInitialMaxData(config: QuicheConfig, v: Long) =
-        quiche_config_set_initial_max_data(config.handle.toCPointer()!!, v.convert())
+    override fun configSetInitialMaxData(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_initial_max_data(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetInitialMaxStreamDataBidiLocal(config: QuicheConfig, v: Long) =
-        quiche_config_set_initial_max_stream_data_bidi_local(config.handle.toCPointer()!!, v.convert())
+    override fun configSetInitialMaxStreamDataBidiLocal(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_initial_max_stream_data_bidi_local(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetInitialMaxStreamDataBidiRemote(config: QuicheConfig, v: Long) =
-        quiche_config_set_initial_max_stream_data_bidi_remote(config.handle.toCPointer()!!, v.convert())
+    override fun configSetInitialMaxStreamDataBidiRemote(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_initial_max_stream_data_bidi_remote(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetInitialMaxStreamDataUni(config: QuicheConfig, v: Long) =
-        quiche_config_set_initial_max_stream_data_uni(config.handle.toCPointer()!!, v.convert())
+    override fun configSetInitialMaxStreamDataUni(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_initial_max_stream_data_uni(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetInitialMaxStreamsBidi(config: QuicheConfig, v: Long) =
-        quiche_config_set_initial_max_streams_bidi(config.handle.toCPointer()!!, v.convert())
+    override fun configSetInitialMaxStreamsBidi(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_initial_max_streams_bidi(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetInitialMaxStreamsUni(config: QuicheConfig, v: Long) =
-        quiche_config_set_initial_max_streams_uni(config.handle.toCPointer()!!, v.convert())
+    override fun configSetInitialMaxStreamsUni(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_initial_max_streams_uni(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetDisableActiveMigration(config: QuicheConfig, v: Boolean) =
-        quiche_config_set_disable_active_migration(config.handle.toCPointer()!!, v)
+    override fun configSetDisableActiveMigration(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = quiche_config_set_disable_active_migration(config.handle.toCPointer()!!, v)
 
-    override fun configVerifyPeer(config: QuicheConfig, v: Boolean) =
-        quiche_config_verify_peer(config.handle.toCPointer()!!, v)
+    override fun configVerifyPeer(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = quiche_config_verify_peer(config.handle.toCPointer()!!, v)
 
-    override fun configEnablePacing(config: QuicheConfig, v: Boolean) =
-        quiche_config_enable_pacing(config.handle.toCPointer()!!, v)
+    override fun configEnablePacing(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = quiche_config_enable_pacing(config.handle.toCPointer()!!, v)
 
-    override fun configSetMaxPacingRate(config: QuicheConfig, v: Long) =
-        quiche_config_set_max_pacing_rate(config.handle.toCPointer()!!, v.convert())
+    override fun configSetMaxPacingRate(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_max_pacing_rate(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetCcAlgorithm(config: QuicheConfig, algo: Int) =
-        quiche_config_set_cc_algorithm(config.handle.toCPointer()!!, algo.convert())
+    override fun configSetCcAlgorithm(
+        config: QuicheConfig,
+        algo: Int,
+    ) = quiche_config_set_cc_algorithm(config.handle.toCPointer()!!, algo.convert())
 
-    override fun configEnableHystart(config: QuicheConfig, v: Boolean) =
-        quiche_config_enable_hystart(config.handle.toCPointer()!!, v)
+    override fun configEnableHystart(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = quiche_config_enable_hystart(config.handle.toCPointer()!!, v)
 
-    override fun configSetInitialCongestionWindowPackets(config: QuicheConfig, packets: Long) =
-        quiche_config_set_initial_congestion_window_packets(config.handle.toCPointer()!!, packets.convert())
+    override fun configSetInitialCongestionWindowPackets(
+        config: QuicheConfig,
+        packets: Long,
+    ) = quiche_config_set_initial_congestion_window_packets(config.handle.toCPointer()!!, packets.convert())
 
-    override fun configSetMaxConnectionWindow(config: QuicheConfig, v: Long) =
-        quiche_config_set_max_connection_window(config.handle.toCPointer()!!, v.convert())
+    override fun configSetMaxConnectionWindow(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_max_connection_window(config.handle.toCPointer()!!, v.convert())
 
-    override fun configSetMaxStreamWindow(config: QuicheConfig, v: Long) =
-        quiche_config_set_max_stream_window(config.handle.toCPointer()!!, v.convert())
+    override fun configSetMaxStreamWindow(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_max_stream_window(config.handle.toCPointer()!!, v.convert())
 
-    override fun configDiscoverPmtu(config: QuicheConfig, v: Boolean) =
-        quiche_config_discover_pmtu(config.handle.toCPointer()!!, v)
+    override fun configDiscoverPmtu(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = quiche_config_discover_pmtu(config.handle.toCPointer()!!, v)
 
-    override fun configEnableEarlyData(config: QuicheConfig) =
-        quiche_config_enable_early_data(config.handle.toCPointer()!!)
+    override fun configEnableEarlyData(config: QuicheConfig) = quiche_config_enable_early_data(config.handle.toCPointer()!!)
 
-    override fun configGrease(config: QuicheConfig, v: Boolean) =
-        quiche_config_grease(config.handle.toCPointer()!!, v)
+    override fun configGrease(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = quiche_config_grease(config.handle.toCPointer()!!, v)
 
     // --- Connection ---
 
     override fun connect(
-        serverNameAddr: Long, serverNameLen: Int,
-        scidAddr: Long, scidLen: Int,
-        localAddr: Long, localAddrLen: Int,
-        peerAddr: Long, peerAddrLen: Int,
+        serverNameAddr: Long,
+        serverNameLen: Int,
+        scidAddr: Long,
+        scidLen: Int,
+        localAddr: Long,
+        localAddrLen: Int,
+        peerAddr: Long,
+        peerAddrLen: Int,
         config: QuicheConfig,
     ): QuicheConn {
-        val conn = quiche_connect(
-            serverNameAddr.toCPointer<ByteVar>()?.toKString(),
-            scidAddr.toCPointer<UByteVar>()!!,
-            scidLen.convert(),
-            localAddr.toCPointer()!!,
-            localAddrLen.convert(),
-            peerAddr.toCPointer()!!,
-            peerAddrLen.convert(),
-            config.handle.toCPointer()!!,
-        ) ?: error("quiche_connect returned null")
+        val conn =
+            quiche_connect(
+                serverNameAddr.toCPointer<ByteVar>()?.toKString(),
+                scidAddr.toCPointer<UByteVar>()!!,
+                scidLen.convert(),
+                localAddr.toCPointer()!!,
+                localAddrLen.convert(),
+                peerAddr.toCPointer()!!,
+                peerAddrLen.convert(),
+                config.handle.toCPointer()!!,
+            ) ?: error("quiche_connect returned null")
         return QuicheConn(conn.rawValue.toLong())
     }
 
-    override fun connFree(conn: QuicheConn) =
-        quiche_conn_free(conn.handle.toCPointer()!!)
+    override fun connFree(conn: QuicheConn) = quiche_conn_free(conn.handle.toCPointer()!!)
 
-    override fun connRecv(conn: QuicheConn, buf: Long, bufLen: Int, recvInfo: QuicheRecvInfo): Int =
+    override fun connRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+        recvInfo: QuicheRecvInfo,
+    ): Int =
         quiche_conn_recv(
             conn.handle.toCPointer()!!,
             buf.toCPointer<ByteVar>()!!.reinterpret(),
@@ -180,7 +229,12 @@ internal object CinteropQuicheApi : QuicheApi {
             recvInfo.handle.toCPointer()!!,
         ).toInt()
 
-    override fun connSend(conn: QuicheConn, buf: Long, bufLen: Int, sendInfo: QuicheSendInfo): Int =
+    override fun connSend(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+        sendInfo: QuicheSendInfo,
+    ): Int =
         quiche_conn_send(
             conn.handle.toCPointer()!!,
             buf.toCPointer<ByteVar>()!!.reinterpret(),
@@ -188,18 +242,24 @@ internal object CinteropQuicheApi : QuicheApi {
             sendInfo.handle.toCPointer()!!,
         ).toInt()
 
-    override fun connStreamRecv(conn: QuicheConn, streamId: QuicStreamId, buf: Long, bufLen: Int): StreamRecvResult {
+    override fun connStreamRecv(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvResult {
         memScoped {
             val fin = alloc<BooleanVar>()
             val errorCode = alloc<ULongVar>()
-            val result = quiche_conn_stream_recv(
-                conn.handle.toCPointer()!!,
-                streamId.id.convert(),
-                buf.toCPointer<UByteVar>()!!,
-                bufLen.convert(),
-                fin.ptr,
-                errorCode.ptr,
-            )
+            val result =
+                quiche_conn_stream_recv(
+                    conn.handle.toCPointer()!!,
+                    streamId.id.convert(),
+                    buf.toCPointer<UByteVar>()!!,
+                    bufLen.convert(),
+                    fin.ptr,
+                    errorCode.ptr,
+                )
             return when {
                 result > 0 -> StreamRecvResult.Data(result.toInt(), fin.value)
                 result == 0L && fin.value -> StreamRecvResult.Data(0, true)
@@ -209,7 +269,13 @@ internal object CinteropQuicheApi : QuicheApi {
         }
     }
 
-    override fun connStreamSend(conn: QuicheConn, streamId: QuicStreamId, buf: Long, bufLen: Int, fin: Boolean): Int {
+    override fun connStreamSend(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): Int {
         memScoped {
             val errorCode = alloc<ULongVar>()
             return quiche_conn_stream_send(
@@ -223,24 +289,23 @@ internal object CinteropQuicheApi : QuicheApi {
         }
     }
 
-    override fun connIsEstablished(conn: QuicheConn): Boolean =
-        quiche_conn_is_established(conn.handle.toCPointer()!!)
+    override fun connIsEstablished(conn: QuicheConn): Boolean = quiche_conn_is_established(conn.handle.toCPointer()!!)
 
-    override fun connIsClosed(conn: QuicheConn): Boolean =
-        quiche_conn_is_closed(conn.handle.toCPointer()!!)
+    override fun connIsClosed(conn: QuicheConn): Boolean = quiche_conn_is_closed(conn.handle.toCPointer()!!)
 
-    override fun connIsTimedOut(conn: QuicheConn): Boolean =
-        quiche_conn_is_timed_out(conn.handle.toCPointer()!!)
+    override fun connIsTimedOut(conn: QuicheConn): Boolean = quiche_conn_is_timed_out(conn.handle.toCPointer()!!)
 
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = quiche_conn_timeout_as_nanos(conn.handle.toCPointer()!!)
         return if (nanos == ULong.MAX_VALUE) null else nanos.toLong().nanoseconds
     }
 
-    override fun connOnTimeout(conn: QuicheConn) =
-        quiche_conn_on_timeout(conn.handle.toCPointer()!!)
+    override fun connOnTimeout(conn: QuicheConn) = quiche_conn_on_timeout(conn.handle.toCPointer()!!)
 
-    override fun connClose(conn: QuicheConn, error: QuicError): Int =
+    override fun connClose(
+        conn: QuicheConn,
+        error: QuicError,
+    ): Int =
         quiche_conn_close(
             conn.handle.toCPointer()!!,
             error is QuicError.ApplicationError,
@@ -251,29 +316,49 @@ internal object CinteropQuicheApi : QuicheApi {
 
     // --- Server-side (stubs for now — Linux server uses direct cinterop) ---
 
-    override fun configLoadCertChainFromPemFile(config: QuicheConfig, pathAddr: Long): Int = 0
-    override fun configLoadPrivKeyFromPemFile(config: QuicheConfig, pathAddr: Long): Int = 0
+    override fun configLoadCertChainFromPemFile(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = 0
+
+    override fun configLoadPrivKeyFromPemFile(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = 0
 
     override fun headerInfo(
-        buf: Long, bufLen: Int, dcil: Int,
-        versionOut: Long, typeOut: Long,
-        scidOut: Long, scidLenOut: Long,
-        dcidOut: Long, dcidLenOut: Long,
-        tokenOut: Long, tokenLenOut: Long,
+        buf: Long,
+        bufLen: Int,
+        dcil: Int,
+        versionOut: Long,
+        typeOut: Long,
+        scidOut: Long,
+        scidLenOut: Long,
+        dcidOut: Long,
+        dcidLenOut: Long,
+        tokenOut: Long,
+        tokenLenOut: Long,
     ): Int = 0
 
     override fun accept(
-        scidAddr: Long, scidLen: Int,
-        odcidAddr: Long, odcidLen: Int,
-        localAddr: Long, localAddrLen: Int,
-        peerAddr: Long, peerAddrLen: Int,
+        scidAddr: Long,
+        scidLen: Int,
+        odcidAddr: Long,
+        odcidLen: Int,
+        localAddr: Long,
+        localAddrLen: Int,
+        peerAddr: Long,
+        peerAddrLen: Int,
         config: QuicheConfig,
     ): QuicheConn = QuicheConn(1L) // stub
 
     override fun negotiateVersion(
-        scidAddr: Long, scidLen: Int,
-        dcidAddr: Long, dcidLen: Int,
-        outAddr: Long, outLen: Int,
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        outAddr: Long,
+        outLen: Int,
     ): Int = 0
 
     // --- Stream iteration ---
@@ -306,7 +391,12 @@ internal object CinteropQuicheApi : QuicheApi {
 
     // --- Helpers (recvInfo/sendInfo use native heap allocation) ---
 
-    override fun recvInfoNew(fromAddr: Long, fromAddrLen: Int, toAddr: Long, toAddrLen: Int): QuicheRecvInfo {
+    override fun recvInfoNew(
+        fromAddr: Long,
+        fromAddrLen: Int,
+        toAddr: Long,
+        toAddrLen: Int,
+    ): QuicheRecvInfo {
         val info = kotlinx.cinterop.nativeHeap.alloc<quiche_recv_info>()
         info.from = fromAddr.toCPointer()!!
         info.from_len = fromAddrLen.convert()
@@ -330,7 +420,8 @@ internal object CinteropQuicheApi : QuicheApi {
 
     override fun sendInfoToAddr(info: QuicheSendInfo): Long {
         val si = info.handle.toCPointer<quiche_send_info>()!!.pointed
-        return si.to.ptr.rawValue.toLong()
+        return si.to.ptr.rawValue
+            .toLong()
     }
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo): Int {

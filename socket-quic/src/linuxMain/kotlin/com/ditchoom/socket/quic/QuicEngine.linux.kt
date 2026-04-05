@@ -149,25 +149,27 @@ private class LinuxQuicEngine : QuicEngine {
                 quiche_config_free(config)
 
                 // Create recvInfo/sendInfo via the QuicheApi
-                val recvInfo = api.recvInfoNew(
-                    peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    peerSockAddrLen.toInt(),
-                    localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    sizeOf<sockaddr_in>().toInt(),
-                )
+                val recvInfo =
+                    api.recvInfoNew(
+                        peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        peerSockAddrLen.toInt(),
+                        localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        sizeOf<sockaddr_in>().toInt(),
+                    )
                 val sendInfo = api.sendInfoNew()
 
                 val udpChannel = IoUringUdpChannel(fd)
-                val driver = QuicheDriver(
-                    api = api,
-                    conn = QuicheConn(conn.rawValue.toLong()),
-                    bufferFactory = bufferFactory,
-                    recvInfo = recvInfo,
-                    sendInfo = sendInfo,
-                    udpChannel = udpChannel,
-                    clientMode = true,
-                    isServer = false,
-                )
+                val driver =
+                    QuicheDriver(
+                        api = api,
+                        conn = QuicheConn(conn.rawValue.toLong()),
+                        bufferFactory = bufferFactory,
+                        recvInfo = recvInfo,
+                        sendInfo = sendInfo,
+                        udpChannel = udpChannel,
+                        clientMode = true,
+                        isServer = false,
+                    )
 
                 val connJob = kotlinx.coroutines.SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
                 val connScope = CoroutineScope(scope.coroutineContext + connJob)
@@ -246,25 +248,87 @@ private class LinuxQuicConnection(
 private class LinuxQuicConfigCalls(
     private val cfg: CPointer<cnames.structs.quiche_config>,
 ) : QuicConfigCalls {
-    override fun setMaxIdleTimeout(ms: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_max_idle_timeout(cfg, ms.convert())
-    override fun setMaxRecvUdpPayloadSize(size: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_max_recv_udp_payload_size(cfg, size.convert())
-    override fun setMaxSendUdpPayloadSize(size: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_max_send_udp_payload_size(cfg, size.convert())
-    override fun setInitialMaxData(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_data(cfg, v.convert())
-    override fun setInitialMaxStreamDataBidiLocal(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_local(cfg, v.convert())
-    override fun setInitialMaxStreamDataBidiRemote(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_remote(cfg, v.convert())
-    override fun setInitialMaxStreamDataUni(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_uni(cfg, v.convert())
-    override fun setInitialMaxStreamsBidi(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_streams_bidi(cfg, v.convert())
-    override fun setInitialMaxStreamsUni(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_streams_uni(cfg, v.convert())
-    override fun setMaxConnectionWindow(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_max_connection_window(cfg, v.convert())
-    override fun setMaxStreamWindow(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window(cfg, v.convert())
-    override fun setDisableActiveMigration(v: Boolean) = com.ditchoom.socket.quic.quiche.quiche_config_set_disable_active_migration(cfg, v)
-    override fun verifyPeer(v: Boolean) = com.ditchoom.socket.quic.quiche.quiche_config_verify_peer(cfg, v)
-    override fun setCcAlgorithm(algo: Int) = com.ditchoom.socket.quic.quiche.quiche_config_set_cc_algorithm(cfg, algo.convert())
-    override fun enableHystart(v: Boolean) = com.ditchoom.socket.quic.quiche.quiche_config_enable_hystart(cfg, v)
-    override fun setInitialCongestionWindowPackets(packets: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_initial_congestion_window_packets(cfg, packets.convert())
-    override fun enablePacing(v: Boolean) = com.ditchoom.socket.quic.quiche.quiche_config_enable_pacing(cfg, v)
-    override fun setMaxPacingRate(v: Long) = com.ditchoom.socket.quic.quiche.quiche_config_set_max_pacing_rate(cfg, v.convert())
-    override fun discoverPmtu(v: Boolean) = com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu(cfg, v)
-    override fun enableEarlyData() = com.ditchoom.socket.quic.quiche.quiche_config_enable_early_data(cfg)
-    override fun grease(v: Boolean) = com.ditchoom.socket.quic.quiche.quiche_config_grease(cfg, v)
+    override fun setMaxIdleTimeout(ms: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_max_idle_timeout(cfg, ms.convert())
+
+    override fun setMaxRecvUdpPayloadSize(size: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_max_recv_udp_payload_size(cfg, size.convert())
+
+    override fun setMaxSendUdpPayloadSize(size: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_max_send_udp_payload_size(cfg, size.convert())
+
+    override fun setInitialMaxData(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_initial_max_data(cfg, v.convert())
+
+    override fun setInitialMaxStreamDataBidiLocal(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_initial_max_stream_data_bidi_local(cfg, v.convert())
+
+    override fun setInitialMaxStreamDataBidiRemote(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_initial_max_stream_data_bidi_remote(cfg, v.convert())
+
+    override fun setInitialMaxStreamDataUni(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_initial_max_stream_data_uni(cfg, v.convert())
+
+    override fun setInitialMaxStreamsBidi(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_initial_max_streams_bidi(cfg, v.convert())
+
+    override fun setInitialMaxStreamsUni(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_initial_max_streams_uni(cfg, v.convert())
+
+    override fun setMaxConnectionWindow(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_max_connection_window(cfg, v.convert())
+
+    override fun setMaxStreamWindow(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_max_stream_window(cfg, v.convert())
+
+    override fun setDisableActiveMigration(v: Boolean) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_disable_active_migration(cfg, v)
+
+    override fun verifyPeer(v: Boolean) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_verify_peer(cfg, v)
+
+    override fun setCcAlgorithm(algo: Int) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_cc_algorithm(cfg, algo.convert())
+
+    override fun enableHystart(v: Boolean) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_enable_hystart(cfg, v)
+
+    override fun setInitialCongestionWindowPackets(packets: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_initial_congestion_window_packets(cfg, packets.convert())
+
+    override fun enablePacing(v: Boolean) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_enable_pacing(cfg, v)
+
+    override fun setMaxPacingRate(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_max_pacing_rate(cfg, v.convert())
+
+    override fun discoverPmtu(v: Boolean) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_discover_pmtu(cfg, v)
+
+    override fun enableEarlyData() =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_enable_early_data(cfg)
+
+    override fun grease(v: Boolean) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_grease(cfg, v)
 }
