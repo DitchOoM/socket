@@ -36,47 +36,7 @@ private class JvmQuicEngine : QuicEngine {
                     api.configSetApplicationProtos(config, alpnAddr, alpnBuf.remaining())
                 }
 
-                api.configSetMaxIdleTimeout(config, quicOptions.idleTimeout.inWholeMilliseconds)
-                api.configSetMaxRecvUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
-                api.configSetMaxSendUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
-
-                // Flow control
-                val fc = quicOptions.flowControl
-                api.configSetInitialMaxData(config, fc.initialMaxData)
-                api.configSetInitialMaxStreamDataBidiLocal(config, fc.initialMaxStreamDataBidiLocal)
-                api.configSetInitialMaxStreamDataBidiRemote(config, fc.initialMaxStreamDataBidiRemote)
-                api.configSetInitialMaxStreamDataUni(config, fc.initialMaxStreamDataUni)
-                api.configSetInitialMaxStreamsBidi(config, fc.initialMaxStreamsBidi)
-                api.configSetInitialMaxStreamsUni(config, fc.initialMaxStreamsUni)
-                fc.maxConnectionWindow?.let { api.configSetMaxConnectionWindow(config, it) }
-                fc.maxStreamWindow?.let { api.configSetMaxStreamWindow(config, it) }
-
-                api.configSetDisableActiveMigration(config, quicOptions.disableActiveMigration)
-                api.configVerifyPeer(config, quicOptions.verifyPeer)
-
-                // Congestion control
-                api.configSetCcAlgorithm(config, quicOptions.congestionControl.quicheValue)
-                when (val cc = quicOptions.congestionControl) {
-                    is CongestionControl.Cubic -> api.configEnableHystart(config, cc.enableHystart)
-                    is CongestionControl.Reno, is CongestionControl.Bbr2 -> {}
-                }
-                quicOptions.initialCongestionWindowPackets?.let {
-                    api.configSetInitialCongestionWindowPackets(config, it)
-                }
-
-                // Pacing
-                when (val pacing = quicOptions.pacing) {
-                    is Pacing.Disabled -> api.configEnablePacing(config, false)
-                    is Pacing.Unlimited -> api.configEnablePacing(config, true)
-                    is Pacing.Limited -> {
-                        api.configEnablePacing(config, true)
-                        api.configSetMaxPacingRate(config, pacing.maxBytesPerSec)
-                    }
-                }
-
-                api.configDiscoverPmtu(config, quicOptions.enablePmtuDiscovery)
-                if (quicOptions.enableEarlyData) api.configEnableEarlyData(config)
-                api.configGrease(config, quicOptions.enableGrease)
+                applyQuicOptions(quicOptions, JvmQuicConfigCalls(api, config))
 
                 // 2. Open UDP channel
                 val channel = DatagramChannel.open()
@@ -144,4 +104,52 @@ private class JvmQuicEngine : QuicEngine {
     companion object {
         private const val QUICHE_PROTOCOL_VERSION = 0x00000001
     }
+}
+
+/** Adapts [QuicheApi] to the platform-neutral [QuicConfigCalls] interface. */
+private class JvmQuicConfigCalls(
+    private val api: QuicheApi,
+    private val cfg: QuicheConfig,
+) : QuicConfigCalls {
+    override fun setMaxIdleTimeout(ms: Long) = api.configSetMaxIdleTimeout(cfg, ms)
+
+    override fun setMaxRecvUdpPayloadSize(size: Long) = api.configSetMaxRecvUdpPayloadSize(cfg, size)
+
+    override fun setMaxSendUdpPayloadSize(size: Long) = api.configSetMaxSendUdpPayloadSize(cfg, size)
+
+    override fun setInitialMaxData(v: Long) = api.configSetInitialMaxData(cfg, v)
+
+    override fun setInitialMaxStreamDataBidiLocal(v: Long) = api.configSetInitialMaxStreamDataBidiLocal(cfg, v)
+
+    override fun setInitialMaxStreamDataBidiRemote(v: Long) = api.configSetInitialMaxStreamDataBidiRemote(cfg, v)
+
+    override fun setInitialMaxStreamDataUni(v: Long) = api.configSetInitialMaxStreamDataUni(cfg, v)
+
+    override fun setInitialMaxStreamsBidi(v: Long) = api.configSetInitialMaxStreamsBidi(cfg, v)
+
+    override fun setInitialMaxStreamsUni(v: Long) = api.configSetInitialMaxStreamsUni(cfg, v)
+
+    override fun setMaxConnectionWindow(v: Long) = api.configSetMaxConnectionWindow(cfg, v)
+
+    override fun setMaxStreamWindow(v: Long) = api.configSetMaxStreamWindow(cfg, v)
+
+    override fun setDisableActiveMigration(v: Boolean) = api.configSetDisableActiveMigration(cfg, v)
+
+    override fun verifyPeer(v: Boolean) = api.configVerifyPeer(cfg, v)
+
+    override fun setCcAlgorithm(algo: Int) = api.configSetCcAlgorithm(cfg, algo)
+
+    override fun enableHystart(v: Boolean) = api.configEnableHystart(cfg, v)
+
+    override fun setInitialCongestionWindowPackets(packets: Long) = api.configSetInitialCongestionWindowPackets(cfg, packets)
+
+    override fun enablePacing(v: Boolean) = api.configEnablePacing(cfg, v)
+
+    override fun setMaxPacingRate(v: Long) = api.configSetMaxPacingRate(cfg, v)
+
+    override fun discoverPmtu(v: Boolean) = api.configDiscoverPmtu(cfg, v)
+
+    override fun enableEarlyData() = api.configEnableEarlyData(cfg)
+
+    override fun grease(v: Boolean) = api.configGrease(cfg, v)
 }

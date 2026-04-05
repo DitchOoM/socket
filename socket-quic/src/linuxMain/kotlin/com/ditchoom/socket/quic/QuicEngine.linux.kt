@@ -16,19 +16,30 @@ import com.ditchoom.socket.linux.io_uring_prep_send
 import com.ditchoom.socket.linux.socket_getsockname
 import com.ditchoom.socket.quic.quiche.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
+import com.ditchoom.socket.quic.quiche.quiche_cc_algorithm
+import com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu
+import com.ditchoom.socket.quic.quiche.quiche_config_enable_early_data
+import com.ditchoom.socket.quic.quiche.quiche_config_enable_hystart
+import com.ditchoom.socket.quic.quiche.quiche_config_enable_pacing
 import com.ditchoom.socket.quic.quiche.quiche_config_free
+import com.ditchoom.socket.quic.quiche.quiche_config_grease
 import com.ditchoom.socket.quic.quiche.quiche_config_new
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
+import com.ditchoom.socket.quic.quiche.quiche_config_set_cc_algorithm
 import com.ditchoom.socket.quic.quiche.quiche_config_set_disable_active_migration
+import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_congestion_window_packets
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_data
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_local
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_remote
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_uni
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_streams_bidi
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_streams_uni
+import com.ditchoom.socket.quic.quiche.quiche_config_set_max_connection_window
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_idle_timeout
+import com.ditchoom.socket.quic.quiche.quiche_config_set_max_pacing_rate
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_recv_udp_payload_size
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_send_udp_payload_size
+import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
@@ -113,50 +124,7 @@ private class LinuxQuicEngine : QuicEngine {
             quiche_config_set_application_protos(config, alpnPtr, alpnBuf.remaining().convert())
             alpnBuf.freeNativeMemory()
 
-            quiche_config_set_max_idle_timeout(config, quicOptions.idleTimeout.inWholeMilliseconds.convert())
-            quiche_config_set_max_recv_udp_payload_size(config, quicOptions.maxUdpPayloadSize.convert())
-            quiche_config_set_max_send_udp_payload_size(config, quicOptions.maxUdpPayloadSize.convert())
-
-            // Flow control
-            val fc = quicOptions.flowControl
-            quiche_config_set_initial_max_data(config, fc.initialMaxData.convert())
-            quiche_config_set_initial_max_stream_data_bidi_local(config, fc.initialMaxStreamDataBidiLocal.convert())
-            quiche_config_set_initial_max_stream_data_bidi_remote(config, fc.initialMaxStreamDataBidiRemote.convert())
-            quiche_config_set_initial_max_stream_data_uni(config, fc.initialMaxStreamDataUni.convert())
-            quiche_config_set_initial_max_streams_bidi(config, fc.initialMaxStreamsBidi.convert())
-            quiche_config_set_initial_max_streams_uni(config, fc.initialMaxStreamsUni.convert())
-            fc.maxConnectionWindow?.let { quiche_config_set_max_connection_window(config, it.convert()) }
-            fc.maxStreamWindow?.let { quiche_config_set_max_stream_window(config, it.convert()) }
-
-            quiche_config_set_disable_active_migration(config, quicOptions.disableActiveMigration)
-            quiche_config_verify_peer(config, quicOptions.verifyPeer)
-
-            // Congestion control
-            quiche_config_set_cc_algorithm(
-                config,
-                quiche_cc_algorithm.byValue(quicOptions.congestionControl.quicheValue.convert()),
-            )
-            when (val cc = quicOptions.congestionControl) {
-                is CongestionControl.Cubic -> quiche_config_enable_hystart(config, cc.enableHystart)
-                is CongestionControl.Reno, is CongestionControl.Bbr2 -> {}
-            }
-            quicOptions.initialCongestionWindowPackets?.let {
-                quiche_config_set_initial_congestion_window_packets(config, it.convert())
-            }
-
-            // Pacing
-            when (val pacing = quicOptions.pacing) {
-                is Pacing.Disabled -> quiche_config_enable_pacing(config, false)
-                is Pacing.Unlimited -> quiche_config_enable_pacing(config, true)
-                is Pacing.Limited -> {
-                    quiche_config_enable_pacing(config, true)
-                    quiche_config_set_max_pacing_rate(config, pacing.maxBytesPerSec.convert())
-                }
-            }
-
-            quiche_config_discover_pmtu(config, quicOptions.enablePmtuDiscovery)
-            if (quicOptions.enableEarlyData) quiche_config_enable_early_data(config)
-            quiche_config_grease(config, quicOptions.enableGrease)
+            applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config))
 
             // Resolve and create connected UDP socket
             memScoped {
@@ -505,4 +473,52 @@ private class LinuxQuicConnection(
     companion object {
         private const val MAX_DATAGRAM_SIZE = 1350
     }
+}
+
+/** Adapts quiche cinterop to the platform-neutral [QuicConfigCalls] interface. */
+private class LinuxQuicConfigCalls(
+    private val cfg: CPointer<cnames.structs.quiche_config>,
+) : QuicConfigCalls {
+    override fun setMaxIdleTimeout(ms: Long) = quiche_config_set_max_idle_timeout(cfg, ms.convert())
+
+    override fun setMaxRecvUdpPayloadSize(size: Long) = quiche_config_set_max_recv_udp_payload_size(cfg, size.convert())
+
+    override fun setMaxSendUdpPayloadSize(size: Long) = quiche_config_set_max_send_udp_payload_size(cfg, size.convert())
+
+    override fun setInitialMaxData(v: Long) = quiche_config_set_initial_max_data(cfg, v.convert())
+
+    override fun setInitialMaxStreamDataBidiLocal(v: Long) = quiche_config_set_initial_max_stream_data_bidi_local(cfg, v.convert())
+
+    override fun setInitialMaxStreamDataBidiRemote(v: Long) = quiche_config_set_initial_max_stream_data_bidi_remote(cfg, v.convert())
+
+    override fun setInitialMaxStreamDataUni(v: Long) = quiche_config_set_initial_max_stream_data_uni(cfg, v.convert())
+
+    override fun setInitialMaxStreamsBidi(v: Long) = quiche_config_set_initial_max_streams_bidi(cfg, v.convert())
+
+    override fun setInitialMaxStreamsUni(v: Long) = quiche_config_set_initial_max_streams_uni(cfg, v.convert())
+
+    override fun setMaxConnectionWindow(v: Long) = quiche_config_set_max_connection_window(cfg, v.convert())
+
+    override fun setMaxStreamWindow(v: Long) = quiche_config_set_max_stream_window(cfg, v.convert())
+
+    override fun setDisableActiveMigration(v: Boolean) = quiche_config_set_disable_active_migration(cfg, v)
+
+    override fun verifyPeer(v: Boolean) = quiche_config_verify_peer(cfg, v)
+
+    override fun setCcAlgorithm(algo: Int) = quiche_config_set_cc_algorithm(cfg, quiche_cc_algorithm.byValue(algo.convert()))
+
+    override fun enableHystart(v: Boolean) = quiche_config_enable_hystart(cfg, v)
+
+    override fun setInitialCongestionWindowPackets(packets: Long) =
+        quiche_config_set_initial_congestion_window_packets(cfg, packets.convert())
+
+    override fun enablePacing(v: Boolean) = quiche_config_enable_pacing(cfg, v)
+
+    override fun setMaxPacingRate(v: Long) = quiche_config_set_max_pacing_rate(cfg, v.convert())
+
+    override fun discoverPmtu(v: Boolean) = quiche_config_discover_pmtu(cfg, v)
+
+    override fun enableEarlyData() = quiche_config_enable_early_data(cfg)
+
+    override fun grease(v: Boolean) = quiche_config_grease(cfg, v)
 }

@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import kotlin.jvm.JvmInline
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
