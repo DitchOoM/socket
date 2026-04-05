@@ -112,6 +112,7 @@ jobs:
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
           :socket-quic:jvmTest
+          :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Upload macOS quiche native libs
