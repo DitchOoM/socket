@@ -60,6 +60,9 @@ jobs:
           cache: gradle
       - name: TCP + TLS integration tests
         run: ./gradlew jvmTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+      - name: QUIC integration tests
+        run: ./gradlew socket-quic:jvmTest --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        continue-on-error: true
 
   js-node:
     name: "JS (Node.js)"
@@ -100,6 +103,9 @@ jobs:
           restore-keys: konan-linux-
       - name: TCP + TLS integration tests
         run: ./gradlew linuxX64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+      - name: QUIC integration tests
+        run: ./gradlew socket-quic:linuxX64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        continue-on-error: true
 
   apple:
     name: "Apple (macOS + iOS Simulator)"
@@ -121,11 +127,17 @@ jobs:
           path: ~/.konan
           key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-macos-
-      - name: macOS integration tests
+      - name: macOS TCP + TLS integration tests
         run: ./gradlew macosArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
-      - name: iOS Simulator integration tests
+      - name: macOS QUIC integration tests
+        run: ./gradlew socket-quic:macosArm64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        continue-on-error: true
+      - name: iOS Simulator TCP + TLS integration tests
         run: ./gradlew iosSimulatorArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
         continue-on-error: true  # simulator may have restricted network
+      - name: iOS Simulator QUIC integration tests
+        run: ./gradlew socket-quic:iosSimulatorArm64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        continue-on-error: true
 
   android-emulator:
     name: "Android (Emulator)"
@@ -143,10 +155,13 @@ jobs:
           cache: gradle
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
-      - name: Run integration tests on emulator
+      - name: TCP + TLS + QUIC integration tests on emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
           arch: x86_64
-          script: ./gradlew connectedAndroidTest --no-configuration-cache -Pandroid.testInstrumentationRunnerArguments.class=com.ditchoom.socket.NetworkIntegrationTests
+          script: |
+            ./gradlew connectedAndroidTest --no-configuration-cache \
+              -Pandroid.testInstrumentationRunnerArguments.class=com.ditchoom.socket.NetworkIntegrationTests || true
+            ./gradlew :socket-quic:connectedAndroidTest --no-configuration-cache || true
         continue-on-error: true  # emulator networking can be flaky
