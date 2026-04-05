@@ -43,7 +43,6 @@ class ReconnectingConnectionNetworkTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-
             pool = BufferPool(),
             options = testOptions,
         )

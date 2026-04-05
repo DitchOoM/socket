@@ -22,7 +22,6 @@ class ReconnectingConnectionTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-
             pool = BufferPool(),
             options = testOptions,
         )

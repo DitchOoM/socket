@@ -29,7 +29,10 @@ import kotlin.time.Duration.Companion.seconds
  * Wire format: [2-byte length (Short)] [UTF-8 string bytes]
  */
 object TestStringCodec : Codec<String> {
-    override fun decode(buffer: ReadBuffer, context: DecodeContext): String {
+    override fun decode(
+        buffer: ReadBuffer,
+        context: DecodeContext,
+    ): String {
         val length = buffer.readShort().toInt() and 0xFFFF
         return buffer.readString(length)
     }
@@ -65,7 +68,6 @@ class CodecConnectionTests {
             CodecConnection(
                 stream = aStream,
                 codec = TestStringCodec,
-
                 pool = BufferPool(),
                 options = testOptions,
             )
@@ -73,7 +75,6 @@ class CodecConnectionTests {
             CodecConnection(
                 stream = bStream,
                 codec = TestStringCodec,
-
                 pool = BufferPool(),
                 options = testOptions,
             )
@@ -199,7 +200,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -225,7 +225,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -249,7 +248,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = aStream,
                     codec = TestStringCodec,
-    
                     pool = pool,
                     options = testOptions,
                 )
@@ -279,7 +277,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -290,7 +287,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -315,7 +311,6 @@ class CodecConnectionTests {
                     hostname = "localhost",
                     port = 8080,
                     codec = TestStringCodec,
-    
                     transport = transport,
                     options = testOptions,
                 )
@@ -334,7 +329,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -342,7 +336,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -369,7 +362,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -393,7 +385,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -413,7 +404,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -432,7 +422,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -451,7 +440,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -470,7 +458,6 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-    
                     pool = BufferPool(),
                     options = testOptions,
                 )
