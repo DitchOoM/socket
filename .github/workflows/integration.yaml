@@ -1,0 +1,152 @@
+name: "Integration Tests"
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled]
+  workflow_dispatch:
+
+# Only run if PR has 'integration-test' label, or manually triggered
+# Always runs all jobs but each gates on the label check
+jobs:
+  check-label:
+    name: "Check trigger"
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          elif [ "${{ contains(github.event.pull_request.labels.*.name, 'integration-test') }}" = "true" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          else
+            echo "run=false" >> $GITHUB_OUTPUT
+          fi
+
+  jvm-linux:
+    name: "JVM (Linux x64)"
+    needs: check-label
+    if: needs.check-label.outputs.should-run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: TCP + TLS integration tests
+        run: ./gradlew jvmTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+      - name: QUIC integration tests
+        run: ./gradlew socket-quic:jvmTest --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        continue-on-error: true  # quiche native lib may not be available
+
+  jvm-windows:
+    name: "JVM (Windows x64)"
+    needs: check-label
+    if: needs.check-label.outputs.should-run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: TCP + TLS integration tests
+        run: ./gradlew jvmTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+
+  js-node:
+    name: "JS (Node.js)"
+    needs: check-label
+    if: needs.check-label.outputs.should-run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: TCP + TLS integration tests
+        run: ./gradlew jsNodeTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+
+  linux-native:
+    name: "Linux Native (x64)"
+    needs: check-label
+    if: needs.check-label.outputs.should-run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
+      - name: TCP + TLS integration tests
+        run: ./gradlew linuxX64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+
+  apple:
+    name: "Apple (macOS + iOS Simulator)"
+    needs: check-label
+    if: needs.check-label.outputs.should-run == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Cache Konan
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-macos-
+      - name: macOS integration tests
+        run: ./gradlew macosArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+      - name: iOS Simulator integration tests
+        run: ./gradlew iosSimulatorArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+        continue-on-error: true  # simulator may have restricted network
+
+  android-emulator:
+    name: "Android (Emulator)"
+    needs: check-label
+    if: needs.check-label.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+      - name: Run integration tests on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          script: ./gradlew connectedAndroidTest --no-configuration-cache -Pandroid.testInstrumentationRunnerArguments.class=com.ditchoom.socket.NetworkIntegrationTests
+        continue-on-error: true  # emulator networking can be flaky
