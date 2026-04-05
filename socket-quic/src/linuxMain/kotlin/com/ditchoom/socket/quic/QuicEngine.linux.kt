@@ -16,7 +16,6 @@ import com.ditchoom.socket.linux.io_uring_prep_send
 import com.ditchoom.socket.linux.socket_getsockname
 import com.ditchoom.socket.quic.quiche.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
-import com.ditchoom.socket.quic.quiche.quiche_cc_algorithm
 import com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_early_data
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_hystart
@@ -505,7 +504,7 @@ private class LinuxQuicConfigCalls(
 
     override fun verifyPeer(v: Boolean) = quiche_config_verify_peer(cfg, v)
 
-    override fun setCcAlgorithm(algo: Int) = quiche_config_set_cc_algorithm(cfg, quiche_cc_algorithm.byValue(algo.convert()))
+    override fun setCcAlgorithm(algo: Int) = quiche_config_set_cc_algorithm(cfg, algo.convert())
 
     override fun enableHystart(v: Boolean) = quiche_config_enable_hystart(cfg, v)
 
