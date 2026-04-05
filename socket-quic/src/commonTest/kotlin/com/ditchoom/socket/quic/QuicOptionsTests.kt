@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.seconds
 
 class QuicOptionsTests {
@@ -9,7 +10,7 @@ class QuicOptionsTests {
     fun validOptions_constructsSuccessfully() {
         val options = QuicOptions(alpnProtocols = listOf("h3"))
         kotlin.test.assertEquals(listOf("h3"), options.alpnProtocols)
-        kotlin.test.assertEquals(10_485_760, options.initialMaxData)
+        kotlin.test.assertEquals(10_485_760, options.flowControl.initialMaxData)
         kotlin.test.assertEquals(1350, options.maxUdpPayloadSize)
         kotlin.test.assertTrue(options.verifyPeer)
     }
@@ -28,44 +29,44 @@ class QuicOptionsTests {
     }
 
     @Test
-    fun negativeInitialMaxData_throws() {
+    fun negativeFlowControlData_throws() {
         assertFailsWith<IllegalArgumentException> {
-            QuicOptions(alpnProtocols = listOf("h3"), initialMaxData = -1)
+            FlowControl(initialMaxData = -1)
         }
     }
 
     @Test
-    fun negativeInitialMaxStreamDataBidiLocal_throws() {
+    fun negativeFlowControlBidiLocal_throws() {
         assertFailsWith<IllegalArgumentException> {
-            QuicOptions(alpnProtocols = listOf("h3"), initialMaxStreamDataBidiLocal = -1)
+            FlowControl(initialMaxStreamDataBidiLocal = -1)
         }
     }
 
     @Test
-    fun negativeInitialMaxStreamDataBidiRemote_throws() {
+    fun negativeFlowControlBidiRemote_throws() {
         assertFailsWith<IllegalArgumentException> {
-            QuicOptions(alpnProtocols = listOf("h3"), initialMaxStreamDataBidiRemote = -1)
+            FlowControl(initialMaxStreamDataBidiRemote = -1)
         }
     }
 
     @Test
-    fun negativeInitialMaxStreamDataUni_throws() {
+    fun negativeFlowControlUni_throws() {
         assertFailsWith<IllegalArgumentException> {
-            QuicOptions(alpnProtocols = listOf("h3"), initialMaxStreamDataUni = -1)
+            FlowControl(initialMaxStreamDataUni = -1)
         }
     }
 
     @Test
-    fun negativeInitialMaxStreamsBidi_throws() {
+    fun negativeFlowControlStreamsBidi_throws() {
         assertFailsWith<IllegalArgumentException> {
-            QuicOptions(alpnProtocols = listOf("h3"), initialMaxStreamsBidi = -1)
+            FlowControl(initialMaxStreamsBidi = -1)
         }
     }
 
     @Test
-    fun negativeInitialMaxStreamsUni_throws() {
+    fun negativeFlowControlStreamsUni_throws() {
         assertFailsWith<IllegalArgumentException> {
-            QuicOptions(alpnProtocols = listOf("h3"), initialMaxStreamsUni = -1)
+            FlowControl(initialMaxStreamsUni = -1)
         }
     }
 
@@ -98,15 +99,9 @@ class QuicOptionsTests {
 
     @Test
     fun zeroStreamLimits_succeeds() {
-        // Zero means no streams of that type allowed
-        val options =
-            QuicOptions(
-                alpnProtocols = listOf("h3"),
-                initialMaxStreamsBidi = 0,
-                initialMaxStreamsUni = 0,
-            )
-        kotlin.test.assertEquals(0, options.initialMaxStreamsBidi)
-        kotlin.test.assertEquals(0, options.initialMaxStreamsUni)
+        val fc = FlowControl(initialMaxStreamsBidi = 0, initialMaxStreamsUni = 0)
+        kotlin.test.assertEquals(0, fc.initialMaxStreamsBidi)
+        kotlin.test.assertEquals(0, fc.initialMaxStreamsUni)
     }
 
     @Test
@@ -114,16 +109,93 @@ class QuicOptionsTests {
         val original =
             QuicOptions(
                 alpnProtocols = listOf("h3"),
-                initialMaxData = 5_000_000,
+                flowControl = FlowControl(initialMaxData = 5_000_000),
                 maxUdpPayloadSize = 1400,
                 disableActiveMigration = true,
                 verifyPeer = false,
             )
         val copy = original.copy(idleTimeout = 60.seconds)
-        kotlin.test.assertEquals(5_000_000, copy.initialMaxData)
+        kotlin.test.assertEquals(5_000_000, copy.flowControl.initialMaxData)
         kotlin.test.assertEquals(1400, copy.maxUdpPayloadSize)
         kotlin.test.assertTrue(copy.disableActiveMigration)
         kotlin.test.assertFalse(copy.verifyPeer)
         kotlin.test.assertEquals(60.seconds, copy.idleTimeout)
+    }
+
+    @Test
+    fun congestionControl_exhaustiveWhen() {
+        val algorithms: List<CongestionControl> =
+            listOf(
+                CongestionControl.Reno,
+                CongestionControl.Cubic(),
+                CongestionControl.Bbr2,
+            )
+        for (cc in algorithms) {
+            // Compiler enforces exhaustiveness — every branch must be handled
+            val name =
+                when (cc) {
+                    is CongestionControl.Reno -> "reno"
+                    is CongestionControl.Cubic -> "cubic(hystart=${cc.enableHystart})"
+                    is CongestionControl.Bbr2 -> "bbr2"
+                }
+            kotlin.test.assertTrue(name.isNotEmpty())
+        }
+    }
+
+    @Test
+    fun pacing_exhaustiveWhen() {
+        val configs: List<Pacing> =
+            listOf(
+                Pacing.Disabled,
+                Pacing.Unlimited,
+                Pacing.Limited(1_000_000),
+            )
+        for (p in configs) {
+            val desc =
+                when (p) {
+                    is Pacing.Disabled -> "off"
+                    is Pacing.Unlimited -> "on"
+                    is Pacing.Limited -> "limited(${p.maxBytesPerSec})"
+                }
+            kotlin.test.assertTrue(desc.isNotEmpty())
+        }
+    }
+
+    @Test
+    fun pacingLimited_zeroBytesPerSec_throws() {
+        assertFailsWith<IllegalArgumentException> {
+            Pacing.Limited(0)
+        }
+    }
+
+    @Test
+    fun pacingLimited_negativeBytesPerSec_throws() {
+        assertFailsWith<IllegalArgumentException> {
+            Pacing.Limited(-1)
+        }
+    }
+
+    @Test
+    fun cubicHystart_defaultTrue() {
+        val cubic = CongestionControl.Cubic()
+        kotlin.test.assertTrue(cubic.enableHystart)
+    }
+
+    @Test
+    fun cubicHystart_canDisable() {
+        val cubic = CongestionControl.Cubic(enableHystart = false)
+        kotlin.test.assertFalse(cubic.enableHystart)
+    }
+
+    @Test
+    fun defaultCongestionControl_isCubic() {
+        val options = QuicOptions(alpnProtocols = listOf("h3"))
+        assertIs<CongestionControl.Cubic>(options.congestionControl)
+    }
+
+    @Test
+    fun defaultPacing_isUnlimited() {
+        val options = QuicOptions(alpnProtocols = listOf("h3"))
+        assertIs<Pacing.Unlimited>(options.pacing)
     }
 }

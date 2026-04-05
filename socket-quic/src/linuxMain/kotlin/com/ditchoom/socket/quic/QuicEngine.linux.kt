@@ -116,34 +116,47 @@ private class LinuxQuicEngine : QuicEngine {
             quiche_config_set_max_idle_timeout(config, quicOptions.idleTimeout.inWholeMilliseconds.convert())
             quiche_config_set_max_recv_udp_payload_size(config, quicOptions.maxUdpPayloadSize.convert())
             quiche_config_set_max_send_udp_payload_size(config, quicOptions.maxUdpPayloadSize.convert())
-            quiche_config_set_initial_max_data(config, quicOptions.initialMaxData.convert())
-            quiche_config_set_initial_max_stream_data_bidi_local(
-                config,
-                quicOptions.initialMaxStreamDataBidiLocal.convert(),
-            )
-            quiche_config_set_initial_max_stream_data_bidi_remote(
-                config,
-                quicOptions.initialMaxStreamDataBidiRemote.convert(),
-            )
-            quiche_config_set_initial_max_stream_data_uni(config, quicOptions.initialMaxStreamDataUni.convert())
-            quiche_config_set_initial_max_streams_bidi(config, quicOptions.initialMaxStreamsBidi.convert())
-            quiche_config_set_initial_max_streams_uni(config, quicOptions.initialMaxStreamsUni.convert())
+
+            // Flow control
+            val fc = quicOptions.flowControl
+            quiche_config_set_initial_max_data(config, fc.initialMaxData.convert())
+            quiche_config_set_initial_max_stream_data_bidi_local(config, fc.initialMaxStreamDataBidiLocal.convert())
+            quiche_config_set_initial_max_stream_data_bidi_remote(config, fc.initialMaxStreamDataBidiRemote.convert())
+            quiche_config_set_initial_max_stream_data_uni(config, fc.initialMaxStreamDataUni.convert())
+            quiche_config_set_initial_max_streams_bidi(config, fc.initialMaxStreamsBidi.convert())
+            quiche_config_set_initial_max_streams_uni(config, fc.initialMaxStreamsUni.convert())
+            fc.maxConnectionWindow?.let { quiche_config_set_max_connection_window(config, it.convert()) }
+            fc.maxStreamWindow?.let { quiche_config_set_max_stream_window(config, it.convert()) }
+
             quiche_config_set_disable_active_migration(config, quicOptions.disableActiveMigration)
             quiche_config_verify_peer(config, quicOptions.verifyPeer)
-            quiche_config_enable_pacing(config, quicOptions.enablePacing)
-            quicOptions.maxPacingRate?.let { quiche_config_set_max_pacing_rate(config, it.convert()) }
-            quicOptions.congestionControlAlgorithm?.let {
-                quiche_config_set_cc_algorithm(config, quiche_cc_algorithm.byValue(it.value.convert()))
+
+            // Congestion control
+            quiche_config_set_cc_algorithm(
+                config,
+                quiche_cc_algorithm.byValue(quicOptions.congestionControl.quicheValue.convert()),
+            )
+            when (val cc = quicOptions.congestionControl) {
+                is CongestionControl.Cubic -> quiche_config_enable_hystart(config, cc.enableHystart)
+                is CongestionControl.Reno, is CongestionControl.Bbr2 -> {}
             }
-            quicOptions.enableHystart?.let { quiche_config_enable_hystart(config, it) }
             quicOptions.initialCongestionWindowPackets?.let {
                 quiche_config_set_initial_congestion_window_packets(config, it.convert())
             }
-            quicOptions.maxConnectionWindow?.let { quiche_config_set_max_connection_window(config, it.convert()) }
-            quicOptions.maxStreamWindow?.let { quiche_config_set_max_stream_window(config, it.convert()) }
-            quicOptions.enablePmtuDiscovery?.let { quiche_config_discover_pmtu(config, it) }
+
+            // Pacing
+            when (val pacing = quicOptions.pacing) {
+                is Pacing.Disabled -> quiche_config_enable_pacing(config, false)
+                is Pacing.Unlimited -> quiche_config_enable_pacing(config, true)
+                is Pacing.Limited -> {
+                    quiche_config_enable_pacing(config, true)
+                    quiche_config_set_max_pacing_rate(config, pacing.maxBytesPerSec.convert())
+                }
+            }
+
+            quiche_config_discover_pmtu(config, quicOptions.enablePmtuDiscovery)
             if (quicOptions.enableEarlyData) quiche_config_enable_early_data(config)
-            quicOptions.enableGrease?.let { quiche_config_grease(config, it) }
+            quiche_config_grease(config, quicOptions.enableGrease)
 
             // Resolve and create connected UDP socket
             memScoped {

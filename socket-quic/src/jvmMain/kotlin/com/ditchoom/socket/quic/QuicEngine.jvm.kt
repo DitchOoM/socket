@@ -39,26 +39,44 @@ private class JvmQuicEngine : QuicEngine {
                 api.configSetMaxIdleTimeout(config, quicOptions.idleTimeout.inWholeMilliseconds)
                 api.configSetMaxRecvUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
                 api.configSetMaxSendUdpPayloadSize(config, quicOptions.maxUdpPayloadSize.toLong())
-                api.configSetInitialMaxData(config, quicOptions.initialMaxData)
-                api.configSetInitialMaxStreamDataBidiLocal(config, quicOptions.initialMaxStreamDataBidiLocal)
-                api.configSetInitialMaxStreamDataBidiRemote(config, quicOptions.initialMaxStreamDataBidiRemote)
-                api.configSetInitialMaxStreamDataUni(config, quicOptions.initialMaxStreamDataUni)
-                api.configSetInitialMaxStreamsBidi(config, quicOptions.initialMaxStreamsBidi)
-                api.configSetInitialMaxStreamsUni(config, quicOptions.initialMaxStreamsUni)
+
+                // Flow control
+                val fc = quicOptions.flowControl
+                api.configSetInitialMaxData(config, fc.initialMaxData)
+                api.configSetInitialMaxStreamDataBidiLocal(config, fc.initialMaxStreamDataBidiLocal)
+                api.configSetInitialMaxStreamDataBidiRemote(config, fc.initialMaxStreamDataBidiRemote)
+                api.configSetInitialMaxStreamDataUni(config, fc.initialMaxStreamDataUni)
+                api.configSetInitialMaxStreamsBidi(config, fc.initialMaxStreamsBidi)
+                api.configSetInitialMaxStreamsUni(config, fc.initialMaxStreamsUni)
+                fc.maxConnectionWindow?.let { api.configSetMaxConnectionWindow(config, it) }
+                fc.maxStreamWindow?.let { api.configSetMaxStreamWindow(config, it) }
+
                 api.configSetDisableActiveMigration(config, quicOptions.disableActiveMigration)
                 api.configVerifyPeer(config, quicOptions.verifyPeer)
-                api.configEnablePacing(config, quicOptions.enablePacing)
-                quicOptions.maxPacingRate?.let { api.configSetMaxPacingRate(config, it) }
-                quicOptions.congestionControlAlgorithm?.let { api.configSetCcAlgorithm(config, it.value) }
-                quicOptions.enableHystart?.let { api.configEnableHystart(config, it) }
+
+                // Congestion control
+                api.configSetCcAlgorithm(config, quicOptions.congestionControl.quicheValue)
+                when (val cc = quicOptions.congestionControl) {
+                    is CongestionControl.Cubic -> api.configEnableHystart(config, cc.enableHystart)
+                    is CongestionControl.Reno, is CongestionControl.Bbr2 -> {}
+                }
                 quicOptions.initialCongestionWindowPackets?.let {
                     api.configSetInitialCongestionWindowPackets(config, it)
                 }
-                quicOptions.maxConnectionWindow?.let { api.configSetMaxConnectionWindow(config, it) }
-                quicOptions.maxStreamWindow?.let { api.configSetMaxStreamWindow(config, it) }
-                quicOptions.enablePmtuDiscovery?.let { api.configDiscoverPmtu(config, it) }
+
+                // Pacing
+                when (val pacing = quicOptions.pacing) {
+                    is Pacing.Disabled -> api.configEnablePacing(config, false)
+                    is Pacing.Unlimited -> api.configEnablePacing(config, true)
+                    is Pacing.Limited -> {
+                        api.configEnablePacing(config, true)
+                        api.configSetMaxPacingRate(config, pacing.maxBytesPerSec)
+                    }
+                }
+
+                api.configDiscoverPmtu(config, quicOptions.enablePmtuDiscovery)
                 if (quicOptions.enableEarlyData) api.configEnableEarlyData(config)
-                quicOptions.enableGrease?.let { api.configGrease(config, it) }
+                api.configGrease(config, quicOptions.enableGrease)
 
                 // 2. Open UDP channel
                 val channel = DatagramChannel.open()
