@@ -47,6 +47,18 @@ private class JvmQuicEngine : QuicEngine {
                 api.configSetInitialMaxStreamsUni(config, quicOptions.initialMaxStreamsUni)
                 api.configSetDisableActiveMigration(config, quicOptions.disableActiveMigration)
                 api.configVerifyPeer(config, quicOptions.verifyPeer)
+                api.configEnablePacing(config, quicOptions.enablePacing)
+                quicOptions.maxPacingRate?.let { api.configSetMaxPacingRate(config, it) }
+                quicOptions.congestionControlAlgorithm?.let { api.configSetCcAlgorithm(config, it.value) }
+                quicOptions.enableHystart?.let { api.configEnableHystart(config, it) }
+                quicOptions.initialCongestionWindowPackets?.let {
+                    api.configSetInitialCongestionWindowPackets(config, it)
+                }
+                quicOptions.maxConnectionWindow?.let { api.configSetMaxConnectionWindow(config, it) }
+                quicOptions.maxStreamWindow?.let { api.configSetMaxStreamWindow(config, it) }
+                quicOptions.enablePmtuDiscovery?.let { api.configDiscoverPmtu(config, it) }
+                if (quicOptions.enableEarlyData) api.configEnableEarlyData(config)
+                quicOptions.enableGrease?.let { api.configGrease(config, it) }
 
                 // 2. Open UDP channel
                 val channel = DatagramChannel.open()

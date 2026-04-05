@@ -94,6 +94,56 @@ JNIEXPORT void JNICALL JNI_FN(nConfigVerifyPeer)(
     quiche_config_verify_peer((quiche_config *)(uintptr_t)config, (bool)v);
 }
 
+JNIEXPORT void JNICALL JNI_FN(nConfigEnablePacing)(
+    JNIEnv *env, jclass cls, jlong config, jboolean v) {
+    quiche_config_enable_pacing((quiche_config *)(uintptr_t)config, (bool)v);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigSetMaxPacingRate)(
+    JNIEnv *env, jclass cls, jlong config, jlong v) {
+    quiche_config_set_max_pacing_rate((quiche_config *)(uintptr_t)config, (uint64_t)v);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigSetCcAlgorithm)(
+    JNIEnv *env, jclass cls, jlong config, jint algo) {
+    quiche_config_set_cc_algorithm((quiche_config *)(uintptr_t)config, (enum quiche_cc_algorithm)algo);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigEnableHystart)(
+    JNIEnv *env, jclass cls, jlong config, jboolean v) {
+    quiche_config_enable_hystart((quiche_config *)(uintptr_t)config, (bool)v);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialCongestionWindowPackets)(
+    JNIEnv *env, jclass cls, jlong config, jlong packets) {
+    quiche_config_set_initial_congestion_window_packets((quiche_config *)(uintptr_t)config, (size_t)packets);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigSetMaxConnectionWindow)(
+    JNIEnv *env, jclass cls, jlong config, jlong v) {
+    quiche_config_set_max_connection_window((quiche_config *)(uintptr_t)config, (uint64_t)v);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigSetMaxStreamWindow)(
+    JNIEnv *env, jclass cls, jlong config, jlong v) {
+    quiche_config_set_max_stream_window((quiche_config *)(uintptr_t)config, (uint64_t)v);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigDiscoverPmtu)(
+    JNIEnv *env, jclass cls, jlong config, jboolean v) {
+    quiche_config_discover_pmtu((quiche_config *)(uintptr_t)config, (bool)v);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigEnableEarlyData)(
+    JNIEnv *env, jclass cls, jlong config) {
+    quiche_config_enable_early_data((quiche_config *)(uintptr_t)config);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigGrease)(
+    JNIEnv *env, jclass cls, jlong config, jboolean v) {
+    quiche_config_grease((quiche_config *)(uintptr_t)config, (bool)v);
+}
+
 /* --- Connection --- */
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnect)(

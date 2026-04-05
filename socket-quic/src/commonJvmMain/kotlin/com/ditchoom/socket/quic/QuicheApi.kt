@@ -82,6 +82,53 @@ interface QuicheApi {
         v: Boolean,
     )
 
+    fun configEnablePacing(
+        config: QuicheConfig,
+        v: Boolean,
+    )
+
+    fun configSetMaxPacingRate(
+        config: QuicheConfig,
+        v: Long,
+    )
+
+    fun configSetCcAlgorithm(
+        config: QuicheConfig,
+        algo: Int,
+    )
+
+    fun configEnableHystart(
+        config: QuicheConfig,
+        v: Boolean,
+    )
+
+    fun configSetInitialCongestionWindowPackets(
+        config: QuicheConfig,
+        packets: Long,
+    )
+
+    fun configSetMaxConnectionWindow(
+        config: QuicheConfig,
+        v: Long,
+    )
+
+    fun configSetMaxStreamWindow(
+        config: QuicheConfig,
+        v: Long,
+    )
+
+    fun configDiscoverPmtu(
+        config: QuicheConfig,
+        v: Boolean,
+    )
+
+    fun configEnableEarlyData(config: QuicheConfig)
+
+    fun configGrease(
+        config: QuicheConfig,
+        v: Boolean,
+    )
+
     // --- Connection ---
 
     fun connect(

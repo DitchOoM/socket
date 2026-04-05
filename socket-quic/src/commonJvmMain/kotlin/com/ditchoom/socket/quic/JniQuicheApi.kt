@@ -82,6 +82,53 @@ object JniQuicheApi : QuicheApi {
         v: Boolean,
     ) = nConfigVerifyPeer(config.ptr, v)
 
+    override fun configEnablePacing(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = nConfigEnablePacing(config.ptr, v)
+
+    override fun configSetMaxPacingRate(
+        config: QuicheConfig,
+        v: Long,
+    ) = nConfigSetMaxPacingRate(config.ptr, v)
+
+    override fun configSetCcAlgorithm(
+        config: QuicheConfig,
+        algo: Int,
+    ) = nConfigSetCcAlgorithm(config.ptr, algo)
+
+    override fun configEnableHystart(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = nConfigEnableHystart(config.ptr, v)
+
+    override fun configSetInitialCongestionWindowPackets(
+        config: QuicheConfig,
+        packets: Long,
+    ) = nConfigSetInitialCongestionWindowPackets(config.ptr, packets)
+
+    override fun configSetMaxConnectionWindow(
+        config: QuicheConfig,
+        v: Long,
+    ) = nConfigSetMaxConnectionWindow(config.ptr, v)
+
+    override fun configSetMaxStreamWindow(
+        config: QuicheConfig,
+        v: Long,
+    ) = nConfigSetMaxStreamWindow(config.ptr, v)
+
+    override fun configDiscoverPmtu(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = nConfigDiscoverPmtu(config.ptr, v)
+
+    override fun configEnableEarlyData(config: QuicheConfig) = nConfigEnableEarlyData(config.ptr)
+
+    override fun configGrease(
+        config: QuicheConfig,
+        v: Boolean,
+    ) = nConfigGrease(config.ptr, v)
+
     // --- Connection ---
     override fun connect(
         serverNameAddr: Long,
@@ -237,6 +284,53 @@ object JniQuicheApi : QuicheApi {
     )
 
     @JvmStatic private external fun nConfigVerifyPeer(
+        config: Long,
+        v: Boolean,
+    )
+
+    @JvmStatic private external fun nConfigEnablePacing(
+        config: Long,
+        v: Boolean,
+    )
+
+    @JvmStatic private external fun nConfigSetMaxPacingRate(
+        config: Long,
+        v: Long,
+    )
+
+    @JvmStatic private external fun nConfigSetCcAlgorithm(
+        config: Long,
+        algo: Int,
+    )
+
+    @JvmStatic private external fun nConfigEnableHystart(
+        config: Long,
+        v: Boolean,
+    )
+
+    @JvmStatic private external fun nConfigSetInitialCongestionWindowPackets(
+        config: Long,
+        packets: Long,
+    )
+
+    @JvmStatic private external fun nConfigSetMaxConnectionWindow(
+        config: Long,
+        v: Long,
+    )
+
+    @JvmStatic private external fun nConfigSetMaxStreamWindow(
+        config: Long,
+        v: Long,
+    )
+
+    @JvmStatic private external fun nConfigDiscoverPmtu(
+        config: Long,
+        v: Boolean,
+    )
+
+    @JvmStatic private external fun nConfigEnableEarlyData(config: Long)
+
+    @JvmStatic private external fun nConfigGrease(
         config: Long,
         v: Boolean,
     )

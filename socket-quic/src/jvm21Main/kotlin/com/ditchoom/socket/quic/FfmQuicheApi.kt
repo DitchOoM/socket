@@ -72,6 +72,36 @@ class FfmQuicheApi private constructor(
     private val hVerifyPeer by lazy {
         downcall("quiche_config_verify_peer", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
     }
+    private val hEnablePacing by lazy {
+        downcall("quiche_config_enable_pacing", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+    }
+    private val hSetMaxPacingRate by lazy {
+        downcall("quiche_config_set_max_pacing_rate", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+    }
+    private val hSetCcAlgorithm by lazy {
+        downcall("quiche_config_set_cc_algorithm", FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT))
+    }
+    private val hEnableHystart by lazy {
+        downcall("quiche_config_enable_hystart", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+    }
+    private val hSetInitialCwndPackets by lazy {
+        downcall("quiche_config_set_initial_congestion_window_packets", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+    }
+    private val hSetMaxConnWindow by lazy {
+        downcall("quiche_config_set_max_connection_window", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+    }
+    private val hSetMaxStreamWindow by lazy {
+        downcall("quiche_config_set_max_stream_window", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+    }
+    private val hDiscoverPmtu by lazy {
+        downcall("quiche_config_discover_pmtu", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+    }
+    private val hEnableEarlyData by lazy {
+        downcall("quiche_config_enable_early_data", FunctionDescriptor.ofVoid(ADDRESS))
+    }
+    private val hGrease by lazy {
+        downcall("quiche_config_grease", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
+    }
     private val hConnect by lazy {
         downcall(
             "quiche_connect",
@@ -205,6 +235,73 @@ class FfmQuicheApi private constructor(
         v: Boolean,
     ) {
         hVerifyPeer.invokeExact(seg(config.ptr), v)
+    }
+
+    override fun configEnablePacing(
+        config: QuicheConfig,
+        v: Boolean,
+    ) {
+        hEnablePacing.invokeExact(seg(config.ptr), v)
+    }
+
+    override fun configSetMaxPacingRate(
+        config: QuicheConfig,
+        v: Long,
+    ) {
+        hSetMaxPacingRate.invokeExact(seg(config.ptr), v)
+    }
+
+    override fun configSetCcAlgorithm(
+        config: QuicheConfig,
+        algo: Int,
+    ) {
+        hSetCcAlgorithm.invokeExact(seg(config.ptr), algo)
+    }
+
+    override fun configEnableHystart(
+        config: QuicheConfig,
+        v: Boolean,
+    ) {
+        hEnableHystart.invokeExact(seg(config.ptr), v)
+    }
+
+    override fun configSetInitialCongestionWindowPackets(
+        config: QuicheConfig,
+        packets: Long,
+    ) {
+        hSetInitialCwndPackets.invokeExact(seg(config.ptr), packets)
+    }
+
+    override fun configSetMaxConnectionWindow(
+        config: QuicheConfig,
+        v: Long,
+    ) {
+        hSetMaxConnWindow.invokeExact(seg(config.ptr), v)
+    }
+
+    override fun configSetMaxStreamWindow(
+        config: QuicheConfig,
+        v: Long,
+    ) {
+        hSetMaxStreamWindow.invokeExact(seg(config.ptr), v)
+    }
+
+    override fun configDiscoverPmtu(
+        config: QuicheConfig,
+        v: Boolean,
+    ) {
+        hDiscoverPmtu.invokeExact(seg(config.ptr), v)
+    }
+
+    override fun configEnableEarlyData(config: QuicheConfig) {
+        hEnableEarlyData.invokeExact(seg(config.ptr))
+    }
+
+    override fun configGrease(
+        config: QuicheConfig,
+        v: Boolean,
+    ) {
+        hGrease.invokeExact(seg(config.ptr), v)
     }
 
     // --- Connection ---

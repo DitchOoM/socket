@@ -130,6 +130,20 @@ private class LinuxQuicEngine : QuicEngine {
             quiche_config_set_initial_max_streams_uni(config, quicOptions.initialMaxStreamsUni.convert())
             quiche_config_set_disable_active_migration(config, quicOptions.disableActiveMigration)
             quiche_config_verify_peer(config, quicOptions.verifyPeer)
+            quiche_config_enable_pacing(config, quicOptions.enablePacing)
+            quicOptions.maxPacingRate?.let { quiche_config_set_max_pacing_rate(config, it.convert()) }
+            quicOptions.congestionControlAlgorithm?.let {
+                quiche_config_set_cc_algorithm(config, quiche_cc_algorithm.byValue(it.value.convert()))
+            }
+            quicOptions.enableHystart?.let { quiche_config_enable_hystart(config, it) }
+            quicOptions.initialCongestionWindowPackets?.let {
+                quiche_config_set_initial_congestion_window_packets(config, it.convert())
+            }
+            quicOptions.maxConnectionWindow?.let { quiche_config_set_max_connection_window(config, it.convert()) }
+            quicOptions.maxStreamWindow?.let { quiche_config_set_max_stream_window(config, it.convert()) }
+            quicOptions.enablePmtuDiscovery?.let { quiche_config_discover_pmtu(config, it) }
+            if (quicOptions.enableEarlyData) quiche_config_enable_early_data(config)
+            quicOptions.enableGrease?.let { quiche_config_grease(config, it) }
 
             // Resolve and create connected UDP socket
             memScoped {
