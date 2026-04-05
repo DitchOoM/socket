@@ -39,9 +39,9 @@ jobs:
           java-version: '21'
           cache: gradle
       - name: TCP + TLS integration tests
-        run: ./gradlew jvmTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+        run: ./gradlew :jvmTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
       - name: QUIC integration tests
-        run: ./gradlew socket-quic:jvmTest --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        run: ./gradlew :socket-quic:jvmTest --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
         continue-on-error: true  # quiche native lib may not be available
 
   jvm-windows:
@@ -59,9 +59,9 @@ jobs:
           java-version: '21'
           cache: gradle
       - name: TCP + TLS integration tests
-        run: ./gradlew jvmTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+        run: ./gradlew :jvmTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
       - name: QUIC integration tests
-        run: ./gradlew socket-quic:jvmTest --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        run: ./gradlew :socket-quic:jvmTest --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
         continue-on-error: true
 
   js-node:
@@ -79,7 +79,7 @@ jobs:
           java-version: '21'
           cache: gradle
       - name: TCP + TLS integration tests
-        run: ./gradlew jsNodeTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+        run: ./gradlew :jsNodeTest --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
 
   linux-native:
     name: "Linux Native (x64)"
@@ -102,9 +102,9 @@ jobs:
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
       - name: TCP + TLS integration tests
-        run: ./gradlew linuxX64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+        run: ./gradlew :linuxX64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
       - name: QUIC integration tests
-        run: ./gradlew socket-quic:linuxX64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        run: ./gradlew :socket-quic:linuxX64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
         continue-on-error: true
 
   apple:
@@ -128,15 +128,15 @@ jobs:
           key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-macos-
       - name: macOS TCP + TLS integration tests
-        run: ./gradlew macosArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+        run: ./gradlew :macosArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
       - name: macOS QUIC integration tests
-        run: ./gradlew socket-quic:macosArm64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        run: ./gradlew :socket-quic:macosArm64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
         continue-on-error: true
       - name: iOS Simulator TCP + TLS integration tests
-        run: ./gradlew iosSimulatorArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
+        run: ./gradlew :iosSimulatorArm64Test --tests "com.ditchoom.socket.NetworkIntegrationTests" --no-configuration-cache
         continue-on-error: true  # simulator may have restricted network
       - name: iOS Simulator QUIC integration tests
-        run: ./gradlew socket-quic:iosSimulatorArm64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
+        run: ./gradlew :socket-quic:iosSimulatorArm64Test --tests "com.ditchoom.socket.quic.QuicIntegrationTests" --no-configuration-cache
         continue-on-error: true
 
   android-emulator:
