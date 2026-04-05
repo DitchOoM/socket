@@ -12,6 +12,8 @@ import java.lang.foreign.ValueLayout.JAVA_BOOLEAN
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.nanoseconds
 
 /**
  * FFM quiche bindings for JDK 21+.
@@ -118,13 +120,13 @@ class FfmQuicheApi private constructor(
     private val hStreamRecv by lazy {
         downcall(
             "quiche_conn_stream_recv",
-            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS),
+            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS),
         )
     }
     private val hStreamSend by lazy {
         downcall(
             "quiche_conn_stream_send",
-            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BOOLEAN),
+            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BOOLEAN, ADDRESS),
         )
     }
     private val hIsEstablished by lazy {
@@ -151,157 +153,157 @@ class FfmQuicheApi private constructor(
     override fun configNew(version: Int): QuicheConfig = QuicheConfig((hConfigNew.invokeExact(version) as MemorySegment).address())
 
     override fun configFree(config: QuicheConfig) {
-        hConfigFree.invokeExact(seg(config.ptr))
+        hConfigFree.invokeExact(seg(config.handle))
     }
 
     override fun configSetApplicationProtos(
         config: QuicheConfig,
         protosAddr: Long,
         protosLen: Int,
-    ): Int = hConfigSetAppProtos.invokeExact(seg(config.ptr), seg(protosAddr), protosLen.toLong()) as Int
+    ): Int = hConfigSetAppProtos.invokeExact(seg(config.handle), seg(protosAddr), protosLen.toLong()) as Int
 
     override fun configSetMaxIdleTimeout(
         config: QuicheConfig,
         timeout: Long,
     ) {
-        hConfigSetMaxIdleTimeout.invokeExact(seg(config.ptr), timeout)
+        hConfigSetMaxIdleTimeout.invokeExact(seg(config.handle), timeout)
     }
 
     override fun configSetMaxRecvUdpPayloadSize(
         config: QuicheConfig,
         size: Long,
     ) {
-        hConfigSetMaxRecvUdp.invokeExact(seg(config.ptr), size)
+        hConfigSetMaxRecvUdp.invokeExact(seg(config.handle), size)
     }
 
     override fun configSetMaxSendUdpPayloadSize(
         config: QuicheConfig,
         size: Long,
     ) {
-        hConfigSetMaxSendUdp.invokeExact(seg(config.ptr), size)
+        hConfigSetMaxSendUdp.invokeExact(seg(config.handle), size)
     }
 
     override fun configSetInitialMaxData(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxData.invokeExact(seg(config.ptr), v)
+        hSetMaxData.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetInitialMaxStreamDataBidiLocal(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetBidiLocal.invokeExact(seg(config.ptr), v)
+        hSetBidiLocal.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetInitialMaxStreamDataBidiRemote(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetBidiRemote.invokeExact(seg(config.ptr), v)
+        hSetBidiRemote.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetInitialMaxStreamDataUni(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetUni.invokeExact(seg(config.ptr), v)
+        hSetUni.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetInitialMaxStreamsBidi(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetStreamsBidi.invokeExact(seg(config.ptr), v)
+        hSetStreamsBidi.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetInitialMaxStreamsUni(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetStreamsUni.invokeExact(seg(config.ptr), v)
+        hSetStreamsUni.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetDisableActiveMigration(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hDisableMigration.invokeExact(seg(config.ptr), v)
+        hDisableMigration.invokeExact(seg(config.handle), v)
     }
 
     override fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hVerifyPeer.invokeExact(seg(config.ptr), v)
+        hVerifyPeer.invokeExact(seg(config.handle), v)
     }
 
     override fun configEnablePacing(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hEnablePacing.invokeExact(seg(config.ptr), v)
+        hEnablePacing.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetMaxPacingRate(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxPacingRate.invokeExact(seg(config.ptr), v)
+        hSetMaxPacingRate.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetCcAlgorithm(
         config: QuicheConfig,
         algo: Int,
     ) {
-        hSetCcAlgorithm.invokeExact(seg(config.ptr), algo)
+        hSetCcAlgorithm.invokeExact(seg(config.handle), algo)
     }
 
     override fun configEnableHystart(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hEnableHystart.invokeExact(seg(config.ptr), v)
+        hEnableHystart.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetInitialCongestionWindowPackets(
         config: QuicheConfig,
         packets: Long,
     ) {
-        hSetInitialCwndPackets.invokeExact(seg(config.ptr), packets)
+        hSetInitialCwndPackets.invokeExact(seg(config.handle), packets)
     }
 
     override fun configSetMaxConnectionWindow(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxConnWindow.invokeExact(seg(config.ptr), v)
+        hSetMaxConnWindow.invokeExact(seg(config.handle), v)
     }
 
     override fun configSetMaxStreamWindow(
         config: QuicheConfig,
         v: Long,
     ) {
-        hSetMaxStreamWindow.invokeExact(seg(config.ptr), v)
+        hSetMaxStreamWindow.invokeExact(seg(config.handle), v)
     }
 
     override fun configDiscoverPmtu(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hDiscoverPmtu.invokeExact(seg(config.ptr), v)
+        hDiscoverPmtu.invokeExact(seg(config.handle), v)
     }
 
     override fun configEnableEarlyData(config: QuicheConfig) {
-        hEnableEarlyData.invokeExact(seg(config.ptr))
+        hEnableEarlyData.invokeExact(seg(config.handle))
     }
 
     override fun configGrease(
         config: QuicheConfig,
         v: Boolean,
     ) {
-        hGrease.invokeExact(seg(config.ptr), v)
+        hGrease.invokeExact(seg(config.handle), v)
     }
 
     // --- Connection ---
@@ -325,13 +327,13 @@ class FfmQuicheApi private constructor(
                 localAddrLen,
                 seg(peerAddr),
                 peerAddrLen,
-                seg(config.ptr),
+                seg(config.handle),
             ) as MemorySegment
         return QuicheConn(result.address())
     }
 
     override fun connFree(conn: QuicheConn) {
-        hConnFree.invokeExact(seg(conn.ptr))
+        hConnFree.invokeExact(seg(conn.handle))
     }
 
     override fun connRecv(
@@ -339,55 +341,225 @@ class FfmQuicheApi private constructor(
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
-    ): Int = (hConnRecv.invokeExact(seg(conn.ptr), seg(buf), bufLen.toLong(), seg(recvInfo.ptr)) as Long).toInt()
+    ): Int = (hConnRecv.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong(), seg(recvInfo.handle)) as Long).toInt()
 
     override fun connSend(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         sendInfo: QuicheSendInfo,
-    ): Int = (hConnSend.invokeExact(seg(conn.ptr), seg(buf), bufLen.toLong(), seg(sendInfo.ptr)) as Long).toInt()
+    ): Int = (hConnSend.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong(), seg(sendInfo.handle)) as Long).toInt()
 
     override fun connStreamRecv(
         conn: QuicheConn,
-        streamId: Long,
+        streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
-    ): Long =
+    ): StreamRecvResult =
         Arena.ofConfined().use { arena ->
             val finOut = arena.allocate(JAVA_BOOLEAN)
-            val result = hStreamRecv.invokeExact(seg(conn.ptr), streamId, seg(buf), bufLen.toLong(), finOut) as Long
-            val fin = finOut.get(JAVA_BOOLEAN, 0)
-            if (fin) result or (1L shl 63) else result
+            val errOut = arena.allocate(JAVA_LONG)
+            val raw = hStreamRecv.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), finOut, errOut) as Long
+            if (raw >= 0) {
+                val fin = finOut.get(JAVA_BOOLEAN, 0)
+                StreamRecvResult.Data(raw.toInt(), fin)
+            } else if (raw == QUICHE_ERR_DONE) {
+                StreamRecvResult.Done
+            } else {
+                StreamRecvResult.Error(raw.toInt())
+            }
         }
 
     override fun connStreamSend(
         conn: QuicheConn,
-        streamId: Long,
+        streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ): Int = (hStreamSend.invokeExact(seg(conn.ptr), streamId, seg(buf), bufLen.toLong(), fin) as Long).toInt()
+    ): Int =
+        Arena.ofConfined().use { arena ->
+            val errOut = arena.allocate(JAVA_LONG)
+            (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
+        }
 
-    override fun connIsEstablished(conn: QuicheConn): Boolean = hIsEstablished.invokeExact(seg(conn.ptr)) as Boolean
+    override fun connIsEstablished(conn: QuicheConn): Boolean = hIsEstablished.invokeExact(seg(conn.handle)) as Boolean
 
-    override fun connIsClosed(conn: QuicheConn): Boolean = hIsClosed.invokeExact(seg(conn.ptr)) as Boolean
+    override fun connIsClosed(conn: QuicheConn): Boolean = hIsClosed.invokeExact(seg(conn.handle)) as Boolean
 
-    override fun connIsTimedOut(conn: QuicheConn): Boolean = hIsTimedOut.invokeExact(seg(conn.ptr)) as Boolean
+    override fun connIsTimedOut(conn: QuicheConn): Boolean = hIsTimedOut.invokeExact(seg(conn.handle)) as Boolean
 
-    override fun connTimeoutAsNanos(conn: QuicheConn): Long = hTimeoutNanos.invokeExact(seg(conn.ptr)) as Long
+    override fun connTimeout(conn: QuicheConn): Duration? {
+        val nanos = hTimeoutNanos.invokeExact(seg(conn.handle)) as Long
+        return if (nanos < 0) null else nanos.nanoseconds
+    }
 
     override fun connOnTimeout(conn: QuicheConn) {
-        hOnTimeout.invokeExact(seg(conn.ptr))
+        hOnTimeout.invokeExact(seg(conn.handle))
     }
 
     override fun connClose(
         conn: QuicheConn,
-        app: Boolean,
-        err: Long,
-        reasonAddr: Long,
-        reasonLen: Int,
-    ): Int = hConnClose.invokeExact(seg(conn.ptr), app, err, seg(reasonAddr), reasonLen.toLong()) as Int
+        error: QuicError,
+    ): Int =
+        hConnClose.invokeExact(
+            seg(conn.handle),
+            error is QuicError.ApplicationError,
+            error.code,
+            seg(0L),
+            0L,
+        ) as Int
+
+    // --- Server-side ---
+    private val hLoadCert by lazy {
+        downcall("quiche_config_load_cert_chain_from_pem_file", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    }
+    private val hLoadKey by lazy {
+        downcall("quiche_config_load_priv_key_from_pem_file", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    }
+    private val hHeaderInfo by lazy {
+        downcall(
+            "quiche_header_info",
+            FunctionDescriptor.of(
+                JAVA_INT,
+                ADDRESS,
+                JAVA_LONG,
+                JAVA_LONG,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+                ADDRESS,
+            ),
+        )
+    }
+    private val hAccept by lazy {
+        downcall(
+            "quiche_accept",
+            FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+        )
+    }
+    private val hNegotiateVersion by lazy {
+        downcall(
+            "quiche_negotiate_version",
+            FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG),
+        )
+    }
+    private val hConnReadable by lazy {
+        downcall("quiche_conn_readable", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    }
+    private val hConnWritable by lazy {
+        downcall("quiche_conn_writable", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    }
+    private val hStreamIterNext by lazy {
+        downcall("quiche_stream_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS))
+    }
+    private val hStreamIterFree by lazy {
+        downcall("quiche_stream_iter_free", FunctionDescriptor.ofVoid(ADDRESS))
+    }
+
+    override fun configLoadCertChainFromPemFile(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = hLoadCert.invokeExact(seg(config.handle), seg(pathAddr)) as Int
+
+    override fun configLoadPrivKeyFromPemFile(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = hLoadKey.invokeExact(seg(config.handle), seg(pathAddr)) as Int
+
+    override fun headerInfo(
+        buf: Long,
+        bufLen: Int,
+        dcil: Int,
+        versionOut: Long,
+        typeOut: Long,
+        scidOut: Long,
+        scidLenOut: Long,
+        dcidOut: Long,
+        dcidLenOut: Long,
+        tokenOut: Long,
+        tokenLenOut: Long,
+    ): Int =
+        hHeaderInfo.invokeExact(
+            seg(buf),
+            bufLen.toLong(),
+            dcil.toLong(),
+            seg(versionOut),
+            seg(typeOut),
+            seg(scidOut),
+            seg(scidLenOut),
+            seg(dcidOut),
+            seg(dcidLenOut),
+            seg(tokenOut),
+            seg(tokenLenOut),
+        ) as Int
+
+    override fun accept(
+        scidAddr: Long,
+        scidLen: Int,
+        odcidAddr: Long,
+        odcidLen: Int,
+        localAddr: Long,
+        localAddrLen: Int,
+        peerAddr: Long,
+        peerAddrLen: Int,
+        config: QuicheConfig,
+    ): QuicheConn {
+        val result =
+            hAccept.invokeExact(
+                seg(scidAddr),
+                scidLen.toLong(),
+                seg(odcidAddr),
+                odcidLen.toLong(),
+                seg(localAddr),
+                localAddrLen,
+                seg(peerAddr),
+                peerAddrLen,
+                seg(config.handle),
+            ) as MemorySegment
+        return QuicheConn(result.address())
+    }
+
+    override fun negotiateVersion(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int =
+        (
+            hNegotiateVersion.invokeExact(
+                seg(scidAddr),
+                scidLen.toLong(),
+                seg(dcidAddr),
+                dcidLen.toLong(),
+                seg(outAddr),
+                outLen.toLong(),
+            ) as Long
+        ).toInt()
+
+    override fun connReadable(conn: QuicheConn): QuicheStreamIter =
+        QuicheStreamIter((hConnReadable.invokeExact(seg(conn.handle)) as MemorySegment).address())
+
+    override fun connWritable(conn: QuicheConn): QuicheStreamIter =
+        QuicheStreamIter((hConnWritable.invokeExact(seg(conn.handle)) as MemorySegment).address())
+
+    override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
+        if (iter.isExhausted) return null
+        return Arena.ofConfined().use { arena ->
+            val streamIdOut = arena.allocate(JAVA_LONG)
+            val hasNext = hStreamIterNext.invokeExact(seg(iter.handle), streamIdOut) as Boolean
+            if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
+        }
+    }
+
+    override fun streamIterFree(iter: QuicheStreamIter) {
+        if (!iter.isExhausted) hStreamIterFree.invokeExact(seg(iter.handle))
+    }
 
     // --- RecvInfo / SendInfo via FFM Arena-allocated structs ---
     //
@@ -438,16 +610,17 @@ class FfmQuicheApi private constructor(
 
     override fun sendInfoToAddr(info: QuicheSendInfo): Long {
         // to field starts at offset 136 (after from sockaddr_storage 128 + from_len 4 + padding 4)
-        val segment = MemorySegment.ofAddress(info.ptr).reinterpret(SEND_INFO_SIZE.toLong())
+        val segment = MemorySegment.ofAddress(info.handle).reinterpret(SEND_INFO_SIZE.toLong())
         return segment.get(ADDRESS, SEND_INFO_TO_OFFSET.toLong()).address()
     }
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo): Int {
-        val segment = MemorySegment.ofAddress(info.ptr).reinterpret(SEND_INFO_SIZE.toLong())
+        val segment = MemorySegment.ofAddress(info.handle).reinterpret(SEND_INFO_SIZE.toLong())
         return segment.get(JAVA_INT, SEND_INFO_TO_LEN_OFFSET.toLong())
     }
 
     companion object {
+        private const val QUICHE_ERR_DONE = -1L
         private const val RECV_INFO_SIZE = 32
         private const val SEND_INFO_SIZE = 288
         private const val SEND_INFO_TO_OFFSET = 136 // after sockaddr_storage(128) + socklen_t(4) + pad(4)

@@ -1,5 +1,6 @@
 package com.ditchoom.socket.transport
 
+import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.socket.ConnectionState
 import com.ditchoom.socket.DefaultReconnectionClassifier
 import com.ditchoom.socket.NetworkAvailability
@@ -20,15 +21,16 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.TimeSource
 
 /**
- * A [MessageConnection] that automatically reconnects on failure.
+ * A [Connection] that automatically reconnects on failure.
  *
  * The [connect] factory is called on each (re)connect attempt. It should create a fresh
- * [MessageConnection], perform any protocol handshake (e.g., MQTT CONNECT/CONNACK),
+ * [Connection], perform any protocol handshake (e.g., MQTT CONNECT/CONNACK),
  * and return the ready-to-use connection. Protocol state that must survive reconnects
  * (persistence, subscriptions) should be captured in the [connect] closure.
  *
@@ -40,7 +42,7 @@ import kotlin.time.TimeSource
  * val conn = ReconnectingConnection(
  *     connect = {
  *         val codec = CodecConnection.connect("broker.example.com", 1883,
- *             MyCodec, MyCodec::peekFrameSize)
+ *             MyCodec)
  *         codec.send(ConnectPacket(clientId = "my-client"))
  *         codec.receive().first() // await handshake response
  *         codec
@@ -53,10 +55,12 @@ import kotlin.time.TimeSource
  * ```
  */
 class ReconnectingConnection<T>(
-    private val connect: suspend () -> MessageConnection<T>,
+    private val connect: suspend () -> Connection<T>,
     private val classifier: ReconnectionClassifier = DefaultReconnectionClassifier(),
     private val networkMonitor: NetworkMonitor = NetworkMonitor.AlwaysAvailable,
-) : MessageConnection<T> {
+) : Connection<T> {
+    override val id: Long = 0L
+
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Initialized)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
@@ -65,11 +69,16 @@ class ReconnectingConnection<T>(
     /** Timestamp of the most recent decoded message, or `null` if none received yet. */
     val lastMessageReceived: StateFlow<TimeSource.Monotonic.ValueTimeMark?> = _lastMessageReceived.asStateFlow()
 
-    private var currentConnection: MessageConnection<T>? = null
+    @Volatile
+    private var currentConnection: Connection<T>? = null
 
-    @kotlin.concurrent.Volatile
+    @Volatile
     private var backoffReset = false
+
+    @Volatile
     private var closed = false
+
+    @Volatile
     private var receiving = false
 
     /**

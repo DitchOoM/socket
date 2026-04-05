@@ -49,13 +49,14 @@ actual fun defaultQuicEngine(): QuicEngine = AppleQuicEngine()
  * Requires iOS 15+ / macOS 12+.
  */
 private class AppleQuicEngine : QuicEngine {
-    override suspend fun connect(
+    override suspend fun <R> connect(
         hostname: String,
         port: Int,
         quicOptions: QuicOptions,
         connectionOptions: ConnectionOptions,
         timeout: Duration,
-    ): QuicConnection =
+        block: suspend QuicScope.() -> R,
+    ): R =
         withTimeout(timeout) {
             // Build ALPN array — pass as List which K/N bridges to NSArray
             val alpnList: List<Any?> = quicOptions.alpnProtocols
@@ -105,7 +106,12 @@ private class AppleQuicEngine : QuicEngine {
                 }
             }
 
-            AppleQuicConnection(nwConn, connectionOptions.bufferFactory)
+            val quicConn = AppleQuicConnection(nwConn, connectionOptions.bufferFactory)
+            try {
+                quicConn.block()
+            } finally {
+                quicConn.close()
+            }
         }
 
     override fun close() {}
@@ -120,12 +126,16 @@ private class AppleQuicEngine : QuicEngine {
 private class AppleQuicConnection(
     private val nwConn: nw_connection_t,
     private val bufferFactory: BufferFactory,
-) : QuicConnection {
+    private val scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
+) : QuicConnection,
+    CoroutineScope by scope {
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Established("h3"))
     override val state: StateFlow<QuicConnectionState> = _state
 
     private val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
-    private var nextClientStreamId = 0L
+    private val nextClientStreamId = kotlin.concurrent.AtomicLong(0L)
+
+    @Volatile
     private var closed = false
 
     override suspend fun openStream(): QuicByteStream {
@@ -133,8 +143,7 @@ private class AppleQuicConnection(
         check(_state.value is QuicConnectionState.Established) {
             "Cannot open stream in state ${_state.value}"
         }
-        val streamId = QuicStreamId(nextClientStreamId)
-        nextClientStreamId += 4
+        val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
         return QuicByteStream(streamId, NWQuicByteStream(nwConn))
     }
 

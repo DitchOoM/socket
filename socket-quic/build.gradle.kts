@@ -22,7 +22,6 @@ val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
 repositories {
-    mavenLocal()
     google()
     mavenCentral()
 }
@@ -475,6 +474,13 @@ kotlin {
             }
         }
     }
+}
+
+// Enable FFM native access for JVM tests (quiche uses Panama on JDK 21+)
+// --add-opens needed for JNI fallback path (direct ByteBuffer address access)
+tasks.withType<Test> {
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
 }
 
 android {

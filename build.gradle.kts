@@ -33,7 +33,6 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
-    mavenLocal() // For local buffer library testing
     google()
     mavenCentral()
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }

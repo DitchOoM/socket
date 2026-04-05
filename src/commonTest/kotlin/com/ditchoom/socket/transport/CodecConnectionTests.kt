@@ -5,7 +5,11 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.Codec
+import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.codec.SizeEstimate
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.MockClientToServerSocket
@@ -25,7 +29,7 @@ import kotlin.time.Duration.Companion.seconds
  * Wire format: [2-byte length (Short)] [UTF-8 string bytes]
  */
 object TestStringCodec : Codec<String> {
-    override fun decode(buffer: ReadBuffer): String {
+    override fun decode(buffer: ReadBuffer, context: DecodeContext): String {
         val length = buffer.readShort().toInt() and 0xFFFF
         return buffer.readString(length)
     }
@@ -33,21 +37,22 @@ object TestStringCodec : Codec<String> {
     override fun encode(
         buffer: WriteBuffer,
         value: String,
+        context: EncodeContext,
     ) {
         val bytes = value.encodeToByteArray()
         buffer.writeShort(bytes.size.toShort())
         buffer.writeBytes(bytes)
     }
 
-    override fun sizeOf(value: String): Int = 2 + value.encodeToByteArray().size
+    override fun sizeOf(value: String): SizeEstimate = SizeEstimate.Exact(2 + value.encodeToByteArray().size)
 
-    fun peekFrameSize(
+    override fun peekFrameSize(
         stream: StreamProcessor,
         baseOffset: Int,
-    ): Int? {
-        if (stream.available() < baseOffset + 2) return null
+    ): PeekResult {
+        if (stream.available() < baseOffset + 2) return PeekResult.NeedsMoreData
         val length = stream.peekShort(baseOffset).toInt() and 0xFFFF
-        return 2 + length
+        return PeekResult.Size(2 + length)
     }
 }
 
@@ -60,7 +65,7 @@ class CodecConnectionTests {
             CodecConnection(
                 stream = aStream,
                 codec = TestStringCodec,
-                peekFrameSize = TestStringCodec::peekFrameSize,
+
                 pool = BufferPool(),
                 options = testOptions,
             )
@@ -68,7 +73,7 @@ class CodecConnectionTests {
             CodecConnection(
                 stream = bStream,
                 codec = TestStringCodec,
-                peekFrameSize = TestStringCodec::peekFrameSize,
+
                 pool = BufferPool(),
                 options = testOptions,
             )
@@ -194,7 +199,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -220,7 +225,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -244,7 +249,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = aStream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = pool,
                     options = testOptions,
                 )
@@ -274,7 +279,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -285,7 +290,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -310,7 +315,7 @@ class CodecConnectionTests {
                     hostname = "localhost",
                     port = 8080,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     transport = transport,
                     options = testOptions,
                 )
@@ -329,7 +334,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -337,7 +342,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -364,7 +369,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -388,7 +393,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -408,7 +413,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -427,7 +432,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -446,7 +451,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )
@@ -465,7 +470,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    peekFrameSize = TestStringCodec::peekFrameSize,
+    
                     pool = BufferPool(),
                     options = testOptions,
                 )

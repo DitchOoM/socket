@@ -234,6 +234,85 @@ JNIEXPORT jint JNICALL JNI_FN(nConnClose)(
         (const uint8_t *)(uintptr_t)reason_addr, (size_t)reason_len);
 }
 
+/* --- Server-side --- */
+
+JNIEXPORT jint JNICALL JNI_FN(nConfigLoadCertChainFromPemFile)(
+    JNIEnv *env, jclass cls, jlong config, jlong path_addr) {
+    return (jint)quiche_config_load_cert_chain_from_pem_file(
+        (quiche_config *)(uintptr_t)config,
+        (const char *)(uintptr_t)path_addr);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConfigLoadPrivKeyFromPemFile)(
+    JNIEnv *env, jclass cls, jlong config, jlong path_addr) {
+    return (jint)quiche_config_load_priv_key_from_pem_file(
+        (quiche_config *)(uintptr_t)config,
+        (const char *)(uintptr_t)path_addr);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nHeaderInfo)(
+    JNIEnv *env, jclass cls,
+    jlong buf, jint buf_len, jint dcil,
+    jlong version_out, jlong type_out,
+    jlong scid_out, jlong scid_len_out,
+    jlong dcid_out, jlong dcid_len_out,
+    jlong token_out, jlong token_len_out) {
+    return (jint)quiche_header_info(
+        (const uint8_t *)(uintptr_t)buf, (size_t)buf_len, (size_t)dcil,
+        (uint32_t *)(uintptr_t)version_out, (uint8_t *)(uintptr_t)type_out,
+        (uint8_t *)(uintptr_t)scid_out, (size_t *)(uintptr_t)scid_len_out,
+        (uint8_t *)(uintptr_t)dcid_out, (size_t *)(uintptr_t)dcid_len_out,
+        (uint8_t *)(uintptr_t)token_out, (size_t *)(uintptr_t)token_len_out);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nAccept)(
+    JNIEnv *env, jclass cls,
+    jlong scid_addr, jint scid_len,
+    jlong odcid_addr, jint odcid_len,
+    jlong local_addr, jint local_addr_len,
+    jlong peer_addr, jint peer_addr_len,
+    jlong config) {
+    return (jlong)(uintptr_t)quiche_accept(
+        (const uint8_t *)(uintptr_t)scid_addr, (size_t)scid_len,
+        odcid_addr ? (const uint8_t *)(uintptr_t)odcid_addr : NULL, (size_t)odcid_len,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_addr_len,
+        (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_addr_len,
+        (quiche_config *)(uintptr_t)config);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nNegotiateVersion)(
+    JNIEnv *env, jclass cls,
+    jlong scid_addr, jint scid_len,
+    jlong dcid_addr, jint dcid_len,
+    jlong out_addr, jint out_len) {
+    return (jint)quiche_negotiate_version(
+        (const uint8_t *)(uintptr_t)scid_addr, (size_t)scid_len,
+        (const uint8_t *)(uintptr_t)dcid_addr, (size_t)dcid_len,
+        (uint8_t *)(uintptr_t)out_addr, (size_t)out_len);
+}
+
+/* --- Stream iteration --- */
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnReadable)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)(uintptr_t)quiche_conn_readable((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnWritable)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)(uintptr_t)quiche_conn_writable((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nStreamIterNext)(
+    JNIEnv *env, jclass cls, jlong iter) {
+    uint64_t stream_id;
+    bool has_next = quiche_stream_iter_next(
+        (quiche_stream_iter *)(uintptr_t)iter, &stream_id);
+    return has_next ? (jlong)stream_id : -1;
+}
+
+JNIEXPORT void JNICALL JNI_FN(nStreamIterFree)(JNIEnv *env, jclass cls, jlong iter) {
+    quiche_stream_iter_free((quiche_stream_iter *)(uintptr_t)iter);
+}
+
 /* --- RecvInfo / SendInfo helpers --- */
 
 JNIEXPORT jlong JNICALL JNI_FN(nRecvInfoNew)(

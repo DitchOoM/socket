@@ -6,13 +6,14 @@ import kotlin.time.Duration
 actual fun defaultQuicEngine(): QuicEngine = WasmJsQuicEngine()
 
 private class WasmJsQuicEngine : QuicEngine {
-    override suspend fun connect(
+    override suspend fun <R> connect(
         hostname: String,
         port: Int,
         quicOptions: QuicOptions,
         connectionOptions: ConnectionOptions,
         timeout: Duration,
-    ): QuicConnection =
+        block: suspend QuicScope.() -> R,
+    ): R =
         throw UnsupportedOperationException(
             "QUIC is not supported in wasmJs environments (no raw UDP access)",
         )

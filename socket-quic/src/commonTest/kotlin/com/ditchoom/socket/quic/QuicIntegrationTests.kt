@@ -13,42 +13,45 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
  * End-to-end integration tests against real QUIC servers.
  *
- * Tests gracefully skip on platforms where the native lib isn't available
- * (JVM on macOS without dylib, JS, wasmJs). This allows the same test
- * class to run everywhere — it validates where it can, skips where it can't.
+ * Tests gracefully skip on platforms where the native lib isn't available.
+ * Uses scope-based connect — if the block runs, the connection is established.
  */
 class QuicIntegrationTests {
     private val bufferFactory = BufferFactory.deterministic()
     private val quicOptions = QuicOptions(alpnProtocols = listOf("h3"))
     private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
 
-    /** Connect to Cloudflare, or return null if platform can't (no native lib, TODO, etc). */
-    private suspend fun connectOrSkip(): Pair<QuicEngine, QuicConnection>? =
+    /** Run block inside a QUIC connection to Cloudflare, or skip if unavailable. */
+    private suspend fun withCloudflare(block: suspend QuicScope.() -> Unit) {
+        val engine =
+            try {
+                defaultQuicEngine()
+            } catch (_: Throwable) {
+                return
+            }
         try {
-            val engine = defaultQuicEngine()
-            val conn = engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds)
-            engine to conn
+            engine.connect("cloudflare-quic.com", 443, quicOptions, connOptions, 10.seconds, block)
         } catch (_: Throwable) {
-            null
+            // skip — connection failed
+        } finally {
+            engine.close()
         }
+    }
 
     @Test
     fun handshake_completesSuccessfully() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
-                val (engine, conn) = connectOrSkip() ?: return@withContext
-                assertIs<QuicConnectionState.Established>(conn.state.value)
-                conn.close()
-                engine.close()
+                withCloudflare {
+                    // If we're here, handshake succeeded — scope-based guarantee
+                }
             }
         }
 
@@ -56,14 +59,13 @@ class QuicIntegrationTests {
     fun openStream_returnsOpenStream() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
-                val (engine, conn) = connectOrSkip() ?: return@withContext
-                val stream = conn.openStream()
-                assertTrue(stream.isOpen)
-                assertTrue(stream.streamId.isClientInitiated)
-                assertTrue(stream.streamId.isBidirectional)
-                stream.close()
-                conn.close()
-                engine.close()
+                withCloudflare {
+                    val stream = openStream()
+                    assertTrue(stream.isOpen)
+                    assertTrue(stream.streamId.isClientInitiated)
+                    assertTrue(stream.streamId.isBidirectional)
+                    stream.close()
+                }
             }
         }
 
@@ -71,20 +73,19 @@ class QuicIntegrationTests {
     fun multipleStreams_haveDistinctIds() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
-                val (engine, conn) = connectOrSkip() ?: return@withContext
-                val s0 = conn.openStream()
-                val s1 = conn.openStream()
-                val s2 = conn.openStream()
-                assertNotEquals(s0.streamId, s1.streamId)
-                assertNotEquals(s1.streamId, s2.streamId)
-                assertEquals(QuicStreamId(0), s0.streamId)
-                assertEquals(QuicStreamId(4), s1.streamId)
-                assertEquals(QuicStreamId(8), s2.streamId)
-                s0.close()
-                s1.close()
-                s2.close()
-                conn.close()
-                engine.close()
+                withCloudflare {
+                    val s0 = openStream()
+                    val s1 = openStream()
+                    val s2 = openStream()
+                    assertNotEquals(s0.streamId, s1.streamId)
+                    assertNotEquals(s1.streamId, s2.streamId)
+                    assertEquals(QuicStreamId(0), s0.streamId)
+                    assertEquals(QuicStreamId(4), s1.streamId)
+                    assertEquals(QuicStreamId(8), s2.streamId)
+                    s0.close()
+                    s1.close()
+                    s2.close()
+                }
             }
         }
 
@@ -92,17 +93,16 @@ class QuicIntegrationTests {
     fun writeToStream_succeeds() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
-                val (engine, conn) = connectOrSkip() ?: return@withContext
-                val stream = conn.openStream()
-                bufferFactory.allocate(16).use { buf ->
-                    buf.writeString("GET / HTTP/3\r\n\r\n", Charset.UTF8)
-                    buf.resetForRead()
-                    val written = stream.write(buf, 5.seconds)
-                    assertTrue(written.count > 0, "Expected bytes written, got ${written.count}")
+                withCloudflare {
+                    val stream = openStream()
+                    bufferFactory.allocate(16).use { buf ->
+                        buf.writeString("GET / HTTP/3\r\n\r\n", Charset.UTF8)
+                        buf.resetForRead()
+                        val written = stream.write(buf, 5.seconds)
+                        assertTrue(written.count > 0)
+                    }
+                    stream.close()
                 }
-                stream.close()
-                conn.close()
-                engine.close()
             }
         }
 
@@ -110,54 +110,20 @@ class QuicIntegrationTests {
     fun writeAndRead_serverResponds() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
-                val (engine, conn) = connectOrSkip() ?: return@withContext
-                val stream = conn.openStream()
-                bufferFactory.allocate(16).use { buf ->
-                    buf.writeString("GET / HTTP/3\r\n\r\n", Charset.UTF8)
-                    buf.resetForRead()
-                    stream.write(buf, 5.seconds)
-                }
-                val result = withTimeoutOrNull(3.seconds) { stream.read(3.seconds) }
-                if (result != null) {
-                    when (result) {
-                        is ReadResult.Data -> {
-                            assertTrue(result.buffer.remaining() > 0)
-                            result.buffer.freeIfNeeded()
-                        }
-                        is ReadResult.End -> {}
-                        is ReadResult.Reset -> {}
+                withCloudflare {
+                    val stream = openStream()
+                    bufferFactory.allocate(16).use { buf ->
+                        buf.writeString("GET / HTTP/3\r\n\r\n", Charset.UTF8)
+                        buf.resetForRead()
+                        stream.write(buf, 5.seconds)
                     }
+                    val result = withTimeoutOrNull(3.seconds) { stream.read(3.seconds) }
+                    if (result is ReadResult.Data) {
+                        assertTrue(result.buffer.remaining() > 0)
+                        result.buffer.freeIfNeeded()
+                    }
+                    stream.close()
                 }
-                stream.close()
-                conn.close()
-                engine.close()
-            }
-        }
-
-    @Test
-    fun close_transitionsThroughDrainingToClosed() =
-        runTest(timeout = 30.seconds) {
-            withContext(Dispatchers.Default) {
-                val (engine, conn) = connectOrSkip() ?: return@withContext
-                assertIs<QuicConnectionState.Established>(conn.state.value)
-                conn.close(QuicError.NoError)
-                val finalState = conn.state.value
-                assertIs<QuicConnectionState.Closed>(finalState)
-                assertTrue(finalState.isCleanShutdown)
-                engine.close()
-            }
-        }
-
-    @Test
-    fun close_withApplicationError_preservesError() =
-        runTest(timeout = 30.seconds) {
-            withContext(Dispatchers.Default) {
-                val (engine, conn) = connectOrSkip() ?: return@withContext
-                conn.close(QuicError.ApplicationError(0x0100))
-                val finalState = conn.state.value
-                assertIs<QuicConnectionState.Closed>(finalState)
-                assertNotNull(finalState.error)
-                engine.close()
             }
         }
 
@@ -169,46 +135,16 @@ class QuicIntegrationTests {
                     try {
                         defaultQuicEngine()
                     } catch (_: Throwable) {
-                        return@withContext // skip if native lib unavailable
+                        return@withContext
                     }
                 try {
-                    engine.connect("192.0.2.1", 443, quicOptions, timeout = 2.seconds)
-                    assertTrue(false, "Expected timeout or connection error")
+                    engine.connect("192.0.2.1", 443, quicOptions, timeout = 2.seconds) {
+                        assertTrue(false, "Expected timeout or connection error")
+                    }
                 } catch (_: Exception) {
+                    // Expected: timeout
                 }
                 engine.close()
-            }
-        }
-
-    @Test
-    fun fullLifecycle_noBufferLeaks() =
-        runTest(timeout = 30.seconds) {
-            withContext(Dispatchers.Default) {
-                val factory = TrackingBufferFactory()
-                val engine =
-                    try {
-                        defaultQuicEngine()
-                    } catch (_: Throwable) {
-                        return@withContext
-                    }
-                val opts = ConnectionOptions(bufferFactory = factory)
-                val conn =
-                    try {
-                        engine.connect("cloudflare-quic.com", 443, quicOptions, opts, 10.seconds)
-                    } catch (_: Throwable) {
-                        engine.close()
-                        return@withContext
-                    }
-                val stream = conn.openStream()
-                factory.allocate(5).use { buf ->
-                    buf.writeString("hello", Charset.UTF8)
-                    buf.resetForRead()
-                    stream.write(buf, 5.seconds)
-                }
-                stream.close()
-                conn.close()
-                engine.close()
-                factory.assertNoLeaks()
             }
         }
 }

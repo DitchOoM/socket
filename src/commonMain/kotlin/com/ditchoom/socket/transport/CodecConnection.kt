@@ -6,6 +6,7 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
@@ -15,29 +16,24 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlin.concurrent.Volatile
 import kotlin.time.TimeSource
-
-/**
- * Peek function type for determining frame size from buffered stream data.
- *
- * Generated codecs produce `peekFrameSize(stream: StreamProcessor, baseOffset: Int): Int?`.
- * Pass as: `MyCodec::peekFrameSize`.
- *
- * Returns the total frame size in bytes, or null if not enough data to determine.
- */
-typealias PeekFrameSize = (stream: StreamProcessor, baseOffset: Int) -> Int?
 
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
-    private val peekFrameSize: PeekFrameSize,
     val pool: BufferPool,
     private val options: ConnectionOptions = ConnectionOptions(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
-) : MessageConnection<T> {
+    override val id: Long = 0L,
+) : com.ditchoom.buffer.flow.Connection<T> {
     private val streamProcessor: StreamProcessor = StreamProcessor.create(pool)
+
+    @Volatile
     private var closed = false
+
+    @Volatile
     private var receiving = false
 
     private val _lastDataReceived = MutableStateFlow<TimeSource.Monotonic.ValueTimeMark?>(null)
@@ -86,7 +82,11 @@ class CodecConnection<T>(
 
     override suspend fun send(message: T) {
         check(!closed) { "CodecConnection is closed" }
-        val size = codec.sizeOf(message) ?: options.defaultBufferSize
+        val size =
+            when (val estimate = codec.sizeOf(message)) {
+                is com.ditchoom.buffer.codec.SizeEstimate.Exact -> estimate.bytes
+                com.ditchoom.buffer.codec.SizeEstimate.UnableToPrecalculate -> options.defaultBufferSize
+            }
         val buffer = pool.acquire(size)
         try {
             codec.encode(buffer, message, encodeContext)
@@ -98,7 +98,11 @@ class CodecConnection<T>(
     }
 
     private fun drainFrame(): T? {
-        val frameSize = peekFrameSize(streamProcessor, 0) ?: return null
+        val frameSize =
+            when (val result = codec.peekFrameSize(streamProcessor, 0)) {
+                is PeekResult.Size -> result.bytes
+                PeekResult.NeedsMoreData -> return null
+            }
         if (streamProcessor.available() < frameSize) return null
         return streamProcessor.readBufferScoped(frameSize) { codec.decode(this, decodeContext) }
     }
@@ -128,7 +132,6 @@ class CodecConnection<T>(
             hostname: String,
             port: Int,
             codec: Codec<T>,
-            peekFrameSize: PeekFrameSize,
             transport: Transport = TcpTransport(),
             options: ConnectionOptions = ConnectionOptions(),
             decodeContext: DecodeContext = DecodeContext.Empty,
@@ -145,7 +148,7 @@ class CodecConnection<T>(
                     bufferFactory = PooledBufferFactory(pool, options.bufferFactory),
                 )
             val stream = transport.connect(hostname, port, pooledOptions)
-            return CodecConnection(stream, codec, peekFrameSize, pool, options, decodeContext, encodeContext)
+            return CodecConnection(stream, codec, pool, options, decodeContext, encodeContext)
         }
     }
 }

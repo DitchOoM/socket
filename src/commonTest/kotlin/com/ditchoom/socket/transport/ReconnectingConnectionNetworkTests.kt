@@ -43,7 +43,7 @@ class ReconnectingConnectionNetworkTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-            peekFrameSize = TestStringCodec::peekFrameSize,
+
             pool = BufferPool(),
             options = testOptions,
         )

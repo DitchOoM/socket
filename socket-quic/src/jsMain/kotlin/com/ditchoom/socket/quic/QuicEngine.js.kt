@@ -17,13 +17,14 @@ actual fun defaultQuicEngine(): QuicEngine = JsQuicEngine()
  * Data copies between JS ArrayBuffer and native memory are unavoidable on this platform.
  */
 private class JsQuicEngine : QuicEngine {
-    override suspend fun connect(
+    override suspend fun <R> connect(
         hostname: String,
         port: Int,
         quicOptions: QuicOptions,
         connectionOptions: ConnectionOptions,
         timeout: Duration,
-    ): QuicConnection {
+        block: suspend QuicScope.() -> R,
+    ): R {
         val isNode =
             js(
                 "typeof process !== 'undefined' && process.versions != null && process.versions.node != null",

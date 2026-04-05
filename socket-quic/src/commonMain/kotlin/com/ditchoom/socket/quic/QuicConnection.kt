@@ -1,30 +1,17 @@
 package com.ditchoom.socket.quic
 
-import com.ditchoom.socket.transport.ByteStream
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * A QUIC connection supporting multiplexed streams.
+ * Internal QUIC connection — extends [QuicScope] with lifecycle management.
  *
- * Each stream is exposed as a [ByteStream] via [openStream] (client-initiated)
- * or [acceptStream] / [streams] (peer-initiated).
- *
- * State transitions are observable via [state] and follow [QuicConnectionState] semantics.
+ * Not exposed to users directly. Users interact via [QuicScope] inside
+ * [QuicEngine.connect] or [QuicServer.connections] blocks.
  */
-interface QuicConnection {
-    /** Current connection state. Never emits impossible transitions. */
+internal interface QuicConnection : QuicScope {
+    /** Current connection state (internal — used by engine/server for lifecycle management). */
     val state: StateFlow<QuicConnectionState>
 
-    /** Open a new client-initiated bidirectional stream. */
-    suspend fun openStream(): QuicByteStream
-
-    /** Accept the next peer-initiated stream, suspending until one arrives. */
-    suspend fun acceptStream(): QuicByteStream
-
-    /** Flow of all peer-initiated streams. Completes when the connection closes. */
-    fun streams(): Flow<QuicByteStream>
-
-    /** Gracefully close the connection, sending CONNECTION_CLOSE with [error]. */
+    /** Close the connection with a QUIC error. Called by the scope when the block ends. */
     suspend fun close(error: QuicError = QuicError.NoError)
 }

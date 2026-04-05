@@ -4,11 +4,15 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.socket.transport.ByteStream
 import com.ditchoom.socket.transport.MemoryTransport
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
+import kotlin.coroutines.CoroutineContext
 
 /**
  * In-memory [QuicConnection] for testing. Supports:
@@ -20,6 +24,8 @@ import kotlinx.coroutines.flow.consumeAsFlow
 class MockQuicConnection(
     initialState: QuicConnectionState = QuicConnectionState.Established("h3"),
 ) : QuicConnection {
+    private val mockScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    override val coroutineContext: CoroutineContext = mockScope.coroutineContext
     private val _state = MutableStateFlow<QuicConnectionState>(initialState)
     override val state: StateFlow<QuicConnectionState> = _state
 
