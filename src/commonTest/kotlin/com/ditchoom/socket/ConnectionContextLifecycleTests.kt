@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.MemoryTransport
 import com.ditchoom.socket.transport.TcpByteStream
@@ -23,7 +24,6 @@ class ConnectionContextLifecycleTests {
             val mock = MockClientToServerSocket()
             mock.open(80, 5.seconds, "test")
 
-            // Acquire a buffer to populate the pool
             val buf = context.pool.acquire(64)
             context.pool.release(buf)
             assertTrue(context.pool.stats().currentPoolSize > 0, "Pool should have buffers")
@@ -35,62 +35,63 @@ class ConnectionContextLifecycleTests {
         }
 
     @Test
-    fun codecConnectionCloseClearsOwnedPool() =
+    fun codecConnectionCloseDoesNotClearPoolDirectly() =
         runTest {
-            val (clientStream, serverStream) = MemoryTransport.createPair()
-            val context = ConnectionContext(testOptions)
+            val (clientStream, _) = MemoryTransport.createPair()
+            val pool = BufferPool()
 
-            // Acquire a buffer to populate the pool
+            val buf = pool.acquire(64)
+            pool.release(buf)
+            val poolSizeBefore = pool.stats().currentPoolSize
+            assertTrue(poolSizeBefore > 0)
+
+            val conn = CodecConnection(
+                stream = clientStream,
+                codec = com.ditchoom.socket.transport.TestStringCodec,
+                pool = pool,
+                options = testOptions,
+            )
+            conn.close()
+
+            // CodecConnection borrows the pool — it should NOT clear it
+            assertEquals(poolSizeBefore, pool.stats().currentPoolSize)
+        }
+
+    @Test
+    fun tcpByteStreamOwnsContextLifecycle() =
+        runTest {
+            val context = ConnectionContext(testOptions)
+            val mock = MockClientToServerSocket()
+            mock.open(80, 5.seconds, "test")
+
+            // CodecConnection borrows pool, TcpByteStream owns context
+            val tcpStream = TcpByteStream(mock, context)
+            val conn = CodecConnection(
+                stream = tcpStream,
+                codec = com.ditchoom.socket.transport.TestStringCodec,
+                pool = context.pool,
+                options = testOptions,
+            )
+
             val buf = context.pool.acquire(64)
             context.pool.release(buf)
             assertTrue(context.pool.stats().currentPoolSize > 0)
 
-            val conn =
-                CodecConnection(
-                    stream = clientStream,
-                    codec = com.ditchoom.socket.transport.TestStringCodec,
-                    context = context,
-                    ownsContext = true,
-                )
+            // CodecConnection.close() → TcpByteStream.close() → context.close()
             conn.close()
 
-            assertEquals(0, context.pool.stats().currentPoolSize, "Owned pool should be cleared")
-        }
-
-    @Test
-    fun codecConnectionCloseDoesNotClearSharedPool() =
-        runTest {
-            val (clientStream, _) = MemoryTransport.createPair()
-            val context = ConnectionContext(testOptions)
-
-            val buf = context.pool.acquire(64)
-            context.pool.release(buf)
-            val poolSizeBefore = context.pool.stats().currentPoolSize
-            assertTrue(poolSizeBefore > 0)
-
-            val conn =
-                CodecConnection(
-                    stream = clientStream,
-                    codec = com.ditchoom.socket.transport.TestStringCodec,
-                    context = context,
-                    ownsContext = false,
-                )
-            conn.close()
-
-            assertEquals(poolSizeBefore, context.pool.stats().currentPoolSize, "Shared pool should NOT be cleared")
+            assertEquals(0, context.pool.stats().currentPoolSize, "Pool cleared via TcpByteStream ownership chain")
         }
 
     @Test
     fun repeatedContextCreateAndCloseDoesNotLeak() =
         runTest {
-            // Simulate many short-lived connections
             repeat(100) {
                 val context = ConnectionContext(testOptions)
                 val mock = MockClientToServerSocket()
                 mock.open(80, 5.seconds, "test")
 
                 val stream = TcpByteStream(mock, context)
-                // Use the pool
                 val buf = context.pool.acquire(1024)
                 context.pool.release(buf)
 

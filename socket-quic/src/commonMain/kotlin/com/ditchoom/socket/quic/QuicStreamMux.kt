@@ -16,6 +16,9 @@ import com.ditchoom.socket.transport.CodecConnection
  * Each stream opened or accepted becomes a [CodecConnection] that encodes/decodes
  * messages via the codec. The [Connection.id] is set to the QUIC stream ID for
  * cross-layer log correlation.
+ *
+ * The mux owns the [ConnectionContext] and closes it when the mux is done.
+ * Individual [CodecConnection]s borrow the pool but don't manage its lifecycle.
  */
 class QuicStreamMux<T>(
     private val connection: QuicScope,
@@ -29,7 +32,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            context = context,
+            pool = context.pool,
+            options = context.options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -41,7 +45,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            context = context,
+            pool = context.pool,
+            options = context.options,
             encodeContext = encodeContext,
             id = stream.streamId.id,
         )
@@ -52,7 +57,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            context = context,
+            pool = context.pool,
+            options = context.options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -64,7 +70,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            context = context,
+            pool = context.pool,
+            options = context.options,
             decodeContext = decodeContext,
             id = stream.streamId.id,
         )

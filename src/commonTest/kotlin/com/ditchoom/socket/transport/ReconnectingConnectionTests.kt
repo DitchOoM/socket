@@ -23,7 +23,8 @@ class ReconnectingConnectionTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-            context = com.ditchoom.socket.ConnectionContext(testOptions),
+            pool = com.ditchoom.buffer.pool.BufferPool(),
+            options = testOptions,
         )
 
     // ── reconnects after failure ──
