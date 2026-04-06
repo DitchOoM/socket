@@ -72,7 +72,6 @@ class SuspendingSocketInputStream(
                 reader.read(readTimeout)
             }
         val buffer = bufferTimed.value
-        buffer.resetForRead()
         return buffer.slice()
     }
 }
