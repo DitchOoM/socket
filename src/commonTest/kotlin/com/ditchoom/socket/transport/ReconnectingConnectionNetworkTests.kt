@@ -1,7 +1,6 @@
 package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.ConnectionState
 import com.ditchoom.socket.NetworkAvailability
@@ -44,7 +43,9 @@ class ReconnectingConnectionNetworkTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-            pool = com.ditchoom.buffer.pool.BufferPool(),
+            pool =
+                com.ditchoom.buffer.pool
+                    .BufferPool(),
             options = testOptions,
         )
 

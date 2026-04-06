@@ -45,12 +45,13 @@ class ConnectionContextLifecycleTests {
             val poolSizeBefore = pool.stats().currentPoolSize
             assertTrue(poolSizeBefore > 0)
 
-            val conn = CodecConnection(
-                stream = clientStream,
-                codec = com.ditchoom.socket.transport.TestStringCodec,
-                pool = pool,
-                options = testOptions,
-            )
+            val conn =
+                CodecConnection(
+                    stream = clientStream,
+                    codec = com.ditchoom.socket.transport.TestStringCodec,
+                    pool = pool,
+                    options = testOptions,
+                )
             conn.close()
 
             // CodecConnection borrows the pool — it should NOT clear it
@@ -66,12 +67,13 @@ class ConnectionContextLifecycleTests {
 
             // CodecConnection borrows pool, TcpByteStream owns context
             val tcpStream = TcpByteStream(mock, context)
-            val conn = CodecConnection(
-                stream = tcpStream,
-                codec = com.ditchoom.socket.transport.TestStringCodec,
-                pool = context.pool,
-                options = testOptions,
-            )
+            val conn =
+                CodecConnection(
+                    stream = tcpStream,
+                    codec = com.ditchoom.socket.transport.TestStringCodec,
+                    pool = context.pool,
+                    options = testOptions,
+                )
 
             val buf = context.pool.acquire(64)
             context.pool.release(buf)
