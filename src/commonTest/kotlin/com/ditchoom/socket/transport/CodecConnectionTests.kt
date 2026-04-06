@@ -61,7 +61,11 @@ object TestStringCodec : Codec<String> {
 }
 
 class CodecConnectionTests {
-    private val testOptions = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
+    private val testOptions = ConnectionOptions(
+        readTimeout = 5.seconds,
+        writeTimeout = 5.seconds,
+        bufferFactory = BufferFactory.Default,
+    )
 
     private fun createPairCodecConnections(): Pair<CodecConnection<String>, CodecConnection<String>> {
         val (aStream, bStream) = MemoryTransport.createPair()

@@ -1,5 +1,7 @@
 package com.ditchoom.socket.transport
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.toReadBuffer
 import com.ditchoom.socket.MockClientToServerSocket
@@ -17,7 +19,10 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 class TcpByteStreamTests {
-    private val testOptions = com.ditchoom.socket.ConnectionOptions(readTimeout = 5.seconds)
+    private val testOptions = com.ditchoom.socket.ConnectionOptions(
+        readTimeout = 5.seconds,
+        bufferFactory = com.ditchoom.buffer.BufferFactory.Default,
+    )
 
     private fun createStream(): Pair<TcpByteStream, MockClientToServerSocket> {
         val mock = MockClientToServerSocket()
