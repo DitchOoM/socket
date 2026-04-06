@@ -3,9 +3,9 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.socket.transport.ByteStream
-import com.ditchoom.socket.transport.BytesWritten
-import com.ditchoom.socket.transport.ReadResult
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadResult
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 

@@ -87,7 +87,7 @@ class QuicLocalServerTests {
                         server.connections {
                             val stream = acceptStream()
                             val data = stream.read(5.seconds)
-                            if (data is com.ditchoom.socket.transport.ReadResult.Data) {
+                            if (data is com.ditchoom.buffer.flow.ReadResult.Data) {
                                 stream.write(data.buffer, 5.seconds)
                             }
                             stream.close()
@@ -106,7 +106,7 @@ class QuicLocalServerTests {
                             stream.write(sendBuf, 5.seconds)
 
                             val response = stream.read(5.seconds)
-                            if (response is com.ditchoom.socket.transport.ReadResult.Data) {
+                            if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
                                 echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
                             } else {
                                 echoResult.complete("no_data")

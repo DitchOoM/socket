@@ -18,9 +18,9 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_receive
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
-import com.ditchoom.socket.transport.ByteStream
-import com.ditchoom.socket.transport.BytesWritten
-import com.ditchoom.socket.transport.ReadResult
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.toCPointer
 import kotlinx.coroutines.channels.Channel

@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.socket.transport.ByteStream
+import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.socket.transport.MemoryTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

@@ -7,7 +7,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.socket.transport.ReadResult
+import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

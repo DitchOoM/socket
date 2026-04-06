@@ -6,7 +6,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.ConnectionOptions
-import com.ditchoom.socket.transport.ReadResult
+import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext

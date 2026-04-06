@@ -22,6 +22,7 @@ val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
 repositories {
+    mavenLocal()
     google()
     mavenCentral()
 }

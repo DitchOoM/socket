@@ -2,10 +2,12 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.NoSuchAlgorithmException
@@ -32,7 +34,7 @@ internal class JvmTlsHandler(
     private val port: Int,
     private val rawRead: suspend (BaseJvmBuffer, Duration) -> Int,
     private val rawWrite: suspend (ReadBuffer, Duration) -> Int,
-    private val bufferFactory: BufferFactory = BufferFactory.Default,
+    private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
 ) {
     private lateinit var engine: SSLEngine
     private var overflowEncryptedReadBuffer: BaseJvmBuffer? = null
@@ -78,33 +80,37 @@ internal class JvmTlsHandler(
         timeout: Duration,
     ): Int {
         val encrypted = allocateBuffer(engine.session.packetBufferSize)
-        val result =
-            try {
-                engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
-            } catch (e: javax.net.ssl.SSLHandshakeException) {
-                throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
-            } catch (e: javax.net.ssl.SSLException) {
-                throw SSLProtocolException(e.message ?: "TLS wrap error", e)
-            }
-        when (result.status!!) {
-            SSLEngineResult.Status.BUFFER_UNDERFLOW ->
-                throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
-            SSLEngineResult.Status.BUFFER_OVERFLOW ->
-                throw IllegalStateException("SSL Engine Buffer Overflow - wrap")
-            SSLEngineResult.Status.CLOSED,
-            SSLEngineResult.Status.OK,
-            -> {
-                encrypted.resetForRead()
-                var writtenBytes = 0
-                while (encrypted.hasRemaining()) {
-                    val bytesWrote = rawWrite(encrypted, timeout)
-                    if (bytesWrote < 0) {
-                        return -1
-                    }
-                    writtenBytes += bytesWrote
+        try {
+            val result =
+                try {
+                    engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
+                } catch (e: javax.net.ssl.SSLHandshakeException) {
+                    throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+                } catch (e: javax.net.ssl.SSLException) {
+                    throw SSLProtocolException(e.message ?: "TLS wrap error", e)
                 }
-                return writtenBytes
+            when (result.status!!) {
+                SSLEngineResult.Status.BUFFER_UNDERFLOW ->
+                    throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
+                SSLEngineResult.Status.BUFFER_OVERFLOW ->
+                    throw IllegalStateException("SSL Engine Buffer Overflow - wrap")
+                SSLEngineResult.Status.CLOSED,
+                SSLEngineResult.Status.OK,
+                -> {
+                    encrypted.resetForRead()
+                    var writtenBytes = 0
+                    while (encrypted.hasRemaining()) {
+                        val bytesWrote = rawWrite(encrypted, timeout)
+                        if (bytesWrote < 0) {
+                            return -1
+                        }
+                        writtenBytes += bytesWrote
+                    }
+                    return writtenBytes
+                }
             }
+        } finally {
+            encrypted.freeIfNeeded()
         }
     }
 
@@ -168,7 +174,7 @@ internal class JvmTlsHandler(
 
     private suspend fun doHandshake(timeout: Duration) {
         var cachedBuffer: BaseJvmBuffer? = null
-        val emptyBuffer = EMPTY_BUFFER as BaseJvmBuffer
+        val emptyBuffer = EMPTY_BUFFER.unwrapFully() as BaseJvmBuffer
         while (engine.handshakeStatus != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
             when (engine.handshakeStatus) {
                 SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(emptyBuffer, timeout)
@@ -210,7 +216,7 @@ internal class JvmTlsHandler(
         }
     }
 
-    private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size) as BaseJvmBuffer
+    private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size).unwrapFully() as BaseJvmBuffer
 
     private fun slicePlainText(plainText: BaseJvmBuffer): PlatformBuffer {
         val position = plainText.position()

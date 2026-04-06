@@ -1,5 +1,6 @@
 package com.ditchoom.socket.transport
 
+import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.socket.ConnectionOptions
 
 interface Transport {

@@ -1,8 +1,9 @@
 package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.BaseJvmBuffer
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
@@ -29,9 +30,14 @@ abstract class BaseClientSocket(
     override suspend fun read(timeout: Duration): ReadBuffer {
         if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
         tlsHandler?.let { return it.unwrap(timeout) }
-        val buffer = bufferFactory.allocate(socket.socket().receiveBufferSize) as BaseJvmBuffer
-        read(buffer, timeout)
-        return buffer
+        val buffer = bufferFactory.allocate(socket.socket().receiveBufferSize)
+        try {
+            read(buffer.unwrapFully() as BaseJvmBuffer, timeout)
+            return buffer
+        } catch (e: Exception) {
+            buffer.freeIfNeeded()
+            throw e
+        }
     }
 
     override suspend fun read(
@@ -55,7 +61,7 @@ abstract class BaseClientSocket(
         timeout: Duration,
     ): Int {
         if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return it.wrap((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer, timeout) }
+        tlsHandler?.let { return it.wrap(buffer.unwrapFully() as BaseJvmBuffer, timeout) }
         return rawSocketWrite(buffer, timeout)
     }
 
@@ -63,7 +69,7 @@ abstract class BaseClientSocket(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val byteBuffer = ((buffer as PlatformBuffer).unwrap() as BaseJvmBuffer).byteBuffer
+        val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
         var totalWritten = 0
         try {
             writeMutex.withLock {

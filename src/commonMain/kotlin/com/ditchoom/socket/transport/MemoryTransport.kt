@@ -3,6 +3,9 @@ package com.ditchoom.socket.transport
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.channels.Channel

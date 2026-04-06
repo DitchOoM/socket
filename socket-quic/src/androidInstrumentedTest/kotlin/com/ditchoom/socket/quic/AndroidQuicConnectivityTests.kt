@@ -58,7 +58,7 @@ class AndroidQuicConnectivityTests {
                     stream.write(sendBuf, 5.seconds)
 
                     val response = stream.read(5.seconds)
-                    assertIs<com.ditchoom.socket.transport.ReadResult.Data>(response)
+                    assertIs<com.ditchoom.buffer.flow.ReadResult.Data>(response)
 
                     stream.close()
                 }

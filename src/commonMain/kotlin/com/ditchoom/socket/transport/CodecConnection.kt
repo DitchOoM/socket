@@ -2,12 +2,15 @@ package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.Codec
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.buffer.withPooling
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.flow.Flow
@@ -144,9 +147,7 @@ class CodecConnection<T>(
                     factory = options.bufferFactory,
                 )
             val pooledOptions =
-                options.copy(
-                    bufferFactory = PooledBufferFactory(pool, options.bufferFactory),
-                )
+                options.copy(bufferFactory = options.bufferFactory.withPooling(pool))
             val stream = transport.connect(hostname, port, pooledOptions)
             return CodecConnection(stream, codec, pool, options, decodeContext, encodeContext)
         }
