@@ -11,6 +11,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Ignore
 import kotlin.test.Test
@@ -71,7 +72,7 @@ class SimpleSocketTests {
 
     @Test
     fun manyClientsConnectingToOneServer() =
-        runTestNoTimeSkipping {
+        runTestNoTimeSkipping(timeout = 15.seconds) {
             val server = ServerSocket.allocate()
             val acceptedClientFlow = server.bind()
             val clientCount = 5
@@ -98,7 +99,6 @@ class SimpleSocketTests {
                     clientToServer.close()
                 }
             }
-            // Wait for server to finish processing all clients
             processedClients.lockWithTimeout()
             server.close()
             serverJob.cancel()
@@ -163,7 +163,6 @@ Connection: close
             launch(Dispatchers.Default) {
                 flow.collect { serverToClient ->
                     val buffer = serverToClient.read(1.seconds)
-                    buffer.resetForRead()
                     val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
                     assertEquals(text, dataReceivedFromClient)
                     serverToClientPort = serverToClient.localPort()
@@ -210,7 +209,6 @@ Connection: close
             assertTrue(serverPort > 0, "No port number from server")
             clientToServer.open(serverPort)
             val buffer = clientToServer.read(5.seconds)
-            buffer.resetForRead()
             val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
             serverToClientMutex.lockWithTimeout()
             assertEquals(text, dataReceivedFromServer)

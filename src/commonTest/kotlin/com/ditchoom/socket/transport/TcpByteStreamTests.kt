@@ -1,9 +1,6 @@
 package com.ditchoom.socket.transport
 
-import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
-
 import com.ditchoom.buffer.toReadBuffer
 import com.ditchoom.socket.MockClientToServerSocket
 import com.ditchoom.socket.SSLHandshakeFailedException
@@ -37,7 +34,6 @@ class TcpByteStreamTests {
 
             val result = stream.read(5.seconds)
             assertIs<ReadResult.Data>(result)
-            result.buffer.resetForRead()
             assertEquals(2, result.buffer.remaining())
         }
 
@@ -61,11 +57,9 @@ class TcpByteStreamTests {
             mock.open(80, 5.seconds, "test")
             mock.simulateDisconnect()
 
-            // General close is not EndOfStream or ConnectionReset,
-            // so it should propagate as an exception
-            assertFailsWith<SocketClosedException.General> {
-                stream.read(5.seconds)
-            }
+            // General close maps to ReadResult.End — byte stream abstracts away close reason
+            val result = stream.read(5.seconds)
+            assertIs<ReadResult.End>(result)
         }
 
     // ── read() → ReadResult.Reset ──
@@ -126,9 +120,9 @@ class TcpByteStreamTests {
             mock.open(80, 5.seconds, "test")
             mock.enqueueReadError(SocketClosedException.BrokenPipe("broken pipe"))
 
-            assertFailsWith<SocketClosedException.BrokenPipe> {
-                stream.read(5.seconds)
-            }
+            // BrokenPipe maps to ReadResult.End — byte stream abstracts away close reason
+            val result = stream.read(5.seconds)
+            assertIs<ReadResult.End>(result)
         }
 
     // ── write() ──
