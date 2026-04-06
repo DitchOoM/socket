@@ -1,9 +1,6 @@
 package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.buffer.flow.BytesWritten
-import com.ditchoom.buffer.flow.ReadResult
-
 import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.ConnectionState

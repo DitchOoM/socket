@@ -62,10 +62,8 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
     ): Int {
         tlsHandler?.let { tls ->
             val decrypted = tls.unwrap(timeout)
-            // unwrap returns buffer in write-mode (position = data end)
-            val bytesAvailable = decrypted.position()
+            val bytesAvailable = decrypted.remaining()
             if (bytesAvailable > 0) {
-                decrypted.resetForRead()
                 buffer.write(decrypted)
             }
             return bytesAvailable

@@ -219,12 +219,8 @@ internal class JvmTlsHandler(
     private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size).unwrapFully() as BaseJvmBuffer
 
     private fun slicePlainText(plainText: BaseJvmBuffer): PlatformBuffer {
-        val position = plainText.position()
-        plainText.position(0)
-        plainText.setLimit(position)
-        val slicedBuffer = plainText.slice()
-        slicedBuffer.position(slicedBuffer.limit())
-        return slicedBuffer
+        plainText.resetForRead()
+        return plainText.slice()
     }
 
     /**

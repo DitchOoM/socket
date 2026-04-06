@@ -30,8 +30,7 @@ class MockClientToServerSocket : ClientToServerSocket {
     fun enqueueReadBytes(vararg bytes: Byte) {
         val buffer = BufferFactory.Default.allocate(bytes.size)
         for (b in bytes) buffer.writeByte(b)
-        // Leave position at end of written data (like a real socket read).
-        // Caller should call resetForRead() on the result of read().
+        buffer.resetForRead()
         enqueueRead(buffer)
     }
 

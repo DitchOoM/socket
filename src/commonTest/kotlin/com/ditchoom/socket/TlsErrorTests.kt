@@ -603,7 +603,6 @@ class TlsErrorTests {
 
                     // First read must return data even if TLS 1.3 NewSessionTicket arrives first
                     val response = socket.read(10.seconds)
-                    response.resetForRead()
                     val remaining = response.remaining()
                     assertTrue(remaining > 0, "First read should return data (not empty from NewSessionTicket)")
                     val text = response.readString(remaining, Charset.UTF8)

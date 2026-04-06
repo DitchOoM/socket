@@ -5,9 +5,9 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

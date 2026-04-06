@@ -2,8 +2,8 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.socket.transport.MemoryTransport
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.socket.transport.MemoryTransport
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

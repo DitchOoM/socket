@@ -3,10 +3,10 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.ConnectionOptions
-import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext

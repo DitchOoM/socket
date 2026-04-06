@@ -2,10 +2,10 @@ package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.Codec
-import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor

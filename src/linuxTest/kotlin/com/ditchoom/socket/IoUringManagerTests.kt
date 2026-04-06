@@ -82,7 +82,6 @@ class IoUringManagerTests {
                                 try {
                                     while (client.isOpen()) {
                                         val data = client.read(5.seconds)
-                                        data.resetForRead()
                                         if (data.remaining() > 0) {
                                             client.write(data, 5.seconds)
                                         }
@@ -203,7 +202,6 @@ class IoUringManagerTests {
                         try {
                             server.bind(0, "127.0.0.1").collect { client ->
                                 val data = client.read(5.seconds)
-                                data.resetForRead()
                                 client.write(data, 5.seconds)
                                 client.close()
                             }

@@ -1,9 +1,5 @@
 package com.ditchoom.socket.transport
 
-import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.buffer.flow.BytesWritten
-import com.ditchoom.buffer.flow.ReadResult
-
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
@@ -12,9 +8,9 @@ import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.SizeEstimate
-import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.MockClientToServerSocket
 import com.ditchoom.socket.SocketClosedException

@@ -6,9 +6,9 @@ import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.SizeEstimate
-import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
