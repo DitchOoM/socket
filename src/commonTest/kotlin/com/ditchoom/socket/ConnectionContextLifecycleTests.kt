@@ -1,6 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.MemoryTransport
 import com.ditchoom.socket.transport.TcpByteStream
@@ -46,12 +45,13 @@ class ConnectionContextLifecycleTests {
             context.pool.release(buf)
             assertTrue(context.pool.stats().currentPoolSize > 0)
 
-            val conn = CodecConnection(
-                stream = clientStream,
-                codec = com.ditchoom.socket.transport.TestStringCodec,
-                context = context,
-                ownsContext = true,
-            )
+            val conn =
+                CodecConnection(
+                    stream = clientStream,
+                    codec = com.ditchoom.socket.transport.TestStringCodec,
+                    context = context,
+                    ownsContext = true,
+                )
             conn.close()
 
             assertEquals(0, context.pool.stats().currentPoolSize, "Owned pool should be cleared")
@@ -68,12 +68,13 @@ class ConnectionContextLifecycleTests {
             val poolSizeBefore = context.pool.stats().currentPoolSize
             assertTrue(poolSizeBefore > 0)
 
-            val conn = CodecConnection(
-                stream = clientStream,
-                codec = com.ditchoom.socket.transport.TestStringCodec,
-                context = context,
-                ownsContext = false,
-            )
+            val conn =
+                CodecConnection(
+                    stream = clientStream,
+                    codec = com.ditchoom.socket.transport.TestStringCodec,
+                    context = context,
+                    ownsContext = false,
+                )
             conn.close()
 
             assertEquals(poolSizeBefore, context.pool.stats().currentPoolSize, "Shared pool should NOT be cleared")
