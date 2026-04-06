@@ -14,6 +14,6 @@ class TcpTransport : Transport {
         val socket = ClientSocket.allocate()
         socket.bufferFactory = context.bufferFactory
         socket.open(port, context.options.connectionTimeout, hostname, context.options.socketOptions)
-        return TcpByteStream(socket)
+        return TcpByteStream(socket, context)
     }
 }
