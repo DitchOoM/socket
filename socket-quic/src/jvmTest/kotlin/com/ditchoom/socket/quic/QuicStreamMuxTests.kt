@@ -6,7 +6,7 @@ import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.SizeEstimate
-import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
@@ -86,7 +86,7 @@ class QuicStreamMuxTests {
                 val serverJob =
                     launch(Dispatchers.IO) {
                         server.connections {
-                            val mux = QuicStreamMux(this, TestCodec, BufferPool(), opts)
+                            val mux = QuicStreamMux(this, TestCodec, ConnectionContext(opts))
                             val conn = mux.acceptBidirectional()
                             val msg = conn.receive().first()
                             conn.send("echo: $msg")

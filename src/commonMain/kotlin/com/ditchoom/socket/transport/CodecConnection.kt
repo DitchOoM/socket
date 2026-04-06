@@ -7,10 +7,9 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.buffer.withPooling
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.flow.Flow
@@ -25,12 +24,14 @@ import kotlin.time.TimeSource
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
-    val pool: BufferPool,
-    private val options: ConnectionOptions = ConnectionOptions(),
+    private val context: ConnectionContext,
+    private val ownsContext: Boolean = false,
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
+    val pool get() = context.pool
+    private val options get() = context.options
     private val streamProcessor: StreamProcessor = StreamProcessor.create(pool)
 
     @Volatile
@@ -127,7 +128,7 @@ class CodecConnection<T>(
         closed = true
         stream.close()
         streamProcessor.release()
-        pool.clear()
+        if (ownsContext) context.close()
     }
 
     companion object {
@@ -140,16 +141,9 @@ class CodecConnection<T>(
             decodeContext: DecodeContext = DecodeContext.Empty,
             encodeContext: EncodeContext = EncodeContext.Empty,
         ): CodecConnection<T> {
-            val pool =
-                BufferPool(
-                    maxPoolSize = options.maxPoolSize,
-                    defaultBufferSize = options.defaultBufferSize,
-                    factory = options.bufferFactory,
-                )
-            val pooledOptions =
-                options.copy(bufferFactory = options.bufferFactory.withPooling(pool))
-            val stream = transport.connect(hostname, port, pooledOptions)
-            return CodecConnection(stream, codec, pool, options, decodeContext, encodeContext)
+            val context = ConnectionContext(options)
+            val stream = transport.connect(hostname, port, context)
+            return CodecConnection(stream, codec, context, ownsContext = true, decodeContext, encodeContext)
         }
     }
 }

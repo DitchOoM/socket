@@ -7,8 +7,7 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
-import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.transport.CodecConnection
 
 /**
@@ -21,8 +20,7 @@ import com.ditchoom.socket.transport.CodecConnection
 class QuicStreamMux<T>(
     private val connection: QuicScope,
     private val codec: Codec<T>,
-    private val pool: BufferPool,
-    private val options: ConnectionOptions = ConnectionOptions(),
+    private val context: ConnectionContext,
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) : StreamMux<T> {
@@ -31,8 +29,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = pool,
-            options = options,
+            context = context,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -44,8 +41,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = pool,
-            options = options,
+            context = context,
             encodeContext = encodeContext,
             id = stream.streamId.id,
         )
@@ -56,8 +52,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = pool,
-            options = options,
+            context = context,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -69,8 +64,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = pool,
-            options = options,
+            context = context,
             decodeContext = decodeContext,
             id = stream.streamId.id,
         )

@@ -3,7 +3,6 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadWriteBuffer
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.buffer.stream.SuspendingStreamProcessor
 import com.ditchoom.buffer.stream.builder
@@ -19,10 +18,11 @@ import kotlin.time.Duration
  */
 class SocketConnection private constructor(
     val socket: ClientToServerSocket,
-    val pool: BufferPool,
+    private val context: ConnectionContext,
     val stream: SuspendingStreamProcessor,
-    private val options: ConnectionOptions,
 ) {
+    val pool get() = context.pool
+    private val options get() = context.options
     val isOpen: Boolean get() = socket.isOpen()
 
     /**
@@ -74,6 +74,7 @@ class SocketConnection private constructor(
 
     suspend fun close() {
         socket.close()
+        context.close()
     }
 
     companion object {
@@ -82,16 +83,12 @@ class SocketConnection private constructor(
             port: Int,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
+            val context = ConnectionContext(options)
             val socket = ClientSocket.allocate()
-            socket.bufferFactory = options.bufferFactory
+            socket.bufferFactory = context.bufferFactory
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
-            val pool =
-                BufferPool(
-                    maxPoolSize = options.maxPoolSize,
-                    threadingMode = options.threadingMode,
-                )
-            val stream = StreamProcessor.builder(pool).buildSuspending()
-            return SocketConnection(socket, pool, stream, options)
+            val stream = StreamProcessor.builder(context.pool).buildSuspending()
+            return SocketConnection(socket, context, stream)
         }
 
         suspend fun <T> connect(
@@ -112,14 +109,10 @@ class SocketConnection private constructor(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            socket.bufferFactory = options.bufferFactory
-            val pool =
-                BufferPool(
-                    maxPoolSize = options.maxPoolSize,
-                    threadingMode = options.threadingMode,
-                )
-            val stream = StreamProcessor.builder(pool).buildSuspending()
-            return SocketConnection(socket, pool, stream, options)
+            val context = ConnectionContext(options)
+            socket.bufferFactory = context.bufferFactory
+            val stream = StreamProcessor.builder(context.pool).buildSuspending()
+            return SocketConnection(socket, context, stream)
         }
     }
 }

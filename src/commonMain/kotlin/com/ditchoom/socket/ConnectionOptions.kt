@@ -7,11 +7,10 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Configuration for [SocketConnection].
+ * Pure configuration for socket connections.
  *
- * Bundles socket options, timeouts, buffer pool sizing, and buffer allocation strategy
- * into a single object. The [bufferFactory] controls how internal read buffers are allocated,
- * allowing callers to inject pooled, shared memory, or managed allocation strategies.
+ * This is a value object — it holds no resources and is safe to copy, share, or discard.
+ * Resources (buffer pools, pooled factories) are created by [ConnectionContext].
  */
 data class ConnectionOptions(
     val socketOptions: SocketOptions = SocketOptions(),

@@ -6,7 +6,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -19,8 +19,8 @@ class MemoryTransport : Transport {
     override suspend fun connect(
         hostname: String,
         port: Int,
-        options: ConnectionOptions,
-    ): ByteStream = createPair(options.bufferFactory).first
+        context: ConnectionContext,
+    ): ByteStream = createPair(context.bufferFactory).first
 
     companion object {
         fun createPair(bufferFactory: BufferFactory = BufferFactory.Default): Pair<ByteStream, ByteStream> {

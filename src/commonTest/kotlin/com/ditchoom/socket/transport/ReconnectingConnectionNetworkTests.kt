@@ -4,7 +4,7 @@ import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 
-import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.ConnectionState
 import com.ditchoom.socket.NetworkAvailability
@@ -47,8 +47,7 @@ class ReconnectingConnectionNetworkTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-            pool = BufferPool(),
-            options = testOptions,
+            context = com.ditchoom.socket.ConnectionContext(testOptions),
         )
 
     // ── NetworkMonitor integration ──

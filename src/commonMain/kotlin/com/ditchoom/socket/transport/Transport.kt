@@ -1,12 +1,12 @@
 package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.ConnectionContext
 
 interface Transport {
     suspend fun connect(
         hostname: String,
         port: Int,
-        options: ConnectionOptions = ConnectionOptions(),
+        context: ConnectionContext,
     ): ByteStream
 }

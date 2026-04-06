@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.StreamMux
-import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -46,13 +46,13 @@ suspend fun <T, R> QuicEngine.connectMux(
     port: Int,
     quicOptions: QuicOptions,
     codec: Codec<T>,
-    pool: BufferPool = BufferPool(),
     connectionOptions: ConnectionOptions = ConnectionOptions(),
     timeout: Duration = 15.seconds,
     block: suspend StreamMux<T>.() -> R,
 ): R =
     connect(hostname, port, quicOptions, connectionOptions, timeout) {
-        val mux = QuicStreamMux(this, codec, pool, connectionOptions)
+        val context = ConnectionContext(connectionOptions)
+        val mux = QuicStreamMux(this, codec, context)
         mux.block()
     }
 
