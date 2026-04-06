@@ -12,13 +12,12 @@ import kotlin.time.Duration
 
 class TcpByteStream(
     private val socket: ClientToServerSocket,
-    private val context: ConnectionContext? = null,
+    private val context: ConnectionContext,
 ) : ByteStream {
     override val isOpen: Boolean get() = socket.isOpen()
 
     override suspend fun read(timeout: Duration): ReadResult {
-        val pool = context?.pool ?: return readUnpooled(timeout)
-        val buffer = pool.acquire(context.options.defaultBufferSize)
+        val buffer = context.pool.acquire(context.options.defaultBufferSize)
         return try {
             val bytesRead = socket.read(buffer, timeout)
             if (bytesRead <= 0) {
@@ -41,15 +40,6 @@ class TcpByteStream(
         }
     }
 
-    private suspend fun readUnpooled(timeout: Duration): ReadResult =
-        try {
-            ReadResult.Data(socket.read(timeout))
-        } catch (_: SocketClosedException.ConnectionReset) {
-            ReadResult.Reset
-        } catch (_: SocketClosedException) {
-            ReadResult.End
-        }
-
     override suspend fun write(
         buffer: ReadBuffer,
         timeout: Duration,
@@ -62,6 +52,6 @@ class TcpByteStream(
 
     override suspend fun close() {
         socket.close()
-        context?.close()
+        context.close()
     }
 }

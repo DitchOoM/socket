@@ -193,7 +193,7 @@ class CodecConnectionTests {
             mock.open(80, 5.seconds, "test")
             mock.enqueueReadError(SocketClosedException.ConnectionReset("peer reset"))
 
-            val stream = TcpByteStream(mock)
+            val stream = TcpByteStream(mock, ConnectionContext(testOptions))
             val codec =
                 CodecConnection(
                     stream = stream,
@@ -217,7 +217,7 @@ class CodecConnectionTests {
             mock.open(80, 5.seconds, "test")
             mock.enqueueReadError(SocketTimeoutException("timed out"))
 
-            val stream = TcpByteStream(mock)
+            val stream = TcpByteStream(mock, ConnectionContext(testOptions))
             val codec =
                 CodecConnection(
                     stream = stream,
