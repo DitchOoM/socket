@@ -33,6 +33,7 @@ abstract class BaseClientSocket(
         val buffer = bufferFactory.allocate(socket.socket().receiveBufferSize)
         try {
             read(buffer.unwrapFully() as BaseJvmBuffer, timeout)
+            buffer.resetForRead()
             return buffer
         } catch (e: Exception) {
             buffer.freeIfNeeded()

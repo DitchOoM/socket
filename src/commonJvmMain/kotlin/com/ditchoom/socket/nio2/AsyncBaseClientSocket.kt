@@ -30,6 +30,7 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
         val buffer = bufferFactory.allocate(receiveBuffer)
         try {
             read(buffer.unwrapFully() as BaseJvmBuffer, timeout)
+            buffer.resetForRead()
             return buffer
         } catch (e: Exception) {
             buffer.freeIfNeeded()
