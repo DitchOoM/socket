@@ -1,6 +1,7 @@
 package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
@@ -15,13 +16,37 @@ class TcpByteStream(
 ) : ByteStream {
     override val isOpen: Boolean get() = socket.isOpen()
 
-    override suspend fun read(timeout: Duration): ReadResult =
+    override suspend fun read(timeout: Duration): ReadResult {
+        val pool = context?.pool ?: return readUnpooled(timeout)
+        val buffer = pool.acquire(context.options.defaultBufferSize)
+        return try {
+            val bytesRead = socket.read(buffer, timeout)
+            if (bytesRead <= 0) {
+                buffer.freeIfNeeded()
+                ReadResult.End
+            } else {
+                buffer.setLimit(buffer.position())
+                buffer.position(0)
+                ReadResult.Data(buffer)
+            }
+        } catch (_: SocketClosedException.ConnectionReset) {
+            buffer.freeIfNeeded()
+            ReadResult.Reset
+        } catch (_: SocketClosedException) {
+            buffer.freeIfNeeded()
+            ReadResult.End
+        } catch (e: Exception) {
+            buffer.freeIfNeeded()
+            throw e
+        }
+    }
+
+    private suspend fun readUnpooled(timeout: Duration): ReadResult =
         try {
             ReadResult.Data(socket.read(timeout))
         } catch (_: SocketClosedException.ConnectionReset) {
             ReadResult.Reset
         } catch (_: SocketClosedException) {
-            // EndOfStream, General, BrokenPipe — all mean connection is gone
             ReadResult.End
         }
 
