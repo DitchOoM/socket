@@ -23,6 +23,7 @@ class SuspendingSocketInputStreamTests {
                     override suspend fun read(timeout: Duration): ReadBuffer {
                         val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(0.toByte())
+                        buffer.resetForRead()
                         return buffer
                     }
                 }
@@ -47,6 +48,7 @@ class SuspendingSocketInputStreamTests {
                     override suspend fun read(timeout: Duration): ReadBuffer {
                         val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
+                        buffer.resetForRead()
                         return buffer
                     }
                 }
@@ -72,6 +74,7 @@ class SuspendingSocketInputStreamTests {
                     override suspend fun read(timeout: Duration): ReadBuffer {
                         val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
+                        buffer.resetForRead()
                         return buffer
                     }
                 }
@@ -97,6 +100,7 @@ class SuspendingSocketInputStreamTests {
                     override suspend fun read(timeout: Duration): ReadBuffer {
                         val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
+                        buffer.resetForRead()
                         return buffer
                     }
                 }
@@ -121,6 +125,7 @@ class SuspendingSocketInputStreamTests {
                     override suspend fun read(timeout: Duration): ReadBuffer {
                         val buffer = BufferFactory.Default.allocate(1)
                         buffer.writeByte(internalCount++)
+                        buffer.resetForRead()
                         return buffer
                     }
                 }

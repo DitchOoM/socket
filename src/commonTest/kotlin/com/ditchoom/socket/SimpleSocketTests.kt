@@ -11,6 +11,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Ignore
 import kotlin.test.Test
@@ -76,17 +77,22 @@ class SimpleSocketTests {
             val acceptedClientFlow = server.bind()
             val clientCount = 5
             val processedClients = Mutex(locked = true)
+            val countMutex = Mutex()
             var clientsHandled = 0
             val serverJob =
                 launch(Dispatchers.Default) {
                     acceptedClientFlow.collect { serverToClient ->
-                        val s = serverToClient.readString()
-                        val indexReceived = s.toInt()
-                        serverToClient.writeString("ack $indexReceived")
-                        serverToClient.close()
-                        clientsHandled++
-                        if (clientsHandled >= clientCount) {
-                            processedClients.unlock()
+                        launch {
+                            val s = serverToClient.readString()
+                            val indexReceived = s.toInt()
+                            serverToClient.writeString("ack $indexReceived")
+                            serverToClient.close()
+                            countMutex.withLock {
+                                clientsHandled++
+                                if (clientsHandled >= clientCount) {
+                                    processedClients.unlock()
+                                }
+                            }
                         }
                     }
                 }
