@@ -69,7 +69,6 @@ class MockClientToServerSocket : ClientToServerSocket {
         timeout: Duration,
     ): Int {
         val readBuffer = read(timeout)
-        readBuffer.resetForRead()
         val bytesRead = readBuffer.remaining()
         buffer.write(readBuffer)
         return bytesRead
