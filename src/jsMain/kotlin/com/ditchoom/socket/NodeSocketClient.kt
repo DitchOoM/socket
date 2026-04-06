@@ -124,7 +124,6 @@ open class NodeSocket : ClientSocket {
                 "Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError",
             )
         }
-        message.result.position(message.bytesRead)
         return message.result
     }
 

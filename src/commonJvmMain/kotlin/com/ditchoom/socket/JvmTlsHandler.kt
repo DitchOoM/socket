@@ -2,10 +2,11 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.buffer.deterministic
+
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
@@ -34,7 +35,7 @@ internal class JvmTlsHandler(
     private val port: Int,
     private val rawRead: suspend (BaseJvmBuffer, Duration) -> Int,
     private val rawWrite: suspend (ReadBuffer, Duration) -> Int,
-    private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    private val bufferFactory: BufferFactory = BufferFactory.Default,
 ) {
     private lateinit var engine: SSLEngine
     private var overflowEncryptedReadBuffer: BaseJvmBuffer? = null
