@@ -89,7 +89,7 @@ private fun String.substringFrom(marker: String): String {
 open class NodeSocket : ClientSocket {
     internal var isClosed = true
     internal var netSocket: Socket? = null
-    internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
+    internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
 
@@ -206,6 +206,10 @@ class NodeClientSocket :
             buffer.position(result.length)
             buffer.resetForRead()
             incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+        }
+        netSocket.on("error") { _ ->
+            hadTransmissionError = true
+            cleanSocket(netSocket)
         }
         netSocket.on("close") { transmissionError ->
             hadTransmissionError = transmissionError.unsafeCast<Boolean>()
