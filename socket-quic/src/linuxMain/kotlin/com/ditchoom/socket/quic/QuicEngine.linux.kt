@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
@@ -63,7 +64,9 @@ private class LinuxQuicEngine : QuicEngine {
         block: suspend QuicScope.() -> R,
     ): R =
         withTimeout(timeout) {
-            val bufferFactory = connectionOptions.bufferFactory
+            val bufferFactory =
+                com.ditchoom.buffer.BufferFactory
+                    .deterministic()
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
@@ -245,7 +248,7 @@ private class LinuxQuicConnection(
 }
 
 /** Adapts quiche cinterop to the platform-neutral [QuicConfigCalls] interface. */
-private class LinuxQuicConfigCalls(
+internal class LinuxQuicConfigCalls(
     private val cfg: CPointer<cnames.structs.quiche_config>,
 ) : QuicConfigCalls {
     override fun setMaxIdleTimeout(ms: Long) =

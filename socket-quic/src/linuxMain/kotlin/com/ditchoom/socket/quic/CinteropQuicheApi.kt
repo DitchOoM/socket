@@ -3,12 +3,15 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
+import com.ditchoom.socket.quic.quiche.quiche_accept
 import com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_early_data
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_hystart
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_pacing
 import com.ditchoom.socket.quic.quiche.quiche_config_free
 import com.ditchoom.socket.quic.quiche.quiche_config_grease
+import com.ditchoom.socket.quic.quiche.quiche_config_load_cert_chain_from_pem_file
+import com.ditchoom.socket.quic.quiche.quiche_config_load_priv_key_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_new
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
 import com.ditchoom.socket.quic.quiche.quiche_config_set_cc_algorithm
@@ -41,6 +44,8 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
 import com.ditchoom.socket.quic.quiche.quiche_conn_writable
 import com.ditchoom.socket.quic.quiche.quiche_connect
+import com.ditchoom.socket.quic.quiche.quiche_header_info
+import com.ditchoom.socket.quic.quiche.quiche_negotiate_version
 import com.ditchoom.socket.quic.quiche.quiche_recv_info
 import com.ditchoom.socket.quic.quiche.quiche_send_info
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
@@ -49,6 +54,7 @@ import kotlinx.cinterop.BooleanVar
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.NativePtr
 import kotlinx.cinterop.UByteVar
+import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
@@ -314,17 +320,25 @@ internal object CinteropQuicheApi : QuicheApi {
             0.convert(),
         ).toInt()
 
-    // --- Server-side (stubs for now — Linux server uses direct cinterop) ---
+    // --- Server-side ---
 
     override fun configLoadCertChainFromPemFile(
         config: QuicheConfig,
         pathAddr: Long,
-    ): Int = 0
+    ): Int =
+        quiche_config_load_cert_chain_from_pem_file(
+            config.handle.toCPointer()!!,
+            pathAddr.toCPointer<ByteVar>()!!.toKString(),
+        )
 
     override fun configLoadPrivKeyFromPemFile(
         config: QuicheConfig,
         pathAddr: Long,
-    ): Int = 0
+    ): Int =
+        quiche_config_load_priv_key_from_pem_file(
+            config.handle.toCPointer()!!,
+            pathAddr.toCPointer<ByteVar>()!!.toKString(),
+        )
 
     override fun headerInfo(
         buf: Long,
@@ -338,7 +352,20 @@ internal object CinteropQuicheApi : QuicheApi {
         dcidLenOut: Long,
         tokenOut: Long,
         tokenLenOut: Long,
-    ): Int = 0
+    ): Int =
+        quiche_header_info(
+            buf.toCPointer<UByteVar>()!!,
+            bufLen.convert(),
+            dcil.convert(),
+            versionOut.toCPointer<UIntVar>()!!,
+            typeOut.toCPointer<UByteVar>()!!,
+            scidOut.toCPointer<UByteVar>()!!,
+            scidLenOut.toCPointer<ULongVar>()!!,
+            dcidOut.toCPointer<UByteVar>()!!,
+            dcidLenOut.toCPointer<ULongVar>()!!,
+            tokenOut.toCPointer<UByteVar>()!!,
+            tokenLenOut.toCPointer<ULongVar>()!!,
+        )
 
     override fun accept(
         scidAddr: Long,
@@ -350,7 +377,21 @@ internal object CinteropQuicheApi : QuicheApi {
         peerAddr: Long,
         peerAddrLen: Int,
         config: QuicheConfig,
-    ): QuicheConn = QuicheConn(1L) // stub
+    ): QuicheConn {
+        val conn =
+            quiche_accept(
+                scidAddr.toCPointer<UByteVar>()!!,
+                scidLen.convert(),
+                odcidAddr.toCPointer<UByteVar>(), // nullable — null when no retry
+                odcidLen.convert(),
+                localAddr.toCPointer()!!,
+                localAddrLen.convert(),
+                peerAddr.toCPointer()!!,
+                peerAddrLen.convert(),
+                config.handle.toCPointer()!!,
+            ) ?: error("quiche_accept returned null")
+        return QuicheConn(conn.rawValue.toLong())
+    }
 
     override fun negotiateVersion(
         scidAddr: Long,
@@ -359,7 +400,15 @@ internal object CinteropQuicheApi : QuicheApi {
         dcidLen: Int,
         outAddr: Long,
         outLen: Int,
-    ): Int = 0
+    ): Int =
+        quiche_negotiate_version(
+            scidAddr.toCPointer<UByteVar>()!!,
+            scidLen.convert(),
+            dcidAddr.toCPointer<UByteVar>()!!,
+            dcidLen.convert(),
+            outAddr.toCPointer<UByteVar>()!!,
+            outLen.convert(),
+        ).toInt()
 
     // --- Stream iteration ---
 

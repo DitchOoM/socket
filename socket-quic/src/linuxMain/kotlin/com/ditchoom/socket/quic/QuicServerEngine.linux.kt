@@ -1,3 +1,481 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.ditchoom.socket.quic
 
-actual fun defaultQuicServerEngine(): QuicServerEngine = TODO("Linux QUIC server — pending io_uring + quiche cinterop implementation")
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.linux.socket_getsockname
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.UIntVar
+import kotlinx.cinterop.ULongVar
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.nativeHeap
+import kotlinx.cinterop.pointed
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.toCPointer
+import kotlinx.cinterop.value
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.consumeAsFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import platform.posix.AF_INET
+import platform.posix.INADDR_ANY
+import platform.posix.SOCK_DGRAM
+import platform.posix.bind
+import platform.posix.htonl
+import platform.posix.htons
+import platform.posix.memcpy
+import platform.posix.ntohs
+import platform.posix.sockaddr_in
+import platform.posix.sockaddr_storage
+import platform.posix.socket
+import kotlin.time.Duration
+
+actual fun defaultQuicServerEngine(): QuicServerEngine = LinuxQuicServerEngine()
+
+private class LinuxQuicServerEngine : QuicServerEngine {
+    private val api: QuicheApi = CinteropQuicheApi
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    override suspend fun bind(
+        port: Int,
+        host: String?,
+        tlsConfig: QuicTlsConfig,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer {
+        val bufferFactory = BufferFactory.deterministic()
+
+        val config = api.configNew(QUICHE_PROTOCOL_VERSION)
+
+        // Load TLS cert chain
+        writeNullTerminatedString(tlsConfig.certChainPath, bufferFactory).let { certBuf ->
+            val rc = api.configLoadCertChainFromPemFile(config, certBuf.nativeMemoryAccess!!.nativeAddress.toLong())
+            certBuf.freeNativeMemory()
+            check(rc == 0) { "Failed to load cert chain: $rc" }
+        }
+
+        // Load TLS private key
+        writeNullTerminatedString(tlsConfig.privKeyPath, bufferFactory).let { keyBuf ->
+            val rc = api.configLoadPrivKeyFromPemFile(config, keyBuf.nativeMemoryAccess!!.nativeAddress.toLong())
+            keyBuf.freeNativeMemory()
+            check(rc == 0) { "Failed to load private key: $rc" }
+        }
+
+        // ALPN
+        val alpnBuf = encodeAlpnList(quicOptions.alpnProtocols, bufferFactory)
+        api.configSetApplicationProtos(config, alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong(), alpnBuf.remaining())
+        alpnBuf.freeNativeMemory()
+
+        applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config.handle.toCPointer()!!))
+
+        // Create & bind UDP socket
+        val fd = socket(AF_INET, SOCK_DGRAM, 0)
+        check(fd >= 0) { "Failed to create UDP socket" }
+
+        memScoped {
+            val addr = alloc<sockaddr_in>()
+            addr.sin_family = AF_INET.convert()
+            addr.sin_addr.s_addr = htonl(INADDR_ANY)
+            addr.sin_port = htons(port.toUShort())
+            val bindRc = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+            check(bindRc == 0) { "Failed to bind UDP socket to port $port" }
+        }
+
+        // Get assigned port
+        val boundPort =
+            memScoped {
+                val boundAddr = alloc<sockaddr_in>()
+                val boundLen = alloc<UIntVar>()
+                boundLen.value = sizeOf<sockaddr_in>().convert()
+                socket_getsockname(fd, boundAddr.ptr.reinterpret(), boundLen.ptr)
+                ntohs(boundAddr.sin_port).toInt()
+            }
+
+        // Copy local address to heap buffer for recvInfo (outlives memScoped)
+        val localAddrBuf = bufferFactory.allocate(sizeOf<sockaddr_in>().toInt())
+        memScoped {
+            val localAddr = alloc<sockaddr_in>()
+            val localLen = alloc<UIntVar>()
+            localLen.value = sizeOf<sockaddr_in>().convert()
+            socket_getsockname(fd, localAddr.ptr.reinterpret(), localLen.ptr)
+            val dst = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
+            memcpy(dst, localAddr.ptr, sizeOf<sockaddr_in>().convert())
+        }
+
+        return LinuxQuicServer(
+            api = api,
+            config = config,
+            serverChannel = IoUringUdpServerChannel(fd),
+            boundPort = boundPort,
+            localAddrBuf = localAddrBuf,
+            bufferFactory = bufferFactory,
+            scope = scope,
+        )
+    }
+
+    override fun close() {}
+
+    companion object {
+        private const val QUICHE_PROTOCOL_VERSION = 0x00000001
+    }
+}
+
+/**
+ * Linux QUIC server. Central receive loop uses [IoUringUdpServerChannel.recvFrom]
+ * to parse QUIC headers and route packets by DCID to the appropriate [QuicheDriver].
+ *
+ * Mirrors [JvmQuicServer] architecture — each connection driven by its own [QuicheDriver],
+ * no shared mutexes, zero-copy packet delivery.
+ */
+private class LinuxQuicServer(
+    private val api: QuicheApi,
+    private val config: QuicheConfig,
+    private val serverChannel: IoUringUdpServerChannel,
+    private val boundPort: Int,
+    private val localAddrBuf: PlatformBuffer,
+    private val bufferFactory: BufferFactory,
+    private val scope: CoroutineScope,
+) : QuicServer {
+    override val port: Int get() = boundPort
+
+    private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
+    private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
+
+    @kotlin.concurrent.Volatile
+    private var closed = false
+
+    private val receiveJob = scope.launch(Dispatchers.Default) { receiveLoop() }
+
+    override suspend fun connections(handler: suspend QuicScope.() -> Unit) {
+        for (driver in acceptedDrivers) {
+            scope.launch(Dispatchers.Default) {
+                val connJob = SupervisorJob(coroutineContext[Job])
+                val connScope = CoroutineScope(coroutineContext + connJob)
+                val conn = LinuxServerQuicConnection(driver, bufferFactory, connScope)
+                try {
+                    conn.state.first { it !is QuicConnectionState.Handshaking }
+                    if (conn.state.value is QuicConnectionState.Established) {
+                        conn.handler()
+                    }
+                } finally {
+                    conn.close()
+                    connJob.cancel()
+                }
+            }
+        }
+    }
+
+    override suspend fun close() {
+        if (closed) return
+        closed = true
+        for (driver in connectionsByDcid.values.toSet()) {
+            driver.destroy()
+        }
+        connectionsByDcid.clear()
+        api.configFree(config)
+        acceptedDrivers.close()
+        serverChannel.close()
+        receiveJob.cancel()
+        localAddrBuf.freeNativeMemory()
+    }
+
+    /**
+     * Central receive loop. Suspends on io_uring until a UDP packet arrives,
+     * parses the QUIC header to extract the DCID, and routes to the owning
+     * [QuicheDriver] or accepts a new connection.
+     */
+    private suspend fun receiveLoop() {
+        // Header parsing scratch buffers (reused across iterations)
+        val versionBuf = bufferFactory.allocate(4)
+        val typeBuf = bufferFactory.allocate(1)
+        val scidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
+        val scidLenBuf = bufferFactory.allocate(8)
+        val dcidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
+        val dcidLenBuf = bufferFactory.allocate(8)
+        val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
+        val tokenLenBuf = bufferFactory.allocate(8)
+
+        try {
+            while (!closed) {
+                // Allocate a fresh buffer per packet — ownership transfers to driver (zero-copy)
+                val recvBuf = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
+
+                val recvResult =
+                    try {
+                        serverChannel.recvFrom(recvBuf)
+                    } catch (_: Exception) {
+                        recvBuf.freeNativeMemory()
+                        if (closed) return
+                        continue
+                    }
+
+                if (recvResult.bytesReceived <= 0) {
+                    recvBuf.freeNativeMemory()
+                    continue
+                }
+
+                val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+
+                // Initialize size_t output buffers with max capacity
+                writeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
+                writeSizeT(dcidLenBuf, QUIC_MAX_CONN_ID_LEN)
+                writeSizeT(tokenLenBuf, MAX_TOKEN_LEN)
+
+                val rc =
+                    api.headerInfo(
+                        recvAddr,
+                        recvResult.bytesReceived,
+                        QUIC_MAX_CONN_ID_LEN,
+                        versionBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        typeBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        scidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        scidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        dcidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        dcidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        tokenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        tokenLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                    )
+                if (rc < 0) {
+                    recvBuf.freeNativeMemory()
+                    continue
+                }
+
+                val dcidLen = readSizeT(dcidLenBuf)
+                val dcidKey = ConnectionIdKey.fromNative(dcidBuf, dcidLen)
+
+                val existingDriver = connectionsByDcid[dcidKey]
+                if (existingDriver != null) {
+                    val sendResult = existingDriver.commands.trySend(QuicheCmd.RecvPacket(recvBuf, recvResult.bytesReceived))
+                    if (sendResult.isFailure) {
+                        recvBuf.freeNativeMemory()
+                        connectionsByDcid.remove(dcidKey)
+                    }
+                } else {
+                    val result = acceptNewConnection(recvBuf, recvResult)
+                    if (result != null) {
+                        val (driver, serverScidKey) = result
+                        connectionsByDcid[serverScidKey] = driver
+                        connectionsByDcid[dcidKey] = driver
+                        acceptedDrivers.trySend(driver)
+                    }
+                }
+            }
+        } finally {
+            versionBuf.freeNativeMemory()
+            typeBuf.freeNativeMemory()
+            scidBuf.freeNativeMemory()
+            scidLenBuf.freeNativeMemory()
+            dcidBuf.freeNativeMemory()
+            dcidLenBuf.freeNativeMemory()
+            tokenBuf.freeNativeMemory()
+            tokenLenBuf.freeNativeMemory()
+        }
+    }
+
+    /**
+     * Accept a new QUIC connection.
+     * [recvBuf] ownership is consumed: it is freed after the initial packet is fed to quiche.
+     */
+    private fun acceptNewConnection(
+        recvBuf: PlatformBuffer,
+        recvResult: RecvFromResult,
+    ): Pair<QuicheDriver, ConnectionIdKey>? {
+        val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+
+        val serverScid = generateScid(bufferFactory)
+        val serverScidAddr = serverScid.nativeMemoryAccess!!.nativeAddress.toLong()
+
+        val localAddr = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+        val localAddrLen = sizeOf<sockaddr_in>().toInt()
+
+        val peerAddr = recvResult.peerAddr.rawValue.toLong()
+        val peerAddrLen = recvResult.peerAddrLen.toInt()
+
+        val conn =
+            try {
+                api.accept(
+                    serverScidAddr,
+                    QUIC_MAX_CONN_ID_LEN,
+                    0L, // no retry / odcid
+                    0,
+                    localAddr,
+                    localAddrLen,
+                    peerAddr,
+                    peerAddrLen,
+                    config,
+                )
+            } catch (_: Exception) {
+                serverScid.freeNativeMemory()
+                recvBuf.freeNativeMemory()
+                return null
+            }
+
+        if (conn.handle == 0L) {
+            serverScid.freeNativeMemory()
+            recvBuf.freeNativeMemory()
+            return null
+        }
+
+        // Copy peer address to heap — recvResult.peerAddr points to IoUringUdpServerChannel's
+        // internal buffer which will be overwritten on the next recvFrom call
+        val peerAddrCopy = nativeHeap.alloc<sockaddr_storage>()
+        memcpy(peerAddrCopy.ptr, recvResult.peerAddr, peerAddrLen.convert())
+
+        // Create per-connection recvInfo (peer → local) and sendInfo
+        val peerBuf = bufferFactory.allocate(peerAddrLen)
+        val peerDst = peerBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
+        memcpy(peerDst, recvResult.peerAddr, peerAddrLen.convert())
+
+        val recvInfo =
+            api.recvInfoNew(
+                peerBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                peerAddrLen,
+                localAddr,
+                localAddrLen,
+            )
+        val sendInfo = api.sendInfoNew()
+
+        // Feed the initial packet before the driver starts
+        api.connRecv(conn, recvAddr, recvResult.bytesReceived, recvInfo)
+        recvBuf.freeNativeMemory()
+
+        val udpChannel = ServerConnectionUdpChannel(serverChannel, peerAddrCopy.ptr, peerAddrLen.convert())
+        val driver =
+            QuicheDriver(
+                api = api,
+                conn = conn,
+                bufferFactory = bufferFactory,
+                recvInfo = recvInfo,
+                sendInfo = sendInfo,
+                udpChannel = udpChannel,
+                clientMode = false,
+                isServer = true,
+            )
+
+        driver.start(scope)
+
+        val scidKey = ConnectionIdKey.fromNative(serverScid, QUIC_MAX_CONN_ID_LEN)
+        serverScid.freeNativeMemory()
+        return driver to scidKey
+    }
+
+    companion object {
+        private const val MAX_DATAGRAM_SIZE = 1350
+        private const val MAX_TOKEN_LEN = 256
+    }
+}
+
+// --- Helpers ---
+
+private fun writeNullTerminatedString(
+    str: String,
+    factory: BufferFactory,
+): PlatformBuffer {
+    val buf = factory.allocate(str.length + 1)
+    buf.writeString(str, Charset.UTF8)
+    buf.writeByte(0)
+    buf.resetForRead()
+    return buf
+}
+
+/** Write a native `size_t` value into a [PlatformBuffer]'s backing memory. */
+private fun writeSizeT(
+    buf: PlatformBuffer,
+    value: Int,
+) {
+    buf.nativeMemoryAccess!!
+        .nativeAddress
+        .toCPointer<ULongVar>()!!
+        .pointed
+        .value = value.toULong()
+}
+
+/** Read a native `size_t` from a [PlatformBuffer]'s backing memory. */
+private fun readSizeT(buf: PlatformBuffer): Int =
+    buf.nativeMemoryAccess!!
+        .nativeAddress
+        .toCPointer<ULongVar>()!!
+        .pointed
+        .value
+        .toInt()
+
+/**
+ * Key for connection lookup by DCID. Byte-array equality/hashCode for map keys.
+ */
+private class ConnectionIdKey private constructor(
+    private val bytes: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean = other is ConnectionIdKey && bytes.contentEquals(other.bytes)
+
+    override fun hashCode(): Int = bytes.contentHashCode()
+
+    companion object {
+        fun fromNative(
+            buffer: PlatformBuffer,
+            length: Int,
+        ): ConnectionIdKey {
+            val addr = buffer.nativeMemoryAccess!!.nativeAddress
+            val bytes = ByteArray(length)
+            for (i in 0 until length) {
+                bytes[i] = (addr + i).toCPointer<ByteVar>()!!.pointed.value
+            }
+            return ConnectionIdKey(bytes)
+        }
+    }
+}
+
+/**
+ * Server-side QUIC connection backed by a [QuicheDriver].
+ */
+private class LinuxServerQuicConnection(
+    private val driver: QuicheDriver,
+    private val bufferFactory: BufferFactory,
+    connectionScope: CoroutineScope,
+) : QuicConnection,
+    CoroutineScope by connectionScope {
+    override val state: StateFlow<QuicConnectionState> = driver.state
+
+    override suspend fun openStream(): QuicByteStream {
+        try {
+            val deferred = CompletableDeferred<StreamSlot>()
+            driver.commands.send(QuicheCmd.OpenStream(deferred))
+            val slot = deferred.await()
+            val adapter = DriverStreamAdapter(driver, slot)
+            return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, bufferFactory))
+        } catch (_: ClosedSendChannelException) {
+            throw SocketClosedException.General("connection closed")
+        }
+    }
+
+    override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
+
+    override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
+
+    override suspend fun close(error: QuicError) {
+        try {
+            val deferred = CompletableDeferred<Unit>()
+            driver.commands.send(QuicheCmd.Close(error, deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            // Already closed
+        }
+        driver.destroy()
+    }
+}
