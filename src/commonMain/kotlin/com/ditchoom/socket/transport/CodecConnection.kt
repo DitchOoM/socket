@@ -85,12 +85,7 @@ class CodecConnection<T>(
 
     override suspend fun send(message: T) {
         check(!closed) { "CodecConnection is closed" }
-        val size =
-            when (val estimate = codec.sizeOf(message)) {
-                is com.ditchoom.buffer.codec.SizeEstimate.Exact -> estimate.bytes
-                com.ditchoom.buffer.codec.SizeEstimate.UnableToPrecalculate -> options.defaultBufferSize
-            }
-        val buffer = pool.acquire(size)
+        val buffer = pool.acquire(codec.wireSizeHint.coerceAtLeast(options.defaultBufferSize))
         try {
             codec.encode(buffer, message, encodeContext)
             buffer.resetForRead()

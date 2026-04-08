@@ -104,9 +104,11 @@ open class NodeSocket : ClientSocket {
 
     override suspend fun read(timeout: Duration): ReadBuffer {
         val socket = netSocket
-        if (socket == null || !isOpen()) {
-            throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
-        }
+            ?: throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
+        // Don't pre-check isOpen() — the channel may still have buffered data from
+        // "data" events that fired before a "close" event set isClosed=true.
+        // Draining the channel first prevents a race where fast-closing servers
+        // (like Autobahn) send a response and close before read() is called.
         socket.resume()
         val message =
             withTimeout(timeout) {
@@ -119,7 +121,7 @@ open class NodeSocket : ClientSocket {
                     )
                 }
             }
-        if (message.bytesRead < 0 || !isOpen()) {
+        if (message.bytesRead < 0) {
             throw SocketClosedException.General(
                 "Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError",
             )
@@ -199,6 +201,9 @@ class NodeClientSocket :
         val netSocket = connect(useTls, options, timeout)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
+        if (socketOptions.tcpNoDelay == true) {
+            netSocket.setNoDelay(true)
+        }
         netSocket.on("data") { data ->
             val result = int8ArrayOf(data)
             val buffer = JsBuffer(result)
