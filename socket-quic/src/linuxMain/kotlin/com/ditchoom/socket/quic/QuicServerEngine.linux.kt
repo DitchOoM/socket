@@ -158,6 +158,13 @@ private class LinuxQuicServer(
     private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
 
+    /**
+     * Queue for drivers that need their [connectionsByDcid] entries removed.
+     * Connection handlers add drivers here after close; the receive loop drains it.
+     * This keeps all map mutations on the receive loop coroutine.
+     */
+    private val driverCleanupCh = Channel<QuicheDriver>(Channel.UNLIMITED)
+
     @kotlin.concurrent.Volatile
     private var closed = false
 
@@ -176,6 +183,7 @@ private class LinuxQuicServer(
                     }
                 } finally {
                     conn.close()
+                    driverCleanupCh.trySend(driver)
                     connJob.cancel()
                 }
             }
@@ -214,6 +222,9 @@ private class LinuxQuicServer(
 
         try {
             while (!closed) {
+                // Remove entries for drivers closed by connection handlers
+                drainCleanupChannel()
+
                 // Allocate a fresh buffer per packet — ownership transfers to driver (zero-copy)
                 val recvBuf = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
 
@@ -265,7 +276,8 @@ private class LinuxQuicServer(
                     val sendResult = existingDriver.commands.trySend(QuicheCmd.RecvPacket(recvBuf, recvResult.bytesReceived))
                     if (sendResult.isFailure) {
                         recvBuf.freeNativeMemory()
-                        connectionsByDcid.remove(dcidKey)
+                        // Remove ALL entries for this dead driver, not just the one we hit
+                        connectionsByDcid.keys.removeAll { connectionsByDcid[it] === existingDriver }
                     }
                 } else {
                     val result = acceptNewConnection(recvBuf, recvResult)
@@ -286,6 +298,17 @@ private class LinuxQuicServer(
             dcidLenBuf.freeNativeMemory()
             tokenBuf.freeNativeMemory()
             tokenLenBuf.freeNativeMemory()
+        }
+    }
+
+    /**
+     * Drain the cleanup channel — remove all [connectionsByDcid] entries for dead drivers.
+     * Called from the receive loop coroutine only.
+     */
+    private fun drainCleanupChannel() {
+        while (true) {
+            val driver = driverCleanupCh.tryReceive().getOrNull() ?: break
+            connectionsByDcid.keys.removeAll { connectionsByDcid[it] === driver }
         }
     }
 

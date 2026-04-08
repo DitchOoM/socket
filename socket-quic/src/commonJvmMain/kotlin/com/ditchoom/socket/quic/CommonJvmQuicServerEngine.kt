@@ -22,6 +22,7 @@ import java.net.SocketAddress
 import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.time.Duration
 
 /** Shared JVM/Android QUIC server engine. */
@@ -115,6 +116,13 @@ internal class JvmQuicServer(
     private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
 
+    /**
+     * Thread-safe queue for drivers that need their [connectionsByDcid] entries removed.
+     * Connection handlers add drivers here after close; the receive loop drains it.
+     * This keeps all map mutations on the receive loop thread — no ConcurrentHashMap needed.
+     */
+    private val driverCleanupQueue = ConcurrentLinkedQueue<QuicheDriver>()
+
     @Volatile private var closed = false
 
     @Volatile private var receiveSelector: Selector? = null
@@ -133,6 +141,8 @@ internal class JvmQuicServer(
                     }
                 } finally {
                     conn.close()
+                    driverCleanupQueue.add(driver)
+                    receiveSelector?.wakeup()
                     connJob.cancel()
                 }
             }
@@ -175,9 +185,13 @@ internal class JvmQuicServer(
             channel.register(selector, SelectionKey.OP_READ)
 
             while (!closed) {
-                selector.select() // async wait — unblocked by channel.close()
+                selector.select() // async wait — unblocked by channel.close() or cleanup wakeup
                 if (closed) break
                 selector.selectedKeys().clear()
+
+                // Remove entries for drivers that have been closed by connection handlers.
+                // This runs on the receive loop thread — sole writer to connectionsByDcid.
+                drainCleanupQueue()
 
                 // Drain all available packets after select returns
                 while (true) {
@@ -242,7 +256,8 @@ internal class JvmQuicServer(
                         val sendResult = existingDriver.commands.trySend(QuicheCmd.RecvPacket(recvBuf, received))
                         if (sendResult.isFailure) {
                             recvBuf.freeNativeMemory()
-                            connectionsByDcid.remove(dcidKey)
+                            // Remove ALL entries for this dead driver, not just the one we hit
+                            connectionsByDcid.entries.removeIf { it.value === existingDriver }
                         }
                     } else {
                         // Accept new connection — recvBuf ownership transfers inside
@@ -273,6 +288,17 @@ internal class JvmQuicServer(
                 selector.close()
             } catch (_: Exception) {
             }
+        }
+    }
+
+    /**
+     * Drain the cleanup queue — remove all [connectionsByDcid] entries for dead drivers.
+     * Called from the receive loop thread only.
+     */
+    private fun drainCleanupQueue() {
+        while (true) {
+            val driver = driverCleanupQueue.poll() ?: break
+            connectionsByDcid.entries.removeIf { it.value === driver }
         }
     }
 
