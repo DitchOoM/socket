@@ -3,9 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
-    // KSP available but not applied — @ProtocolMessage is a marker annotation.
-    // Consumers who want generated codecs can apply KSP + buffer-codec-processor themselves.
-    // alias(libs.plugins.ksp)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
     signing
@@ -491,13 +489,81 @@ afterEvaluate {
         }
     }
 
+    // --- Network control server for migration tests ---
+    val netCtrlPidFile = layout.buildDirectory.file("network-control-server.pid").get().asFile
+
+    tasks.register("startNetworkControlServer") {
+        group = "verification"
+        description = "Start the network control server on localhost:9998 for migration tests"
+        dependsOn("compileTestKotlinJvm", "jvmTestProcessResources")
+
+        doLast {
+            if (netCtrlPidFile.exists()) {
+                val oldPid = netCtrlPidFile.readText().trim()
+                ProcessBuilder("kill", oldPid).start().waitFor()
+                netCtrlPidFile.delete()
+            }
+
+            val testClasspath =
+                kotlin.jvm().compilations["test"].runtimeDependencyFiles.files +
+                    kotlin.jvm().compilations["test"].output.allOutputs.files +
+                    kotlin.jvm().compilations["main"].output.allOutputs.files +
+                    kotlin.jvm().compilations["java21"].output.allOutputs.files
+
+            val classpathStr = testClasspath.joinToString(File.pathSeparator)
+            val javaExec = org.gradle.internal.jvm.Jvm.current().javaExecutable.absolutePath
+
+            val process =
+                ProcessBuilder(
+                    javaExec,
+                    "--enable-native-access=ALL-UNNAMED",
+                    "--add-opens", "java.base/java.nio=ALL-UNNAMED",
+                    "-cp", classpathStr,
+                    "com.ditchoom.socket.quic.netctrl.NetworkControlServerKt",
+                ).redirectErrorStream(true)
+                    .start()
+
+            netCtrlPidFile.parentFile.mkdirs()
+            netCtrlPidFile.writeText(process.pid().toString())
+
+            val reader = process.inputStream.bufferedReader()
+            val deadline = System.currentTimeMillis() + 10_000
+            while (System.currentTimeMillis() < deadline) {
+                if (reader.ready()) {
+                    val line = reader.readLine() ?: break
+                    logger.lifecycle("[net-ctrl] $line")
+                    if (line.contains("READY")) break
+                }
+                Thread.sleep(100)
+            }
+            if (!process.isAlive) throw GradleException("Network control server failed to start")
+
+            ProcessBuilder("adb", "reverse", "tcp:9998", "tcp:9998")
+                .redirectErrorStream(true).start().waitFor()
+
+            logger.lifecycle("Network control server running (PID ${process.pid()}), adb reverse configured")
+        }
+    }
+
+    tasks.register("stopNetworkControlServer") {
+        group = "verification"
+        description = "Stop the network control server"
+        doLast {
+            if (netCtrlPidFile.exists()) {
+                val pid = netCtrlPidFile.readText().trim()
+                ProcessBuilder("kill", pid).start().waitFor()
+                netCtrlPidFile.delete()
+                logger.lifecycle("Stopped network control server (PID $pid)")
+            }
+        }
+    }
+
     tasks.register("androidQuicIntegrationTest") {
         group = "verification"
-        description = "Build native libs, start test server, run Android instrumented tests, stop server"
-        dependsOn("startQuicTestServer")
-        finalizedBy("stopQuicTestServer")
+        description = "Build native libs, start servers, run Android instrumented tests, stop servers"
+        dependsOn("startQuicTestServer", "startNetworkControlServer")
+        finalizedBy("stopQuicTestServer", "stopNetworkControlServer")
         doLast {
-            // Run the actual connected tests
             val result =
                 ProcessBuilder(
                     "${rootProject.projectDir}/gradlew",
@@ -645,6 +711,7 @@ kotlin {
         androidMain.get().dependsOn(commonJvmMain)
         val commonJvmTest by creating {
             dependsOn(commonTest.get())
+            kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
         }
         jvmTest.get().dependsOn(commonJvmTest)
         val androidUnitTest by getting {
@@ -653,6 +720,7 @@ kotlin {
             }
         }
         val androidInstrumentedTest by getting {
+            kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)
@@ -664,13 +732,18 @@ kotlin {
     }
 }
 
-// KSP codec processor wiring (disabled — see alias above)
-// kotlin.targets.configureEach {
-//     if (name != "metadata") {
-//         dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec.processor)
-//         dependencies.add("ksp${name.replaceFirstChar { it.uppercase() }}", libs.buffer.codec)
-//     }
-// }
+// KSP codec processor — wired for JVM and Android test compilations only.
+// Generates codecs for @ProtocolMessage types in commonJvmTest (NetCtrlProtocol).
+dependencies {
+    add("kspJvmTest", libs.buffer.codec.processor)
+}
+// Android KSP configurations are registered after evaluation
+afterEvaluate {
+    val kspConfigs = configurations.names.filter { it.startsWith("ksp") && it.contains("Android", ignoreCase = true) }
+    kspConfigs.filter { it.contains("Test", ignoreCase = true) }.forEach { configName ->
+        dependencies.add(configName, libs.buffer.codec.processor.get())
+    }
+}
 
 kotlin {
     sourceSets {

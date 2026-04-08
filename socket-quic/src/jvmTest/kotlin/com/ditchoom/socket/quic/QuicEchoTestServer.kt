@@ -2,8 +2,8 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -36,22 +36,27 @@ fun main(args: Array<String>) {
         println("READY port=${server.port}")
         System.out.flush()
 
-        // Accept connections — each connection gets its own coroutine scope
+        // Accept connections — each runs in its own coroutine scope
         server.connections {
-            // Accept one stream per connection and echo its data back
-            val stream = acceptStream()
             try {
-                while (true) {
-                    val data = stream.read(30.seconds)
-                    if (data is ReadResult.Data) {
-                        stream.write(data.buffer, 10.seconds)
-                    } else {
-                        break
+                // acceptStream has a timeout so health-check connections
+                // (that connect but never open a stream) don't block the server
+                val stream = withTimeout(3.seconds) { acceptStream() }
+                try {
+                    while (true) {
+                        val data = stream.read(30.seconds)
+                        if (data is ReadResult.Data) {
+                            stream.write(data.buffer, 10.seconds)
+                        } else {
+                            break
+                        }
                     }
+                } catch (_: Exception) {
+                } finally {
+                    stream.close()
                 }
             } catch (_: Exception) {
-            } finally {
-                stream.close()
+                // Health-check connection with no stream — just let it close
             }
         }
     }
