@@ -5,7 +5,6 @@ import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
-import com.ditchoom.buffer.codec.SizeEstimate
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionContext
@@ -42,7 +41,7 @@ private object TestCodec : Codec<String> {
         buffer.writeBytes(bytes)
     }
 
-    override fun sizeOf(value: String): SizeEstimate = SizeEstimate.Exact(2 + value.encodeToByteArray().size)
+    override val wireSizeHint: Int get() = 256
 
     override fun peekFrameSize(
         stream: StreamProcessor,

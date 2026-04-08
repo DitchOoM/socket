@@ -9,15 +9,43 @@ import java.io.InputStreamReader
  * All commands require root access (`su`). Call [isRooted] first to verify.
  */
 object EmulatorNetworkUtils {
-    /** Check if root access is available. */
-    fun isRooted(): Boolean =
-        try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
-            val result = process.waitFor()
-            result == 0
-        } catch (_: Exception) {
-            false
+    /**
+     * Detected `su` invocation style. Newer emulators (API 30+) use `su 0 <cmd>`
+     * while older ones use `su -c <cmd>`. Detected once and cached.
+     */
+    private val suStyle: SuStyle by lazy { detectSuStyle() }
+
+    private enum class SuStyle { DASH_C, NUMERIC, NONE }
+
+    /** Known locations for the `su` binary on various emulator images. */
+    private val suPaths = listOf("su", "/system/xbin/su", "/system/bin/su", "/sbin/su")
+
+    private fun detectSuStyle(): SuStyle {
+        for (su in suPaths) {
+            // Try "su 0 id" first (works on newer emulators / userdebug builds)
+            try {
+                val p = Runtime.getRuntime().exec(arrayOf(su, "0", "id"))
+                if (p.waitFor() == 0) {
+                    suBinary = su
+                    return SuStyle.NUMERIC
+                }
+            } catch (_: Exception) {}
+            // Fall back to "su -c id" (older emulators)
+            try {
+                val p = Runtime.getRuntime().exec(arrayOf(su, "-c", "id"))
+                if (p.waitFor() == 0) {
+                    suBinary = su
+                    return SuStyle.DASH_C
+                }
+            } catch (_: Exception) {}
         }
+        return SuStyle.NONE
+    }
+
+    private var suBinary: String = "su"
+
+    /** Check if root access is available. */
+    fun isRooted(): Boolean = suStyle != SuStyle.NONE
 
     /** Block all outgoing UDP traffic via iptables. */
     fun blockUdp() {
@@ -52,7 +80,12 @@ object EmulatorNetworkUtils {
     }
 
     private fun execRoot(command: String): String {
-        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+        val args = when (suStyle) {
+            SuStyle.NUMERIC -> arrayOf(suBinary, "0", command)
+            SuStyle.DASH_C -> arrayOf(suBinary, "-c", command)
+            SuStyle.NONE -> throw RuntimeException("Root not available")
+        }
+        val process = Runtime.getRuntime().exec(args)
         val reader = BufferedReader(InputStreamReader(process.inputStream))
         val output = reader.readText()
         val exitCode = process.waitFor()

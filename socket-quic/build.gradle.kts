@@ -292,6 +292,225 @@ tasks.register("buildQuicheAll") {
     }
 }
 
+// --- Android JNI native library build ---
+// Builds quiche via cargo-ndk and compiles the JNI shim with NDK clang.
+// Requires: cargo, cargo-ndk, Android NDK, Rust Android targets
+//   rustup target add x86_64-linux-android aarch64-linux-android
+//   cargo install cargo-ndk
+
+// Resolve Android NDK — checks env vars then common install locations
+val androidNdkDir: File? by lazy {
+    val envNdk = System.getenv("ANDROID_NDK_HOME")
+    if (envNdk != null && File(envNdk).exists()) return@lazy File(envNdk)
+    val sdkRoot = System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME")
+    if (sdkRoot != null) {
+        val ndkDir = File(sdkRoot, "ndk")
+        if (ndkDir.exists()) return@lazy ndkDir.listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name }
+    }
+    val homeNdk = File(System.getProperty("user.home"), "Android/ndk")
+    if (homeNdk.exists()) return@lazy homeNdk.listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name }
+    null
+}
+
+data class AndroidAbi(
+    val abi: String,
+    val rustTarget: String,
+    val ndkClangPrefix: String,
+)
+
+val androidAbis = listOf(
+    AndroidAbi("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android24"),
+    AndroidAbi("x86_64", "x86_64-linux-android", "x86_64-linux-android24"),
+)
+
+fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
+    val ndk = androidNdkDir ?: return null
+    val outputDir = projectDir.resolve("src/androidMain/jniLibs/${abi.abi}")
+    val outputLib = outputDir.resolve("libquiche_jni.so")
+    val markerFile = outputDir.resolve(".built-$quicheVersion")
+
+    return tasks.register("buildAndroidJni${abi.abi.replace("-", "").replaceFirstChar { it.uppercase() }}") {
+        group = "build"
+        description = "Build quiche + JNI shim for Android ${abi.abi}"
+        inputs.property("quicheVersion", quicheVersion)
+        inputs.file("src/jni/quiche_jni.c")
+        outputs.file(markerFile)
+        onlyIf { !markerFile.exists() }
+
+        doLast {
+            // 1. Get quiche source (reuses shared clone)
+            val buildDir = quicheBuildDir.get().asFile
+            val sourceDir = downloadQuicheSource(buildDir, quicheVersion, quicheSha256)
+
+            // 2. Build quiche for Android via cargo ndk
+            logger.lifecycle("Building quiche for Android ${abi.abi}...")
+            val env = mutableMapOf<String, String>()
+            env["ANDROID_NDK_HOME"] = ndk.absolutePath
+            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+
+            val cargoResult =
+                ProcessBuilder(
+                    cargoBin, "ndk", "--target", abi.abi, "--platform", "24",
+                    "--", "build", "--release", "--package", "quiche",
+                    "--no-default-features", "--features", "ffi,boringssl-vendored",
+                ).directory(sourceDir)
+                    .also { pb -> pb.environment().putAll(env) }
+                    .redirectErrorStream(true)
+                    .start()
+                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
+                    .waitFor()
+            if (cargoResult != 0) throw GradleException("cargo ndk build failed for ${abi.abi}")
+
+            // 3. Find the static library
+            val quicheLib = sourceDir.resolve("target/${abi.rustTarget}/release/libquiche.a")
+            if (!quicheLib.exists()) throw GradleException("libquiche.a not found at ${quicheLib.absolutePath}")
+
+            // 4. Compile JNI shim with NDK clang
+            outputDir.mkdirs()
+            val ndkHost = if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) "darwin-x86_64" else "linux-x86_64"
+            val ndkToolchain = ndk.resolve("toolchains/llvm/prebuilt/$ndkHost")
+            val ndkClang = ndkToolchain.resolve("bin/${abi.ndkClangPrefix}-clang")
+            val llvmStrip = ndkToolchain.resolve("bin/llvm-strip")
+            val javaHome = System.getenv("JAVA_HOME") ?: org.gradle.internal.jvm.Jvm.current().javaHome.absolutePath
+
+            logger.lifecycle("Compiling JNI shim for ${abi.abi}...")
+            val clangResult =
+                ProcessBuilder(
+                    ndkClang.absolutePath, "-shared", "-fPIC", "-Wall",
+                    "-o", outputLib.absolutePath,
+                    projectDir.resolve("src/jni/quiche_jni.c").absolutePath,
+                    "-I$javaHome/include", "-I$javaHome/include/linux",
+                    "-I${projectDir.resolve("libs/quiche/include").absolutePath}",
+                    "-Wl,--whole-archive", quicheLib.absolutePath, "-Wl,--no-whole-archive",
+                    "-lm", "-ldl", "-llog",
+                ).redirectErrorStream(true)
+                    .start()
+                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
+                    .waitFor()
+            if (clangResult != 0) throw GradleException("JNI shim compilation failed for ${abi.abi}")
+
+            ProcessBuilder(llvmStrip.absolutePath, "--strip-all", outputLib.absolutePath).start().waitFor()
+
+            markerFile.writeText("quiche $quicheVersion JNI shim for ${abi.abi} built on ${System.currentTimeMillis()}")
+            logger.lifecycle("Built: ${outputLib.absolutePath} (${outputLib.length() / 1024}KB)")
+        }
+    }
+}
+
+val androidJniTasks = androidAbis.mapNotNull { createBuildAndroidJniTask(it) }
+
+if (androidJniTasks.isNotEmpty()) {
+    tasks.register("buildAndroidNativeLibs") {
+        group = "build"
+        description = "Build quiche JNI shims for all Android ABIs"
+        dependsOn(androidJniTasks)
+    }
+
+    // Ensure JNI shims are built before any connected Android test
+    afterEvaluate {
+        tasks.matching { it.name.startsWith("connected") && it.name.contains("AndroidTest") }.configureEach {
+            dependsOn(androidJniTasks)
+        }
+    }
+}
+
+// --- QUIC test server for Android instrumented tests ---
+// Starts a QUIC echo server on the host so the emulator can connect via adb reverse.
+
+afterEvaluate {
+    val quicTestServerPidFile = layout.buildDirectory.file("quic-test-server.pid").get().asFile
+
+    tasks.register("startQuicTestServer") {
+        group = "verification"
+        description = "Start a QUIC echo server on localhost:4433 for Android instrumented tests"
+        dependsOn("compileTestKotlinJvm", "jvmTestProcessResources")
+
+        doLast {
+            if (quicTestServerPidFile.exists()) {
+                val oldPid = quicTestServerPidFile.readText().trim()
+                ProcessBuilder("kill", oldPid).start().waitFor()
+                quicTestServerPidFile.delete()
+            }
+
+            val testClasspath =
+                kotlin.jvm().compilations["test"].runtimeDependencyFiles.files +
+                    kotlin.jvm().compilations["test"].output.allOutputs.files +
+                    kotlin.jvm().compilations["main"].output.allOutputs.files +
+                    kotlin.jvm().compilations["java21"].output.allOutputs.files
+
+            val classpathStr = testClasspath.joinToString(File.pathSeparator)
+            val javaExec = org.gradle.internal.jvm.Jvm.current().javaExecutable.absolutePath
+            val certDir = projectDir.resolve("testcerts")
+
+            val process =
+                ProcessBuilder(
+                    javaExec,
+                    "--enable-native-access=ALL-UNNAMED",
+                    "--add-opens", "java.base/java.nio=ALL-UNNAMED",
+                    "-cp", classpathStr,
+                    "com.ditchoom.socket.quic.QuicEchoTestServerKt",
+                    certDir.resolve("cert.crt").absolutePath,
+                    certDir.resolve("cert.key").absolutePath,
+                ).redirectErrorStream(true)
+                    .start()
+
+            quicTestServerPidFile.parentFile.mkdirs()
+            quicTestServerPidFile.writeText(process.pid().toString())
+
+            // Wait for server to be ready (looks for "READY" on stdout)
+            val reader = process.inputStream.bufferedReader()
+            val deadline = System.currentTimeMillis() + 10_000
+            while (System.currentTimeMillis() < deadline) {
+                if (reader.ready()) {
+                    val line = reader.readLine() ?: break
+                    logger.lifecycle("[quic-server] $line")
+                    if (line.contains("READY")) break
+                }
+                Thread.sleep(100)
+            }
+            if (!process.isAlive) throw GradleException("QUIC test server failed to start")
+
+            // Set up adb reverse so emulator localhost:4433 → host:4433
+            ProcessBuilder("adb", "reverse", "tcp:4433", "tcp:4433")
+                .redirectErrorStream(true).start().waitFor()
+
+            logger.lifecycle("QUIC test server running (PID ${process.pid()}), adb reverse configured")
+        }
+    }
+
+    tasks.register("stopQuicTestServer") {
+        group = "verification"
+        description = "Stop the QUIC echo test server"
+        doLast {
+            if (quicTestServerPidFile.exists()) {
+                val pid = quicTestServerPidFile.readText().trim()
+                ProcessBuilder("kill", pid).start().waitFor()
+                quicTestServerPidFile.delete()
+                logger.lifecycle("Stopped QUIC test server (PID $pid)")
+            }
+        }
+    }
+
+    tasks.register("androidQuicIntegrationTest") {
+        group = "verification"
+        description = "Build native libs, start test server, run Android instrumented tests, stop server"
+        dependsOn("startQuicTestServer")
+        finalizedBy("stopQuicTestServer")
+        doLast {
+            // Run the actual connected tests
+            val result =
+                ProcessBuilder(
+                    "${rootProject.projectDir}/gradlew",
+                    ":socket-quic:connectedDebugAndroidTest",
+                ).directory(rootProject.projectDir)
+                    .inheritIO()
+                    .start()
+                    .waitFor()
+            if (result != 0) throw GradleException("Android instrumented tests failed")
+        }
+    }
+}
+
 fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuicHelpersCinterop() {
     compilations["main"].cinterops {
         create("NWQuicHelpers") {

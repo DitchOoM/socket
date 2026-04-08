@@ -36,7 +36,11 @@ class AndroidQuicMigrationTests {
 
     @Before
     fun checkPrerequisites() {
-        assumeTrue("Root access required for network migration tests", EmulatorNetworkUtils.isRooted())
+        assumeTrue(
+            "Root access required for network migration tests. " +
+                "Use an emulator with target=default (not google_apis) and run 'adb root' first.",
+            EmulatorNetworkUtils.isRooted(),
+        )
     }
 
     @After

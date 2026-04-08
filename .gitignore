@@ -30,6 +30,9 @@ local.properties
 
 # Built native libraries (built by Gradle)
 libs/
+# Android JNI shims (built by buildAndroidNativeLibs task)
+socket-quic/src/androidMain/jniLibs/*/*.so
+socket-quic/src/androidMain/jniLibs/*/.built-*
 
 # Docusaurus
 docs/node_modules/

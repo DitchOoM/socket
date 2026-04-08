@@ -7,6 +7,7 @@ import com.ditchoom.buffer.Default
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.test.assertIs
@@ -15,8 +16,8 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Android QUIC connectivity tests against a local server.
  *
- * The QUIC test server must be running on the host machine.
- * Emulator connects via 10.0.2.2 (host loopback alias) or adb reverse.
+ * Run via `./gradlew :socket-quic:androidQuicIntegrationTest` which starts
+ * the test server on the host and configures `adb reverse`.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicConnectivityTests {
@@ -30,6 +31,21 @@ class AndroidQuicConnectivityTests {
             idleTimeout = 10.seconds,
         )
 
+    /** Skip the entire class if the test server isn't reachable. */
+    @Before
+    fun checkServerReachable() {
+        val engine = defaultQuicEngine()
+        try {
+            runBlocking(Dispatchers.IO) {
+                engine.connect(serverHost, serverPort, testQuicOptions, timeout = 5.seconds) {}
+            }
+        } catch (_: Throwable) {
+            engine.close()
+            assumeTrue("QUIC test server not reachable at $serverHost:$serverPort — run androidQuicIntegrationTest", false)
+        }
+        engine.close()
+    }
+
     @Test
     fun connectToLocalServer() =
         runBlocking(Dispatchers.IO) {
@@ -38,8 +54,6 @@ class AndroidQuicConnectivityTests {
                 engine.connect(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
                     // If we reach here, handshake completed successfully
                 }
-            } catch (_: Throwable) {
-                assumeTrue("QUIC server not reachable — skipping", false)
             } finally {
                 engine.close()
             }
@@ -62,8 +76,6 @@ class AndroidQuicConnectivityTests {
 
                     stream.close()
                 }
-            } catch (_: Throwable) {
-                assumeTrue("QUIC server not reachable — skipping", false)
             } finally {
                 engine.close()
             }
