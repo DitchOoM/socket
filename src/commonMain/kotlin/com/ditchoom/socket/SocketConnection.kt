@@ -1,7 +1,7 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.ReadWriteBuffer
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.buffer.stream.SuspendingStreamProcessor
@@ -62,7 +62,7 @@ class SocketConnection private constructor(
 
     inline fun <T> withBuffer(
         minSize: Int = 0,
-        block: (ReadWriteBuffer) -> T,
+        block: (PlatformBuffer) -> T,
     ): T {
         val buf = pool.acquire(minSize)
         return try {
