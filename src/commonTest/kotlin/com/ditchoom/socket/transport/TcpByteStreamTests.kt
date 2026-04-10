@@ -19,10 +19,11 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 class TcpByteStreamTests {
-    private val testOptions = com.ditchoom.socket.ConnectionOptions(
-        readTimeout = 5.seconds,
-        bufferFactory = com.ditchoom.buffer.BufferFactory.Default,
-    )
+    private val testOptions =
+        com.ditchoom.socket.ConnectionOptions(
+            readTimeout = 5.seconds,
+            bufferFactory = com.ditchoom.buffer.BufferFactory.Default,
+        )
 
     private fun createStream(): Pair<TcpByteStream, MockClientToServerSocket> {
         val mock = MockClientToServerSocket()
@@ -43,6 +44,101 @@ class TcpByteStreamTests {
             val result = stream.read(5.seconds)
             assertIs<ReadResult.Data>(result)
             assertEquals(2, result.buffer.remaining())
+        }
+
+    // ── read() handles buffers larger than defaultBufferSize (overflow regression) ──
+
+    @Test
+    fun readHandlesBufferLargerThanDefaultBufferSize() =
+        runTest {
+            val (stream, mock) = createStream()
+            mock.open(80, 5.seconds, "test")
+
+            // Simulate a 64KB read — larger than defaultBufferSize (8KB)
+            val largeSize = 65536
+            val largeBuffer =
+                com.ditchoom.buffer.BufferFactory.Default
+                    .allocate(largeSize)
+            repeat(largeSize) { largeBuffer.writeByte((it % 256).toByte()) }
+            largeBuffer.resetForRead()
+            mock.enqueueRead(largeBuffer)
+
+            val result = stream.read(5.seconds)
+            assertIs<ReadResult.Data>(result)
+            assertEquals(largeSize, result.buffer.remaining(), "All $largeSize bytes should be readable")
+        }
+
+    @Test
+    fun readPreservesDataIntegrityForLargeBuffers() =
+        runTest {
+            val (stream, mock) = createStream()
+            mock.open(80, 5.seconds, "test")
+
+            // 16KB payload — 2x the defaultBufferSize
+            val size = 16384
+            val sourceBuffer =
+                com.ditchoom.buffer.BufferFactory.Default
+                    .allocate(size)
+            repeat(size) { sourceBuffer.writeByte((it % 256).toByte()) }
+            sourceBuffer.resetForRead()
+            mock.enqueueRead(sourceBuffer)
+
+            val result = stream.read(5.seconds)
+            assertIs<ReadResult.Data>(result)
+            val buf = result.buffer
+            assertEquals(size, buf.remaining())
+
+            // Verify every byte matches the pattern
+            repeat(size) { i ->
+                assertEquals(
+                    (i % 256).toByte(),
+                    buf.readByte(),
+                    "Byte at index $i should match",
+                )
+            }
+        }
+
+    @Test
+    fun readHandlesExactlyDefaultBufferSizeBytes() =
+        runTest {
+            val (stream, mock) = createStream()
+            mock.open(80, 5.seconds, "test")
+
+            // Exactly 8192 bytes — the boundary case
+            val size = 8192
+            val buffer =
+                com.ditchoom.buffer.BufferFactory.Default
+                    .allocate(size)
+            repeat(size) { buffer.writeByte(0xAB.toByte()) }
+            buffer.resetForRead()
+            mock.enqueueRead(buffer)
+
+            val result = stream.read(5.seconds)
+            assertIs<ReadResult.Data>(result)
+            assertEquals(size, result.buffer.remaining())
+        }
+
+    @Test
+    fun readHandlesMultipleConsecutiveLargeReads() =
+        runTest {
+            val (stream, mock) = createStream()
+            mock.open(80, 5.seconds, "test")
+
+            val sizes = listOf(32768, 65536, 12000)
+            for (size in sizes) {
+                val buf =
+                    com.ditchoom.buffer.BufferFactory.Default
+                        .allocate(size)
+                repeat(size) { buf.writeByte((it % 256).toByte()) }
+                buf.resetForRead()
+                mock.enqueueRead(buf)
+            }
+
+            for (size in sizes) {
+                val result = stream.read(5.seconds)
+                assertIs<ReadResult.Data>(result)
+                assertEquals(size, result.buffer.remaining(), "Read of $size bytes should return all data")
+            }
         }
 
     // ── read() → ReadResult.End ──

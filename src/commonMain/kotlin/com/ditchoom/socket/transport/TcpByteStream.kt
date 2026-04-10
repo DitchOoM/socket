@@ -16,29 +16,20 @@ class TcpByteStream(
 ) : ByteStream {
     override val isOpen: Boolean get() = socket.isOpen()
 
-    override suspend fun read(timeout: Duration): ReadResult {
-        val buffer = context.pool.acquire(context.options.defaultBufferSize)
-        return try {
-            val bytesRead = socket.read(buffer, timeout)
-            if (bytesRead <= 0) {
+    override suspend fun read(timeout: Duration): ReadResult =
+        try {
+            val buffer = socket.read(timeout)
+            if (buffer.remaining() <= 0) {
                 buffer.freeIfNeeded()
                 ReadResult.End
             } else {
-                buffer.setLimit(buffer.position())
-                buffer.position(0)
                 ReadResult.Data(buffer)
             }
         } catch (_: SocketClosedException.ConnectionReset) {
-            buffer.freeIfNeeded()
             ReadResult.Reset
         } catch (_: SocketClosedException) {
-            buffer.freeIfNeeded()
             ReadResult.End
-        } catch (e: Exception) {
-            buffer.freeIfNeeded()
-            throw e
         }
-    }
 
     override suspend fun write(
         buffer: ReadBuffer,

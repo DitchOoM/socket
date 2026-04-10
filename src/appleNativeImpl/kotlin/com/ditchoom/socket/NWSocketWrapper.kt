@@ -70,6 +70,7 @@ open class NWSocketWrapper : ClientSocket {
                                 // Zero-copy: wrap NSData directly using NSDataBuffer
                                 val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
                                 buffer.position(data.length.toInt())
+                                buffer.resetForRead()
                                 continuation.resume(buffer)
                             }
                             isComplete?.boolValue == true -> {

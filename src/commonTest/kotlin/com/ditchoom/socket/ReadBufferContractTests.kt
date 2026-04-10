@@ -115,10 +115,13 @@ class ReadBufferContractTests {
             val mock = mockWithData()
             mock.open(80, 5.seconds, "test")
 
-            val context = ConnectionContext(ConnectionOptions(
-                readTimeout = 5.seconds,
-                bufferFactory = BufferFactory.Default,
-            ))
+            val context =
+                ConnectionContext(
+                    ConnectionOptions(
+                        readTimeout = 5.seconds,
+                        bufferFactory = BufferFactory.Default,
+                    ),
+                )
             val stream = TcpByteStream(mock, context)
             val result = stream.read(5.seconds)
             assertTrue(result is ReadResult.Data, "Should be Data result")
@@ -127,6 +130,45 @@ class ReadBufferContractTests {
             assertEquals(0, buffer.position(), "TcpByteStream buffer should be read-ready")
             val str = buffer.readString(buffer.remaining())
             assertEquals(testData, str)
+        }
+
+    // ── TcpByteStream handles large reads without overflow ──
+
+    @Test
+    fun tcpByteStreamLargeReadDoesNotOverflow() =
+        runTest {
+            val mock = MockClientToServerSocket()
+            // 64KB payload — well above the 8KB defaultBufferSize
+            val size = 65536
+            val largeBuf = BufferFactory.Default.allocate(size)
+            repeat(size) { largeBuf.writeByte((it % 256).toByte()) }
+            largeBuf.resetForRead()
+            mock.enqueueRead(largeBuf)
+            mock.open(80, 5.seconds, "test")
+
+            val context =
+                ConnectionContext(
+                    ConnectionOptions(
+                        readTimeout = 5.seconds,
+                        bufferFactory = BufferFactory.Default,
+                    ),
+                )
+            val stream = TcpByteStream(mock, context)
+            val result = stream.read(5.seconds)
+            assertTrue(result is ReadResult.Data, "Should be Data result, not overflow")
+
+            val buffer = result.buffer
+            assertEquals(0, buffer.position(), "Buffer should be read-ready")
+            assertEquals(size, buffer.remaining(), "All $size bytes should be available")
+
+            // Verify data integrity
+            repeat(size) { i ->
+                assertEquals(
+                    (i % 256).toByte(),
+                    buffer.readByte(),
+                    "Byte mismatch at index $i",
+                )
+            }
         }
 
     // ── Multi-read: ensure each read returns correct independent data ──

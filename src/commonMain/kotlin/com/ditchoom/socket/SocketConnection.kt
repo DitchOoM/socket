@@ -26,28 +26,21 @@ class SocketConnection private constructor(
     val isOpen: Boolean get() = socket.isOpen()
 
     /**
-     * Reads data from socket into the stream processor using a pooled buffer.
+     * Reads data from socket into the stream processor.
      *
-     * Uses zero-copy path: acquires a buffer from the pool, reads directly into it,
-     * then transfers ownership to the stream processor. The buffer is freed if the
-     * read fails or returns no data.
+     * Delegates to socket.read(timeout) which returns a platform-native buffer
+     * (zero-copy on JS/Apple, SO_RCVBUF-sized on JVM/Linux). The buffer is
+     * transferred to the stream processor or freed if empty.
      */
     suspend fun readIntoStream(timeout: Duration = options.readTimeout): Int {
-        val buffer = pool.acquire(options.defaultBufferSize)
-        try {
-            val bytesRead = socket.read(buffer, timeout)
-            if (bytesRead > 0) {
-                buffer.setLimit(buffer.position())
-                buffer.position(0)
-                stream.append(buffer)
-            } else {
-                buffer.freeIfNeeded()
-            }
-            return bytesRead
-        } catch (e: Exception) {
+        val buffer = socket.read(timeout)
+        val bytesRead = buffer.remaining()
+        if (bytesRead > 0) {
+            stream.append(buffer)
+        } else {
             buffer.freeIfNeeded()
-            throw e
         }
+        return bytesRead
     }
 
     suspend fun write(
