@@ -103,8 +103,9 @@ open class NodeSocket : ClientSocket {
     override suspend fun remotePort() = netSocket?.remotePort ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        val socket = netSocket
-            ?: throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
+        val socket =
+            netSocket
+                ?: throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
         // Don't pre-check isOpen() — the channel may still have buffered data from
         // "data" events that fired before a "close" event set isClosed=true.
         // Draining the channel first prevents a race where fast-closing servers
@@ -228,7 +229,13 @@ class NodeClientSocket :
         js(
             """
             if (Buffer.isBuffer(obj)) {
-                // Zero-copy view into the Node.js Buffer
+                if (obj.byteOffset > 0 || obj.byteLength < obj.buffer.byteLength) {
+                    // Buffer shares a pool ArrayBuffer — must copy to isolate
+                    var copy = new Uint8Array(obj.byteLength);
+                    copy.set(new Uint8Array(obj.buffer, obj.byteOffset, obj.byteLength));
+                    return new Int8Array(copy.buffer, 0, obj.byteLength);
+                }
+                // Dedicated ArrayBuffer — safe to view directly
                 return new Int8Array(obj.buffer, obj.byteOffset, obj.byteLength)
             } else {
                 var buf = Buffer.from(obj);
