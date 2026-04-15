@@ -316,10 +316,11 @@ data class AndroidAbi(
     val ndkClangPrefix: String,
 )
 
-val androidAbis = listOf(
-    AndroidAbi("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android24"),
-    AndroidAbi("x86_64", "x86_64-linux-android", "x86_64-linux-android24"),
-)
+val androidAbis =
+    listOf(
+        AndroidAbi("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android24"),
+        AndroidAbi("x86_64", "x86_64-linux-android", "x86_64-linux-android24"),
+    )
 
 fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
     val ndk = androidNdkDir ?: return null
@@ -348,9 +349,20 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
 
             val cargoResult =
                 ProcessBuilder(
-                    cargoBin, "ndk", "--target", abi.abi, "--platform", "24",
-                    "--", "build", "--release", "--package", "quiche",
-                    "--no-default-features", "--features", "ffi,boringssl-vendored",
+                    cargoBin,
+                    "ndk",
+                    "--target",
+                    abi.abi,
+                    "--platform",
+                    "24",
+                    "--",
+                    "build",
+                    "--release",
+                    "--package",
+                    "quiche",
+                    "--no-default-features",
+                    "--features",
+                    "ffi,boringssl-vendored",
                 ).directory(sourceDir)
                     .also { pb -> pb.environment().putAll(env) }
                     .redirectErrorStream(true)
@@ -369,18 +381,30 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
             val ndkToolchain = ndk.resolve("toolchains/llvm/prebuilt/$ndkHost")
             val ndkClang = ndkToolchain.resolve("bin/${abi.ndkClangPrefix}-clang")
             val llvmStrip = ndkToolchain.resolve("bin/llvm-strip")
-            val javaHome = System.getenv("JAVA_HOME") ?: org.gradle.internal.jvm.Jvm.current().javaHome.absolutePath
+            val javaHome =
+                System.getenv("JAVA_HOME") ?: org.gradle.internal.jvm.Jvm
+                    .current()
+                    .javaHome.absolutePath
 
             logger.lifecycle("Compiling JNI shim for ${abi.abi}...")
             val clangResult =
                 ProcessBuilder(
-                    ndkClang.absolutePath, "-shared", "-fPIC", "-Wall",
-                    "-o", outputLib.absolutePath,
+                    ndkClang.absolutePath,
+                    "-shared",
+                    "-fPIC",
+                    "-Wall",
+                    "-o",
+                    outputLib.absolutePath,
                     projectDir.resolve("src/jni/quiche_jni.c").absolutePath,
-                    "-I$javaHome/include", "-I$javaHome/include/linux",
+                    "-I$javaHome/include",
+                    "-I$javaHome/include/linux",
                     "-I${projectDir.resolve("libs/quiche/include").absolutePath}",
-                    "-Wl,--whole-archive", quicheLib.absolutePath, "-Wl,--no-whole-archive",
-                    "-lm", "-ldl", "-llog",
+                    "-Wl,--whole-archive",
+                    quicheLib.absolutePath,
+                    "-Wl,--no-whole-archive",
+                    "-lm",
+                    "-ldl",
+                    "-llog",
                 ).redirectErrorStream(true)
                     .start()
                     .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
@@ -416,7 +440,11 @@ if (androidJniTasks.isNotEmpty()) {
 // Starts a QUIC echo server on the host so the emulator can connect via adb reverse.
 
 afterEvaluate {
-    val quicTestServerPidFile = layout.buildDirectory.file("quic-test-server.pid").get().asFile
+    val quicTestServerPidFile =
+        layout.buildDirectory
+            .file("quic-test-server.pid")
+            .get()
+            .asFile
 
     tasks.register("startQuicTestServer") {
         group = "verification"
@@ -431,21 +459,38 @@ afterEvaluate {
             }
 
             val testClasspath =
-                kotlin.jvm().compilations["test"].runtimeDependencyFiles.files +
-                    kotlin.jvm().compilations["test"].output.allOutputs.files +
-                    kotlin.jvm().compilations["main"].output.allOutputs.files +
-                    kotlin.jvm().compilations["java21"].output.allOutputs.files
+                kotlin
+                    .jvm()
+                    .compilations["test"]
+                    .runtimeDependencyFiles.files +
+                    kotlin
+                        .jvm()
+                        .compilations["test"]
+                        .output.allOutputs.files +
+                    kotlin
+                        .jvm()
+                        .compilations["main"]
+                        .output.allOutputs.files +
+                    kotlin
+                        .jvm()
+                        .compilations["java21"]
+                        .output.allOutputs.files
 
             val classpathStr = testClasspath.joinToString(File.pathSeparator)
-            val javaExec = org.gradle.internal.jvm.Jvm.current().javaExecutable.absolutePath
+            val javaExec =
+                org.gradle.internal.jvm.Jvm
+                    .current()
+                    .javaExecutable.absolutePath
             val certDir = projectDir.resolve("testcerts")
 
             val process =
                 ProcessBuilder(
                     javaExec,
                     "--enable-native-access=ALL-UNNAMED",
-                    "--add-opens", "java.base/java.nio=ALL-UNNAMED",
-                    "-cp", classpathStr,
+                    "--add-opens",
+                    "java.base/java.nio=ALL-UNNAMED",
+                    "-cp",
+                    classpathStr,
                     "com.ditchoom.socket.quic.QuicEchoTestServerKt",
                     certDir.resolve("cert.crt").absolutePath,
                     certDir.resolve("cert.key").absolutePath,
@@ -470,7 +515,9 @@ afterEvaluate {
 
             // Set up adb reverse so emulator localhost:4433 → host:4433
             ProcessBuilder("adb", "reverse", "tcp:4433", "tcp:4433")
-                .redirectErrorStream(true).start().waitFor()
+                .redirectErrorStream(true)
+                .start()
+                .waitFor()
 
             logger.lifecycle("QUIC test server running (PID ${process.pid()}), adb reverse configured")
         }
@@ -490,7 +537,11 @@ afterEvaluate {
     }
 
     // --- Network control server for migration tests ---
-    val netCtrlPidFile = layout.buildDirectory.file("network-control-server.pid").get().asFile
+    val netCtrlPidFile =
+        layout.buildDirectory
+            .file("network-control-server.pid")
+            .get()
+            .asFile
 
     tasks.register("startNetworkControlServer") {
         group = "verification"
@@ -505,20 +556,37 @@ afterEvaluate {
             }
 
             val testClasspath =
-                kotlin.jvm().compilations["test"].runtimeDependencyFiles.files +
-                    kotlin.jvm().compilations["test"].output.allOutputs.files +
-                    kotlin.jvm().compilations["main"].output.allOutputs.files +
-                    kotlin.jvm().compilations["java21"].output.allOutputs.files
+                kotlin
+                    .jvm()
+                    .compilations["test"]
+                    .runtimeDependencyFiles.files +
+                    kotlin
+                        .jvm()
+                        .compilations["test"]
+                        .output.allOutputs.files +
+                    kotlin
+                        .jvm()
+                        .compilations["main"]
+                        .output.allOutputs.files +
+                    kotlin
+                        .jvm()
+                        .compilations["java21"]
+                        .output.allOutputs.files
 
             val classpathStr = testClasspath.joinToString(File.pathSeparator)
-            val javaExec = org.gradle.internal.jvm.Jvm.current().javaExecutable.absolutePath
+            val javaExec =
+                org.gradle.internal.jvm.Jvm
+                    .current()
+                    .javaExecutable.absolutePath
 
             val process =
                 ProcessBuilder(
                     javaExec,
                     "--enable-native-access=ALL-UNNAMED",
-                    "--add-opens", "java.base/java.nio=ALL-UNNAMED",
-                    "-cp", classpathStr,
+                    "--add-opens",
+                    "java.base/java.nio=ALL-UNNAMED",
+                    "-cp",
+                    classpathStr,
                     "com.ditchoom.socket.quic.netctrl.NetworkControlServerKt",
                 ).redirectErrorStream(true)
                     .start()
@@ -539,7 +607,9 @@ afterEvaluate {
             if (!process.isAlive) throw GradleException("Network control server failed to start")
 
             ProcessBuilder("adb", "reverse", "tcp:9998", "tcp:9998")
-                .redirectErrorStream(true).start().waitFor()
+                .redirectErrorStream(true)
+                .start()
+                .waitFor()
 
             logger.lifecycle("Network control server running (PID ${process.pid()}), adb reverse configured")
         }
@@ -741,7 +811,11 @@ dependencies {
 afterEvaluate {
     val kspConfigs = configurations.names.filter { it.startsWith("ksp") && it.contains("Android", ignoreCase = true) }
     kspConfigs.filter { it.contains("Test", ignoreCase = true) }.forEach { configName ->
-        dependencies.add(configName, libs.buffer.codec.processor.get())
+        dependencies.add(
+            configName,
+            libs.buffer.codec.processor
+                .get(),
+        )
     }
 }
 

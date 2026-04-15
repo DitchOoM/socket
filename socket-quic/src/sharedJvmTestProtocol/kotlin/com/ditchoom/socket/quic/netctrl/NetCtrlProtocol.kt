@@ -13,40 +13,58 @@ import com.ditchoom.buffer.codec.annotations.ProtocolMessage
 sealed interface NetCtrlCommand {
     @ProtocolMessage
     @PacketType(0x01)
-    data class BlockUdp(val reserved: UByte = 0u) : NetCtrlCommand
+    data class BlockUdp(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 
     @ProtocolMessage
     @PacketType(0x02)
-    data class UnblockUdp(val reserved: UByte = 0u) : NetCtrlCommand
+    data class UnblockUdp(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 
     @ProtocolMessage
     @PacketType(0x03)
-    data class AddLatency(val ms: Int) : NetCtrlCommand
+    data class AddLatency(
+        val ms: Int,
+    ) : NetCtrlCommand
 
     @ProtocolMessage
     @PacketType(0x04)
-    data class RemoveLatency(val reserved: UByte = 0u) : NetCtrlCommand
+    data class RemoveLatency(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 
     @ProtocolMessage
     @PacketType(0x05)
-    data class AirplaneOn(val reserved: UByte = 0u) : NetCtrlCommand
+    data class AirplaneOn(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 
     @ProtocolMessage
     @PacketType(0x06)
-    data class AirplaneOff(val reserved: UByte = 0u) : NetCtrlCommand
+    data class AirplaneOff(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 
     /** Pre-schedule airplane mode off after [delayMs] (before sending [AirplaneOn]). */
     @ProtocolMessage
     @PacketType(0x07)
-    data class ScheduleAirplaneOff(val delayMs: Long) : NetCtrlCommand
+    data class ScheduleAirplaneOff(
+        val delayMs: Long,
+    ) : NetCtrlCommand
 
     @ProtocolMessage
     @PacketType(0x08)
-    data class Cleanup(val reserved: UByte = 0u) : NetCtrlCommand
+    data class Cleanup(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 
     @ProtocolMessage
     @PacketType(0x09)
-    data class Ping(val reserved: UByte = 0u) : NetCtrlCommand
+    data class Ping(
+        val reserved: UByte = 0u,
+    ) : NetCtrlCommand
 }
 
 /**
@@ -57,11 +75,15 @@ sealed interface NetCtrlCommand {
 sealed interface NetCtrlResponse {
     @ProtocolMessage
     @PacketType(0x01)
-    data class Ok(val reserved: UByte = 0u) : NetCtrlResponse
+    data class Ok(
+        val reserved: UByte = 0u,
+    ) : NetCtrlResponse
 
     @ProtocolMessage
     @PacketType(0x02)
-    data class Scheduled(val delayMs: Long) : NetCtrlResponse
+    data class Scheduled(
+        val delayMs: Long,
+    ) : NetCtrlResponse
 
     @ProtocolMessage
     @PacketType(0x03)

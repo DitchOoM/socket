@@ -15,12 +15,15 @@ import java.util.concurrent.TimeUnit
  * Usage: `NetworkControlServerKt [port]`
  * Prints "READY port=<port>" when accepting connections.
  */
-class NetworkControlServer(private val port: Int = 9998) {
+class NetworkControlServer(
+    private val port: Int = 9998,
+) {
     private val serverSocket = ServerSocket(port)
     private val appliedModifications = ConcurrentLinkedQueue<String>()
-    private val scheduler = Executors.newSingleThreadScheduledExecutor { r ->
-        Thread(r, "net-ctrl-scheduler").apply { isDaemon = true }
-    }
+    private val scheduler =
+        Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "net-ctrl-scheduler").apply { isDaemon = true }
+        }
 
     fun run() {
         Runtime.getRuntime().addShutdownHook(Thread { cleanup() })
@@ -46,11 +49,12 @@ class NetworkControlServer(private val port: Int = 9998) {
             val out = client.getOutputStream()
 
             while (!client.isClosed) {
-                val command = try {
-                    NetCtrlFraming.recv(inp, NetCtrlCommandCodec)
-                } catch (_: IOException) {
-                    break
-                }
+                val command =
+                    try {
+                        NetCtrlFraming.recv(inp, NetCtrlCommandCodec)
+                    } catch (_: IOException) {
+                        break
+                    }
 
                 println("[net-ctrl] << $command")
                 val response = dispatch(command)
@@ -131,16 +135,25 @@ class NetworkControlServer(private val port: Int = 9998) {
     private fun reestablishAdbReverse() {
         println("[net-ctrl] Re-establishing adb reverse port mappings")
         ProcessBuilder("adb", "reverse", "tcp:4433", "tcp:4433")
-            .redirectErrorStream(true).start().waitFor()
+            .redirectErrorStream(true)
+            .start()
+            .waitFor()
         ProcessBuilder("adb", "reverse", "tcp:9998", "tcp:9998")
-            .redirectErrorStream(true).start().waitFor()
+            .redirectErrorStream(true)
+            .start()
+            .waitFor()
     }
 
     private fun adb(shellCommand: String) {
-        val result = ProcessBuilder("adb", "shell", "su", "0", shellCommand)
-            .redirectErrorStream(true)
-            .start()
-        val output = result.inputStream.bufferedReader().readText().trim()
+        val result =
+            ProcessBuilder("adb", "shell", "su", "0", shellCommand)
+                .redirectErrorStream(true)
+                .start()
+        val output =
+            result.inputStream
+                .bufferedReader()
+                .readText()
+                .trim()
         val exitCode = result.waitFor()
         if (output.isNotEmpty()) println("[net-ctrl]   adb: $output")
         if (exitCode != 0) println("[net-ctrl]   adb exit=$exitCode (non-fatal)")

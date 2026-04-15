@@ -42,13 +42,21 @@ class NetworkControl(
             false
         }
 
-    fun blockUdp() { sendCommand(NetCtrlCommand.BlockUdp()) }
+    fun blockUdp() {
+        sendCommand(NetCtrlCommand.BlockUdp())
+    }
 
-    fun unblockUdp() { sendCommand(NetCtrlCommand.UnblockUdp()) }
+    fun unblockUdp() {
+        sendCommand(NetCtrlCommand.UnblockUdp())
+    }
 
-    fun addLatency(ms: Int) { sendCommand(NetCtrlCommand.AddLatency(ms)) }
+    fun addLatency(ms: Int) {
+        sendCommand(NetCtrlCommand.AddLatency(ms))
+    }
 
-    fun removeLatency() { sendCommand(NetCtrlCommand.RemoveLatency()) }
+    fun removeLatency() {
+        sendCommand(NetCtrlCommand.RemoveLatency())
+    }
 
     /**
      * Activates airplane mode with pre-scheduled recovery.
@@ -76,7 +84,9 @@ class NetworkControl(
         out = null
     }
 
-    fun airplaneModeOff() { sendCommand(NetCtrlCommand.AirplaneOff()) }
+    fun airplaneModeOff() {
+        sendCommand(NetCtrlCommand.AirplaneOff())
+    }
 
     /**
      * Waits for the scheduled airplane mode recovery, then reconnects the control channel.
@@ -87,11 +97,16 @@ class NetworkControl(
         reconnect()
     }
 
-    fun cleanup() { sendCommand(NetCtrlCommand.Cleanup()) }
+    fun cleanup() {
+        sendCommand(NetCtrlCommand.Cleanup())
+    }
 
     /** Reconnects the control channel (e.g., after airplane mode recovery). */
     fun reconnect() {
-        try { socket?.close() } catch (_: IOException) {}
+        try {
+            socket?.close()
+        } catch (_: IOException) {
+        }
         socket = null
         inp = null
         out = null
@@ -100,8 +115,14 @@ class NetworkControl(
     }
 
     override fun close() {
-        try { cleanup() } catch (_: IOException) {}
-        try { socket?.close() } catch (_: IOException) {}
+        try {
+            cleanup()
+        } catch (_: IOException) {
+        }
+        try {
+            socket?.close()
+        } catch (_: IOException) {
+        }
         socket = null
         inp = null
         out = null

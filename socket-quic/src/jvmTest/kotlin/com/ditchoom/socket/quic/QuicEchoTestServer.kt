@@ -21,11 +21,12 @@ fun main(args: Array<String>) {
     val keyPath = args[1]
 
     val port = 4433
-    val quicOptions = QuicOptions(
-        alpnProtocols = listOf("test"),
-        verifyPeer = false,
-        idleTimeout = 30.seconds,
-    )
+    val quicOptions =
+        QuicOptions(
+            alpnProtocols = listOf("test"),
+            verifyPeer = false,
+            idleTimeout = 30.seconds,
+        )
     val tlsConfig = QuicTlsConfig(certChainPath = certPath, privKeyPath = keyPath)
 
     runBlocking(Dispatchers.IO) {
