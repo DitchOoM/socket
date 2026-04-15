@@ -7,7 +7,6 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -85,7 +84,7 @@ class QuicStreamMuxTests {
                 val serverJob =
                     launch(Dispatchers.IO) {
                         server.connections {
-                            val mux = QuicStreamMux(this, TestCodec, ConnectionContext(opts))
+                            val mux = QuicStreamMux(this, TestCodec, opts)
                             val conn = mux.acceptBidirectional()
                             val msg = conn.receive().first()
                             conn.send("echo: $msg")

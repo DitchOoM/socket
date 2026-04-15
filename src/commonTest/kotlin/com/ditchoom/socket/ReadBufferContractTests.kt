@@ -115,14 +115,7 @@ class ReadBufferContractTests {
             val mock = mockWithData()
             mock.open(80, 5.seconds, "test")
 
-            val context =
-                ConnectionContext(
-                    ConnectionOptions(
-                        readTimeout = 5.seconds,
-                        bufferFactory = BufferFactory.Default,
-                    ),
-                )
-            val stream = TcpByteStream(mock, context)
+            val stream = TcpByteStream(mock)
             val result = stream.read(5.seconds)
             assertTrue(result is ReadResult.Data, "Should be Data result")
 
@@ -146,14 +139,7 @@ class ReadBufferContractTests {
             mock.enqueueRead(largeBuf)
             mock.open(80, 5.seconds, "test")
 
-            val context =
-                ConnectionContext(
-                    ConnectionOptions(
-                        readTimeout = 5.seconds,
-                        bufferFactory = BufferFactory.Default,
-                    ),
-                )
-            val stream = TcpByteStream(mock, context)
+            val stream = TcpByteStream(mock)
             val result = stream.read(5.seconds)
             assertTrue(result is ReadResult.Data, "Should be Data result, not overflow")
 

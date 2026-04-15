@@ -9,8 +9,16 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Pure configuration for socket connections.
  *
- * This is a value object — it holds no resources and is safe to copy, share, or discard.
- * Resources (buffer pools, pooled factories) are created by [ConnectionContext].
+ * Buffer allocation is controlled entirely by [bufferFactory]. Pass a
+ * [com.ditchoom.buffer.pool.BufferPool] (which implements [BufferFactory]) when you
+ * want pool-recycled buffers; pass [BufferFactory.Default] or
+ * [com.ditchoom.buffer.deterministic] when you don't. The socket library owns no
+ * pools of its own — [bufferFactory] flows straight through to every buffer
+ * allocation in the read/write path.
+ *
+ * [maxPoolSize], [defaultBufferSize], and [threadingMode] are advisory hints for
+ * transports that build their own auxiliary pools (e.g. for stream-processor chunks)
+ * and have no effect when [bufferFactory] is already a pool.
  */
 data class ConnectionOptions(
     val socketOptions: SocketOptions = SocketOptions(),

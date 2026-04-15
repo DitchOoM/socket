@@ -1,5 +1,6 @@
 package com.ditchoom.socket.transport
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
@@ -7,10 +8,8 @@ import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.flow.Flow
@@ -25,13 +24,13 @@ import kotlin.time.TimeSource
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
-    val pool: BufferPool,
+    val bufferFactory: BufferFactory,
     private val options: ConnectionOptions = ConnectionOptions(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
-    private val streamProcessor: StreamProcessor = StreamProcessor.create(pool)
+    private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferFactory)
 
     @Volatile
     private var closed = false
@@ -85,7 +84,7 @@ class CodecConnection<T>(
 
     override suspend fun send(message: T) {
         check(!closed) { "CodecConnection is closed" }
-        val buffer = pool.acquire(codec.wireSizeHint.coerceAtLeast(options.defaultBufferSize))
+        val buffer = bufferFactory.allocate(codec.wireSizeHint.coerceAtLeast(options.defaultBufferSize))
         try {
             codec.encode(buffer, message, encodeContext)
             buffer.resetForRead()
@@ -134,9 +133,8 @@ class CodecConnection<T>(
             decodeContext: DecodeContext = DecodeContext.Empty,
             encodeContext: EncodeContext = EncodeContext.Empty,
         ): CodecConnection<T> {
-            val context = ConnectionContext(options)
-            val stream = transport.connect(hostname, port, context)
-            return CodecConnection(stream, codec, context.pool, options, decodeContext, encodeContext)
+            val stream = transport.connect(hostname, port, options)
+            return CodecConnection(stream, codec, options.bufferFactory, options, decodeContext, encodeContext)
         }
     }
 }

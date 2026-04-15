@@ -22,7 +22,7 @@ class ReconnectingConnectionTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-            pool =
+            bufferFactory =
                 com.ditchoom.buffer.pool
                     .BufferPool(),
             options = testOptions,

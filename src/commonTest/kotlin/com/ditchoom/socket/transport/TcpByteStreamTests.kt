@@ -19,16 +19,9 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 class TcpByteStreamTests {
-    private val testOptions =
-        com.ditchoom.socket.ConnectionOptions(
-            readTimeout = 5.seconds,
-            bufferFactory = com.ditchoom.buffer.BufferFactory.Default,
-        )
-
     private fun createStream(): Pair<TcpByteStream, MockClientToServerSocket> {
         val mock = MockClientToServerSocket()
-        val context = com.ditchoom.socket.ConnectionContext(testOptions)
-        val stream = TcpByteStream(mock, context)
+        val stream = TcpByteStream(mock)
         return stream to mock
     }
 

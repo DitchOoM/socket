@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
@@ -9,20 +10,19 @@ import com.ditchoom.buffer.stream.builder
 import kotlin.time.Duration
 
 /**
- * A composed socket connection that bundles a socket + buffer pool + stream processor.
+ * A composed socket connection bundling a socket + stream processor.
  *
- * Protocol implementations (WebSocket, MQTT, HTTP) build on this instead of managing
- * raw socket components directly.
- *
- * Create via [connect] for new connections or [wrap] for pre-existing sockets (e.g., tests).
+ * Buffer allocation is controlled by the caller via [ConnectionOptions.bufferFactory].
+ * Pass a [com.ditchoom.buffer.pool.BufferPool] as the factory for pool-recycled
+ * allocation; pass any other factory (e.g. [BufferFactory.Default],
+ * [com.ditchoom.buffer.deterministic]) for fresh-per-allocate semantics.
  */
 class SocketConnection private constructor(
     val socket: ClientToServerSocket,
-    private val context: ConnectionContext,
+    val options: ConnectionOptions,
     val stream: SuspendingStreamProcessor,
 ) {
-    val pool get() = context.pool
-    private val options get() = context.options
+    val bufferFactory: BufferFactory get() = options.bufferFactory
     val isOpen: Boolean get() = socket.isOpen()
 
     /**
@@ -53,21 +53,26 @@ class SocketConnection private constructor(
         timeout: Duration = options.writeTimeout,
     ): Int = socket.writeGathered(buffers, timeout)
 
+    /**
+     * Allocates a buffer from [bufferFactory], runs [block] with it, and frees it on exit.
+     * When [bufferFactory] is a [com.ditchoom.buffer.pool.BufferPool] the allocation hits the
+     * pool and `freeIfNeeded` returns it there; with a non-pool factory each call is a
+     * fresh allocate + deterministic free (or GC, depending on the factory).
+     */
     inline fun <T> withBuffer(
         minSize: Int = 0,
         block: (PlatformBuffer) -> T,
     ): T {
-        val buf = pool.acquire(minSize)
+        val buf = bufferFactory.allocate(minSize) as PlatformBuffer
         return try {
             block(buf)
         } finally {
-            pool.release(buf)
+            buf.freeIfNeeded()
         }
     }
 
     suspend fun close() {
         socket.close()
-        context.close()
     }
 
     companion object {
@@ -76,12 +81,11 @@ class SocketConnection private constructor(
             port: Int,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            val context = ConnectionContext(options)
             val socket = ClientSocket.allocate()
-            socket.bufferFactory = context.bufferFactory
+            socket.bufferFactory = options.bufferFactory
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
-            val stream = StreamProcessor.builder(context.pool).buildSuspending()
-            return SocketConnection(socket, context, stream)
+            val stream = StreamProcessor.builder(options.bufferFactory).buildSuspending()
+            return SocketConnection(socket, options, stream)
         }
 
         suspend fun <T> connect(
@@ -102,10 +106,9 @@ class SocketConnection private constructor(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            val context = ConnectionContext(options)
-            socket.bufferFactory = context.bufferFactory
-            val stream = StreamProcessor.builder(context.pool).buildSuspending()
-            return SocketConnection(socket, context, stream)
+            socket.bufferFactory = options.bufferFactory
+            val stream = StreamProcessor.builder(options.bufferFactory).buildSuspending()
+            return SocketConnection(socket, options, stream)
         }
     }
 }

@@ -7,7 +7,7 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
-import com.ditchoom.socket.ConnectionContext
+import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.transport.CodecConnection
 
 /**
@@ -17,13 +17,13 @@ import com.ditchoom.socket.transport.CodecConnection
  * messages via the codec. The [Connection.id] is set to the QUIC stream ID for
  * cross-layer log correlation.
  *
- * The mux owns the [ConnectionContext] and closes it when the mux is done.
- * Individual [CodecConnection]s borrow the pool but don't manage its lifecycle.
+ * Buffer allocation for each stream is routed through [ConnectionOptions.bufferFactory];
+ * pass a [com.ditchoom.buffer.pool.BufferPool] as the factory for pooled chunks.
  */
 class QuicStreamMux<T>(
     private val connection: QuicScope,
     private val codec: Codec<T>,
-    private val context: ConnectionContext,
+    private val options: ConnectionOptions,
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) : StreamMux<T> {
@@ -32,8 +32,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = context.pool,
-            options = context.options,
+            bufferFactory = options.bufferFactory,
+            options = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -45,8 +45,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = context.pool,
-            options = context.options,
+            bufferFactory = options.bufferFactory,
+            options = options,
             encodeContext = encodeContext,
             id = stream.streamId.id,
         )
@@ -57,8 +57,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = context.pool,
-            options = context.options,
+            bufferFactory = options.bufferFactory,
+            options = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -70,8 +70,8 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            pool = context.pool,
-            options = context.options,
+            bufferFactory = options.bufferFactory,
+            options = options,
             decodeContext = decodeContext,
             id = stream.streamId.id,
         )

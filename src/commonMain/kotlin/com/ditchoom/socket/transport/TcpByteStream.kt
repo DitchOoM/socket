@@ -6,13 +6,11 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.ClientToServerSocket
-import com.ditchoom.socket.ConnectionContext
 import com.ditchoom.socket.SocketClosedException
 import kotlin.time.Duration
 
 class TcpByteStream(
     private val socket: ClientToServerSocket,
-    private val context: ConnectionContext,
 ) : ByteStream {
     override val isOpen: Boolean get() = socket.isOpen()
 
@@ -43,6 +41,5 @@ class TcpByteStream(
 
     override suspend fun close() {
         socket.close()
-        context.close()
     }
 }
