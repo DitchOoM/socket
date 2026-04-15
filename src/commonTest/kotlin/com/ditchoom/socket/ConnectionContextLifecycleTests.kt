@@ -17,11 +17,12 @@ import kotlin.time.Duration.Companion.seconds
  * when connections close, preventing direct buffer memory leaks.
  */
 class ConnectionContextLifecycleTests {
-    private val testOptions = ConnectionOptions(
-        readTimeout = 5.seconds,
-        writeTimeout = 5.seconds,
-        bufferFactory = BufferFactory.Default,
-    )
+    private val testOptions =
+        ConnectionOptions(
+            readTimeout = 5.seconds,
+            writeTimeout = 5.seconds,
+            bufferFactory = BufferFactory.Default,
+        )
 
     @Test
     fun tcpByteStreamCloseClearsPool() =
