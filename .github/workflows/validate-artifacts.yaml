@@ -142,14 +142,20 @@ jobs:
 
           if [ -f "$QUIC_JAR" ] && [ -d "$NATIVES" ]; then
             echo "Injecting macOS native libs into socket-quic JVM JAR..."
-            # Re-nest under META-INF/native/ so paths match NativeLibLoader expectations
+            # Re-nest under META-INF/native/ so paths match NativeLibLoader expectations.
+            # The artifact's per-platform directory now contains a `lib/` subdirectory
+            # (build-apple.yaml writes into libs/quiche/<platform>/lib/); older uploads
+            # put dylibs at the platform root. Detect and strip `lib/` when present.
             INJECT_DIR="/tmp/inject-natives"
             mkdir -p "$INJECT_DIR/META-INF/native"
             for dir in "$NATIVES"/macos-*/; do
               [ -d "$dir" ] || continue
-              platform=$(basename "$dir")
-              cp -r "$dir" "$INJECT_DIR/META-INF/native/$platform"
-              echo "  Staged META-INF/native/$platform/"
+              platform=$(basename "${dir%/}")
+              src="${dir%/}"
+              [ -d "$src/lib" ] && src="$src/lib"
+              mkdir -p "$INJECT_DIR/META-INF/native/$platform"
+              cp "$src"/*.dylib "$INJECT_DIR/META-INF/native/$platform/" 2>/dev/null || true
+              echo "  Staged META-INF/native/$platform/ from $src"
             done
             (cd "$INJECT_DIR" && zip -ur "$QUIC_JAR" META-INF/native/)
             rm -rf "$INJECT_DIR"

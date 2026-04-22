@@ -44,19 +44,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Combined quiche + JNI shim cache — shims now live under
+      # socket-quic/libs/quiche/<platform>/lib/ alongside libquiche.dylib,
+      # matching the local-dev path so Gradle's classifier-JAR pipeline picks
+      # them up from the same place. Hash quiche_jni.c so shim edits invalidate.
       - name: Cache quiche macOS
         uses: actions/cache@v4
         with:
           path: |
             socket-quic/libs/quiche/macos-x64
             socket-quic/libs/quiche/macos-arm64
-          key: quiche-macos-v2-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      - name: Cache built JNI shims (macOS)
-        uses: actions/cache@v4
-        with:
-          path: socket-quic/src/jvmMain/resources/META-INF/native/macos-*
-          key: quiche-jni-macos-v1-${{ hashFiles('socket-quic/src/jni/quiche_jni.c', 'gradle/libs.versions.toml') }}
+          key: quiche-macos-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -71,7 +69,9 @@ jobs:
         continue-on-error: true
         run: |
           set -x
-          RESOURCE_BASE="socket-quic/src/jvmMain/resources/META-INF/native"
+          # Write into libs/quiche/<platform>/lib/ so local-dev + CI share paths
+          # and the Gradle classifier-JAR pipeline (jvmNativesJar*) picks up.
+          QUICHE_LIBS="socket-quic/libs/quiche"
 
           # Clone quiche once, build for both architectures
           git clone --recursive --depth 1 --branch 0.28.0 \
@@ -83,7 +83,7 @@ jobs:
           for pair in "aarch64-apple-darwin macos-arm64" "x86_64-apple-darwin macos-x64"; do
             RUST_TARGET="${pair%% *}"
             PLATFORM="${pair##* }"
-            DEST="$RESOURCE_BASE/$PLATFORM"
+            DEST="$QUICHE_LIBS/$PLATFORM/lib"
 
             cd /tmp/quiche-src
             cargo build --release --package quiche --target $RUST_TARGET \
@@ -115,7 +115,7 @@ jobs:
 
       - name: Verify macOS JNI shims exist
         run: |
-          find socket-quic/src/jvmMain/resources/META-INF/native/macos-* -type f 2>/dev/null || echo "WARN: no macOS JNI shims"
+          find socket-quic/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
 
       - name: Run Apple tests
         run: >-
@@ -135,7 +135,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: quiche-macos-natives
-          path: socket-quic/src/jvmMain/resources/META-INF/native/macos-*/
+          path: socket-quic/libs/quiche/macos-*/lib/
           retention-days: 1
           if-no-files-found: ignore
 

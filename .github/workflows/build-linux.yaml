@@ -92,23 +92,22 @@ jobs:
       - name: Add Rust cross-compile targets
         run: rustup target add aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
 
+      # Combined quiche + JNI shim cache — shims now live under
+      # socket-quic/libs/quiche/<platform>/lib/ alongside libquiche.{so,a},
+      # matching the local-dev path (createBuildQuicheSharedTask +
+      # buildJvmJniShim*), so a single platform dir covers both outputs.
+      # Hash quiche_jni.c too so shim edits invalidate the cache.
       - name: Cache quiche Linux x64
         uses: actions/cache@v4
         with:
           path: socket-quic/libs/quiche/linux-x64
-          key: quiche-linux-x64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: quiche-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v4
         with:
           path: socket-quic/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v3-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      - name: Cache built JNI shims
-        uses: actions/cache@v4
-        with:
-          path: socket-quic/src/jvmMain/resources/META-INF/native
-          key: quiche-jni-shims-v1-${{ hashFiles('socket-quic/src/jni/quiche_jni.c', 'gradle/libs.versions.toml') }}
+          key: quiche-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -133,7 +132,10 @@ jobs:
           WS="${{ github.workspace }}"
           JNI_SRC="$WS/socket-quic/src/jni/quiche_jni.c"
           QUICHE_H="$WS/socket-quic/libs/quiche/include"
-          JVM_NATIVE="$WS/socket-quic/src/jvmMain/resources/META-INF/native"
+          # JNI shims go next to libquiche.{so,a} under libs/quiche/<platform>/lib/
+          # so the Gradle classifier-JAR pipeline (jvmNativesJar*) and jvmTest
+          # stager pick them up from the same place local dev writes them.
+          QUICHE_LIBS="$WS/socket-quic/libs/quiche"
           ANDROID_JNI="$WS/socket-quic/src/androidMain/jniLibs"
 
           # Build quiche static (Linux K/Native) + shared (Linux JVM)
@@ -174,7 +176,7 @@ jobs:
           QUICHE_BSSL_PATH=$BSSL cargo build --release --package quiche \
             --target x86_64-unknown-linux-gnu --no-default-features --features ffi \
             --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
-          build_jni "x86_64-unknown-linux-gnu" "gcc" "strip --strip-all" "$JVM_NATIVE/linux-x64" "libquiche_jni.so" "" "$BSSL"
+          build_jni "x86_64-unknown-linux-gnu" "gcc" "strip --strip-all" "$QUICHE_LIBS/linux-x64/lib" "libquiche_jni.so" "" "$BSSL"
 
           # Linux arm64 JNI shim
           echo "=== Linux arm64 JNI ==="
@@ -183,7 +185,7 @@ jobs:
           QUICHE_BSSL_PATH=$BSSL_ARM cargo build --release --package quiche \
             --target aarch64-unknown-linux-gnu --no-default-features --features ffi \
             --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
-          build_jni "aarch64-unknown-linux-gnu" "aarch64-linux-gnu-gcc" "aarch64-linux-gnu-strip --strip-all" "$JVM_NATIVE/linux-arm64" "libquiche_jni.so" "" "$BSSL_ARM"
+          build_jni "aarch64-unknown-linux-gnu" "aarch64-linux-gnu-gcc" "aarch64-linux-gnu-strip --strip-all" "$QUICHE_LIBS/linux-arm64/lib" "libquiche_jni.so" "" "$BSSL_ARM"
 
           # Windows x64 JNI shim (cross-compile via MinGW)
           echo "=== Windows x64 JNI ==="
@@ -193,15 +195,15 @@ jobs:
             --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
           WIN_LIB=$(find "$QUICHE_DIR/target/x86_64-pc-windows-gnu/release" -name "libquiche.a" 2>/dev/null | head -1)
           if [ -n "$WIN_LIB" ]; then
-            mkdir -p "$JVM_NATIVE/windows-x64"
+            mkdir -p "$QUICHE_LIBS/windows-x64/lib"
             x86_64-w64-mingw32-gcc -shared -Wall \
-              -o "$JVM_NATIVE/windows-x64/quiche_jni.dll" "$JNI_SRC" \
+              -o "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" "$JNI_SRC" \
               -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
               -I"$QUICHE_H" \
               -Wl,--whole-archive "$WIN_LIB" -Wl,--no-whole-archive \
               -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lpthread -lm -lstdc++ \
-              && x86_64-w64-mingw32-strip --strip-all "$JVM_NATIVE/windows-x64/quiche_jni.dll" \
-              && echo "Built Windows x64: $(du -h "$JVM_NATIVE/windows-x64/quiche_jni.dll" | cut -f1)"
+              && x86_64-w64-mingw32-strip --strip-all "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" \
+              && echo "Built Windows x64: $(du -h "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" | cut -f1)"
           fi
 
           # Android arm64 JNI shim (via cargo-ndk)
@@ -227,12 +229,12 @@ jobs:
           fi
 
           echo "=== Done ==="
-          find "$JVM_NATIVE" "$ANDROID_JNI" -name "*.so" -o -name "*.dll" -o -name "*.dylib" 2>/dev/null
+          find "$QUICHE_LIBS" "$ANDROID_JNI" -name "*.so" -o -name "*.dll" -o -name "*.dylib" 2>/dev/null
 
       - name: Verify JNI shims exist
         run: |
           echo "=== JVM native libs ==="
-          find socket-quic/src/jvmMain/resources/META-INF/native -type f 2>/dev/null || echo "WARN: no JNI shims found"
+          find socket-quic/libs/quiche -name "libquiche_jni.*" -o -name "quiche_jni.dll" 2>/dev/null || echo "WARN: no JNI shims found"
           echo "=== Android native libs ==="
           find socket-quic/src/androidMain/jniLibs -type f 2>/dev/null || echo "No Android JNI (expected on Linux)"
 
