@@ -23,6 +23,48 @@ internal class KoffiQuicheApi : QuicheApi {
     // QuicheDriver doesn't re-parse on every call.
     private val fnConfigNew = quicheLibrary.func("void* quiche_config_new(uint32_t version)")
     private val fnConfigFree = quicheLibrary.func("void quiche_config_free(void* config)")
+    private val fnConfigSetApplicationProtos =
+        quicheLibrary.func(
+            "int quiche_config_set_application_protos(void* config, const uint8_t* protos, size_t protos_len)",
+        )
+    private val fnConfigSetMaxIdleTimeout =
+        quicheLibrary.func("void quiche_config_set_max_idle_timeout(void* config, uint64_t v)")
+    private val fnConfigSetMaxRecvUdpPayloadSize =
+        quicheLibrary.func("void quiche_config_set_max_recv_udp_payload_size(void* config, size_t v)")
+    private val fnConfigSetMaxSendUdpPayloadSize =
+        quicheLibrary.func("void quiche_config_set_max_send_udp_payload_size(void* config, size_t v)")
+    private val fnConfigSetInitialMaxData =
+        quicheLibrary.func("void quiche_config_set_initial_max_data(void* config, uint64_t v)")
+    private val fnConfigSetInitialMaxStreamDataBidiLocal =
+        quicheLibrary.func("void quiche_config_set_initial_max_stream_data_bidi_local(void* config, uint64_t v)")
+    private val fnConfigSetInitialMaxStreamDataBidiRemote =
+        quicheLibrary.func("void quiche_config_set_initial_max_stream_data_bidi_remote(void* config, uint64_t v)")
+    private val fnConfigSetInitialMaxStreamDataUni =
+        quicheLibrary.func("void quiche_config_set_initial_max_stream_data_uni(void* config, uint64_t v)")
+    private val fnConfigSetInitialMaxStreamsBidi =
+        quicheLibrary.func("void quiche_config_set_initial_max_streams_bidi(void* config, uint64_t v)")
+    private val fnConfigSetInitialMaxStreamsUni =
+        quicheLibrary.func("void quiche_config_set_initial_max_streams_uni(void* config, uint64_t v)")
+    private val fnConfigSetDisableActiveMigration =
+        quicheLibrary.func("void quiche_config_set_disable_active_migration(void* config, bool v)")
+    private val fnConfigVerifyPeer = quicheLibrary.func("void quiche_config_verify_peer(void* config, bool v)")
+    private val fnConfigEnablePacing = quicheLibrary.func("void quiche_config_enable_pacing(void* config, bool v)")
+    private val fnConfigSetMaxPacingRate =
+        quicheLibrary.func("void quiche_config_set_max_pacing_rate(void* config, uint64_t v)")
+    private val fnConfigSetCcAlgorithm =
+        quicheLibrary.func("void quiche_config_set_cc_algorithm(void* config, int algo)")
+    private val fnConfigEnableHystart = quicheLibrary.func("void quiche_config_enable_hystart(void* config, bool v)")
+    private val fnConfigSetInitialCongestionWindowPackets =
+        quicheLibrary.func("void quiche_config_set_initial_congestion_window_packets(void* config, size_t packets)")
+    private val fnConfigSetMaxConnectionWindow =
+        quicheLibrary.func("void quiche_config_set_max_connection_window(void* config, uint64_t v)")
+    private val fnConfigSetMaxStreamWindow =
+        quicheLibrary.func("void quiche_config_set_max_stream_window(void* config, uint64_t v)")
+    private val fnConfigDiscoverPmtu =
+        quicheLibrary.func("void quiche_config_discover_pmtu(void* config, bool v)")
+    private val fnConfigEnableEarlyData =
+        quicheLibrary.func("void quiche_config_enable_early_data(void* config)")
+    private val fnConfigGrease = quicheLibrary.func("void quiche_config_grease(void* config, bool v)")
 
     // Config
     override fun configNew(version: Int): QuicheConfig = QuicheConfig(addressOf(fnConfigNew(version)))
@@ -35,109 +77,151 @@ internal class KoffiQuicheApi : QuicheApi {
         config: QuicheConfig,
         protosAddr: Long,
         protosLen: Int,
-    ): Int = TODO("koffi: quiche_config_set_application_protos")
+    ): Int = fnConfigSetApplicationProtos(config.handle.asPointer(), protosAddr.asPointer(), protosLen).unsafeCast<Int>()
 
     override fun configSetMaxIdleTimeout(
         config: QuicheConfig,
         timeout: Long,
-    ): Unit = TODO("koffi: quiche_config_set_max_idle_timeout")
+    ) {
+        fnConfigSetMaxIdleTimeout(config.handle.asPointer(), timeout.asPointer())
+    }
 
     override fun configSetMaxRecvUdpPayloadSize(
         config: QuicheConfig,
         size: Long,
-    ): Unit = TODO("koffi: quiche_config_set_max_recv_udp_payload_size")
+    ) {
+        fnConfigSetMaxRecvUdpPayloadSize(config.handle.asPointer(), size.asPointer())
+    }
 
     override fun configSetMaxSendUdpPayloadSize(
         config: QuicheConfig,
         size: Long,
-    ): Unit = TODO("koffi: quiche_config_set_max_send_udp_payload_size")
+    ) {
+        fnConfigSetMaxSendUdpPayloadSize(config.handle.asPointer(), size.asPointer())
+    }
 
     override fun configSetInitialMaxData(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_initial_max_data")
+    ) {
+        fnConfigSetInitialMaxData(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetInitialMaxStreamDataBidiLocal(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_initial_max_stream_data_bidi_local")
+    ) {
+        fnConfigSetInitialMaxStreamDataBidiLocal(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetInitialMaxStreamDataBidiRemote(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_initial_max_stream_data_bidi_remote")
+    ) {
+        fnConfigSetInitialMaxStreamDataBidiRemote(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetInitialMaxStreamDataUni(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_initial_max_stream_data_uni")
+    ) {
+        fnConfigSetInitialMaxStreamDataUni(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetInitialMaxStreamsBidi(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_initial_max_streams_bidi")
+    ) {
+        fnConfigSetInitialMaxStreamsBidi(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetInitialMaxStreamsUni(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_initial_max_streams_uni")
+    ) {
+        fnConfigSetInitialMaxStreamsUni(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetDisableActiveMigration(
         config: QuicheConfig,
         v: Boolean,
-    ): Unit = TODO("koffi: quiche_config_set_disable_active_migration")
+    ) {
+        fnConfigSetDisableActiveMigration(config.handle.asPointer(), v)
+    }
 
     override fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,
-    ): Unit = TODO("koffi: quiche_config_verify_peer")
+    ) {
+        fnConfigVerifyPeer(config.handle.asPointer(), v)
+    }
 
     override fun configEnablePacing(
         config: QuicheConfig,
         v: Boolean,
-    ): Unit = TODO("koffi: quiche_config_enable_pacing")
+    ) {
+        fnConfigEnablePacing(config.handle.asPointer(), v)
+    }
 
     override fun configSetMaxPacingRate(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_max_pacing_rate")
+    ) {
+        fnConfigSetMaxPacingRate(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetCcAlgorithm(
         config: QuicheConfig,
         algo: Int,
-    ): Unit = TODO("koffi: quiche_config_set_cc_algorithm")
+    ) {
+        fnConfigSetCcAlgorithm(config.handle.asPointer(), algo)
+    }
 
     override fun configEnableHystart(
         config: QuicheConfig,
         v: Boolean,
-    ): Unit = TODO("koffi: quiche_config_enable_hystart")
+    ) {
+        fnConfigEnableHystart(config.handle.asPointer(), v)
+    }
 
     override fun configSetInitialCongestionWindowPackets(
         config: QuicheConfig,
         packets: Long,
-    ): Unit = TODO("koffi: quiche_config_set_initial_congestion_window_packets")
+    ) {
+        fnConfigSetInitialCongestionWindowPackets(config.handle.asPointer(), packets.asPointer())
+    }
 
     override fun configSetMaxConnectionWindow(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_max_connection_window")
+    ) {
+        fnConfigSetMaxConnectionWindow(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configSetMaxStreamWindow(
         config: QuicheConfig,
         v: Long,
-    ): Unit = TODO("koffi: quiche_config_set_max_stream_window")
+    ) {
+        fnConfigSetMaxStreamWindow(config.handle.asPointer(), v.asPointer())
+    }
 
     override fun configDiscoverPmtu(
         config: QuicheConfig,
         v: Boolean,
-    ): Unit = TODO("koffi: quiche_config_discover_pmtu")
+    ) {
+        fnConfigDiscoverPmtu(config.handle.asPointer(), v)
+    }
 
-    override fun configEnableEarlyData(config: QuicheConfig): Unit = TODO("koffi: quiche_config_enable_early_data")
+    override fun configEnableEarlyData(config: QuicheConfig) {
+        fnConfigEnableEarlyData(config.handle.asPointer())
+    }
 
     override fun configGrease(
         config: QuicheConfig,
         v: Boolean,
-    ): Unit = TODO("koffi: quiche_config_grease")
+    ) {
+        fnConfigGrease(config.handle.asPointer(), v)
+    }
 
     // Connection
     override fun connect(
