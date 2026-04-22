@@ -19,6 +19,13 @@ private const val QUICHE_ERR_DONE: Int = -1
  * never reaches this class.
  */
 internal class KoffiQuicheApi : QuicheApi {
+    // Address → koffi External map for structs we allocated via koffi.alloc.
+    // koffi.free and koffi.decode both require the External object; a bare BigInt
+    // address (what we expose through QuicheRecvInfo.handle etc.) can't round-trip
+    // back to an External, so we keep both. Bounded size — the driver allocates one
+    // recv_info and one send_info per connection.
+    private val structHandles = mutableMapOf<Long, dynamic>()
+
     // Cached koffi function handles. Binding via lib.func() parses the C prototype
     // string once per signature; we memoize at construction so the hot path in
     // QuicheDriver doesn't re-parse on every call.
@@ -529,15 +536,47 @@ internal class KoffiQuicheApi : QuicheApi {
         fromAddrLen: Int,
         toAddr: Long,
         toAddrLen: Int,
-    ): QuicheRecvInfo = TODO("koffi: build quiche_recv_info struct")
+    ): QuicheRecvInfo {
+        val ext = koffi.alloc(recvInfoType, 1)
+        val initFields = js("({})")
+        initFields.from = fromAddr.asPointer()
+        initFields.from_len = fromAddrLen
+        initFields.to = toAddr.asPointer()
+        initFields.to_len = toAddrLen
+        koffi.encode(ext, recvInfoType, initFields)
+        val addr = addressOf(ext)
+        structHandles[addr] = ext
+        return QuicheRecvInfo(addr)
+    }
 
-    override fun recvInfoFree(info: QuicheRecvInfo): Unit = TODO("koffi: free quiche_recv_info struct")
+    override fun recvInfoFree(info: QuicheRecvInfo) {
+        val ext = structHandles.remove(info.handle) ?: return
+        koffi.free(ext)
+    }
 
-    override fun sendInfoNew(): QuicheSendInfo = TODO("koffi: allocate quiche_send_info struct")
+    override fun sendInfoNew(): QuicheSendInfo {
+        // quiche writes into .to / .to_len after quiche_conn_send(); we just hand back
+        // zero-filled backing memory (koffi.alloc zero-inits by default).
+        val ext = koffi.alloc(sendInfoType, 1)
+        val addr = addressOf(ext)
+        structHandles[addr] = ext
+        return QuicheSendInfo(addr)
+    }
 
-    override fun sendInfoFree(info: QuicheSendInfo): Unit = TODO("koffi: free quiche_send_info struct")
+    override fun sendInfoFree(info: QuicheSendInfo) {
+        val ext = structHandles.remove(info.handle) ?: return
+        koffi.free(ext)
+    }
 
-    override fun sendInfoToAddr(info: QuicheSendInfo): Long = TODO("koffi: read send_info.to pointer")
+    override fun sendInfoToAddr(info: QuicheSendInfo): Long {
+        // Pointer arithmetic: &info->to = base + offsetof(quiche_send_info, to).
+        // No decode needed — the callers want the address of the embedded sockaddr_storage
+        // so they can overlay a sockaddr struct onto it.
+        return info.handle + SEND_INFO_OFFSET_TO
+    }
 
-    override fun sendInfoToAddrLen(info: QuicheSendInfo): Int = TODO("koffi: read send_info.to_len")
+    override fun sendInfoToAddrLen(info: QuicheSendInfo): Int {
+        val ext = structHandles[info.handle] ?: error("sendInfoToAddrLen: unknown send_info handle ${info.handle}")
+        return koffi.decode(ext, sendInfoType).to_len.unsafeCast<Int>()
+    }
 }

@@ -44,3 +44,49 @@ internal fun quicheVersion(): String =
         .func("const char* quiche_version()")
         .unsafeCast<() -> String>()
         .invoke()
+
+/**
+ * koffi type descriptors for the two quiche info structs we allocate in [KoffiQuicheApi].
+ *
+ * Layouts were verified against libquiche 0.28.0 on macOS arm64 with a direct C compile
+ * (sizeof + offsetof) — they match exactly:
+ *
+ * - `quiche_recv_info` (32 bytes): void* from, uint32_t from_len, void* to, uint32_t to_len.
+ * - `quiche_send_info` (288 bytes): sockaddr_storage from (128, 8-aligned), uint32_t from_len,
+ *   sockaddr_storage to (128, 8-aligned) at offset 136, uint32_t to_len at offset 264,
+ *   struct timespec at at offset 272.
+ *
+ * We model sockaddr_storage as `uint64_t[16]` (128 bytes, 8-byte alignment) rather than
+ * `uint8_t[128]` so the koffi-computed field offsets match what C emits.
+ */
+internal val sockaddrStorageType: dynamic by lazy { koffi.array("uint64_t", 16) }
+
+internal val recvInfoType: dynamic by lazy {
+    koffi.struct(
+        "quiche_recv_info",
+        js(
+            "({ from: 'void*', from_len: 'uint32_t', to: 'void*', to_len: 'uint32_t' })",
+        ),
+    )
+}
+
+internal val timespecType: dynamic by lazy {
+    koffi.struct(
+        "timespec",
+        js("({ tv_sec: 'int64_t', tv_nsec: 'int64_t' })"),
+    )
+}
+
+internal val sendInfoType: dynamic by lazy {
+    val fields =
+        js(
+            "({ from: null, from_len: 'uint32_t', to: null, to_len: 'uint32_t', at: null })",
+        )
+    fields.from = sockaddrStorageType
+    fields.to = sockaddrStorageType
+    fields.at = timespecType
+    koffi.struct("quiche_send_info", fields)
+}
+
+/** Byte offset of `quiche_send_info.to` — verified to equal 136 on 64-bit macOS/Linux. */
+internal const val SEND_INFO_OFFSET_TO: Long = 136

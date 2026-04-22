@@ -58,6 +58,24 @@ class KoffiQuicheSmokeTest {
         }
     }
 
+    @Test
+    fun recvInfoAndSendInfoAllocRoundTripThroughKoffi() {
+        if (!isNode) return
+        val api = KoffiQuicheApi()
+        // Use arbitrary non-null sockaddr-looking pointers — recvInfoNew doesn't dereference them.
+        val recvInfo = api.recvInfoNew(fromAddr = 0xCAFE1L, fromAddrLen = 16, toAddr = 0xCAFE2L, toAddrLen = 16)
+        assertNotEquals(0L, recvInfo.handle)
+        api.recvInfoFree(recvInfo)
+
+        val sendInfo = api.sendInfoNew()
+        assertNotEquals(0L, sendInfo.handle)
+        // &info->to == info + 136; verify our computed offset matches the C layout.
+        assertEquals(sendInfo.handle + 136L, api.sendInfoToAddr(sendInfo))
+        // Freshly allocated send_info is zero-filled — to_len starts at 0.
+        assertEquals(0, api.sendInfoToAddrLen(sendInfo))
+        api.sendInfoFree(sendInfo)
+    }
+
     companion object {
         /** Mirrors the value in CommonJvmQuicEngine; defined locally so this test doesn't pull in commonJvmMain. */
         private const val QUICHE_PROTOCOL_VERSION = 0x00000001
