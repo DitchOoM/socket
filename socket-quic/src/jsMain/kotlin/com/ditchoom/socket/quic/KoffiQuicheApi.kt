@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.nanoseconds
 
 /**
  * Node.js [QuicheApi] backed by koffi FFI against libquiche.{so,dylib}.
@@ -65,6 +66,16 @@ internal class KoffiQuicheApi : QuicheApi {
     private val fnConfigEnableEarlyData =
         quicheLibrary.func("void quiche_config_enable_early_data(void* config)")
     private val fnConfigGrease = quicheLibrary.func("void quiche_config_grease(void* config, bool v)")
+    private val fnConnFree = quicheLibrary.func("void quiche_conn_free(void* conn)")
+    private val fnConnIsEstablished = quicheLibrary.func("bool quiche_conn_is_established(void* conn)")
+    private val fnConnIsClosed = quicheLibrary.func("bool quiche_conn_is_closed(void* conn)")
+    private val fnConnIsTimedOut = quicheLibrary.func("bool quiche_conn_is_timed_out(void* conn)")
+    private val fnConnTimeoutAsNanos = quicheLibrary.func("uint64_t quiche_conn_timeout_as_nanos(void* conn)")
+    private val fnConnOnTimeout = quicheLibrary.func("void quiche_conn_on_timeout(void* conn)")
+    private val fnConnClose =
+        quicheLibrary.func(
+            "int quiche_conn_close(void* conn, bool app, uint64_t err, const uint8_t* reason, size_t reason_len)",
+        )
 
     // Config
     override fun configNew(version: Int): QuicheConfig = QuicheConfig(addressOf(fnConfigNew(version)))
@@ -236,7 +247,9 @@ internal class KoffiQuicheApi : QuicheApi {
         config: QuicheConfig,
     ): QuicheConn = TODO("koffi: quiche_connect")
 
-    override fun connFree(conn: QuicheConn): Unit = TODO("koffi: quiche_conn_free")
+    override fun connFree(conn: QuicheConn) {
+        fnConnFree(conn.handle.asPointer())
+    }
 
     override fun connRecv(
         conn: QuicheConn,
@@ -267,20 +280,42 @@ internal class KoffiQuicheApi : QuicheApi {
         fin: Boolean,
     ): Int = TODO("koffi: quiche_conn_stream_send")
 
-    override fun connIsEstablished(conn: QuicheConn): Boolean = TODO("koffi: quiche_conn_is_established")
+    override fun connIsEstablished(conn: QuicheConn): Boolean =
+        fnConnIsEstablished(conn.handle.asPointer()).unsafeCast<Boolean>()
 
-    override fun connIsClosed(conn: QuicheConn): Boolean = TODO("koffi: quiche_conn_is_closed")
+    override fun connIsClosed(conn: QuicheConn): Boolean = fnConnIsClosed(conn.handle.asPointer()).unsafeCast<Boolean>()
 
-    override fun connIsTimedOut(conn: QuicheConn): Boolean = TODO("koffi: quiche_conn_is_timed_out")
+    override fun connIsTimedOut(conn: QuicheConn): Boolean =
+        fnConnIsTimedOut(conn.handle.asPointer()).unsafeCast<Boolean>()
 
-    override fun connTimeout(conn: QuicheConn): Duration? = TODO("koffi: quiche_conn_timeout_as_nanos")
+    override fun connTimeout(conn: QuicheConn): Duration? {
+        val raw = fnConnTimeoutAsNanos(conn.handle.asPointer())
+        // koffi returns uint64_t as Number when the value fits in 2^53, BigInt otherwise.
+        // quiche's sentinel for "no timeout" is UINT64_MAX — always BigInt, always overflows Long.
+        // Any real timeout nanoseconds fits easily in Long (2^62 ns = 146 years).
+        val nanos = raw.toString().unsafeCast<String>().toLongOrNull() ?: return null
+        return if (nanos < 0L) null else nanos.nanoseconds
+    }
 
-    override fun connOnTimeout(conn: QuicheConn): Unit = TODO("koffi: quiche_conn_on_timeout")
+    override fun connOnTimeout(conn: QuicheConn) {
+        fnConnOnTimeout(conn.handle.asPointer())
+    }
 
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
-    ): Int = TODO("koffi: quiche_conn_close")
+    ): Int {
+        val app = error is QuicError.ApplicationError
+        // No reason bytes for now — mirrors JniQuicheApi which also passes (0, 0). Extending
+        // the QuicError surface to carry a reason string is a separate change.
+        return fnConnClose(
+            conn.handle.asPointer(),
+            app,
+            error.code.asPointer(),
+            0L.asPointer(),
+            0,
+        ).unsafeCast<Int>()
+    }
 
     // Server
     override fun configLoadCertChainFromPemFile(
