@@ -6,9 +6,10 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.nativeMemoryAccess
-import kotlin.concurrent.Volatile
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketConnectionException
@@ -18,11 +19,9 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_receive
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
-import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.buffer.flow.BytesWritten
-import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.toCPointer
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +33,7 @@ import platform.Foundation.NSData
 import platform.Foundation.NSNumber
 import platform.Foundation.create
 import platform.Network.nw_connection_t
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
@@ -61,14 +61,15 @@ private class AppleQuicEngine : QuicEngine {
             // Build ALPN array — pass as List which K/N bridges to NSArray
             val alpnList: List<Any?> = quicOptions.alpnProtocols
 
-            val nwConn = nw_helper_create_quic_connection(
-                hostname,
-                port.toUShort(),
-                alpnList,
-                NSNumber(bool = quicOptions.verifyPeer),
-                quicOptions.idleTimeout.inWholeSeconds.toInt(),
-                timeout.inWholeSeconds.toInt(),
-            ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection")
+            val nwConn =
+                nw_helper_create_quic_connection(
+                    hostname,
+                    port.toUShort(),
+                    alpnList,
+                    NSNumber(bool = quicOptions.verifyPeer),
+                    quicOptions.idleTimeout.inWholeSeconds.toInt(),
+                    timeout.inWholeSeconds.toInt(),
+                ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection")
 
             // Wait for handshake completion
             suspendCancellableCoroutine { cont ->
