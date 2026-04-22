@@ -6,6 +6,8 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.buffer.use
 import kotlinx.coroutines.CompletableDeferred
@@ -130,6 +132,27 @@ internal class JvmQuicServer(
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
 
     /**
+     * Recv buffer pool — each incoming UDP datagram needs a fresh MAX_DATAGRAM_SIZE
+     * (1350-byte) buffer, and ownership transfers to the connection's driver which
+     * frees it after quiche_conn_recv copies the bytes internally. PooledBuffer's
+     * `freeNativeMemory()` returns to the pool, so all existing free-paths
+     * (driver command execution, receive-loop error branches, destroy drain) feed
+     * the pool without code changes.
+     *
+     * MultiThreaded mode: receive loop acquires (Selector thread); drivers release
+     * (per-connection coroutine, can hop dispatchers under Dispatchers.IO).
+     * maxPoolSize=64 → ~87 KB cached (64 × 1350) — caps steady-state RSS while
+     * covering typical concurrent-driver counts.
+     */
+    private val recvBufPool =
+        BufferPool(
+            threadingMode = ThreadingMode.MultiThreaded,
+            maxPoolSize = 64,
+            defaultBufferSize = MAX_DATAGRAM_SIZE,
+            factory = bufferFactory,
+        )
+
+    /**
      * Thread-safe queue for drivers that need their [connectionsByDcid] entries removed.
      * Connection handlers add drivers here after close; the receive loop drains it.
      * This keeps all map mutations on the receive loop thread — no ConcurrentHashMap needed.
@@ -172,6 +195,11 @@ internal class JvmQuicServer(
             driver.destroy()
         }
         connectionsByDcid.clear()
+        // Drivers have drained — safe to free cached recv buffers. Any release
+        // after this point would silently repopulate the pool (benign, but
+        // buffers would leak until server GC), which is why this follows the
+        // destroy loop.
+        recvBufPool.clear()
         api.configFree(config)
         acceptedDrivers.close()
         // Cancel handler coroutines spawned via connections() — they're
@@ -220,8 +248,9 @@ internal class JvmQuicServer(
 
                 // Drain all available packets after select returns
                 while (true) {
-                    // Allocate a fresh buffer per packet — ownership transfers to driver (zero-copy)
-                    val recvBuf = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
+                    // Acquire a buffer from the per-server pool — ownership transfers to driver
+                    // (zero-copy). The driver's freeNativeMemory() releases back to the pool.
+                    val recvBuf = recvBufPool.acquire(MAX_DATAGRAM_SIZE)
                     val recvByteBuffer = (recvBuf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
                     recvByteBuffer.clear()
 
