@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.bufferHashCode
+import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.buffer.use
@@ -404,24 +406,29 @@ internal class JvmQuicServer(
 
 /**
  * Key for connection lookup by DCID.
+ *
+ * Holds a managed-heap snapshot of the CID bytes (typically ≤20 bytes
+ * per RFC 9000 §5.1) so the key is stable across datagram buffer
+ * recycling. Equality/hash reuse the buffer library's content-based
+ * helpers, eliminating the per-datagram [ByteArray] that the pre-v2
+ * implementation allocated.
  */
 internal class ConnectionIdKey private constructor(
-    private val bytes: ByteArray,
+    private val snapshot: com.ditchoom.buffer.ReadBuffer,
 ) {
-    override fun equals(other: Any?): Boolean = other is ConnectionIdKey && bytes.contentEquals(other.bytes)
+    override fun equals(other: Any?): Boolean = other is ConnectionIdKey && snapshot.contentEquals(other.snapshot)
 
-    override fun hashCode(): Int = bytes.contentHashCode()
+    override fun hashCode(): Int = bufferHashCode(snapshot)
 
     companion object {
         fun from(
             buffer: com.ditchoom.buffer.PlatformBuffer,
             length: Int,
         ): ConnectionIdKey {
-            val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-            val bytes = ByteArray(length)
-            bb.position(0)
-            bb.get(bytes, 0, length)
-            return ConnectionIdKey(bytes)
+            val snapshot = BufferFactory.managed().allocate(length)
+            for (i in 0 until length) snapshot.writeByte(buffer.get(i))
+            snapshot.resetForRead()
+            return ConnectionIdKey(snapshot)
         }
     }
 }

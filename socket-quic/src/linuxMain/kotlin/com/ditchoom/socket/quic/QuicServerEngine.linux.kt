@@ -5,7 +5,9 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.linux.socket_getsockname
@@ -440,26 +442,30 @@ private fun readSizeT(buf: PlatformBuffer): Int =
         .toInt()
 
 /**
- * Key for connection lookup by DCID. Byte-array equality/hashCode for map keys.
+ * Key for connection lookup by DCID.
+ *
+ * Holds a managed-heap snapshot of the CID bytes (typically ≤20 bytes
+ * per RFC 9000 §5.1) so the key is stable across datagram buffer
+ * recycling. Equality/hash reuse the buffer library's content-based
+ * helpers, eliminating the per-datagram [ByteArray] that the pre-v2
+ * implementation allocated.
  */
 private class ConnectionIdKey private constructor(
-    private val bytes: ByteArray,
+    private val snapshot: com.ditchoom.buffer.ReadBuffer,
 ) {
-    override fun equals(other: Any?): Boolean = other is ConnectionIdKey && bytes.contentEquals(other.bytes)
+    override fun equals(other: Any?): Boolean = other is ConnectionIdKey && snapshot.contentEquals(other.snapshot)
 
-    override fun hashCode(): Int = bytes.contentHashCode()
+    override fun hashCode(): Int = bufferHashCode(snapshot)
 
     companion object {
         fun fromNative(
             buffer: PlatformBuffer,
             length: Int,
         ): ConnectionIdKey {
-            val addr = buffer.nativeMemoryAccess!!.nativeAddress
-            val bytes = ByteArray(length)
-            for (i in 0 until length) {
-                bytes[i] = (addr + i).toCPointer<ByteVar>()!!.pointed.value
-            }
-            return ConnectionIdKey(bytes)
+            val snapshot = BufferFactory.managed().allocate(length)
+            for (i in 0 until length) snapshot.writeByte(buffer.get(i))
+            snapshot.resetForRead()
+            return ConnectionIdKey(snapshot)
         }
     }
 }
