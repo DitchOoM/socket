@@ -972,6 +972,12 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.coroutines.test)
         }
+        jsMain.dependencies {
+            // koffi — Node.js FFI used by the Node QUIC engine to load libquiche.{so,dylib}.
+            // Loaded at runtime via dynamic `require('koffi')` inside the isNode branch,
+            // so browser webpack bundling is not affected.
+            implementation(npm("koffi", "2.16.1"))
+        }
         val commonJvmMain by creating {
             dependsOn(commonMain.get())
         }

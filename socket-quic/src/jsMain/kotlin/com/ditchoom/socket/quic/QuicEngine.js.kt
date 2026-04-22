@@ -24,12 +24,8 @@ private class JsQuicEngine : QuicEngine {
         connectionOptions: ConnectionOptions,
         timeout: Duration,
         block: suspend QuicScope.() -> R,
-    ): R {
-        val isNode =
-            js(
-                "typeof process !== 'undefined' && process.versions != null && process.versions.node != null",
-            )
-        if (isNode as Boolean) {
+    ): R =
+        if (isNode) {
             TODO(
                 "Node.js QUIC via koffi FFI (load libquiche.so). " +
                     "JS buffers require data copies — no nativeMemoryAccess on this platform.",
@@ -39,7 +35,6 @@ private class JsQuicEngine : QuicEngine {
                 "QUIC is not supported in browser environments (no raw UDP access)",
             )
         }
-    }
 
     override fun close() {}
 }
