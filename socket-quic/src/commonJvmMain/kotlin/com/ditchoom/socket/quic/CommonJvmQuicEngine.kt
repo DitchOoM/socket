@@ -6,6 +6,7 @@ import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeout
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
@@ -131,16 +132,23 @@ private class CommonJvmQuicEngine : QuicEngine {
                     // Order matters: close the connection first (driver processes Close
                     // command and flushes CONNECTION_CLOSE), then cancel remaining children,
                     // then close the UDP channel (unblocks selector).
+                    //
+                    // IMPORTANT: close udpChannel, not just the underlying DatagramChannel.
+                    // udpChannel wraps its own Selector; closing only `channel` leaves the
+                    // selector alive with udpReaderLoop's suspend frame stuck in select(),
+                    // leaking one coroutine per connect() call.
                     quicConnection.close()
                     connJob.cancel()
-                    channel.close()
+                    udpChannel.close()
                 }
             } finally {
                 api.configFree(config)
             }
         }
 
-    override fun close() {}
+    override fun close() {
+        scope.cancel()
+    }
 
     companion object {
         private const val QUICHE_PROTOCOL_VERSION = 0x00000001

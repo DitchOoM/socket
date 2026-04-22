@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.Flow
@@ -69,7 +70,9 @@ private class JvmQuicServerEngine : QuicServerEngine {
         return JvmQuicServer(api, config, channel, localAddr, bufferFactory, scope)
     }
 
-    override fun close() {}
+    override fun close() {
+        scope.cancel()
+    }
 
     companion object {
         private const val QUICHE_PROTOCOL_VERSION = 0x00000001
@@ -112,9 +115,16 @@ internal class JvmQuicServer(
     private val channel: DatagramChannel,
     private val localAddr: InetSocketAddress,
     private val bufferFactory: BufferFactory,
-    private val scope: CoroutineScope,
+    engineScope: CoroutineScope,
 ) : QuicServer {
     override val port: Int get() = localAddr.port
+
+    // Child scope of the engine — cancelling it takes down every handler
+    // coroutine spawned via connections() plus the receive loop. Without this,
+    // handlers launched on the engine's scope leak past server.close() and
+    // pile up on Dispatchers.IO across successive tests.
+    private val serverJob = SupervisorJob(engineScope.coroutineContext[Job])
+    private val scope = CoroutineScope(engineScope.coroutineContext + serverJob)
 
     private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
@@ -164,6 +174,11 @@ internal class JvmQuicServer(
         connectionsByDcid.clear()
         api.configFree(config)
         acceptedDrivers.close()
+        // Cancel handler coroutines spawned via connections() — they're
+        // children of serverJob. Non-blocking: the guarantee we need is
+        // asserted by JvmQuicServerLifecycleTests (no coroutines outlive
+        // server.close()).
+        serverJob.cancel()
     }
 
     /**
