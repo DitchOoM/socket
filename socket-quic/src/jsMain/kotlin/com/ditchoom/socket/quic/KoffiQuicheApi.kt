@@ -3,11 +3,11 @@ package com.ditchoom.socket.quic
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.nanoseconds
 
+/** quiche sentinel for "no more data" / "stream finished" on ssize_t-returning I/O. */
+private const val QUICHE_ERR_DONE: Int = -1
+
 /**
  * Node.js [QuicheApi] backed by koffi FFI against libquiche.{so,dylib}.
- *
- * **Status:** scaffold. Every method throws [NotImplementedError] pending the
- * koffi binding work (Phase 3.2 JS implementation). See [Koffi] for the loader.
  *
  * Implementation strategy mirrors [com.ditchoom.socket.quic.QuicheDriver]'s
  * call shape — purely synchronous calls into quiche's C API. koffi handles
@@ -15,8 +15,8 @@ import kotlin.time.Duration.Companion.nanoseconds
  * buffers have no `nativeMemoryAccess`, so bytes must be copied between
  * JS `Uint8Array` and koffi-allocated native memory on every hop.
  *
- * Will be instantiated by [com.ditchoom.socket.quic.JsQuicEngine] only when
- * [isNode] is true; browser code never reaches this class.
+ * Instantiated by [JsQuicEngine] only when [isNode] is true; browser code
+ * never reaches this class.
  */
 internal class KoffiQuicheApi : QuicheApi {
     // Cached koffi function handles. Binding via lib.func() parses the C prototype
@@ -75,6 +75,30 @@ internal class KoffiQuicheApi : QuicheApi {
     private val fnConnClose =
         quicheLibrary.func(
             "int quiche_conn_close(void* conn, bool app, uint64_t err, const uint8_t* reason, size_t reason_len)",
+        )
+    private val fnConnReadable = quicheLibrary.func("void* quiche_conn_readable(void* conn)")
+    private val fnConnWritable = quicheLibrary.func("void* quiche_conn_writable(void* conn)")
+    private val fnStreamIterNext =
+        quicheLibrary.func("bool quiche_stream_iter_next(void* iter, uint64_t* stream_id)")
+    private val fnStreamIterFree = quicheLibrary.func("void quiche_stream_iter_free(void* iter)")
+    private val fnConnRecv =
+        quicheLibrary.func("int quiche_conn_recv(void* conn, uint8_t* buf, size_t buf_len, const void* info)")
+    private val fnConnSend =
+        quicheLibrary.func("int quiche_conn_send(void* conn, uint8_t* out, size_t out_len, void* out_info)")
+
+    // quiche 0.28's stream_recv/send each take a trailing `uint64_t *out_error_code` output param
+    // that is only populated on STOP_SENDING / STREAM_RESET. The QuicheApi interface doesn't expose
+    // it; we pass a 1-slot BigInt64Array scratch buffer and discard the value — matches JniQuicheApi
+    // behavior (the JNI shim passes a local and drops it).
+    private val fnConnStreamRecv =
+        quicheLibrary.func(
+            "int quiche_conn_stream_recv(void* conn, uint64_t stream_id, uint8_t* out, " +
+                "size_t buf_len, bool* fin, uint64_t* out_error_code)",
+        )
+    private val fnConnStreamSend =
+        quicheLibrary.func(
+            "int quiche_conn_stream_send(void* conn, uint64_t stream_id, const uint8_t* buf, " +
+                "size_t buf_len, bool fin, uint64_t* out_error_code)",
         )
 
     // Config
@@ -256,21 +280,51 @@ internal class KoffiQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
-    ): Int = TODO("koffi: quiche_conn_recv")
+    ): Int =
+        fnConnRecv(
+            conn.handle.asPointer(),
+            buf.asPointer(),
+            bufLen,
+            recvInfo.handle.asPointer(),
+        ).unsafeCast<Int>()
 
     override fun connSend(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         sendInfo: QuicheSendInfo,
-    ): Int = TODO("koffi: quiche_conn_send")
+    ): Int =
+        fnConnSend(
+            conn.handle.asPointer(),
+            buf.asPointer(),
+            bufLen,
+            sendInfo.handle.asPointer(),
+        ).unsafeCast<Int>()
 
     override fun connStreamRecv(
         conn: QuicheConn,
         streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
-    ): StreamRecvResult = TODO("koffi: quiche_conn_stream_recv")
+    ): StreamRecvResult {
+        // bool is 1 byte in the C ABI; Uint8Array(1) gives us the exact storage.
+        val finBuf = js("new Uint8Array(1)")
+        val errBuf = js("new BigInt64Array(1)")
+        val n =
+            fnConnStreamRecv(
+                conn.handle.asPointer(),
+                streamId.id.asPointer(),
+                buf.asPointer(),
+                bufLen,
+                finBuf,
+                errBuf,
+            ).unsafeCast<Int>()
+        return when {
+            n >= 0 -> StreamRecvResult.Data(bytesRead = n, fin = finBuf[0].unsafeCast<Int>() != 0)
+            n == QUICHE_ERR_DONE -> StreamRecvResult.Done
+            else -> StreamRecvResult.Error(n)
+        }
+    }
 
     override fun connStreamSend(
         conn: QuicheConn,
@@ -278,15 +332,23 @@ internal class KoffiQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ): Int = TODO("koffi: quiche_conn_stream_send")
+    ): Int {
+        val errBuf = js("new BigInt64Array(1)")
+        return fnConnStreamSend(
+            conn.handle.asPointer(),
+            streamId.id.asPointer(),
+            buf.asPointer(),
+            bufLen,
+            fin,
+            errBuf,
+        ).unsafeCast<Int>()
+    }
 
-    override fun connIsEstablished(conn: QuicheConn): Boolean =
-        fnConnIsEstablished(conn.handle.asPointer()).unsafeCast<Boolean>()
+    override fun connIsEstablished(conn: QuicheConn): Boolean = fnConnIsEstablished(conn.handle.asPointer()).unsafeCast<Boolean>()
 
     override fun connIsClosed(conn: QuicheConn): Boolean = fnConnIsClosed(conn.handle.asPointer()).unsafeCast<Boolean>()
 
-    override fun connIsTimedOut(conn: QuicheConn): Boolean =
-        fnConnIsTimedOut(conn.handle.asPointer()).unsafeCast<Boolean>()
+    override fun connIsTimedOut(conn: QuicheConn): Boolean = fnConnIsTimedOut(conn.handle.asPointer()).unsafeCast<Boolean>()
 
     override fun connTimeout(conn: QuicheConn): Duration? {
         val raw = fnConnTimeoutAsNanos(conn.handle.asPointer())
@@ -364,13 +426,25 @@ internal class KoffiQuicheApi : QuicheApi {
     ): Int = TODO("koffi: quiche_negotiate_version")
 
     // Stream iteration
-    override fun connReadable(conn: QuicheConn): QuicheStreamIter = TODO("koffi: quiche_conn_readable")
+    override fun connReadable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(addressOf(fnConnReadable(conn.handle.asPointer())))
 
-    override fun connWritable(conn: QuicheConn): QuicheStreamIter = TODO("koffi: quiche_conn_writable")
+    override fun connWritable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(addressOf(fnConnWritable(conn.handle.asPointer())))
 
-    override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? = TODO("koffi: quiche_stream_iter_next")
+    override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
+        // C signature: bool quiche_stream_iter_next(quiche_stream_iter *iter, uint64_t *stream_id).
+        // koffi accepts a TypedArray as a raw buffer pointer — BigInt64Array(1) is exactly 8 bytes
+        // of backing memory, matching a uint64_t slot. koffi writes the stream id into [0] before
+        // returning.
+        val outBuf = js("new BigInt64Array(1)")
+        val hasNext = fnStreamIterNext(iter.handle.asPointer(), outBuf).unsafeCast<Boolean>()
+        if (!hasNext) return null
+        val streamId = outBuf[0].toString().unsafeCast<String>().toLong()
+        return QuicStreamId(streamId)
+    }
 
-    override fun streamIterFree(iter: QuicheStreamIter): Unit = TODO("koffi: quiche_stream_iter_free")
+    override fun streamIterFree(iter: QuicheStreamIter) {
+        fnStreamIterFree(iter.handle.asPointer())
+    }
 
     // Helpers
     override fun recvInfoNew(
