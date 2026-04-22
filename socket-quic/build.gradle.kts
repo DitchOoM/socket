@@ -883,7 +883,32 @@ kotlin {
     }
     js {
         browser() // QUIC unsupported in browser (no raw UDP)
-        nodejs() // QUIC via quiche FFI (koffi) on Node.js
+        nodejs { // QUIC via quiche FFI (koffi) on Node.js
+            testTask {
+                useMocha { timeout = "30s" }
+                // Point koffi at the locally-built libquiche shared lib for jsNodeTest.
+                // Only sets the env var when the host's prebuilt dylib/so is present;
+                // otherwise the test falls back to its CWD-relative default and will
+                // skip via a runtime check.
+                val hostLibquiche =
+                    when {
+                        isMacOS ->
+                            projectDir
+                                .resolve("libs/quiche/macos-arm64/lib/libquiche.dylib")
+                                .takeIf { it.exists() }
+                                ?: projectDir.resolve("libs/quiche/macos-x64/lib/libquiche.dylib").takeIf { it.exists() }
+                        isLinux ->
+                            projectDir
+                                .resolve("libs/quiche/linux-x64/lib/libquiche.so")
+                                .takeIf { it.exists() }
+                                ?: projectDir.resolve("libs/quiche/linux-arm64/lib/libquiche.so").takeIf { it.exists() }
+                        else -> null
+                    }
+                if (hostLibquiche != null) {
+                    environment("LIBQUICHE_PATH", hostLibquiche.absolutePath)
+                }
+            }
+        }
     }
     wasmJs {
         browser() // QUIC unsupported in browser (no raw UDP/WASM QUIC)

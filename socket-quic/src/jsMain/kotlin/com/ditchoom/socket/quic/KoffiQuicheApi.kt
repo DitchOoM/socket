@@ -18,10 +18,18 @@ import kotlin.time.Duration
  * [isNode] is true; browser code never reaches this class.
  */
 internal class KoffiQuicheApi : QuicheApi {
-    // Config
-    override fun configNew(version: Int): QuicheConfig = TODO("koffi: quiche_config_new")
+    // Cached koffi function handles. Binding via lib.func() parses the C prototype
+    // string once per signature; we memoize at construction so the hot path in
+    // QuicheDriver doesn't re-parse on every call.
+    private val fnConfigNew = quicheLibrary.func("void* quiche_config_new(uint32_t version)")
+    private val fnConfigFree = quicheLibrary.func("void quiche_config_free(void* config)")
 
-    override fun configFree(config: QuicheConfig): Unit = TODO("koffi: quiche_config_free")
+    // Config
+    override fun configNew(version: Int): QuicheConfig = QuicheConfig(addressOf(fnConfigNew(version)))
+
+    override fun configFree(config: QuicheConfig) {
+        fnConfigFree(config.handle.asPointer())
+    }
 
     override fun configSetApplicationProtos(
         config: QuicheConfig,
