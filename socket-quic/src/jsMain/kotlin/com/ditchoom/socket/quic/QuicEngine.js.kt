@@ -6,15 +6,18 @@ import kotlin.time.Duration
 actual fun defaultQuicEngine(): QuicEngine = JsQuicEngine()
 
 /**
- * JS QUIC engine.
+ * JS QUIC engine — placeholder.
  *
- * - **Browser**: QUIC is not available (no raw UDP access). Throws [UnsupportedOperationException].
- * - **Node.js**: Uses quiche via koffi FFI to load libquiche shared library.
- *   Node 23+ also has experimental `node:quic` but it's unstable.
- *   The koffi approach matches the JVM pattern — load the same libquiche.so.
+ * QUIC on JS is not yet implemented. A koffi-backed Node binding was
+ * explored and deferred on zero-copy grounds; see memory
+ * `socket_quic_js_koffi_deferred.md` and branch `feature/socket-quic-js-wip`
+ * for the attempt. Browsers have no raw UDP access at all (WebTransport is a
+ * possible future path but requires a platform API, not FFI).
  *
- * Note: JS buffers don't support [com.ditchoom.buffer.nativeMemoryAccess] (returns null).
- * Data copies between JS ArrayBuffer and native memory are unavoidable on this platform.
+ * This class exists so multiplatform consumers can reference [QuicEngine] types
+ * from JS common code (composing transports and picking at runtime). Calling
+ * [connect] throws [UnsupportedOperationException] — not [TODO] — so callers
+ * using `catch (Exception)` get a cleanly catchable signal, not an [Error].
  */
 private class JsQuicEngine : QuicEngine {
     override suspend fun <R> connect(
@@ -24,22 +27,10 @@ private class JsQuicEngine : QuicEngine {
         connectionOptions: ConnectionOptions,
         timeout: Duration,
         block: suspend QuicScope.() -> R,
-    ): R {
-        val isNode =
-            js(
-                "typeof process !== 'undefined' && process.versions != null && process.versions.node != null",
-            )
-        if (isNode as Boolean) {
-            TODO(
-                "Node.js QUIC via koffi FFI (load libquiche.so). " +
-                    "JS buffers require data copies — no nativeMemoryAccess on this platform.",
-            )
-        } else {
-            throw UnsupportedOperationException(
-                "QUIC is not supported in browser environments (no raw UDP access)",
-            )
-        }
-    }
+    ): R =
+        throw UnsupportedOperationException(
+            "QUIC is not yet implemented on JS. Track feature/socket-quic-js-wip for progress.",
+        )
 
     override fun close() {}
 }
