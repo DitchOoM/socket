@@ -1,7 +1,9 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -507,25 +509,30 @@ class LinuxClientSocket : ClientToServerSocket {
             }
         }
 
-        // Fallback: copy to temporary array
-        val bytes = buffer.readByteArray(remaining)
-        return bytes.usePinned { pinned ->
-            val ptr = pinned.addressOf(0)
+        // Fallback: neither native nor managed access (e.g. FragmentedReadBuffer).
+        // Stage into a deterministic native scratch buffer so sslWrite/io_uring
+        // get a pointer without going through a Kotlin-heap ByteArray. Scratch
+        // is freed unconditionally; source position is advanced by the actual
+        // bytes-sent count via handleWriteResult, not by the amount we staged.
+        val scratch = BufferFactory.deterministic().allocate(remaining)
+        try {
+            val sourcePos = buffer.position()
+            scratch.write(buffer) // consumes `remaining` bytes from source
+            buffer.position(sourcePos) // handleWriteResult will re-advance
+            scratch.resetForRead()
+            val ptr =
+                scratch.nativeMemoryAccess!!
+                    .nativeAddress
+                    .toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    sslWrite(ptr, bytes.size, timeout).toLong()
+                    sslWrite(ptr, remaining, timeout).toLong()
                 } else {
-                    writeWithIoUring(ptr, bytes.size, timeout).toLong()
+                    writeWithIoUring(ptr, remaining, timeout).toLong()
                 }
-            when {
-                bytesSent >= 0 -> bytesSent.toInt()
-                else ->
-                    if (ssl != null) {
-                        handleSslWriteError(bytesSent.toInt())
-                    } else {
-                        handleWriteError((-bytesSent).toInt())
-                    }
-            }
+            return handleWriteResult(buffer, bytesSent)
+        } finally {
+            scratch.freeNativeMemory()
         }
     }
 

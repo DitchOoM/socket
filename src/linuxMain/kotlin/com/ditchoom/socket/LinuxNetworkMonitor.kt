@@ -2,6 +2,9 @@
 
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.CoroutineScope
@@ -37,14 +40,22 @@ class LinuxNetworkMonitor : NetworkMonitor {
 
         if (netlinkFd >= 0) {
             scope.launch {
-                val buf = ByteArray(4096)
-                while (isActive) {
-                    val n =
-                        buf.usePinned { pinned ->
-                            recv(netlinkFd, pinned.addressOf(0), buf.size.toULong(), 0)
-                        }
-                    if (n <= 0) break
-                    _availability.value = checkInterfaces()
+                // Allocate a native scratch buffer once, reuse across netlink recvs.
+                // Deterministic (malloc/free) so it's freed when the coroutine exits —
+                // no GC-managed ByteArray, no per-iteration pin/unpin.
+                val scratch = BufferFactory.deterministic().allocate(4096)
+                try {
+                    val ptr =
+                        scratch.nativeMemoryAccess!!
+                            .nativeAddress
+                            .toCPointer<ByteVar>()!!
+                    while (isActive) {
+                        val n = recv(netlinkFd, ptr, 4096.toULong(), 0)
+                        if (n <= 0) break
+                        _availability.value = checkInterfaces()
+                    }
+                } finally {
+                    scratch.freeNativeMemory()
                 }
             }
         }
