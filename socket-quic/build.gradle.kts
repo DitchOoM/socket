@@ -491,7 +491,7 @@ afterEvaluate {
 // --- Android JNI native library build ---
 // Builds quiche via cargo-ndk and compiles the JNI shim with NDK clang.
 // Requires: cargo, cargo-ndk, Android NDK, Rust Android targets
-//   rustup target add x86_64-linux-android aarch64-linux-android
+//   rustup target add x86_64-linux-android aarch64-linux-android armv7-linux-androideabi
 //   cargo install cargo-ndk
 
 // Resolve Android NDK — checks env vars then common install locations
@@ -517,6 +517,7 @@ data class AndroidAbi(
 val androidAbis =
     listOf(
         AndroidAbi("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android24"),
+        AndroidAbi("armeabi-v7a", "armv7-linux-androideabi", "armv7a-linux-androideabi24"),
         AndroidAbi("x86_64", "x86_64-linux-android", "x86_64-linux-android24"),
     )
 
