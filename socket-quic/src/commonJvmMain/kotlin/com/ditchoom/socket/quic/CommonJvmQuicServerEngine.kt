@@ -185,7 +185,14 @@ internal class JvmQuicServer(
         val tokenLenBuf = bufferFactory.allocate(8)
 
         try {
-            channel.register(selector, SelectionKey.OP_READ)
+            // Guard against the race where close() runs before this coroutine has been
+            // scheduled. The channel would already be closed and register() would throw.
+            if (closed) return
+            try {
+                channel.register(selector, SelectionKey.OP_READ)
+            } catch (_: java.nio.channels.ClosedChannelException) {
+                return
+            }
 
             while (!closed) {
                 selector.select() // async wait — unblocked by channel.close() or cleanup wakeup
