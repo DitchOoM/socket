@@ -140,21 +140,23 @@ open class NodeSocket : ClientSocket {
             throw SocketClosedException.General("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val bytesToWrite = buffer.remaining()
-        val jsBuffer =
-            when (buffer) {
-                is JsBuffer -> buffer
-                is PlatformBuffer -> buffer.unwrapFully() as JsBuffer
-                else -> null
-            }
+        // unwrapFully traverses any BufferWrapper chain (PooledBuffer,
+        // TrackedSlice, LeakTrackingBuffer, …) so we reach the concrete
+        // JsBuffer regardless of how many decorators sit on top.
+        val unwrapped = buffer.unwrapFully()
         val dataToWrite =
-            if (jsBuffer != null) {
-                val array = jsBuffer.buffer
-                Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+            if (unwrapped is JsBuffer) {
+                val array = unwrapped.buffer
+                Uint8Array(array.buffer, array.byteOffset + unwrapped.position(), bytesToWrite)
             } else {
-                // Fallback for non-PlatformBuffer types (e.g. TrackedSlice)
-                val savedPos = buffer.position()
+                // Non-JsBuffer ReadBuffer (e.g. FragmentedReadBuffer) — at the
+                // Node.js socket.write boundary a materialise-into-Uint8Array
+                // is unavoidable. ByteArray IS Int8Array at runtime on Kotlin/JS,
+                // so the unsafeCast below is zero-copy; the only allocation is
+                // the Int8Array that readByteArray produces.
+                @Suppress("NoByteArrayInProd") // JS platform boundary — no zero-copy path
                 val bytes = buffer.readByteArray(bytesToWrite)
-                buffer.position(savedPos)
+                buffer.position(buffer.position() - bytesToWrite) // undo readByteArray advance
                 Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, bytesToWrite)
             }
         writeMutex.withLock { socket.write(dataToWrite) }
