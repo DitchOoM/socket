@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.JsBuffer
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.channels.Channel
