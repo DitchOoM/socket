@@ -100,6 +100,31 @@ internal class KoffiQuicheApi : QuicheApi {
             "int quiche_conn_stream_send(void* conn, uint64_t stream_id, const uint8_t* buf, " +
                 "size_t buf_len, bool fin, uint64_t* out_error_code)",
         )
+    private val fnConnect =
+        quicheLibrary.func(
+            "void* quiche_connect(const char* server_name, const uint8_t* scid, size_t scid_len, " +
+                "const void* local, uint32_t local_len, const void* peer, uint32_t peer_len, void* config)",
+        )
+    private val fnAccept =
+        quicheLibrary.func(
+            "void* quiche_accept(const uint8_t* scid, size_t scid_len, const uint8_t* odcid, size_t odcid_len, " +
+                "const void* local, uint32_t local_len, const void* peer, uint32_t peer_len, void* config)",
+        )
+    private val fnNegotiateVersion =
+        quicheLibrary.func(
+            "int quiche_negotiate_version(const uint8_t* scid, size_t scid_len, " +
+                "const uint8_t* dcid, size_t dcid_len, uint8_t* out, size_t out_len)",
+        )
+    private val fnHeaderInfo =
+        quicheLibrary.func(
+            "int quiche_header_info(const uint8_t* buf, size_t buf_len, size_t dcil, " +
+                "uint32_t* version, uint8_t* type, uint8_t* scid, size_t* scid_len, " +
+                "uint8_t* dcid, size_t* dcid_len, uint8_t* token, size_t* token_len)",
+        )
+    private val fnConfigLoadCertChainFromPemFile =
+        quicheLibrary.func("int quiche_config_load_cert_chain_from_pem_file(void* config, const char* path)")
+    private val fnConfigLoadPrivKeyFromPemFile =
+        quicheLibrary.func("int quiche_config_load_priv_key_from_pem_file(void* config, const char* path)")
 
     // Config
     override fun configNew(version: Int): QuicheConfig = QuicheConfig(addressOf(fnConfigNew(version)))
@@ -269,7 +294,24 @@ internal class KoffiQuicheApi : QuicheApi {
         peerAddr: Long,
         peerAddrLen: Int,
         config: QuicheConfig,
-    ): QuicheConn = TODO("koffi: quiche_connect")
+    ): QuicheConn {
+        // The C signature takes a null-terminated server_name and no length param —
+        // callers on every platform are responsible for null-termination. `serverNameLen`
+        // is ignored here; it exists on the Kotlin interface to support future
+        // length-aware platform variants.
+        val raw =
+            fnConnect(
+                serverNameAddr.asPointer(),
+                scidAddr.asPointer(),
+                scidLen,
+                localAddr.asPointer(),
+                localAddrLen,
+                peerAddr.asPointer(),
+                peerAddrLen,
+                config.handle.asPointer(),
+            )
+        return QuicheConn(addressOf(raw))
+    }
 
     override fun connFree(conn: QuicheConn) {
         fnConnFree(conn.handle.asPointer())
@@ -383,12 +425,12 @@ internal class KoffiQuicheApi : QuicheApi {
     override fun configLoadCertChainFromPemFile(
         config: QuicheConfig,
         pathAddr: Long,
-    ): Int = TODO("koffi: quiche_config_load_cert_chain_from_pem_file")
+    ): Int = fnConfigLoadCertChainFromPemFile(config.handle.asPointer(), pathAddr.asPointer()).unsafeCast<Int>()
 
     override fun configLoadPrivKeyFromPemFile(
         config: QuicheConfig,
         pathAddr: Long,
-    ): Int = TODO("koffi: quiche_config_load_priv_key_from_pem_file")
+    ): Int = fnConfigLoadPrivKeyFromPemFile(config.handle.asPointer(), pathAddr.asPointer()).unsafeCast<Int>()
 
     override fun headerInfo(
         buf: Long,
@@ -402,7 +444,20 @@ internal class KoffiQuicheApi : QuicheApi {
         dcidLenOut: Long,
         tokenOut: Long,
         tokenLenOut: Long,
-    ): Int = TODO("koffi: quiche_header_info")
+    ): Int =
+        fnHeaderInfo(
+            buf.asPointer(),
+            bufLen,
+            dcil,
+            versionOut.asPointer(),
+            typeOut.asPointer(),
+            scidOut.asPointer(),
+            scidLenOut.asPointer(),
+            dcidOut.asPointer(),
+            dcidLenOut.asPointer(),
+            tokenOut.asPointer(),
+            tokenLenOut.asPointer(),
+        ).unsafeCast<Int>()
 
     override fun accept(
         scidAddr: Long,
@@ -414,7 +469,21 @@ internal class KoffiQuicheApi : QuicheApi {
         peerAddr: Long,
         peerAddrLen: Int,
         config: QuicheConfig,
-    ): QuicheConn = TODO("koffi: quiche_accept")
+    ): QuicheConn {
+        val raw =
+            fnAccept(
+                scidAddr.asPointer(),
+                scidLen,
+                odcidAddr.asPointer(),
+                odcidLen,
+                localAddr.asPointer(),
+                localAddrLen,
+                peerAddr.asPointer(),
+                peerAddrLen,
+                config.handle.asPointer(),
+            )
+        return QuicheConn(addressOf(raw))
+    }
 
     override fun negotiateVersion(
         scidAddr: Long,
@@ -423,7 +492,15 @@ internal class KoffiQuicheApi : QuicheApi {
         dcidLen: Int,
         outAddr: Long,
         outLen: Int,
-    ): Int = TODO("koffi: quiche_negotiate_version")
+    ): Int =
+        fnNegotiateVersion(
+            scidAddr.asPointer(),
+            scidLen,
+            dcidAddr.asPointer(),
+            dcidLen,
+            outAddr.asPointer(),
+            outLen,
+        ).unsafeCast<Int>()
 
     // Stream iteration
     override fun connReadable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(addressOf(fnConnReadable(conn.handle.asPointer())))
