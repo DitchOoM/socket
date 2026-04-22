@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.NoSuchAlgorithmException
 import java.security.cert.X509Certificate
+import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
@@ -59,9 +60,21 @@ internal class JvmTlsHandler(
         engine = context.createSSLEngine(hostname, port)
         engine.useClientMode = true
 
-        if (config.verifyHostname && hostname != null) {
+        // SNI + hostname verification must be configured through a single
+        // SSLParameters round-trip. Assigning `engine.sslParameters = sslParams`
+        // with `serverNames = null` wipes the implicit SNI that
+        // createSSLEngine(host, port) sets, which caused handshakes against
+        // SNI-strict hosts (example.com, cloudflare.com) to fail. RFC 6066
+        // §3 forbids SNI values that look like IP literals, so guard on that
+        // when populating serverNames.
+        if (hostname != null) {
             val sslParams = engine.sslParameters
-            sslParams.endpointIdentificationAlgorithm = "HTTPS"
+            if (config.verifyHostname) {
+                sslParams.endpointIdentificationAlgorithm = "HTTPS"
+            }
+            if (!hostname.isIpLiteral()) {
+                sslParams.serverNames = listOf(SNIHostName(hostname))
+            }
             engine.sslParameters = sslParams
         }
 
@@ -221,6 +234,14 @@ internal class JvmTlsHandler(
     private fun slicePlainText(plainText: BaseJvmBuffer): PlatformBuffer {
         plainText.resetForRead()
         return plainText.slice()
+    }
+
+    private fun String.isIpLiteral(): Boolean {
+        if (startsWith('[') && endsWith(']')) return true // bracketed IPv6
+        if (contains(':')) return true // unbracketed IPv6
+        return split('.').let { parts ->
+            parts.size == 4 && parts.all { p -> p.length in 1..3 && p.all(Char::isDigit) }
+        }
     }
 
     /**
