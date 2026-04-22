@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.unwrapFully
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
@@ -31,7 +32,7 @@ internal class NioUdpChannel(
         sel.select()
         sel.selectedKeys().clear()
 
-        val bb = (buffer.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
+        val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
         bb.clear()
         return channel.read(bb)
     }
@@ -40,7 +41,7 @@ internal class NioUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
     ) {
-        val bb = (buffer.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
+        val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
         bb.clear()
         bb.limit(len)
         if (peerAddr != null) {

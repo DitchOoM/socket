@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.buffer.use
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -90,7 +91,7 @@ private fun writeNullTerminatedString(
  * We read it via the underlying direct ByteBuffer to avoid restricted FFM APIs.
  */
 private fun readNativeSizeT(buf: com.ditchoom.buffer.PlatformBuffer): Int {
-    val bb = (buf.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
+    val bb = (buf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
     bb.order(java.nio.ByteOrder.nativeOrder())
     return bb.getLong(0).toInt()
 }
@@ -197,7 +198,7 @@ internal class JvmQuicServer(
                 while (true) {
                     // Allocate a fresh buffer per packet — ownership transfers to driver (zero-copy)
                     val recvBuf = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
-                    val recvByteBuffer = (recvBuf.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
+                    val recvByteBuffer = (recvBuf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
                     recvByteBuffer.clear()
 
                     val peerAddr: SocketAddress? =
@@ -309,7 +310,7 @@ internal class JvmQuicServer(
         buf: com.ditchoom.buffer.PlatformBuffer,
         value: Int,
     ) {
-        val bb = (buf.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
+        val bb = (buf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
         bb.order(java.nio.ByteOrder.nativeOrder())
         bb.putLong(0, value.toLong())
     }
@@ -416,7 +417,7 @@ internal class ConnectionIdKey private constructor(
             buffer: com.ditchoom.buffer.PlatformBuffer,
             length: Int,
         ): ConnectionIdKey {
-            val bb = (buffer.unwrap() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
+            val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
             val bytes = ByteArray(length)
             bb.position(0)
             bb.get(bytes, 0, length)
