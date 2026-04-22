@@ -4,9 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
@@ -35,7 +33,7 @@ class ReactiveDriverTests {
 
     @Test
     fun streamSlot_signal_wakes_receiver() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val slot = StreamSlot(QuicStreamId(0))
             val received = CompletableDeferred<Boolean>()
 
@@ -51,7 +49,7 @@ class ReactiveDriverTests {
 
     @Test
     fun streamSlot_conflated_coalesces_signals() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val slot = StreamSlot(QuicStreamId(0))
 
             slot.dataSignal.trySend(Unit)
@@ -66,7 +64,7 @@ class ReactiveDriverTests {
 
     @Test
     fun streamSlot_close_unblocks_waiting_receiver() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val slot = StreamSlot(QuicStreamId(0))
             val gotException = CompletableDeferred<Boolean>()
 
@@ -88,7 +86,7 @@ class ReactiveDriverTests {
 
     @Test
     fun openStream_assigns_sequential_client_ids() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val driver = createTestDriver()
             driver.start(this)
 
@@ -107,7 +105,7 @@ class ReactiveDriverTests {
 
     @Test
     fun openStream_assigns_sequential_server_ids() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val driver = createTestDriver(isServer = true)
             driver.start(this)
 
@@ -123,8 +121,8 @@ class ReactiveDriverTests {
         }
 
     @Test
-    fun state_transitions_to_established(): Unit =
-        runBlocking(Dispatchers.Default) {
+    fun state_transitions_to_established() =
+        runQuicTest {
             val api = StubQuicheApi()
             api.established = true
             val driver = createTestDriver(api)
@@ -142,7 +140,7 @@ class ReactiveDriverTests {
 
     @Test
     fun streamRecv_returns_done_immediately() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val api = StubQuicheApi()
             api.streamRecvResult = StreamRecvResult.Done
             val driver = createTestDriver(api)
@@ -165,7 +163,7 @@ class ReactiveDriverTests {
 
     @Test
     fun streamRecv_returns_data() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val api = StubQuicheApi()
             api.streamRecvResult = StreamRecvResult.Data(42, false)
             val driver = createTestDriver(api)
@@ -191,7 +189,7 @@ class ReactiveDriverTests {
 
     @Test
     fun destroy_doesNotHang() =
-        runBlocking(Dispatchers.Default) {
+        runQuicTest {
             val driver = createTestDriver()
             driver.start(this)
 
@@ -202,8 +200,8 @@ class ReactiveDriverTests {
         }
 
     @Test
-    fun commands_after_destroy_throw(): Unit =
-        runBlocking(Dispatchers.Default) {
+    fun commands_after_destroy_throw() =
+        runQuicTest {
             val driver = createTestDriver()
             driver.start(this)
             driver.destroy()
@@ -215,8 +213,8 @@ class ReactiveDriverTests {
         }
 
     @Test
-    fun connection_close_sets_closed_state(): Unit =
-        runBlocking(Dispatchers.Default) {
+    fun connection_close_sets_closed_state() =
+        runQuicTest {
             val api = StubQuicheApi()
             api.established = true
             val driver = createTestDriver(api)
