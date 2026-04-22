@@ -98,8 +98,8 @@ private val IS_BSD: Boolean by lazy {
 // AF_INET = 2 on every POSIX
 private const val AF_INET = 2
 
-// AF_INET6 is platform-specific
-private val AF_INET6: Int = if (System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") || it.contains("bsd") }) 30 else 10
+// AF_INET6 is platform-specific — BSDs / Darwin use 30, Linux uses 10.
+private val AF_INET6: Int = if (IS_BSD) 30 else 10
 
 private const val SOCKADDR_IN_SIZE = 16
 private const val SOCKADDR_IN6_SIZE = 28
