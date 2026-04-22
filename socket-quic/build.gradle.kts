@@ -249,6 +249,32 @@ fun createBuildQuicheSharedTask(
             val destLib = outputDir.resolve("lib/libquiche.$libExt")
             builtLib.copyTo(destLib, overwrite = true)
 
+            // Also copy libquiche.a — the JVM JNI shim links against it for self-
+            // contained packaging (the .dylib is for FFM on JDK 21+).
+            val builtStatic = sourceDir.resolve("target/$cargoTarget/release/libquiche.a")
+            if (builtStatic.exists()) {
+                builtStatic.copyTo(outputDir.resolve("lib/libquiche.a"), overwrite = true)
+            }
+            // Copy quiche.h for the JNI shim compile (Android task reads from libs/quiche/include).
+            val headerSrc = sourceDir.resolve("quiche/include/quiche.h")
+            val headerDest = projectDir.resolve("libs/quiche/include/quiche.h")
+            if (headerSrc.exists() && !headerDest.exists()) {
+                headerDest.parentFile.mkdirs()
+                headerSrc.copyTo(headerDest, overwrite = true)
+            }
+
+            // macOS dylibs get cargo's default install_name (/usr/local/lib/...), which
+            // breaks dyld once we extract from a JAR at runtime. Retarget to @rpath so
+            // dependents resolve via the loader path.
+            if (os == "macos") {
+                ProcessBuilder(
+                    "install_name_tool",
+                    "-id",
+                    "@rpath/libquiche.$libExt",
+                    destLib.absolutePath,
+                ).inheritIO().start().waitFor()
+            }
+
             // Strip the shared library
             val stripCmd =
                 if (os == "macos") {
@@ -287,6 +313,178 @@ tasks.register("buildQuicheAll") {
     }
     if (isMacOS) {
         dependsOn(buildQuicheSharedMacosX64!!, buildQuicheSharedMacosArm64!!)
+    }
+}
+
+// --- JVM JNI shim build (desktop macOS / Linux) ---
+// Compiles src/jni/quiche_jni.c and links quiche statically so the resulting
+// libquiche_jni.{dylib,so} is self-contained (no dyld dependency chain).
+// FFM on JDK 21+ uses libquiche.{dylib,so} directly; this shim is the JDK 8–20
+// fallback path loaded by NativeLibLoader.
+
+fun createBuildJvmJniShimTask(
+    os: String,
+    arch: String,
+    buildShared: TaskProvider<Task>,
+): TaskProvider<Task> {
+    val taskName = "buildJvmJniShim${os.replaceFirstChar { it.uppercase() }}${arch.replaceFirstChar { it.uppercase() }}"
+    val outputDir = projectDir.resolve("libs/quiche/$os-$arch/lib")
+    val libExt = if (os == "macos") "dylib" else "so"
+    val outputLib = outputDir.resolve("libquiche_jni.$libExt")
+    val markerFile = outputDir.resolve(".jni-built-$quicheVersion")
+
+    return tasks.register(taskName) {
+        group = "build"
+        description = "Build quiche JNI shim for $os-$arch (JDK 8–20 fallback path)"
+        dependsOn(buildShared)
+        inputs.property("quicheVersion", quicheVersion)
+        inputs.file("src/jni/quiche_jni.c")
+        outputs.file(markerFile)
+        onlyIf { !markerFile.exists() }
+
+        doLast {
+            val quicheStatic = outputDir.resolve("libquiche.a")
+            if (!quicheStatic.exists()) {
+                throw GradleException(
+                    "libquiche.a missing at ${quicheStatic.absolutePath} — " +
+                        "the shared build should have copied it alongside libquiche.$libExt",
+                )
+            }
+            val javaHome =
+                System.getenv("JAVA_HOME") ?: org.gradle.internal.jvm.Jvm
+                    .current()
+                    .javaHome.absolutePath
+            val jdkIncludeOs = if (os == "macos") "darwin" else "linux"
+            val quicheInclude = projectDir.resolve("libs/quiche/include")
+            val jniSource = projectDir.resolve("src/jni/quiche_jni.c")
+
+            val cmd = mutableListOf<String>()
+            if (os == "macos") {
+                cmd +=
+                    listOf(
+                        "clang",
+                        "-dynamiclib",
+                        "-O2",
+                        "-Wall",
+                        "-o",
+                        outputLib.absolutePath,
+                        jniSource.absolutePath,
+                        "-I$javaHome/include",
+                        "-I$javaHome/include/$jdkIncludeOs",
+                        "-I${quicheInclude.absolutePath}",
+                        // Pull every symbol from libquiche.a so the JNI dylib is self-contained
+                        "-Wl,-force_load,${quicheStatic.absolutePath}",
+                        "-Wl,-install_name,@rpath/libquiche_jni.$libExt",
+                    )
+            } else {
+                cmd +=
+                    listOf(
+                        "cc",
+                        "-shared",
+                        "-fPIC",
+                        "-O2",
+                        "-Wall",
+                        "-o",
+                        outputLib.absolutePath,
+                        jniSource.absolutePath,
+                        "-I$javaHome/include",
+                        "-I$javaHome/include/$jdkIncludeOs",
+                        "-I${quicheInclude.absolutePath}",
+                        "-Wl,--whole-archive",
+                        quicheStatic.absolutePath,
+                        "-Wl,--no-whole-archive",
+                        "-lm",
+                        "-ldl",
+                        "-lpthread",
+                        // ELF RUNPATH so the shim can find sibling libs if it ever needs them
+                        "-Wl,-rpath,\$ORIGIN",
+                    )
+            }
+
+            logger.lifecycle("Compiling JNI shim for $os-$arch...")
+            val process =
+                ProcessBuilder(cmd)
+                    .redirectErrorStream(true)
+                    .start()
+            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            val result = process.waitFor()
+            if (result != 0) throw GradleException("JNI shim compilation failed for $os-$arch (exit $result)")
+
+            val stripCmd =
+                if (os == "macos") {
+                    listOf("strip", "-x", outputLib.absolutePath)
+                } else {
+                    listOf("strip", "--strip-all", outputLib.absolutePath)
+                }
+            ProcessBuilder(stripCmd).inheritIO().start().waitFor()
+
+            markerFile.writeText("quiche $quicheVersion JNI shim built on ${System.currentTimeMillis()}")
+            val sizeKb = outputLib.length() / 1024
+            logger.lifecycle("JNI shim built successfully ($os-$arch, ${sizeKb}KB)")
+        }
+    }
+}
+
+val jvmJniShimMacosX64 =
+    if (isMacOS) createBuildJvmJniShimTask("macos", "x64", buildQuicheSharedMacosX64!!) else null
+val jvmJniShimMacosArm64 =
+    if (isMacOS) createBuildJvmJniShimTask("macos", "arm64", buildQuicheSharedMacosArm64!!) else null
+val jvmJniShimLinuxX64 =
+    if (isLinux) createBuildJvmJniShimTask("linux", "x64", buildQuicheSharedLinuxX64!!) else null
+val jvmJniShimLinuxArm64 =
+    if (isLinux) createBuildJvmJniShimTask("linux", "arm64", buildQuicheSharedLinuxArm64!!) else null
+
+// Unified entry point referenced by the handoff doc — builds every native lib
+// needed to exercise socket-quic on the current host's JVM (shared + JNI shim).
+tasks.register("prepareQuicheNativeLib") {
+    group = "build"
+    description = "Build quiche shared lib + JNI shim for the current host OS/arch"
+    if (isMacOS) {
+        val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+        dependsOn(
+            if (hostArch == "arm64") jvmJniShimMacosArm64!! else jvmJniShimMacosX64!!,
+        )
+    }
+    if (isLinux) {
+        val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+        dependsOn(
+            if (hostArch == "arm64") jvmJniShimLinuxArm64!! else jvmJniShimLinuxX64!!,
+        )
+    }
+}
+
+// Stage built native libs into a directory added to the jvmTest runtime
+// classpath (not to main resources — we don't want them in the base jvmJar).
+// NativeLibLoader.getResourceAsStream("META-INF/native/...") picks them up
+// from the classpath at test time; at publish time, they ship as per-host
+// classifier JARs (see below).
+val stagedNativeResourcesDir = layout.buildDirectory.dir("generated-native-resources/jvmMain")
+val nativeLibsByPlatform =
+    mapOf(
+        "linux-x64" to listOf("libquiche.so", "libquiche_jni.so"),
+        "linux-arm64" to listOf("libquiche.so", "libquiche_jni.so"),
+        "macos-x64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
+        "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
+    )
+
+tasks.register<Copy>("stageQuicheNativeResources") {
+    group = "build"
+    description = "Copy built quiche native libs into jvmTest classpath (META-INF/native/<platform>/...)"
+    into(stagedNativeResourcesDir)
+    for ((platform, libs) in nativeLibsByPlatform) {
+        val libDir = projectDir.resolve("libs/quiche/$platform/lib")
+        into("META-INF/native/$platform") {
+            from(libDir) { include(*libs.toTypedArray()) }
+        }
+    }
+}
+
+afterEvaluate {
+    tasks.named<Test>("jvmTest").configure {
+        dependsOn("prepareQuicheNativeLib", "stageQuicheNativeResources")
+        // Put staged natives on the test runtime classpath so NativeLibLoader
+        // can extract them as classloader resources.
+        classpath += files(stagedNativeResourcesDir)
     }
 }
 
@@ -881,10 +1079,16 @@ kotlin
         runtimeDependencyFiles += java21Output
     }
 
-// Configure JVM JAR after evaluation (task created by KMP plugin)
+// Configure JVM JAR after evaluation (task created by KMP plugin).
+// Base jvmJar is code-only — native libs ship in classifier JARs below, so
+// consumers pull only the natives matching their host. The exclude() below
+// strips natives that would otherwise get picked up from
+// src/jvmMain/resources/META-INF/native/ (where CI's build-linux.yaml writes
+// its JNI shims today — leaving them there for the jvmTest classpath).
 afterEvaluate {
     tasks.named<Jar>("jvmJar") {
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        exclude("META-INF/native/**")
         // Multi-release JAR: JDK 21+ gets FFM quiche bindings
         manifest {
             attributes("Multi-Release" to "true")
@@ -898,20 +1102,66 @@ afterEvaluate {
                     .allOutputs,
             )
         }
-        // Bundle quiche native libraries (shared lib + JNI shim, included if built)
-        val nativeLibs =
-            mapOf(
-                "linux-x64" to listOf("libquiche.so", "libquiche_jni.so"),
-                "linux-arm64" to listOf("libquiche.so", "libquiche_jni.so"),
-                "macos-x64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
-                "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
-            )
-        for ((platform, libs) in nativeLibs) {
-            val libDir = projectDir.resolve("libs/quiche/$platform/lib")
-            val existingLibs = libs.filter { libDir.resolve(it).exists() }
-            if (existingLibs.isNotEmpty()) {
-                into("META-INF/native/$platform") {
-                    from(libDir) { include(*existingLibs.toTypedArray()) }
+    }
+}
+
+// --- Per-host native classifier JARs ---
+// Consumers add the matching classifier as a runtime-only dep, e.g.:
+//   runtimeOnly("com.ditchoom:socket-quic:3.x:macos-aarch64@jar")
+// This is the same pattern netty-tcnative-boringssl-static uses.
+
+// Gradle classifier naming convention uses the "os-arch" strings that Maven
+// ecosystems expect (aarch64 not arm64, x86_64 not x64). Map our internal
+// $os-$arch keys to those.
+data class NativeClassifier(
+    val key: String, // internal — matches libs/quiche/<key>/lib
+    val classifier: String, // maven classifier — consumer-facing
+)
+
+val nativeClassifiers =
+    listOf(
+        NativeClassifier("macos-arm64", "macos-aarch64"),
+        NativeClassifier("macos-x64", "macos-x86_64"),
+        NativeClassifier("linux-x64", "linux-x86_64"),
+        NativeClassifier("linux-arm64", "linux-aarch64"),
+    )
+
+val nativeClassifierJars =
+    nativeClassifiers.map { (key, classifier) ->
+        val libs = nativeLibsByPlatform.getValue(key)
+        val libDir = projectDir.resolve("libs/quiche/$key/lib")
+        val taskSuffix = classifier.split("-").joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
+        tasks.register<Jar>("jvmNativesJar$taskSuffix") {
+            group = "build"
+            description = "Package quiche natives for $classifier (consumed as runtime classifier JAR)"
+            archiveClassifier.set(classifier)
+            archiveBaseName.set(artifactName)
+            destinationDirectory.set(layout.buildDirectory.dir("libs"))
+            into("META-INF/native/$key") {
+                from(libDir) { include(*libs.toTypedArray()) }
+            }
+            // Only produce the jar if the native lib was built for this platform.
+            onlyIf { libs.all { libDir.resolve(it).exists() } }
+        } to classifier
+    }
+
+// Register each classifier JAR as an additional artifact on the jvm Maven
+// publication so publishToMavenLocal / publishToMavenCentral emit them
+// alongside the base socket-quic-jvm artifact. Only attach if the platform's
+// native libs exist on the host — a Mac build attaches macos-* classifiers;
+// Linux CI attaches linux-*. A release assembly step should merge platforms.
+afterEvaluate {
+    publishing {
+        publications.withType<MavenPublication>().matching { it.name == "jvm" }.configureEach {
+            nativeClassifiers.forEach { (key, classifier) ->
+                val libDir = projectDir.resolve("libs/quiche/$key/lib")
+                val libs = nativeLibsByPlatform.getValue(key)
+                val allPresent = libs.all { libDir.resolve(it).exists() }
+                if (allPresent) {
+                    val jarTask = nativeClassifierJars.first { it.second == classifier }.first
+                    artifact(jarTask) {
+                        this.classifier = classifier
+                    }
                 }
             }
         }
