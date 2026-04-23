@@ -101,6 +101,10 @@ open class NWSocketWrapper : ClientSocket {
     /**
      * Zero-copy write operation.
      * Passes NSData directly to Network.framework without copying.
+     *
+     * Advances [buffer]'s position by the number of bytes accepted, matching the JVM NIO
+     * contract (`socket.write(byteBuffer)` moves position). [ReadBuffer.toNSData] always
+     * produces an NSData whose length equals `buffer.remaining()` at call time.
      */
     override suspend fun write(
         buffer: ReadBuffer,
@@ -109,6 +113,7 @@ open class NWSocketWrapper : ClientSocket {
         if (closedLocally) throw SocketClosedException.General("Socket is closed")
         val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         val nsData = buffer.toNSData()
+        val bytesToWrite = nsData.length.toInt()
 
         return writeMutex.withLock {
             withTimeout(timeout) {
@@ -119,7 +124,8 @@ open class NWSocketWrapper : ClientSocket {
                                 mapSocketException(errorDomain, errorDesc),
                             )
                         } else {
-                            continuation.resume(nsData.length.toInt())
+                            buffer.position(buffer.position() + bytesToWrite)
+                            continuation.resume(bytesToWrite)
                         }
                     }
                     continuation.invokeOnCancellation {
