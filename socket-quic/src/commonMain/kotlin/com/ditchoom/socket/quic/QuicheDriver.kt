@@ -7,6 +7,8 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +60,31 @@ class QuicheDriver(
     private val udpSendBuf: PlatformBuffer = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
     private val sendAddr = udpSendBuf.nativeMemoryAccess!!.nativeAddress.toLong()
     private var driverJob: Job? = null
+
+    /**
+     * Client-mode recv buffer pool — mirrors the server-side pool in
+     * CommonJvmQuicServerEngine. Only allocated in [clientMode] because
+     * server-accepted drivers receive packets via commands.send() from the
+     * server's receive loop and never run [udpReaderLoop].
+     *
+     * MultiThreaded mode: [udpReaderLoop] acquires on its own Dispatchers.Default
+     * coroutine; the driver's [run] loop releases (via [QuicheCmd.RecvPacket]'s
+     * `freeNativeMemory()` in [execute] or [failCommand]) on a different
+     * Dispatchers.Default coroutine — different threads under load.
+     * maxPoolSize=64 → ~87 KB cached (64 × 1350), generous for a single
+     * connection's in-flight datagram count.
+     */
+    private val recvBufPool: BufferPool? =
+        if (clientMode) {
+            BufferPool(
+                threadingMode = ThreadingMode.MultiThreaded,
+                maxPoolSize = 64,
+                defaultBufferSize = MAX_DATAGRAM_SIZE,
+                factory = bufferFactory,
+            )
+        } else {
+            null
+        }
 
     fun start(scope: CoroutineScope) {
         driverJob = scope.launch(Dispatchers.Default) { run() }
@@ -184,9 +211,10 @@ class QuicheDriver(
      * Suspends until data arrives — zero CPU when no packets.
      */
     private suspend fun udpReaderLoop() {
+        val pool = recvBufPool!!
         try {
             while (coroutineContext[Job]?.isActive != false) {
-                val buf = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
+                val buf = pool.acquire(MAX_DATAGRAM_SIZE)
                 val received =
                     try {
                         udpChannel.receive(buf)
@@ -222,6 +250,11 @@ class QuicheDriver(
         api.recvInfoFree(recvInfo)
         api.sendInfoFree(sendInfo)
         udpSendBuf.freeNativeMemory()
+        // commands.tryReceive() drain above freed any pending RecvPackets
+        // back to the pool. Late releases from an in-flight udpReaderLoop
+        // iteration are benign — they repopulate the pool, which is GC'd
+        // with the driver.
+        recvBufPool?.clear()
         incomingStreams.close()
     }
 
