@@ -627,11 +627,18 @@ if (androidJniTasks.isNotEmpty()) {
         dependsOn(androidJniTasks)
     }
 
-    // Ensure JNI shims are built before any connected Android test
+    // Ensure JNI shims are built before any connected Android test and
+    // before Gradle's own jniLib-folder merge (Gradle 8.14 strict mode
+    // flags mergeJniLibFolders as having an implicit dependency on the
+    // buildAndroidJni* task outputs via src/androidMain/jniLibs/<abi>/).
     afterEvaluate {
-        tasks.matching { it.name.startsWith("connected") && it.name.contains("AndroidTest") }.configureEach {
-            dependsOn(androidJniTasks)
-        }
+        tasks
+            .matching {
+                (it.name.startsWith("connected") && it.name.contains("AndroidTest")) ||
+                    (it.name.startsWith("merge") && it.name.endsWith("JniLibFolders"))
+            }.configureEach {
+                dependsOn(androidJniTasks)
+            }
     }
 }
 
