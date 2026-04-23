@@ -469,4 +469,32 @@ class CodecConnectionTests {
             conn.close()
             conn.close() // should not throw
         }
+
+    /**
+     * Regression guard for the MQTT 32KB publish overflow: if a codec's wireSizeHint
+     * under-sizes the encode buffer for a particular message (MQTT PUBLISH wireSizeHint
+     * is fixed at the codec level but payload size is per-message and can be large),
+     * send() must grow and retry rather than letting BufferOverflowException reach
+     * the caller. This test pins that behaviour via TestStringCodec — its wireSizeHint
+     * is 2, so a 40000-char string would need at least 40002 bytes, well past the
+     * 8192 default. Before the fix this test threw BufferOverflowException; after
+     * the fix the round-trip completes.
+     */
+    @Test
+    fun sendGrowsBufferWhenMessageExceedsWireSizeHintAndDefault() =
+        runTest {
+            val (a, b) = createPairCodecConnections()
+            try {
+                // 40_000 bytes of payload + 2-byte length prefix = 40_002 bytes on the wire,
+                // well beyond ConnectionOptions.defaultBufferSize = 8192 and codec.wireSizeHint = 2.
+                val large = "x".repeat(40_000)
+                a.send(large)
+                val received = b.receive().first()
+                assertEquals(large.length, received.length)
+                assertEquals(large, received)
+            } finally {
+                a.close()
+                b.close()
+            }
+        }
 }

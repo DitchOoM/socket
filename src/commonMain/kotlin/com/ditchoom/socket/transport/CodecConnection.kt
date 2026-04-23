@@ -1,6 +1,7 @@
 package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.BufferOverflowException
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
@@ -84,13 +85,29 @@ class CodecConnection<T>(
 
     override suspend fun send(message: T) {
         check(!closed) { "CodecConnection is closed" }
-        val buffer = bufferFactory.allocate(codec.wireSizeHint.coerceAtLeast(options.defaultBufferSize))
-        try {
-            codec.encode(buffer, message, encodeContext)
-            buffer.resetForRead()
-            stream.write(buffer, options.writeTimeout)
-        } finally {
-            buffer.freeIfNeeded()
+        // wireSizeHint is a static per-codec hint; messages whose wire size is
+        // unknown ahead of time (e.g. MQTT PUBLISH with a 32 KB payload) can
+        // exceed it. On overflow, grow 4× and retry. Encode is expected to be
+        // deterministic, so re-encoding into a larger buffer produces the
+        // same bytes. Retries are bounded to avoid pathological loops.
+        var capacity = codec.wireSizeHint.coerceAtLeast(options.defaultBufferSize)
+        var attempts = 0
+        while (true) {
+            val buffer = bufferFactory.allocate(capacity)
+            try {
+                codec.encode(buffer, message, encodeContext)
+                buffer.resetForRead()
+                stream.write(buffer, options.writeTimeout)
+                return
+            } catch (e: BufferOverflowException) {
+                buffer.freeIfNeeded()
+                if (attempts++ >= MAX_SEND_RESIZE_ATTEMPTS) throw e
+                capacity = (capacity.toLong() * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                continue
+            } catch (t: Throwable) {
+                buffer.freeIfNeeded()
+                throw t
+            }
         }
     }
 
@@ -124,6 +141,8 @@ class CodecConnection<T>(
     }
 
     companion object {
+        private const val MAX_SEND_RESIZE_ATTEMPTS = 20
+
         suspend fun <T> connect(
             hostname: String,
             port: Int,
