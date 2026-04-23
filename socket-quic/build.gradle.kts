@@ -599,7 +599,14 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
                     // jni_md.h lives in a host-platform-specific subdir of $JAVA_HOME/include.
                     // Android NDK's toolchain doesn't provide jni.h, so we source it from the
                     // host JDK running Gradle.
-                    "-I$javaHome/include/${if (org.gradle.internal.os.OperatingSystem.current().isMacOsX) "darwin" else "linux"}",
+                    "-I$javaHome/include/${if (org.gradle.internal.os.OperatingSystem
+                            .current()
+                            .isMacOsX
+                    ) {
+                        "darwin"
+                    } else {
+                        "linux"
+                    }}",
                     "-I${projectDir.resolve("libs/quiche/include").absolutePath}",
                     "-Wl,--whole-archive",
                     quicheLib.absolutePath,
