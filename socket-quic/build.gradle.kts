@@ -596,7 +596,10 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
                     outputLib.absolutePath,
                     projectDir.resolve("src/jni/quiche_jni.c").absolutePath,
                     "-I$javaHome/include",
-                    "-I$javaHome/include/linux",
+                    // jni_md.h lives in a host-platform-specific subdir of $JAVA_HOME/include.
+                    // Android NDK's toolchain doesn't provide jni.h, so we source it from the
+                    // host JDK running Gradle.
+                    "-I$javaHome/include/${if (org.gradle.internal.os.OperatingSystem.current().isMacOsX) "darwin" else "linux"}",
                     "-I${projectDir.resolve("libs/quiche/include").absolutePath}",
                     "-Wl,--whole-archive",
                     quicheLib.absolutePath,
