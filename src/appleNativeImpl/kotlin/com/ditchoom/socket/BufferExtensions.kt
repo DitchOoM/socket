@@ -1,16 +1,15 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.MutableDataBuffer
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UnsafeNumber
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.usePinned
 import platform.Foundation.NSData
 import platform.Foundation.NSMakeRange
-import platform.Foundation.create
 import platform.Foundation.subdataWithRange
 
 /**
@@ -44,19 +43,21 @@ internal fun ReadBuffer.toNSData(): NSData =
             }
         }
         else -> {
-            // Fallback: copy bytes to NSData for other buffer types. Preserve position — the
-            // caller (NWSocketWrapper.write) is responsible for advancing it after the write
-            // completes, matching the zero-copy branches above.
+            // Fallback for exotic ReadBuffer types (e.g. deprecated FragmentedReadBuffer).
+            // Stage into an NSMutableData-backed scratch buffer — one copy into native
+            // memory — then hand the backing NSMutableData out directly (NSMutableData
+            // IS-an NSData). No Kotlin-heap ByteArray intermediary. Source position is
+            // preserved; NWSocketWrapper.write advances it after the write completes.
             val remaining = remaining()
             if (remaining == 0) {
                 NSData()
             } else {
                 val savedPosition = position()
-                val bytes = readByteArray(remaining)
+                val scratch = BufferFactory.Default.allocate(remaining)
+                scratch.write(this)
                 position(savedPosition)
-                bytes.usePinned { pinned ->
-                    NSData.create(bytes = pinned.addressOf(0), length = bytes.size.convert())
-                }
+                scratch.resetForRead()
+                scratch.toNSData()
             }
         }
     }
