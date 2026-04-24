@@ -161,12 +161,40 @@ internal class IoUringUdpServerChannel(
         }
     }
 
-    /** Close the socket and free pre-allocated native memory. */
-    fun close() {
+    /**
+     * Close the socket FD only. The caller must subsequently:
+     *   1. Join the receive-loop coroutine (so any suspended recvFrom returns from
+     *      submitAndWait — the kernel will deliver -ECANCELED / -EBADF for in-flight
+     *      io_uring recvmsg SQEs once the fd is closed).
+     *   2. Call [freeBuffers].
+     * Freeing the pre-allocated recv structures inside this same call is a use-after-
+     * free trap (kernel may still be writing into them after fd close but before the
+     * CQE is delivered to userspace) — glibc catches it as "malloc(): unsorted double
+     * linked list corrupted" and the test process aborts.
+     */
+    fun closeFd() {
         platform.posix.close(fd)
+    }
+
+    /**
+     * Free the pre-allocated recv structures. MUST only be called after the receive
+     * loop has fully exited — otherwise the kernel and/or user code may still be
+     * referencing this memory.
+     */
+    fun freeBuffers() {
         nativeHeap.free(recvMsg)
         nativeHeap.free(recvIov)
         nativeHeap.free(recvAddr)
+    }
+
+    /**
+     * Convenience for tests / single-threaded callers with no in-flight receive loop:
+     * close the fd and free buffers in one shot. Production server uses
+     * [closeFd] + receive-loop join + [freeBuffers] explicitly to avoid use-after-free.
+     */
+    fun close() {
+        closeFd()
+        freeBuffers()
     }
 }
 

@@ -164,4 +164,40 @@ abstract class QuicServerTestSuite {
             server.close()
             // Should not throw or hang — clean shutdown
         }
+
+    /**
+     * Regression: server.close() must stop the receive loop BEFORE destroying drivers
+     * and BEFORE freeing recv buffers. On Linux/io_uring, getting this wrong races with
+     * (a) the receive loop routing a packet to an already-destroyed driver (SIGSEGV) or
+     * (b) the kernel finishing an in-flight io_uring SQE write into already-freed
+     * recv buffers (glibc "malloc(): unsorted double linked list corrupted"). Single-cycle
+     * runs in serverAcceptsConnection caught this ~17% of the time; 10 rapid cycles in
+     * one test push that to >85%, so a regression fires reliably here.
+     */
+    @Test
+    fun rapidBindConnectCloseCyclesAreClean() =
+        runQuicTest {
+            repeat(10) { iteration ->
+                val server = serverEngine().bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
+                val handlerRan = CompletableDeferred<Unit>()
+                val serverJob =
+                    launch {
+                        server.connections {
+                            handlerRan.complete(Unit)
+                            delay(500)
+                        }
+                    }
+                delay(50)
+                val clientJob =
+                    launch {
+                        clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 5.seconds) {
+                            delay(100)
+                        }
+                    }
+                kotlinx.coroutines.withTimeout(5.seconds) { handlerRan.await() }
+                clientJob.cancel()
+                serverJob.cancel()
+                server.close()
+            }
+        }
 }

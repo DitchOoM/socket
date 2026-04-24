@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import platform.posix.AF_INET
 import platform.posix.INADDR_ANY
@@ -209,14 +210,25 @@ private class LinuxQuicServer(
     override suspend fun close() {
         if (closed) return
         closed = true
+        // Order is load-bearing.
+        // 1. Stop receiving FIRST: closing the fd makes any io_uring recvmsg in-flight
+        //    return -ECANCELED, which the loop's catch{} + closed-check translates into a
+        //    clean exit. cancelAndJoin then waits for the loop to fully exit.
+        // 2. Only after the receive loop is gone is it safe to destroy drivers — otherwise
+        //    the loop may be mid-routing a packet to existingDriver.commands.trySend(...)
+        //    and touch a freed driver (SIGSEGV ~17% in linuxX64Test serverAcceptsConnection).
+        // 3. Only after the loop is gone is it safe to free the recv buffers it shares
+        //    with the kernel via io_uring SQEs ("malloc(): unsorted double linked list
+        //    corrupted" otherwise).
+        serverChannel.closeFd()
+        receiveJob.cancelAndJoin()
         for (driver in connectionsByDcid.values.toSet()) {
             driver.destroy()
         }
         connectionsByDcid.clear()
         api.configFree(config)
         acceptedDrivers.close()
-        serverChannel.close()
-        receiveJob.cancel()
+        serverChannel.freeBuffers()
         localAddrBuf.freeNativeMemory()
     }
 
