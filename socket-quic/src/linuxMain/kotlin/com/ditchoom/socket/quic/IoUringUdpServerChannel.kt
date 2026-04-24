@@ -58,6 +58,12 @@ internal class IoUringUdpServerChannel(
     private val recvMsg: msghdr
 
     init {
+        // nativeHeap.alloc does not zero-init. Without this, ss_family is garbage until the
+        // first successful recvmsg overwrites it — and on any recvmsg that fails to write
+        // msg_name (error CQE, spurious wake, 0-byte result), the garbage family gets handed
+        // to quiche and SIGABRTs through Rust's std_addr_from_c panic. Explicit zero means
+        // the family check below catches the bug cleanly instead of aborting the process.
+        platform.posix.memset(recvAddr.ptr, 0, sizeOf<sockaddr_storage>().convert())
         val msg = nativeHeap.alloc<msghdr>()
         msg.msg_name = recvAddr.ptr
         msg.msg_namelen = sizeOf<sockaddr_storage>().convert()
@@ -73,23 +79,46 @@ internal class IoUringUdpServerChannel(
      *
      * Suspends via io_uring until a packet arrives. Returns the bytes received and the
      * sender's address. The address points to internal storage — copy it before the next call.
+     *
+     * Returns a [RecvFromResult] with non-positive [RecvFromResult.bytesReceived] if the
+     * recvmsg returned no data or an error; callers should skip / retry rather than pass
+     * the address to quiche (whose FFI panics on sa_family ∉ {AF_INET, AF_INET6}).
      */
     suspend fun recvFrom(buffer: PlatformBuffer): RecvFromResult {
         val ptr = buffer.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         recvIov.iov_base = ptr
         recvIov.iov_len = buffer.capacity.convert()
         recvMsg.msg_namelen = sizeOf<sockaddr_storage>().convert()
+        // Re-zero before every recvmsg: if the kernel doesn't update msg_name (rare but
+        // observed on spurious CQEs), we catch it at the ss_family check below rather than
+        // propagate the previous call's address as if it were this call's.
+        platform.posix.memset(recvAddr.ptr, 0, sizeOf<sockaddr_storage>().convert())
 
         val bytesReceived =
             IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
                 io_uring_prep_recvmsg(sqe, fd, recvMsg.ptr, 0u)
             }
-        // Determine actual address length from the family (recvmsg doesn't shrink msg_namelen)
+        if (bytesReceived <= 0) {
+            return RecvFromResult(
+                bytesReceived = bytesReceived,
+                peerAddr = recvAddr.ptr.reinterpret(),
+                peerAddrLen = 0u,
+            )
+        }
+        // Determine actual address length from the family (recvmsg doesn't shrink msg_namelen).
+        // If the family is neither AF_INET nor AF_INET6, recvmsg didn't write a valid peer
+        // address — signal the caller by returning bytesReceived=-1 so the packet is skipped.
+        val family = recvAddr.ss_family.toInt()
         val addrLen: socklen_t =
-            when (recvAddr.ss_family.toInt()) {
+            when (family) {
                 AF_INET -> sizeOf<sockaddr_in>().convert()
                 AF_INET6 -> sizeOf<sockaddr_in6>().convert()
-                else -> recvMsg.msg_namelen
+                else ->
+                    return RecvFromResult(
+                        bytesReceived = -1,
+                        peerAddr = recvAddr.ptr.reinterpret(),
+                        peerAddrLen = 0u,
+                    )
             }
         return RecvFromResult(
             bytesReceived = bytesReceived,

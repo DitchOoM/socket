@@ -953,32 +953,25 @@ kotlin {
                 binaries.all {
                     // -Bstatic around -lquiche forces ld.lld to pick libquiche.a, not the sibling
                     // libquiche.so (which has unresolved SSL_* refs and fails --no-allow-shlib-undefined).
-                    // whole-archive pulls all quiche symbols; BSSL static archives resolve SSL_*/EVP_*/CRYPTO_*
-                    // refs in libquiche.a. allow-multiple-definition handles overlap with base socket's
-                    // cinterop which also links libssl.a/libcrypto.a.
-                    val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-x64/lib")
-                    val opts =
-                        buildList {
-                            add("-L${quicheLibDir.absolutePath}")
-                            add("-Wl,-Bstatic")
-                            add("-Wl,--whole-archive")
-                            add("-lquiche")
-                            add("-Wl,--no-whole-archive")
-                            if (boringsslLibDir.resolve("libssl.a").exists()) {
-                                add("-L${boringsslLibDir.absolutePath}")
-                                add("-lssl")
-                                add("-lcrypto")
-                            }
-                            add("-Wl,-Bdynamic")
-                            add("-lpthread")
-                            add("-ldl")
-                            add("-lm")
-                            add("-lstdc++")
-                            add("--unresolved-symbols=ignore-in-object-files")
-                            add("--allow-multiple-definition")
-                            add("-Wl,--defsym=QUICHE_BSSL=1") // marker to indicate quiche BoringSSL is linked
-                        }
-                    linkerOpts(*opts.toTypedArray())
+                    // whole-archive pulls in all quiche symbols. BSSL archives are transitively
+                    // contributed by the base :socket: module's cinterop (staticLibraries.linux =
+                    // libssl.a libcrypto.a in LinuxSockets.def); we don't link them again here to
+                    // avoid duplicate work. allow-multiple-definition covers any residual overlap.
+                    linkerOpts(
+                        "-L${quicheLibDir.absolutePath}",
+                        "-Wl,-Bstatic",
+                        "-Wl,--whole-archive",
+                        "-lquiche",
+                        "-Wl,--no-whole-archive",
+                        "-Wl,-Bdynamic",
+                        "-lpthread",
+                        "-ldl",
+                        "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
+                        "-Wl,--defsym=QUICHE_BSSL=1", // marker to indicate quiche BoringSSL is linked
+                    )
                 }
             }
         }
@@ -992,29 +985,22 @@ kotlin {
             val quicheLibArm64 = projectDir.resolve("libs/quiche/linux-arm64/lib/libquiche.a")
             if (quicheLibArm64.exists()) {
                 binaries.all {
-                    // Mirror linuxX64: -Bstatic forces static quiche, BSSL archives resolve SSL_*/EVP_*/CRYPTO_*.
-                    val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-arm64/lib")
-                    val opts =
-                        buildList {
-                            add("-L${quicheLibArm64.parentFile.absolutePath}")
-                            add("-Wl,-Bstatic")
-                            add("-Wl,--whole-archive")
-                            add("-lquiche")
-                            add("-Wl,--no-whole-archive")
-                            if (boringsslLibDir.resolve("libssl.a").exists()) {
-                                add("-L${boringsslLibDir.absolutePath}")
-                                add("-lssl")
-                                add("-lcrypto")
-                            }
-                            add("-Wl,-Bdynamic")
-                            add("-lpthread")
-                            add("-ldl")
-                            add("-lm")
-                            add("-lstdc++")
-                            add("--unresolved-symbols=ignore-in-object-files")
-                            add("--allow-multiple-definition")
-                        }
-                    linkerOpts(*opts.toTypedArray())
+                    // Mirror linuxX64: -Bstatic forces static quiche; BSSL comes from the base
+                    // :socket: module's cinterop (staticLibraries.linux = libssl.a libcrypto.a).
+                    linkerOpts(
+                        "-L${quicheLibArm64.parentFile.absolutePath}",
+                        "-Wl,-Bstatic",
+                        "-Wl,--whole-archive",
+                        "-lquiche",
+                        "-Wl,--no-whole-archive",
+                        "-Wl,-Bdynamic",
+                        "-lpthread",
+                        "-ldl",
+                        "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
+                    )
                 }
             }
         }

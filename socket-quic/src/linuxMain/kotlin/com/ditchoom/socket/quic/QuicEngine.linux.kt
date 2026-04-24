@@ -104,10 +104,17 @@ private class LinuxQuicEngine : QuicEngine {
                     throw SocketConnectionException.Refused(hostname, port, platformError = "UDP connect failed")
                 }
 
+                // memScoped.alloc does not zero-init. If socket_getsockname fails silently,
+                // sin_family is garbage and quiche_connect SIGABRTs through std_addr_from_c.
                 val localAddr = alloc<sockaddr_in>()
+                platform.posix.memset(localAddr.ptr, 0, sizeOf<sockaddr_in>().convert())
                 val localAddrLen = alloc<kotlinx.cinterop.UIntVar>()
                 localAddrLen.value = sizeOf<sockaddr_in>().convert()
-                socket_getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
+                val gsRc = socket_getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
+                check(gsRc == 0) { "socket_getsockname returned $gsRc" }
+                check(localAddr.sin_family.toInt() == AF_INET) {
+                    "socket_getsockname sin_family=${localAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
+                }
 
                 // SCID
                 val scidBuf = bufferFactory.allocate(MAX_CONN_ID_LEN)

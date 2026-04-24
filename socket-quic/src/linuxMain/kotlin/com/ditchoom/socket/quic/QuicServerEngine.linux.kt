@@ -100,23 +100,37 @@ private class LinuxQuicServerEngine : QuicServerEngine {
             check(bindRc == 0) { "Failed to bind UDP socket to port $port" }
         }
 
-        // Get assigned port
+        // Get assigned port. memScoped.alloc does not zero-init; we must check the
+        // getsockname return value — a silent failure leaves sin_family as garbage, which
+        // SIGABRTs through Rust's std_addr_from_c panic when quiche_accept reads it.
         val boundPort =
             memScoped {
                 val boundAddr = alloc<sockaddr_in>()
+                platform.posix.memset(boundAddr.ptr, 0, sizeOf<sockaddr_in>().convert())
                 val boundLen = alloc<UIntVar>()
                 boundLen.value = sizeOf<sockaddr_in>().convert()
-                socket_getsockname(fd, boundAddr.ptr.reinterpret(), boundLen.ptr)
+                val rc = socket_getsockname(fd, boundAddr.ptr.reinterpret(), boundLen.ptr)
+                check(rc == 0) { "socket_getsockname(boundPort) returned $rc" }
+                check(boundAddr.sin_family.toInt() == AF_INET) {
+                    "socket_getsockname(boundPort) sin_family=${boundAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
+                }
                 ntohs(boundAddr.sin_port).toInt()
             }
 
-        // Copy local address to heap buffer for recvInfo (outlives memScoped)
+        // Copy local address to heap buffer for recvInfo (outlives memScoped). Same
+        // init/check discipline as above — this buffer is handed to quiche via api.accept
+        // and api.recvInfoNew, so a garbage sin_family here poisons every accepted connection.
         val localAddrBuf = bufferFactory.allocate(sizeOf<sockaddr_in>().toInt())
         memScoped {
             val localAddr = alloc<sockaddr_in>()
+            platform.posix.memset(localAddr.ptr, 0, sizeOf<sockaddr_in>().convert())
             val localLen = alloc<UIntVar>()
             localLen.value = sizeOf<sockaddr_in>().convert()
-            socket_getsockname(fd, localAddr.ptr.reinterpret(), localLen.ptr)
+            val rc = socket_getsockname(fd, localAddr.ptr.reinterpret(), localLen.ptr)
+            check(rc == 0) { "socket_getsockname(localAddr) returned $rc" }
+            check(localAddr.sin_family.toInt() == AF_INET) {
+                "socket_getsockname(localAddr) sin_family=${localAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
+            }
             val dst = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
             memcpy(dst, localAddr.ptr, sizeOf<sockaddr_in>().convert())
         }

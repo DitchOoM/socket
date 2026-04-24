@@ -123,31 +123,47 @@ class LinuxQuicSmokeTest {
 
         memScoped {
             val fd = socket(AF_INET, SOCK_DGRAM, 0)
+            assertTrue(fd >= 0, "socket() failed: $fd")
             val hints = alloc<addrinfo>()
             hints.ai_family = AF_INET
             hints.ai_socktype = SOCK_DGRAM
             val resultPtr = alloc<kotlinx.cinterop.CPointerVar<addrinfo>>()
-            getaddrinfo("cloudflare-quic.com", "443", hints.ptr, resultPtr.ptr)
+            // Resolve a well-known target. Every return value below MUST be checked: an uncaught
+            // failure leaves ai_addr / localAddr with garbage sa_family bytes, and quiche_connect
+            // then panics inside Rust's `std_addr_from_c` with SIGABRT — indistinguishable from
+            // a legitimate crash. See LinuxQuicAddressMarshallingTest for per-helper isolation.
+            val rr = getaddrinfo("cloudflare-quic.com", "443", hints.ptr, resultPtr.ptr)
+            assertTrue(rr == 0, "getaddrinfo failed: $rr")
             val addrInfo = resultPtr.value!!.pointed
-            connect(fd, addrInfo.ai_addr, addrInfo.ai_addrlen)
+            val peerFamily = addrInfo.ai_addr!!.pointed.sa_family.toInt()
+            assertTrue(
+                peerFamily == AF_INET,
+                "getaddrinfo returned peer sa_family=$peerFamily (expected AF_INET=$AF_INET)",
+            )
+            val cr = connect(fd, addrInfo.ai_addr, addrInfo.ai_addrlen)
+            assertTrue(cr == 0, "connect() returned $cr")
 
-            println("Getting local addr...")
             val localAddr = alloc<sockaddr_in>()
+            // Poison sin_family so we can't mistake a silent getsockname failure for success —
+            // 0xA5 is intentionally neither AF_INET nor AF_INET6.
+            localAddr.sin_family = 0xA5u.convert()
             val localAddrLen = alloc<kotlinx.cinterop.UIntVar>()
             localAddrLen.value = kotlinx.cinterop.sizeOf<sockaddr_in>().convert()
-            com.ditchoom.socket.linux
-                .socket_getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
-            println("Local addr obtained")
+            val gs =
+                com.ditchoom.socket.linux
+                    .socket_getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
+            assertTrue(gs == 0, "socket_getsockname returned $gs")
+            val localFamily = localAddr.sin_family.toInt()
+            assertTrue(
+                localFamily == AF_INET,
+                "socket_getsockname left sin_family=$localFamily (expected AF_INET=$AF_INET)",
+            )
 
-            // Generate SCID via ByteArray + pin
             val scidBytes =
                 ByteArray(QUIC_MAX_CONN_ID_LEN) {
-                    kotlin.random.Random
-                        .nextInt(256)
-                        .toByte()
+                    kotlin.random.Random.nextInt(256).toByte()
                 }
 
-            println("Calling quiche_connect...")
             val conn =
                 scidBytes.usePinned { pinned ->
                     quiche_connect(
@@ -161,10 +177,7 @@ class LinuxQuicSmokeTest {
                         config,
                     )
                 }
-            println("quiche_connect returned: $conn")
             assertNotNull(conn, "quiche_connect returned null")
-            println("quiche_connect succeeded, conn is established: ${quiche_conn_is_established(conn)}")
-
             quiche_conn_free(conn)
             freeaddrinfo(resultPtr.value)
             close(fd)
