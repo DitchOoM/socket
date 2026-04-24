@@ -377,6 +377,19 @@ fun createBuildJvmJniShimTask(
                         "-Wl,-install_name,@rpath/libquiche_jni.$libExt",
                     )
             } else {
+                // When the cargo build used QUICHE_BSSL_PATH (shared BoringSSL from base socket
+                // module), libquiche.a has unresolved SSL_*/EVP_*/CRYPTO_* refs. Link those
+                // archives inside the same --whole-archive pair — mirrors build-linux.yaml.
+                val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch/lib")
+                val bsslArchives =
+                    if (boringsslLibDir.resolve("libssl.a").exists()) {
+                        listOf(
+                            boringsslLibDir.resolve("libssl.a").absolutePath,
+                            boringsslLibDir.resolve("libcrypto.a").absolutePath,
+                        )
+                    } else {
+                        emptyList()
+                    }
                 cmd +=
                     listOf(
                         "cc",
@@ -392,6 +405,8 @@ fun createBuildJvmJniShimTask(
                         "-I${quicheInclude.absolutePath}",
                         "-Wl,--whole-archive",
                         quicheStatic.absolutePath,
+                    ) + bsslArchives +
+                    listOf(
                         "-Wl,--no-whole-archive",
                         "-lm",
                         "-ldl",
@@ -936,21 +951,34 @@ kotlin {
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             if (quicheStatic.exists()) {
                 binaries.all {
-                    // Use whole-archive to pull all quiche symbols, allow-multiple-definition
-                    // to resolve BoringSSL/OpenSSL symbol collision with base module
-                    linkerOpts(
-                        "-L${quicheLibDir.absolutePath}",
-                        "-Wl,--whole-archive",
-                        "-lquiche",
-                        "-Wl,--no-whole-archive",
-                        "-lpthread",
-                        "-ldl",
-                        "-lm",
-                        "-lstdc++",
-                        "--unresolved-symbols=ignore-in-object-files",
-                        "--allow-multiple-definition",
-                        "-Wl,--defsym=QUICHE_BSSL=1", // marker to indicate quiche BoringSSL is linked
-                    )
+                    // -Bstatic around -lquiche forces ld.lld to pick libquiche.a, not the sibling
+                    // libquiche.so (which has unresolved SSL_* refs and fails --no-allow-shlib-undefined).
+                    // whole-archive pulls all quiche symbols; BSSL static archives resolve SSL_*/EVP_*/CRYPTO_*
+                    // refs in libquiche.a. allow-multiple-definition handles overlap with base socket's
+                    // cinterop which also links libssl.a/libcrypto.a.
+                    val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-x64/lib")
+                    val opts =
+                        buildList {
+                            add("-L${quicheLibDir.absolutePath}")
+                            add("-Wl,-Bstatic")
+                            add("-Wl,--whole-archive")
+                            add("-lquiche")
+                            add("-Wl,--no-whole-archive")
+                            if (boringsslLibDir.resolve("libssl.a").exists()) {
+                                add("-L${boringsslLibDir.absolutePath}")
+                                add("-lssl")
+                                add("-lcrypto")
+                            }
+                            add("-Wl,-Bdynamic")
+                            add("-lpthread")
+                            add("-ldl")
+                            add("-lm")
+                            add("-lstdc++")
+                            add("--unresolved-symbols=ignore-in-object-files")
+                            add("--allow-multiple-definition")
+                            add("-Wl,--defsym=QUICHE_BSSL=1") // marker to indicate quiche BoringSSL is linked
+                        }
+                    linkerOpts(*opts.toTypedArray())
                 }
             }
         }
@@ -964,16 +992,29 @@ kotlin {
             val quicheLibArm64 = projectDir.resolve("libs/quiche/linux-arm64/lib/libquiche.a")
             if (quicheLibArm64.exists()) {
                 binaries.all {
-                    linkerOpts(
-                        "-L${quicheLibArm64.parentFile.absolutePath}",
-                        "-lquiche",
-                        "-lpthread",
-                        "-ldl",
-                        "-lm",
-                        "-lstdc++",
-                        "--unresolved-symbols=ignore-in-object-files",
-                        "--allow-multiple-definition",
-                    )
+                    // Mirror linuxX64: -Bstatic forces static quiche, BSSL archives resolve SSL_*/EVP_*/CRYPTO_*.
+                    val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-arm64/lib")
+                    val opts =
+                        buildList {
+                            add("-L${quicheLibArm64.parentFile.absolutePath}")
+                            add("-Wl,-Bstatic")
+                            add("-Wl,--whole-archive")
+                            add("-lquiche")
+                            add("-Wl,--no-whole-archive")
+                            if (boringsslLibDir.resolve("libssl.a").exists()) {
+                                add("-L${boringsslLibDir.absolutePath}")
+                                add("-lssl")
+                                add("-lcrypto")
+                            }
+                            add("-Wl,-Bdynamic")
+                            add("-lpthread")
+                            add("-ldl")
+                            add("-lm")
+                            add("-lstdc++")
+                            add("--unresolved-symbols=ignore-in-object-files")
+                            add("--allow-multiple-definition")
+                        }
+                    linkerOpts(*opts.toTypedArray())
                 }
             }
         }
