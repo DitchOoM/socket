@@ -32,7 +32,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferFactory = options.bufferFactory,
+            bufferPool = options.bufferPool,
             options = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
@@ -45,7 +45,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferFactory = options.bufferFactory,
+            bufferPool = options.bufferPool,
             options = options,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -57,7 +57,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferFactory = options.bufferFactory,
+            bufferPool = options.bufferPool,
             options = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
@@ -70,7 +70,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferFactory = options.bufferFactory,
+            bufferPool = options.bufferPool,
             options = options,
             decodeContext = decodeContext,
             id = stream.streamId.id,

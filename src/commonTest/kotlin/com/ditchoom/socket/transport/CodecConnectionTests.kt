@@ -7,8 +7,9 @@ import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.codec.PeekResult
+import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.buffer.stream.PeekResult
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.MockClientToServerSocket
@@ -46,7 +47,12 @@ object TestStringCodec : Codec<String> {
         buffer.writeBytes(bytes)
     }
 
-    override val wireSizeHint: Int get() = 2 // 2-byte length prefix
+    // BackPatch — wire size depends on string length; framework falls back to defaultBufferSize
+    // and grows on overflow. This shape exercises the send() retry path.
+    override fun wireSize(
+        value: String,
+        context: EncodeContext,
+    ): WireSize = WireSize.BackPatch
 
     override fun peekFrameSize(
         stream: StreamProcessor,
@@ -54,7 +60,7 @@ object TestStringCodec : Codec<String> {
     ): PeekResult {
         if (stream.available() < baseOffset + 2) return PeekResult.NeedsMoreData
         val length = stream.peekShort(baseOffset).toInt() and 0xFFFF
-        return PeekResult.Size(2 + length)
+        return PeekResult.Complete(2 + length)
     }
 }
 
@@ -63,7 +69,6 @@ class CodecConnectionTests {
         ConnectionOptions(
             readTimeout = 5.seconds,
             writeTimeout = 5.seconds,
-            bufferFactory = BufferFactory.Default,
         )
 
     private fun createPairCodecConnections(): Pair<CodecConnection<String>, CodecConnection<String>> {
@@ -72,14 +77,14 @@ class CodecConnectionTests {
             CodecConnection(
                 stream = aStream,
                 codec = TestStringCodec,
-                bufferFactory = BufferPool(),
+                bufferPool = BufferPool(),
                 options = testOptions,
             )
         val b =
             CodecConnection(
                 stream = bStream,
                 codec = TestStringCodec,
-                bufferFactory = BufferPool(),
+                bufferPool = BufferPool(),
                 options = testOptions,
             )
         return a to b
@@ -204,7 +209,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 
@@ -229,7 +234,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 
@@ -252,7 +257,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = aStream,
                     codec = TestStringCodec,
-                    bufferFactory = pool,
+                    bufferPool = pool,
                     options = testOptions,
                 )
 
@@ -274,14 +279,14 @@ class CodecConnectionTests {
 
             // Simulate: handshake parser read "msg1" bytes but they belong to the framing phase
             val preSeeded = BufferFactory.Default.allocate(32)
-            TestStringCodec.encode(preSeeded, "pre-seeded")
+            TestStringCodec.encode(preSeeded, "pre-seeded", EncodeContext.Empty)
             preSeeded.resetForRead()
 
             val server =
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
             server.preSeed(preSeeded)
@@ -291,7 +296,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
             client.send("after-upgrade")
@@ -333,14 +338,14 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
             val server =
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 
@@ -366,13 +371,13 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 
             // preSeed before first receive — allowed
             val buf1 = BufferFactory.Default.allocate(32)
-            TestStringCodec.encode(buf1, "seed1")
+            TestStringCodec.encode(buf1, "seed1", EncodeContext.Empty)
             buf1.resetForRead()
             server.preSeed(buf1)
 
@@ -381,7 +386,7 @@ class CodecConnectionTests {
 
             // preSeed after receive completes — also allowed
             val buf2 = BufferFactory.Default.allocate(32)
-            TestStringCodec.encode(buf2, "seed2")
+            TestStringCodec.encode(buf2, "seed2", EncodeContext.Empty)
             buf2.resetForRead()
             server.preSeed(buf2)
 
@@ -389,7 +394,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
             client.close()
@@ -408,7 +413,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 
@@ -426,7 +431,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 
@@ -444,7 +449,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 
@@ -462,7 +467,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferFactory = BufferPool(),
+                    bufferPool = BufferPool(),
                     options = testOptions,
                 )
 

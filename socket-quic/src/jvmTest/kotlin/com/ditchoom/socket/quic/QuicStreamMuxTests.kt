@@ -5,7 +5,8 @@ import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
-import com.ditchoom.buffer.stream.PeekResult
+import com.ditchoom.buffer.codec.PeekResult
+import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.CompletableDeferred
@@ -40,7 +41,10 @@ private object TestCodec : Codec<String> {
         buffer.writeBytes(bytes)
     }
 
-    override val wireSizeHint: Int get() = 256
+    override fun wireSize(
+        value: String,
+        context: EncodeContext,
+    ): WireSize = WireSize.BackPatch
 
     override fun peekFrameSize(
         stream: StreamProcessor,
@@ -48,7 +52,7 @@ private object TestCodec : Codec<String> {
     ): PeekResult {
         if (stream.available() < baseOffset + 2) return PeekResult.NeedsMoreData
         val length = stream.peekShort(baseOffset).toInt() and 0xFFFF
-        return PeekResult.Size(2 + length)
+        return PeekResult.Complete(2 + length)
     }
 }
 

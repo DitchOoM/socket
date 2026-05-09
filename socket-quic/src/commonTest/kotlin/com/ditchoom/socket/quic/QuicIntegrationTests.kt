@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.Dispatchers
@@ -25,8 +26,9 @@ import kotlin.time.Duration.Companion.seconds
  */
 class QuicIntegrationTests {
     private val bufferFactory = BufferFactory.deterministic()
+    private val bufferPool = BufferPool(factory = bufferFactory)
     private val quicOptions = QuicOptions(alpnProtocols = listOf("h3"))
-    private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
+    private val connOptions = ConnectionOptions(bufferPool = bufferPool)
 
     /** Run block inside a QUIC connection to Cloudflare, or skip if unavailable. */
     private suspend fun withCloudflare(block: suspend QuicScope.() -> Unit) {

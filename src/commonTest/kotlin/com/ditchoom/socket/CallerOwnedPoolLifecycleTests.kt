@@ -1,7 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.MemoryTransport
@@ -28,7 +26,6 @@ class CallerOwnedPoolLifecycleTests {
         ConnectionOptions(
             readTimeout = 5.seconds,
             writeTimeout = 5.seconds,
-            bufferFactory = BufferFactory.Default,
         )
 
     @Test
@@ -65,8 +62,8 @@ class CallerOwnedPoolLifecycleTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = com.ditchoom.socket.transport.TestStringCodec,
-                    bufferFactory = pool,
-                    options = testOptions.copy(bufferFactory = pool),
+                    bufferPool = pool,
+                    options = testOptions.copy(bufferPool = pool),
                 )
             conn.close()
 

@@ -107,7 +107,7 @@ private class AppleQuicEngine : QuicEngine {
                 }
             }
 
-            val quicConn = AppleQuicConnection(nwConn, connectionOptions.bufferFactory)
+            val quicConn = AppleQuicConnection(nwConn, connectionOptions.bufferPool)
             try {
                 quicConn.block()
             } finally {

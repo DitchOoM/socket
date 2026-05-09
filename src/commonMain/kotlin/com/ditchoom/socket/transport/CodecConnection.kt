@@ -1,15 +1,16 @@
 package com.ditchoom.socket.transport
 
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.BufferOverflowException
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.codec.PeekResult
+import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.buffer.stream.PeekResult
+import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
@@ -25,13 +26,13 @@ import kotlin.time.TimeSource
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
-    val bufferFactory: BufferFactory,
+    val bufferPool: BufferPool,
     private val options: ConnectionOptions = ConnectionOptions(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
-    private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferFactory)
+    private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
     @Volatile
     private var closed = false
@@ -85,15 +86,20 @@ class CodecConnection<T>(
 
     override suspend fun send(message: T) {
         check(!closed) { "CodecConnection is closed" }
-        // wireSizeHint is a static per-codec hint; messages whose wire size is
-        // unknown ahead of time (e.g. MQTT PUBLISH with a 32 KB payload) can
-        // exceed it. On overflow, grow 4× and retry. Encode is expected to be
-        // deterministic, so re-encoding into a larger buffer produces the
-        // same bytes. Retries are bounded to avoid pathological loops.
-        var capacity = codec.wireSizeHint.coerceAtLeast(options.defaultBufferSize)
+        // Initial capacity: codec's per-call wireSize. Exact lets us allocate-exact
+        // first try; BackPatch falls back to defaultBufferSize and may still overflow
+        // for variable-length encodes (e.g. MQTT PUBLISH with a large payload). On
+        // overflow, grow 4× and retry. Encode is expected to be deterministic, so
+        // re-encoding into a larger buffer produces the same bytes. Retries are
+        // bounded to avoid pathological loops.
+        var capacity =
+            when (val ws = codec.wireSize(message, encodeContext)) {
+                is WireSize.Exact -> ws.bytes
+                WireSize.BackPatch -> options.defaultBufferSize
+            }
         var attempts = 0
         while (true) {
-            val buffer = bufferFactory.allocate(capacity)
+            val buffer = bufferPool.allocate(capacity)
             try {
                 codec.encode(buffer, message, encodeContext)
                 buffer.resetForRead()
@@ -114,8 +120,14 @@ class CodecConnection<T>(
     private fun drainFrame(): T? {
         val frameSize =
             when (val result = codec.peekFrameSize(streamProcessor, 0)) {
-                is PeekResult.Size -> result.bytes
+                is PeekResult.Complete -> result.bytes
                 PeekResult.NeedsMoreData -> return null
+                PeekResult.NoFraming ->
+                    error(
+                        "Codec ${codec::class.simpleName} reports NoFraming — " +
+                            "cannot drive a streaming receive loop. Use a codec that " +
+                            "implements peekFrameSize.",
+                    )
             }
         if (streamProcessor.available() < frameSize) return null
         return streamProcessor.readBufferScoped(frameSize) { codec.decode(this, decodeContext) }
@@ -153,7 +165,7 @@ class CodecConnection<T>(
             encodeContext: EncodeContext = EncodeContext.Empty,
         ): CodecConnection<T> {
             val stream = transport.connect(hostname, port, options)
-            return CodecConnection(stream, codec, options.bufferFactory, options, decodeContext, encodeContext)
+            return CodecConnection(stream, codec, options.bufferPool, options, decodeContext, encodeContext)
         }
     }
 }

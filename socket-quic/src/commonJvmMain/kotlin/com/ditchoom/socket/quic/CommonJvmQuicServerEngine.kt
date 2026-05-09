@@ -250,7 +250,7 @@ internal class JvmQuicServer(
                 while (true) {
                     // Acquire a buffer from the per-server pool — ownership transfers to driver
                     // (zero-copy). The driver's freeNativeMemory() releases back to the pool.
-                    val recvBuf = recvBufPool.acquire(MAX_DATAGRAM_SIZE)
+                    val recvBuf = recvBufPool.allocate(MAX_DATAGRAM_SIZE)
                     val recvByteBuffer = (recvBuf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
                     recvByteBuffer.clear()
 

@@ -214,7 +214,7 @@ class QuicheDriver(
         val pool = recvBufPool!!
         try {
             while (coroutineContext[Job]?.isActive != false) {
-                val buf = pool.acquire(MAX_DATAGRAM_SIZE)
+                val buf = pool.allocate(MAX_DATAGRAM_SIZE)
                 val received =
                     try {
                         udpChannel.receive(buf)
