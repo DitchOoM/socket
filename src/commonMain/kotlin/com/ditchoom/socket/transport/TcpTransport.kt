@@ -12,7 +12,7 @@ class TcpTransport : Transport {
         options: ConnectionOptions,
     ): ByteStream {
         val socket = ClientSocket.allocate()
-        socket.bufferFactory = options.bufferPool
+        socket.bufferFactory = options.bufferFactory
         socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
         return TcpByteStream(socket)
     }

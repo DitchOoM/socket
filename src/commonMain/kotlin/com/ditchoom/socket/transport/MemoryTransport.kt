@@ -20,7 +20,7 @@ class MemoryTransport : Transport {
         hostname: String,
         port: Int,
         options: ConnectionOptions,
-    ): ByteStream = createPair(options.bufferPool).first
+    ): ByteStream = createPair(options.bufferFactory).first
 
     companion object {
         fun createPair(bufferFactory: BufferFactory = BufferFactory.Default): Pair<ByteStream, ByteStream> {

@@ -43,9 +43,6 @@ class ReconnectingConnectionNetworkTests {
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-            bufferPool =
-                com.ditchoom.buffer.pool
-                    .BufferPool(),
             options = testOptions,
         )
 

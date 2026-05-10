@@ -26,12 +26,12 @@ import kotlin.time.TimeSource
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
-    val bufferPool: BufferPool,
     private val options: ConnectionOptions = ConnectionOptions(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
+    private val bufferPool: BufferPool = BufferPool(factory = options.bufferFactory)
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
     @Volatile
@@ -150,6 +150,7 @@ class CodecConnection<T>(
         closed = true
         stream.close()
         streamProcessor.release()
+        bufferPool.clear()
     }
 
     companion object {
@@ -165,7 +166,7 @@ class CodecConnection<T>(
             encodeContext: EncodeContext = EncodeContext.Empty,
         ): CodecConnection<T> {
             val stream = transport.connect(hostname, port, options)
-            return CodecConnection(stream, codec, options.bufferPool, options, decodeContext, encodeContext)
+            return CodecConnection(stream, codec, options, decodeContext, encodeContext)
         }
     }
 }

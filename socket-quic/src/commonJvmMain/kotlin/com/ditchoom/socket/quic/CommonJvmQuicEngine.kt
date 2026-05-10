@@ -32,7 +32,7 @@ private class CommonJvmQuicEngine : QuicEngine {
         block: suspend QuicScope.() -> R,
     ): R =
         withTimeout(timeout) {
-            val bufferFactory = connectionOptions.bufferPool
+            val bufferFactory = connectionOptions.bufferFactory
 
             // 1. Create quiche config
             val config = api.configNew(QUICHE_PROTOCOL_VERSION)

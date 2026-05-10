@@ -17,8 +17,7 @@ import com.ditchoom.socket.transport.CodecConnection
  * messages via the codec. The [Connection.id] is set to the QUIC stream ID for
  * cross-layer log correlation.
  *
- * Buffer allocation for each stream is routed through [ConnectionOptions.bufferFactory];
- * pass a [com.ditchoom.buffer.pool.BufferPool] as the factory for pooled chunks.
+ * Buffer allocation for each stream is routed through [ConnectionOptions.bufferFactory].
  */
 class QuicStreamMux<T>(
     private val connection: QuicScope,
@@ -32,7 +31,6 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferPool = options.bufferPool,
             options = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
@@ -45,7 +43,6 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferPool = options.bufferPool,
             options = options,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -57,7 +54,6 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferPool = options.bufferPool,
             options = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
@@ -70,7 +66,6 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            bufferPool = options.bufferPool,
             options = options,
             decodeContext = decodeContext,
             id = stream.streamId.id,

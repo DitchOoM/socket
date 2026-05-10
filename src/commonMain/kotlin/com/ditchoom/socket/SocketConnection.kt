@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
@@ -12,16 +13,16 @@ import kotlin.time.Duration
 /**
  * A composed socket connection bundling a socket + stream processor.
  *
- * Buffer allocation is controlled by the caller via [ConnectionOptions.bufferPool].
- * The pool feeds both the stream processor's chunk staging and per-call allocations
- * (via `BufferPool : BufferFactory`).
+ * Buffer allocation is controlled by the caller via [ConnectionOptions.bufferFactory].
+ * An internal pool is constructed from that factory to back the stream processor and
+ * per-call helpers; the pool is never exposed.
  */
 class SocketConnection private constructor(
     val socket: ClientToServerSocket,
     val options: ConnectionOptions,
     val stream: SuspendingStreamProcessor,
 ) {
-    val bufferPool: BufferPool get() = options.bufferPool
+    val bufferFactory: BufferFactory get() = options.bufferFactory
     val isOpen: Boolean get() = socket.isOpen()
 
     /**
@@ -53,14 +54,13 @@ class SocketConnection private constructor(
     ): Int = socket.writeGathered(buffers, timeout)
 
     /**
-     * Acquires a buffer from [bufferPool], runs [block] with it, and returns it on exit.
-     * Pooled buffers' `freeIfNeeded` returns the buffer to the pool.
+     * Allocates a buffer from [bufferFactory], runs [block] with it, and frees it on exit.
      */
     inline fun <T> withBuffer(
         minSize: Int = 0,
         block: (PlatformBuffer) -> T,
     ): T {
-        val buf = bufferPool.allocate(minSize) as PlatformBuffer
+        val buf = bufferFactory.allocate(minSize)
         return try {
             block(buf)
         } finally {
@@ -79,9 +79,9 @@ class SocketConnection private constructor(
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
             val socket = ClientSocket.allocate()
-            socket.bufferFactory = options.bufferPool
+            socket.bufferFactory = options.bufferFactory
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
-            val stream = StreamProcessor.builder(options.bufferPool).buildSuspending()
+            val stream = StreamProcessor.builder(BufferPool(factory = options.bufferFactory)).buildSuspending()
             return SocketConnection(socket, options, stream)
         }
 
@@ -103,8 +103,8 @@ class SocketConnection private constructor(
             socket: ClientToServerSocket,
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
-            socket.bufferFactory = options.bufferPool
-            val stream = StreamProcessor.builder(options.bufferPool).buildSuspending()
+            socket.bufferFactory = options.bufferFactory
+            val stream = StreamProcessor.builder(BufferPool(factory = options.bufferFactory)).buildSuspending()
             return SocketConnection(socket, options, stream)
         }
     }

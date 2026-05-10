@@ -9,7 +9,6 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.MockClientToServerSocket
@@ -77,14 +76,12 @@ class CodecConnectionTests {
             CodecConnection(
                 stream = aStream,
                 codec = TestStringCodec,
-                bufferPool = BufferPool(),
                 options = testOptions,
             )
         val b =
             CodecConnection(
                 stream = bStream,
                 codec = TestStringCodec,
-                bufferPool = BufferPool(),
                 options = testOptions,
             )
         return a to b
@@ -209,8 +206,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             assertFailsWith<SocketClosedException.ConnectionReset> {
@@ -234,38 +230,12 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             assertFailsWith<SocketTimeoutException> {
                 codec.receive().toList()
             }
-
-            codec.close()
-        }
-
-    // ── send() uses pool for buffers ──
-
-    @Test
-    fun sendUsesPoolForEncoding() =
-        runTest {
-            val pool = BufferPool()
-            val (aStream, _) = MemoryTransport.createPair()
-
-            val codec =
-                CodecConnection(
-                    stream = aStream,
-                    codec = TestStringCodec,
-                    bufferPool = pool,
-                    options = testOptions,
-                )
-
-            codec.send("test1")
-            codec.send("test2")
-
-            val stats = pool.stats()
-            assertTrue(stats.totalAllocations >= 2, "Expected at least 2 pool allocations for 2 sends")
 
             codec.close()
         }
@@ -286,8 +256,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
             server.preSeed(preSeeded)
 
@@ -296,8 +265,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
             client.send("after-upgrade")
             client.close()
@@ -338,15 +306,13 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
             val server =
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             // First collection (simulates handshake)
@@ -371,8 +337,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             // preSeed before first receive — allowed
@@ -394,8 +359,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
             client.close()
 
@@ -413,8 +377,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             conn.close()
@@ -431,8 +394,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             conn.close()
@@ -449,8 +411,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             conn.close()
@@ -467,8 +428,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    bufferPool = BufferPool(),
-                    options = testOptions,
+                        options = testOptions,
                 )
 
             conn.close()
