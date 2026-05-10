@@ -237,6 +237,77 @@ class ReactiveDriverTests {
             Unit
         }
 
+    // ---- UDP send-error handling (regression: shutdown-leak flake) ----
+    //
+    // QuicheDriver.flushOutgoing() used to let any exception from udpChannel.send()
+    // escape run(), which is launched in scope.launch(Dispatchers.Default). The
+    // uncaught exception then leaked into the surrounding runTest scope and flaked
+    // an unrelated test in the next run. Real-world triggers were
+    // PortUnreachableException (peer gone) and ClosedChannelException (channel
+    // closed during shutdown). The driver must swallow these, transition to
+    // Closed, and unwind cleanly via cleanup().
+
+    @Test
+    fun flushOutgoing_swallowsExceptionFromUdpSend() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.connSendOnce = 1300 // force one flushOutgoing iteration
+            val udp =
+                StubUdpChannel(
+                    sendBehavior = { _, _ -> throw RuntimeException("simulated PortUnreachable") },
+                )
+            val driver = createTestDriver(api = api, udpChannel = udp)
+            driver.start(this) // would crash run() before the fix; uncaught exception fails runTest
+
+            // Driver must wind down cleanly within the timeout.
+            withTimeout(2.seconds) { driver.destroy() }
+            assertEquals(1, udp.sendCount, "send was attempted exactly once")
+        }
+
+    @Test
+    fun flushOutgoing_transitionsToClosedOnUdpError() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.connSendOnce = 1300
+            val udp = StubUdpChannel(sendBehavior = { _, _ -> throw RuntimeException("send failed") })
+            val driver = createTestDriver(api = api, udpChannel = udp)
+            driver.start(this)
+
+            // The driver should observe the failure and short-circuit to Closed,
+            // closing the command channel so further sends fail predictably.
+            withTimeout(2.seconds) {
+                while (driver.state.value !is QuicConnectionState.Closed) {
+                    yield()
+                }
+            }
+            assertIs<QuicConnectionState.Closed>(driver.state.value)
+            assertTrue(driver.commands.isClosedForSend, "commands channel closed after UDP failure")
+
+            driver.destroy()
+        }
+
+    @Test
+    fun flushOutgoing_failsPendingCommandsAfterUdpError() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.connSendOnce = 1300
+            val udp = StubUdpChannel(sendBehavior = { _, _ -> throw RuntimeException("send failed") })
+            val driver = createTestDriver(api = api, udpChannel = udp)
+            driver.start(this)
+
+            // Wait for the driver to short-circuit, then verify a new OpenStream gets
+            // ClosedSendChannelException rather than hanging forever.
+            withTimeout(2.seconds) {
+                while (!driver.commands.isClosedForSend) yield()
+            }
+            assertFailsWith<kotlinx.coroutines.channels.ClosedSendChannelException> {
+                driver.commands.send(QuicheCmd.OpenStream(CompletableDeferred()))
+            }
+
+            driver.destroy()
+            Unit
+        }
+
     // ---- Helpers ----
 
     private suspend fun sendOpenStream(driver: QuicheDriver): StreamSlot {
@@ -248,6 +319,7 @@ class ReactiveDriverTests {
     private fun createTestDriver(
         api: StubQuicheApi = StubQuicheApi(),
         isServer: Boolean = false,
+        udpChannel: UdpChannel = StubUdpChannel(),
     ): QuicheDriver =
         QuicheDriver(
             api = api,
@@ -255,7 +327,7 @@ class ReactiveDriverTests {
             bufferFactory = bufferFactory,
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
-            udpChannel = StubUdpChannel(),
+            udpChannel = udpChannel,
             clientMode = false,
             isServer = isServer,
         )

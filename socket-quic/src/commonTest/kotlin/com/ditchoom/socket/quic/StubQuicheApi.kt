@@ -14,6 +14,13 @@ internal class StubQuicheApi : QuicheApi {
 
     @Volatile var streamRecvResult: StreamRecvResult = StreamRecvResult.Done
 
+    /**
+     * If non-null, the next [connSend] returns this value (then resets to null).
+     * Lets tests force a single [QuicheDriver.flushOutgoing] iteration without
+     * a real congestion-control state machine.
+     */
+    @Volatile var connSendOnce: Int? = null
+
     // --- Config (all no-ops) ---
     override fun configNew(version: Int) = QuicheConfig(1L)
 
@@ -154,7 +161,14 @@ internal class StubQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
         sendInfo: QuicheSendInfo,
-    ) = 0
+    ): Int {
+        val once = connSendOnce
+        if (once != null) {
+            connSendOnce = null
+            return once
+        }
+        return 0
+    }
 
     override fun connStreamRecv(
         conn: QuicheConn,

@@ -202,7 +202,21 @@ class QuicheDriver(
         while (true) {
             val written = api.connSend(conn, sendAddr, MAX_DATAGRAM_SIZE, sendInfo)
             if (written <= 0) break
-            udpChannel.send(udpSendBuf, written)
+            try {
+                udpChannel.send(udpSendBuf, written)
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                // UDP send failed (peer unreachable, channel closed during shutdown, etc).
+                // The connection cannot make further progress — short-circuit to Closed and
+                // let the driver loop unwind via cleanup(). Letting the exception escape
+                // would leak it as an uncaught coroutine failure into the parent scope.
+                if (_state.value !is QuicConnectionState.Closed) {
+                    _state.value = QuicConnectionState.Closed(null)
+                    commands.close()
+                }
+                return
+            }
         }
     }
 

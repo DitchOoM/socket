@@ -7,8 +7,16 @@ import kotlinx.coroutines.channels.Channel
  * No-op [UdpChannel] for driver unit tests.
  * Does not perform real I/O — the driver is tested with [clientMode] = false,
  * so the UDP reader loop is never started.
+ *
+ * Tests that need to inject UDP send errors (e.g. PortUnreachableException,
+ * ClosedChannelException) supply [sendBehavior] which is invoked on each send.
  */
-class StubUdpChannel : UdpChannel {
+class StubUdpChannel(
+    private val sendBehavior: (PlatformBuffer, Int) -> Unit = { _, _ -> },
+) : UdpChannel {
+    var sendCount: Int = 0
+        private set
+
     override suspend fun receive(buffer: PlatformBuffer): Int {
         // Should never be called in tests (clientMode = false)
         Channel<Unit>().receive() // suspend forever
@@ -19,7 +27,8 @@ class StubUdpChannel : UdpChannel {
         buffer: PlatformBuffer,
         len: Int,
     ) {
-        // No-op: tests don't need real UDP sends
+        sendCount++
+        sendBehavior(buffer, len)
     }
 
     override fun close() {}
