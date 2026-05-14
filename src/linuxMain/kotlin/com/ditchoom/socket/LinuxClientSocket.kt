@@ -69,18 +69,44 @@ class LinuxClientSocket : ClientToServerSocket {
             val addrInfo = result.value ?: throw SocketUnknownHostException(host, "No address found")
 
             try {
-                // Create socket
-                sockfd = socket(addrInfo.pointed.ai_family, SOCK_STREAM, 0)
-                checkSocketResult(sockfd, "socket")
+                // Walk the addrinfo linked list and try each candidate in order. getaddrinfo
+                // returns multiple records for dual-stack hosts (AAAA + A, multiple IPv4s, etc.);
+                // attempting only the first record — as the prior code did — fails the entire
+                // connect when the head address is unreachable even though a later address would
+                // succeed. broker.hivemq.com is the canonical reproducer: its 8 AAAA records all
+                // ECONNREFUSED while the A record accepts. RFC 8305 / Happy Eyeballs racing is
+                // not implemented here; sequential fallback is enough to clear the common
+                // dual-stack-misconfiguration case.
+                var lastError: Exception? = null
+                var entryPtr: CPointer<addrinfo>? = addrInfo
+                while (entryPtr != null) {
+                    val entry = entryPtr.pointed
+                    val candidateFd = socket(entry.ai_family, SOCK_STREAM, 0)
+                    if (candidateFd < 0) {
+                        lastError = mapErrnoToException(errno, "socket")
+                        entryPtr = entry.ai_next
+                        continue
+                    }
+                    try {
+                        setNonBlocking(candidateFd)
+                        applySocketOptions(candidateFd, socketOptions)
+                        sockfd = candidateFd
+                        connectWithIoUring(entry.ai_addr!!, entry.ai_addrlen, timeout)
+                        // Connect succeeded — exit the fallback loop.
+                        lastError = null
+                        break
+                    } catch (e: Exception) {
+                        lastError = e
+                        closeSocket(candidateFd)
+                        sockfd = -1
+                        entryPtr = entry.ai_next
+                    }
+                }
 
-                // Set non-blocking for io_uring
-                setNonBlocking(sockfd)
-
-                // Apply socket options
-                applySocketOptions(sockfd, socketOptions)
-
-                // Connect using io_uring
-                connectWithIoUring(addrInfo.pointed.ai_addr!!, addrInfo.pointed.ai_addrlen, timeout)
+                if (sockfd < 0) {
+                    throw lastError
+                        ?: SocketConnectionException.Refused(host, port, platformError = "all addresses unreachable")
+                }
 
                 // Cache the socket's receive buffer size for efficient read operations
                 cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
