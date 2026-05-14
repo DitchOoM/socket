@@ -43,33 +43,37 @@ class QuicLocalServerTests {
     @Test
     fun serverAcceptsConnection() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(15.seconds) {
-                val serverEngine = defaultQuicServerEngine()
-                val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                val handlerRan = CompletableDeferred<Unit>()
+            val clientEngine = engineOrSkip()
+            val serverEngine = defaultQuicServerEngine()
+            val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
+            try {
+                withTimeout(15.seconds) {
+                    val handlerRan = CompletableDeferred<Unit>()
 
-                val serverJob =
-                    launch(Dispatchers.IO) {
-                        server.connections {
-                            handlerRan.complete(Unit)
-                            delay(3.seconds)
+                    val serverJob =
+                        launch(Dispatchers.IO) {
+                            server.connections {
+                                handlerRan.complete(Unit)
+                                delay(3.seconds)
+                            }
                         }
-                    }
-                delay(100)
+                    delay(100)
 
-                val clientEngine = engineOrSkip()
-                val clientJob =
-                    launch(Dispatchers.IO) {
-                        clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            delay(3.seconds)
+                    val clientJob =
+                        launch(Dispatchers.IO) {
+                            clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                                delay(3.seconds)
+                            }
                         }
-                    }
 
-                withTimeout(10.seconds) { handlerRan.await() }
+                    withTimeout(10.seconds) { handlerRan.await() }
 
-                clientJob.cancel()
-                serverJob.cancel()
+                    clientJob.cancel()
+                    serverJob.cancel()
+                }
+            } finally {
                 server.close()
+                serverEngine.close()
                 clientEngine.close()
             }
         }
@@ -77,50 +81,54 @@ class QuicLocalServerTests {
     @Test
     fun echoSingleStream() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(15.seconds) {
-                val serverEngine = defaultQuicServerEngine()
-                val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                val echoResult = CompletableDeferred<String>()
+            val clientEngine = engineOrSkip()
+            val serverEngine = defaultQuicServerEngine()
+            val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
+            try {
+                withTimeout(15.seconds) {
+                    val echoResult = CompletableDeferred<String>()
 
-                val serverJob =
-                    launch(Dispatchers.IO) {
-                        server.connections {
-                            val stream = acceptStream()
-                            val data = stream.read(5.seconds)
-                            if (data is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                stream.write(data.buffer, 5.seconds)
+                    val serverJob =
+                        launch(Dispatchers.IO) {
+                            server.connections {
+                                val stream = acceptStream()
+                                val data = stream.read(5.seconds)
+                                if (data is com.ditchoom.buffer.flow.ReadResult.Data) {
+                                    stream.write(data.buffer, 5.seconds)
+                                }
+                                stream.close()
                             }
-                            stream.close()
                         }
-                    }
-                delay(100)
+                    delay(100)
 
-                val clientEngine = engineOrSkip()
-                val clientJob =
-                    launch(Dispatchers.IO) {
-                        clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            val stream = openStream()
-                            val sendBuf = BufferFactory.Default.allocate(11)
-                            sendBuf.writeString("hello quic!", Charset.UTF8)
-                            sendBuf.resetForRead()
-                            stream.write(sendBuf, 5.seconds)
+                    val clientJob =
+                        launch(Dispatchers.IO) {
+                            clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                val sendBuf = BufferFactory.Default.allocate(11)
+                                sendBuf.writeString("hello quic!", Charset.UTF8)
+                                sendBuf.resetForRead()
+                                stream.write(sendBuf, 5.seconds)
 
-                            val response = stream.read(5.seconds)
-                            if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
-                            } else {
-                                echoResult.complete("no_data")
+                                val response = stream.read(5.seconds)
+                                if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
+                                    echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                } else {
+                                    echoResult.complete("no_data")
+                                }
+                                stream.close()
                             }
-                            stream.close()
                         }
-                    }
 
-                val result = withTimeout(10.seconds) { echoResult.await() }
-                assertEquals("hello quic!", result)
+                    val result = withTimeout(10.seconds) { echoResult.await() }
+                    assertEquals("hello quic!", result)
 
-                clientJob.cancel()
-                serverJob.cancel()
+                    clientJob.cancel()
+                    serverJob.cancel()
+                }
+            } finally {
                 server.close()
+                serverEngine.close()
                 clientEngine.close()
             }
         }
