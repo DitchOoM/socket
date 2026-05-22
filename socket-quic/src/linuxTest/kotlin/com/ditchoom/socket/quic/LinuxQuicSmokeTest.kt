@@ -16,7 +16,6 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_recv_udp_payload_si
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_send_udp_payload_size
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
-import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
 import com.ditchoom.socket.quic.quiche.quiche_connect
 import com.ditchoom.socket.quic.quiche.quiche_version
 import kotlinx.cinterop.UByteVar
@@ -135,7 +134,10 @@ class LinuxQuicSmokeTest {
             val rr = getaddrinfo("cloudflare-quic.com", "443", hints.ptr, resultPtr.ptr)
             assertTrue(rr == 0, "getaddrinfo failed: $rr")
             val addrInfo = resultPtr.value!!.pointed
-            val peerFamily = addrInfo.ai_addr!!.pointed.sa_family.toInt()
+            val peerFamily =
+                addrInfo.ai_addr!!
+                    .pointed.sa_family
+                    .toInt()
             assertTrue(
                 peerFamily == AF_INET,
                 "getaddrinfo returned peer sa_family=$peerFamily (expected AF_INET=$AF_INET)",
@@ -161,7 +163,9 @@ class LinuxQuicSmokeTest {
 
             val scidBytes =
                 ByteArray(QUIC_MAX_CONN_ID_LEN) {
-                    kotlin.random.Random.nextInt(256).toByte()
+                    kotlin.random.Random
+                        .nextInt(256)
+                        .toByte()
                 }
 
             val conn =

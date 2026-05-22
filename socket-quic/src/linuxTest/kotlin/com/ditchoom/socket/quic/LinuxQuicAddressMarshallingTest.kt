@@ -114,7 +114,10 @@ class LinuxQuicAddressMarshallingTest {
             assertEquals(0, rc, "getaddrinfo returned $rc")
             try {
                 val first = result.value!!.pointed
-                val family = first.ai_addr!!.pointed.sa_family.toInt()
+                val family =
+                    first.ai_addr!!
+                        .pointed.sa_family
+                        .toInt()
                 assertEquals(
                     AF_INET,
                     family,

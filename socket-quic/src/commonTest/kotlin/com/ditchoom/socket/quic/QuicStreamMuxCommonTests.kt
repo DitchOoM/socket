@@ -73,23 +73,25 @@ private class FakeQuicScope(
     scope: CoroutineScope,
     private val openStreams: ArrayDeque<QuicByteStream>,
     private val incomingStreams: ArrayDeque<QuicByteStream>,
-) : QuicScope, CoroutineScope by scope {
+) : QuicScope,
+    CoroutineScope by scope {
     private val incomingChannel = Channel<QuicByteStream>(Channel.UNLIMITED)
 
     init {
         incomingStreams.forEach { incomingChannel.trySend(it) }
     }
 
-    override suspend fun openStream(): QuicByteStream =
-        openStreams.removeFirst()
+    override suspend fun openStream(): QuicByteStream = openStreams.removeFirst()
 
-    override suspend fun acceptStream(): QuicByteStream =
-        incomingChannel.receive()
+    override suspend fun acceptStream(): QuicByteStream = incomingChannel.receive()
 
     override fun streams(): Flow<QuicByteStream> = incomingChannel.consumeAsFlow()
 }
 
-private fun pairOfStreams(idA: Long, idB: Long): Pair<QuicByteStream, QuicByteStream> {
+private fun pairOfStreams(
+    idA: Long,
+    idB: Long,
+): Pair<QuicByteStream, QuicByteStream> {
     val (rawA, rawB) = MemoryTransport.createPair()
     return QuicByteStream(QuicStreamId(idA), rawA) to QuicByteStream(QuicStreamId(idB), rawB)
 }
@@ -101,11 +103,12 @@ class QuicStreamMuxCommonTests {
     fun openBidirectional_propagatesStreamId() =
         runQuicTest {
             val (clientSide, serverSide) = pairOfStreams(idA = 0, idB = 4)
-            val mux = QuicStreamMux(
-                connection = FakeQuicScope(this, ArrayDeque(listOf(clientSide)), ArrayDeque()),
-                codec = MuxStringCodec,
-                options = opts,
-            )
+            val mux =
+                QuicStreamMux(
+                    connection = FakeQuicScope(this, ArrayDeque(listOf(clientSide)), ArrayDeque()),
+                    codec = MuxStringCodec,
+                    options = opts,
+                )
 
             val conn = mux.openBidirectional()
             assertEquals(0L, conn.id, "Connection.id should mirror QUIC stream id")
@@ -124,11 +127,12 @@ class QuicStreamMuxCommonTests {
     fun acceptBidirectional_returnsFromIncomingChannel() =
         runQuicTest {
             val (raw0, raw1) = pairOfStreams(idA = 1, idB = 5)
-            val mux = QuicStreamMux(
-                connection = FakeQuicScope(this, ArrayDeque(), ArrayDeque(listOf(raw0))),
-                codec = MuxStringCodec,
-                options = opts,
-            )
+            val mux =
+                QuicStreamMux(
+                    connection = FakeQuicScope(this, ArrayDeque(), ArrayDeque(listOf(raw0))),
+                    codec = MuxStringCodec,
+                    options = opts,
+                )
 
             val accepted = mux.acceptBidirectional()
             assertEquals(1L, accepted.id)
@@ -153,7 +157,10 @@ class QuicStreamMuxCommonTests {
     }
 
     /** Encode one length-prefixed string and write it directly to a raw byte stream. */
-    private suspend fun sendOneFromRawSide(raw: QuicByteStream, value: String) {
+    private suspend fun sendOneFromRawSide(
+        raw: QuicByteStream,
+        value: String,
+    ) {
         val bytes = value.encodeToByteArray()
         val buf = BufferFactory.Default.allocate(2 + bytes.size)
         buf.writeShort(bytes.size.toShort())
