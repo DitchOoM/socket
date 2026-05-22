@@ -2,6 +2,15 @@
 
 Tracked here so the gaps from each session aren't lost.
 
+## Phase-2 TLS cert matrix follow-ups (2026-05-22)
+
+- [ ] **Per-platform CA-trust injection for the *valid* path.** Decision §7.3 of `TESTING_STRATEGY.md` chose CI-time injection (Apple keychain, Linux CA bundle, JVM `cacerts`). Until that lands, `tlsHarnessValidPassesWithInsecure` uses `tlsInsecure()` — i.e. it only proves the TLS handshake itself completes, not that default cert validation accepts the harness CA. Once injection is wired, switch the test to `tlsDefault()`.
+- [ ] **Wire `generateHarnessCerts` into the arm64 Linux CI job.** Phase 1's `test-arm64` job runs the raw `.kexe` bypassing Gradle (see TODO above); the harness `up`/`down` are intended to wrap the binary, but the *cert generation* also needs to run there since the tls container mounts `./tls/certs/`. Add `bash test-harness/tls/gen-certs.sh` as a step before `docker compose up`.
+- [ ] **Migrate the remaining `TlsErrorTests` cases to the harness.** Phase 2 added 9 deterministic conformance tests; the 24-method `TlsErrorTests` class still hits the public internet (`example.com`, `www.cloudflare.com`, `nginx.org`, `httpbin.org`, `www.google.com`, `*.badssl.com`). Each one has a direct harness equivalent now — the `tls*FailsWithDefault` cases map to the cert-matrix ports; the multi-host tests (`tlsToExampleDotCom`, `tlsToHttpbin`, etc.) collapse to a single `tlsHarnessValidPassesWithInsecure`. Mark the public-host originals `@Ignore` once the harness coverage is fully migrated.
+- [ ] **`SniStrictHostsTest` migration.** The `tls` container's `valid` block already serves both `valid.test` and `localhost` as `server_name` aliases; for SNI strictness coverage we need separate `server_name`-only vhosts (no `default_server` fallback) on port 443. Add when `SniStrictHostsTest` is moved to `commonTest`.
+- [ ] **TLS 1.3-only scenario** (`tlsFirstReadReturnsData`) — needs a dedicated nginx block with `ssl_protocols TLSv1.3` on a sixth port (`TLS_TLS13_PORT=14493`, currently reserved/commented out in `harness.env`).
+- [ ] **JS Node TLS path coverage.** Tests run on JVM and `linuxX64` in Phase 2; the Node TLS implementation (`jsMain`) should be covered too — same cert matrix, same conformance suite. Add `jsNodeTest` to the harnessUp/Down wiring.
+
 ## Phase-1 harness skeleton follow-ups (2026-05-22)
 
 Surfaced while building `test-harness/` + the `generateHarnessConfig` wiring.

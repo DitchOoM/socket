@@ -786,6 +786,11 @@ val generateHarnessConfig by tasks.registering {
                 append("    const val host: String = \"${req("HARNESS_HOST")}\"\n")
                 append("    const val echoPort: Int = ${req("ECHO_PORT")}\n")
                 append("    const val httpPort: Int = ${req("HTTP_PORT")}\n")
+                append("    const val tlsValidPort: Int = ${req("TLS_VALID_PORT")}\n")
+                append("    const val tlsSelfSignedPort: Int = ${req("TLS_SELF_SIGNED_PORT")}\n")
+                append("    const val tlsExpiredPort: Int = ${req("TLS_EXPIRED_PORT")}\n")
+                append("    const val tlsWrongHostPort: Int = ${req("TLS_WRONG_HOST_PORT")}\n")
+                append("    const val tlsUntrustedPort: Int = ${req("TLS_UNTRUSTED_PORT")}\n")
                 append("}\n")
             },
         )
@@ -834,9 +839,46 @@ fun runHarnessCmd(args: List<String>): Int {
     }
 }
 
+// Idempotent cert-matrix generation (TESTING_STRATEGY.md §2b). The script writes
+// to test-harness/tls/certs/, which is gitignored. Runs once; subsequent calls
+// short-circuit on the `.generated` marker file. Wired before `harnessUp` so
+// `docker compose up` sees the cert files on the mounted volume.
+val generateHarnessCerts by tasks.registering {
+    group = "verification"
+    description = "Generate the harness TLS cert matrix (./test-harness/tls/gen-certs.sh)."
+    val script = harnessDir.file("tls/gen-certs.sh")
+    val marker = harnessDir.file("tls/certs/.generated")
+    inputs.file(script)
+    outputs.file(marker)
+    doLast {
+        if (org.gradle.internal.os.OperatingSystem
+                .current()
+                .isWindows
+        ) {
+            logger.lifecycle("harness: Windows host — skipping cert generation (need bash + openssl)")
+            return@doLast
+        }
+        try {
+            val proc =
+                ProcessBuilder("bash", script.asFile.absolutePath)
+                    .directory(harnessDir.asFile)
+                    .redirectErrorStream(true)
+                    .start()
+            proc.inputStream.bufferedReader().forEachLine { logger.lifecycle("harness: $it") }
+            val rc = proc.waitFor()
+            if (rc != 0) {
+                logger.lifecycle("harness: gen-certs.sh returned $rc — TLS tests will skip via isHarnessAvailable()")
+            }
+        } catch (e: Exception) {
+            logger.lifecycle("harness: cert generation skipped — ${e.message}")
+        }
+    }
+}
+
 val harnessUp by tasks.registering {
     group = "verification"
     description = "Start the local test harness (docker compose up --wait). No-op if docker unavailable."
+    dependsOn(generateHarnessCerts)
     doLast {
         val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait"))
         if (rc != 0) {
