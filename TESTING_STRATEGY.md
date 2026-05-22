@@ -471,12 +471,12 @@ No container fixes a wall-clock assertion. The principle: **assert observable st
 
 ## 6. Migration path — phased, suite stays green throughout
 
-**Phase 0 — stop the bleeding (no harness, ~1 day).** Pure assertion fixes, mergeable immediately:
-- Rewrite all `elapsed < Nms` assertions per §5 (watchdog + state). 
-- Convert `checkPort()` to poll-with-timeout.
-- Fix `coroutineCancellationCleansUpSocket` delay values.
-- Fix the `tlsWithSni` decode helper to read-then-decode.
-- Result: the timing/CLOSE_WAIT/decode flake classes are gone before the harness exists.
+**Phase 0 — stop the bleeding (no harness, ~1 day). ✅ DONE — commit `5421d42`.** Pure assertion fixes, mergeable immediately:
+- ✅ Rewrote all `elapsed < Nms` assertions per §5 (watchdog + state).
+- ✅ Converted `checkPort()` to poll-with-timeout.
+- ✅ Fixed `coroutineCancellationCleansUpSocket` delay values.
+- ✅ Fixed the `tlsWithSni` decode (and `SniStrictHostsTest`, found failing during verification — same UTF-8 straddle) to check the ASCII status line from raw bytes.
+- Result: the timing/CLOSE_WAIT/decode flake classes are gone before the harness exists. Verified `jvmTest` 224 green, `linuxX64Test` green. Note: `tlsWithSni`/`SniStrictHostsTest` still reach the public internet — that dependency is removed in Phase 2; the broader public-host TLS tests share the latent decode fragility until then.
 
 **Phase 1 — harness skeleton.** Build `test-harness/` with `echo` + `http` containers only, `docker-compose.yml`, healthchecks, `harness.env`, the `generateHarnessConfig` Gradle task, the single `expect fun harnessHost()`. Add `harnessUp`/`harnessDown` task wiring for `jvmTest` + `linuxX64Test`. Migrate the *plain HTTP* tests first (`httpRawSocket*`, `NetworkIntegrationTests.tcp_*`) to `Scenario.Http`. Keep the old public-host tests **alongside** behind an `@Ignore`-able flag so the suite never goes red. Validate on JVM + Linux.
 
