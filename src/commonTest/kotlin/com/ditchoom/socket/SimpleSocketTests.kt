@@ -279,16 +279,18 @@ Connection: close
         // TCP teardown is asynchronous: after close() a socket can sit briefly in
         // CLOSE_WAIT before the kernel reaps it. Poll until it drains instead of
         // asserting once — a socket that drains quickly is normal, one that never
-        // drains is a real leak and trips the watchdog below.
+        // drains is a real leak and trips the watchdog below. 10 s is generous
+        // for WSL2-under-load (Phase-2 harness compose + concurrent tests can
+        // push reap latency past 5 s); a real leak hangs indefinitely either way.
         try {
-            withTimeout(5.seconds) {
+            withTimeout(10.seconds) {
                 while (readStats(port, "CLOSE_WAIT").isNotEmpty()) {
                     delay(50)
                 }
             }
         } catch (_: TimeoutCancellationException) {
             val stats = readStats(port, "CLOSE_WAIT")
-            fail("Socket still in CLOSE_WAIT after 5s (count=${stats.count()}): $stats")
+            fail("Socket still in CLOSE_WAIT after 10s (count=${stats.count()}): $stats")
         }
     }
 }

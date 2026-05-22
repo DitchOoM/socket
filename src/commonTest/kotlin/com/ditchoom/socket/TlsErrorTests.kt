@@ -7,6 +7,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.WriteBuffer
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -346,6 +347,9 @@ class TlsErrorTests {
 
     // ==================== Certificate Validation Tests (badssl.com) ====================
 
+    // Replaced by TlsConformanceTests.tlsHarnessExpiredFailsWithDefault — same intent,
+    // deterministic against the local harness cert matrix instead of badssl.com.
+    @Ignore
     @Test
     fun tlsExpiredCertificateShouldFail() =
         runTestNoTimeSkipping {
@@ -376,6 +380,8 @@ class TlsErrorTests {
             }
         }
 
+    // Replaced by TlsConformanceTests.tlsHarnessWrongHostFailsWithDefault.
+    @Ignore
     @Test
     fun tlsWrongHostShouldFail() =
         runTestNoTimeSkipping {
@@ -406,6 +412,8 @@ class TlsErrorTests {
             }
         }
 
+    // Replaced by TlsConformanceTests.tlsHarnessSelfSignedFailsWithDefault.
+    @Ignore
     @Test
     fun tlsSelfSignedShouldFail() =
         runTestNoTimeSkipping {
@@ -438,6 +446,8 @@ class TlsErrorTests {
 
     // ==================== TlsConfig Tests ====================
 
+    // Replaced by TlsConformanceTests.tlsHarnessSelfSignedPassesWithInsecure.
+    @Ignore
     @Test
     fun tlsInsecureModeAllowsSelfSigned() =
         runTestNoTimeSkipping {
@@ -462,6 +472,8 @@ class TlsErrorTests {
             }
         }
 
+    // Replaced by TlsConformanceTests.tlsHarnessExpiredPassesWithInsecure.
+    @Ignore
     @Test
     fun tlsInsecureModeAllowsExpired() =
         runTestNoTimeSkipping {
@@ -485,6 +497,9 @@ class TlsErrorTests {
             }
         }
 
+    // Same intent as tlsSelfSignedShouldFail — both replaced by
+    // TlsConformanceTests.tlsHarnessSelfSignedFailsWithDefault.
+    @Ignore
     @Test
     fun tlsDefaultOptionsRejectSelfSigned() =
         runTestNoTimeSkipping {

@@ -1,5 +1,7 @@
 package com.ditchoom.socket.harness
 
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.toReadBuffer
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.SSLSocketException
 import com.ditchoom.socket.SocketOptions
@@ -9,6 +11,7 @@ import com.ditchoom.socket.harnessHost
 import com.ditchoom.socket.isHarnessAvailable
 import com.ditchoom.socket.runTestNoTimeSkipping
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -54,6 +57,37 @@ class TlsConformanceTests {
             ) { socket ->
                 assertTrue(socket.isOpen(), "TLS handshake against harness-valid should succeed")
             }
+        }
+
+    /**
+     * Full TLS request/response cycle against the valid cert. Replaces the
+     * legacy `tlsTo{ExampleDotCom,Nginx,Httpbin,Google}` family — same intent
+     * ("did TLS write+read end-to-end against a server with a real cert?"),
+     * deterministic execution.
+     */
+    @Test
+    fun tlsHarnessValidGetReturnsHttp() =
+        runTestNoTimeSkipping {
+            if (!isHarnessAvailable()) return@runTestNoTimeSkipping
+            val prefix =
+                ClientSocket.connect(
+                    port = HarnessConfig.tlsValidPort,
+                    hostname = harnessHost(),
+                    socketOptions = SocketOptions.tlsInsecure(),
+                    timeout = 5.seconds,
+                ) { socket ->
+                    val request =
+                        "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n"
+                            .toReadBuffer(Charset.UTF8)
+                    socket.write(request, 2.seconds)
+                    val firstChunk = socket.read(5.seconds)
+                    buildString {
+                        repeat(minOf(5, firstChunk.remaining())) {
+                            append(firstChunk.readByte().toInt().toChar())
+                        }
+                    }
+                }
+            assertEquals("HTTP/", prefix, "valid-cert TLS GET must return an HTTP response")
         }
 
     // ── self-signed ───────────────────────────────────────────────────────────
