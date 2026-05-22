@@ -155,8 +155,9 @@ class ResourceCleanupTests {
                     serverFlow.collect { client ->
                         serverClientRef = client
                         clientConnected.unlock()
-                        // Don't send anything - wait for cancel
-                        delay(60000)
+                        // Don't send anything - wait for cancel. Kept well under the
+                        // 30s runTestNoTimeSkipping budget so the watchdog can't fire.
+                        delay(5.seconds)
                     }
                 }
 
@@ -168,8 +169,9 @@ class ResourceCleanupTests {
                     client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
                     clientConnected.lockWithTimeout()
 
-                    // This should block and be cancelled
-                    client.read(60.seconds)
+                    // This should block and be cancelled (5s keeps it inside the
+                    // 30s test budget; the read is cancelled long before it fires).
+                    client.read(5.seconds)
                 }
 
             // Wait for connection

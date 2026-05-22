@@ -32,10 +32,19 @@ class SniStrictHostsTest {
                 ) { socket ->
                     assertTrue(socket.isOpen(), "TLS handshake should succeed against $host")
                     socket.writeString("GET / HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n")
-                    val response = socket.readString(timeout = 10.seconds)
+                    // Check the status line from raw bytes. The HTTP status line is
+                    // ASCII, but decoding the full (UTF-8) body as a string is fragile
+                    // when a multi-byte char straddles a TCP read boundary.
+                    val firstChunk = socket.read(10.seconds)
+                    val statusPrefix =
+                        buildString {
+                            repeat(minOf(5, firstChunk.remaining())) {
+                                append(firstChunk.readByte().toInt().toChar())
+                            }
+                        }
                     assertTrue(
-                        response.contains("HTTP/"),
-                        "Expected HTTP response from $host; got: ${response.take(80)}",
+                        statusPrefix == "HTTP/",
+                        "Expected HTTP response from $host; got status prefix: '$statusPrefix'",
                     )
                 }
             }

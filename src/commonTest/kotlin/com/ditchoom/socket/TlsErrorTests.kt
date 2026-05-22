@@ -122,8 +122,20 @@ class TlsErrorTests {
                 ) { socket ->
                     assertTrue(socket.isOpen(), "Socket should be open with SNI")
                     socket.writeString("GET / HTTP/1.1\r\nHost: www.cloudflare.com\r\nConnection: close\r\n\r\n")
-                    val response = socket.readString(timeout = 5.seconds)
-                    assertTrue(response.contains("HTTP/"), "Should receive valid HTTP response with SNI")
+                    // Check the status line from raw bytes. The HTTP status line is
+                    // ASCII, but decoding the full (UTF-8) body as a string is fragile
+                    // when a multi-byte char straddles a TCP read boundary.
+                    val firstChunk = socket.read(5.seconds)
+                    val statusPrefix =
+                        buildString {
+                            repeat(minOf(5, firstChunk.remaining())) {
+                                append(firstChunk.readByte().toInt().toChar())
+                            }
+                        }
+                    assertTrue(
+                        statusPrefix == "HTTP/",
+                        "Should receive valid HTTP response with SNI, got prefix: '$statusPrefix'",
+                    )
                 }
             } catch (e: UnsupportedOperationException) {
                 // Skip on platforms that don't support TLS (browser)

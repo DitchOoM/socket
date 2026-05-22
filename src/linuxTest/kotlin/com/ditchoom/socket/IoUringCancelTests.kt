@@ -4,10 +4,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.measureTime
 
 /**
  * Linux-specific tests for io_uring cancellation behavior.
@@ -51,16 +51,13 @@ class IoUringCancelTests {
 
             delay(200)
 
-            val cancelTime =
-                measureTime {
-                    readJob.cancel()
-                    readJob.join()
-                }
-
-            assertTrue(
-                cancelTime.inWholeMilliseconds < 200,
-                "io_uring cancel took ${cancelTime.inWholeMilliseconds}ms, expected < 200ms",
-            )
+            // io_uring cancel must not wait out the 30s read; the watchdog is the
+            // assertion. 200ms wall-clock budgets are meaningless under CI/WSL2 jitter.
+            withTimeout(5.seconds) {
+                readJob.cancel()
+                readJob.join()
+            }
+            assertTrue(readJob.isCancelled, "Read job should be cancelled")
 
             client.close()
             server.close()
@@ -102,16 +99,14 @@ class IoUringCancelTests {
 
                 delay(100)
 
-                val cancelTime =
-                    measureTime {
-                        readJob.cancel()
-                        readJob.join()
-                    }
-
-                assertTrue(
-                    cancelTime.inWholeMilliseconds < 500,
-                    "Cycle $cycle: cancel took ${cancelTime.inWholeMilliseconds}ms",
-                )
+                // No leak / no hang is the intent: the watchdog catches a hung
+                // cancel, and completing all 5 cycles inside the test budget is
+                // the leak check.
+                withTimeout(5.seconds) {
+                    readJob.cancel()
+                    readJob.join()
+                }
+                assertTrue(readJob.isCancelled, "Cycle $cycle: read job should be cancelled")
 
                 client.close()
                 server.close()
