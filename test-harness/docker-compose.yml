@@ -1,0 +1,49 @@
+name: socket-test-harness
+
+# Phase 1 stack: plain TCP echo + HTTP/1.1.
+# Each service is bound to 127.0.0.1 only — never exposed beyond localhost.
+# Ports are pinned (no dynamic mapping) so JVM/K/N see identical numbers.
+
+networks:
+  socketnet:
+    driver: bridge
+
+services:
+  # L0 — plain TCP echo (socat EXEC:cat). Used by clientEcho/serverEcho-style
+  # tests and as the cheapest harness-availability probe.
+  echo:
+    build: ./echo
+    networks: [socketnet]
+    ports:
+      - "127.0.0.1:14000:14000"
+    healthcheck:
+      # 127.0.0.1, not "localhost": docker's embedded DNS returns IPv6 (::1)
+      # first; socat would try ::1:14000 and get "connection refused" because
+      # socat-LISTEN binds IPv4 only by default.
+      test: ["CMD-SHELL", "echo PING | socat -T 2 - TCP:127.0.0.1:14000 | grep -q PING"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped
+
+  # L0 — HTTP/1.1. Static content under ./http/www; per-route returns under
+  # ./http/conf.d/default.conf. CORS-permissive so browser/wasmJs WebSocket-
+  # shape tests can reach it cross-origin.
+  http:
+    image: nginx:1.27-alpine
+    networks: [socketnet]
+    volumes:
+      - ./http/conf.d:/etc/nginx/conf.d:ro
+      - ./http/www:/usr/share/nginx/html:ro
+    ports:
+      - "127.0.0.1:14080:80"
+    healthcheck:
+      # 127.0.0.1, not "localhost": see the echo service above — nginx's
+      # default `listen 80;` is IPv4 only, and "localhost" resolves to ::1.
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/get | grep -q ok"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped

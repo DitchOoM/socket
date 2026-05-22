@@ -1,9 +1,11 @@
 package com.ditchoom.socket
 
+import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -48,5 +50,46 @@ internal suspend fun Mutex.lockWithTimeout(
 ) {
     withTimeout(timeout) {
         lock(owner)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Harness reachability (see test-harness/ and TESTING_STRATEGY.md §3a)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Host the local test harness is reachable on for the current platform.
+ *
+ * JVM / K-Native / Apple: returns `HarnessConfig.host` (typically `127.0.0.1`)
+ * — harness and test share the runner.
+ *
+ * Browser (JS/wasmJs): same default. Browser targets do not exercise the
+ * socket harness today (no raw-socket surface), so this value is consumed
+ * only by potential future WebSocket-shape tests; switch the browser actual
+ * to `window.location.hostname` if that ever changes.
+ */
+internal expect fun harnessHost(): String
+
+/**
+ * `true` when the harness TCP echo endpoint is reachable from this process.
+ *
+ * Probes `HarnessConfig.echoPort` on [harnessHost] with a 500 ms budget.
+ * Used by harness-backed tests so the suite stays green when the local
+ * stack isn't up (e.g. local dev without Docker, or a CI runner where
+ * `harnessUp` no-op'd because the host isn't supported).
+ *
+ * Returns `false` immediately on browser/wasmJs (`WEBSOCKETS_ONLY`).
+ */
+internal suspend fun isHarnessAvailable(): Boolean {
+    if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return false
+    return try {
+        ClientSocket.connect(
+            port = HarnessConfig.echoPort,
+            hostname = harnessHost(),
+            timeout = 500.milliseconds,
+        ) { /* immediate close — we just needed to know the listener is alive */ }
+        true
+    } catch (_: Throwable) {
+        false
     }
 }

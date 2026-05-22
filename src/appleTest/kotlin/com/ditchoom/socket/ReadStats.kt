@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.NetworkCapabilities.FULL_SOCKET_ACCESS
 import com.ditchoom.socket.NetworkCapabilities.WEBSOCKETS_ONLY
+import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -59,3 +60,5 @@ actual fun isRunningInSimulator(): Boolean {
     val env = NSProcessInfo.processInfo.environment
     return env["SIMULATOR_DEVICE_NAME"] != null || env["SIMULATOR_UDID"] != null
 }
+
+internal actual fun harnessHost(): String = HarnessConfig.host

@@ -734,3 +734,129 @@ tasks.register<Copy>("copyDokkaToDocusaurus") {
     from(layout.buildDirectory.dir("dokka/html"))
     into(layout.projectDirectory.dir("docs/static/api"))
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Test harness (local Docker Compose). Phase 1 — echo + http only.
+// Design: TESTING_STRATEGY.md  ·  Stack: test-harness/README.md
+// ──────────────────────────────────────────────────────────────────────
+
+val harnessDir = layout.projectDirectory.dir("test-harness")
+val harnessEnvFile = harnessDir.file("harness.env")
+val harnessGeneratedDir = layout.buildDirectory.dir("generated/harness/commonTest")
+
+// Reads test-harness/harness.env and writes a generated Kotlin object
+// onto commonTest's source path. One object, zero expect/actual — visible
+// identically on JVM, K/N, Apple, JS, and wasmJs (none of which need to
+// hand-roll a system-property reader). Edit harness.env, run this task,
+// every target sees the new value.
+val generateHarnessConfig by tasks.registering {
+    group = "verification"
+    description = "Generate HarnessConfig.kt from test-harness/harness.env"
+    val envFile = harnessEnvFile
+    val outDir = harnessGeneratedDir
+    inputs.file(envFile)
+    outputs.dir(outDir)
+    doLast {
+        val env =
+            envFile.asFile
+                .readLines()
+                .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+                .associate { line ->
+                    val i = line.indexOf('=')
+                    require(i > 0) { "Malformed harness.env line: '$line'" }
+                    line.substring(0, i).trim() to line.substring(i + 1).trim()
+                }
+
+        fun req(key: String): String = env[key] ?: error("Missing $key in $envFile")
+        val pkgDir = outDir.get().asFile.resolve("com/ditchoom/socket/harness")
+        pkgDir.mkdirs()
+        pkgDir.resolve("HarnessConfig.kt").writeText(
+            buildString {
+                append("// Generated from test-harness/harness.env — DO NOT EDIT.\n")
+                // Suppress ktlint's SCREAMING_SNAKE_CASE rule: we deliberately use camelCase
+                // for object members so call sites read like normal properties.
+                append("@file:Suppress(\"ktlint:standard:property-naming\")\n\n")
+                append("package com.ditchoom.socket.harness\n\n")
+                append("/**\n")
+                append(" * Endpoints for the local docker-compose test harness.\n")
+                append(" * Single source of truth: edit test-harness/harness.env and re-run\n")
+                append(" * `:generateHarnessConfig` (auto-fired by every test task).\n")
+                append(" */\n")
+                append("internal object HarnessConfig {\n")
+                append("    const val host: String = \"${req("HARNESS_HOST")}\"\n")
+                append("    const val echoPort: Int = ${req("ECHO_PORT")}\n")
+                append("    const val httpPort: Int = ${req("HTTP_PORT")}\n")
+                append("}\n")
+            },
+        )
+    }
+}
+
+kotlin.sourceSets.named("commonTest") {
+    kotlin.srcDir(generateHarnessConfig.map { harnessGeneratedDir })
+}
+
+tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
+    dependsOn(generateHarnessConfig)
+}
+
+// ─── harnessUp / harnessDown ──────────────────────────────────────────
+// Both tolerant: missing Docker, Windows host, or HARNESS_DISABLED=true
+// → silent no-op. Tests then short-circuit at runtime via
+// isHarnessAvailable() and the suite stays green.
+
+fun runHarnessCmd(args: List<String>): Int {
+    if (System.getenv("HARNESS_DISABLED")?.lowercase() == "true") {
+        logger.lifecycle("harness: HARNESS_DISABLED=true — skipping `${args.joinToString(" ")}`")
+        return 0
+    }
+    if (org.gradle.internal.os.OperatingSystem
+            .current()
+            .isWindows
+    ) {
+        logger.lifecycle(
+            "harness: Windows host — skipping `${args.joinToString(" ")}`; " +
+                "run on Linux/macOS (or WSL) for harness coverage",
+        )
+        return 0
+    }
+    return try {
+        val proc =
+            ProcessBuilder(args)
+                .directory(harnessDir.asFile)
+                .redirectErrorStream(true)
+                .start()
+        proc.inputStream.bufferedReader().forEachLine { logger.lifecycle("harness: $it") }
+        proc.waitFor()
+    } catch (e: Exception) {
+        logger.lifecycle("harness: skipped — ${e.message}")
+        0
+    }
+}
+
+val harnessUp by tasks.registering {
+    group = "verification"
+    description = "Start the local test harness (docker compose up --wait). No-op if docker unavailable."
+    doLast {
+        val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait"))
+        if (rc != 0) {
+            logger.lifecycle(
+                "harness: `docker compose up` returned $rc — tests will skip harness scenarios " +
+                    "via isHarnessAvailable()",
+            )
+        }
+    }
+}
+
+val harnessDown by tasks.registering {
+    group = "verification"
+    description = "Stop the local test harness (docker compose down -v). No-op if docker unavailable."
+    doLast { runHarnessCmd(listOf("docker", "compose", "down", "-v")) }
+}
+
+listOf("jvmTest", "linuxX64Test").forEach { name ->
+    tasks.matching { it.name == name }.configureEach {
+        dependsOn(harnessUp)
+        finalizedBy(harnessDown)
+    }
+}
