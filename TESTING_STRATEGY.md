@@ -314,7 +314,9 @@ On macOS, Docker Desktop runs the engine in a Linux VM. Containers are reachable
 
 CA trust on Apple: Network.framework validates against the **system keychain**. For the *valid* TLS path to pass on Apple, the harness root CA must be added to the login keychain as trusted (`security add-trusted-cert`). This is a CI step (see §3d). For tests that use `SocketOptions.tlsInsecure()` no trust injection is needed.
 
-Apple targets **only build on macOS CI** — the harness must therefore come up on the macOS runner too. Docker Desktop is preinstalled on GitHub `macos-*` runners *but is not started by default and is slow*; Colima is the lighter alternative. Recommendation: use **Colima** on macOS CI (`colima start`, then plain `docker compose up`).
+Apple targets **only build on macOS CI** — the harness must therefore come up on the macOS runner too. Docker Desktop is preinstalled on GitHub `macos-*` runners *but is not started by default and is slow*; Colima is the lighter alternative. Recommendation: use **Colima** on macOS CI (`colima start`, then plain `docker compose up`). GitHub `macos-latest` is itself Apple Silicon (arm64), so Colima runs an arm64 Linux VM and the harness images build/run arm64-native — no QEMU.
+
+**Apple `container` — considered, not adopted.** Apple's native containerization tool runs Linux containers in per-container lightweight VMs and is fast on Apple Silicon; it is attractive for *local development*. It is **not** the right choice for the harness *orchestrator*: (1) it is `container run`–oriented — multi-service `docker compose` orchestration, and especially container-to-container networking (our toxiproxy-fronts-backends topology), is immature; (2) running `container` on macOS while Linux CI runs Docker Compose **forks the harness runtime** — different networking semantics, different bugs — defeating the goal of a bit-identical stack everywhere; (3) it is unproven on GitHub `macos-*` runners, where Colima has a known `brew` + `colima start` path. The Apple-Silicon speed-up `container` would buy is instead obtained by building the images arm64-native under Colima (§3f). Revisit `container` later strictly as a local-dev convenience, never as a second CI orchestrator.
 
 ### 3d. CI: bringing the stack up/down
 
@@ -347,6 +349,40 @@ listOf("linuxX64Test", "jsNodeTest", "macosArm64Test", "iosSimulatorArm64Test").
 `--wait` (Compose v2.17+) blocks until every service's healthcheck passes — that eliminates the "container not ready yet" flake class entirely. Each service gets a `healthcheck:` (nginx: `curl -f localhost`; echo: a TCP probe; toxiproxy: `GET /version`).
 
 CI gating: the harness is heavy. Keep the current split — fast PR check (`review.yaml`, **no harness**, runs only the deterministic in-process + pure-logic tests) and a harness-backed job. Convert `integration.yaml` (currently label-gated, hits the real internet) into the **harness** job: it brings the stack up and runs the conformance suite against `127.0.0.1`, so it can run on *every* PR, not just labeled ones, because it no longer depends on flaky public hosts.
+
+### 3e. arm64 Linux — an existing target that bypasses Gradle
+
+`linuxArm64` is a real target (`build.gradle.kts:504`; `src/linuxMain` is shared with `linuxX64`) and CI already runs it: `build-linux.yaml`'s `test-arm64` job on an `ubuntu-24.04-arm` runner. That job is structured unlike every other test task — it does **not** invoke Gradle. The x64 `build` job cross-compiles the K/N arm64 test binary and uploads it as an artifact; the arm64 runner downloads and executes the raw `.kexe` directly (`./build/bin/linuxArm64/debugTest/test.kexe`).
+
+Consequence: the Gradle `dependsOn(harnessUp)` / `finalizedBy(harnessDown)` wiring from §3d **cannot** reach this job. The harness must be brought up at the workflow-step level instead:
+
+```yaml
+- name: Start harness
+  working-directory: test-harness
+  run: docker compose up -d --wait
+- name: Run ARM64 tests (base module)
+  run: ./build/bin/linuxArm64/debugTest/test.kexe
+- name: Run ARM64 tests (socket-quic)
+  run: ./socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+- name: Stop harness
+  if: always()
+  working-directory: test-harness
+  run: docker compose down -v
+```
+
+This works cleanly because **`HarnessConfig` is compile-time** — it is generated from `harness.env` and compiled *into* the binary on the x64 build host. With `harness.env` static (`127.0.0.1` + the pinned ports §3a/§3d already mandate), the cross-compiled arm64 binary carries the correct endpoints; no runtime lookup. `harnessHost()` → `127.0.0.1` is correct because the harness and the binary share the arm64 runner. Docker is available on `ubuntu-24.04-arm` runners, and the images build arm64-native there (§3f).
+
+### 3f. No emulation — an arch-matched runner matrix
+
+Hard rule for a *determinism* harness: **never run the containers under QEMU emulation.** Emulation adds unpredictable scheduling latency — reintroducing exactly the timing jitter the harness exists to remove. The harness CI therefore runs as an arch-matched matrix:
+
+| Test tasks | Runner | Harness arch |
+|---|---|---|
+| JVM, Android, JS, `linuxX64Test` | `ubuntu-24.04` | `linux/amd64` native |
+| `linuxArm64Test` (raw `.kexe`, §3e) | `ubuntu-24.04-arm` | `linux/arm64` native |
+| `macos*Test`, `ios*Test` | `macos-latest` (arm64) | `linux/arm64` under Colima |
+
+Because §7.6 chose "build images per run," each runner builds the harness for its *own* architecture — so **no `buildx` cross-builds and no multi-arch registry are needed**. The only requirement on the Dockerfiles: pin base images that publish both `linux/amd64` and `linux/arm64` (nginx, toxiproxy, alpine, golang all do).
 
 ---
 
@@ -466,3 +502,5 @@ Settled with the user (2026-05-22):
 4. **Browser scope — confirmed skip.** Browser/wasmJs targets do not exercise the socket harness; the existing `WEBSOCKETS_ONLY` skip stands.
 5. **`integration.yaml` — fold into `review.yaml`.** The harness runs as an always-on job on every PR; the label-gated public-internet job is removed.
 6. **Harness location — in-repo `test-harness/`.** Committed into this repo for the simplest `docker compose` task wiring; CI builds images per run.
+7. **Apple `container` — not adopted; Colima stands.** Apple's native containerization tool is fast on Apple Silicon but immature for multi-service compose + container-to-container networking, and adopting it would fork the harness runtime from Linux CI. macOS CI uses Colima; the Apple-Silicon speed-up comes from arm64-native images, not a second runtime. See §3c.
+8. **arm64 — first-class, no emulation.** `linuxArm64` is an existing target with an existing `ubuntu-24.04-arm` CI job that runs the raw `.kexe` (not Gradle). The harness CI runs as an arch-matched matrix (`ubuntu-24.04` / `ubuntu-24.04-arm` / `macos-latest`); each runner builds the harness for its own arch — no QEMU, no `buildx`. The arm64 job brings the stack up/down at the workflow-step level since it bypasses Gradle. See §3e, §3f.
