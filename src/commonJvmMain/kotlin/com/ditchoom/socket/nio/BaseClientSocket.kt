@@ -9,10 +9,11 @@ import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
 import com.ditchoom.socket.nio.util.remoteAddressOrNull
 import com.ditchoom.socket.nio.util.write
+import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.IOException
 import java.net.InetSocketAddress
-import java.nio.channels.ClosedChannelException
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import kotlin.time.Duration
@@ -48,8 +49,11 @@ abstract class BaseClientSocket(
         val bytesRead =
             try {
                 readMutex.withLock { socket.read(buffer.byteBuffer, selector, timeout) }
-            } catch (e: ClosedChannelException) {
-                throw SocketClosedException.General("Socket is closed.", e)
+            } catch (e: IOException) {
+                // Route every platform IOException (ClosedChannelException, Connection reset,
+                // etc.) through the single mapper. Already-wrapped SocketException is passed
+                // through unchanged. CancellationException is not an IOException → propagates.
+                throw wrapJvmException(e)
             }
         if (bytesRead < 0) {
             throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
@@ -82,8 +86,12 @@ abstract class BaseClientSocket(
                     totalWritten += bytesWritten
                 }
             }
-        } catch (e: ClosedChannelException) {
-            throw SocketClosedException.General("Socket is closed.", e)
+        } catch (e: IOException) {
+            // Route every platform IOException (Broken pipe, Connection reset,
+            // ClosedChannelException, etc.) through the single mapper so callers see
+            // SocketClosedException.BrokenPipe / .ConnectionReset / .General — not a
+            // raw IOException. CancellationException is not an IOException → propagates.
+            throw wrapJvmException(e)
         }
         return totalWritten
     }

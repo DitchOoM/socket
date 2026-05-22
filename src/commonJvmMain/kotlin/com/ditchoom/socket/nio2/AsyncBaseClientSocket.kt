@@ -10,11 +10,12 @@ import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
 import com.ditchoom.socket.nio2.util.assignedPort
+import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.IOException
 import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
-import java.nio.channels.ClosedChannelException
 import kotlin.time.Duration
 
 abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocketChannel>() {
@@ -47,8 +48,11 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
                 readMutex.withLock {
                     socket.aRead(buffer.byteBuffer, timeout)
                 }
-            } catch (e: ClosedChannelException) {
-                throw SocketClosedException.General("Socket is closed.", e)
+            } catch (e: IOException) {
+                // Route every platform IOException through the single mapper. The async
+                // failed() callback also wraps; this catches synchronous throws from
+                // channel setup and passes already-wrapped SocketException through.
+                throw wrapJvmException(e)
             }
         if (bytesRead < 0) {
             throw SocketClosedException.EndOfStream("Received $bytesRead from server indicating a socket close.")
@@ -96,8 +100,11 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
                     totalWritten += bytesWritten
                 }
             }
-        } catch (e: ClosedChannelException) {
-            throw SocketClosedException.General("Socket is closed.", e)
+        } catch (e: IOException) {
+            // Route every platform IOException (Broken pipe, Connection reset, etc.)
+            // through the single mapper. The async failed() callback also wraps; this
+            // catches synchronous throws and passes already-wrapped SocketException through.
+            throw wrapJvmException(e)
         }
         return totalWritten
     }
