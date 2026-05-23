@@ -36,17 +36,13 @@ class TlsValidPathConformanceTests {
     // ── JSON GET — collapses the legacy multi-host tlsTo{ExampleDotCom,Nginx,Httpbin,…} family.
 
     /**
-     * `GET /get` returns a deterministic small HTTP/1.1 200 response over TLS.
-     * Replaces the legacy `tlsJsonApi` (httpbin.org) test plus the
-     * `tlsTo{ExampleDotCom,Nginx,Httpbin,WithValidCertificate}` family — all
-     * five had the same intent ("does TLS write+read complete end-to-end against
-     * a server with a real cert?"), so they collapse to one harness assertion.
-     *
-     * Note: the TLS vhost (test-harness/tls/conf.d/default.conf) is a self-
-     * contained nginx that only defines `/get` and `/` — distinct from the http
-     * vhost. So we assert the status line + the `ok\n` body the route documents.
-     * If a later phase wants a real JSON content-type assertion, the TLS conf
-     * needs a `/json` route added (orchestrator note in the migration summary).
+     * `GET /json` returns a deterministic `application/json` HTTP/1.1 200
+     * response over TLS. Replaces the legacy `tlsJsonApi` (httpbin.org) test
+     * plus the `tlsTo{ExampleDotCom,Nginx,Httpbin,WithValidCertificate}` family
+     * — all five had the same intent ("does TLS write+read complete end-to-end
+     * against a server with a real cert?"), so they collapse to one harness
+     * assertion. Phase 4 added the `/json` route on the TLS vhost (mirroring
+     * the http vhost) so we can assert the typed response without softening.
      */
     @Test
     fun tlsHarnessValidJsonGet() =
@@ -60,7 +56,7 @@ class TlsValidPathConformanceTests {
                     timeout = 5.seconds,
                 ) { socket ->
                     socket.writeString(
-                        "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\n" +
+                        "GET /json HTTP/1.1\r\nHost: ${harnessHost()}\r\n" +
                             "Connection: close\r\nAccept: application/json\r\n\r\n",
                     )
                     socket.readString(timeout = 5.seconds)
@@ -70,8 +66,12 @@ class TlsValidPathConformanceTests {
                 "expected HTTP/1.1 200 OK status line, got: ${response.take(40)}",
             )
             assertTrue(
-                response.contains("ok"),
-                "expected `ok` body marker from /get route, got: ${response.take(160)}",
+                response.contains("Content-Type: application/json", ignoreCase = true),
+                "expected application/json Content-Type header, got: ${response.take(240)}",
+            )
+            assertTrue(
+                response.contains("""{"ok":true}"""),
+                "expected JSON body `{\"ok\":true}` from /json route, got: ${response.take(240)}",
             )
         }
 
@@ -165,10 +165,13 @@ class TlsValidPathConformanceTests {
     /**
      * Multiple sequential reads on a single TLS connection cumulatively drain
      * the response. Exercises TLS session state across reads (key updates,
-     * session tickets, etc.). Migrated from `TlsErrorTests.tlsMultipleSequentialReads`
-     * — the contract under test is "the loop terminates and yields the body",
-     * not absolute size (the TLS vhost serves a small body; see the
-     * `tlsHarnessLargerResponse` doc for the conf.d note).
+     * session tickets, etc.). Migrated from `TlsErrorTests.tlsMultipleSequentialReads`.
+     *
+     * Phase 4 routes this against `/large` (≥ 8 KB body) so multi-read drain
+     * is actually forced — a single-read drain on a small body would pass the
+     * loop trivially. Smallish nginx record sizes split the body across
+     * multiple TLS records, which the socket layer surfaces as multiple
+     * `read()` returns.
      */
     @Test
     fun tlsHarnessMultipleSequentialReads() =
@@ -181,11 +184,11 @@ class TlsValidPathConformanceTests {
                 timeout = 5.seconds,
             ) { socket ->
                 socket.writeString(
-                    "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
+                    "GET /large HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
                 )
                 var totalBytes = 0
                 var readCount = 0
-                while (socket.isOpen() && readCount < 10) {
+                while (socket.isOpen() && readCount < 20) {
                     try {
                         val buf = BufferFactory.Default.allocate(65536) as WriteBuffer
                         val n = socket.read(buf, 5.seconds)
@@ -209,16 +212,21 @@ class TlsValidPathConformanceTests {
      * TLS-1.3 NewSessionTicket consumed silently). Migrated from
      * `TlsErrorTests.tlsFirstReadReturnsData`.
      *
-     * Phase-4 will route this through the TLS-1.3-only port (14493) once that
-     * nginx vhost lands; until then the valid port is sufficient because the
-     * nginx defaults negotiate TLS 1.3 on modern OpenSSL.
+     * Phase 4 routes this through the sixth TLS vhost — `ssl_protocols TLSv1.3`
+     * with no 1.2 fallback (port 14493). This locks the assertion onto a
+     * handshake that *must* emit NewSessionTicket post-handshake, which is
+     * exactly the regression surface: the underlying bug was a TLS-1.3 NST
+     * being surfaced to the caller as an empty `read()` return instead of
+     * silently consumed by the SSLEngine. On the default 443 port the
+     * negotiated protocol can vary with OpenSSL/JSSE policy, so a green run
+     * there doesn't prove TLS-1.3 was actually exercised; here it does.
      */
     @Test
     fun tlsHarnessFirstReadReturnsData() =
         runTestNoTimeSkipping {
             if (!isHarnessAvailable()) return@runTestNoTimeSkipping
             ClientSocket.connect(
-                port = HarnessConfig.tlsValidPort,
+                port = HarnessConfig.tlsTls13Port,
                 hostname = harnessHost(),
                 socketOptions = SocketOptions.tlsInsecure(),
                 timeout = 5.seconds,
@@ -275,16 +283,15 @@ class TlsValidPathConformanceTests {
     // ── Larger response ───────────────────────────────────────────────────────
 
     /**
-     * Multi-read drain over TLS — issues one HTTP GET, then keeps reading until
-     * the server closes the connection, and verifies the body is delivered
-     * intact across however many TCP reads it takes. Migrated from
-     * `TlsErrorTests.tlsLargerResponse` (which leaned on Google's response size).
+     * Multi-read drain over TLS against an ≥ 8 KB body — issues one HTTP GET
+     * against `/large`, keeps reading until the server closes, and verifies
+     * the body is delivered intact across however many TCP/TLS-record reads
+     * it takes. Migrated from `TlsErrorTests.tlsLargerResponse` (which leaned
+     * on Google's response size).
      *
-     * The TLS vhost serves a small body (`ok\n` from `/get`) — see
-     * `test-harness/tls/conf.d/default.conf`. That's enough to prove the
-     * multi-read drain works; absolute byte count is not the contract under
-     * test. If a later phase wants a >1 KB body over TLS, add a `/large` route
-     * to the TLS conf (the http vhost already has one).
+     * Phase 4 added the `/large` route on the TLS vhost (mirroring the http
+     * vhost) — 8256 bytes of deterministic content, so we can pin both
+     * cumulative byte count (≥ 8192) AND byte-exact reassembly.
      */
     @Test
     fun tlsHarnessLargerResponse() =
@@ -297,11 +304,11 @@ class TlsValidPathConformanceTests {
                 timeout = 5.seconds,
             ) { socket ->
                 socket.writeString(
-                    "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
+                    "GET /large HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
                 )
                 val collected = StringBuilder()
                 var readCount = 0
-                while (socket.isOpen() && readCount < 20) {
+                while (socket.isOpen() && readCount < 40) {
                     try {
                         val chunk = socket.read(5.seconds)
                         val remaining = chunk.remaining()
@@ -314,11 +321,33 @@ class TlsValidPathConformanceTests {
                 }
                 val response = collected.toString()
                 assertTrue(response.startsWith("HTTP/1.1 200 OK"), "expected HTTP status line")
+
+                // Drop the headers — chunk-encoded or content-length doesn't matter, we
+                // emitted `Connection: close` so nginx ends the body at FIN. Split on
+                // the header/body delimiter and assert against the body.
+                val splitIdx = response.indexOf("\r\n\r\n")
+                assertTrue(splitIdx > 0, "expected end-of-headers marker, got: ${response.take(160)}")
+                val body = response.substring(splitIdx + 4)
+
+                // Body content: 64 lines of 128 chars each + newlines = 8256 bytes.
+                // First 16 lines cycle through 0..f, then the pattern repeats four times.
                 assertTrue(
-                    response.contains("ok"),
-                    "expected `ok` body to arrive intact across $readCount reads, " +
-                        "got ${response.length} bytes: ${response.take(120)}",
+                    body.length >= 8192,
+                    "expected /large body ≥ 8 KB, got ${body.length} bytes across $readCount reads",
                 )
+                // Byte-exact reassembly check: the first 128 chars should be all '0',
+                // and the body should contain all hex digits 0..f as line prefixes.
+                assertTrue(
+                    body.startsWith("0".repeat(128)),
+                    "expected /large body to start with 128 zeros (line 1), got: ${body.take(40)}",
+                )
+                for (c in "0123456789abcdef") {
+                    assertTrue(
+                        body.contains("$c".repeat(128)),
+                        "expected body to contain a line of 128 '$c' characters " +
+                            "(reassembly check across $readCount reads)",
+                    )
+                }
                 assertTrue(readCount >= 1, "expected at least one successful read")
             }
         }

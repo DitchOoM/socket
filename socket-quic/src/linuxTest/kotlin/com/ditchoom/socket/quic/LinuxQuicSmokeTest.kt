@@ -93,7 +93,10 @@ class LinuxQuicSmokeTest {
             hints.ai_family = AF_INET
             hints.ai_socktype = SOCK_DGRAM
             val resultPtr = alloc<kotlinx.cinterop.CPointerVar<addrinfo>>()
-            val resolveResult = getaddrinfo("cloudflare-quic.com", "443", hints.ptr, resultPtr.ptr)
+            // 127.0.0.1: smoke-tests the getaddrinfo binding without depending on
+            // public DNS. Previously used cloudflare-quic.com; replaced for
+            // Phase 4 (no public-host dependencies in the test suite).
+            val resolveResult = getaddrinfo("127.0.0.1", "443", hints.ptr, resultPtr.ptr)
             assertTrue(resolveResult == 0, "getaddrinfo failed: $resolveResult")
 
             val addrInfo = resultPtr.value!!.pointed
@@ -131,7 +134,11 @@ class LinuxQuicSmokeTest {
             // failure leaves ai_addr / localAddr with garbage sa_family bytes, and quiche_connect
             // then panics inside Rust's `std_addr_from_c` with SIGABRT — indistinguishable from
             // a legitimate crash. See LinuxQuicAddressMarshallingTest for per-helper isolation.
-            val rr = getaddrinfo("cloudflare-quic.com", "443", hints.ptr, resultPtr.ptr)
+            //
+            // Phase 4: target switched from cloudflare-quic.com to 127.0.0.1. The smoke test
+            // only exercises bind/connect/quiche_connect — no packets are ever sent — so the
+            // peer doesn't have to exist, and using loopback removes the public-DNS dependency.
+            val rr = getaddrinfo("127.0.0.1", "443", hints.ptr, resultPtr.ptr)
             assertTrue(rr == 0, "getaddrinfo failed: $rr")
             val addrInfo = resultPtr.value!!.pointed
             val peerFamily =
@@ -171,7 +178,10 @@ class LinuxQuicSmokeTest {
             val conn =
                 scidBytes.usePinned { pinned ->
                     quiche_connect(
-                        "cloudflare-quic.com",
+                        // SNI string — quiche_connect doesn't resolve it. Was
+                        // "cloudflare-quic.com" pre-Phase 4; now matches the harness
+                        // self-signed cert (CN=quic.tech, in socket-quic/testcerts/).
+                        "quic.tech",
                         pinned.addressOf(0).reinterpret(),
                         QUIC_MAX_CONN_ID_LEN.convert(),
                         localAddr.ptr.reinterpret(),

@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -12,7 +13,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Ignore
 import kotlin.test.Test
@@ -24,12 +24,34 @@ import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 class SimpleSocketTests {
+    /**
+     * Connect against the harness `netem-blackhole` endpoint — a listener whose
+     * eth0 has `tc qdisc … netem loss 100%` installed. SYN arrives, SYN-ACK is
+     * dropped, the client's `connect()` blocks until the 1-second budget fires.
+     *
+     * Phase-4 migration off the legacy `10.255.255.1` magic IP: that route
+     * worked on raw Linux (the kernel default-routes the address into the
+     * abyss) but broke on hosts whose default route shunted 10/8 traffic
+     * back to a local interface — the test would either fail-fast with
+     * ECONNREFUSED or time out for the wrong reason. The netem blackhole
+     * gives every platform an identical "SYN accepted, SYN-ACK lost"
+     * topology so the timeout assertion is the only variable under test.
+     *
+     * The host is the *pinned bridge IP* (`HarnessConfig.netemBlackholeHost`),
+     * not `harnessHost()` — docker-proxy on a 127.0.0.1 publish would complete
+     * the client-side accept locally and break the blackhole semantics
+     * (see docker-compose.yml for the rationale).
+     */
     @Test
     fun connectTimeoutWorks() =
-        runTest {
+        runTestNoTimeSkipping {
+            if (!isHarnessAvailable()) return@runTestNoTimeSkipping
             try {
-                // Use non-routable IP address to test connection timeout without external network
-                ClientSocket.connect(80, hostname = "10.255.255.1", timeout = 1.seconds)
+                ClientSocket.connect(
+                    port = HarnessConfig.netemBlackholePort,
+                    hostname = HarnessConfig.netemBlackholeHost,
+                    timeout = 1.seconds,
+                )
                 fail("should not have reached this")
             } catch (_: TimeoutCancellationException) {
             } catch (_: SocketException) {
@@ -53,12 +75,22 @@ class SimpleSocketTests {
             }
         }
 
+    /**
+     * Same harness `netem-blackhole` endpoint as [connectTimeoutWorks] — the
+     * intent here is "a stalled connect() unwinds cleanly when the timeout
+     * trips", complementary to the timeout-existence assertion above.
+     * See [connectTimeoutWorks] for the netem topology + bridge-IP rationale.
+     */
     @Test
     fun closeWorks() =
-        runTest {
+        runTestNoTimeSkipping {
+            if (!isHarnessAvailable()) return@runTestNoTimeSkipping
             try {
-                // Use non-routable IP address to test without external network
-                ClientSocket.connect(80, hostname = "10.255.255.1", timeout = 1.seconds)
+                ClientSocket.connect(
+                    port = HarnessConfig.netemBlackholePort,
+                    hostname = HarnessConfig.netemBlackholeHost,
+                    timeout = 1.seconds,
+                )
                 fail("the connection should timeout, so this line should never hit")
             } catch (t: TimeoutCancellationException) {
                 // expected

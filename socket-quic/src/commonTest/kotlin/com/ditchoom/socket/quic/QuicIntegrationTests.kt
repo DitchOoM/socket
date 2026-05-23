@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -46,6 +47,7 @@ class QuicIntegrationTests {
     }
 
     @Test
+    @Ignore // Replaced by QuicHarnessIntegrationTests.harness_handshake_completesSuccessfully — no more public-host dependency.
     fun handshake_completesSuccessfully() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
@@ -56,6 +58,7 @@ class QuicIntegrationTests {
         }
 
     @Test
+    @Ignore // Replaced by QuicHarnessIntegrationTests.harness_openStream_returnsOpenStream — no more public-host dependency.
     fun openStream_returnsOpenStream() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
@@ -70,6 +73,7 @@ class QuicIntegrationTests {
         }
 
     @Test
+    @Ignore // Replaced by QuicHarnessIntegrationTests.harness_multipleStreams_haveDistinctIds — no more public-host dependency.
     fun multipleStreams_haveDistinctIds() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
@@ -90,6 +94,7 @@ class QuicIntegrationTests {
         }
 
     @Test
+    @Ignore // Replaced by QuicHarnessIntegrationTests.harness_writeToStream_succeeds — no more public-host dependency.
     fun writeToStream_succeeds() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
@@ -107,6 +112,7 @@ class QuicIntegrationTests {
         }
 
     @Test
+    @Ignore // Replaced by QuicHarnessIntegrationTests.harness_writeAndRead_serverResponds — no more public-host dependency.
     fun writeAndRead_serverResponds() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
