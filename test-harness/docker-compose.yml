@@ -7,6 +7,14 @@ name: socket-test-harness
 networks:
   socketnet:
     driver: bridge
+    # Pinned subnet so the netem-blackhole service can be reached at a stable
+    # IPv4 address from the host. docker-proxy on 127.0.0.1 completes the
+    # client's connect handshake locally and would defeat the "SYN never
+    # acknowledged" semantics; connecting to the bridge IP directly skips
+    # docker-proxy and surfaces the real connect-timeout.
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 services:
   # L0 — plain TCP echo (socat EXEC:cat). Used by clientEcho/serverEcho-style
@@ -66,21 +74,79 @@ services:
     volumes:
       - ./tls/conf.d:/etc/nginx/conf.d:ro
       - ./tls/certs:/etc/nginx/certs:ro
+      # Share the http vhost's www dir for `/large` static body. nginx's
+      # `return 200 "..."` directive has a length limit (~4 KB for a single
+      # parameter) which the ≥ 8 KB /large body busts, so we serve the
+      # response from a static file instead.
+      - ./http/www:/usr/share/nginx/html:ro
     ports:
       - "127.0.0.1:14443:443"   # valid (signed by harness-root)
       - "127.0.0.1:14453:453"   # self-signed
       - "127.0.0.1:14463:463"   # expired (backdated cert)
       - "127.0.0.1:14473:473"   # wrong-host (SAN doesn't match 127.0.0.1)
       - "127.0.0.1:14483:483"   # untrusted-root (signed by a different CA)
+      - "127.0.0.1:14493:493"   # valid cert, TLS 1.3-only (no 1.2 fallback)
     healthcheck:
       # Just verify nginx is listening on the valid-TLS port — `nc -z` is a
       # plain TCP port-open probe (busybox nc, bundled in nginx:alpine). The
       # actual TLS handshake/validation behavior is what the *tests* assert.
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 443 && nc -z 127.0.0.1 453 && nc -z 127.0.0.1 463 && nc -z 127.0.0.1 473 && nc -z 127.0.0.1 483"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 443 && nc -z 127.0.0.1 453 && nc -z 127.0.0.1 463 && nc -z 127.0.0.1 473 && nc -z 127.0.0.1 483 && nc -z 127.0.0.1 493"]
       interval: 2s
       timeout: 3s
       retries: 15
       start_period: 1s
+    restart: unless-stopped
+
+  # L3 — netem blackhole. Replaces the magic `10.255.255.1` non-routable IP in
+  # connect-timeout tests with a deterministic, harness-local endpoint. The
+  # container has socat listening on 14999, and `tc qdisc add ... root netem
+  # loss 100%` on eth0 drops *all* outbound packets so the SYN-ACK never
+  # reaches the client. Inbound is untouched by an egress qdisc, which is
+  # exactly the asymmetry we need: SYN arrives, SYN-ACK vanishes.
+  #
+  # ── Host-binding note ────────────────────────────────────────────────────
+  # We do *not* publish a 127.0.0.1 port for this service because docker-proxy
+  # completes the host-side accept locally before forwarding to the container
+  # (verified empirically: the client's `connect()` returns success in <1 ms,
+  # then `recv()` times out). Tests must connect to the pinned bridge IP
+  # (`172.30.0.99:14999`) instead — the host has a kernel route to the bridge
+  # subnet, so SYNs traverse br-* directly, hit the container's eth0 (no
+  # docker-proxy), the netem qdisc drops the SYN-ACK on the way out, and the
+  # client's connect-timeout fires.
+  #
+  # NET_ADMIN is required for `tc qdisc add`. Alpine 3.20 + iproute2 + socat
+  # is ~10 MB; busybox `nc` doesn't `fork` reliably, which is why socat is the
+  # listener.
+  netem-blackhole:
+    image: alpine:3.20
+    networks:
+      socketnet:
+        # Pinned so HarnessConfig.netemBlackholeHost can be a constant. Any
+        # IP in the 172.30.0.0/24 subnet above works; .99 is well away from
+        # the gateway/auto-assigned range to avoid collisions.
+        ipv4_address: 172.30.0.99
+    cap_add:
+      - NET_ADMIN
+    # `sh -c` so the egress drop is installed *before* socat starts accepting.
+    # Without that ordering, a fast-enough client SYN+SYN-ACK could complete
+    # the handshake before the qdisc lands and the test would observe a
+    # successful connect instead of a timeout.
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        apk add --no-cache iproute2 socat >/dev/null
+        tc qdisc add dev eth0 root netem loss 100%
+        exec socat -d TCP-LISTEN:14999,reuseaddr,fork EXEC:/bin/true
+    healthcheck:
+      # Egress is dropped, so any TCP/HTTP probe times out — `nc -z` would
+      # hang. Verify the listener process is alive instead.
+      test: ["CMD-SHELL", "pgrep socat >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
     restart: unless-stopped
 
   # L4 — toxiproxy. Sits between the test process and {echo, http, tls:valid}
@@ -121,4 +187,28 @@ services:
       timeout: 3s
       retries: 15
       start_period: 1s
+    restart: unless-stopped
+
+  # L7 — QUIC echo server. JVM-based, wraps QuicEchoTestServer from
+  # socket-quic test sources (built by :socket-quic:quicEchoJar, which is
+  # a dependsOn of harnessUp). UDP only; replaces cloudflare-quic.com in
+  # QuicIntegrationTests via QuicHarnessIntegrationTests.
+  #
+  # Healthcheck: `pgrep -x java` — proves the JVM is alive. A UDP-level
+  # probe (`nc -uz`) is unreliable here because QUIC won't respond to a
+  # bare UDP datagram; only a complete client hello triggers a packet
+  # back. The test itself is the actual probe (the QUIC client either
+  # connects or the test skips/fails); pgrep just stops Docker from
+  # restarting the container while it's healthy.
+  quic-echo:
+    build: ./quic-echo
+    networks: [socketnet]
+    ports:
+      - "127.0.0.1:14433:14433/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x java >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 30        # JVM cold-start + quiche JNI extract is slow
+      start_period: 5s
     restart: unless-stopped

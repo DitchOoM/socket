@@ -767,6 +767,83 @@ afterEvaluate {
         }
     }
 
+    // --- QUIC echo fat-jar for the test-harness Docker container ---
+    // Produces a single self-contained jar (Main-Class = QuicEchoTestServerKt)
+    // that wraps every JVM test runtime dep + the compiled test classes + the
+    // host quiche JNI natives, then copies it to test-harness/quic-echo/quic-echo.jar
+    // so the Dockerfile's COPY picks it up.
+    //
+    // The harness orchestrator wires this as a `dependsOn` of `harnessUp`
+    // (see root build.gradle.kts) so `docker compose up` always sees a fresh
+    // jar that matches the current source.
+    //
+    // Why a fat jar and not a thin jar + Gradle classpath script: Docker can
+    // run a single `java -jar` with zero host knowledge; the alternative
+    // (mounting Gradle's classpath cache into the container) would couple
+    // the image to the build environment.
+    tasks.register<Jar>("quicEchoJar") {
+        group = "build"
+        description =
+            "Build a runnable fat jar of QuicEchoTestServer for test-harness/quic-echo. " +
+            "Output: test-harness/quic-echo/quic-echo.jar"
+        dependsOn("compileTestKotlinJvm", "jvmTestProcessResources", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+
+        archiveBaseName.set("quic-echo")
+        archiveVersion.set("")
+        destinationDirectory.set(rootProject.projectDir.resolve("test-harness/quic-echo"))
+
+        manifest {
+            attributes(
+                "Main-Class" to "com.ditchoom.socket.quic.QuicEchoTestServerKt",
+                "Multi-Release" to "true",
+            )
+        }
+
+        // Bundle every dep: kotlin stdlib, kotlinx-coroutines, ditchoom-buffer,
+        // the socket-quic jvmMain + commonJvmMain + commonMain classes, plus
+        // the compiled jvmTest classes (where QuicEchoTestServer lives). Then
+        // overlay the staged quiche natives (META-INF/native/<os>-<arch>/).
+        val jvm = kotlin.jvm()
+        val testCompilation = jvm.compilations["test"]
+        val mainCompilation = jvm.compilations["main"]
+        val java21Compilation = jvm.compilations["java21"]
+
+        from(testCompilation.output.allOutputs)
+        from(mainCompilation.output.allOutputs)
+        // Multi-release: ship the JDK-21 FFM bindings under META-INF/versions/21
+        into("META-INF/versions/21") {
+            from(java21Compilation.output.allOutputs)
+        }
+        // The staged-natives task drops files under stagedNativeResourcesDir
+        // already prefixed with META-INF/native/<os>-<arch>/, so a plain `from`
+        // preserves that layout inside the jar.
+        from(stagedNativeResourcesDir)
+
+        // Unpack every dep jar so the resulting fat jar is `java -jar`-able.
+        // Duplicate META-INF entries (manifests, signatures, services) would
+        // otherwise break the jar; EXCLUDE picks the first occurrence.
+        from({
+            testCompilation.runtimeDependencyFiles.files
+                .filter { it.isFile && it.name.endsWith(".jar") }
+                .map { zipTree(it) }
+        })
+
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        // Drop signing metadata from upstream jars — fat-jar invalidates signatures.
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/INDEX.LIST", "module-info.class")
+
+        // Side effect: also stage the self-signed cert/key alongside the jar so
+        // the Dockerfile's COPY picks them up. Kept next to the jar so the
+        // Dockerfile context is a single, self-contained directory.
+        doLast {
+            val certDir = projectDir.resolve("testcerts")
+            val outDir = rootProject.projectDir.resolve("test-harness/quic-echo/testcerts")
+            outDir.mkdirs()
+            certDir.resolve("cert.crt").copyTo(outDir.resolve("cert.crt"), overwrite = true)
+            certDir.resolve("cert.key").copyTo(outDir.resolve("cert.key"), overwrite = true)
+        }
+    }
+
     // --- Network control server for migration tests ---
     val netCtrlPidFile =
         layout.buildDirectory
@@ -886,6 +963,63 @@ fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuicHel
         }
     }
 }
+
+// --- QuicHarnessConfig codegen ---
+// socket-quic's commonTest is a separate source set from the root project's
+// commonTest (so the root's generated HarnessConfig isn't visible here).
+// Mirror just the values we need by reading the root's harness.env, then
+// emitting a tiny `QuicHarnessConfig` object into a generated commonTest
+// source dir. Single source of truth stays at test-harness/harness.env.
+val quicHarnessEnvFile = rootProject.projectDir.resolve("test-harness/harness.env")
+val quicHarnessGeneratedDir = layout.buildDirectory.dir("generated/harness/commonTest")
+val generateQuicHarnessConfig =
+    tasks.register("generateQuicHarnessConfig") {
+        group = "verification"
+        description = "Generate QuicHarnessConfig.kt from test-harness/harness.env"
+        inputs.file(quicHarnessEnvFile)
+        outputs.dir(quicHarnessGeneratedDir)
+        doLast {
+            val env =
+                quicHarnessEnvFile
+                    .readLines()
+                    .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+                    .associate { line ->
+                        val i = line.indexOf('=')
+                        require(i > 0) { "Malformed harness.env line: '$line'" }
+                        line.substring(0, i).trim() to line.substring(i + 1).trim()
+                    }
+            val host = env["HARNESS_HOST"] ?: error("Missing HARNESS_HOST in $quicHarnessEnvFile")
+            // QUIC_ECHO_PORT may be commented out until the orchestrator merges the
+            // Phase-4 env snippet — fall back to 14433 (the value from the spec) so
+            // the codegen doesn't fail standalone. Tests use isHarnessAvailable() to
+            // skip if the harness isn't actually up.
+            val port = env["QUIC_ECHO_PORT"] ?: "14433"
+            val pkgDir =
+                quicHarnessGeneratedDir
+                    .get()
+                    .asFile
+                    .resolve("com/ditchoom/socket/quic/harness")
+            pkgDir.mkdirs()
+            pkgDir.resolve("QuicHarnessConfig.kt").writeText(
+                buildString {
+                    append("// Generated from test-harness/harness.env — DO NOT EDIT.\n")
+                    append("@file:Suppress(\"ktlint:standard:property-naming\")\n\n")
+                    append("package com.ditchoom.socket.quic.harness\n\n")
+                    append("/**\n")
+                    append(" * QUIC echo endpoint exposed by the local docker-compose harness.\n")
+                    append(" * Single source of truth: edit test-harness/harness.env and re-run\n")
+                    append(" * `:socket-quic:generateQuicHarnessConfig` (auto-fired by every test task).\n")
+                    append(" */\n")
+                    append("internal object QuicHarnessConfig {\n")
+                    append("    const val host: String = \"$host\"\n")
+                    append("    const val quicEchoPort: Int = $port\n")
+                    append("    /** ALPN advertised by the harness QUIC echo server (QuicEchoTestServer). */\n")
+                    append("    const val alpn: String = \"test\"\n")
+                    append("}\n")
+                },
+            )
+        }
+    }
 
 kotlin {
     jvmToolchain(21)
@@ -1012,10 +1146,13 @@ kotlin {
             api(project(":"))
             implementation(libs.kotlinx.coroutines.core)
         }
-        commonTest.dependencies {
-            implementation(kotlin("test"))
-            implementation(libs.kotlinx.coroutines.core)
-            implementation(libs.kotlinx.coroutines.test)
+        commonTest {
+            kotlin.srcDir(generateQuicHarnessConfig.map { quicHarnessGeneratedDir })
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
+            }
         }
         val commonJvmMain by creating {
             dependsOn(commonMain.get())
@@ -1091,6 +1228,19 @@ kotlin {
 tasks.withType<Test> {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
+}
+
+// Ensure the QUIC harness-config codegen runs before any test task — same
+// pattern the root project uses for its HarnessConfig generator. Targets
+// every AbstractTestTask (jvmTest, linuxX64Test, kotlinNodeTest, …).
+tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
+    dependsOn(generateQuicHarnessConfig)
+}
+// Compilation tasks that index commonTest sources also need the generated
+// file present before they run; without this they fail to resolve
+// QuicHarnessConfig references in QuicHarnessIntegrationTests.
+tasks.matching { it.name.startsWith("compileTestKotlin") || it.name.contains("TestKotlin") }.configureEach {
+    dependsOn(generateQuicHarnessConfig)
 }
 
 android {

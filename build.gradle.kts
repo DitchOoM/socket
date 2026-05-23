@@ -791,6 +791,9 @@ val generateHarnessConfig by tasks.registering {
                 append("    const val tlsExpiredPort: Int = ${req("TLS_EXPIRED_PORT")}\n")
                 append("    const val tlsWrongHostPort: Int = ${req("TLS_WRONG_HOST_PORT")}\n")
                 append("    const val tlsUntrustedPort: Int = ${req("TLS_UNTRUSTED_PORT")}\n")
+                append("    const val tlsTls13Port: Int = ${req("TLS_TLS13_PORT")}\n")
+                append("    const val netemBlackholeHost: String = \"${req("NETEM_BLACKHOLE_HOST")}\"\n")
+                append("    const val netemBlackholePort: Int = ${req("NETEM_BLACKHOLE_PORT")}\n")
                 append("    const val toxiproxyApiPort: Int = ${req("TOXIPROXY_API_PORT")}\n")
                 append("    const val toxiproxyEchoPort: Int = ${req("TOXIPROXY_ECHO_PORT")}\n")
                 append("    const val toxiproxyHttpPort: Int = ${req("TOXIPROXY_HTTP_PORT")}\n")
@@ -883,6 +886,12 @@ val harnessUp by tasks.registering {
     group = "verification"
     description = "Start the local test harness (docker compose up --wait). No-op if docker unavailable."
     dependsOn(generateHarnessCerts)
+    // Phase 4 — make sure the quic-echo image's input artefact (a fat jar of
+    // QuicEchoTestServer + its test deps + the host's quiche native libs) is
+    // current before `docker compose up` reads it. Subproject task is wrapped
+    // in `tasks.named` so the dependency edge is resolved lazily — keeps the
+    // root build script orderable against the subproject's afterEvaluate.
+    dependsOn(project(":socket-quic").tasks.named("quicEchoJar"))
     doLast {
         val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait"))
         if (rc != 0) {
@@ -900,8 +909,19 @@ val harnessDown by tasks.registering {
     doLast { runHarnessCmd(listOf("docker", "compose", "down", "-v")) }
 }
 
+// Wrap both the root module's test tasks AND :socket-quic's matching test
+// tasks with the harness lifecycle. Phase 4 adds quic-echo to the compose
+// stack, so :socket-quic:jvmTest's new QuicHarnessIntegrationTests need it
+// running. The exit gate is intentionally two separate gradle invocations
+// (HANDOFF.md Phase 4) so the root and socket-quic test tasks don't run
+// concurrently — JVM+native workload contention causes the in-process QUIC
+// tests' 10 s timeouts to miss on resource-constrained runners.
 listOf("jvmTest", "linuxX64Test").forEach { name ->
     tasks.matching { it.name == name }.configureEach {
+        dependsOn(harnessUp)
+        finalizedBy(harnessDown)
+    }
+    project(":socket-quic").tasks.matching { it.name == name }.configureEach {
         dependsOn(harnessUp)
         finalizedBy(harnessDown)
     }
