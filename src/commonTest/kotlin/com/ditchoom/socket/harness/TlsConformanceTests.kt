@@ -29,30 +29,49 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Skipped silently when the harness isn't running (see [isHarnessAvailable]).
  *
- * **Phase-2 caveat — the *valid* path.** Proving that `tlsDefault()` succeeds
- * against the harness-root–signed cert requires the harness CA in each
- * platform's trust store (TESTING_STRATEGY.md §7.3 — chosen path is per-platform
- * CA injection in CI). Until that CI plumbing lands, the valid-path test uses
- * `tlsInsecure()` and is therefore only a smoke test that the TLS handshake
- * itself completes — not that default cert validation accepts the harness CA.
- * The four failure scenarios below *do* exercise default validation, because
- * they verify *rejection* — which doesn't depend on what is trusted.
+ * **Valid-path tests use `SocketOptions.tlsDefault()`** and exercise the
+ * platform's default cert-validation path against the harness self-signed CA.
+ * They **require the harness root CA** (`test-harness/tls/certs/ca.crt`) to be
+ * trusted by the platform. Locally, no CA is injected, so these tests **fail**
+ * with a cert-validation error — that failure tells you the CA-injection step
+ * is missing, which is intentional (better a loud local failure than a silent
+ * skip that masks a CI regression).
+ *
+ * Inject the harness CA locally:
+ * ```
+ * sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
+ * sudo update-ca-certificates
+ * sudo keytool -importcert -trustcacerts \
+ *     -file test-harness/tls/certs/ca.crt \
+ *     -alias harness-root \
+ *     -keystore "$JAVA_HOME/lib/security/cacerts" \
+ *     -storepass changeit -noprompt
+ * # macOS:
+ * sudo security add-trusted-cert -d -r trustRoot \
+ *     -k /Library/Keychains/System.keychain test-harness/tls/certs/ca.crt
+ * ```
+ *
+ * CI wires this automatically; see `.github/workflows/review.yaml`'s
+ * "Trust harness CA" steps. The four *rejection* scenarios below have always
+ * used `tlsDefault()` and don't depend on what's trusted.
  */
 class TlsConformanceTests {
     // ── valid ─────────────────────────────────────────────────────────────────
 
     /**
-     * TLS handshake completes against the valid (harness-root-signed) cert.
-     * Uses [SocketOptions.tlsInsecure] until per-platform CA injection lands.
+     * TLS handshake completes against the valid (harness-root-signed) cert
+     * using default cert validation. Requires the harness root CA in the
+     * platform's trust store; see the class-level KDoc for local-injection
+     * commands and the CI counterpart.
      */
     @Test
-    fun tlsHarnessValidPassesWithInsecure() =
+    fun tlsHarnessValidPassesWithDefault() =
         runTestNoTimeSkipping {
             if (!isHarnessAvailable()) return@runTestNoTimeSkipping
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 5.seconds,
             ) { socket ->
                 assertTrue(socket.isOpen(), "TLS handshake against harness-valid should succeed")
@@ -63,7 +82,8 @@ class TlsConformanceTests {
      * Full TLS request/response cycle against the valid cert. Replaces the
      * legacy `tlsTo{ExampleDotCom,Nginx,Httpbin,Google}` family — same intent
      * ("did TLS write+read end-to-end against a server with a real cert?"),
-     * deterministic execution.
+     * deterministic execution. Uses default cert validation (see class-level
+     * KDoc for trust-store setup).
      */
     @Test
     fun tlsHarnessValidGetReturnsHttp() =
@@ -73,7 +93,7 @@ class TlsConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsInsecure(),
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 5.seconds,
                 ) { socket ->
                     val request =
@@ -172,8 +192,9 @@ class TlsConformanceTests {
         runTestNoTimeSkipping {
             if (!isHarnessAvailable()) return@runTestNoTimeSkipping
             // Turning off only hostname verification still requires the cert to chain to a
-            // trusted CA (which our harness CA isn't, on the platform side). Use the full
-            // tlsInsecure() preset so this also covers the CA-trust gap until §7.3 lands.
+            // trusted CA. Even after CI's CA-injection makes the harness root trusted, a
+            // hostname-verify-only relaxation API isn't exposed on SocketOptions today;
+            // the full tlsInsecure() preset is the only available knob for this scenario.
             ClientSocket.connect(
                 port = HarnessConfig.tlsWrongHostPort,
                 hostname = harnessHost(),

@@ -25,8 +25,16 @@ import kotlin.time.Duration.Companion.seconds
  * (which covers the cert-validation matrix); split out so each file stays
  * focused on one axis.
  *
- * Uses [SocketOptions.tlsInsecure] until per-platform CA injection lands
- * (TESTING_STRATEGY.md §7.3); the assertions don't depend on validation mode.
+ * Uses [SocketOptions.tlsDefault] — same validation mode as production callers.
+ * Requires the harness root CA (`test-harness/tls/certs/ca.crt`) to be trusted
+ * by the platform; locally these tests **fail** with a cert-validation error
+ * until you inject the CA (see [TlsConformanceTests] KDoc for commands). CI
+ * wires the injection automatically; see `.github/workflows/review.yaml`'s
+ * "Trust harness CA" steps. These tests are about read-shape / concurrency /
+ * partial-read correctness rather than cert validation per se; using
+ * `tlsDefault()` keeps the validation mode consistent with
+ * [TlsConformanceTests] so the suite has a single CA-injection precondition.
+ *
  * Skipped silently when the harness isn't running (see [isHarnessAvailable]).
  *
  * Each test issues an HTTP/1.1 `GET /<route>` against the nginx behind the
@@ -52,7 +60,7 @@ class TlsValidPathConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsInsecure(),
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 5.seconds,
                 ) { socket ->
                     socket.writeString(
@@ -90,7 +98,7 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 5.seconds,
             ) { socket ->
                 socket.writeString(
@@ -128,7 +136,7 @@ class TlsValidPathConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsInsecure(),
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 5.seconds,
                 ) { socket ->
                     socket.writeString(request)
@@ -140,7 +148,7 @@ class TlsValidPathConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsInsecure(),
+                    socketOptions = SocketOptions.tlsDefault(),
                     timeout = 5.seconds,
                 ) { socket ->
                     socket.writeString(request)
@@ -180,7 +188,7 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 5.seconds,
             ) { socket ->
                 socket.writeString(
@@ -228,7 +236,7 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsTls13Port,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 5.seconds,
             ) { socket ->
                 socket.writeString(
@@ -259,7 +267,7 @@ class TlsValidPathConformanceTests {
                             ClientSocket.connect(
                                 port = HarnessConfig.tlsValidPort,
                                 hostname = harnessHost(),
-                                socketOptions = SocketOptions.tlsInsecure(),
+                                socketOptions = SocketOptions.tlsDefault(),
                                 timeout = 5.seconds,
                             ) { socket ->
                                 socket.writeString(
@@ -300,7 +308,7 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 5.seconds,
             ) { socket ->
                 socket.writeString(
@@ -368,7 +376,7 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 5.seconds,
             ) { socket ->
                 assertTrue(socket.isOpen(), "first connection should be open")
@@ -380,7 +388,7 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
+                socketOptions = SocketOptions.tlsDefault(),
                 timeout = 5.seconds,
             ) { socket ->
                 assertTrue(socket.isOpen(), "reconnection should be open")
