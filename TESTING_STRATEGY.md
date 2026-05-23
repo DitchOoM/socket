@@ -487,11 +487,27 @@ No container fixes a wall-clock assertion. The principle: **assert observable st
 - 🔶 **CA-trust CI injection (§3c/§3d/§7.3) deferred** — the valid-path test uses `tlsInsecure()` for now; once CI injects the harness root CA into JVM `cacerts` / Linux CA bundle / Apple keychain, switch it to `tlsDefault()`. Tracked in `TODO.md`.
 - 🔶 **Remaining migrations deferred** — `NetworkIntegrationTests.tls_*`, `SniStrictHostsTest`, `LinuxTlsTests`, plus the read-shape / concurrent-connection variants in `TlsErrorTests`. All have direct harness equivalents now; sweep is mechanical, tracked in `TODO.md`.
 
-**Phase 3 — toxiproxy (L4).** Add the `toxiproxy` service. Build the shared `harness` toxic-setup helper. Migrate `ExceptionIntegrationTests` peer-close tests + `JvmExceptionSubtypeTests` scenarios onto deterministic toxiproxy faults. Add the partial-read / UTF-8-straddle regression test. File the broken-pipe wrapper bug.
+**Phase 3 — toxiproxy (L4). ✅ DONE — commits `0bff529`, `3f9c917`, `a0d3962`.**
+- ✅ `toxiproxy` service (ghcr.io/shopify/toxiproxy:2.12.0, distroless image — healthcheck via `/toxiproxy-cli list`). 4 ports: 8474 API + 15000/15080/15443 proxies to echo/http/tls.
+- ✅ `Toxiproxy` helper in `commonJvmTest` (HttpURLConnection-only, no new deps). API: `ensureDefaultProxies`, `isToxiproxyAvailable`, `clearToxics`, `addDownToxic` (via proxy `enabled:false` — toxiproxy 2.12 dropped the `down` toxic type), `addResetPeerToxic`, `addSlicerToxic`.
+- ✅ `ExceptionConformanceTests` (writeAfterProxyDown + writeAfterPeerReset) — the deterministic regression for the JVM broken-pipe wrapper fix in `1561478`. 5/5 consecutive passes. Originals `@Ignore`'d.
+- ✅ `PartialReadConformanceTests` (slicer-driven, asserts UTF-8 round-trip + `readCount ≥ 2` so a regressed slicer fails loud).
+- ✅ Remaining `TlsErrorTests` sweep (12 tests → `TlsValidPathConformanceTests` + collapsed dups → existing `TlsConformanceTests`).
 
-**Phase 4 — netem (L3) + QUIC.** Static netem profiles for deterministic connect-timeout (replace the `10.255.255.1` magic IP). Add the `quic-echo` container (wraps existing `QuicEchoTestServer`); migrate `QuicIntegrationTests` off `cloudflare-quic.com`. Address the `TODO.md` gaps: multi-address / IPv6-only DNS — the harness can serve a name with both an A and an unreachable AAAA record (via a tiny DNS container or `/etc/hosts` tricks) to exercise the Linux addrinfo fallback in-repo.
+**Phase 4 — netem (L3) + QUIC. ✅ DONE — commits `d520030`, `3ea5887`.**
+- ✅ `netem-blackhole` service (Alpine + iproute2 + socat, `NET_ADMIN`, `tc qdisc add ... netem loss 100%`). Replaces the magic `10.255.255.1` IP in `SimpleSocketTests.{connectTimeoutWorks,closeWorks}`. Uses a pinned bridge IP (172.30.0.99/24) — docker-proxy on a 127.0.0.1 publish would complete the connect() locally and defeat the blackhole.
+- ✅ TLS-1.3-only sixth nginx vhost on port 493 (host 14493); `tlsHarnessFirstReadReturnsData` migrated. `/json` and `/large` routes also added to the valid (443) vhost so the Phase-3 sweep's softened assertions can be tightened back to content-type + ≥ 8 KB body.
+- ✅ `quic-echo` container (`eclipse-temurin:21-jre-noble` — alpine/jammy fail the quiche JNI shim's glibc check). Built per-CI-run by new `:socket-quic:quicEchoJar` task. `QuicHarnessIntegrationTests` (5 tests) on 14433 with `verifyPeer=false` against the harness self-signed cert; originals `@Ignore`'d.
+- ✅ `LinuxQuicSmokeTest` — cloudflare-quic.com → 127.0.0.1 (the smoke tests never send packets; only DNS + bind correctness).
+- 🔶 **IPv6-only / multi-address DNS coverage deferred** — `LinuxClientSocket.kt`'s addrinfo iteration is inside a `memScoped` cinterop block with no injection seam, and a real dnsmasq fixture would need root to edit /etc/resolv.conf on the test runner. Bullet kept in `TODO.md`; ships when the iteration grows a seam or container-side test execution lands.
 
-**Phase 5 — browser/wasmJs + cleanup.** Confirm browser/wasmJs runs stay green by *skipping* socket scenarios (they already do via `WEBSOCKETS_ONLY`). Add CORS header to the `http` container for any future browser-reachable test. Delete the now-dead public-host tests and the `integration.yaml` internet dependency; fold the harness job into `review.yaml` so every PR gets deterministic network coverage.
+**Phase 5 — browser/wasmJs + cleanup. ✅ DONE — commits `7c44876`, `20313af`.**
+- ✅ CORS headers already in `test-harness/http/conf.d/default.conf` (`Access-Control-Allow-Origin/Methods/Headers: *` with `always`). Browser target itself stays skipped (decision §7.4 / `WEBSOCKETS_ONLY`); headers stand ready for a future browser source set.
+- ✅ `integration.yaml` deleted; its content is now part of the always-on `review.yaml` harness arch-matrix job (`ubuntu-24.04` / `ubuntu-24.04-arm` / `macos-latest` with Colima).
+- ✅ Per-platform CA-trust injection wired in each CI workflow that runs the harness: Linux `update-ca-certificates` + JVM `keytool -importcert`; macOS `security add-trusted-cert` + JVM `keytool`. `tlsHarnessValid*` family flipped from `tlsInsecure()` → `tlsDefault()` so the default validation path is now exercised against the harness root CA. Cert-rejection family stays on `tlsInsecure()` (their assertion target is leniency).
+- ✅ `jsNodeTest` added to the harness up/down wrap. Node TLS implementation now gets cert-matrix coverage on every CI runner.
+- ✅ `ktlintCheck` wired as a fast-fail step in `review.yaml` (closes the Phase-1 TODO bullet).
+- 🔶 **Public-host originals (`@Ignore`'d throughout Phases 2–4) not yet deleted.** The HANDOFF green-throughout rule keeps them in place until Apple CI has run the harness equivalents at least once. After the first green PR run, sweep with a follow-up PR.
 
 **Green-throughout rule:** at each phase, the new harness test lands and passes *before* the corresponding public-host test is deleted. Never delete-then-add.
 
