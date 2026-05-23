@@ -4,6 +4,7 @@ import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -91,7 +92,11 @@ class JvmExceptionSubtypeTests {
             )
         }
 
+    // Replaced by ExceptionConformanceTests.writeAfterProxyDown_producesSocketClosedException +
+    // writeAfterPeerReset_producesSocketClosedException; remove after CI proves the harness path
+    // runs on every platform per TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
     @Test
+    @Ignore
     fun brokenPipeOrReset_isSocketClosedSubtype() =
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()

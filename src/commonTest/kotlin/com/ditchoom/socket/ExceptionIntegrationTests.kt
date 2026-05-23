@@ -5,6 +5,7 @@ import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -143,7 +144,11 @@ class ExceptionIntegrationTests {
     // Write to closed peer — BrokenPipe / ConnectionReset path
     // ──────────────────────────────────────────────────────────────────
 
+    // Replaced by ExceptionConformanceTests.writeAfterProxyDown_producesSocketClosedException +
+    // writeAfterPeerReset_producesSocketClosedException; remove after CI proves the harness path
+    // runs on every platform per TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
     @Test
+    @Ignore
     fun writeAfterPeerClose_producesSocketClosedException() =
         runTestNoTimeSkipping {
             val server = ServerSocket.allocate()
