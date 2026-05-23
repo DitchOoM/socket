@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -13,6 +14,8 @@ import kotlin.time.Duration.Companion.seconds
  * and on network-restricted environments (iOS Simulator in CI).
  */
 class NetworkIntegrationTests {
+    // Deferred — Phase 1/2 migration target. Harness equivalents exist for plain-HTTP (HarnessConformanceTests.harnessHttpStatusLine) and TLS (TlsConformanceTests.*); the multi-host integration shape collapses to TlsValidPathConformanceTests.tlsHarnessValidGetReturnsHttp. Migrate or delete in the follow-up PR.
+    @Ignore
     @Test
     fun tcp_connectToPublicServer() =
         runTestNoTimeSkipping(timeout = 15.seconds) {
@@ -27,6 +30,8 @@ class NetworkIntegrationTests {
             }
         }
 
+    // Deferred — Phase 1/2 migration target. Harness equivalents exist for plain-HTTP (HarnessConformanceTests.harnessHttpStatusLine) and TLS (TlsConformanceTests.*); the multi-host integration shape collapses to TlsValidPathConformanceTests.tlsHarnessValidGetReturnsHttp. Migrate or delete in the follow-up PR.
+    @Ignore
     @Test
     fun tls_connectToPublicServer() =
         runTestNoTimeSkipping(timeout = 15.seconds) {
@@ -41,6 +46,8 @@ class NetworkIntegrationTests {
             }
         }
 
+    // Deferred — Phase 1/2 migration target. Harness equivalents exist for plain-HTTP (HarnessConformanceTests.harnessHttpStatusLine) and TLS (TlsConformanceTests.*); the multi-host integration shape collapses to TlsValidPathConformanceTests.tlsHarnessValidGetReturnsHttp. Migrate or delete in the follow-up PR.
+    @Ignore
     @Test
     fun tls_connectToCloudflare() =
         runTestNoTimeSkipping(timeout = 15.seconds) {
@@ -56,6 +63,8 @@ class NetworkIntegrationTests {
             }
         }
 
+    // Deferred — Phase 1/2 migration target. Harness equivalents exist for plain-HTTP (HarnessConformanceTests.harnessHttpStatusLine) and TLS (TlsConformanceTests.*); the multi-host integration shape collapses to TlsValidPathConformanceTests.tlsHarnessValidGetReturnsHttp. Migrate or delete in the follow-up PR.
+    @Ignore
     @Test
     fun tcp_readWriteRoundtrip() =
         runTestNoTimeSkipping(timeout = 15.seconds) {

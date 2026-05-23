@@ -170,7 +170,7 @@ class LinuxQuicAddressMarshallingTest {
                 val conn =
                     scidBytes.usePinned { pinned ->
                         quiche_connect(
-                            "example.com",
+                            "127.0.0.1",
                             pinned.addressOf(0).reinterpret(),
                             QUIC_MAX_CONN_ID_LEN.convert(),
                             localAddr.ptr.reinterpret(),

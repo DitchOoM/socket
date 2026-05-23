@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -20,6 +21,8 @@ import kotlin.time.Duration.Companion.seconds
 class SniStrictHostsTest {
     private val sniStrictHosts = listOf("www.example.com", "www.cloudflare.com", "badssl.com")
 
+    // Deferred — SNI strictness migration blocked on separate server_name-only nginx vhosts (no default_server fallback) in test-harness/tls/conf.d/. Tracked in TODO.md.
+    @Ignore
     @Test
     fun handshakeSucceedsAgainstSniStrictHosts() =
         runTestNoTimeSkipping {

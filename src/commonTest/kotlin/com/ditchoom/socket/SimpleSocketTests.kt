@@ -143,13 +143,17 @@ class SimpleSocketTests {
             serverJob.cancel()
         }
 
-    /**
-     * Integration tests that require external network access.
-     * These verify real-world HTTP/HTTPS connectivity.
-     */
+    // Integration tests that require external network access — all currently @Ignore'd
+    // pending Phase 1 migration to the local harness. Once CI runs the harness path
+    // on every platform, delete (or convert call-sites to the harness equivalent).
+
+    // Deferred — Phase 1 migration target (per old TODO.md). Harness equivalent already covered by HarnessConformanceTests.harnessHttpStatusLine on HarnessConfig.httpPort. Delete or convert to a direct call-site after CI green-light.
+    @Ignore
     @Test
     fun httpRawSocketExampleDomain() = readHttp("example.com", false)
 
+    // Deferred — Phase 1 migration target (per old TODO.md). Harness equivalent already covered by HarnessConformanceTests.harnessHttpStatusLine on HarnessConfig.httpPort. Delete or convert to a direct call-site after CI green-light.
+    @Ignore
     @Test
     fun httpRawSocketGoogleDomain() = readHttp("google.com", false)
 
