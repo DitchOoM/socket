@@ -289,12 +289,32 @@ jobs:
     name: "Linux ARM64 (native)"
     needs: build
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
+      # Checkout is needed for test-harness/ scripts + docker-compose.yml.
+      # This job runs raw K/Native .kexe binaries and bypasses Gradle, so the
+      # harnessUp/harnessDown Gradle tasks never fire. We bring the harness
+      # up/down at the YAML level instead.
+      - uses: actions/checkout@v4
+
       - name: Download ARM64 test binary
         uses: actions/download-artifact@v4
         with:
           name: linux-arm64-test-binary
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      # Linux trust-store injection covers the K/Native path too — BoringSSL
+      # in the .kexe reads /etc/ssl/certs/ at runtime. No JVM keystore step is
+      # needed for the .kexe (no JVM in this job).
+      - name: Trust harness CA (Linux)
+        run: |
+          sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
+          sudo update-ca-certificates
+
+      - name: Bring up test harness
+        run: cd test-harness && docker compose up -d --wait
 
       - name: Run ARM64 tests (base module)
         run: |
@@ -309,3 +329,7 @@ jobs:
           else
             echo "socket-quic ARM64 binary not found — skipping"
           fi
+
+      - name: Bring down test harness
+        if: always()
+        run: cd test-harness && docker compose down -v

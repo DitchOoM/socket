@@ -117,6 +117,35 @@ jobs:
         run: |
           find socket-quic/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
 
+      # macOS has no Docker daemon by default; Colima provides a Docker-CLI
+      # compatible engine so the harnessUp Gradle task can `docker compose up`.
+      # Apple K/Native tests still go through Network.framework which validates
+      # against the system keychain — both keychain + JVM keystore trust steps
+      # below cover the JVM-on-macOS and K/N-on-macOS code paths.
+      - name: Install Colima (macOS)
+        run: |
+          brew install colima docker
+          colima start --cpu 2 --memory 4 --disk 20
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      - name: Trust harness CA (macOS keychain)
+        run: |
+          sudo security add-trusted-cert -d -r trustRoot \
+              -k /Library/Keychains/System.keychain test-harness/tls/certs/ca.crt
+
+      - name: Trust harness CA in JVM keystore (macOS)
+        run: |
+          sudo keytool -delete -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit 2>/dev/null || true
+          sudo keytool -importcert -trustcacerts \
+              -file test-harness/tls/certs/ca.crt \
+              -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit -noprompt
+
       - name: Run Apple tests
         run: >-
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
