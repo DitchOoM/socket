@@ -82,3 +82,43 @@ services:
       retries: 15
       start_period: 1s
     restart: unless-stopped
+
+  # L4 — toxiproxy. Sits between the test process and {echo, http, tls:valid}
+  # so Phase-3 tests can inject `down`/`reset_peer`/`slicer` toxics for the
+  # deterministic broken-pipe / partial-read regressions
+  # (TESTING_STRATEGY.md §2d, HANDOFF.md Phase 3).
+  #
+  # The image is distroless — no shell, no `nc`, no `wget`. The only binaries
+  # are `/toxiproxy-server` (the default entrypoint) and `/toxiproxy-cli`.
+  # `toxiproxy-cli list` hits the local control API on 127.0.0.1:8474 and
+  # exits 0 iff it succeeds, which is exactly the healthcheck signal we want.
+  #
+  # Proxies are NOT pre-configured here — test classes POST them at setup
+  # via the Toxiproxy helper in commonJvmTest, so each test run gets a fresh,
+  # isolated proxy table.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    networks: [socketnet]
+    depends_on:
+      echo:
+        condition: service_healthy
+      http:
+        condition: service_healthy
+      tls:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8474:8474"     # control API
+      - "127.0.0.1:15000:15000"   # proxy → echo:14000
+      - "127.0.0.1:15080:15080"   # proxy → http:80
+      - "127.0.0.1:15443:15443"   # proxy → tls:443 (valid-cert vhost)
+    healthcheck:
+      # Distroless image — no shell, so use the exec form of CMD with
+      # toxiproxy-cli (which calls the local 8474 API and exits non-zero
+      # if it can't reach the server). Equivalent to `nc -z 127.0.0.1 8474`
+      # but using what's actually in the image.
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped

@@ -791,6 +791,10 @@ val generateHarnessConfig by tasks.registering {
                 append("    const val tlsExpiredPort: Int = ${req("TLS_EXPIRED_PORT")}\n")
                 append("    const val tlsWrongHostPort: Int = ${req("TLS_WRONG_HOST_PORT")}\n")
                 append("    const val tlsUntrustedPort: Int = ${req("TLS_UNTRUSTED_PORT")}\n")
+                append("    const val toxiproxyApiPort: Int = ${req("TOXIPROXY_API_PORT")}\n")
+                append("    const val toxiproxyEchoPort: Int = ${req("TOXIPROXY_ECHO_PORT")}\n")
+                append("    const val toxiproxyHttpPort: Int = ${req("TOXIPROXY_HTTP_PORT")}\n")
+                append("    const val toxiproxyTlsPort: Int = ${req("TOXIPROXY_TLS_PORT")}\n")
                 append("}\n")
             },
         )
