@@ -59,6 +59,10 @@ class TlsErrorTests {
             }
         }
 
+    // Replaced by TlsConformanceTests.tlsHarnessValidGetReturnsHttp. Remove after
+    // CI proves the harness path runs on every platform per TESTING_STRATEGY.md
+    // §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsWithValidCertificate() =
         runTestNoTimeSkipping {
@@ -181,6 +185,10 @@ class TlsErrorTests {
 
     // ==================== Multiple Public Sites Tests ====================
 
+    // Replaced by TlsConformanceTests.tlsHarnessValidGetReturnsHttp; remove after
+    // CI proves the harness path runs on every platform per TESTING_STRATEGY.md
+    // §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsToExampleDotCom() =
         runTestNoTimeSkipping {
@@ -205,6 +213,10 @@ class TlsErrorTests {
             }
         }
 
+    // Replaced by TlsConformanceTests.tlsHarnessValidGetReturnsHttp; remove after
+    // CI proves the harness path runs on every platform per TESTING_STRATEGY.md
+    // §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsToNginx() =
         runTestNoTimeSkipping {
@@ -229,6 +241,10 @@ class TlsErrorTests {
             }
         }
 
+    // Replaced by TlsConformanceTests.tlsHarnessValidGetReturnsHttp; remove after
+    // CI proves the harness path runs on every platform per TESTING_STRATEGY.md
+    // §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsToHttpbin() =
         runTestNoTimeSkipping {
@@ -253,6 +269,10 @@ class TlsErrorTests {
 
     // ==================== Concurrent Connections Test ====================
 
+    // Replaced by TlsValidPathConformanceTests.tlsHarnessConcurrentConnections;
+    // remove after CI proves the harness path runs on every platform per
+    // TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsConcurrentConnections() =
         runTestNoTimeSkipping {
@@ -286,6 +306,10 @@ class TlsErrorTests {
 
     // ==================== Larger Data Transfer Test ====================
 
+    // Replaced by TlsValidPathConformanceTests.tlsHarnessLargerResponse; remove
+    // after CI proves the harness path runs on every platform per
+    // TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsLargerResponse() =
         runTestNoTimeSkipping {
@@ -316,6 +340,10 @@ class TlsErrorTests {
 
     // ==================== JSON API Test ====================
 
+    // Replaced by TlsValidPathConformanceTests.tlsHarnessValidJsonGet; remove
+    // after CI proves the harness path runs on every platform per
+    // TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsJsonApi() =
         runTestNoTimeSkipping {
@@ -532,6 +560,10 @@ class TlsErrorTests {
 
     // ==================== Connection Recovery Test ====================
 
+    // Replaced by TlsValidPathConformanceTests.tlsHarnessReconnectAfterClose;
+    // remove after CI proves the harness path runs on every platform per
+    // TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
+    @Ignore
     @Test
     fun tlsReconnectAfterClose() =
         runTestNoTimeSkipping {
@@ -573,7 +605,12 @@ class TlsErrorTests {
      *
      * This is a regression test for a bug where AsyncBaseClientSocket.read(WriteBuffer, timeout)
      * bypassed TLS decryption entirely, returning raw encrypted bytes instead of plaintext.
+     *
+     * Replaced by TlsValidPathConformanceTests.tlsHarnessReadIntoWriteBuffer; remove
+     * after CI proves the harness path runs on every platform per TESTING_STRATEGY.md
+     * §6 Phase 5 green-throughout rule.
      */
+    @Ignore
     @Test
     fun tlsReadIntoWriteBuffer() =
         runTestNoTimeSkipping {
@@ -615,7 +652,13 @@ class TlsErrorTests {
      * empty, which callers would interpret as end-of-stream.
      *
      * Uses a server known to negotiate TLS 1.3 on modern JVMs.
+     *
+     * Replaced by TlsValidPathConformanceTests.tlsHarnessFirstReadReturnsData; remove
+     * after CI proves the harness path runs on every platform per TESTING_STRATEGY.md
+     * §6 Phase 5 green-throughout rule. (Phase 4 may re-route to a TLS-1.3-only
+     * port; see HANDOFF.md.)
      */
+    @Ignore
     @Test
     fun tlsFirstReadReturnsData() =
         runTestNoTimeSkipping {
@@ -647,7 +690,12 @@ class TlsErrorTests {
      *
      * Ensures read(timeout) and read(WriteBuffer, timeout) produce the same plaintext
      * when talking to a TLS server. Both paths must correctly decrypt through the TLS handler.
+     *
+     * Replaced by TlsValidPathConformanceTests.tlsHarnessBothReadOverloadsReturnSameData;
+     * remove after CI proves the harness path runs on every platform per
+     * TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
      */
+    @Ignore
     @Test
     fun tlsBothReadOverloadsReturnSameData() =
         runTestNoTimeSkipping {
@@ -708,7 +756,12 @@ class TlsErrorTests {
      *
      * Ensures the TLS session state is maintained correctly across reads, handling
      * any interleaved TLS protocol messages (key updates, session tickets, etc.).
+     *
+     * Replaced by TlsValidPathConformanceTests.tlsHarnessMultipleSequentialReads;
+     * remove after CI proves the harness path runs on every platform per
+     * TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
      */
+    @Ignore
     @Test
     fun tlsMultipleSequentialReads() =
         runTestNoTimeSkipping {
