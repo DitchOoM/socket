@@ -65,6 +65,13 @@ static inline void ssl_ctx_set_verify_peer(SSL_CTX *ctx, int verify) {
 // name). Probing with inet_pton + falling back is the standard pattern (cf.
 // libcurl ssl_set_engine in lib/vtls/openssl.c).
 //
+// BoringSSL gotcha: unlike OpenSSL, BoringSSL's X509_VERIFY_PARAM_set1_host
+// treats `namelen == 0` as an *empty* name and returns 0, rather than the
+// OpenSSL convention of "if zero, use strlen". The comment in
+// crypto/x509/x509_vpm.c (`int_x509_param_set_hosts`) is explicit:
+// > Unlike OpenSSL, we reject trying to set or add an empty name.
+// Pass strlen(hostname) explicitly so the wrapper works on either library.
+//
 // Returns 1 on success, 0 on any failure (caller maps to SSLProtocolException).
 static inline int ssl_set_verify_host(SSL *ssl, const char *hostname) {
     if (!ssl || !hostname || hostname[0] == '\0') return 0;
@@ -79,5 +86,6 @@ static inline int ssl_set_verify_host(SSL *ssl, const char *hostname) {
         return X509_VERIFY_PARAM_set1_ip_asc(param, hostname);
     }
     // DNS name — match against SAN DNS entries (and CN as legacy fallback).
-    return X509_VERIFY_PARAM_set1_host(param, hostname, 0);
+    // Explicit strlen() — see BoringSSL note above.
+    return X509_VERIFY_PARAM_set1_host(param, hostname, strlen(hostname));
 }
