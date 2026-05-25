@@ -824,6 +824,24 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
     }
 }
 
+// Pin JVM tests to a single sequential fork. The JVM test surface uses
+// process-wide mutable globals (`useAsyncChannels`, `useNioBlocking` in
+// `commonJvmMain/Socket.kt`) that the Simple{Nio,NioNonBlocking,Async}-
+// SocketTests classes flip via @BeforeTest/@AfterTest save-and-restore.
+// That isolation only works inside a single fork running tests
+// sequentially; multiple forks (or in-fork parallelism) would race on the
+// shared globals and silently exercise the wrong client implementation —
+// the tests would still pass because they're impl-agnostic, but the
+// discriminating coverage would be lost.
+//
+// If you need to enable parallel JVM tests, first migrate those globals
+// to a CoroutineContext.Element or a per-call factory (see the long
+// comment in Socket.kt).
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    maxParallelForks = 1
+    setForkEvery(0L)
+}
+
 // ─── harnessUp / harnessDown ──────────────────────────────────────────
 // Both tolerant: missing Docker, Windows host, or HARNESS_DISABLED=true
 // → silent no-op. Tests then short-circuit at runtime via

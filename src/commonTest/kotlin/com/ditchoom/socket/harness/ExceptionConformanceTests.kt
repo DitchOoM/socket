@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -225,9 +226,12 @@ class ExceptionConformanceTests {
                 )
             try {
                 coroutineScope {
-                    // Park the read in a child coroutine; CoroutineStart.UNDISPATCHED
-                    // makes it execute up to the first suspend point (the kernel
-                    // read) before async() returns.
+                    // Park the read in a child coroutine. CoroutineStart.UNDISPATCHED
+                    // guarantees the body runs up to its first non-trivial suspend
+                    // before async() returns. In our case that's NIO2's
+                    // `AsynchronousSocketChannel.read()` (JVM) / io_uring submit
+                    // (linuxX64) / `socket.on('data')` registration (jsNode) —
+                    // i.e. the kernel-side read is *already* registered.
                     val readResult =
                         async<Throwable?>(start = CoroutineStart.UNDISPATCHED) {
                             try {
@@ -237,17 +241,25 @@ class ExceptionConformanceTests {
                                 t
                             }
                         }
-                    delay(100.milliseconds) // let the read park on the kernel syscall
-                    // One byte → sidecar's `head -c 1` exits → socat close() →
-                    // SO_LINGER=0 → TCP RST. The write itself may succeed (it's
-                    // delivered before the RST) or fail with EPIPE on slow
-                    // schedulers; we don't assert on it — only what the *parked
-                    // read* observes.
-                    try {
-                        socket.writeString("x", Charset.UTF8, 2.seconds)
-                    } catch (_: SocketClosedException) {
-                        // Already-RST path: race between this write and the
-                        // arriving RST. Fine — the read is what we're testing.
+                    // Trigger the close in a retry loop instead of a fixed delay.
+                    // The previous shape `delay(100ms); writeString("x")` worked
+                    // on idle dev boxes but was a tax on busy CI runners where
+                    // 100ms doesn't always cover the syscall round-trip
+                    // (kernel ack → server recv → server close → RST → client).
+                    // Reactive form: keep writing 1-byte triggers until the read
+                    // observes the close (success path), or until our own write
+                    // hits EPIPE (already-closed path) — both terminate the loop.
+                    // `yield()` returns to the dispatcher between iterations so
+                    // the read coroutine gets to consume the RST when it arrives.
+                    while (!readResult.isCompleted) {
+                        try {
+                            socket.writeString("x", Charset.UTF8, 1.seconds)
+                        } catch (_: SocketClosedException) {
+                            // RST already in our send buffer's face. The parked
+                            // read will see the same close; just wait for it.
+                            break
+                        }
+                        yield()
                     }
                     val thrown = readResult.await()
                     assertNotNull(thrown, "expected the parked read to throw")
