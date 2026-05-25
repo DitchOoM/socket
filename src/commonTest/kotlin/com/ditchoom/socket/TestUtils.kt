@@ -29,22 +29,6 @@ expect fun isRunningInSimulator(): Boolean
 internal expect fun isWindowsJvm(): Boolean
 
 /**
- * `true` when the current process is a Kotlin/Native Linux target
- * (`linuxX64`, `linuxArm64`).
- *
- * Used as a coarse skip-guard for tests blocked by gaps in the Linux K/N
- * TLS implementation (BoringSSL via cinterop). The current gap motivating
- * this guard: `tlsHarnessWrongHostFailsWithDefault` — the K/N path
- * validates the cert chain but doesn't enforce SAN/hostname matching on
- * top, so a cert with `SAN: other.test` connecting via `127.0.0.1`
- * succeeds where JVM/Apple/JS correctly reject it. Real fix is hostname
- * verification in `LinuxClientSocket`; tracked in TODO.md.
- *
- * Returns `false` on every non-Linux-native target.
- */
-internal expect fun isLinuxNative(): Boolean
-
-/**
  * Platform-specific return type for test functions.
  * On JVM/K/N: Unit (required by K/N test framework).
  * On JS: Any (allows returning Promise for mocha async test tracking).

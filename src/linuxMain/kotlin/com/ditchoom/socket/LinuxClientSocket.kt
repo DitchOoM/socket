@@ -189,6 +189,20 @@ class LinuxClientSocket : ClientToServerSocket {
         // Set hostname for SNI
         ssl_set_hostname(ssl, hostname)
 
+        // Enforce SAN/hostname matching when verifyHostname is on. Without this,
+        // SSL_VERIFY_PEER only checks the chain — a trusted cert with a SAN
+        // that doesn't cover the connected host still completes the handshake,
+        // which JVM, Apple, and JS all reject by default. The C wrapper picks
+        // between X509_VERIFY_PARAM_set1_host (DNS) and …set1_ip_asc (IP) by
+        // probing with inet_pton; see LinuxSockets.def.
+        if (currentTlsConfig.verifyHostname) {
+            if (ssl_set_verify_host(ssl, hostname) != 1) {
+                throw SSLProtocolException(
+                    "Failed to configure hostname verification for '$hostname'",
+                )
+            }
+        }
+
         // Attach socket to SSL
         SSL_set_fd(ssl, sockfd)
 

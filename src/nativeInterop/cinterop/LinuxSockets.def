@@ -12,7 +12,7 @@ package = com.ditchoom.socket.linux
 # Why static OpenSSL? Kotlin/Native bundles glibc 2.19, but Ubuntu 24.04's
 # dynamic libssl requires glibc 2.33+. Our static build uses glibc 2.17.
 
-headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h openssl/ssl.h openssl/err.h openssl/x509.h linux/netlink.h linux/rtnetlink.h ifaddrs.h net/if.h
+headers = sys/socket.h sys/types.h netinet/in.h netinet/tcp.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h sys/select.h sys/time.h sys/eventfd.h poll.h string.h liburing.h openssl/ssl.h openssl/err.h openssl/x509.h openssl/x509v3.h linux/netlink.h linux/rtnetlink.h ifaddrs.h net/if.h
 
 # Compiler flags - include paths are set via build.gradle.kts includeDirs
 # to support both native compilation and cross-compilation
@@ -52,4 +52,32 @@ static inline int ssl_set_hostname(SSL *ssl, const char *hostname) {
 // SSL_VERIFY_NONE = 0, SSL_VERIFY_PEER = 1
 static inline void ssl_ctx_set_verify_peer(SSL_CTX *ctx, int verify) {
     SSL_CTX_set_verify(ctx, verify ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, NULL);
+}
+
+// Configure peer hostname verification against the cert's SubjectAltName.
+// Without this, SSL_CTX_set_verify(... SSL_VERIFY_PEER ...) only checks the
+// chain — a cert with `SAN: other.test` happily completes the handshake when
+// the client connected as `127.0.0.1` and the chain is trusted, which is a
+// real security gap (JVM, Apple, JS all reject this case by default).
+//
+// IP literals need a different param setter than DNS names:
+// X509_VERIFY_PARAM_set1_host rejects "127.0.0.1" outright (not a valid DNS
+// name). Probing with inet_pton + falling back is the standard pattern (cf.
+// libcurl ssl_set_engine in lib/vtls/openssl.c).
+//
+// Returns 1 on success, 0 on any failure (caller maps to SSLProtocolException).
+static inline int ssl_set_verify_host(SSL *ssl, const char *hostname) {
+    if (!ssl || !hostname || hostname[0] == '\0') return 0;
+    X509_VERIFY_PARAM *param = SSL_get0_param(ssl);
+    if (!param) return 0;
+
+    struct in_addr v4;
+    struct in6_addr v6;
+    if (inet_pton(AF_INET, hostname, &v4) == 1 ||
+        inet_pton(AF_INET6, hostname, &v6) == 1) {
+        // IP literal — match against SAN IP entries.
+        return X509_VERIFY_PARAM_set1_ip_asc(param, hostname);
+    }
+    // DNS name — match against SAN DNS entries (and CN as legacy fallback).
+    return X509_VERIFY_PARAM_set1_host(param, hostname, 0);
 }
