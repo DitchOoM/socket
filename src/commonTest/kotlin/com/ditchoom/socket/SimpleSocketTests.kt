@@ -46,6 +46,10 @@ class SimpleSocketTests {
     fun connectTimeoutWorks() =
         runTestNoTimeSkipping {
             if (!isHarnessAvailable()) return@runTestNoTimeSkipping
+            // Netem is Linux-kernel-bound; the native macOS fixture doesn't
+            // run it. Skip cleanly there so the assertion isn't observing a
+            // different failure mode (ECONNREFUSED instead of SYN-ACK loss).
+            if (!isNetemAvailable()) return@runTestNoTimeSkipping
             try {
                 ClientSocket.connect(
                     port = HarnessConfig.netemBlackholePort,
@@ -85,6 +89,9 @@ class SimpleSocketTests {
     fun closeWorks() =
         runTestNoTimeSkipping {
             if (!isHarnessAvailable()) return@runTestNoTimeSkipping
+            // Same netem dependency as [connectTimeoutWorks] — skip on the
+            // native macOS fixture where the L3 netem service isn't present.
+            if (!isNetemAvailable()) return@runTestNoTimeSkipping
             try {
                 ClientSocket.connect(
                     port = HarnessConfig.netemBlackholePort,

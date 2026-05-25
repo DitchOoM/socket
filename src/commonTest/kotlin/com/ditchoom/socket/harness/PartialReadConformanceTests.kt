@@ -24,9 +24,10 @@ import kotlin.time.Duration.Companion.seconds
  * UTF-8 character in one `read()` return — the decode MUST work across read
  * boundaries or this test fails.
  *
- * Lives in `commonJvmTest` for symmetry with [ExceptionConformanceTests] — both
- * rely on the JVM-only `Toxiproxy` helper today. We re-shape into
- * `expect/actual` when toxiproxy interop becomes available on K/Native.
+ * Lives in `commonTest` alongside [ExceptionConformanceTests] — both ride the
+ * library's own `ClientSocket` via the multiplatform [Toxiproxy] helper, so
+ * every platform with FULL_SOCKET_ACCESS (JVM, linuxX64, jsNode, Apple)
+ * exercises the same partial-read decode invariant.
  */
 class PartialReadConformanceTests {
     /**

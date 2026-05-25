@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
@@ -88,6 +89,37 @@ internal suspend fun isHarnessAvailable(): Boolean {
             hostname = harnessHost(),
             timeout = 500.milliseconds,
         ) { /* immediate close — we just needed to know the listener is alive */ }
+        true
+    } catch (_: Throwable) {
+        false
+    }
+}
+
+/**
+ * `true` when the harness `netem-blackhole` endpoint exists and is dropping
+ * SYN-ACKs as designed.
+ *
+ * Distinct from [isHarnessAvailable] because the L3 netem service is
+ * Linux-kernel-bound (NET_ADMIN + `tc qdisc`) and isn't part of the native
+ * macOS fixture (homebrew socat+nginx). A separate probe is needed because
+ * the netem topology *intentionally* stalls connects — a successful TCP
+ * connect to this host:port would be a misconfiguration, not availability.
+ *
+ * Probe semantics (200 ms budget):
+ *  - `TimeoutCancellationException` → SYN sent, SYN-ACK lost: netem is up
+ *  - any other throwable             → no route / no listener: netem is down
+ *  - probe returns successfully      → not the netem service (refuse this too)
+ */
+internal suspend fun isNetemAvailable(): Boolean {
+    if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return false
+    return try {
+        ClientSocket.connect(
+            port = HarnessConfig.netemBlackholePort,
+            hostname = HarnessConfig.netemBlackholeHost,
+            timeout = 200.milliseconds,
+        ) { /* unreachable when netem is working — SYN-ACK is dropped */ }
+        false
+    } catch (_: TimeoutCancellationException) {
         true
     } catch (_: Throwable) {
         false
