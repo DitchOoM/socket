@@ -63,4 +63,6 @@ actual fun isRunningInSimulator(): Boolean {
 
 internal actual fun isWindowsJvm(): Boolean = false
 
+internal actual fun isLinuxNative(): Boolean = false
+
 internal actual fun harnessHost(): String = HarnessConfig.host

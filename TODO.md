@@ -26,6 +26,7 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
 
 ## CI follow-ups (PR #48 CI rework)
 
+- [ ] **Linux K/Native TLS hostname verification.** `LinuxClientSocket` (BoringSSL via cinterop) validates the cert *chain* but doesn't enforce SAN/hostname matching on top — a cert with `SAN: other.test` succeeds when connecting via `127.0.0.1` as long as the chain is trusted. Only surfaced now that CI installs harness-root into the system trust store; previously the untrusted chain rejected the connect for the wrong reason. `tlsHarnessWrongHostFailsWithDefault` skips on `isLinuxNative()` until BoringSSL `SSL_set1_host` (or equivalent SAN check) is wired through the connect path. Contract still validated on JVM, Apple, and jsNode.
 - [ ] **`socket-quic:jvmTest` quiche-0.28 panic.** Aborts with a non-unwinding panic from `quiche_conn_recv` (`quiche/src/ffi.rs:2059:14`) → SIGABRT, exit value 134. Observed on both Linux x64 and Windows in CI. Pre-existing — not introduced by the harness migration. Currently masked with `continue-on-error: true` in `build-linux.yaml` and excluded from the Windows job entirely. Needs a reproducer + a fix in the JNI shim or a quiche bump (0.28 → 0.29).
 - [ ] **Windows JVM Tests mapping gaps** (`JvmExceptionMapping.kt`). Five tests currently skip on Windows via `isWindowsJvm()`:
   - `ExceptionIntegrationTests.tlsToNonTlsServer_producesSSLSocketException` — Windows surfaces neither `SSLSocketException` nor `SocketClosedException`; need to detect the JSSE shape that escapes through the channel-close race.
