@@ -24,6 +24,16 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
 - [ ] **Full RFC 8305 Happy Eyeballs racing.** Current Linux addrinfo iteration is sequential — if the first IPv6 address SYNs out, the user waits ~75 s for the v4 fallback. Real Happy Eyeballs races A and AAAA in parallel with a small "resolution preference" delay. Not blocking, latency-sensitive future work.
 - [ ] **Cross-platform parity test for addrinfo iteration.** JVM (`AsynchronousSocketChannel`) and Apple (`NWConnection`) iterate addresses internally; a unit test on each platform that documents the behavior would be useful once an injection seam exists.
 
+## CI follow-ups (PR #48 CI rework)
+
+- [ ] **`socket-quic:jvmTest` quiche-0.28 panic.** Aborts with a non-unwinding panic from `quiche_conn_recv` (`quiche/src/ffi.rs:2059:14`) → SIGABRT, exit value 134. Observed on both Linux x64 and Windows in CI. Pre-existing — not introduced by the harness migration. Currently masked with `continue-on-error: true` in `build-linux.yaml` and excluded from the Windows job entirely. Needs a reproducer + a fix in the JNI shim or a quiche bump (0.28 → 0.29).
+- [ ] **Windows JVM Tests mapping gaps** (`JvmExceptionMapping.kt`). Five tests currently skip on Windows via `isWindowsJvm()`:
+  - `ExceptionIntegrationTests.tlsToNonTlsServer_producesSSLSocketException` — Windows surfaces neither `SSLSocketException` nor `SocketClosedException`; need to detect the JSSE shape that escapes through the channel-close race.
+  - `ExceptionIntegrationTests.connectionRefused_producesSocketConnectionException` + `connectionRefused_exceptionHasUsefulMessage` + `JvmExceptionSubtypeTests.connectionRefused_isSocketConnectionExceptionRefused` — Windows NIO2 holds the connect past the test's 2 s budget instead of returning ECONNREFUSED. Either tighten the wrapper to surface ECONNREFUSED faster, or extend the test budget on Windows.
+  - `ResourceCleanupTests.repeatedOpenClose` — Windows IOException routes through the `closed`-message branch and produces `SocketClosedException.General` mid-test. Distinguish Windows-NIO2's "socket already closed" from "kernel just closed it under us".
+- [ ] **Windows quiche JNI native.** `build-linux.yaml` cross-compiles `quiche_jni.dll` via MinGW but the result is never staged into JAR resources (the `nativeLibsByPlatform` map in `socket-quic/build.gradle.kts` excludes `windows-*`). `socket-quic:jvmTest` is excluded from the Windows job until this lands.
+- [ ] **`pendingReadDuringPeerReset_producesSocketClosedException` deterministic fixture.** Currently `@Ignore`'d (commit `421a676`) — flakes on GH ubuntu-24.04 runners. Replace toxiproxy's `reset_peer` with the sidecar RST-only fixture proposed above ("Subtype-precise `SocketClosedException` cross-platform regression") and re-enable.
+
 ## Other (pre-existing)
 
 Carried from earlier sessions / memories. Not introduced by the harness migration.

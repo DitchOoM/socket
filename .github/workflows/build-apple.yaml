@@ -127,7 +127,10 @@ jobs:
       # Root cause not nailed down; sticking with the proven Docker stack.)
       - name: Install Colima (qemu driver)
         run: |
-          brew install colima docker
+          # qemu-img is required by colima's qemu driver; not transitively
+          # pulled by the colima formula. Without it: "cannot use vmType:
+          # 'qemu', error: qemu-img not found".
+          brew install colima docker qemu
           colima start --vm-type=qemu --cpu 2 --memory 4 --disk 20
 
       - name: Generate harness TLS certs
