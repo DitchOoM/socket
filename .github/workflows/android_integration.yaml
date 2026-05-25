@@ -32,8 +32,15 @@ jobs:
 
       - name: Install Rust + cargo-ndk
         uses: dtolnay/rust-toolchain@stable
+      # All four Android Rust targets are needed because socket-quic's
+      # build.gradle.kts enumerates arm64-v8a / armeabi-v7a / x86_64 / x86
+      # ABIs (see `androidAbis` list); cargo-ndk fails if any target is
+      # missing. The previous list omitted armv7-linux-androideabi and
+      # i686-linux-android, causing :socket-quic:buildAndroidJniArmeabiv7a
+      # to fail in this job.
       - run: |
-          rustup target add x86_64-linux-android aarch64-linux-android
+          rustup target add x86_64-linux-android aarch64-linux-android \
+              armv7-linux-androideabi i686-linux-android
           cargo install cargo-ndk
 
       - name: Build Android QUIC native libs
