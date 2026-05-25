@@ -131,7 +131,9 @@ jobs:
       - name: Install Apple Container
         run: |
           brew install --quiet container
-          container system start
+          # `container system start` prompts interactively for the kata-containers
+          # kernel install on first run; pipe `yes` so it accepts the default.
+          yes | container system start
 
       - name: Generate harness TLS certs
         run: bash test-harness/tls/gen-certs.sh
