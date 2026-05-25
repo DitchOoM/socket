@@ -160,6 +160,21 @@ jobs:
           ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Test reports on failure — see build-linux.yaml for the why.
+      - name: Upload test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-apple
+          path: |
+            build/reports/tests/
+            build/test-results/
+            build/reports/ktlint/
+            socket-quic/build/reports/tests/
+            socket-quic/build/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Upload macOS quiche native libs
         if: always()
         uses: actions/upload-artifact@v4

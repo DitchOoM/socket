@@ -304,6 +304,23 @@ jobs:
           :socket-quic:linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Test reports on failure — surfaces the full assertion message + stack
+      # trace that gradle's brief CI log otherwise truncates to
+      # `AssertionError at Assert.java:89`. Indispensable for diagnosing the
+      # next harness flake without having to push a re-run with debug prints.
+      - name: Upload test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-linux
+          path: |
+            build/reports/tests/
+            build/test-results/
+            socket-quic/build/reports/tests/
+            socket-quic/build/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Upload Android native libs
         if: always()
         uses: actions/upload-artifact@v4
