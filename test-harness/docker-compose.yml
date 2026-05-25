@@ -189,38 +189,39 @@ services:
       start_period: 1s
     restart: unless-stopped
 
-  # L4 — Deterministic TCP RST sidecar. Replaces toxiproxy's `reset_peer`
+  # L4 — Deterministic peer-close sidecar. Replaces toxiproxy's `reset_peer`
   # toxic on the read-path peer-reset test. `reset_peer` is implemented as
   # SO_LINGER=0 + close() on the *proxy* side, but the FIN/RST ordering on
   # the *client* side is kernel-scheduling-dependent — on busy GH
   # ubuntu-24.04 runners a parked read often observes EOF before the RST
   # arrives, flaking the assertion. This sidecar takes toxiproxy out of the
   # path: a tiny Python listener calls setsockopt(SO_LINGER, on=1, linger=0)
-  # then close() in that exact order, which puts a real TCP RST on the wire
-  # (no FIN) on every kernel. See ./rst/rst_server.py for the why.
-  #
+  # then close() in that exact order on the accepted FD. On every kernel,
+  # the *server-side* close is deterministic; what the client observes on
+  # the wire depends on whether docker-proxy sits in between (see below).
   # The single-byte trigger lets the test control timing precisely: park a
-  # read(), then write one byte to arm the RST. See ExceptionConformanceTests
+  # read(), then write one byte to arm the close. See ExceptionConformanceTests
   # `pendingReadDuringPeerReset_producesSocketClosedException` for the
   # consumer.
   #
-  # ── Host-binding note (same gotcha as netem-blackhole) ──────────────────
-  # We do *not* publish a 127.0.0.1 port for this service: docker-proxy on
-  # the loopback publish terminates two separate TCP connections back-to-
-  # back and converts the upstream's RST into a graceful FIN on the host
-  # side (verified empirically — the client sees EndOfStream, not
-  # ConnectionReset). Tests must connect to the pinned bridge IP
-  # (`172.30.0.98:14998`) directly so the SYN traverses the docker bridge,
-  # hits the container's eth0 with no userland-proxy in the middle, and the
-  # kernel-generated RST reaches the client unmodified.
+  # ── Host-binding note ──────────────────────────────────────────────────
+  # Published on 127.0.0.1:14998 (not connected via the bridge IP like
+  # netem-blackhole). docker-proxy on the loopback publish does convert the
+  # server-side RST into a graceful FIN on the host side — but a FIN still
+  # surfaces as `SocketClosedException.EndOfStream`, which is a subtype of
+  # `SocketClosedException` and satisfies the test's parent-class
+  # assertion. An earlier revision pinned a bridge IP (172.30.0.98) to
+  # preserve the RST on the wire, but GH ubuntu-24.04 runners exhibited a
+  # one-way-path issue with custom-subnet bridges: the connect handshake
+  # succeeded, but small writes from host → container were never delivered
+  # to the listener, so the parked read timed out at 5s with a
+  # `TimeoutCancellationException` instead of seeing the close. docker-
+  # proxy avoids the bridge entirely.
   rst:
     build: ./rst
-    networks:
-      socketnet:
-        # Pinned so HarnessConfig.rstHost can be a constant. .98 is well
-        # away from the gateway and from netem-blackhole's .99 to avoid
-        # collisions.
-        ipv4_address: 172.30.0.98
+    networks: [socketnet]
+    ports:
+      - "127.0.0.1:14998:14998"
     healthcheck:
       # python3 is already in the image; using it for the healthcheck
       # avoids pulling in netcat/socat just for the probe.

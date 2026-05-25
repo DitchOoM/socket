@@ -170,50 +170,59 @@ class ExceptionConformanceTests {
 
     /**
      * Park a `read()` in a background coroutine, write one byte to the
-     * deterministic RST sidecar, and confirm the parked read surfaces a
-     * [SocketClosedException] — the **read path** counterpart to the two
-     * preceding write-path tests.
+     * deterministic peer-close sidecar, and confirm the parked read
+     * surfaces a [SocketClosedException] — the **read path** counterpart
+     * to the two preceding write-path tests.
      *
      * Why a dedicated sidecar instead of toxiproxy `reset_peer`:
      *
      * - toxiproxy 2.12's `reset_peer` SO_LINGER=0+close()s on the *proxy*
-     *   side. On a busy WSL2/Linux/Docker kernel the FIN/RST ordering on
-     *   the *client* side is scheduling-dependent — the parked read often
-     *   observes EOF (→ `EndOfStream`) before the RST is delivered, and
-     *   on GH `ubuntu-24.04` it flaked badly enough we `@Ignore`'d this
-     *   case after commit `421a676`.
-     * - The `rst` service in docker-compose.yml is a socat listener with
-     *   `so-linger=0` on accepted FDs. `SYSTEM:head -c 1` reads exactly
-     *   one byte from the client then exits, which triggers socat's
-     *   close() — with SO_LINGER=0 set, the kernel sends a real TCP RST
-     *   (no FIN). Deterministic across kernels.
+     *   side, but the toxic activates on *data flow*, not connection
+     *   liveness. On busy GH `ubuntu-24.04` runners the parked read often
+     *   surfaced a [kotlinx.coroutines.TimeoutCancellationException]
+     *   before the toxic fired — flaked badly enough that commit `421a676`
+     *   `@Ignore`'d this case.
+     * - The `rst` service in docker-compose.yml is a Python listener that
+     *   calls `setsockopt(SO_LINGER, on=1, linger=0)` then `close()` on
+     *   the accepted FD after reading exactly one byte. The single-byte
+     *   trigger is what's deterministic: the test controls *when* the
+     *   server closes by *when* it writes the byte.
+     *
+     * Wire-level RST vs. FIN: the sidecar is published on 127.0.0.1, so
+     * docker-proxy sits in the path and converts the server-side RST into
+     * a graceful FIN on the host side. That's fine — a FIN still surfaces
+     * as [SocketClosedException.EndOfStream], which is a subtype of
+     * [SocketClosedException] and satisfies the assertion below. The
+     * assertion stays at the parent class: jsNode's stream-shape and
+     * Apple's `NWConnection` sometimes surface a generic close path even
+     * when the wire saw RST, and we don't want to chase that subtype
+     * variation across platforms. What matters here is that *all*
+     * platforms' read-path wrappers translate the connection loss into a
+     * `SocketClosedException` — that's the contract.
+     *
+     * (An earlier revision used a pinned docker-bridge IP to preserve the
+     * RST on the wire, but GH ubuntu-24.04 runners exhibited a one-way-
+     * path issue with custom-subnet bridges: the connect handshake
+     * succeeded, but small writes from host → container were never
+     * delivered to the listener, so the parked read timed out at 5s with
+     * a `TimeoutCancellationException` instead of seeing the close. See
+     * `test-harness/docker-compose.yml` `rst:` for the full rationale.)
      *
      * The single-byte trigger lets the test order things precisely:
      *   1. connect to the sidecar
      *   2. park `read()` (CoroutineStart.UNDISPATCHED → up to first suspend)
      *   3. `delay(100ms)` to give the read time to actually block on the
      *      kernel syscall
-     *   4. write one byte → sidecar exits → RST arrives → parked read fails.
-     *
-     * Assertion is still parent-class only. With a deterministic RST we
-     * could in principle tighten to [SocketClosedException.ConnectionReset],
-     * but jsNode's stream-shape and Apple's `NWConnection` sometimes
-     * surface a generic close path even when the wire saw RST, and we don't
-     * want to chase that subtype variation across platforms. What matters
-     * here is that *all* platforms' read-path wrappers translate the
-     * connection loss into a `SocketClosedException` — that's the contract.
+     *   4. write one byte → sidecar exits → close arrives → parked read fails.
      */
     @Test
     fun pendingReadDuringPeerReset_producesSocketClosedException() =
         runTestNoTimeSkipping {
             if (!isHarnessAvailable()) return@runTestNoTimeSkipping
-            // Connect to the pinned bridge IP (NOT harnessHost()) — docker-proxy
-            // on a 127.0.0.1 publish would convert the RST into a graceful FIN.
-            // See test-harness/docker-compose.yml `rst:` for the rationale.
             val socket =
                 ClientSocket.connect(
                     port = HarnessConfig.rstPort,
-                    hostname = HarnessConfig.rstHost,
+                    hostname = harnessHost(),
                     timeout = 5.seconds,
                 )
             try {
