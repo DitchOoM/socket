@@ -399,7 +399,7 @@ jobs:
       # QuicHarnessIntegrationTests `withHarness` guard anyway — there's no
       # linuxArm64 quiche K/N native to bring up the client side.
       - name: Bring up test harness (without quic-echo)
-        run: cd test-harness && docker compose up -d --wait echo http tls toxiproxy netem-blackhole
+        run: cd test-harness && docker compose up -d --wait echo http tls toxiproxy netem-blackhole rst
 
       - name: Run ARM64 tests (base module)
         run: |
