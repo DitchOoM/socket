@@ -314,6 +314,19 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
+      # Symmetric to build-apple.yaml's quiche-macos-natives. The publish step
+      # below uploads maven-local with the JAR but Gradle doesn't (currently)
+      # stage native libs into META-INF/native/<platform>/ at publish time —
+      # validate-artifacts.yaml injects them post-merge from this artifact.
+      - name: Upload quiche Linux native libs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiche-linux-natives
+          path: socket-quic/libs/quiche/linux-*/lib/
+          retention-days: 1
+          if-no-files-found: ignore
+
       - name: Upload ARM64 test binaries
         uses: actions/upload-artifact@v4
         with:
