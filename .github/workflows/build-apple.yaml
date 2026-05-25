@@ -117,34 +117,14 @@ jobs:
         run: |
           find socket-quic/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
 
-      # macOS has no Docker daemon by default; Colima provides a Docker-CLI
-      # compatible engine so the harnessUp Gradle task can `docker compose up`.
-      # Apple K/Native tests still go through Network.framework which validates
-      # against the system keychain — both keychain + JVM keystore trust steps
-      # below cover the JVM-on-macOS and K/N-on-macOS code paths.
-      - name: Install Colima (macOS)
-        run: |
-          brew install colima docker
-          colima start --cpu 2 --memory 4 --disk 20
-
-      - name: Generate harness TLS certs
-        run: bash test-harness/tls/gen-certs.sh
-
-      - name: Trust harness CA (macOS keychain)
-        run: |
-          sudo security add-trusted-cert -d -r trustRoot \
-              -k /Library/Keychains/System.keychain test-harness/tls/certs/ca.crt
-
-      - name: Trust harness CA in JVM keystore (macOS)
-        run: |
-          sudo keytool -delete -alias harness-root \
-              -keystore "$JAVA_HOME/lib/security/cacerts" \
-              -storepass changeit 2>/dev/null || true
-          sudo keytool -importcert -trustcacerts \
-              -file test-harness/tls/certs/ca.crt \
-              -alias harness-root \
-              -keystore "$JAVA_HOME/lib/security/cacerts" \
-              -storepass changeit -noprompt
+      # Native macOS test-harness fixture — homebrew socat + nginx in place of
+      # the Docker / Colima VM. Apple K/N tests only need an L0/L6 peer, not
+      # toxiproxy/netem (Linux-kernel-bound; tests skip via existing guards).
+      # Drops the Colima VZ-driver boot flake that was blocking this job. See
+      # HANDOFF.md (Q1) for the full rationale. up.sh does cert gen + keychain
+      # trust + JVM keystore trust + service start in one go.
+      - name: Bring up macOS test harness (native socat + nginx)
+        run: bash test-harness/macos/up.sh
 
       - name: Run Apple tests
         run: >-
@@ -158,6 +138,12 @@ jobs:
         run: >-
           ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Tear down before the publish + upload steps so a hung socat/nginx
+      # doesn't bleed into the next job that might reuse the runner.
+      - name: Bring down macOS test harness
+        if: always()
+        run: bash test-harness/macos/down.sh
 
       - name: Upload macOS quiche native libs
         if: always()
