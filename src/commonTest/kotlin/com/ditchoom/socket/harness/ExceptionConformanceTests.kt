@@ -188,25 +188,23 @@ class ExceptionConformanceTests {
      *   trigger is what's deterministic: the test controls *when* the
      *   server closes by *when* it writes the byte.
      *
-     * Wire-level RST vs. FIN: the sidecar is published on 127.0.0.1, so
-     * docker-proxy sits in the path and converts the server-side RST into
-     * a graceful FIN on the host side. That's fine — a FIN still surfaces
-     * as [SocketClosedException.EndOfStream], which is a subtype of
-     * [SocketClosedException] and satisfies the assertion below. The
-     * assertion stays at the parent class: jsNode's stream-shape and
+     * Networking: the rst service runs with `network_mode: host`, so the
+     * Python listener binds directly in the host's network namespace —
+     * no docker bridge, no docker-proxy, no NAT. Loopback to loopback.
+     * The RST that SO_LINGER+close puts on the wire reaches the client
+     * unmodified, and the read-path wrapper surfaces
+     * [SocketClosedException.ConnectionReset] (subclass of
+     * `SocketClosedException`). Two earlier topologies (bridge-IP pin,
+     * 127.0.0.1 port publish) both failed on GH ubuntu-24.04 runners
+     * while passing locally — see `test-harness/docker-compose.yml`
+     * `rst:` for the postmortem.
+     *
+     * The assertion stays at the parent class: jsNode's stream-shape and
      * Apple's `NWConnection` sometimes surface a generic close path even
      * when the wire saw RST, and we don't want to chase that subtype
      * variation across platforms. What matters here is that *all*
      * platforms' read-path wrappers translate the connection loss into a
      * `SocketClosedException` — that's the contract.
-     *
-     * (An earlier revision used a pinned docker-bridge IP to preserve the
-     * RST on the wire, but GH ubuntu-24.04 runners exhibited a one-way-
-     * path issue with custom-subnet bridges: the connect handshake
-     * succeeded, but small writes from host → container were never
-     * delivered to the listener, so the parked read timed out at 5s with
-     * a `TimeoutCancellationException` instead of seeing the close. See
-     * `test-harness/docker-compose.yml` `rst:` for the full rationale.)
      *
      * The single-byte trigger lets the test order things precisely:
      *   1. connect to the sidecar

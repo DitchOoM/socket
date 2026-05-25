@@ -191,40 +191,46 @@ services:
 
   # L4 — Deterministic peer-close sidecar. Replaces toxiproxy's `reset_peer`
   # toxic on the read-path peer-reset test. `reset_peer` is implemented as
-  # SO_LINGER=0 + close() on the *proxy* side, but the FIN/RST ordering on
-  # the *client* side is kernel-scheduling-dependent — on busy GH
-  # ubuntu-24.04 runners a parked read often observes EOF before the RST
-  # arrives, flaking the assertion. This sidecar takes toxiproxy out of the
-  # path: a tiny Python listener calls setsockopt(SO_LINGER, on=1, linger=0)
-  # then close() in that exact order on the accepted FD. On every kernel,
-  # the *server-side* close is deterministic; what the client observes on
-  # the wire depends on whether docker-proxy sits in between (see below).
-  # The single-byte trigger lets the test control timing precisely: park a
-  # read(), then write one byte to arm the close. See ExceptionConformanceTests
-  # `pendingReadDuringPeerReset_producesSocketClosedException` for the
+  # SO_LINGER=0 + close() on the *proxy* side, but the toxic activates on
+  # data flow, not connection liveness — on busy GH ubuntu-24.04 runners
+  # the parked read often timed out before the toxic fired, badly enough
+  # we `@Ignore`'d the case in commit 421a676. This sidecar takes toxiproxy
+  # out of the path: a tiny Python listener calls setsockopt(SO_LINGER,
+  # on=1, linger=0) then close() on the accepted FD after reading exactly
+  # one byte. The single-byte trigger is what's deterministic: the test
+  # controls *when* the server closes by *when* it writes the byte. See
+  # `ExceptionConformanceTests.pendingReadDuringPeerReset_…` for the
   # consumer.
   #
-  # ── Host-binding note ──────────────────────────────────────────────────
-  # Published on 127.0.0.1:14998 (not connected via the bridge IP like
-  # netem-blackhole). docker-proxy on the loopback publish does convert the
-  # server-side RST into a graceful FIN on the host side — but a FIN still
-  # surfaces as `SocketClosedException.EndOfStream`, which is a subtype of
-  # `SocketClosedException` and satisfies the test's parent-class
-  # assertion. An earlier revision pinned a bridge IP (172.30.0.98) to
-  # preserve the RST on the wire, but GH ubuntu-24.04 runners exhibited a
-  # one-way-path issue with custom-subnet bridges: the connect handshake
-  # succeeded, but small writes from host → container were never delivered
-  # to the listener, so the parked read timed out at 5s with a
-  # `TimeoutCancellationException` instead of seeing the close. docker-
-  # proxy avoids the bridge entirely.
+  # ── Networking: network_mode: host ─────────────────────────────────────
+  # Two earlier topologies were tried and both failed on GH ubuntu-24.04
+  # runners (while passing locally on WSL2):
+  #
+  #  - bridge IP pin (172.30.0.98, like netem-blackhole): connect handshake
+  #    completed, but small writes from host → container were never
+  #    delivered to the Python recv(1) — the parked read timed out at 5s
+  #    with TimeoutCancellationException instead of seeing the close.
+  #    Custom-subnet bridges on GH runners appear to have one-way-path
+  #    issues with small payloads.
+  #  - 127.0.0.1 port publish (with docker-proxy): same symptom — docker-
+  #    proxy on the runner doesn't appear to deliver the 1-byte payload
+  #    promptly enough for the recv-then-close cycle to fire inside the
+  #    test's 5s budget. Locally docker-proxy passes it instantly.
+  #
+  # `network_mode: host` puts the python listener directly in the host
+  # network namespace — no bridge, no NAT, no docker-proxy, no
+  # conntrack. Loopback to loopback. RST goes straight through and the
+  # read-path wrapper surfaces SocketClosedException on every platform.
+  # The cost is that this service can't use the `socketnet` bridge, but
+  # the rst sidecar doesn't need to talk to any other harness service —
+  # the test client is the only consumer.
   rst:
     build: ./rst
-    networks: [socketnet]
-    ports:
-      - "127.0.0.1:14998:14998"
+    network_mode: host
     healthcheck:
-      # python3 is already in the image; using it for the healthcheck
-      # avoids pulling in netcat/socat just for the probe.
+      # network_mode:host means the listener IS the host's port, so probe
+      # 127.0.0.1 directly. python3 is already in the image; avoids
+      # pulling in netcat/socat just for the probe.
       test:
         - "CMD-SHELL"
         - "python3 -c 'import socket,sys;s=socket.socket();s.settimeout(2);s.connect((\"127.0.0.1\",14998));s.close()' || exit 1"
