@@ -1,11 +1,8 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -135,57 +132,6 @@ class ExceptionIntegrationTests {
                 try {
                     client.read(2.seconds)
                     fail("Should have thrown on reading from closed connection")
-                } catch (e: SocketClosedException) {
-                    e
-                }
-            assertIs<SocketClosedException>(ex)
-
-            client.close()
-            server.close()
-            serverJob.cancel()
-        }
-
-    // ──────────────────────────────────────────────────────────────────
-    // Write to closed peer — BrokenPipe / ConnectionReset path
-    // ──────────────────────────────────────────────────────────────────
-
-    // Replaced by ExceptionConformanceTests.writeAfterProxyDown_producesSocketClosedException +
-    // writeAfterPeerReset_producesSocketClosedException; remove after CI proves the harness path
-    // runs on every platform per TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
-    @Test
-    @Ignore
-    fun writeAfterPeerClose_producesSocketClosedException() =
-        runTestNoTimeSkipping {
-            val server = ServerSocket.allocate()
-            val serverFlow = server.bind()
-            val clientConnected = Mutex(locked = true)
-
-            val serverJob =
-                launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
-                        clientConnected.unlock()
-                        client.close()
-                    }
-                }
-
-            val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
-            clientConnected.lockWithTimeout()
-
-            kotlinx.coroutines.delay(200)
-
-            // Write enough data to overflow the kernel send buffer and trigger the error.
-            // Kernel send buffer is typically ~128 KB; 100 × 8 KB = 800 KB guarantees overflow.
-            val ex =
-                try {
-                    repeat(100) {
-                        client.write(
-                            "x".repeat(8192).toReadBuffer(Charset.UTF8),
-                            1.seconds,
-                        )
-                        kotlinx.coroutines.delay(5)
-                    }
-                    fail("Should have thrown when writing to closed connection")
                 } catch (e: SocketClosedException) {
                     e
                 }

@@ -14,11 +14,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
@@ -149,58 +147,6 @@ class SimpleSocketTests {
             server.close()
             serverJob.cancel()
         }
-
-    // Integration tests that require external network access — all currently @Ignore'd
-    // pending Phase 1 migration to the local harness. Once CI runs the harness path
-    // on every platform, delete (or convert call-sites to the harness equivalent).
-
-    // Deferred — Phase 1 migration target (per old TODO.md). Harness equivalent already covered by HarnessConformanceTests.harnessHttpStatusLine on HarnessConfig.httpPort. Delete or convert to a direct call-site after CI green-light.
-    @Ignore
-    @Test
-    fun httpRawSocketExampleDomain() = readHttp("example.com", false)
-
-    // Deferred — Phase 1 migration target (per old TODO.md). Harness equivalent already covered by HarnessConformanceTests.harnessHttpStatusLine on HarnessConfig.httpPort. Delete or convert to a direct call-site after CI green-light.
-    @Ignore
-    @Test
-    fun httpRawSocketGoogleDomain() = readHttp("google.com", false)
-
-    @Ignore // Depends on external network; replace with local TLS server test
-    @Test
-    fun httpsRawSocketGoogleDomain() = readHttp("google.com", true)
-
-    private fun readHttp(
-        domain: String,
-        tls: Boolean,
-    ) = runTestNoTimeSkipping {
-        var localPort = 1
-        val remotePort = if (tls) 443 else 80
-        val socketOptions = if (tls) SocketOptions.tlsDefault() else SocketOptions()
-        val response =
-            ClientSocket.connect(remotePort, domain, socketOptions = socketOptions, timeout = 10.seconds) { socket ->
-                val request =
-                    """
-GET / HTTP/1.1
-Host: www.$domain
-Connection: close
-
-""".toReadBuffer(Charset.UTF8)
-                val bytesWritten = socket.write(request, 5.seconds)
-                localPort = socket.localPort()
-                assertTrue { bytesWritten > 0 }
-                val response = StringBuilder(socket.readString(timeout = 5.seconds))
-                // Always use UTF8 for reading - NativeBuffer on Linux only supports UTF8,
-                // and HTTP responses from google.com/example.com are ASCII-compatible
-                socket.readFlowString(Charset.UTF8, 5.seconds).collect {
-                    response.append(it)
-                }
-                response
-            }
-        assertTrue { response.startsWith("HTTP/") }
-        assertTrue { response.contains("<html", ignoreCase = true) }
-        assertTrue { response.contains("/html>", ignoreCase = true) }
-        assertNotEquals(1, localPort)
-        checkPort(localPort)
-    }
 
     @Test
     fun serverEcho() =

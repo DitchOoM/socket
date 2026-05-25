@@ -18,15 +18,6 @@ class SimpleNioBlockingSocketTests {
     fun closeWorks() = SimpleSocketTests().closeWorks()
 
     @Test
-    fun httpRawSocketExampleDomain() = SimpleSocketTests().httpRawSocketExampleDomain()
-
-    @Test
-    fun httpRawSocketGoogleDomain() = SimpleSocketTests().httpRawSocketGoogleDomain()
-
-    @Test
-    fun httpsRawSocketGoogleDomain() = SimpleSocketTests().httpsRawSocketGoogleDomain()
-
-    @Test
     fun manyClientsConnectingToOneServer() = SimpleSocketTests().manyClientsConnectingToOneServer()
 
     @Test
