@@ -11,7 +11,6 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -170,108 +169,89 @@ class ExceptionConformanceTests {
         }
 
     /**
-     * Park a `read()` in a background coroutine, drive data through the
-     * proxy from a concurrent writer to fire the `reset_peer` toxic, and
-     * confirm the parked read surfaces a [SocketClosedException] — the
-     * **read path** of every platform's wrapper (counterpart to the two
-     * preceding tests, which exercise the write path).
+     * Park a `read()` in a background coroutine, write one byte to the
+     * deterministic RST sidecar, and confirm the parked read surfaces a
+     * [SocketClosedException] — the **read path** counterpart to the two
+     * preceding write-path tests.
      *
-     * Two empirical findings drove the shape of this test:
+     * Why a dedicated sidecar instead of toxiproxy `reset_peer`:
      *
-     * 1. `reset_peer` is data-flow-triggered. For an idle connection no
-     *    RST is sent and the parked read just hits its own timeout. The
-     *    concurrent writer below pushes a packet through the proxy so the
-     *    toxic activates — its outcome is ignored, the write may succeed
-     *    locally (kernel send buffer) or fail with EPIPE; both are fine
-     *    because we only assert what the *parked read* observes.
+     * - toxiproxy 2.12's `reset_peer` SO_LINGER=0+close()s on the *proxy*
+     *   side. On a busy WSL2/Linux/Docker kernel the FIN/RST ordering on
+     *   the *client* side is scheduling-dependent — the parked read often
+     *   observes EOF (→ `EndOfStream`) before the RST is delivered, and
+     *   on GH `ubuntu-24.04` it flaked badly enough we `@Ignore`'d this
+     *   case after commit `421a676`.
+     * - The `rst` service in docker-compose.yml is a socat listener with
+     *   `so-linger=0` on accepted FDs. `SYSTEM:head -c 1` reads exactly
+     *   one byte from the client then exits, which triggers socat's
+     *   close() — with SO_LINGER=0 set, the kernel sends a real TCP RST
+     *   (no FIN). Deterministic across kernels.
      *
-     * 2. Subtype tightening to [SocketClosedException.ConnectionReset]
-     *    isn't deterministic. toxiproxy 2.12's `reset_peer` sets
-     *    SO_LINGER=0 then close()s — in theory this sends a TCP RST.
-     *    In practice on a busy WSL2/Linux/Docker kernel the FIN ordering
-     *    means the client sometimes sees EOF (→ `EndOfStream`) before the
-     *    RST is delivered (→ `ConnectionReset`), and which one wins is
-     *    scheduling-dependent. Both are valid `SocketClosedException`
-     *    subtypes — the assertion stays loose so the test is portable
-     *    across kernels. A subtype-precise read-path regression would
-     *    need a fixture that can force RST-only (e.g. a sidecar TCP
-     *    server with SO_LINGER=0 and direct close, no graceful shutdown);
-     *    tracked as future work in TODO.md.
+     * The single-byte trigger lets the test order things precisely:
+     *   1. connect to the sidecar
+     *   2. park `read()` (CoroutineStart.UNDISPATCHED → up to first suspend)
+     *   3. `delay(100ms)` to give the read time to actually block on the
+     *      kernel syscall
+     *   4. write one byte → sidecar exits → RST arrives → parked read fails.
      *
-     * 3. `@Ignore`'d until the deterministic RST-only fixture lands. On
-     *    GH ubuntu-24.04 runners the parked read surfaces a
-     *    [kotlinx.coroutines.TimeoutCancellationException] often enough to
-     *    flake this assertion — locally on WSL2 it passes three times in a
-     *    row, but the toxic's data-flow trigger appears scheduling-sensitive
-     *    on the smaller CI runners. Write-path counterparts
-     *    (writeAfterProxyDown, writeAfterPeerReset) still exercise the same
-     *    wrapper contract from the other direction.
+     * Assertion is still parent-class only. With a deterministic RST we
+     * could in principle tighten to [SocketClosedException.ConnectionReset],
+     * but jsNode's stream-shape and Apple's `NWConnection` sometimes
+     * surface a generic close path even when the wire saw RST, and we don't
+     * want to chase that subtype variation across platforms. What matters
+     * here is that *all* platforms' read-path wrappers translate the
+     * connection loss into a `SocketClosedException` — that's the contract.
      */
-    @Ignore
     @Test
     fun pendingReadDuringPeerReset_producesSocketClosedException() =
         runTestNoTimeSkipping {
             if (!isHarnessAvailable()) return@runTestNoTimeSkipping
-            if (!Toxiproxy.isToxiproxyAvailable()) return@runTestNoTimeSkipping
-            Toxiproxy.ensureDefaultProxies()
+            // Connect to the pinned bridge IP (NOT harnessHost()) — docker-proxy
+            // on a 127.0.0.1 publish would convert the RST into a graceful FIN.
+            // See test-harness/docker-compose.yml `rst:` for the rationale.
+            val socket =
+                ClientSocket.connect(
+                    port = HarnessConfig.rstPort,
+                    hostname = HarnessConfig.rstHost,
+                    timeout = 5.seconds,
+                )
             try {
-                val socket =
-                    ClientSocket.connect(
-                        port = HarnessConfig.toxiproxyEchoPort,
-                        hostname = harnessHost(),
-                        timeout = 5.seconds,
-                    )
-                try {
-                    // Prime the connection so we know traffic flows before the toxic.
-                    socket.writeString("hello", Charset.UTF8, 2.seconds)
-                    val echo = socket.read(2.seconds)
-                    echo.readString(echo.remaining(), Charset.UTF8)
-
-                    Toxiproxy.addResetPeerToxic(Toxiproxy.Proxy.ECHO, timeoutMs = 0)
-
-                    coroutineScope {
-                        // Park the read in a child coroutine; CoroutineStart.UNDISPATCHED
-                        // makes it execute up to the first suspend point (the kernel
-                        // read) before async() returns.
-                        val readResult =
-                            async<Throwable?>(start = CoroutineStart.UNDISPATCHED) {
-                                try {
-                                    socket.read(5.seconds)
-                                    null
-                                } catch (t: Throwable) {
-                                    t
-                                }
+                coroutineScope {
+                    // Park the read in a child coroutine; CoroutineStart.UNDISPATCHED
+                    // makes it execute up to the first suspend point (the kernel
+                    // read) before async() returns.
+                    val readResult =
+                        async<Throwable?>(start = CoroutineStart.UNDISPATCHED) {
+                            try {
+                                socket.read(5.seconds)
+                                null
+                            } catch (t: Throwable) {
+                                t
                             }
-                        delay(100.milliseconds) // let the read park on the kernel syscall
-                        // Trigger the data-flow-armed reset_peer toxic from a second
-                        // coroutine. We swallow its outcome — the write may succeed
-                        // locally or EPIPE before the RST reaches us; both are fine.
-                        val writeJob =
-                            async<Throwable?>(start = CoroutineStart.UNDISPATCHED) {
-                                try {
-                                    repeat(20) {
-                                        socket.writeString("trigger", Charset.UTF8, 2.seconds)
-                                        delay(50.milliseconds)
-                                    }
-                                    null
-                                } catch (t: Throwable) {
-                                    t
-                                }
-                            }
-                        val thrown = readResult.await()
-                        writeJob.await()
-                        assertNotNull(thrown, "expected the parked read to throw")
-                        assertTrue(
-                            thrown is SocketClosedException,
-                            "expected SocketClosedException, got " +
-                                "${thrown::class.simpleName}(${thrown.message})",
-                        )
+                        }
+                    delay(100.milliseconds) // let the read park on the kernel syscall
+                    // One byte → sidecar's `head -c 1` exits → socat close() →
+                    // SO_LINGER=0 → TCP RST. The write itself may succeed (it's
+                    // delivered before the RST) or fail with EPIPE on slow
+                    // schedulers; we don't assert on it — only what the *parked
+                    // read* observes.
+                    try {
+                        socket.writeString("x", Charset.UTF8, 2.seconds)
+                    } catch (_: SocketClosedException) {
+                        // Already-RST path: race between this write and the
+                        // arriving RST. Fine — the read is what we're testing.
                     }
-                } finally {
-                    socket.close()
+                    val thrown = readResult.await()
+                    assertNotNull(thrown, "expected the parked read to throw")
+                    assertTrue(
+                        thrown is SocketClosedException,
+                        "expected SocketClosedException, got " +
+                            "${thrown::class.simpleName}(${thrown.message})",
+                    )
                 }
             } finally {
-                Toxiproxy.ensureDefaultProxies()
+                socket.close()
             }
         }
 }

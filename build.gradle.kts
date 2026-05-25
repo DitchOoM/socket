@@ -798,6 +798,8 @@ val generateHarnessConfig by tasks.registering {
                 append("    const val toxiproxyEchoPort: Int = ${req("TOXIPROXY_ECHO_PORT")}\n")
                 append("    const val toxiproxyHttpPort: Int = ${req("TOXIPROXY_HTTP_PORT")}\n")
                 append("    const val toxiproxyTlsPort: Int = ${req("TOXIPROXY_TLS_PORT")}\n")
+                append("    const val rstHost: String = \"${req("RST_HOST")}\"\n")
+                append("    const val rstPort: Int = ${req("RST_PORT")}\n")
                 append("}\n")
             },
         )

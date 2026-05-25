@@ -189,6 +189,50 @@ services:
       start_period: 1s
     restart: unless-stopped
 
+  # L4 — Deterministic TCP RST sidecar. Replaces toxiproxy's `reset_peer`
+  # toxic on the read-path peer-reset test. `reset_peer` is implemented as
+  # SO_LINGER=0 + close() on the *proxy* side, but the FIN/RST ordering on
+  # the *client* side is kernel-scheduling-dependent — on busy GH
+  # ubuntu-24.04 runners a parked read often observes EOF before the RST
+  # arrives, flaking the assertion. This sidecar takes toxiproxy out of the
+  # path: a tiny Python listener calls setsockopt(SO_LINGER, on=1, linger=0)
+  # then close() in that exact order, which puts a real TCP RST on the wire
+  # (no FIN) on every kernel. See ./rst/rst_server.py for the why.
+  #
+  # The single-byte trigger lets the test control timing precisely: park a
+  # read(), then write one byte to arm the RST. See ExceptionConformanceTests
+  # `pendingReadDuringPeerReset_producesSocketClosedException` for the
+  # consumer.
+  #
+  # ── Host-binding note (same gotcha as netem-blackhole) ──────────────────
+  # We do *not* publish a 127.0.0.1 port for this service: docker-proxy on
+  # the loopback publish terminates two separate TCP connections back-to-
+  # back and converts the upstream's RST into a graceful FIN on the host
+  # side (verified empirically — the client sees EndOfStream, not
+  # ConnectionReset). Tests must connect to the pinned bridge IP
+  # (`172.30.0.98:14998`) directly so the SYN traverses the docker bridge,
+  # hits the container's eth0 with no userland-proxy in the middle, and the
+  # kernel-generated RST reaches the client unmodified.
+  rst:
+    build: ./rst
+    networks:
+      socketnet:
+        # Pinned so HarnessConfig.rstHost can be a constant. .98 is well
+        # away from the gateway and from netem-blackhole's .99 to avoid
+        # collisions.
+        ipv4_address: 172.30.0.98
+    healthcheck:
+      # python3 is already in the image; using it for the healthcheck
+      # avoids pulling in netcat/socat just for the probe.
+      test:
+        - "CMD-SHELL"
+        - "python3 -c 'import socket,sys;s=socket.socket();s.settimeout(2);s.connect((\"127.0.0.1\",14998));s.close()' || exit 1"
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+    restart: unless-stopped
+
   # L7 — QUIC echo server. JVM-based, wraps QuicEchoTestServer from
   # socket-quic test sources (built by :socket-quic:quicEchoJar, which is
   # a dependsOn of harnessUp). UDP only; replaces cloudflare-quic.com in
