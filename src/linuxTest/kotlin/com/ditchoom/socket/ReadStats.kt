@@ -50,4 +50,6 @@ actual fun currentTimeMillis(): Long = startMark.elapsedNow().inWholeMillisecond
 
 actual fun isRunningInSimulator(): Boolean = false
 
+internal actual fun isWindowsJvm(): Boolean = false
+
 internal actual fun harnessHost(): String = HarnessConfig.host

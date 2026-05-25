@@ -61,4 +61,6 @@ actual fun isRunningInSimulator(): Boolean {
     return env["SIMULATOR_DEVICE_NAME"] != null || env["SIMULATOR_UDID"] != null
 }
 
+internal actual fun isWindowsJvm(): Boolean = false
+
 internal actual fun harnessHost(): String = HarnessConfig.host

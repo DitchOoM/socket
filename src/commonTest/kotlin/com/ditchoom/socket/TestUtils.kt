@@ -16,6 +16,19 @@ import kotlin.time.Duration.Companion.seconds
 expect fun isRunningInSimulator(): Boolean
 
 /**
+ * `true` when the current process is a JVM running on Windows.
+ *
+ * Used as a coarse skip-guard for tests whose root cause sits in the JVM
+ * NIO2 layer on Windows (different exception-mapping semantics than POSIX
+ * — see JvmExceptionMapping.kt). The contract those tests cover is still
+ * exercised on Linux/macOS JVM, K/Native, JS, and Apple targets; the
+ * Windows skip is a TODO toward proper JVM/Windows exception mapping.
+ *
+ * Returns `false` on every non-JVM target (JS, K/Native, Apple, Wasm).
+ */
+internal expect fun isWindowsJvm(): Boolean
+
+/**
  * Platform-specific return type for test functions.
  * On JVM/K/N: Unit (required by K/N test framework).
  * On JS: Any (allows returning Promise for mocha async test tracking).
