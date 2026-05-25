@@ -117,14 +117,26 @@ jobs:
         run: |
           find socket-quic/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
 
-      # Native macOS test-harness fixture — homebrew socat + nginx in place of
-      # the Docker / Colima VM. Apple K/N tests only need an L0/L6 peer, not
-      # toxiproxy/netem (Linux-kernel-bound; tests skip via existing guards).
-      # Drops the Colima VZ-driver boot flake that was blocking this job. See
-      # HANDOFF.md (Q1) for the full rationale. up.sh does cert gen + keychain
-      # trust + JVM keystore trust + service start in one go.
-      - name: Bring up macOS test harness (native socat + nginx)
-        run: bash test-harness/macos/up.sh
+      # macOS test harness — Colima with the qemu VM driver. The default VZ
+      # driver fails to boot on the current macos-latest image (`error
+      # starting vm: error at 'creating and starting': exit status 1`). qemu
+      # is the documented-stable fallback; ~30s slower to boot but always
+      # works. (We tried the native homebrew socat + nginx fixture too —
+      # works for L0/HTTP, but Apple Network.framework throws
+      # SSLProtocolException on every TLS handshake against native nginx.
+      # Root cause not nailed down; sticking with the proven Docker stack.)
+      - name: Install Colima (qemu driver)
+        run: |
+          brew install colima docker
+          colima start --vm-type=qemu --cpu 2 --memory 4 --disk 20
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      - name: Trust harness CA (macOS keychain)
+        run: |
+          sudo security add-trusted-cert -d -r trustRoot \
+              -k /Library/Keychains/System.keychain test-harness/tls/certs/ca.crt
 
       - name: Run Apple tests
         run: >-
@@ -139,11 +151,14 @@ jobs:
           ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Tear down before the publish + upload steps so a hung socat/nginx
-      # doesn't bleed into the next job that might reuse the runner.
-      - name: Bring down macOS test harness
+      # Tear down before the publish + upload steps so a stuck container
+      # doesn't keep the runner pinned. `colima delete` clears the VM state
+      # so a subsequent job on the same runner gets a clean slate.
+      - name: Bring down test harness
         if: always()
-        run: bash test-harness/macos/down.sh
+        run: |
+          cd test-harness && docker compose down -v || true
+          colima delete -f || true
 
       - name: Upload macOS quiche native libs
         if: always()
