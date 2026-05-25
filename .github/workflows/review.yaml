@@ -40,9 +40,12 @@ jobs:
       # socket-quic:jvmTest is excluded on Windows because no Windows quiche
       # JNI native is packaged into the JAR — QuicheApiLoader throws
       # NoClassDefFoundError. Building a windows-x64 native is tracked as a
-      # follow-up; see TODO.md.
+      # follow-up; see TODO.md. The leading colon on `:jvmTest` scopes the
+      # task to the root project; the unqualified `jvmTest` (Gradle multi-
+      # project name matching) ran across every subproject and would have
+      # pulled socket-quic:jvmTest back in.
       - name: Run JVM tests
-        run: ./gradlew jvmTest --no-configuration-cache
+        run: ./gradlew :jvmTest --no-configuration-cache
 
   docs:
     name: "Validate Docs Generation"
