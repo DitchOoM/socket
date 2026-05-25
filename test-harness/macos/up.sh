@@ -29,20 +29,17 @@ brew list nginx >/dev/null 2>&1 || brew install nginx
 # ── TLS certs ─────────────────────────────────────────────────────────────────
 bash "$HARNESS_DIR/tls/gen-certs.sh"
 
-# ── CA trust (keychain + JVM keystore) ────────────────────────────────────────
-# Keychain covers Apple Network.framework / NSURLSession (K/N targets).
-# JVM keystore covers any JVM tests running on the same runner.
+# ── CA trust (keychain) ───────────────────────────────────────────────────────
+# Keychain trust is what Apple K/N tests need — Network.framework validates
+# against /Library/Keychains/System.keychain. The macOS test command in
+# build-apple.yaml runs `:macosX64Test :macosArm64Test :iosSimulatorArm64Test
+# :socket-quic:jvmTest` etc.; none of them route harness TLS through JSSE
+# (Apple targets are Network.framework-validated, socket-quic:jvmTest does not
+# hit harness TLS), so the JVM keystore step that lived here previously was
+# both unused and brittle (`keytool error: Input not an X.509 certificate`
+# under sudo on macos-latest Zulu 21).
 sudo security add-trusted-cert -d -r trustRoot \
     -k /Library/Keychains/System.keychain "$CERTS_DIR/ca.crt"
-
-sudo keytool -delete -alias harness-root \
-    -keystore "$JAVA_HOME/lib/security/cacerts" \
-    -storepass changeit 2>/dev/null || true
-sudo keytool -importcert -trustcacerts \
-    -file "$CERTS_DIR/ca.crt" \
-    -alias harness-root \
-    -keystore "$JAVA_HOME/lib/security/cacerts" \
-    -storepass changeit -noprompt
 
 # ── echo (L0) — socat fork-per-connection ─────────────────────────────────────
 # Mirrors test-harness/echo/Dockerfile: -T 60 inactivity timeout, fork on
