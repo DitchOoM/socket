@@ -117,21 +117,32 @@ jobs:
         run: |
           find socket-quic/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
 
-      # macOS test harness — Colima with the qemu VM driver. The default VZ
-      # driver fails to boot on the current macos-latest image (`error
-      # starting vm: error at 'creating and starting': exit status 1`). qemu
-      # is the documented-stable fallback; ~30s slower to boot but always
-      # works. (We tried the native homebrew socat + nginx fixture too —
-      # works for L0/HTTP, but Apple Network.framework throws
-      # SSLProtocolException on every TLS handshake against native nginx.
-      # Root cause not nailed down; sticking with the proven Docker stack.)
-      - name: Install Colima (qemu driver)
+      # macOS test harness — Apple `container` (Path B per HANDOFF Q1).
+      # Path A (native homebrew socat + nginx) → 12 Apple K/N TLS failures
+      # against native nginx. Path C (Colima qemu) → host agent crashes on
+      # macos-latest (`host agent process has exited: exit status 2`).
+      # Apple `container` uses macOS-native Virtualization.framework Lite,
+      # ships with a `compose` subcommand, and avoids Lima/QEMU entirely.
+      # Bridge networking + NET_ADMIN cap support are the open questions;
+      # if the netem-blackhole service fails to start, the
+      # isNetemAvailable() probe in TestUtils will skip the two
+      # netem-dependent SimpleSocketTests cleanly and the rest of the
+      # harness still serves its purpose.
+      - name: Install Apple Container
         run: |
-          # qemu-img is required by colima's qemu driver; not transitively
-          # pulled by the colima formula. Without it: "cannot use vmType:
-          # 'qemu', error: qemu-img not found".
-          brew install colima docker qemu
-          colima start --vm-type=qemu --cpu 2 --memory 4 --disk 20
+          brew install --quiet container
+          container system start
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      - name: Trust harness CA (macOS keychain)
+        run: |
+          sudo security add-trusted-cert -d -r trustRoot \
+              -k /Library/Keychains/System.keychain test-harness/tls/certs/ca.crt
+
+      - name: Bring up harness via Apple container compose
+        run: container compose -f test-harness/docker-compose.yml up -d --wait
 
       - name: Generate harness TLS certs
         run: bash test-harness/tls/gen-certs.sh
@@ -155,13 +166,13 @@ jobs:
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Tear down before the publish + upload steps so a stuck container
-      # doesn't keep the runner pinned. `colima delete` clears the VM state
-      # so a subsequent job on the same runner gets a clean slate.
+      # doesn't pin the runner. `container system stop` releases the
+      # virtualization-framework daemon.
       - name: Bring down test harness
         if: always()
         run: |
-          cd test-harness && docker compose down -v || true
-          colima delete -f || true
+          container compose -f test-harness/docker-compose.yml down -v || true
+          container system stop || true
 
       - name: Upload macOS quiche native libs
         if: always()
