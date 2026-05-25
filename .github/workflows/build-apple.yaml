@@ -117,42 +117,27 @@ jobs:
         run: |
           find socket-quic/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
 
-      # macOS test harness — Apple `container` (Path B per HANDOFF Q1).
-      # Path A (native homebrew socat + nginx) → 12 Apple K/N TLS failures
-      # against native nginx. Path C (Colima qemu) → host agent crashes on
-      # macos-latest (`host agent process has exited: exit status 2`).
-      # Apple `container` uses macOS-native Virtualization.framework Lite,
-      # ships with a `compose` subcommand, and avoids Lima/QEMU entirely.
-      # Bridge networking + NET_ADMIN cap support are the open questions;
-      # if the netem-blackhole service fails to start, the
-      # isNetemAvailable() probe in TestUtils will skip the two
-      # netem-dependent SimpleSocketTests cleanly and the rest of the
-      # harness still serves its purpose.
-      - name: Install Apple Container
-        run: |
-          brew install --quiet container
-          # `container system start` prompts interactively for the kata-containers
-          # kernel install on first run; pipe `yes` so it accepts the default.
-          yes | container system start
-
-      - name: Generate harness TLS certs
-        run: bash test-harness/tls/gen-certs.sh
-
-      - name: Trust harness CA (macOS keychain)
-        run: |
-          sudo security add-trusted-cert -d -r trustRoot \
-              -k /Library/Keychains/System.keychain test-harness/tls/certs/ca.crt
-
-      - name: Bring up harness via Apple container compose
-        run: container compose -f test-harness/docker-compose.yml up -d --wait
-
-      - name: Generate harness TLS certs
-        run: bash test-harness/tls/gen-certs.sh
-
-      - name: Trust harness CA (macOS keychain)
-        run: |
-          sudo security add-trusted-cert -d -r trustRoot \
-              -k /Library/Keychains/System.keychain test-harness/tls/certs/ca.crt
+      # macOS harness — disabled. Three fixture paths attempted on macos-latest;
+      # all failed (HANDOFF.md Q1 + TODO.md):
+      #   Path A (native homebrew socat + nginx)
+      #       → Apple Network.framework throws SSLProtocolException on every
+      #         TLS handshake against native nginx (12 tests).
+      #   Path B (Apple `container` CLI, 0.12.3)
+      #       → CLI surface incomplete: no `system start` subcommand
+      #         (exit 64 = usage error).
+      #   Path C (Colima with --vm-type=qemu)
+      #       → lima host agent crashes on macos-latest's image
+      #         ("host agent process has exited: exit status 2").
+      #
+      # HARNESS_DISABLED=true tells the Gradle harness lifecycle to no-op (see
+      # runHarnessCmd in build.gradle.kts), and isHarnessAvailable() returns
+      # false at runtime so every harness-backed test (TlsConformanceTests,
+      # ExceptionConformanceTests, etc.) skips cleanly via the existing guard.
+      # Apple K/N target unit tests, ktlint, and socket-quic:jvmTest still run
+      # — they don't depend on the harness. Cross-platform contracts are still
+      # validated on build-linux's JVM/K-Native/jsNode runs.
+      - name: Disable harness on macOS (no working Docker fixture)
+        run: echo "HARNESS_DISABLED=true" >> $GITHUB_ENV
 
       - name: Run Apple tests
         run: >-
@@ -166,15 +151,6 @@ jobs:
         run: >-
           ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test
           --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Tear down before the publish + upload steps so a stuck container
-      # doesn't pin the runner. `container system stop` releases the
-      # virtualization-framework daemon.
-      - name: Bring down test harness
-        if: always()
-        run: |
-          container compose -f test-harness/docker-compose.yml down -v || true
-          container system stop || true
 
       - name: Upload macOS quiche native libs
         if: always()

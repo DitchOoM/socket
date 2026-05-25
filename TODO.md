@@ -26,6 +26,22 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
 
 ## CI follow-ups (PR #48 CI rework)
 
+- [ ] **macOS harness coverage.** All three fixture paths attempted on
+  `macos-latest` failed:
+    - **Path A** (homebrew socat + nginx): Apple Network.framework throws
+      `SSLProtocolException` on every TLS handshake against native nginx
+      (12 tests). Root cause unclear — possibly an ALPN or extension
+      negotiation gap.
+    - **Path B** (Apple `container` 0.12.3): CLI surface incomplete; no
+      `container system start` subcommand, exit 64.
+    - **Path C** (Colima `--vm-type=qemu`): Lima host agent crashes on the
+      current macos-latest image (`exit status 2`); VZ driver also broken
+      (the original handoff symptom).
+  Current state: `HARNESS_DISABLED=true` set in `build-apple.yaml`, harness-
+  backed Apple K/N tests skip via `isHarnessAvailable()`. Cross-platform
+  contracts are still validated on Linux JVM/K-Native/jsNode. Re-evaluate
+  when (a) macos-13/14 runners reopen with Colima support, (b) Apple
+  `container` grows a compose plugin, or (c) we adopt a self-hosted Mac.
 - [ ] **Linux K/Native TLS hostname verification.** `LinuxClientSocket` (BoringSSL via cinterop) validates the cert *chain* but doesn't enforce SAN/hostname matching on top — a cert with `SAN: other.test` succeeds when connecting via `127.0.0.1` as long as the chain is trusted. Only surfaced now that CI installs harness-root into the system trust store; previously the untrusted chain rejected the connect for the wrong reason. `tlsHarnessWrongHostFailsWithDefault` skips on `isLinuxNative()` until BoringSSL `SSL_set1_host` (or equivalent SAN check) is wired through the connect path. Contract still validated on JVM, Apple, and jsNode.
 - [ ] **`socket-quic:jvmTest` quiche-0.28 panic.** Aborts with a non-unwinding panic from `quiche_conn_recv` (`quiche/src/ffi.rs:2059:14`) → SIGABRT, exit value 134. Observed on both Linux x64 and Windows in CI. Pre-existing — not introduced by the harness migration. Currently masked with `continue-on-error: true` in `build-linux.yaml` and excluded from the Windows job entirely. Needs a reproducer + a fix in the JNI shim or a quiche bump (0.28 → 0.29).
 - [ ] **Windows JVM Tests mapping gaps** (`JvmExceptionMapping.kt`). Five tests currently skip on Windows via `isWindowsJvm()`:
