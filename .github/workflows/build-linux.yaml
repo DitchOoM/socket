@@ -89,8 +89,20 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Desktop cross targets + all four Android NDK targets. The Android targets
+      # are needed by :socket-quic:buildAndroidJni* (cargo-ndk), which Gradle
+      # transitively invokes from :socket-quic:linkDebugTestLinuxArm64 /
+      # publishToMavenLocal even though this job runs on x64. Installing them
+      # here (instead of leaving cargo-ndk to fail later inside the continue-
+      # on-error \"Build quiche\" step) keeps the JNI build deterministic.
       - name: Add Rust cross-compile targets
-        run: rustup target add aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
+        run: |
+          rustup target add aarch64-unknown-linux-gnu x86_64-pc-windows-gnu \
+              aarch64-linux-android armv7-linux-androideabi \
+              x86_64-linux-android i686-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --quiet
 
       # Combined quiche + JNI shim cache — shims now live under
       # socket-quic/libs/quiche/<platform>/lib/ alongside libquiche.{so,a},
