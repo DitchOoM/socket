@@ -11,7 +11,6 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -95,7 +94,6 @@ class QuicStreamMuxTests {
                             conn.close()
                         }
                     }
-                delay(100)
 
                 // Client: send via StreamMux
                 val clientEngine =

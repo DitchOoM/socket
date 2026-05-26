@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -54,15 +54,14 @@ class QuicLocalServerTests {
                         launch(Dispatchers.IO) {
                             server.connections {
                                 handlerRan.complete(Unit)
-                                delay(3.seconds)
+                                awaitCancellation()
                             }
                         }
-                    delay(100)
 
                     val clientJob =
                         launch(Dispatchers.IO) {
                             clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                                delay(3.seconds)
+                                awaitCancellation()
                             }
                         }
 
@@ -99,7 +98,6 @@ class QuicLocalServerTests {
                                 stream.close()
                             }
                         }
-                    delay(100)
 
                     val clientJob =
                         launch(Dispatchers.IO) {

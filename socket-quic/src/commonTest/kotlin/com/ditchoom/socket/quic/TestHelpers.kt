@@ -6,6 +6,8 @@ import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -31,3 +33,27 @@ fun runQuicTest(block: suspend CoroutineScope.() -> Unit): TestResult =
             withTimeout(15.seconds) { block() }
         }
     }
+
+/**
+ * Reactive replacement for `delay(N)` followed by an assertion: yields the dispatcher
+ * until [predicate] holds, with [timeout] as a wall-clock backstop. Converges within
+ * one scheduler tick once the awaited event fires — no fixed wait, no polling on
+ * wall-clock time, no spinning the CPU.
+ *
+ * Use this anywhere a test was written like `delay(500) // let X propagate; assertEquals(…)`.
+ * The [reason] is surfaced in the [TimeoutCancellationException] message when the
+ * predicate never holds, making timeouts diagnose themselves.
+ */
+suspend fun awaitUntil(
+    timeout: Duration,
+    reason: String,
+    predicate: () -> Boolean,
+) {
+    try {
+        withTimeout(timeout) {
+            while (!predicate()) yield()
+        }
+    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+        throw AssertionError("awaitUntil($timeout) timed out: $reason")
+    }
+}

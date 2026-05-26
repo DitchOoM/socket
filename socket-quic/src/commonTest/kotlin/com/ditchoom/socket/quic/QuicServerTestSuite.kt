@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -54,15 +54,18 @@ abstract class QuicServerTestSuite {
                 launch {
                     server.connections {
                         handlerRan.complete(Unit)
-                        delay(2.seconds)
+                        // Hold the handler open until the test cancels this coroutine —
+                        // reactive (vs. delay(2s) which was just guessing).
+                        awaitCancellation()
                     }
                 }
-            delay(100)
 
             val clientJob =
                 launch {
                     clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                        delay(2.seconds)
+                        // Same — stay connected until cancelled. The test races handlerRan
+                        // against a 10s outer timeout and cancels both jobs once satisfied.
+                        awaitCancellation()
                     }
                 }
 
@@ -90,7 +93,6 @@ abstract class QuicServerTestSuite {
                         stream.close()
                     }
                 }
-            delay(100)
 
             val clientJob =
                 launch {
@@ -135,16 +137,15 @@ abstract class QuicServerTestSuite {
                             connected++
                             if (connected >= count) handlersRan.complete(Unit)
                         }
-                        delay(2.seconds)
+                        awaitCancellation()
                     }
                 }
-            delay(100)
 
             val clientJobs =
                 (1..count).map {
                     launch {
                         clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            delay(2.seconds)
+                            awaitCancellation()
                         }
                     }
                 }
@@ -184,14 +185,13 @@ abstract class QuicServerTestSuite {
                     launch {
                         server.connections {
                             handlerRan.complete(Unit)
-                            delay(500)
+                            awaitCancellation()
                         }
                     }
-                delay(50)
                 val clientJob =
                     launch {
                         clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 5.seconds) {
-                            delay(100)
+                            awaitCancellation()
                         }
                     }
                 kotlinx.coroutines.withTimeout(5.seconds) { handlerRan.await() }

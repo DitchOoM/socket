@@ -4,7 +4,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -60,16 +60,15 @@ class ServerConnectionTimingTest {
                     launch(Dispatchers.IO) {
                         server.connections {
                             handlerRan.complete(Unit)
-                            delay(3.seconds) // keep alive
+                            awaitCancellation()
                         }
                     }
-                delay(100)
 
                 val clientEngine = engineOrSkip()
                 val clientJob =
                     launch(Dispatchers.IO) {
                         clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            delay(3.seconds) // keep connection alive
+                            awaitCancellation() // keep connection alive
                         }
                     }
 
@@ -96,10 +95,9 @@ class ServerConnectionTimingTest {
                         server.connections {
                             val stream = acceptStream()
                             streamAccepted.complete(stream.streamId.id)
-                            delay(3.seconds)
+                            awaitCancellation()
                         }
                     }
-                delay(100)
 
                 val clientEngine = engineOrSkip()
                 val clientJob =
@@ -113,7 +111,7 @@ class ServerConnectionTimingTest {
                             buf.writeString("hello", Charset.UTF8)
                             buf.resetForRead()
                             stream.write(buf, 5.seconds)
-                            delay(3.seconds) // keep connection alive
+                            awaitCancellation() // keep connection alive
                         }
                     }
 
@@ -147,7 +145,6 @@ class ServerConnectionTimingTest {
                             stream.close()
                         }
                     }
-                delay(100)
 
                 // Client: open stream, write, read echo
                 val clientEngine = engineOrSkip()
