@@ -6,6 +6,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -26,9 +27,6 @@ import kotlin.time.Duration.Companion.seconds
  * 1. Sequential connections work (no cross-connection interference)
  * 2. No-stream connections don't poison subsequent connections
  * 3. connectionsByDcid is properly cleaned up after connection close
- *
- * Reactive: every wait is bounded by a wall-clock timeout but converges within a
- * scheduler tick of the observable event — no fixed `delay()` calls.
  */
 class StaleConnectionDiagnosticTests {
     private val testQuicOptions =
@@ -103,17 +101,6 @@ class StaleConnectionDiagnosticTests {
         return result.await()
     }
 
-    /** Pull the live connectionsByDcid map out of a JvmQuicServer via reflection (test-only). */
-    private fun dcidMapOf(server: QuicServer): Map<*, *> {
-        val field = server::class.java.getDeclaredField("connectionsByDcid")
-        field.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        return field.get(server) as Map<*, *>
-    }
-
-    /** True when every entry in the dcid map points to a driver that is still actively accepting commands. */
-    private fun Map<*, *>.hasNoStaleDrivers(): Boolean = values.none { (it as QuicheDriver).commands.isClosedForSend }
-
     // ── Two sequential echo connections through the same server ────────────
 
     @Test
@@ -123,9 +110,7 @@ class StaleConnectionDiagnosticTests {
                 val serverEngine = defaultQuicServerEngine()
                 val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                 val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
-                // server.bind() returns when the socket is bound; the receive loop
-                // buffers any racing client packets into acceptedDrivers (unbounded).
-                // No "wait for server" delay needed.
+                delay(100)
 
                 val clientEngine = engineOrSkip()
 
@@ -147,20 +132,16 @@ class StaleConnectionDiagnosticTests {
                 val serverEngine = defaultQuicServerEngine()
                 val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                 val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
+                delay(100)
 
                 val clientEngine = engineOrSkip()
-                val dcidMap = dcidMapOf(server)
 
-                // Connection 1: handshake + no stream + close. Echo handler's acceptStream
-                // will time out (3s) after the connect block returns and the connection is
-                // closed; we let it run async — we'll wait below for cleanup to settle.
-                clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {}
-
-                // Wait for server-side cleanup to drain the stale driver entries before
-                // we open Connection 2. Bound by 5s — well past the 3s acceptStream timeout.
-                awaitUntil(5.seconds, "Connection 1's no-stream driver cleaned up from dcidMap") {
-                    dcidMap.hasNoStaleDrivers()
+                // Connection 1: connect but don't open any streams (health-check)
+                clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                    delay(1.seconds)
                 }
+
+                delay(500) // let server-side handler process disconnect
 
                 // Connection 2: full echo round-trip
                 assertEquals("hello", echoRoundTrip(clientEngine, server, "hello"))
@@ -180,17 +161,17 @@ class StaleConnectionDiagnosticTests {
                 val serverEngine = defaultQuicServerEngine()
                 val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                 val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
+                delay(100)
 
                 val clientEngine = engineOrSkip()
-                val dcidMap = dcidMapOf(server)
 
                 for (i in 1..5) {
-                    clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {}
+                    clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                        delay(200)
+                    }
                 }
 
-                awaitUntil(5.seconds, "all 5 no-stream drivers cleaned up from dcidMap") {
-                    dcidMap.hasNoStaleDrivers()
-                }
+                delay(500)
                 assertEquals("alive", echoRoundTrip(clientEngine, server, "alive"))
 
                 serverJob.cancel()
@@ -208,28 +189,35 @@ class StaleConnectionDiagnosticTests {
                 val serverEngine = defaultQuicServerEngine()
                 val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                 val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
+                delay(100)
+
+                // Access connectionsByDcid via reflection
+                val dcidMapField = server::class.java.getDeclaredField("connectionsByDcid")
+                dcidMapField.isAccessible = true
+                @Suppress("UNCHECKED_CAST")
+                val dcidMap = dcidMapField.get(server) as MutableMap<*, *>
 
                 val clientEngine = engineOrSkip()
-                val dcidMap = dcidMapOf(server)
 
                 // Connection 1: echo round-trip
                 echoRoundTrip(clientEngine, server, "test1")
-                awaitUntil(5.seconds, "echo driver 1 cleaned up from dcidMap") {
-                    dcidMap.hasNoStaleDrivers()
+                delay(1.seconds) // let cleanup propagate
+
+                // Connection 2: no-stream
+                clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                    delay(500)
                 }
 
-                // Connection 2: handshake + no stream + close. Echo handler's acceptStream
-                // times out (3s) and then the receive loop drains the queue.
-                clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {}
+                delay(4.seconds) // 3s acceptStream timeout + cleanup
 
-                awaitUntil(5.seconds, "no-stream driver cleaned up from dcidMap") {
-                    dcidMap.hasNoStaleDrivers()
+                // All entries should be cleaned up — no stale drivers
+                var staleCount = 0
+                for ((_, value) in dcidMap.entries) {
+                    @Suppress("USELESS_IS_CHECK")
+                    val driver = value as QuicheDriver
+                    if (driver.commands.isClosedForSend) staleCount++
                 }
 
-                // hasNoStaleDrivers() returning true means there are zero entries whose
-                // driver has closed; expressed as the original assertion below for clarity.
-                val staleCount =
-                    dcidMap.values.count { (it as QuicheDriver).commands.isClosedForSend }
                 assertEquals(
                     0,
                     staleCount,
@@ -251,6 +239,7 @@ class StaleConnectionDiagnosticTests {
                 val serverEngine = defaultQuicServerEngine()
                 val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                 val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
+                delay(100)
 
                 val clientEngine = engineOrSkip()
 

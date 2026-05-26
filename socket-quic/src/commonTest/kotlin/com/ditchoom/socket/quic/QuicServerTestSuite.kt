@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -53,22 +54,21 @@ abstract class QuicServerTestSuite {
                 launch {
                     server.connections {
                         handlerRan.complete(Unit)
-                        // Handler returns immediately; JvmQuicServer.connections() wraps each
-                        // handler in finally{conn.close()}, so the connection cleans up via
-                        // the framework's normal path. awaitCancellation() here would *not*
-                        // be cancelled by serverJob.cancel() — the handler runs on the
-                        // engine's scope, not serverJob's — and the connect-block's
-                        // finally chain would deadlock on driver cleanup (CI-only race).
+                        delay(2.seconds)
+                    }
+                }
+            delay(100)
+
+            val clientJob =
+                launch {
+                    clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                        delay(2.seconds)
                     }
                 }
 
-            clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                // Empty block — handshake completes, then the connection closes when this
-                // returns. Same reactive shape as the server handler.
-            }
-
             kotlinx.coroutines.withTimeout(10.seconds) { handlerRan.await() }
 
+            clientJob.cancel()
             serverJob.cancel()
             server.close()
         }
@@ -90,6 +90,7 @@ abstract class QuicServerTestSuite {
                         stream.close()
                     }
                 }
+            delay(100)
 
             val clientJob =
                 launch {
@@ -134,18 +135,16 @@ abstract class QuicServerTestSuite {
                             connected++
                             if (connected >= count) handlersRan.complete(Unit)
                         }
-                        // Return immediately — framework's finally{conn.close()} handles the
-                        // rest. Holding open via awaitCancellation() ties handler lifetime to
-                        // the engine scope (not serverJob's), and the connect-block's close
-                        // chain deadlocks on driver cleanup in CI's slower timing.
+                        delay(2.seconds)
                     }
                 }
+            delay(100)
 
             val clientJobs =
                 (1..count).map {
                     launch {
                         clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            // Empty — connect returns when block returns.
+                            delay(2.seconds)
                         }
                     }
                 }
@@ -185,22 +184,18 @@ abstract class QuicServerTestSuite {
                     launch {
                         server.connections {
                             handlerRan.complete(Unit)
-                            // Return immediately — JvmQuicServer's connections() wraps each
-                            // handler in `try { handler() } finally { conn.close() }`, so a
-                            // returning handler triggers the same clean-shutdown path that the
-                            // original delay(500) + cancel did. Using awaitCancellation() here
-                            // caused a CI hang: cancelling serverJob breaks the
-                            // for(driver in acceptedDrivers) loop, but does NOT cancel the
-                            // already-launched handler (it's on the engine's scope, not
-                            // serverJob's), so awaitCancellation() stays suspended forever and
-                            // the JvmQuicConnection.close() chain in the connect-block's
-                            // finally deadlocks waiting on driver.commands cleanup.
+                            delay(500)
                         }
                     }
-                clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 5.seconds) {
-                    // Empty block — connection establishes, then closes when block returns.
-                }
+                delay(50)
+                val clientJob =
+                    launch {
+                        clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 5.seconds) {
+                            delay(100)
+                        }
+                    }
                 kotlinx.coroutines.withTimeout(5.seconds) { handlerRan.await() }
+                clientJob.cancel()
                 serverJob.cancel()
                 server.close()
             }

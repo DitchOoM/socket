@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -53,20 +54,21 @@ class QuicLocalServerTests {
                         launch(Dispatchers.IO) {
                             server.connections {
                                 handlerRan.complete(Unit)
-                                // Return immediately; framework closes the connection via
-                                // finally{conn.close()}. awaitCancellation() here doesn't see
-                                // serverJob.cancel() because the handler runs on the engine's
-                                // scope, not serverJob's — the resulting deadlock surfaces on
-                                // slower CI runners.
+                                delay(3.seconds)
+                            }
+                        }
+                    delay(100)
+
+                    val clientJob =
+                        launch(Dispatchers.IO) {
+                            clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                                delay(3.seconds)
                             }
                         }
 
-                    clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                        // Empty — connect returns when block returns.
-                    }
-
                     withTimeout(10.seconds) { handlerRan.await() }
 
+                    clientJob.cancel()
                     serverJob.cancel()
                 }
             } finally {
@@ -97,6 +99,7 @@ class QuicLocalServerTests {
                                 stream.close()
                             }
                         }
+                    delay(100)
 
                     val clientJob =
                         launch(Dispatchers.IO) {
