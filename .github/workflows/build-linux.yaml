@@ -121,6 +121,27 @@ jobs:
           path: socket-quic/libs/quiche/linux-arm64
           key: quiche-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
+      # Cache the cargo target/ trees for all four quiche cross-compile
+      # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
+      # existing `Cache quiche Linux x64/arm64` entries above only preserve
+      # the FINAL JNI shim outputs under socket-quic/libs/quiche/<platform>/
+      # lib/ — they don't cover cargo's intermediate target/<triple>/release/
+      # where libquiche.a is built. Without this, even on full cache-hit the
+      # "Build quiche native libs" shell step unconditionally invokes cargo
+      # for all four targets, recompiling the whole quiche crate from scratch
+      # (~3-5 min × 4 targets). With target/ cached, cargo sees fingerprints
+      # match and the build is near-instant. Also preserves the cloned quiche
+      # source itself (saves ~5-30s git clone). Key includes the JNI shim
+      # source hash so the cache invalidates on either change.
+      # restore-keys gives a partial-hit on version bumps so cargo incremental
+      # recompile picks up from the previous build instead of from zero.
+      - name: Cache quiche cargo target/ (all triples)
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/build/quiche
+          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-cargo-target-v1-
+
       - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
@@ -309,13 +330,16 @@ jobs:
           --rerun-tasks
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Bisection — half A: classes 1-9 in alphabetical run order
-      # (Io* / Jvm* / Linux* / QuicByteStream / QuicConnectionState) PLUS the 3
-      # flaky classes as the canary. If this step HANGS → poisoner lives in
-      # half A; next cycle bisects within half A. If it PASSES while half B
-      # hangs → poisoner is in half B. continue-on-error: true so both halves
-      # always run.
-      - name: Diagnostic — bisect half A + flaky canary
+      # Bisection narrowed by run 26466246195: Half A (classes 1-9) reproduces
+      # the hang; Half B (classes 10-18) is clean. The flaky canary's first
+      # two tests still pass in Half A, then everything after hangs — looks
+      # like a threshold-crossing resource leak in classes 1-9. Now bisecting
+      # Half A in halves.
+      #
+      # Quarter A1: classes 1-5 (IoUringUdpServerChannel / JvmQuicConnection /
+      # JvmQuicServerLifecycle / JvmQuicServerTest / LinuxQuicAddressMarshalling)
+      # + flaky canary.
+      - name: Diagnostic — bisect quarter A1 (classes 1-5) + flaky canary
         continue-on-error: true
         env:
           RUN_FLAKY_TESTS: "1"
@@ -326,35 +350,24 @@ jobs:
           --tests "com.ditchoom.socket.quic.JvmQuicServerLifecycleTestSuite"
           --tests "com.ditchoom.socket.quic.JvmQuicServerTestSuite"
           --tests "com.ditchoom.socket.quic.LinuxQuicAddressMarshallingTest"
-          --tests "com.ditchoom.socket.quic.LinuxQuicServerTests"
-          --tests "com.ditchoom.socket.quic.LinuxQuicSmokeTest"
-          --tests "com.ditchoom.socket.quic.QuicByteStreamTests"
-          --tests "com.ditchoom.socket.quic.QuicConnectionStateTests"
           --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
           --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
           --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
           --rerun-tasks
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Bisection — half B: classes 10-18 in alphabetical run order
-      # (QuicConnection / QuicEcho / QuicError / QuicHarnessIntegration /
-      # QuicIntegration / QuicLocalServer / QuicOptions / QuicStreamId /
-      # QuicStreamMuxCommon) PLUS the 3 flaky classes.
-      - name: Diagnostic — bisect half B + flaky canary
+      # Quarter A2: classes 6-9 (LinuxQuicServer / LinuxQuicSmoke /
+      # QuicByteStream / QuicConnectionState) + flaky canary.
+      - name: Diagnostic — bisect quarter A2 (classes 6-9) + flaky canary
         continue-on-error: true
         env:
           RUN_FLAKY_TESTS: "1"
         run: >-
           ./gradlew :socket-quic:jvmTest
-          --tests "com.ditchoom.socket.quic.QuicConnectionTests"
-          --tests "com.ditchoom.socket.quic.QuicEchoServerTests"
-          --tests "com.ditchoom.socket.quic.QuicErrorTests"
-          --tests "com.ditchoom.socket.quic.QuicHarnessIntegrationTests"
-          --tests "com.ditchoom.socket.quic.QuicIntegrationTests"
-          --tests "com.ditchoom.socket.quic.QuicLocalServerTests"
-          --tests "com.ditchoom.socket.quic.QuicOptionsTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamIdTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamMuxCommonTests"
+          --tests "com.ditchoom.socket.quic.LinuxQuicServerTests"
+          --tests "com.ditchoom.socket.quic.LinuxQuicSmokeTest"
+          --tests "com.ditchoom.socket.quic.QuicByteStreamTests"
+          --tests "com.ditchoom.socket.quic.QuicConnectionStateTests"
           --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
           --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
           --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
