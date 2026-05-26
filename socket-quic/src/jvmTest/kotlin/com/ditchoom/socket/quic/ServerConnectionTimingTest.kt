@@ -74,6 +74,7 @@ class ServerConnectionTimingTest {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 
@@ -117,6 +118,7 @@ class ServerConnectionTimingTest {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 
@@ -174,6 +176,7 @@ class ServerConnectionTimingTest {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 }

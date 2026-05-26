@@ -120,6 +120,7 @@ class StaleConnectionDiagnosticTests {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 
@@ -149,6 +150,7 @@ class StaleConnectionDiagnosticTests {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 
@@ -177,6 +179,7 @@ class StaleConnectionDiagnosticTests {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 
@@ -227,6 +230,7 @@ class StaleConnectionDiagnosticTests {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 
@@ -252,6 +256,7 @@ class StaleConnectionDiagnosticTests {
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
+                serverEngine.close()
             }
         }
 }
