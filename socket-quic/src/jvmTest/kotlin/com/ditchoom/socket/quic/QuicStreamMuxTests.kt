@@ -83,25 +83,34 @@ class QuicStreamMuxTests {
 
                 val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
 
+                // [DIAGNOSTIC] Per-step logging: this test fails on CI with a 10s timeout
+                // despite passing locally in ~108ms. The log markers below let us see
+                // exactly which step stalls on the GH ubuntu-24.04 runner.
+                val t0 = System.currentTimeMillis()
+                fun ts(): String = "+${System.currentTimeMillis() - t0}ms"
+
                 // Server: accept bidi stream via StreamMux, echo
                 val serverDispatched = CompletableDeferred<Unit>()
                 val serverJob =
                     launch(Dispatchers.IO) {
+                        println("[mux ${ts()}] server: coroutine dispatched")
                         serverDispatched.complete(Unit)
                         server.connections {
+                            println("[mux ${ts()}] server: connections handler invoked")
                             val mux = QuicStreamMux(this, TestCodec, opts)
+                            println("[mux ${ts()}] server: awaiting acceptBidirectional()")
                             val conn = mux.acceptBidirectional()
+                            println("[mux ${ts()}] server: accepted stream id=${conn.id}")
                             val msg = conn.receive().first()
+                            println("[mux ${ts()}] server: received msg=$msg")
                             conn.send("echo: $msg")
+                            println("[mux ${ts()}] server: sent echo")
                             conn.close()
+                            println("[mux ${ts()}] server: closed conn")
                         }
                     }
-                // Reactive wait for the launched serverJob to be dispatched and reach
-                // server.connections() (which suspends on the accept channel). Without
-                // this, on slower CI runners the client packet can arrive before the
-                // server coroutine has even been scheduled, and quiche-vs-quiche
-                // initial-packet pacing pushes the round-trip past the 10s budget below.
                 serverDispatched.await()
+                println("[mux ${ts()}] test: serverDispatched.await() returned")
 
                 // Client: send via StreamMux
                 val clientEngine =
@@ -111,16 +120,24 @@ class QuicStreamMuxTests {
                         assumeTrue("Native lib not available", false)
                         return@withTimeout
                     }
+                println("[mux ${ts()}] test: launching client")
                 val clientJob =
                     launch(Dispatchers.IO) {
+                        println("[mux ${ts()}] client: coroutine dispatched, calling connectMux")
                         clientEngine.connectMux("localhost", server.port, testQuicOptions, TestCodec, connectionOptions = opts) {
+                            println("[mux ${ts()}] client: connectMux block entered")
                             val conn = openBidirectional()
+                            println("[mux ${ts()}] client: openBidirectional() returned id=${conn.id}")
                             assertTrue(conn.id >= 0)
                             conn.send("hello")
+                            println("[mux ${ts()}] client: sent hello, awaiting response")
                             val response = conn.receive().first()
+                            println("[mux ${ts()}] client: received response=$response")
                             muxResult.complete(response)
                             conn.close()
+                            println("[mux ${ts()}] client: closed conn")
                         }
+                        println("[mux ${ts()}] client: connectMux returned")
                     }
 
                 val result = withTimeout(10.seconds) { muxResult.await() }
