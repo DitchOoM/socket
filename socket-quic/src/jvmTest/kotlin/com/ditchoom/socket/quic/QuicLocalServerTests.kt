@@ -50,25 +50,21 @@ class QuicLocalServerTests {
                 withTimeout(15.seconds) {
                     val handlerRan = CompletableDeferred<Unit>()
 
+                    // Handler-immediate pattern; delay(N) in handler deadlocks driver
+                    // shutdown on CI (see QuicServerTestSuite.serverAcceptsConnection).
                     val serverJob =
                         launch(Dispatchers.IO) {
                             server.connections {
                                 handlerRan.complete(Unit)
-                                delay(3.seconds)
                             }
                         }
-                    delay(100)
 
-                    val clientJob =
-                        launch(Dispatchers.IO) {
-                            clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                                delay(3.seconds)
-                            }
-                        }
+                    clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                        // Empty.
+                    }
 
                     withTimeout(10.seconds) { handlerRan.await() }
 
-                    clientJob.cancel()
                     serverJob.cancel()
                 }
             } finally {

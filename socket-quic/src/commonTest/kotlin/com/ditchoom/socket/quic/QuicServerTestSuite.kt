@@ -47,6 +47,12 @@ abstract class QuicServerTestSuite {
     @Test
     fun serverAcceptsConnection() =
         runQuicTest {
+            // Handler-immediate pattern: see rapidBindConnectCloseCyclesAreClean
+            // below for the long story. tl;dr — delay(2.seconds) in the handler
+            // deadlocks driver shutdown on GH ubuntu-24.04 because handlers are
+            // launched on the engine's scope (not serverJob's). Letting the
+            // handler return immediately lets the framework's finally{conn.close()}
+            // run on the natural path.
             val server = serverEngine().bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
             val handlerRan = CompletableDeferred<Unit>()
 
@@ -54,21 +60,15 @@ abstract class QuicServerTestSuite {
                 launch {
                     server.connections {
                         handlerRan.complete(Unit)
-                        delay(2.seconds)
                     }
                 }
-            delay(100)
 
-            val clientJob =
-                launch {
-                    clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                        delay(2.seconds)
-                    }
-                }
+            clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                // Empty — connect returns when block returns.
+            }
 
             kotlinx.coroutines.withTimeout(10.seconds) { handlerRan.await() }
 
-            clientJob.cancel()
             serverJob.cancel()
             server.close()
         }
@@ -122,6 +122,7 @@ abstract class QuicServerTestSuite {
     @Test
     fun multipleConnections() =
         runQuicTest {
+            // Handler-immediate pattern (see serverAcceptsConnection / rapidBindConnect…).
             val server = serverEngine().bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
             val count = 3
             val handlersRan = CompletableDeferred<Unit>()
@@ -135,16 +136,14 @@ abstract class QuicServerTestSuite {
                             connected++
                             if (connected >= count) handlersRan.complete(Unit)
                         }
-                        delay(2.seconds)
                     }
                 }
-            delay(100)
 
             val clientJobs =
                 (1..count).map {
                     launch {
                         clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            delay(2.seconds)
+                            // Empty block.
                         }
                     }
                 }

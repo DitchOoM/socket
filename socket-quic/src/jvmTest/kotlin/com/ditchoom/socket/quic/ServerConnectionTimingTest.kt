@@ -56,27 +56,21 @@ class ServerConnectionTimingTest {
                 val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                 val handlerRan = CompletableDeferred<Unit>()
 
+                // Handler-immediate pattern (see QuicServerTestSuite for context).
                 val serverJob =
                     launch(Dispatchers.IO) {
                         server.connections {
                             handlerRan.complete(Unit)
-                            delay(3.seconds) // keep alive
                         }
                     }
-                delay(100)
 
                 val clientEngine = engineOrSkip()
-                val clientJob =
-                    launch(Dispatchers.IO) {
-                        clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            delay(3.seconds) // keep connection alive
-                        }
-                    }
+                clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                    // Empty.
+                }
 
                 withTimeout(10.seconds) { handlerRan.await() }
-                // If we get here, the server handler ran — test passes
 
-                clientJob.cancel()
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
@@ -91,29 +85,28 @@ class ServerConnectionTimingTest {
                 val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                 val streamAccepted = CompletableDeferred<Long>()
 
+                // Handler-immediate pattern (see QuicServerTestSuite for context).
                 val serverJob =
                     launch(Dispatchers.IO) {
                         server.connections {
                             val stream = acceptStream()
                             streamAccepted.complete(stream.streamId.id)
-                            delay(3.seconds)
+                            stream.close()
                         }
                     }
-                delay(100)
 
                 val clientEngine = engineOrSkip()
                 val clientJob =
                     launch(Dispatchers.IO) {
                         clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
                             val stream = openStream()
-                            // Write something so the server discovers the stream
                             val buf =
                                 com.ditchoom.buffer.BufferFactory.Default
                                     .allocate(5)
                             buf.writeString("hello", Charset.UTF8)
                             buf.resetForRead()
                             stream.write(buf, 5.seconds)
-                            delay(3.seconds) // keep connection alive
+                            stream.close()
                         }
                     }
 
