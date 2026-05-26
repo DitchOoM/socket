@@ -428,6 +428,10 @@ internal class JvmQuicServer(
         recvBuf.freeNativeMemory() // initial packet consumed
 
         val udpChannel = NioUdpChannel(channel, peerAddr)
+        // onCleanup keeps peerSockAddr/localSockAddr strongly reachable for the driver's
+        // lifetime — recvInfo holds only raw Long pointers into their PlatformBuffers,
+        // so without this the buffers become GC-eligible immediately and DirectByteBuffer
+        // Cleaner can free the memory mid-connection (see quiche/src/ffi.rs:2059 panic).
         val driver =
             QuicheDriver(
                 api = api,
@@ -438,13 +442,18 @@ internal class JvmQuicServer(
                 udpChannel = udpChannel,
                 clientMode = false,
                 isServer = true,
+                onCleanup = {
+                    peerSockAddr.free()
+                    localSockAddr.free()
+                },
             )
 
         driver.start(scope)
 
         val scidKey = ConnectionIdKey.from(serverScid, QUIC_MAX_CONN_ID_LEN)
-        // Don't free sockaddrs — they're owned by the recvInfo/driver now
-        // serverScid can be freed now — we have the key
+        // serverScid can be freed now — we have the key.
+        // peerSockAddr/localSockAddr are kept alive by the driver's onCleanup closure
+        // and released when the driver tears down.
         serverScid.freeNativeMemory()
         return driver to scidKey
     }

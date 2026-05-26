@@ -101,6 +101,12 @@ private class CommonJvmQuicEngine : QuicEngine {
 
                 // 7. Create driver + connection
                 val udpChannel = NioUdpChannel(channel)
+                // onCleanup captures the sockaddr holders so they outlive every quiche
+                // call. Without this, the suspending block below stops referencing
+                // connPeerSockAddr/connLocalSockAddr after the QuicheDriver is built,
+                // making their PlatformBuffers GC-eligible — DirectByteBuffer Cleaner
+                // can then free the native memory mid-connection, leaving recvInfo.from
+                // dangling. Symptom: quiche/src/ffi.rs:2059 panic "unsupported address type".
                 val driver =
                     QuicheDriver(
                         api = api,
@@ -111,6 +117,10 @@ private class CommonJvmQuicEngine : QuicEngine {
                         udpChannel = udpChannel,
                         clientMode = true,
                         isServer = false,
+                        onCleanup = {
+                            connPeerSockAddr.free()
+                            connLocalSockAddr.free()
+                        },
                     )
                 // Create a child scope for this connection — cancelled when block returns
                 val connJob = kotlinx.coroutines.SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])

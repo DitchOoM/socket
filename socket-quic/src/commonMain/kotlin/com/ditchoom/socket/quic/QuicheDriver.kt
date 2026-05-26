@@ -47,6 +47,16 @@ class QuicheDriver(
     private val udpChannel: UdpChannel,
     private val clientMode: Boolean = true,
     private val isServer: Boolean = false,
+    /**
+     * Called from [cleanup] after all quiche handles have been freed. Used by callers
+     * to release platform-owned memory referenced by [recvInfo] (peer/local sockaddrs)
+     * whose raw pointers are cached inside the recv_info struct. The closure itself
+     * keeps those Kotlin-side holders strongly reachable for the driver's lifetime —
+     * without it, JVM `DirectByteBuffer`-backed sockaddr buffers can be reclaimed by
+     * GC mid-connection, leaving recvInfo.from dangling. See: socket-quic JVM panic at
+     * quiche/src/ffi.rs:2059 ("unsupported address type").
+     */
+    private val onCleanup: () -> Unit = {},
 ) {
     val commands = Channel<QuicheCmd>(Channel.UNLIMITED)
 
@@ -270,6 +280,10 @@ class QuicheDriver(
         // with the driver.
         recvBufPool?.clear()
         incomingStreams.close()
+        // Released last — quiche may have dereferenced recvInfo.from/to inside
+        // any of the api.*Free() calls above. Safe to release the underlying
+        // sockaddr storage only after the conn/recvInfo handles are gone.
+        onCleanup()
     }
 
     private fun failCommand(cmd: QuicheCmd) {
