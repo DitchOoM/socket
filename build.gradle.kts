@@ -816,11 +816,7 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
     // class name (e.g. `AssertionError at Assert.java:89`) which makes CI
     // failures un-actionable without downloading the HTML report.
     testLogging {
-        // "started" + "passed" surface per-test progress in CI so a hung test is
-        // immediately identifiable from the workflow log (which test was last to
-        // start). Trade-off: extra log noise locally, which is acceptable —
-        // total log volume is bounded by the test count, not test duration.
-        events("started", "passed", "failed", "skipped")
+        events("failed", "skipped")
         showExceptions = true
         showCauses = true
         showStackTraces = true

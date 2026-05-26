@@ -1235,6 +1235,45 @@ tasks.withType<Test> {
 // every AbstractTestTask (jvmTest, linuxX64Test, kotlinNodeTest, …).
 tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
     dependsOn(generateQuicHarnessConfig)
+    // Per-test progress lines via a TestListener — these print at LIFECYCLE
+    // level regardless of testLogging.events gating, which surfaces a hung test
+    // immediately in a CI log (last "TEST START" line wins). Bounded volume
+    // (one line per start + one per finish, regardless of test duration).
+    // testLogging in the root build.gradle.kts only applies to root-project
+    // test tasks; this subproject's :socket-quic:jvmTest etc. need their own.
+    addTestListener(
+        object : org.gradle.api.tasks.testing.TestListener {
+            override fun beforeSuite(suite: org.gradle.api.tasks.testing.TestDescriptor) = Unit
+
+            override fun afterSuite(
+                suite: org.gradle.api.tasks.testing.TestDescriptor,
+                result: org.gradle.api.tasks.testing.TestResult,
+            ) = Unit
+
+            override fun beforeTest(testDescriptor: org.gradle.api.tasks.testing.TestDescriptor) {
+                logger.lifecycle("TEST START ${testDescriptor.className}.${testDescriptor.name}")
+            }
+
+            override fun afterTest(
+                testDescriptor: org.gradle.api.tasks.testing.TestDescriptor,
+                result: org.gradle.api.tasks.testing.TestResult,
+            ) {
+                logger.lifecycle(
+                    "TEST ${result.resultType} ${testDescriptor.className}.${testDescriptor.name} " +
+                        "(${result.endTime - result.startTime}ms)",
+                )
+            }
+        },
+    )
+    // Same testLogging the root project applies — re-stated here because that
+    // root-level configureEach doesn't cross project boundaries.
+    testLogging {
+        events("failed", "skipped")
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 }
 // Compilation tasks that index commonTest sources also need the generated
 // file present before they run; without this they fail to resolve
