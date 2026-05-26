@@ -4,7 +4,6 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -60,22 +59,22 @@ class ServerConnectionTimingTest {
                     launch(Dispatchers.IO) {
                         server.connections {
                             handlerRan.complete(Unit)
-                            awaitCancellation()
+                            // Return immediately; framework's finally{conn.close()} cleans up.
+                            // awaitCancellation() here deadlocks on slower CI: the handler runs
+                            // on the engine's scope (not serverJob's) so it isn't cancellable,
+                            // and the client-side connect's close chain blocks waiting on the
+                            // driver to drain commands that never get processed.
                         }
                     }
 
                 val clientEngine = engineOrSkip()
-                val clientJob =
-                    launch(Dispatchers.IO) {
-                        clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            awaitCancellation() // keep connection alive
-                        }
-                    }
+                clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                    // Empty — connect returns when block returns.
+                }
 
                 withTimeout(10.seconds) { handlerRan.await() }
                 // If we get here, the server handler ran — test passes
 
-                clientJob.cancel()
                 serverJob.cancel()
                 server.close()
                 clientEngine.close()
@@ -95,7 +94,10 @@ class ServerConnectionTimingTest {
                         server.connections {
                             val stream = acceptStream()
                             streamAccepted.complete(stream.streamId.id)
-                            awaitCancellation()
+                            stream.close()
+                            // Return; framework closes the conn. (See sibling test for the
+                            // long story on why awaitCancellation() in a handler deadlocks
+                            // on CI.)
                         }
                     }
 
@@ -104,14 +106,14 @@ class ServerConnectionTimingTest {
                     launch(Dispatchers.IO) {
                         clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
                             val stream = openStream()
-                            // Write something so the server discovers the stream
                             val buf =
                                 com.ditchoom.buffer.BufferFactory.Default
                                     .allocate(5)
                             buf.writeString("hello", Charset.UTF8)
                             buf.resetForRead()
                             stream.write(buf, 5.seconds)
-                            awaitCancellation() // keep connection alive
+                            stream.close()
+                            // Return; connect cleans up the connection.
                         }
                     }
 
