@@ -84,8 +84,10 @@ class QuicStreamMuxTests {
                 val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
 
                 // Server: accept bidi stream via StreamMux, echo
+                val serverDispatched = CompletableDeferred<Unit>()
                 val serverJob =
                     launch(Dispatchers.IO) {
+                        serverDispatched.complete(Unit)
                         server.connections {
                             val mux = QuicStreamMux(this, TestCodec, opts)
                             val conn = mux.acceptBidirectional()
@@ -94,6 +96,12 @@ class QuicStreamMuxTests {
                             conn.close()
                         }
                     }
+                // Reactive wait for the launched serverJob to be dispatched and reach
+                // server.connections() (which suspends on the accept channel). Without
+                // this, on slower CI runners the client packet can arrive before the
+                // server coroutine has even been scheduled, and quiche-vs-quiche
+                // initial-packet pacing pushes the round-trip past the 10s budget below.
+                serverDispatched.await()
 
                 // Client: send via StreamMux
                 val clientEngine =
