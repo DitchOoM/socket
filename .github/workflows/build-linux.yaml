@@ -291,21 +291,70 @@ jobs:
           ./gradlew :socket-quic:jvmTest
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Diagnostic: run the 9 CI-skipped tests in isolation, bypassing the
-      # `assumeTrue` gate via RUN_FLAKY_TESTS=1. Hypothesis: cumulative JVM /
-      # process state from the 130+ earlier tests is what makes these
-      # alphabetically-late tests hang on ubuntu-24.04 hosted runners (handshake
-      # never completes, hits the 10s withTimeout). If this isolated run PASSES
-      # → confirmed cumulative-state, bisect which earlier class poisons. If it
-      # still FAILS → not state, look elsewhere (TLS session cache, FD count,
-      # quiche conn-ID space). `continue-on-error: true` so we collect data
-      # without blocking the green path. See TODO.md / HANDOFF.md.
-      - name: Diagnostic — run flaky jvmTest classes in isolation
+      # Diagnostic baseline: run the 9 CI-skipped tests in isolation, bypassing
+      # the `assumeTrue` gate via RUN_FLAKY_TESTS=1. Confirmed PASSING on run
+      # 26462715219 — all 9 pass in <6s each when run alone. That means the
+      # 10s-handshake-hang in the full suite is cumulative state from earlier
+      # tests. Keeping this step in place as the regression baseline while we
+      # bisect which earlier class is the poisoner.
+      - name: Diagnostic — flaky jvmTest classes in isolation (baseline)
         continue-on-error: true
         env:
           RUN_FLAKY_TESTS: "1"
         run: >-
           ./gradlew :socket-quic:jvmTest
+          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
+          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
+          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
+          --rerun-tasks
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Bisection — half A: classes 1-9 in alphabetical run order
+      # (Io* / Jvm* / Linux* / QuicByteStream / QuicConnectionState) PLUS the 3
+      # flaky classes as the canary. If this step HANGS → poisoner lives in
+      # half A; next cycle bisects within half A. If it PASSES while half B
+      # hangs → poisoner is in half B. continue-on-error: true so both halves
+      # always run.
+      - name: Diagnostic — bisect half A + flaky canary
+        continue-on-error: true
+        env:
+          RUN_FLAKY_TESTS: "1"
+        run: >-
+          ./gradlew :socket-quic:jvmTest
+          --tests "com.ditchoom.socket.quic.IoUringUdpServerChannelTest"
+          --tests "com.ditchoom.socket.quic.JvmQuicConnectionTests"
+          --tests "com.ditchoom.socket.quic.JvmQuicServerLifecycleTestSuite"
+          --tests "com.ditchoom.socket.quic.JvmQuicServerTestSuite"
+          --tests "com.ditchoom.socket.quic.LinuxQuicAddressMarshallingTest"
+          --tests "com.ditchoom.socket.quic.LinuxQuicServerTests"
+          --tests "com.ditchoom.socket.quic.LinuxQuicSmokeTest"
+          --tests "com.ditchoom.socket.quic.QuicByteStreamTests"
+          --tests "com.ditchoom.socket.quic.QuicConnectionStateTests"
+          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
+          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
+          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
+          --rerun-tasks
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Bisection — half B: classes 10-18 in alphabetical run order
+      # (QuicConnection / QuicEcho / QuicError / QuicHarnessIntegration /
+      # QuicIntegration / QuicLocalServer / QuicOptions / QuicStreamId /
+      # QuicStreamMuxCommon) PLUS the 3 flaky classes.
+      - name: Diagnostic — bisect half B + flaky canary
+        continue-on-error: true
+        env:
+          RUN_FLAKY_TESTS: "1"
+        run: >-
+          ./gradlew :socket-quic:jvmTest
+          --tests "com.ditchoom.socket.quic.QuicConnectionTests"
+          --tests "com.ditchoom.socket.quic.QuicEchoServerTests"
+          --tests "com.ditchoom.socket.quic.QuicErrorTests"
+          --tests "com.ditchoom.socket.quic.QuicHarnessIntegrationTests"
+          --tests "com.ditchoom.socket.quic.QuicIntegrationTests"
+          --tests "com.ditchoom.socket.quic.QuicLocalServerTests"
+          --tests "com.ditchoom.socket.quic.QuicOptionsTests"
+          --tests "com.ditchoom.socket.quic.QuicStreamIdTests"
+          --tests "com.ditchoom.socket.quic.QuicStreamMuxCommonTests"
           --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
           --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
           --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
