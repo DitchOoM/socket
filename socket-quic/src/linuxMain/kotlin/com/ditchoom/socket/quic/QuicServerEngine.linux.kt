@@ -187,25 +187,31 @@ private class LinuxQuicServer(
 
     private val receiveJob = scope.launch(Dispatchers.Default) { receiveLoop() }
 
-    override suspend fun connections(handler: suspend QuicScope.() -> Unit) {
-        for (driver in acceptedDrivers) {
-            scope.launch(Dispatchers.Default) {
-                val connJob = SupervisorJob(coroutineContext[Job])
-                val connScope = CoroutineScope(coroutineContext + connJob)
-                val conn = LinuxServerQuicConnection(driver, bufferFactory, connScope)
-                try {
-                    conn.state.first { it !is QuicConnectionState.Handshaking }
-                    if (conn.state.value is QuicConnectionState.Established) {
-                        conn.handler()
+    override suspend fun connections(handler: suspend QuicScope.() -> Unit) =
+        // Structured concurrency: handler lifetime is bound to this connections()
+        // invocation. Cancelling the caller cancels every in-flight handler — see
+        // CommonJvmQuicServerEngine.connections() for the long comment on why this
+        // matters (previously handlers were orphaned onto the engine's scope and
+        // surfaced as a CI hang in JvmQuicServerTestSuite.rapidBindConnectCloseCyclesAreClean).
+        kotlinx.coroutines.coroutineScope {
+            for (driver in acceptedDrivers) {
+                launch(Dispatchers.Default) {
+                    val connJob = SupervisorJob(coroutineContext[Job])
+                    val connScope = CoroutineScope(coroutineContext + connJob)
+                    val conn = LinuxServerQuicConnection(driver, bufferFactory, connScope)
+                    try {
+                        conn.state.first { it !is QuicConnectionState.Handshaking }
+                        if (conn.state.value is QuicConnectionState.Established) {
+                            conn.handler()
+                        }
+                    } finally {
+                        conn.close()
+                        driverCleanupCh.trySend(driver)
+                        connJob.cancel()
                     }
-                } finally {
-                    conn.close()
-                    driverCleanupCh.trySend(driver)
-                    connJob.cancel()
                 }
             }
         }
-    }
 
     override suspend fun close() {
         if (closed) return

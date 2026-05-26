@@ -164,26 +164,35 @@ internal class JvmQuicServer(
     @Volatile private var receiveSelector: Selector? = null
     private val receiveJob = scope.launch(Dispatchers.IO) { receiveLoop() }
 
-    override suspend fun connections(handler: suspend QuicScope.() -> Unit) {
-        for (driver in acceptedDrivers) {
-            scope.launch(Dispatchers.IO) {
-                val connJob = SupervisorJob(coroutineContext[Job])
-                val connScope = CoroutineScope(coroutineContext + connJob)
-                val conn = DriverQuicConnection(driver, connScope)
-                try {
-                    conn.state.first { it !is QuicConnectionState.Handshaking }
-                    if (conn.state.value is QuicConnectionState.Established) {
-                        conn.handler()
+    override suspend fun connections(handler: suspend QuicScope.() -> Unit) =
+        // Bind handler lifetime to the caller's coroutine — cancelling the coroutine
+        // that called connections() must cancel each in-flight handler. Previously
+        // each handler was launched on the engine's own `scope`, so a caller-side
+        // cancel only broke the for-loop and left handlers running indefinitely on
+        // the engine scope — invisible to the caller, but deadlocked any test that
+        // suspended in the handler (e.g. awaitCancellation()) and then expected
+        // cancel to clean up. coroutineScope { … } suspends until every launched
+        // child returns; structured concurrency makes the lifetime explicit.
+        kotlinx.coroutines.coroutineScope {
+            for (driver in acceptedDrivers) {
+                launch(Dispatchers.IO) {
+                    val connJob = SupervisorJob(coroutineContext[Job])
+                    val connScope = CoroutineScope(coroutineContext + connJob)
+                    val conn = DriverQuicConnection(driver, connScope)
+                    try {
+                        conn.state.first { it !is QuicConnectionState.Handshaking }
+                        if (conn.state.value is QuicConnectionState.Established) {
+                            conn.handler()
+                        }
+                    } finally {
+                        conn.close()
+                        driverCleanupQueue.add(driver)
+                        receiveSelector?.wakeup()
+                        connJob.cancel()
                     }
-                } finally {
-                    conn.close()
-                    driverCleanupQueue.add(driver)
-                    receiveSelector?.wakeup()
-                    connJob.cancel()
                 }
             }
         }
-    }
 
     override suspend fun close() {
         if (closed) return
