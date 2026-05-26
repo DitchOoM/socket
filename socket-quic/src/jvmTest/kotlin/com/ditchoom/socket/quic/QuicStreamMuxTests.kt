@@ -87,8 +87,12 @@ class QuicStreamMuxTests {
             // CodecConnection / mux path that we couldn't pin down across 8 CI cycles
             // with per-step diagnostic instrumentation (all four [mux …] log lines
             // from setup print, then silence). Tracked in TODO.md; revisit with a
-            // self-hosted runner or quic-interop-runner.
-            assumeTrue("CI: mux bidi hang (see TODO.md)", System.getenv("CI") == null)
+            // self-hosted runner or quic-interop-runner. Bypass via
+            // RUN_FLAKY_TESTS=1 for the isolation diagnostic step.
+            assumeTrue(
+                "CI: mux bidi hang (see TODO.md)",
+                System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1",
+            )
 
             withTimeout(15.seconds) {
                 val serverEngine = defaultQuicServerEngine()

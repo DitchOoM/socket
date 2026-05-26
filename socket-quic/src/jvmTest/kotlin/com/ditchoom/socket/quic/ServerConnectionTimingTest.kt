@@ -51,7 +51,14 @@ class ServerConnectionTimingTest {
         // run, so the divergence is something about cumulative JVM state by the
         // time alphabetically-late tests run. Adding serverEngine.close() in
         // cleanup did not help. Tracked in TODO.md.
-        assumeTrue("CI: late-suite handshake hang (see TODO.md)", System.getenv("CI") == null)
+        //
+        // Bypass via RUN_FLAKY_TESTS=1 — used by the diagnostic step in
+        // build-linux.yaml to run these tests in isolation (without the 130+
+        // earlier tests) to test the cumulative-state hypothesis.
+        assumeTrue(
+            "CI: late-suite handshake hang (see TODO.md)",
+            System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1",
+        )
         return try {
             defaultQuicEngine()
         } catch (e: Throwable) {

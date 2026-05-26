@@ -291,6 +291,27 @@ jobs:
           ./gradlew :socket-quic:jvmTest
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Diagnostic: run the 9 CI-skipped tests in isolation, bypassing the
+      # `assumeTrue` gate via RUN_FLAKY_TESTS=1. Hypothesis: cumulative JVM /
+      # process state from the 130+ earlier tests is what makes these
+      # alphabetically-late tests hang on ubuntu-24.04 hosted runners (handshake
+      # never completes, hits the 10s withTimeout). If this isolated run PASSES
+      # → confirmed cumulative-state, bisect which earlier class poisons. If it
+      # still FAILS → not state, look elsewhere (TLS session cache, FD count,
+      # quiche conn-ID space). `continue-on-error: true` so we collect data
+      # without blocking the green path. See TODO.md / HANDOFF.md.
+      - name: Diagnostic — run flaky jvmTest classes in isolation
+        continue-on-error: true
+        env:
+          RUN_FLAKY_TESTS: "1"
+        run: >-
+          ./gradlew :socket-quic:jvmTest
+          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
+          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
+          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
+          --rerun-tasks
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       - name: Run socket-quic native tests (quiche cinterop)
         run: >-
           ./gradlew :socket-quic:linuxX64Test
