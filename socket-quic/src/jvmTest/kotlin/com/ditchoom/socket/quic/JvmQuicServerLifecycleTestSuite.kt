@@ -13,6 +13,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.junit.Assume.assumeTrue
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -29,6 +30,20 @@ import kotlin.time.Duration.Companion.seconds
  * still inherit the black-box tests.
  */
 class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
+    // Track every engine created during a test so @AfterTest can close them all.
+    // The lifecycle tests in the abstract parent and in this class create engines
+    // freely (serverEngine(), clientEngine() per test) and only close some of them
+    // in their bodies — engineCloseCancelsEngineScope does, but the others mostly
+    // exercise server/connection close while leaving the engine alive. Without
+    // cleanup, every test in the suite leaks at least one engine; with ~8 tests,
+    // the accumulated quiche state + worker threads pile up in the gradle daemon
+    // and contribute to the late-suite handshake hang on CI. Tests that DO close
+    // the engine explicitly are unaffected — runCatching below makes the second
+    // close a no-op. JUnit creates a fresh test instance per @Test, so these
+    // lists reset automatically per test.
+    private val createdServerEngines = mutableListOf<QuicServerEngine>()
+    private val createdClientEngines = mutableListOf<QuicEngine>()
+
     private fun certPath(name: String): String {
         val url =
             this::class.java.classLoader.getResource("certs/$name")
@@ -44,7 +59,7 @@ class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
 
     override fun serverEngine(): QuicServerEngine =
         try {
-            defaultQuicServerEngine()
+            defaultQuicServerEngine().also { createdServerEngines += it }
         } catch (e: Throwable) {
             assumeTrue("Native lib not available: ${e.message}", false)
             throw AssertionError("unreachable")
@@ -52,11 +67,21 @@ class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
 
     override fun clientEngine(): QuicEngine =
         try {
-            defaultQuicEngine()
+            defaultQuicEngine().also { createdClientEngines += it }
         } catch (e: Throwable) {
             assumeTrue("Native lib not available: ${e.message}", false)
             throw AssertionError("unreachable")
         }
+
+    @AfterTest
+    fun closeTrackedEngines() {
+        // Best-effort: tests that closed an engine themselves will throw on the
+        // second close — swallow so we don't mask the real failure.
+        createdServerEngines.forEach { runCatching { it.close() } }
+        createdClientEngines.forEach { runCatching { it.close() } }
+        createdServerEngines.clear()
+        createdClientEngines.clear()
+    }
 
     // ── Reflection helpers — test-only access to engine + server internals ──
 
