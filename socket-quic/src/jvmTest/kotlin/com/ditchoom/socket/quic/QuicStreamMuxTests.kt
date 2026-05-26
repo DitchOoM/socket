@@ -87,6 +87,7 @@ class QuicStreamMuxTests {
                 // despite passing locally in ~108ms. The log markers below let us see
                 // exactly which step stalls on the GH ubuntu-24.04 runner.
                 val t0 = System.currentTimeMillis()
+
                 fun ts(): String = "+${System.currentTimeMillis() - t0}ms"
 
                 // Server: accept bidi stream via StreamMux, echo
