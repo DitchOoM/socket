@@ -1268,11 +1268,7 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
     // Same testLogging the root project applies — re-stated here because that
     // root-level configureEach doesn't cross project boundaries.
     testLogging {
-        // standard_out + standard_error pipe test println()/System.err to the
-        // gradle/CI console (otherwise stdout is captured into the per-test XML
-        // and invisible during a hang). Useful for ad-hoc diagnostic logging.
-        events("failed", "skipped", "standard_out", "standard_error")
-        showStandardStreams = true
+        events("failed", "skipped")
         showExceptions = true
         showCauses = true
         showStackTraces = true
