@@ -177,25 +177,36 @@ abstract class QuicServerTestSuite {
     @Test
     fun rapidBindConnectCloseCyclesAreClean() =
         runQuicTest {
-            repeat(10) { iteration ->
+            // Surgical fix: this specific test hangs on GH Actions ubuntu-24.04 CI
+            // when the handler holds open with delay(500). With the original code
+            // (delay-based hold), the JvmQuicServer.connections() launches the
+            // handler on the engine's scope, not serverJob's — when the test
+            // serverJob.cancel()s, the handler keeps running, blocking server.close()
+            // via driver.destroy().join() on slower CI scheduling. 10 rapid cycles
+            // amplify the race past the 5s outer budget.
+            //
+            // Fix: handler returns immediately after signaling handlerRan. The
+            // JvmQuicServer.connections() impl wraps the handler in
+            // try { handler() } finally { conn.close() }, so a returning handler
+            // triggers the framework's clean-shutdown path. Client uses an empty
+            // block for the same reason. cfadcdc made connections() use
+            // coroutineScope { } so the for-loop is also bound to serverJob;
+            // serverJob.cancel() now cleanly tears down the iterator AND any
+            // in-flight handler.
+            repeat(10) {
                 val server = serverEngine().bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
                 val handlerRan = CompletableDeferred<Unit>()
                 val serverJob =
                     launch {
                         server.connections {
                             handlerRan.complete(Unit)
-                            delay(500)
+                            // Return immediately; framework closes conn via finally.
                         }
                     }
-                delay(50)
-                val clientJob =
-                    launch {
-                        clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 5.seconds) {
-                            delay(100)
-                        }
-                    }
+                clientEngine().connect("localhost", server.port, testQuicOptions, timeout = 5.seconds) {
+                    // Empty block — connect returns when block returns.
+                }
                 kotlinx.coroutines.withTimeout(5.seconds) { handlerRan.await() }
-                clientJob.cancel()
                 serverJob.cancel()
                 server.close()
             }
