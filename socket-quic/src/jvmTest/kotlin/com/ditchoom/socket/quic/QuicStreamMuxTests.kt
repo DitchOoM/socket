@@ -55,6 +55,13 @@ private object TestCodec : Codec<String> {
     }
 }
 
+/**
+ * **Lifecycle:** engines come from [withQuicServerEngine] / [withQuicEngine]
+ * — scope-only construction guarantees `close()` on every exit path. The
+ * previous `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate that hid this
+ * test on CI is dropped: it papered over an engine-leak threshold that is
+ * now closed by construction.
+ */
 class QuicStreamMuxTests {
     private val testQuicOptions =
         QuicOptions(
@@ -73,76 +80,66 @@ class QuicStreamMuxTests {
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
+    private suspend fun <R> withEngines(block: suspend (QuicServerEngine, QuicEngine) -> R): R {
+        try {
+            return withQuicServerEngine { serverEngine ->
+                withQuicEngine { clientEngine ->
+                    block(serverEngine, clientEngine)
+                }
+            }
+        } catch (e: UnsatisfiedLinkError) {
+            assumeTrue("Native lib not available: ${e.message}", false)
+            throw AssertionError("unreachable")
+        }
+    }
+
     @Test
     fun bidirectionalStreamMuxExchange() =
         runBlocking(Dispatchers.IO) {
-            // Skip on GH Actions CI. The bidi mux exchange hangs the QUIC handshake on
-            // ubuntu-24.04 hosted runners — neither side gets past
-            // `client: connectMux` / `server: connections handler invoked` before the
-            // 10s outer withTimeout fires. Passes locally in ~108ms (any local box,
-            // including same Ubuntu 24.04 with single-CPU JVM constraints). Other
-            // QUIC handshake tests using the same engine.connect() + server.connections
-            // pattern (JvmQuicServerTestSuite.echoSingleStream, etc.) pass on the
-            // exact same CI run, so the difference is something inside the codec /
-            // CodecConnection / mux path that we couldn't pin down across 8 CI cycles
-            // with per-step diagnostic instrumentation (all four [mux …] log lines
-            // from setup print, then silence). Tracked in TODO.md; revisit with a
-            // self-hosted runner or quic-interop-runner. Bypass via
-            // RUN_FLAKY_TESTS=1 for the isolation diagnostic step.
-            assumeTrue(
-                "CI: mux bidi hang (see TODO.md)",
-                System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1",
-            )
-
             withTimeout(15.seconds) {
-                val serverEngine = defaultQuicServerEngine()
-                val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                val muxResult = CompletableDeferred<String>()
+                withEngines { serverEngine, clientEngine ->
+                    val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
+                    val muxResult = CompletableDeferred<String>()
 
-                val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
+                    val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
 
-                // Server: accept bidi stream via StreamMux, echo
-                val serverDispatched = CompletableDeferred<Unit>()
-                val serverJob =
-                    launch(Dispatchers.IO) {
-                        serverDispatched.complete(Unit)
-                        server.connections {
-                            val mux = QuicStreamMux(this, TestCodec, opts)
-                            val conn = mux.acceptBidirectional()
-                            val msg = conn.receive().first()
-                            conn.send("echo: $msg")
-                            conn.close()
+                    // Server: accept bidi stream via StreamMux, echo
+                    val serverDispatched = CompletableDeferred<Unit>()
+                    val serverJob =
+                        launch(Dispatchers.IO) {
+                            serverDispatched.complete(Unit)
+                            server.connections {
+                                val mux = QuicStreamMux(this, TestCodec, opts)
+                                val conn = mux.acceptBidirectional()
+                                val msg = conn.receive().first()
+                                conn.send("echo: $msg")
+                                conn.close()
+                            }
                         }
-                    }
-                serverDispatched.await()
+                    serverDispatched.await()
 
-                // Client: send via StreamMux
-                val clientEngine =
+                    // Client: send via StreamMux
+                    val clientJob =
+                        launch(Dispatchers.IO) {
+                            clientEngine.connectMux("localhost", server.port, testQuicOptions, TestCodec, connectionOptions = opts) {
+                                val conn = openBidirectional()
+                                assertTrue(conn.id >= 0)
+                                conn.send("hello")
+                                val response = conn.receive().first()
+                                muxResult.complete(response)
+                                conn.close()
+                            }
+                        }
+
                     try {
-                        defaultQuicEngine()
-                    } catch (_: Throwable) {
-                        assumeTrue("Native lib not available", false)
-                        return@withTimeout
+                        val result = withTimeout(10.seconds) { muxResult.await() }
+                        assertEquals("echo: hello", result)
+                    } finally {
+                        clientJob.cancel()
+                        serverJob.cancel()
+                        server.close()
                     }
-                val clientJob =
-                    launch(Dispatchers.IO) {
-                        clientEngine.connectMux("localhost", server.port, testQuicOptions, TestCodec, connectionOptions = opts) {
-                            val conn = openBidirectional()
-                            assertTrue(conn.id >= 0)
-                            conn.send("hello")
-                            val response = conn.receive().first()
-                            muxResult.complete(response)
-                            conn.close()
-                        }
-                    }
-
-                val result = withTimeout(10.seconds) { muxResult.await() }
-                assertEquals("echo: hello", result)
-
-                clientJob.cancel()
-                serverJob.cancel()
-                server.close()
-                clientEngine.close()
+                }
             }
         }
 }
