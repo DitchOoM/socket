@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.unwrapFully
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
@@ -44,12 +43,13 @@ internal class NioUdpChannel(
         // exhausted and the next handshake never got a worker. Diagnosed
         // from the CI dump on commit 2878a82 (run 26522427351).
         //
-        // runInterruptible runs the blocking call on Dispatchers.IO (the
-        // right pool for blocking IO) and, on coroutine cancellation,
-        // interrupts the underlying thread. Selector.select() respects
-        // thread interrupt and returns 0, then the next iteration of the
-        // caller's loop sees isActive == false and exits cleanly.
-        runInterruptible(Dispatchers.IO) { sel.select() }
+        // runInterruptible runs the blocking call on quicBlockingDispatcher
+        // (virtual threads on JDK 21+, Dispatchers.IO fallback otherwise)
+        // and, on coroutine cancellation, interrupts the underlying thread.
+        // Selector.select() respects thread interrupt and returns 0, then
+        // the next iteration of the caller's loop sees isActive == false
+        // and exits cleanly.
+        runInterruptible(quicBlockingDispatcher) { sel.select() }
         sel.selectedKeys().clear()
 
         val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer

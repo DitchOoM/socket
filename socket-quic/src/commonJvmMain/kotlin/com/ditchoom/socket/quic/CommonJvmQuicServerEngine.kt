@@ -255,7 +255,9 @@ internal class JvmQuicServer(
                 // the receive loop stalls and `receiveJob.join()` in close()
                 // hangs forever. With runInterruptible, scope cancel ⇒
                 // thread interrupt ⇒ select() returns ⇒ loop exits.
-                kotlinx.coroutines.runInterruptible(Dispatchers.IO) { selector.select() }
+                // Dispatcher routes through quicBlockingDispatcher — virtual
+                // threads on JDK 21+, Dispatchers.IO fallback otherwise.
+                kotlinx.coroutines.runInterruptible(quicBlockingDispatcher) { selector.select() }
                 if (closed) break
                 selector.selectedKeys().clear()
 
