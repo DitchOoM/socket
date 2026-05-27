@@ -56,5 +56,27 @@ suspend fun <T, R> QuicEngine.connectMux(
 
 /**
  * Platform-specific default [QuicEngine] implementation.
+ *
+ * Prefer [withQuicEngine] — it owns construction and release so a caller
+ * cannot leak the engine on an exception or cancellation path. Direct use
+ * of this factory requires explicit `close()` in a `finally`.
  */
 expect fun defaultQuicEngine(): QuicEngine
+
+/**
+ * Scope-only [QuicEngine] construction: allocates an engine, runs [block]
+ * with it, and closes the engine in `finally` — including on exceptional
+ * and cancellation paths.
+ *
+ * This is the canonical way to use a client engine. The reference never
+ * escapes the block, so callers can't forget to close it. See
+ * `DRIVER_REDESIGN.md` → "Engine lifecycle" for the rationale.
+ */
+suspend fun <R> withQuicEngine(block: suspend (QuicEngine) -> R): R {
+    val engine = defaultQuicEngine()
+    try {
+        return block(engine)
+    } finally {
+        engine.close()
+    }
+}

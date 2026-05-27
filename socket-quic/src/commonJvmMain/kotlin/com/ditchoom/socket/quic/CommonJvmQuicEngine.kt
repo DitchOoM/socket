@@ -23,6 +23,11 @@ private class CommonJvmQuicEngine : QuicEngine {
     private val api: QuicheApi = loadQuicheApi()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    init {
+        // GC-paced safety net: see CommonJvmQuicServerEngine.init.
+        registerEngineCleanup(this, checkNotNull(scope.coroutineContext[kotlinx.coroutines.Job]))
+    }
+
     override suspend fun <R> connect(
         hostname: String,
         port: Int,
