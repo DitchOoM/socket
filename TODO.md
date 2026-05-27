@@ -44,7 +44,7 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
   `container` grows a compose plugin, or (c) we adopt a self-hosted Mac.
 - [x] ~**Linux K/Native TLS hostname verification.** `LinuxClientSocket` (BoringSSL via cinterop) validates the cert *chain* but doesn't enforce SAN/hostname matching on top…~ Done — `ssl_set_verify_host` wrapper in `src/nativeInterop/cinterop/LinuxSockets.def` picks between `X509_VERIFY_PARAM_set1_host` (DNS) and `X509_VERIFY_PARAM_set1_ip_asc` (IP literal) by probing the hostname with `inet_pton`, and is called from `LinuxClientSocket.initTls` when `currentTlsConfig.verifyHostname` is on. `tlsHarnessWrongHostFailsWithDefault` re-enabled on linuxX64; `isLinuxNative()` skip-gate removed across all test source sets.
 - [x] ~**`socket-quic:jvmTest` quiche-0.28 panic.** Aborts with a non-unwinding panic from `quiche_conn_recv` (`quiche/src/ffi.rs:2059:14`) → SIGABRT, exit value 134.~ **Done** (commit `5e55a5f`) — root cause was JVM sockaddr buffers GC'd while quiche held raw pointers; fix retains them via `onCleanup` closure on `QuicheDriver`. Also `cfadcdc` made `JvmQuicServer.connections()` use structured concurrency (`coroutineScope`) so handler lifetime is bound to the caller, preventing orphaned handlers from deadlocking driver shutdown.
-- [x] ~**CI-only handshake hang on late-suite jvmTest tests.** 9 tests skipped on GH Actions ubuntu-24.04 runners via `assumeTrue(System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1")`:~
+- [ ] **CI-only handshake hang on late-suite jvmTest tests.** Originally 9 tests skipped on GH Actions ubuntu-24.04 runners via `assumeTrue(System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1")`:
     - `QuicStreamMuxTests.bidirectionalStreamMuxExchange`
     - `ServerConnectionTimingTest.serverHandlerRunsOnClientConnect`
     - `ServerConnectionTimingTest.serverAcceptsStreamFromClient`
@@ -86,6 +86,47 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
 
     Full local `:socket-quic:jvmTest` stays at 162 tests / 0 skips / 0
     failures. Awaiting CI confirmation on PR #48.
+
+    **2026-05-27 night update: engine-leak hypothesis was a contributor,
+    not the root cause.** CI run `26514310996` on `dcfbc37` (lifecycle fix
+    + all 9 gates open) failed at
+    `QuicStreamMuxTests.bidirectionalStreamMuxExchange` with the same 15s
+    outer `withTimeout` shape. 129 tests passed before the hang — right
+    at the original ~130-test threshold the HANDOFF identified. Build
+    halted at the first failure (no `--continue` then), so the other 8
+    ex-gated tests' CI status is unknown from that run.
+
+    The mux test was flagged in the HANDOFF as a separate-shape issue
+    ("something inside the codec / CodecConnection / mux path that we
+    couldn't pin down across 8 CI cycles"), and this CI signal supports
+    that: non-mux QUIC handshake tests (`QuicConnectionTests`,
+    `QuicLocalServerTests`, `JvmQuicServer*TestSuite` etc.) all passed in
+    the same run.
+
+    Landed 2026-05-27 night:
+    - Re-gated `QuicStreamMuxTests.bidirectionalStreamMuxExchange` only,
+      with a comment noting it's a separate mux/codec issue (not the
+      engine-leak shape). The other 8 ex-gated tests remain ungated.
+    - Added `--continue` to the `:socket-quic:jvmTest` Gradle invocation
+      in `build-linux.yaml` so a single hang no longer hides the rest of
+      the suite. With this, the next CI run reveals whether the lifecycle
+      fix held for the other 8 tests, or whether they also still hang.
+
+    **Open questions, pending next CI signal:**
+    - Do the other 8 ex-gated tests pass on CI now? If yes: lifecycle
+      fix worked for the dispatcher-starvation surface, mux is genuinely
+      separate. If no: dispatcher starvation has a deeper cause and the
+      engine-leak fix was structural cleanup but not behavioural.
+    - What is different about the mux/codec handshake path? Worth
+      drilling into once the broader signal is in.
+
+    **Note on follow-up planning (no-engine refactor):** discussed but
+    *not* started. The structural over-engineering (engine layer that
+    quiche has no analog for, 3 scope layers, reactive command channel)
+    is real but its removal is a sizable refactor. Worth doing only once
+    we understand whether the dispatcher-starvation symptom has a deeper
+    cause — flattening the API doesn't help if the leak is somewhere
+    else (e.g. native heap from quiche, NIO selector pile-up, GC pressure).
 - [ ] **Windows JVM Tests mapping gaps** (`JvmExceptionMapping.kt`). Five tests currently skip on Windows via `isWindowsJvm()`:
   - `ExceptionIntegrationTests.tlsToNonTlsServer_producesSSLSocketException` — Windows surfaces neither `SSLSocketException` nor `SocketClosedException`; need to detect the JSSE shape that escapes through the channel-close race.
   - `ExceptionIntegrationTests.connectionRefused_producesSocketConnectionException` + `connectionRefused_exceptionHasUsefulMessage` + `JvmExceptionSubtypeTests.connectionRefused_isSocketConnectionExceptionRefused` — Windows NIO2 holds the connect past the test's 2 s budget instead of returning ECONNREFUSED. Either tighten the wrapper to surface ECONNREFUSED faster, or extend the test budget on Windows.

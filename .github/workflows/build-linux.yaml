@@ -315,10 +315,17 @@ jobs:
       # ~8-16x headroom for the slowest legitimate flake. 9 alphabetically-late
       # tests still skip on CI via assumeTrue gates (see HANDOFF.md / TODO.md
       # for the resource-pressure root-cause story).
+      # --continue: without it, the first hanging test (typically
+      # bidirectionalStreamMuxExchange, alphabetically Q-ordered, currently re-
+      # gated) halts the whole task before the alphabetically-later tests run,
+      # which means each push only reveals one failure at a time. With
+      # --continue, every failing test gets to execute and report so we see the
+      # full failure surface in one CI cycle. Combined with the test-reports
+      # artifact upload below, this gives complete signal per run.
       - name: Run socket-quic JVM tests
         timeout-minutes: 8
         run: >-
-          ./gradlew :socket-quic:jvmTest
+          ./gradlew :socket-quic:jvmTest --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Run socket-quic native tests (quiche cinterop)
