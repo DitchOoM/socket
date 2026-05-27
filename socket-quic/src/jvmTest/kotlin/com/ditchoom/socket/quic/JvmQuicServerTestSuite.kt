@@ -1,21 +1,20 @@
 package com.ditchoom.socket.quic
 
 import org.junit.Assume.assumeTrue
-import kotlin.test.AfterTest
 
+/**
+ * JVM subclass of [QuicServerTestSuite].
+ *
+ * The block-taker factories delegate straight to the commonMain
+ * [withQuicServerEngine] / [withQuicEngine] helpers. Native-lib absence
+ * (`UnsatisfiedLinkError` from `loadQuicheApi`) is converted to a JUnit
+ * assumption so the test is skipped instead of failing on machines where
+ * the quiche JNI hasn't been built (typically non-Linux/non-macOS hosts).
+ *
+ * The previous `@AfterTest` engine-tracker retrofit is gone — scope-only
+ * construction closes the leak by construction.
+ */
 class JvmQuicServerTestSuite : QuicServerTestSuite() {
-    // Track every engine created during a test so @AfterTest can close them all.
-    // The abstract parent's test methods call serverEngine()/clientEngine() then
-    // close the resulting server/connection but never the engine itself — each
-    // engine retains a coroutine scope, worker threads, and a native quiche state
-    // block. Without this tracker, every test in the suite leaks at least one
-    // QuicServerEngine; with ~6 tests across the parent + this class, the pile
-    // crosses a threshold on CI that hangs alphabetically-late tests later in
-    // the same gradle daemon. JUnit creates a fresh test instance per @Test, so
-    // these lists naturally reset per test.
-    private val createdServerEngines = mutableListOf<QuicServerEngine>()
-    private val createdClientEngines = mutableListOf<QuicEngine>()
-
     private fun certPath(name: String): String {
         val url =
             this::class.java.classLoader.getResource("certs/$name")
@@ -29,30 +28,19 @@ class JvmQuicServerTestSuite : QuicServerTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override fun serverEngine(): QuicServerEngine =
+    override suspend fun <R> withServerEngine(block: suspend (QuicServerEngine) -> R): R =
         try {
-            defaultQuicServerEngine().also { createdServerEngines += it }
-        } catch (e: Throwable) {
+            withQuicServerEngine(block)
+        } catch (e: UnsatisfiedLinkError) {
             assumeTrue("Native lib not available: ${e.message}", false)
             throw AssertionError("unreachable")
         }
 
-    override fun clientEngine(): QuicEngine =
+    override suspend fun <R> withClientEngine(block: suspend (QuicEngine) -> R): R =
         try {
-            defaultQuicEngine().also { createdClientEngines += it }
-        } catch (e: Throwable) {
+            withQuicEngine(block)
+        } catch (e: UnsatisfiedLinkError) {
             assumeTrue("Native lib not available: ${e.message}", false)
             throw AssertionError("unreachable")
         }
-
-    @AfterTest
-    fun closeTrackedEngines() {
-        // Swallow close failures — best-effort cleanup. If close throws, the
-        // engine is still abandoned; throwing here would mask the real test
-        // failure that probably preceded it.
-        createdServerEngines.forEach { runCatching { it.close() } }
-        createdClientEngines.forEach { runCatching { it.close() } }
-        createdServerEngines.clear()
-        createdClientEngines.clear()
-    }
 }

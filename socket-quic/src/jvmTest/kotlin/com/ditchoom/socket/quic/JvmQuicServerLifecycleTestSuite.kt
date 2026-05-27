@@ -13,7 +13,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import org.junit.Assume.assumeTrue
-import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -28,22 +27,15 @@ import kotlin.time.Duration.Companion.seconds
  * child-job introspection). These only run on the JVM because Kotlin
  * reflection-based field access is JVM-only; Apple / Linux native targets
  * still inherit the black-box tests.
+ *
+ * The previous `@AfterTest` engine-tracker is gone: engines are now
+ * scoped to each test via [withServerEngine] / [withClientEngine] which
+ * delegate to the commonMain [withQuicServerEngine] / [withQuicEngine]
+ * helpers. Tests that explicitly call `engine.close()` (e.g.
+ * [engineCloseCancelsEngineScope]) remain correct because `close()` is
+ * idempotent — the second close from the helper's `finally` is a no-op.
  */
 class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
-    // Track every engine created during a test so @AfterTest can close them all.
-    // The lifecycle tests in the abstract parent and in this class create engines
-    // freely (serverEngine(), clientEngine() per test) and only close some of them
-    // in their bodies — engineCloseCancelsEngineScope does, but the others mostly
-    // exercise server/connection close while leaving the engine alive. Without
-    // cleanup, every test in the suite leaks at least one engine; with ~8 tests,
-    // the accumulated quiche state + worker threads pile up in the gradle daemon
-    // and contribute to the late-suite handshake hang on CI. Tests that DO close
-    // the engine explicitly are unaffected — runCatching below makes the second
-    // close a no-op. JUnit creates a fresh test instance per @Test, so these
-    // lists reset automatically per test.
-    private val createdServerEngines = mutableListOf<QuicServerEngine>()
-    private val createdClientEngines = mutableListOf<QuicEngine>()
-
     private fun certPath(name: String): String {
         val url =
             this::class.java.classLoader.getResource("certs/$name")
@@ -57,31 +49,21 @@ class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override fun serverEngine(): QuicServerEngine =
+    override suspend fun <R> withServerEngine(block: suspend (QuicServerEngine) -> R): R =
         try {
-            defaultQuicServerEngine().also { createdServerEngines += it }
-        } catch (e: Throwable) {
+            withQuicServerEngine(block)
+        } catch (e: UnsatisfiedLinkError) {
             assumeTrue("Native lib not available: ${e.message}", false)
             throw AssertionError("unreachable")
         }
 
-    override fun clientEngine(): QuicEngine =
+    override suspend fun <R> withClientEngine(block: suspend (QuicEngine) -> R): R =
         try {
-            defaultQuicEngine().also { createdClientEngines += it }
-        } catch (e: Throwable) {
+            withQuicEngine(block)
+        } catch (e: UnsatisfiedLinkError) {
             assumeTrue("Native lib not available: ${e.message}", false)
             throw AssertionError("unreachable")
         }
-
-    @AfterTest
-    fun closeTrackedEngines() {
-        // Best-effort: tests that closed an engine themselves will throw on the
-        // second close — swallow so we don't mask the real failure.
-        createdServerEngines.forEach { runCatching { it.close() } }
-        createdClientEngines.forEach { runCatching { it.close() } }
-        createdServerEngines.clear()
-        createdClientEngines.clear()
-    }
 
     // ── Reflection helpers — test-only access to engine + server internals ──
 
@@ -102,104 +84,109 @@ class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
     @Test
     fun serverCloseCancelsItsChildScope() =
         runBlocking(Dispatchers.IO) {
-            val engine = serverEngine()
-            val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
-            val childJob = serverChildJob(server)
-            assertTrue(childJob.isActive, "serverJob should be active while bound")
+            withServerEngine { engine ->
+                val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
+                val childJob = serverChildJob(server)
+                assertTrue(childJob.isActive, "serverJob should be active while bound")
 
-            server.close()
+                server.close()
 
-            assertTrue(childJob.isCancelled, "serverJob should be cancelled after close()")
+                assertTrue(childJob.isCancelled, "serverJob should be cancelled after close()")
+            }
         }
 
     @Test
     fun serverCloseLeavesNoActiveChildrenOnEngineScope() =
         runBlocking(Dispatchers.IO) {
-            val engine = serverEngine()
-            val beforeChildren = engineScopeJob(engine).children.count()
-            val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
-            server.close()
+            withServerEngine { engine ->
+                val beforeChildren = engineScopeJob(engine).children.count()
+                val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
+                server.close()
 
-            val remaining = waitForChildCountAtMost(engineScopeJob(engine), beforeChildren)
-            assertEquals(beforeChildren, remaining, "engine scope leaked coroutines past server.close()")
+                val remaining = waitForChildCountAtMost(engineScopeJob(engine), beforeChildren)
+                assertEquals(beforeChildren, remaining, "engine scope leaked coroutines past server.close()")
+            }
         }
 
     @Test
     fun engineCloseCancelsEngineScope() =
         runBlocking(Dispatchers.IO) {
-            val engine = serverEngine()
-            val job = engineScopeJob(engine)
-            assertTrue(job.isActive, "engine scope should be active pre-close")
-            engine.close()
-            assertTrue(job.isCancelled, "engine scope should be cancelled after close()")
+            withServerEngine { engine ->
+                val job = engineScopeJob(engine)
+                assertTrue(job.isActive, "engine scope should be active pre-close")
+                engine.close()
+                assertTrue(job.isCancelled, "engine scope should be cancelled after close()")
+                // helper's finally calls engine.close() again — close() is idempotent.
+            }
         }
 
     @Test
     fun multipleBindCloseCyclesDoNotAccumulateChildren() =
         runBlocking(Dispatchers.IO) {
-            val engine = serverEngine()
-            val baseline = engineScopeJob(engine).children.count()
+            withServerEngine { engine ->
+                val baseline = engineScopeJob(engine).children.count()
 
-            repeat(10) {
-                val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
-                server.close()
+                repeat(10) {
+                    val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
+                    server.close()
+                }
+
+                val after = waitForChildCountAtMost(engineScopeJob(engine), baseline)
+                assertEquals(baseline, after, "children accumulated across bind/close cycles — leak")
             }
-
-            val after = waitForChildCountAtMost(engineScopeJob(engine), baseline)
-            assertEquals(baseline, after, "children accumulated across bind/close cycles — leak")
         }
 
     @Test
     fun echoRoundTripThenCloseLeavesNoActiveChildren() =
         runBlocking(Dispatchers.IO) {
-            val srvEngine = serverEngine()
-            val cliEngine = clientEngine()
-            val serverScopeJob = engineScopeJob(srvEngine)
-            val clientScopeJob = engineScopeJob(cliEngine)
-            val serverBaseline = serverScopeJob.children.count()
-            val clientBaseline = clientScopeJob.children.count()
+            withServerEngine { srvEngine ->
+                withClientEngine { cliEngine ->
+                    val serverScopeJob = engineScopeJob(srvEngine)
+                    val clientScopeJob = engineScopeJob(cliEngine)
+                    val serverBaseline = serverScopeJob.children.count()
+                    val clientBaseline = clientScopeJob.children.count()
 
-            val server = srvEngine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
-            val serverJob =
-                launch {
-                    server.connections {
-                        val stream = withTimeout(3.seconds) { acceptStream() }
-                        try {
-                            val data = stream.read(5.seconds)
-                            if (data is ReadResult.Data) {
-                                stream.write(data.buffer, 5.seconds)
+                    val server = srvEngine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
+                    val serverJob =
+                        launch {
+                            server.connections {
+                                val stream = withTimeout(3.seconds) { acceptStream() }
+                                try {
+                                    val data = stream.read(5.seconds)
+                                    if (data is ReadResult.Data) {
+                                        stream.write(data.buffer, 5.seconds)
+                                    }
+                                } finally {
+                                    stream.close()
+                                }
                             }
-                        } finally {
-                            stream.close()
                         }
+
+                    cliEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+                        val stream = openStream()
+                        val send = BufferFactory.Default.allocate(5)
+                        send.writeString("hello", Charset.UTF8)
+                        send.resetForRead()
+                        stream.write(send, 5.seconds)
+                        stream.read(5.seconds)
+                        stream.close()
+                    }
+
+                    serverJob.cancel()
+                    server.close()
+
+                    val serverLeak = waitForChildCountAtMost(serverScopeJob, serverBaseline)
+                    val clientLeak = waitForChildCountAtMost(clientScopeJob, clientBaseline)
+
+                    if (serverLeak > serverBaseline || clientLeak > clientBaseline) {
+                        fail(
+                            "leaked coroutines after echo round-trip: " +
+                                "server=$serverLeak (baseline $serverBaseline), " +
+                                "client=$clientLeak (baseline $clientBaseline)",
+                        )
                     }
                 }
-
-            cliEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                val stream = openStream()
-                val send = BufferFactory.Default.allocate(5)
-                send.writeString("hello", Charset.UTF8)
-                send.resetForRead()
-                stream.write(send, 5.seconds)
-                stream.read(5.seconds)
-                stream.close()
             }
-
-            serverJob.cancel()
-            server.close()
-
-            val serverLeak = waitForChildCountAtMost(serverScopeJob, serverBaseline)
-            val clientLeak = waitForChildCountAtMost(clientScopeJob, clientBaseline)
-
-            if (serverLeak > serverBaseline || clientLeak > clientBaseline) {
-                fail(
-                    "leaked coroutines after echo round-trip: " +
-                        "server=$serverLeak (baseline $serverBaseline), " +
-                        "client=$clientLeak (baseline $clientBaseline)",
-                )
-            }
-
-            cliEngine.close()
         }
 }
 

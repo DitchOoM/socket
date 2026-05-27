@@ -22,7 +22,9 @@ class LinuxQuicServerTests : QuicServerTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override fun serverEngine(): QuicServerEngine = defaultQuicServerEngine()
+    override suspend fun <R> withServerEngine(block: suspend (QuicServerEngine) -> R): R =
+        withQuicServerEngine(block)
 
-    override fun clientEngine(): QuicEngine = defaultQuicEngine()
+    override suspend fun <R> withClientEngine(block: suspend (QuicEngine) -> R): R =
+        withQuicEngine(block)
 }
