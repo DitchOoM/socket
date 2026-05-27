@@ -44,7 +44,7 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
   `container` grows a compose plugin, or (c) we adopt a self-hosted Mac.
 - [x] ~**Linux K/Native TLS hostname verification.** `LinuxClientSocket` (BoringSSL via cinterop) validates the cert *chain* but doesn't enforce SAN/hostname matching on top…~ Done — `ssl_set_verify_host` wrapper in `src/nativeInterop/cinterop/LinuxSockets.def` picks between `X509_VERIFY_PARAM_set1_host` (DNS) and `X509_VERIFY_PARAM_set1_ip_asc` (IP literal) by probing the hostname with `inet_pton`, and is called from `LinuxClientSocket.initTls` when `currentTlsConfig.verifyHostname` is on. `tlsHarnessWrongHostFailsWithDefault` re-enabled on linuxX64; `isLinuxNative()` skip-gate removed across all test source sets.
 - [x] ~**`socket-quic:jvmTest` quiche-0.28 panic.** Aborts with a non-unwinding panic from `quiche_conn_recv` (`quiche/src/ffi.rs:2059:14`) → SIGABRT, exit value 134.~ **Done** (commit `5e55a5f`) — root cause was JVM sockaddr buffers GC'd while quiche held raw pointers; fix retains them via `onCleanup` closure on `QuicheDriver`. Also `cfadcdc` made `JvmQuicServer.connections()` use structured concurrency (`coroutineScope`) so handler lifetime is bound to the caller, preventing orphaned handlers from deadlocking driver shutdown.
-- [ ] **CI-only handshake hang on late-suite jvmTest tests.** 9 tests skipped on GH Actions ubuntu-24.04 runners via `assumeTrue(System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1")`:
+- [x] ~**CI-only handshake hang on late-suite jvmTest tests.** 9 tests skipped on GH Actions ubuntu-24.04 runners via `assumeTrue(System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1")`:~
     - `QuicStreamMuxTests.bidirectionalStreamMuxExchange`
     - `ServerConnectionTimingTest.serverHandlerRunsOnClientConnect`
     - `ServerConnectionTimingTest.serverAcceptsStreamFromClient`
@@ -69,13 +69,23 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
     - `StaleConnectionDiagnosticTests` migrated to the new lifecycle and its `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate dropped (commit `3014388`). 5 of the 9 gates closed in this commit.
     - Engine-lifecycle direction documented in `socket-quic/DRIVER_REDESIGN.md` (commit `9f572f8`).
 
-    **Remaining gates (4 of 9), to migrate next session:**
-    - `ServerConnectionTimingTest.serverHandlerRunsOnClientConnect`
-    - `ServerConnectionTimingTest.serverAcceptsStreamFromClient`
-    - `ServerConnectionTimingTest.scopeBasedEchoRoundTrip`
-    - `QuicStreamMuxTests.bidirectionalStreamMuxExchange`
+    Landed 2026-05-27 evening (API redesign step 2 — done):
+    - `f67aebd` — Remaining 4 gates migrated to `withQuicEngine` /
+      `withQuicServerEngine` via the same `withEngines` helper as
+      `StaleConnectionDiagnosticTests`. All 9 `assumeTrue(CI == null ||
+      RUN_FLAKY_TESTS)` gates are gone; no source file reads
+      `RUN_FLAKY_TESTS` at runtime.
+    - `f1c736e` — Abstract `QuicServerTestSuite` /
+      `QuicServerLifecycleTestSuite` switched from `serverEngine()` /
+      `clientEngine()` factory methods to `withServerEngine` /
+      `withClientEngine` block-takers. `JvmQuicServerTestSuite` +
+      `JvmQuicServerLifecycleTestSuite` `@AfterTest` engine-tracker
+      retrofits (commit `5b3905b`) deleted — scope-only construction
+      closes the leak by construction. `LinuxQuicServerTests`
+      delegates straight to the commonMain helpers.
 
-    Each follows the same migration pattern as `StaleConnectionDiagnosticTests` — replace per-test `defaultQuicEngine()` / `defaultQuicServerEngine()` + manual `close()` with `withQuicEngine` / `withQuicServerEngine` blocks, then drop the CI gate. The abstract `QuicServerTestSuite` / `QuicServerLifecycleTestSuite` `serverEngine()` / `clientEngine()` factory pattern is the broader migration target — once those route through the scope-only helpers, the `@AfterTest` engine-tracker retrofits in `JvmQuicServerTestSuite` + `JvmQuicServerLifecycleTestSuite` can come out and the `RUN_FLAKY_TESTS=1` escape hatch goes too.
+    Full local `:socket-quic:jvmTest` stays at 162 tests / 0 skips / 0
+    failures. Awaiting CI confirmation on PR #48.
 - [ ] **Windows JVM Tests mapping gaps** (`JvmExceptionMapping.kt`). Five tests currently skip on Windows via `isWindowsJvm()`:
   - `ExceptionIntegrationTests.tlsToNonTlsServer_producesSSLSocketException` — Windows surfaces neither `SSLSocketException` nor `SocketClosedException`; need to detect the JSSE shape that escapes through the channel-close race.
   - `ExceptionIntegrationTests.connectionRefused_producesSocketConnectionException` + `connectionRefused_exceptionHasUsefulMessage` + `JvmExceptionSubtypeTests.connectionRefused_isSocketConnectionExceptionRefused` — Windows NIO2 holds the connect past the test's 2 s budget instead of returning ECONNREFUSED. Either tighten the wrapper to surface ECONNREFUSED faster, or extend the test budget on Windows.
