@@ -27,11 +27,16 @@ internal fun assumeCiNotHang() {
 }
 
 /**
- * Dump JVM state to stdout — heap stats, thread counts, and stack traces of
- * every live thread. Intended to be called from a CI-only diagnostic
- * wrapper at the moment of a `TimeoutCancellationException`, so we can see
- * *what* is blocking when an alphabetically-late socket-quic test hangs on
- * the GH ubuntu-24.04 runner while passing locally.
+ * Capture JVM state — heap stats, thread counts, stack traces of every
+ * relevant thread — and return it as a multi-line string.
+ *
+ * Returned (not printed) so it can be embedded in an exception message:
+ * Gradle's `socket-quic` testLogging block uses `events("failed","skipped")`
+ * with `showCauses = showStackTraces = true`, which means *exception
+ * messages and stack traces always appear in the build log* but **stdout
+ * does not** unless `"standard_out"` is added to the events list. Run
+ * `26521692363` (commit `7bc73a9`) proved this empirically — `dumpJvmState`
+ * ran (the catch fired) but its `println` output was swallowed by Gradle.
  *
  * JDK-only — no kotlinx-coroutines-debug agent involved. Adding the agent
  * would change scheduler timing enough to potentially mask the symptom; a
@@ -39,12 +44,9 @@ internal fun assumeCiNotHang() {
  * to distinguish "selector blocked" / "channel send blocked" / "everyone
  * waiting on a deferred that never completes" without changing runtime
  * behaviour.
- *
- * Output is line-prefixed with `[CI-DIAG]` so it's grep-friendly in the
- * Gradle test output stream.
  */
-internal fun dumpJvmState(reason: String) {
-    val tag = "[CI-DIAG]"
+internal fun captureJvmState(reason: String): String {
+    val sb = StringBuilder(8192)
     val now = System.currentTimeMillis()
     val rt = Runtime.getRuntime()
     val heapMB = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024)
@@ -52,26 +54,44 @@ internal fun dumpJvmState(reason: String) {
     val threadMx = ManagementFactory.getThreadMXBean()
     val allStacks = Thread.getAllStackTraces()
 
-    println("$tag ==== JVM STATE DUMP — $reason ====")
-    println("$tag ts=$now heapUsedMB=$heapMB heapMaxMB=$maxMB")
-    println(
-        "$tag threads: live=${threadMx.threadCount} peak=${threadMx.peakThreadCount} " +
-            "daemon=${threadMx.daemonThreadCount} started=${threadMx.totalStartedThreadCount}",
-    )
+    sb.append("==== JVM STATE DUMP — ").append(reason).append(" ====\n")
+    sb
+        .append("ts=")
+        .append(now)
+        .append(" heapUsedMB=")
+        .append(heapMB)
+        .append(" heapMaxMB=")
+        .append(maxMB)
+        .append('\n')
+    sb
+        .append("threads: live=")
+        .append(threadMx.threadCount)
+        .append(" peak=")
+        .append(threadMx.peakThreadCount)
+        .append(" daemon=")
+        .append(threadMx.daemonThreadCount)
+        .append(" started=")
+        .append(threadMx.totalStartedThreadCount)
+        .append('\n')
 
     // Summary by name prefix so we can see if pool threads accumulated.
     val byPrefix =
         allStacks.keys
             .groupingBy { t -> t.name.replace(Regex("-?\\d+$"), "-N").take(60) }
             .eachCount()
-    println("$tag thread-name-counts (prefix → N):")
+    sb.append("thread-name-counts (prefix → N):\n")
     byPrefix.entries.sortedByDescending { it.value }.forEach { (k, v) ->
-        println("$tag   $v × $k")
+        sb
+            .append("  ")
+            .append(v)
+            .append(" × ")
+            .append(k)
+            .append('\n')
     }
 
     // Full stacks of non-daemon threads + any thread whose name contains a
-    // socket-quic-relevant token. Daemon threads from JIT/GC etc. are
-    // suppressed to keep the dump readable.
+    // socket-quic-relevant token. JIT/GC daemons are suppressed for
+    // readability.
     val relevant =
         allStacks.entries.filter { (t, _) ->
             !t.isDaemon ||
@@ -83,24 +103,34 @@ internal fun dumpJvmState(reason: String) {
                 t.name.contains("quic", ignoreCase = true)
         }
 
-    println("$tag relevant thread stacks (${relevant.size}):")
+    sb.append("relevant thread stacks (").append(relevant.size).append("):\n")
     for ((thread, frames) in relevant.sortedBy { it.key.name }) {
-        println(
-            "$tag --- ${thread.name} (id=${thread.id} state=${thread.state} daemon=${thread.isDaemon}) ---",
-        )
-        for (f in frames.take(25)) println("$tag     at $f")
-        if (frames.size > 25) println("$tag     ... ${frames.size - 25} more frames")
+        sb
+            .append("--- ")
+            .append(thread.name)
+            .append(" (id=")
+            .append(thread.id)
+            .append(" state=")
+            .append(thread.state)
+            .append(" daemon=")
+            .append(thread.isDaemon)
+            .append(") ---\n")
+        for (f in frames.take(25)) sb.append("    at ").append(f).append('\n')
+        if (frames.size > 25) {
+            sb.append("    ... ").append(frames.size - 25).append(" more frames\n")
+        }
     }
-    println("$tag ==== END JVM STATE DUMP ====")
-    System.out.flush()
+    sb.append("==== END JVM STATE DUMP ====")
+    return sb.toString()
 }
 
 /**
  * Wrap [block] with [kotlinx.coroutines.withTimeout]; on
- * [kotlinx.coroutines.TimeoutCancellationException] call [dumpJvmState]
- * with [reason] before re-throwing. Used by the late-suite handshake-hang
- * diagnostic — one timeout dump per failing operation tells us exactly
- * which thread is blocked and where.
+ * [kotlinx.coroutines.TimeoutCancellationException] capture the JVM state
+ * via [captureJvmState] and throw a wrapped [AssertionError] that embeds
+ * the dump in its message. Gradle's failure formatter renders exception
+ * messages verbatim, so the dump reaches the build log even when stdout
+ * is suppressed by the testLogging events list.
  */
 internal suspend fun <T> withDumpingTimeout(
     timeoutMillis: Long,
@@ -110,7 +140,7 @@ internal suspend fun <T> withDumpingTimeout(
     try {
         return kotlinx.coroutines.withTimeout(timeoutMillis) { block() }
     } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-        dumpJvmState(reason)
-        throw e
+        val dump = captureJvmState(reason)
+        throw AssertionError("$reason — TIMEOUT after ${timeoutMillis}ms\n$dump", e)
     }
 }
