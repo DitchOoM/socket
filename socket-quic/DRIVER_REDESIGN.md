@@ -246,6 +246,99 @@ sealed interface QuicheCmd {
 
 ---
 
+## Engine lifecycle: leaks impossible by construction
+
+The driver-internal redesign above closes the lifecycle gap *inside* a single
+connection. The bigger foot-gun in practice is one level up: every
+`QuicEngine` / `QuicServerEngine` instance owns a `SupervisorJob` (plus a
+loaded `QuicheApi` reference and — for servers — a per-bind config + receive
+loop). When a caller forgets `engine.close()`, those resources persist.
+
+This is exactly the shape of `socket-quic` test flake bisected in
+`HANDOFF.md`: tests call `defaultQuicEngine()` / `defaultQuicServerEngine()`,
+close the bound `server` / opened connection, and forget the engine. With
+`@AfterTest` retrofits to two of the ~10 affected suites the threshold still
+crosses on the GH ubuntu-24.04 runner after ~130 tests, dispatchers starve,
+and handshake `withTimeout` fires. The same gun is loaded for every consumer
+of the library.
+
+The cure is *API shape*, not more retrofits.
+
+### Scope-only construction (canonical API)
+
+`commonMain` exposes block-scoped helpers that own engine creation **and**
+release:
+
+```kotlin
+suspend fun <R> withQuicEngine(block: suspend (QuicEngine) -> R): R {
+    val engine = defaultQuicEngine()
+    try { return block(engine) } finally { engine.close() }
+}
+
+suspend fun <R> withQuicServerEngine(block: suspend (QuicServerEngine) -> R): R {
+    val engine = defaultQuicServerEngine()
+    try { return block(engine) } finally { engine.close() }
+}
+```
+
+The engine reference never escapes the block. The caller cannot forget the
+release — the `finally` runs on exceptional and cancellation paths too. This
+is the Rust borrow pattern in Kotlin: scope-only ownership.
+
+`defaultQuicEngine()` / `defaultQuicServerEngine()` remain as the platform
+`expect`/`actual` extension points (the helpers wrap them), but the canonical
+consumer-facing surface is `withQuicEngine` / `withQuicServerEngine`.
+
+### Cleaner safety net (JVM belt-and-braces)
+
+On the JVM, even the scope-only API can be bypassed by direct callers of
+`defaultQuicEngine()`. As a second layer, register each engine's
+`SupervisorJob` with `java.lang.ref.Cleaner` at construction. If the engine
+becomes phantom-reachable without `close()`, the cleaner cancels the job —
+delayed but bounded. This does not replace `close()` (cleanup is GC-paced,
+not deterministic), but it prevents unbounded growth under JVM memory
+pressure and is the cheapest possible cross-cutting defence.
+
+```kotlin
+private class JvmQuicServerEngine : QuicServerEngine {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        // Belt-and-braces: if the engine is GC'd without close(), the
+        // cleaner cancels the scope so leaked engines don't pin worker
+        // coroutines indefinitely. The lambda captures only the scope's
+        // Job (a primitive holder) — no path back to `this`, so Cleaner
+        // can reach it.
+        val job = scope.coroutineContext[Job]!!
+        cleaner.register(this) { job.cancel() }
+    }
+    // ... rest unchanged
+}
+```
+
+### Migration shape
+
+1. Ship `withQuicEngine` / `withQuicServerEngine` in commonMain + the JVM
+   Cleaner safety net.
+2. Migrate one canary test class (`StaleConnectionDiagnosticTests`) to
+   prove the new shape closes the leak; remove its CI gate.
+3. Validate on CI; if green, expand to the remaining 8 gated tests +
+   migrate the abstract test suites' factory pattern; drop the
+   `RUN_FLAKY_TESTS=1` escape hatch and the `@AfterTest` engine-tracker
+   retrofits.
+4. (Optional, follow-up) Make `defaultQuicEngine` / `defaultQuicServerEngine`
+   `internal` once all callers are on the scope-only helpers.
+
+### Why this and not `SuspendCloseable.use { }`
+
+`.use { }` over an explicit `AutoCloseable`/`SuspendCloseable` is still a
+caller-side discipline — slightly less verbose than `try { } finally { }`,
+but the engine reference is still in scope after `.use` returns. Scope-only
+helpers eliminate even that footprint. Worth doing eventually anyway, but
+not on the critical path for the leak fix.
+
+---
+
 ## What buffer-codec handles
 
 **Already generated:** `AlpnProtocol` uses `@ProtocolMessage` + `@LengthPrefixed(Byte)`
