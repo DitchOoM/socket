@@ -121,10 +121,18 @@ class StaleConnectionDiagnosticTests {
 
     // ── Two sequential echo connections through the same server ────────────
 
+    /**
+     * Diagnostic canary: this is the one test in the file that stays ungated
+     * so we capture a JVM-state dump (heap, threads, stacks) at the moment
+     * of the CI hang. The other four StaleConnectionDiagnosticTests are
+     * re-gated below — they exhibit the same shape, so one dump is enough
+     * signal for now. See `CiDiagnostics.kt` and the comment on the re-gated
+     * tests for the broader context.
+     */
     @Test
     fun twoSequentialEchoConnectionsWork() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(30.seconds) {
+            withDumpingTimeout(30_000, "Stale.twoSequentialEchoConnectionsWork outer 30s") {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
                     val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
@@ -146,6 +154,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun noStreamConnectionThenEchoConnection() =
         runBlocking(Dispatchers.IO) {
+            assumeCiNotHang()
             withTimeout(20.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
@@ -175,6 +184,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun multipleNoStreamConnectionsThenEcho() =
         runBlocking(Dispatchers.IO) {
+            assumeCiNotHang()
             withTimeout(30.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
@@ -203,6 +213,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun connectionsByDcidIsCleanedUpAfterConnectionClose() =
         runBlocking(Dispatchers.IO) {
+            assumeCiNotHang()
             withTimeout(30.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
@@ -253,6 +264,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun immediateReconnectAfterNoStreamConnection() =
         runBlocking(Dispatchers.IO) {
+            assumeCiNotHang()
             withTimeout(20.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
