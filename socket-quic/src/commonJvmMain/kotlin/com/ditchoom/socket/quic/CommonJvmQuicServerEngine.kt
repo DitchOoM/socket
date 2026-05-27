@@ -38,15 +38,6 @@ private class JvmQuicServerEngine : QuicServerEngine {
     private val api: QuicheApi = loadQuicheApi()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    init {
-        // GC-paced safety net: if a caller bypasses withQuicServerEngine() and
-        // forgets close(), the cleaner cancels the scope when the engine
-        // becomes phantom-reachable. The registration is in a top-level helper
-        // (no `this`) so the lambda physically cannot capture a back-reference
-        // to the engine — see JvmEngineCleaner for the rationale.
-        registerEngineCleanup(this, checkNotNull(scope.coroutineContext[Job]))
-    }
-
     override suspend fun bind(
         port: Int,
         host: String?,

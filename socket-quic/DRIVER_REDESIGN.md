@@ -289,37 +289,28 @@ is the Rust borrow pattern in Kotlin: scope-only ownership.
 `expect`/`actual` extension points (the helpers wrap them), but the canonical
 consumer-facing surface is `withQuicEngine` / `withQuicServerEngine`.
 
-### Cleaner safety net (JVM belt-and-braces)
+### Why no `java.lang.ref.Cleaner` safety net
 
-On the JVM, even the scope-only API can be bypassed by direct callers of
-`defaultQuicEngine()`. As a second layer, register each engine's
-`SupervisorJob` with `java.lang.ref.Cleaner` at construction. If the engine
-becomes phantom-reachable without `close()`, the cleaner cancels the job —
-delayed but bounded. This does not replace `close()` (cleanup is GC-paced,
-not deterministic), but it prevents unbounded growth under JVM memory
-pressure and is the cheapest possible cross-cutting defence.
+An earlier draft of this design added a JVM `Cleaner` belt-and-braces:
+register each engine's `SupervisorJob` with `java.lang.ref.Cleaner` so a
+forgotten engine eventually gets cancelled by GC. It was removed for two
+reasons:
 
-```kotlin
-private class JvmQuicServerEngine : QuicServerEngine {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    init {
-        // Belt-and-braces: if the engine is GC'd without close(), the
-        // cleaner cancels the scope so leaked engines don't pin worker
-        // coroutines indefinitely. The lambda captures only the scope's
-        // Job (a primitive holder) — no path back to `this`, so Cleaner
-        // can reach it.
-        val job = scope.coroutineContext[Job]!!
-        cleaner.register(this) { job.cancel() }
-    }
-    // ... rest unchanged
-}
-```
+1. **The scope-only API already removes the foot-gun.** Once `withQuicEngine` /
+   `withQuicServerEngine` are the canonical surface (and especially once
+   `defaultQuicEngine` / `defaultQuicServerEngine` go `internal`), there is
+   nothing left for the Cleaner to clean. The Cleaner protects against a
+   misuse mode the API itself disallows.
+2. **Cross-platform asymmetry.** `java.lang.ref.Cleaner` was added to
+   Android only at API 33, but `socket-quic`'s `minSdk` is 24 — so a
+   `commonJvmMain` reference fails at class-init time on Android < 33. The
+   workaround (expect/actual with Android no-op) splits the safety story
+   asymmetrically across platforms: JVM gets GC-paced cleanup, Android <
+   33 gets nothing. Better to have one clear lifecycle rule everywhere.
 
 ### Migration shape
 
-1. Ship `withQuicEngine` / `withQuicServerEngine` in commonMain + the JVM
-   Cleaner safety net.
+1. Ship `withQuicEngine` / `withQuicServerEngine` in commonMain.
 2. Migrate one canary test class (`StaleConnectionDiagnosticTests`) to
    prove the new shape closes the leak; remove its CI gate.
 3. Validate on CI; if green, expand to the remaining 8 gated tests +
