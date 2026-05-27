@@ -308,6 +308,22 @@ jobs:
       # and burned the 60-min job timeout, wiping diagnostic data. Now the
       # diagnostic steps are insulated from any later hangs.
 
+      # Full-suite-with-flakies experiment: run the entire socket-quic jvmTest
+      # with RUN_FLAKY_TESTS=1 so the 9 normally-gated tests participate. This
+      # is the FIRST diagnostic step in the job, so the gradle daemon is fresh
+      # — best-case scenario for whether the engine-leak fix + buffer 5.2.0
+      # bump are enough to land the full suite green with the gates removed.
+      # If this PASSES → we can drop the assumeTrue gates entirely. If it
+      # hangs → there are still residual leaks somewhere else in the suite.
+      - name: Diagnostic — FULL suite with RUN_FLAKY_TESTS=1
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          RUN_FLAKY_TESTS: "1"
+        run: >-
+          ./gradlew :socket-quic:jvmTest --rerun-tasks
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       # Diagnostic baseline: run the 9 CI-skipped tests in isolation, bypassing
       # the `assumeTrue` gate via RUN_FLAKY_TESTS=1. Confirmed PASSING on run
       # 26462715219 — all 9 pass in <6s each when run alone. That means the
