@@ -247,7 +247,15 @@ internal class JvmQuicServer(
             }
 
             while (!closed) {
-                selector.select() // async wait — unblocked by channel.close() or cleanup wakeup
+                // runInterruptible: see NioUdpChannel.receive — the same
+                // "suspend method calling blocking Selector.select" trap.
+                // Without it, coroutine cancellation can't reach a thread
+                // parked in EPoll.wait; if close()'s `selector.wakeup() +
+                // channel.close()` race against our entry into select(),
+                // the receive loop stalls and `receiveJob.join()` in close()
+                // hangs forever. With runInterruptible, scope cancel ⇒
+                // thread interrupt ⇒ select() returns ⇒ loop exits.
+                kotlinx.coroutines.runInterruptible(Dispatchers.IO) { selector.select() }
                 if (closed) break
                 selector.selectedKeys().clear()
 
