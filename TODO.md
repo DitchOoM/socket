@@ -57,13 +57,25 @@ See `TESTING_STRATEGY.md` §6 for the full per-phase summary.
 
     **2026-05-27 update: root cause located, partial mitigation landed.** The hang is **resource-pressure-driven** — tests across ~10 classes create `QuicServerEngine` / `QuicEngine` without `close()`, each leaking a scope + ~2 worker threads + a native quiche state block. On the small (2-4 core / 7 GB) GH runner the threshold crosses around the 130th test and coroutine dispatchers starve, so the 10s `withTimeout` on `awaitEstablished` fires. Dispatcher-starvation evidence: `ReactiveDriverTests.streamRecv_returns_data` (stub-API test, no engine of its own) hung past its own `withTimeout(2.seconds)` for 4 minutes in CI run `26482387255`. Local boxes have so much headroom the threshold never crosses. See `HANDOFF.md` for the full bisection log.
 
-    Landed today (2026-05-27):
+    Landed 2026-05-27 morning:
     - Buffer 5.0.0 → 5.2.0 (commit `fd9c308`).
     - Cargo `target/` cache (~3 min CI savings, commit in revert).
     - `@AfterTest` engine cleanup in `JvmQuicServerTestSuite` + `JvmQuicServerLifecycleTestSuite` (commit `5b3905b`). Partial — ~10 other suites still leak.
     - `timeout-minutes: 8` guard on `:socket-quic:jvmTest` step so one hang can't burn the 60-min job budget.
 
-    **Next step is API redesign, not more whack-a-mole.** See `HANDOFF.md` → "Recommended direction" and `socket-quic/DRIVER_REDESIGN.md` (memory `[[project_quic_driver_redesign]]`). Concrete proposals: `Cleaner` safety net + scope-only engine construction (`withQuicServerEngine { engine -> ... }`) so leaks are impossible. After the redesign, mechanically migrate test classes and remove the 9 `assumeTrue` gates one by one.
+    Landed 2026-05-27 afternoon (API redesign step 1):
+    - Scope-only engine construction in commonMain — `withQuicEngine { engine -> ... }` and `withQuicServerEngine { engine -> ... }` close the engine in a `finally` so leaks aren't possible by construction (commit `4b615a8`).
+    - JVM `Cleaner` safety net — `JvmEngineCleaner` registers each engine's `SupervisorJob` with `java.lang.ref.Cleaner` so engines that escape the scope-only API still get GC-paced cleanup (same commit).
+    - `StaleConnectionDiagnosticTests` migrated to the new lifecycle and its `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate dropped (commit `3014388`). 5 of the 9 gates closed in this commit.
+    - Engine-lifecycle direction documented in `socket-quic/DRIVER_REDESIGN.md` (commit `9f572f8`).
+
+    **Remaining gates (4 of 9), to migrate next session:**
+    - `ServerConnectionTimingTest.serverHandlerRunsOnClientConnect`
+    - `ServerConnectionTimingTest.serverAcceptsStreamFromClient`
+    - `ServerConnectionTimingTest.scopeBasedEchoRoundTrip`
+    - `QuicStreamMuxTests.bidirectionalStreamMuxExchange`
+
+    Each follows the same migration pattern as `StaleConnectionDiagnosticTests` — replace per-test `defaultQuicEngine()` / `defaultQuicServerEngine()` + manual `close()` with `withQuicEngine` / `withQuicServerEngine` blocks, then drop the CI gate. The abstract `QuicServerTestSuite` / `QuicServerLifecycleTestSuite` `serverEngine()` / `clientEngine()` factory pattern is the broader migration target — once those route through the scope-only helpers, the `@AfterTest` engine-tracker retrofits in `JvmQuicServerTestSuite` + `JvmQuicServerLifecycleTestSuite` can come out and the `RUN_FLAKY_TESTS=1` escape hatch goes too.
 - [ ] **Windows JVM Tests mapping gaps** (`JvmExceptionMapping.kt`). Five tests currently skip on Windows via `isWindowsJvm()`:
   - `ExceptionIntegrationTests.tlsToNonTlsServer_producesSSLSocketException` — Windows surfaces neither `SSLSocketException` nor `SocketClosedException`; need to detect the JSSE shape that escapes through the channel-close race.
   - `ExceptionIntegrationTests.connectionRefused_producesSocketConnectionException` + `connectionRefused_exceptionHasUsefulMessage` + `JvmExceptionSubtypeTests.connectionRefused_isSocketConnectionExceptionRefused` — Windows NIO2 holds the connect past the test's 2 s budget instead of returning ECONNREFUSED. Either tighten the wrapper to surface ECONNREFUSED faster, or extend the test budget on Windows.
