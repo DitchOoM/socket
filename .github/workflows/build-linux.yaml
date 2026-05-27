@@ -302,139 +302,19 @@ jobs:
           :socket-quic:jvmProcessResources :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Diagnostic steps run FIRST (before the main socket-quic:jvmTest) so
-      # bisection data still lands if the main suite hangs. On run 26467344275
-      # the main suite hung for 53min on QuicLocalServerTests.serverAcceptsConnection
-      # and burned the 60-min job timeout, wiping diagnostic data. Now the
-      # diagnostic steps are insulated from any later hangs.
-
-      # Full-suite-with-flakies experiment: run the entire socket-quic jvmTest
-      # with RUN_FLAKY_TESTS=1 so the 9 normally-gated tests participate. This
-      # is the FIRST diagnostic step in the job, so the gradle daemon is fresh
-      # — best-case scenario for whether the engine-leak fix + buffer 5.2.0
-      # bump are enough to land the full suite green with the gates removed.
-      # If this PASSES → we can drop the assumeTrue gates entirely. If it
-      # hangs → there are still residual leaks somewhere else in the suite.
-      - name: Diagnostic — FULL suite with RUN_FLAKY_TESTS=1
-        continue-on-error: true
-        timeout-minutes: 5
-        env:
-          RUN_FLAKY_TESTS: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest --rerun-tasks
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Diagnostic baseline: run the 9 CI-skipped tests in isolation, bypassing
-      # the `assumeTrue` gate via RUN_FLAKY_TESTS=1. Confirmed PASSING on run
-      # 26462715219 — all 9 pass in <6s each when run alone. That means the
-      # 10s-handshake-hang in the full suite is cumulative state from earlier
-      # tests. Kept as the regression baseline.
-      # timeout-minutes guards against any future hang in a flaky test.
-      - name: Diagnostic — flaky jvmTest classes in isolation (baseline)
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          RUN_FLAKY_TESTS: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest
-          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
-          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
-          --rerun-tasks
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Per-class bisection inside Quarter A1 (classes 1-5).
-      # Run 26467344275 narrowed the poisoner to classes 1-5; with all 5 + the
-      # flaky canary, the LAST 2 flaky tests (10s each) hang. With just classes
-      # 6-9 (Quarter A2) + flaky, all flaky tests pass. So somewhere in classes
-      # 1-5 is the dominant resource leak.
-      #
-      # These 5 diagnostic steps each pair ONE candidate class with the 3 flaky
-      # canary classes. If a step reproduces the hang → that class is a strong
-      # leaker. If none reproduce, the leak is distributed across multiple of
-      # them (need to combine).
-      #
-      # Prime HANDOFF.md suspects: JvmQuicServerLifecycleTestSuite (#3) and
-      # JvmQuicServerTestSuite (#4) — both create defaultQuicServerEngine()
-      # without close() in cleanup.
-
-      - name: Diagnostic — class 1 (IoUringUdpServerChannel) + flaky canary
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          RUN_FLAKY_TESTS: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest
-          --tests "com.ditchoom.socket.quic.IoUringUdpServerChannelTest"
-          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
-          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
-          --rerun-tasks
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      - name: Diagnostic — class 2 (JvmQuicConnection) + flaky canary
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          RUN_FLAKY_TESTS: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest
-          --tests "com.ditchoom.socket.quic.JvmQuicConnectionTests"
-          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
-          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
-          --rerun-tasks
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      - name: Diagnostic — class 3 (JvmQuicServerLifecycle) + flaky canary [SUSPECT]
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          RUN_FLAKY_TESTS: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest
-          --tests "com.ditchoom.socket.quic.JvmQuicServerLifecycleTestSuite"
-          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
-          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
-          --rerun-tasks
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      - name: Diagnostic — class 4 (JvmQuicServerTestSuite) + flaky canary [SUSPECT]
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          RUN_FLAKY_TESTS: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest
-          --tests "com.ditchoom.socket.quic.JvmQuicServerTestSuite"
-          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
-          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
-          --rerun-tasks
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      - name: Diagnostic — class 5 (LinuxQuicAddressMarshalling) + flaky canary
-        continue-on-error: true
-        timeout-minutes: 3
-        env:
-          RUN_FLAKY_TESTS: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest
-          --tests "com.ditchoom.socket.quic.LinuxQuicAddressMarshallingTest"
-          --tests "com.ditchoom.socket.quic.ServerConnectionTimingTest"
-          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
-          --tests "com.ditchoom.socket.quic.QuicStreamMuxTests"
-          --rerun-tasks
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
       # The quiche_conn_recv SIGABRT that previously required continue-on-error
       # was a JVM-side sockaddr lifetime bug (DirectByteBuffer Cleaner freeing
       # the buffer that quiche_recv_info held a raw pointer to); fixed in 5e55a5f.
       # The K/Native side was fixed earlier in b0a4f99. Both steps now run as
       # hard requirements — a real test failure should fail the job.
-      # timeout-minutes: 8 caps run-26467344275's 53-min step-29 hang at 8min
-      # so it can't burn the 60-min job budget again.
+      #
+      # timeout-minutes: 8 caps a single hanging socket-quic test at 8min so it
+      # can't burn the 60-min job timeout and wipe subsequent steps. On run
+      # 26467344275 step 29 hung 53min on QuicLocalServerTests.serverAcceptsConnection
+      # before this guard existed; normal duration is ~30-60s, so 8min is
+      # ~8-16x headroom for the slowest legitimate flake. 9 alphabetically-late
+      # tests still skip on CI via assumeTrue gates (see HANDOFF.md / TODO.md
+      # for the resource-pressure root-cause story).
       - name: Run socket-quic JVM tests
         timeout-minutes: 8
         run: >-
