@@ -96,20 +96,6 @@ class QuicStreamMuxTests {
     @Test
     fun bidirectionalStreamMuxExchange() =
         runBlocking(Dispatchers.IO) {
-            // Separate from the engine-leak fix that closed the other 8 originally-
-            // gated tests: the mux handshake still hangs on GH ubuntu-24.04 hosted
-            // runners (CI run 26514310996, dcfbc37 — 15007ms outer withTimeout
-            // fires; non-mux QUIC handshake tests on the same run pass). HANDOFF's
-            // bisection flagged this exact test as different in shape ("something
-            // inside the codec / CodecConnection / mux path that we couldn't pin
-            // down across 8 CI cycles"). Re-gated until either: (a) the no-engine
-            // refactor surfaces what's different in the mux path, or (b) a
-            // self-hosted / quic-interop-runner reproduces it locally.
-            assumeTrue(
-                "CI: mux/codec handshake hang — separate from engine-leak path " +
-                    "(see TODO.md). Bypass via RUN_FLAKY_TESTS=1 for diagnostics.",
-                System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1",
-            )
             withTimeout(15.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)

@@ -69,7 +69,6 @@ class ServerConnectionTimingTest {
     @Test
     fun serverHandlerRunsOnClientConnect() =
         runBlocking(Dispatchers.IO) {
-            assumeCiNotHang()
             withTimeout(15.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
@@ -100,7 +99,6 @@ class ServerConnectionTimingTest {
     @Test
     fun serverAcceptsStreamFromClient() =
         runBlocking(Dispatchers.IO) {
-            assumeCiNotHang()
             withTimeout(15.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
@@ -145,7 +143,6 @@ class ServerConnectionTimingTest {
     @Test
     fun scopeBasedEchoRoundTrip() =
         runBlocking(Dispatchers.IO) {
-            assumeCiNotHang()
             withTimeout(15.seconds) {
                 withEngines { serverEngine, clientEngine ->
                     val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
