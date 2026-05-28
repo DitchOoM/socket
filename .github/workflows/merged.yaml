@@ -131,12 +131,16 @@ jobs:
             launched=$(grep '^launched=' "$f" | cut -d= -f2)
             ok=$(grep '^ok=' "$f" | cut -d= -f2)
             skip=$(grep '^skip=' "$f" | cut -d= -f2)
+            intentional_skip=$(grep '^intentional_skip=' "$f" | cut -d= -f2)
             launched=${launched:-unknown}
             ok=${ok:-0}
             skip=${skip:-0}
+            intentional_skip=${intentional_skip:-0}
 
             if [ "$ok" -gt 0 ]; then
               status="✅ exercised"
+            elif [ "$skip" -gt 0 ] && [ "$intentional_skip" = "$skip" ]; then
+              status="ℹ️ platform gap (known)"
             elif [ "$skip" -gt 0 ]; then
               status="❌ all skipped"
               FAILED=1
@@ -148,7 +152,7 @@ jobs:
             fi
 
             echo "| $platform | $ok | $skip | $status |" >> "$GITHUB_STEP_SUMMARY"
-            echo "platform=$platform launched=$launched ok=$ok skip=$skip status=$status"
+            echo "platform=$platform launched=$launched ok=$ok skip=$skip intentional=$intentional_skip status=$status"
           done
 
           if [ "$FAILED" = "1" ]; then

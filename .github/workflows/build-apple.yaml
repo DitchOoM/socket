@@ -286,22 +286,33 @@ jobs:
           LOG=/tmp/socket-quic-apple.log
           OK=0
           SKIP=0
+          INTENTIONAL_SKIP=0
           if [ -f "$LOG" ]; then
             OK=$(grep -c 'harness OK' "$LOG" || true)
             SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
+            # Skips marked "Apple K/N" come from QuicHarnessIntegrationTests'
+            # `isAppleKNative()` gate in withHarness (PR #54 iter 9) — they
+            # mean "the harness suite is intentionally not exercised on this
+            # platform because Network.framework's QUIC verify_block path is
+            # known-broken." We report these as intentional skips so the
+            # cross-platform matrix can render them as ℹ️ instead of ❌.
+            INTENTIONAL_SKIP=$(grep -c 'harness SKIP: Apple K/N' "$LOG" || true)
           fi
-          echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP"
+          echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP, INTENTIONAL=$INTENTIONAL_SKIP"
 
           mkdir -p /tmp/quic-audit
           # launched=true → audit step only runs when launch-quic-echo
-          # reported ready, so the harness is known-up. Summary uses this
-          # to distinguish "no markers because crash" (red) from "no
-          # markers because harness wasn't brought up" (informational).
+          # reported ready, so the harness is known-up.
+          # intentional_skip=N → tests that skipped via the platform gate,
+          # not via a connection failure. Summary uses this to distinguish
+          # "platform doesn't support QUIC harness yet" (ℹ️) from "QUIC
+          # client silently regressed" (❌).
           cat > /tmp/quic-audit/apple.txt <<EOF
           platform=apple
           launched=true
           ok=$OK
           skip=$SKIP
+          intentional_skip=$INTENTIONAL_SKIP
           EOF
 
           {
