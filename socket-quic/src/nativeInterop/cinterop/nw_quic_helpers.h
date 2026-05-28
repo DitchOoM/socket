@@ -11,7 +11,9 @@
 
 #import <Foundation/Foundation.h>
 #import <Network/Network.h>
+#import <Security/Security.h>
 #import <dispatch/dispatch.h>
+#include <stdio.h>
 
 #pragma mark - QUIC Connection Creation
 
@@ -88,13 +90,23 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
             if (pinnedCaDer != nil) {
                 sec_protocol_options_set_verify_block(sec_options,
                     ^(sec_protocol_metadata_t metadata, sec_trust_t sec_trust, sec_protocol_verify_complete_t complete) {
+                        // Iter 7 instrumentation: fprintf(stderr) is line-buffered AND
+                        // captured by gradle stdout, so any line printed survives a
+                        // subsequent crash. NARROWS the harness_handshake crash from
+                        // "verify_block kills the process somewhere" to a specific line.
+                        // Delete the fprintfs after the fix lands.
+                        fprintf(stderr, "[nw_quic verify_block] entered\n"); fflush(stderr);
+
                         // sec_trust_t bridges to SecTrustRef (free-bridged Network.framework /
                         // Security types, per Apple's WWDC 2018 "Network Framework" session).
                         SecTrustRef trust_ref = sec_trust_copy_ref(sec_trust);
+                        fprintf(stderr, "[nw_quic verify_block] sec_trust_copy_ref=%p\n", trust_ref); fflush(stderr);
                         if (!trust_ref) { complete(false); return; }
 
                         SecCertificateRef ca_cert = SecCertificateCreateWithData(
                             kCFAllocatorDefault, (__bridge CFDataRef)pinnedCaDer);
+                        fprintf(stderr, "[nw_quic verify_block] SecCertificateCreateWithData=%p (der_len=%lu)\n",
+                                ca_cert, (unsigned long)pinnedCaDer.length); fflush(stderr);
                         if (!ca_cert) {
                             CFRelease(trust_ref);
                             complete(false);
@@ -103,27 +115,34 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
 
                         CFMutableArrayRef anchors = CFArrayCreateMutable(kCFAllocatorDefault, 1, &kCFTypeArrayCallBacks);
                         CFArrayAppendValue(anchors, ca_cert);
-                        SecTrustSetAnchorCertificates(trust_ref, anchors);
-                        SecTrustSetAnchorCertificatesOnly(trust_ref, true);
+                        OSStatus s1 = SecTrustSetAnchorCertificates(trust_ref, anchors);
+                        fprintf(stderr, "[nw_quic verify_block] SetAnchorCertificates=%d\n", (int)s1); fflush(stderr);
+
+                        OSStatus s2 = SecTrustSetAnchorCertificatesOnly(trust_ref, true);
+                        fprintf(stderr, "[nw_quic verify_block] SetAnchorCertificatesOnly=%d\n", (int)s2); fflush(stderr);
 
                         // Relax hostname check — the harness cert has CN=quic.tech but the test
                         // connects to 127.0.0.1. Pinning to the CA chains is what gives us
                         // identity assurance; hostname binding is a separate concern.
                         SecPolicyRef policy = SecPolicyCreateSSL(true, NULL);
-                        CFArrayRef policies = CFArrayCreate(kCFAllocatorDefault, (const void **)&policy, 1, &kCFTypeArrayCallBacks);
-                        SecTrustSetPolicies(trust_ref, policies);
+                        fprintf(stderr, "[nw_quic verify_block] SecPolicyCreateSSL=%p\n", policy); fflush(stderr);
+
+                        OSStatus s3 = SecTrustSetPolicies(trust_ref, policy);
+                        fprintf(stderr, "[nw_quic verify_block] SetPolicies=%d\n", (int)s3); fflush(stderr);
 
                         CFErrorRef error = NULL;
                         bool valid = SecTrustEvaluateWithError(trust_ref, &error);
+                        fprintf(stderr, "[nw_quic verify_block] EvaluateWithError valid=%d error=%p\n", (int)valid, error); fflush(stderr);
                         if (error) CFRelease(error);
 
-                        CFRelease(policies);
                         CFRelease(policy);
                         CFRelease(anchors);
                         CFRelease(ca_cert);
                         CFRelease(trust_ref);
 
+                        fprintf(stderr, "[nw_quic verify_block] about to complete(%d)\n", (int)valid); fflush(stderr);
                         complete(valid);
+                        fprintf(stderr, "[nw_quic verify_block] complete() returned\n"); fflush(stderr);
                     },
                     dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
             }
