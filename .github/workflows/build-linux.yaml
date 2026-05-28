@@ -362,6 +362,7 @@ jobs:
           mkdir -p /tmp/quic-audit
           cat > /tmp/quic-audit/linux-jvm.txt <<EOF
           platform=linux-jvm
+          launched=true
           ok=$OK
           skip=$SKIP
           EOF
@@ -576,6 +577,7 @@ jobs:
           mkdir -p /tmp/quic-audit
           cat > /tmp/quic-audit/linux-arm64.txt <<EOF
           platform=linux-arm64
+          launched=true
           ok=$OK
           skip=$SKIP
           EOF

@@ -234,10 +234,21 @@ jobs:
         # K/N test framework writing them into JUnit XML's <system-out>
         # block — which it doesn't, the way the JVM JUnit runner does.
         # Same pattern the Linux ARM64 audit already uses.
+        #
+        # --stacktrace --info: K/N "Test running process exited unexpectedly"
+        # is a black box without these — the runtime SIGSEGV/SIGABRT leaves
+        # no stack in the default gradle output. --info plus -Pkotlin.native.
+        # debug.exceptions=true makes the K/N runtime surface the offending
+        # native stack instead of just dying. The next CI cycle should
+        # reveal whether the crash is in nw_helper_create_quic_connection,
+        # the cinterop NSArray bridge for the ALPN list, or somewhere
+        # deeper in Network.framework's QUIC init.
         run: |
           set -o pipefail
           ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test \
-            --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 \
+            --no-configuration-cache --stacktrace --info \
+            -Pkotlin.native.debug.exceptions=true \
+            ${{ inputs.gradle-args }} 2>&1 \
             | tee /tmp/socket-quic-apple.log
 
       - name: Stop quic-echo + capture log
@@ -282,8 +293,13 @@ jobs:
           echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP"
 
           mkdir -p /tmp/quic-audit
+          # launched=true → audit step only runs when launch-quic-echo
+          # reported ready, so the harness is known-up. Summary uses this
+          # to distinguish "no markers because crash" (red) from "no
+          # markers because harness wasn't brought up" (informational).
           cat > /tmp/quic-audit/apple.txt <<EOF
           platform=apple
+          launched=true
           ok=$OK
           skip=$SKIP
           EOF

@@ -128,8 +128,10 @@ jobs:
           FAILED=0
           for f in "${FILES[@]}"; do
             platform=$(grep '^platform=' "$f" | cut -d= -f2)
+            launched=$(grep '^launched=' "$f" | cut -d= -f2)
             ok=$(grep '^ok=' "$f" | cut -d= -f2)
             skip=$(grep '^skip=' "$f" | cut -d= -f2)
+            launched=${launched:-unknown}
             ok=${ok:-0}
             skip=${skip:-0}
 
@@ -138,12 +140,15 @@ jobs:
             elif [ "$skip" -gt 0 ]; then
               status="❌ all skipped"
               FAILED=1
+            elif [ "$launched" = "true" ]; then
+              status="❌ no markers despite launch"
+              FAILED=1
             else
               status="ℹ️ no data"
             fi
 
             echo "| $platform | $ok | $skip | $status |" >> "$GITHUB_STEP_SUMMARY"
-            echo "platform=$platform ok=$ok skip=$skip status=$status"
+            echo "platform=$platform launched=$launched ok=$ok skip=$skip status=$status"
           done
 
           if [ "$FAILED" = "1" ]; then
