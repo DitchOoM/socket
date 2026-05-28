@@ -19,10 +19,34 @@
  * Create a QUIC connection.
  * Uses nw_parameters_create_quic() with TLS 1.3 (mandatory for QUIC).
  *
+ * Certificate verification logic:
+ *
+ *   - **trusted_ca_der != nil** → custom verify_block evaluates the
+ *     server's trust chain against the provided CA cert as the SOLE
+ *     trust anchor, with `SecPolicyCreateSSL(true, NULL)` so the
+ *     hostname check is relaxed (the test harness ships a cert for
+ *     `quic.tech` and we connect to `127.0.0.1`; pinning to the CA
+ *     while ignoring hostname is the standard test pattern). Uses
+ *     `SecTrustEvaluateWithError` for real validation, NOT the
+ *     pre-PR-#54 "complete(true) without evaluation" pattern that
+ *     SIGABRT'd under Apple's TLS hardening (see Iter 1-5 in PR #54).
+ *   - **trusted_ca_der == nil, verify_certs == true** → no verify_block
+ *     installed; Network.framework's default trust evaluation runs
+ *     (keychain anchors, hostname check enabled).
+ *   - **trusted_ca_der == nil, verify_certs == false** → no verify_block
+ *     installed either. The `verify_certs = false` knob is now a NO-OP
+ *     on Apple. Documented in `WithQuicConnection.apple.kt`. The right
+ *     way to talk to a self-signed cert on Apple is to pass
+ *     `trustedCaDer` from Kotlin.
+ *
  * @param host Hostname to connect to
  * @param port Port number
  * @param alpn_protocols NSArray of NSString ALPN identifiers (mandatory for QUIC)
- * @param verify_certs Whether to verify TLS certificates
+ * @param verify_certs Whether to use system trust evaluation when no
+ *                     custom CA is provided. Has no effect when
+ *                     `trusted_ca_der` is non-nil.
+ * @param trusted_ca_der DER-encoded CA certificate bytes for pinning;
+ *                       nil to use system trust.
  * @param idle_timeout_seconds QUIC idle timeout (0 = no timeout)
  * @param connection_timeout_seconds TCP-level connection timeout
  * @return nw_connection_t or NULL on parameter error
@@ -32,6 +56,7 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     uint16_t port,
     NSArray<NSString *> * _Nonnull alpn_protocols,
     NSNumber * _Nonnull verify_certs,
+    NSData * _Nullable trusted_ca_der,
     int32_t idle_timeout_seconds,
     int32_t connection_timeout_seconds)
 {
@@ -43,6 +68,12 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     nw_endpoint_t endpoint = nw_endpoint_create_host(host, port_str);
     if (!endpoint) return NULL;
 
+    // Block-captured copy — the block runs asynchronously on the
+    // dispatch queue and `trusted_ca_der` (an Objective-C object) must
+    // be retained for the block's lifetime. Block-capture handles
+    // retain semantics correctly under ARC.
+    NSData * _Nullable pinnedCaDer = trusted_ca_der;
+
     // Create QUIC parameters with TLS
     nw_parameters_t params = nw_parameters_create_quic(
         ^(nw_protocol_options_t _Nonnull tls_options) {
@@ -53,14 +84,54 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
             }
 
-            // Certificate verification
-            if (![verify_certs boolValue]) {
+            // Certificate verification — proper pinning path or default system trust.
+            if (pinnedCaDer != nil) {
                 sec_protocol_options_set_verify_block(sec_options,
-                    ^(sec_protocol_metadata_t metadata, sec_trust_t trust, sec_protocol_verify_complete_t complete) {
-                        complete(true);
+                    ^(sec_protocol_metadata_t metadata, sec_trust_t sec_trust, sec_protocol_verify_complete_t complete) {
+                        // sec_trust_t bridges to SecTrustRef (free-bridged Network.framework /
+                        // Security types, per Apple's WWDC 2018 "Network Framework" session).
+                        SecTrustRef trust_ref = sec_trust_copy_ref(sec_trust);
+                        if (!trust_ref) { complete(false); return; }
+
+                        SecCertificateRef ca_cert = SecCertificateCreateWithData(
+                            kCFAllocatorDefault, (__bridge CFDataRef)pinnedCaDer);
+                        if (!ca_cert) {
+                            CFRelease(trust_ref);
+                            complete(false);
+                            return;
+                        }
+
+                        CFMutableArrayRef anchors = CFArrayCreateMutable(kCFAllocatorDefault, 1, &kCFTypeArrayCallBacks);
+                        CFArrayAppendValue(anchors, ca_cert);
+                        SecTrustSetAnchorCertificates(trust_ref, anchors);
+                        SecTrustSetAnchorCertificatesOnly(trust_ref, true);
+
+                        // Relax hostname check — the harness cert has CN=quic.tech but the test
+                        // connects to 127.0.0.1. Pinning to the CA chains is what gives us
+                        // identity assurance; hostname binding is a separate concern.
+                        SecPolicyRef policy = SecPolicyCreateSSL(true, NULL);
+                        CFArrayRef policies = CFArrayCreate(kCFAllocatorDefault, (const void **)&policy, 1, &kCFTypeArrayCallBacks);
+                        SecTrustSetPolicies(trust_ref, policies);
+
+                        CFErrorRef error = NULL;
+                        bool valid = SecTrustEvaluateWithError(trust_ref, &error);
+                        if (error) CFRelease(error);
+
+                        CFRelease(policies);
+                        CFRelease(policy);
+                        CFRelease(anchors);
+                        CFRelease(ca_cert);
+                        CFRelease(trust_ref);
+
+                        complete(valid);
                     },
                     dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
             }
+            // Else: no verify_block installed. Default system trust handles
+            // it. `verify_certs == false` without a pinned CA is now a no-op
+            // on Apple; production callers who need to skip verification
+            // should pass an explicit always-accept CA (not recommended).
+            (void)verify_certs;
         });
 
     if (!params) return NULL;

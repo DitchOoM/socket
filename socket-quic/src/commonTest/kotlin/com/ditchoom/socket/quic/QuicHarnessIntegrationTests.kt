@@ -46,7 +46,15 @@ class QuicHarnessIntegrationTests {
             // QuicEchoTestServer.kt's `alpnProtocols = listOf("test")`.
             alpnProtocols = listOf(QuicHarnessConfig.alpn),
             // Self-signed harness cert; see file-level comment above.
+            // On non-Apple targets `verifyPeer = false` simply skips
+            // verification (quiche + JVM TLS accept this); on Apple
+            // skipping verification SIGABRTs under TLS hardening (see
+            // PR #54 iter 1-5), so we additionally pin the harness CA via
+            // `pinnedCaCertPath` — Network.framework's verify block
+            // anchors trust to the harness's `quic.tech` cert and uses
+            // a hostname-relaxed SSL policy.
             verifyPeer = false,
+            pinnedCaCertPath = QuicHarnessConfig.pinnedCaCertPath,
             idleTimeout = 10.seconds,
         )
     private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
