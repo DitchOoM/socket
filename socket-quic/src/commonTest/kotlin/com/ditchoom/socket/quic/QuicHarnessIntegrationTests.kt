@@ -51,7 +51,18 @@ class QuicHarnessIntegrationTests {
         )
     private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
 
-    /** Run block inside a QUIC connection to the harness echo, or skip if unreachable. */
+    /**
+     * Run [block] inside a QUIC connection to the harness echo, or skip if
+     * unreachable.
+     *
+     * Logs an explicit `harness OK` or `harness SKIP: <reason>` line so the
+     * CI runner can tell whether the test actually exercised the QUIC
+     * client (vs silently no-op'd because the harness wasn't brought up).
+     * The Apple CI job greps for `harness OK` to assert the macOS-host
+     * `quic-echo` actually accepted at least one connection — without this
+     * signal a forgotten `docker compose up` or a broken jar launch would
+     * pass CI by accident.
+     */
     private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
         try {
             withQuicConnection(
@@ -62,10 +73,13 @@ class QuicHarnessIntegrationTests {
                 5.seconds,
                 block,
             )
-        } catch (_: Throwable) {
+            println("[QuicHarnessIntegrationTests] harness OK")
+        } catch (t: Throwable) {
             // Harness not up, native lib not built, or connection failed —
-            // silently skip. Mirrors the `withCloudflare { ... }` skip
-            // behaviour in QuicIntegrationTests.
+            // skip silently from the test framework's perspective (no
+            // assertion) but emit a grep-able signal so we can audit
+            // whether tests are actually running.
+            println("[QuicHarnessIntegrationTests] harness SKIP: ${t::class.simpleName}: ${t.message}")
         }
     }
 
