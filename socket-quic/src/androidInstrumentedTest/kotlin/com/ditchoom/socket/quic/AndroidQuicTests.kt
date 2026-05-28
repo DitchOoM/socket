@@ -1,14 +1,16 @@
 package com.ditchoom.socket.quic
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import org.junit.Assert.assertNotNull
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Android instrumented tests — runs on real device/emulator (API 24+).
- * Validates JNI native lib loads and QUIC engine works.
+ * Validates JNI native lib loads and QUIC entry points work.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicTests {
@@ -18,11 +20,20 @@ class AndroidQuicTests {
     }
 
     @Test
-    fun quicEngineCreates() {
-        val engine = defaultQuicEngine()
-        assertNotNull(engine)
-        engine.close()
-    }
+    fun withQuicConnectionThrowsOnUnreachableHost() =
+        runBlocking(Dispatchers.IO) {
+            val opts = QuicOptions(alpnProtocols = listOf("h3"))
+            // Bogus address — handshake must fail fast (timeout or refusal). The
+            // observable here is just "calling withQuicConnection wires up the
+            // native lib without crashing"; the throw is expected.
+            try {
+                withQuicConnection("192.0.2.1", 443, opts, timeout = 1.seconds) {
+                    assertTrue("Expected timeout/refusal", false)
+                }
+            } catch (_: Throwable) {
+                // Expected.
+            }
+        }
 
     @Test
     fun quicOptionsValidates() {

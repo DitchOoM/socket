@@ -5,6 +5,7 @@ import com.ditchoom.buffer.use
 import com.ditchoom.socket.ConnectionOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeout
@@ -12,26 +13,29 @@ import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
 import kotlin.time.Duration
 
+private const val QUICHE_PROTOCOL_VERSION = 0x00000001
+
 /**
- * Shared JVM/Android [QuicEngine] implementation backed by quiche + [DatagramChannel].
+ * Shared JVM/Android [withQuicConnection] implementation backed by quiche +
+ * [DatagramChannel]. Owns the per-call scope + native resources for the
+ * duration of [block]; releases everything before returning.
  *
- * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` can delegate to it.
+ * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` actuals
+ * delegate to it.
  */
-internal fun commonJvmQuicEngine(): QuicEngine = CommonJvmQuicEngine()
-
-private class CommonJvmQuicEngine : QuicEngine {
-    private val api: QuicheApi = loadQuicheApi()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    override suspend fun <R> connect(
-        hostname: String,
-        port: Int,
-        quicOptions: QuicOptions,
-        connectionOptions: ConnectionOptions,
-        timeout: Duration,
-        block: suspend QuicScope.() -> R,
-    ): R =
-        withTimeout(timeout) {
+internal suspend fun <R> commonJvmWithQuicConnection(
+    hostname: String,
+    port: Int,
+    quicOptions: QuicOptions,
+    connectionOptions: ConnectionOptions,
+    timeout: Duration,
+    block: suspend QuicScope.() -> R,
+): R {
+    val api: QuicheApi = loadQuicheApi()
+    val parentJob = SupervisorJob()
+    val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
+    try {
+        return withTimeout(timeout) {
             val bufferFactory = connectionOptions.bufferFactory
 
             // 1. Create quiche config
@@ -123,8 +127,8 @@ private class CommonJvmQuicEngine : QuicEngine {
                         },
                     )
                 // Create a child scope for this connection — cancelled when block returns
-                val connJob = kotlinx.coroutines.SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
-                val connScope = CoroutineScope(scope.coroutineContext + connJob)
+                val connJob = SupervisorJob(parentScope.coroutineContext[Job])
+                val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
 
                 val quicConnection =
                     JvmQuicConnection(
@@ -155,13 +159,8 @@ private class CommonJvmQuicEngine : QuicEngine {
                 api.configFree(config)
             }
         }
-
-    override fun close() {
-        scope.cancel()
-    }
-
-    companion object {
-        private const val QUICHE_PROTOCOL_VERSION = 0x00000001
+    } finally {
+        parentScope.cancel()
     }
 }
 

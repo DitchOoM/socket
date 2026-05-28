@@ -28,13 +28,12 @@ import kotlin.time.Duration.Companion.seconds
  * 2. No-stream connections don't poison subsequent connections
  * 3. connectionsByDcid is properly cleaned up after connection close
  *
- * **Lifecycle:** Engines are obtained via [withQuicServerEngine] /
- * [withQuicEngine] — scope-only construction, the engine reference cannot
- * escape the block. Even on assertion failure or `withTimeout` expiry the
- * engine's `close()` runs (finally), so the engine-leak pressure described
- * in `HANDOFF.md` cannot accumulate from this file. The previous
- * `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate that hid these tests on
- * CI is dropped — the lifecycle gap it worked around is gone by construction.
+ * **Lifecycle:** all server / client work runs inside the top-level
+ * [withQuicServer] / [withQuicConnection] helpers — block-scoped construction
+ * with `close()` in finally on every exit path. The previous
+ * `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate that hid these tests on CI
+ * is gone — the lifecycle gap it worked around was closed by construction
+ * (see `socket-quic/DRIVER_REDESIGN.md` → "Engine lifecycle").
  */
 class StaleConnectionDiagnosticTests {
     private val testQuicOptions =
@@ -54,21 +53,11 @@ class StaleConnectionDiagnosticTests {
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
-    /**
-     * Scope-only engine pair: server + client. Native-lib absence skips the
-     * test (assumeTrue) instead of failing; everything else runs the block
-     * inside both engine scopes, guaranteeing close() on every exit path.
-     */
-    private suspend fun <R> withEngines(block: suspend (QuicServerEngine, QuicEngine) -> R): R {
+    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
         try {
-            return withQuicServerEngine { serverEngine ->
-                withQuicEngine { clientEngine ->
-                    block(serverEngine, clientEngine)
-                }
-            }
+            block()
         } catch (e: UnsatisfiedLinkError) {
             assumeTrue("Native lib not available: ${e.message}", false)
-            throw AssertionError("unreachable")
         }
     }
 
@@ -97,12 +86,11 @@ class StaleConnectionDiagnosticTests {
     }
 
     private suspend fun echoRoundTrip(
-        engine: QuicEngine,
         server: QuicServer,
         payload: String,
     ): String {
         val result = CompletableDeferred<String>()
-        engine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
+        withQuicConnection("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
             val stream = openStream()
             val buf = BufferFactory.Default.allocate(payload.length)
             buf.writeString(payload, Charset.UTF8)
@@ -124,18 +112,18 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun twoSequentialEchoConnectionsWork() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(30.seconds) {
-                withEngines { serverEngine, clientEngine ->
-                    val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                    val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
-                    delay(100)
+            skipOnMissingNativeLib {
+                withTimeout(30.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val serverJob = launch(Dispatchers.IO) { echoHandler() }
+                        delay(100)
 
-                    try {
-                        assertEquals("first!", echoRoundTrip(clientEngine, server, "first!"))
-                        assertEquals("second!", echoRoundTrip(clientEngine, server, "second!"))
-                    } finally {
-                        serverJob.cancel()
-                        server.close()
+                        try {
+                            assertEquals("first!", echoRoundTrip(this@withQuicServer, "first!"))
+                            assertEquals("second!", echoRoundTrip(this@withQuicServer, "second!"))
+                        } finally {
+                            serverJob.cancel()
+                        }
                     }
                 }
             }
@@ -146,25 +134,25 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun noStreamConnectionThenEchoConnection() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(20.seconds) {
-                withEngines { serverEngine, clientEngine ->
-                    val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                    val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
-                    delay(100)
+            skipOnMissingNativeLib {
+                withTimeout(20.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val serverJob = launch(Dispatchers.IO) { echoHandler() }
+                        delay(100)
 
-                    try {
-                        // Connection 1: connect but don't open any streams (health-check)
-                        clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            delay(1.seconds)
+                        try {
+                            // Connection 1: connect but don't open any streams (health-check)
+                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                delay(1.seconds)
+                            }
+
+                            delay(500) // let server-side handler process disconnect
+
+                            // Connection 2: full echo round-trip
+                            assertEquals("hello", echoRoundTrip(this@withQuicServer, "hello"))
+                        } finally {
+                            serverJob.cancel()
                         }
-
-                        delay(500) // let server-side handler process disconnect
-
-                        // Connection 2: full echo round-trip
-                        assertEquals("hello", echoRoundTrip(clientEngine, server, "hello"))
-                    } finally {
-                        serverJob.cancel()
-                        server.close()
                     }
                 }
             }
@@ -175,24 +163,24 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun multipleNoStreamConnectionsThenEcho() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(30.seconds) {
-                withEngines { serverEngine, clientEngine ->
-                    val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                    val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
-                    delay(100)
+            skipOnMissingNativeLib {
+                withTimeout(30.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val serverJob = launch(Dispatchers.IO) { echoHandler() }
+                        delay(100)
 
-                    try {
-                        for (i in 1..5) {
-                            clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                                delay(200)
+                        try {
+                            for (i in 1..5) {
+                                withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                    delay(200)
+                                }
                             }
-                        }
 
-                        delay(500)
-                        assertEquals("alive", echoRoundTrip(clientEngine, server, "alive"))
-                    } finally {
-                        serverJob.cancel()
-                        server.close()
+                            delay(500)
+                            assertEquals("alive", echoRoundTrip(this@withQuicServer, "alive"))
+                        } finally {
+                            serverJob.cancel()
+                        }
                     }
                 }
             }
@@ -203,46 +191,47 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun connectionsByDcidIsCleanedUpAfterConnectionClose() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(30.seconds) {
-                withEngines { serverEngine, clientEngine ->
-                    val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                    val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
-                    delay(100)
+            skipOnMissingNativeLib {
+                withTimeout(30.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val serverJob = launch(Dispatchers.IO) { echoHandler() }
+                        delay(100)
 
-                    // Access connectionsByDcid via reflection
-                    val dcidMapField = server::class.java.getDeclaredField("connectionsByDcid")
-                    dcidMapField.isAccessible = true
-                    @Suppress("UNCHECKED_CAST")
-                    val dcidMap = dcidMapField.get(server) as MutableMap<*, *>
+                        // Access connectionsByDcid via reflection
+                        val server: QuicServer = this@withQuicServer
+                        val dcidMapField = server::class.java.getDeclaredField("connectionsByDcid")
+                        dcidMapField.isAccessible = true
+                        @Suppress("UNCHECKED_CAST")
+                        val dcidMap = dcidMapField.get(server) as MutableMap<*, *>
 
-                    try {
-                        // Connection 1: echo round-trip
-                        echoRoundTrip(clientEngine, server, "test1")
-                        delay(1.seconds) // let cleanup propagate
+                        try {
+                            // Connection 1: echo round-trip
+                            echoRoundTrip(server, "test1")
+                            delay(1.seconds) // let cleanup propagate
 
-                        // Connection 2: no-stream
-                        clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {
-                            delay(500)
+                            // Connection 2: no-stream
+                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                delay(500)
+                            }
+
+                            delay(4.seconds) // 3s acceptStream timeout + cleanup
+
+                            // All entries should be cleaned up — no stale drivers
+                            var staleCount = 0
+                            for ((_, value) in dcidMap.entries) {
+                                @Suppress("USELESS_IS_CHECK")
+                                val driver = value as QuicheDriver
+                                if (driver.commands.isClosedForSend) staleCount++
+                            }
+
+                            assertEquals(
+                                0,
+                                staleCount,
+                                "connectionsByDcid has $staleCount stale entries pointing to destroyed drivers",
+                            )
+                        } finally {
+                            serverJob.cancel()
                         }
-
-                        delay(4.seconds) // 3s acceptStream timeout + cleanup
-
-                        // All entries should be cleaned up — no stale drivers
-                        var staleCount = 0
-                        for ((_, value) in dcidMap.entries) {
-                            @Suppress("USELESS_IS_CHECK")
-                            val driver = value as QuicheDriver
-                            if (driver.commands.isClosedForSend) staleCount++
-                        }
-
-                        assertEquals(
-                            0,
-                            staleCount,
-                            "connectionsByDcid has $staleCount stale entries pointing to destroyed drivers",
-                        )
-                    } finally {
-                        serverJob.cancel()
-                        server.close()
                     }
                 }
             }
@@ -253,21 +242,21 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun immediateReconnectAfterNoStreamConnection() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(20.seconds) {
-                withEngines { serverEngine, clientEngine ->
-                    val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                    val serverJob = launch(Dispatchers.IO) { server.echoHandler() }
-                    delay(100)
+            skipOnMissingNativeLib {
+                withTimeout(20.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val serverJob = launch(Dispatchers.IO) { echoHandler() }
+                        delay(100)
 
-                    try {
-                        // No-stream, minimal hold time
-                        clientEngine.connect("localhost", server.port, testQuicOptions, timeout = 10.seconds) {}
+                        try {
+                            // No-stream, minimal hold time
+                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {}
 
-                        // NO delay — reconnect immediately
-                        assertEquals("fast!", echoRoundTrip(clientEngine, server, "fast!"))
-                    } finally {
-                        serverJob.cancel()
-                        server.close()
+                            // NO delay — reconnect immediately
+                            assertEquals("fast!", echoRoundTrip(this@withQuicServer, "fast!"))
+                        } finally {
+                            serverJob.cancel()
+                        }
                     }
                 }
             }

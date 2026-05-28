@@ -6,10 +6,10 @@ import kotlinx.coroutines.flow.StateFlow
  * Internal QUIC connection — extends [QuicScope] with lifecycle management.
  *
  * Not exposed to users directly. Users interact via [QuicScope] inside
- * [QuicEngine.connect] or [QuicServer.connections] blocks.
+ * [withQuicConnection] or [QuicServer.connections] blocks.
  */
 internal interface QuicConnection : QuicScope {
-    /** Current connection state (internal — used by engine/server for lifecycle management). */
+    /** Current connection state (internal — used by the withQuicConnection/withQuicServer wrappers for lifecycle management). */
     val state: StateFlow<QuicConnectionState>
 
     /** Close the connection with a QUIC error. Called by the scope when the block ends. */

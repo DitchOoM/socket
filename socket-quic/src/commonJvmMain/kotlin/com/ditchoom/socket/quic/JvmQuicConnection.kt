@@ -16,7 +16,7 @@ import kotlin.time.Duration
  * JVM QUIC connection backed by [QuicheDriver].
  *
  * Implements [QuicConnection] (internal) which extends [QuicScope] (public).
- * Users only see [QuicScope] inside the [QuicEngine.connect] block.
+ * Users only see [QuicScope] inside the [withQuicConnection] block.
  */
 internal class JvmQuicConnection(
     private val driver: QuicheDriver,

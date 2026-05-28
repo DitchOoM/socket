@@ -56,11 +56,11 @@ private object TestCodec : Codec<String> {
 }
 
 /**
- * **Lifecycle:** engines come from [withQuicServerEngine] / [withQuicEngine]
- * — scope-only construction guarantees `close()` on every exit path. The
- * previous `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate that hid this
- * test on CI is dropped: it papered over an engine-leak threshold that is
- * now closed by construction.
+ * **Lifecycle:** all server / client work runs inside [withQuicServer] /
+ * [withQuicMux] block-takers — scope-only construction guarantees `close()`
+ * on every exit path. The previous `assumeTrue(CI == null || RUN_FLAKY_TESTS)`
+ * gate that hid this test on CI is dropped: it papered over a lifecycle gap
+ * that is now closed by construction.
  */
 class QuicStreamMuxTests {
     private val testQuicOptions =
@@ -80,64 +80,59 @@ class QuicStreamMuxTests {
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
-    private suspend fun <R> withEngines(block: suspend (QuicServerEngine, QuicEngine) -> R): R {
+    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
         try {
-            return withQuicServerEngine { serverEngine ->
-                withQuicEngine { clientEngine ->
-                    block(serverEngine, clientEngine)
-                }
-            }
+            block()
         } catch (e: UnsatisfiedLinkError) {
             assumeTrue("Native lib not available: ${e.message}", false)
-            throw AssertionError("unreachable")
         }
     }
 
     @Test
     fun bidirectionalStreamMuxExchange() =
         runBlocking(Dispatchers.IO) {
-            withTimeout(15.seconds) {
-                withEngines { serverEngine, clientEngine ->
-                    val server = serverEngine.bind(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions)
-                    val muxResult = CompletableDeferred<String>()
+            skipOnMissingNativeLib {
+                withTimeout(15.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val muxResult = CompletableDeferred<String>()
 
-                    val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
+                        val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
 
-                    // Server: accept bidi stream via StreamMux, echo
-                    val serverDispatched = CompletableDeferred<Unit>()
-                    val serverJob =
-                        launch(Dispatchers.IO) {
-                            serverDispatched.complete(Unit)
-                            server.connections {
-                                val mux = QuicStreamMux(this, TestCodec, opts)
-                                val conn = mux.acceptBidirectional()
-                                val msg = conn.receive().first()
-                                conn.send("echo: $msg")
-                                conn.close()
+                        // Server: accept bidi stream via StreamMux, echo
+                        val serverDispatched = CompletableDeferred<Unit>()
+                        val serverJob =
+                            launch(Dispatchers.IO) {
+                                serverDispatched.complete(Unit)
+                                connections {
+                                    val mux = QuicStreamMux(this, TestCodec, opts)
+                                    val conn = mux.acceptBidirectional()
+                                    val msg = conn.receive().first()
+                                    conn.send("echo: $msg")
+                                    conn.close()
+                                }
                             }
-                        }
-                    serverDispatched.await()
+                        serverDispatched.await()
 
-                    // Client: send via StreamMux
-                    val clientJob =
-                        launch(Dispatchers.IO) {
-                            clientEngine.connectMux("localhost", server.port, testQuicOptions, TestCodec, connectionOptions = opts) {
-                                val conn = openBidirectional()
-                                assertTrue(conn.id >= 0)
-                                conn.send("hello")
-                                val response = conn.receive().first()
-                                muxResult.complete(response)
-                                conn.close()
+                        // Client: send via StreamMux
+                        val clientJob =
+                            launch(Dispatchers.IO) {
+                                withQuicMux("localhost", port, testQuicOptions, TestCodec, connectionOptions = opts) {
+                                    val conn = openBidirectional()
+                                    assertTrue(conn.id >= 0)
+                                    conn.send("hello")
+                                    val response = conn.receive().first()
+                                    muxResult.complete(response)
+                                    conn.close()
+                                }
                             }
-                        }
 
-                    try {
-                        val result = withTimeout(10.seconds) { muxResult.await() }
-                        assertEquals("echo: hello", result)
-                    } finally {
-                        clientJob.cancel()
-                        serverJob.cancel()
-                        server.close()
+                        try {
+                            val result = withTimeout(10.seconds) { muxResult.await() }
+                            assertEquals("echo: hello", result)
+                        } finally {
+                            clientJob.cancel()
+                            serverJob.cancel()
+                        }
                     }
                 }
             }

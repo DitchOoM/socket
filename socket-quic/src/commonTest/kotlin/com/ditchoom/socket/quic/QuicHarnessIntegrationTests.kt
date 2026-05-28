@@ -53,15 +53,8 @@ class QuicHarnessIntegrationTests {
 
     /** Run block inside a QUIC connection to the harness echo, or skip if unreachable. */
     private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
-        val engine =
-            try {
-                defaultQuicEngine()
-            } catch (_: Throwable) {
-                // No native lib on this platform — skip.
-                return
-            }
         try {
-            engine.connect(
+            withQuicConnection(
                 QuicHarnessConfig.host,
                 QuicHarnessConfig.quicEchoPort,
                 quicOptions,
@@ -70,10 +63,9 @@ class QuicHarnessIntegrationTests {
                 block,
             )
         } catch (_: Throwable) {
-            // Harness not up, or connection failed — silently skip. Mirrors the
-            // `withCloudflare { ... }` skip behaviour in QuicIntegrationTests.
-        } finally {
-            engine.close()
+            // Harness not up, native lib not built, or connection failed —
+            // silently skip. Mirrors the `withCloudflare { ... }` skip
+            // behaviour in QuicIntegrationTests.
         }
     }
 

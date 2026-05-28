@@ -31,20 +31,29 @@ import java.nio.channels.Selector
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.time.Duration
 
-/** Shared JVM/Android QUIC server engine. */
-internal fun commonJvmQuicServerEngine(): QuicServerEngine = JvmQuicServerEngine()
+private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
-private class JvmQuicServerEngine : QuicServerEngine {
-    private val api: QuicheApi = loadQuicheApi()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    override suspend fun bind(
-        port: Int,
-        host: String?,
-        tlsConfig: QuicTlsConfig,
-        quicOptions: QuicOptions,
-        timeout: Duration,
-    ): QuicServer {
+/**
+ * Shared JVM/Android [withQuicServer] implementation backed by quiche +
+ * [DatagramChannel]. Owns the per-call scope + native resources for the
+ * duration of [block]; closes the server (UDP socket, drivers, handler
+ * coroutines) before returning.
+ *
+ * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` actuals
+ * delegate to it.
+ */
+internal suspend fun <R> commonJvmWithQuicServer(
+    port: Int,
+    host: String?,
+    tlsConfig: QuicTlsConfig,
+    quicOptions: QuicOptions,
+    @Suppress("UNUSED_PARAMETER") timeout: Duration,
+    block: suspend QuicServer.() -> R,
+): R {
+    val api: QuicheApi = loadQuicheApi()
+    val parentJob = SupervisorJob()
+    val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
+    try {
         val bufferFactory = BufferFactory.Default
 
         val config = api.configNew(QUICHE_PROTOCOL_VERSION)
@@ -69,15 +78,14 @@ private class JvmQuicServerEngine : QuicServerEngine {
         channel.bind(InetSocketAddress(host ?: "0.0.0.0", port))
         val localAddr = channel.localAddress as InetSocketAddress
 
-        return JvmQuicServer(api, config, channel, localAddr, bufferFactory, scope)
-    }
-
-    override fun close() {
-        scope.cancel()
-    }
-
-    companion object {
-        private const val QUICHE_PROTOCOL_VERSION = 0x00000001
+        val server = JvmQuicServer(api, config, channel, localAddr, bufferFactory, parentScope)
+        try {
+            return server.block()
+        } finally {
+            server.close()
+        }
+    } finally {
+        parentScope.cancel()
     }
 }
 
@@ -117,16 +125,16 @@ internal class JvmQuicServer(
     private val channel: DatagramChannel,
     private val localAddr: InetSocketAddress,
     private val bufferFactory: BufferFactory,
-    engineScope: CoroutineScope,
+    parentScope: CoroutineScope,
 ) : QuicServer {
     override val port: Int get() = localAddr.port
 
-    // Child scope of the engine — cancelling it takes down every handler
+    // Child scope of the per-call parent — cancelling it takes down every handler
     // coroutine spawned via connections() plus the receive loop. Without this,
-    // handlers launched on the engine's scope leak past server.close() and
-    // pile up on Dispatchers.IO across successive tests.
-    private val serverJob = SupervisorJob(engineScope.coroutineContext[Job])
-    private val scope = CoroutineScope(engineScope.coroutineContext + serverJob)
+    // handlers launched on the parent scope leak past server.close() and pile
+    // up on Dispatchers.IO across successive tests.
+    private val serverJob = SupervisorJob(parentScope.coroutineContext[Job])
+    private val scope = CoroutineScope(parentScope.coroutineContext + serverJob)
 
     private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)

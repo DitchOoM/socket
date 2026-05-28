@@ -55,14 +55,7 @@ class AndroidQuicMigrationTests {
     private suspend fun <R> withServerConnection(
         options: QuicOptions = testQuicOptions,
         block: suspend QuicScope.() -> R,
-    ): R {
-        val engine = defaultQuicEngine()
-        return try {
-            engine.connect(serverHost, serverPort, options, timeout = 15.seconds, block = block)
-        } finally {
-            engine.close()
-        }
-    }
+    ): R = withQuicConnection(serverHost, serverPort, options, timeout = 15.seconds, block = block)
 
     @Test
     fun connectionSurvivesTemporaryNetworkLoss() =

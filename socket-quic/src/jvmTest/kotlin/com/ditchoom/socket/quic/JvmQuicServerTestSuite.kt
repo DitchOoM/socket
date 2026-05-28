@@ -5,14 +5,12 @@ import org.junit.Assume.assumeTrue
 /**
  * JVM subclass of [QuicServerTestSuite].
  *
- * The block-taker factories delegate straight to the commonMain
- * [withQuicServerEngine] / [withQuicEngine] helpers. Native-lib absence
- * (`UnsatisfiedLinkError` from `loadQuicheApi`) is converted to a JUnit
- * assumption so the test is skipped instead of failing on machines where
- * the quiche JNI hasn't been built (typically non-Linux/non-macOS hosts).
- *
- * The previous `@AfterTest` engine-tracker retrofit is gone — scope-only
- * construction closes the leak by construction.
+ * The base suite calls the top-level [withQuicServer] / [withQuicConnection]
+ * helpers directly. Native-lib absence (`UnsatisfiedLinkError` from the
+ * lazy `loadQuicheApi()` inside those helpers) is converted to a JUnit
+ * assumption by [wrapTestBody] so the test is skipped instead of failing
+ * on machines where the quiche JNI hasn't been built (typically non-Linux
+ * / non-macOS hosts).
  */
 class JvmQuicServerTestSuite : QuicServerTestSuite() {
     private fun certPath(name: String): String {
@@ -28,19 +26,11 @@ class JvmQuicServerTestSuite : QuicServerTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun <R> withServerEngine(block: suspend (QuicServerEngine) -> R): R =
+    override suspend fun wrapTestBody(block: suspend () -> Unit) {
         try {
-            withQuicServerEngine(block)
+            block()
         } catch (e: UnsatisfiedLinkError) {
             assumeTrue("Native lib not available: ${e.message}", false)
-            throw AssertionError("unreachable")
         }
-
-    override suspend fun <R> withClientEngine(block: suspend (QuicEngine) -> R): R =
-        try {
-            withQuicEngine(block)
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-            throw AssertionError("unreachable")
-        }
+    }
 }

@@ -8,25 +8,28 @@ import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Platform-neutral lifecycle invariants for [QuicServerEngine] / [QuicServer].
+ * Platform-neutral lifecycle invariants for [withQuicServer] / [QuicServer].
  *
  * Mirrors the [QuicServerTestSuite] / [JvmQuicServerTestSuite] split — platform
- * subclasses override the engine block-takers and inherit every test below.
- * Internal-state assertions (scope cancellation, child coroutine counts) stay in
- * the JVM-only subclass because they need reflection; everything here is
- * externally observable — close returns, handlers terminate, cycles don't hang.
+ * subclasses override [testTlsConfig] (and optionally [wrapTestBody] for
+ * skip-on-missing-native-lib) and inherit every test below. Internal-state
+ * assertions (scope cancellation, child coroutine counts) stay in the JVM-only
+ * subclass because they need reflection; everything here is externally
+ * observable — close returns, handlers terminate, cycles don't hang.
  *
- * **Lifecycle:** see [QuicServerTestSuite] — same scope-only construction
- * via [withServerEngine] / [withClientEngine]. Test bodies that explicitly
- * call `engine.close()` (e.g. `engineCloseCancelsEngineScope` in the JVM
- * subclass) remain correct because `close()` is idempotent.
+ * **Lifecycle:** with the engine layer gone, the per-call parent scope is
+ * created and cancelled by [withQuicServer] itself. There's nothing left to
+ * leak — these tests verify the externally observable consequences of that
+ * invariant.
  */
 abstract class QuicServerLifecycleTestSuite {
-    abstract suspend fun <R> withServerEngine(block: suspend (QuicServerEngine) -> R): R
-
-    abstract suspend fun <R> withClientEngine(block: suspend (QuicEngine) -> R): R
-
     abstract fun testTlsConfig(): QuicTlsConfig
+
+    /**
+     * Platform hook for skip-on-missing-native-lib semantics. Default
+     * passes through; JVM/Android subclasses override.
+     */
+    protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
     protected val testQuicOptions =
         QuicOptions(
@@ -38,46 +41,58 @@ abstract class QuicServerLifecycleTestSuite {
     @Test
     fun serverCloseReturnsWithinTwoSeconds() =
         runQuicTest {
-            withServerEngine { engine ->
-                val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
-                withTimeout(2.seconds) { server.close() }
+            wrapTestBody {
+                // Test that exiting the withQuicServer block (which closes the server)
+                // completes promptly even with no client activity.
+                withTimeout(2.seconds) {
+                    withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                        // Empty — block exit closes the server. The withTimeout asserts
+                        // the close path returns within 2s.
+                    }
+                }
             }
         }
 
     @Test
     fun closeWhileConnectionsBlockingDoesNotDeadlock() =
         runQuicTest {
-            withServerEngine { engine ->
-                val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
-
+            wrapTestBody {
                 // connections() suspends on an empty channel forever. Must not
-                // prevent close() from returning — regardless of whether the
-                // handler coroutine has been scheduled yet.
-                val handlerJob =
-                    launch {
-                        server.connections {
-                            // Unreachable — no client ever arrives in this test.
-                        }
+                // prevent withQuicServer's exit path from returning — regardless
+                // of whether the handler coroutine has been scheduled yet.
+                var handlerJob: kotlinx.coroutines.Job? = null
+                withTimeout(2.seconds) {
+                    withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                        handlerJob =
+                            launch {
+                                connections {
+                                    // Unreachable — no client ever arrives in this test.
+                                }
+                            }
+                        // Block exits immediately, which triggers server.close() inside
+                        // the helper; that must unblock the connections() handler.
                     }
-
-                withTimeout(2.seconds) { server.close() }
+                }
 
                 // Handler should unblock via the server's scope cancellation.
-                val result = withTimeoutOrNull(2.seconds) { handlerJob.join() }
-                assertNotNull(result, "connections() handler did not terminate after server.close()")
+                val result = withTimeoutOrNull(2.seconds) { handlerJob!!.join() }
+                assertNotNull(result, "connections() handler did not terminate after withQuicServer exit")
             }
         }
 
     @Test
     fun multipleBindCloseCyclesCompletePromptly() =
         runQuicTest {
-            withServerEngine { engine ->
+            wrapTestBody {
                 // Each cycle individually bounded; if any one hangs, the per-cycle
                 // timeout fails with a clear signal rather than exhausting the
                 // whole suite's wall clock.
                 repeat(10) {
-                    val server = engine.bind(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions)
-                    withTimeout(2.seconds) { server.close() }
+                    withTimeout(2.seconds) {
+                        withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                            // Empty — bind + immediate close.
+                        }
+                    }
                 }
             }
         }

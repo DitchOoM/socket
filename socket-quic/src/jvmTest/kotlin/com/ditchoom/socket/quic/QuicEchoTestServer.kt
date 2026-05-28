@@ -38,34 +38,33 @@ fun main(args: Array<String>) {
     val tlsConfig = QuicTlsConfig(certChainPath = certPath, privKeyPath = keyPath)
 
     runBlocking(Dispatchers.IO) {
-        val engine = defaultQuicServerEngine()
-        val server = engine.bind(port = port, tlsConfig = tlsConfig, quicOptions = quicOptions)
+        withQuicServer(port = port, tlsConfig = tlsConfig, quicOptions = quicOptions) {
+            // Signal readiness to the Gradle task
+            println("READY port=$port")
+            System.out.flush()
 
-        // Signal readiness to the Gradle task
-        println("READY port=${server.port}")
-        System.out.flush()
-
-        // Accept connections — each runs in its own coroutine scope
-        server.connections {
-            try {
-                // acceptStream has a timeout so health-check connections
-                // (that connect but never open a stream) don't block the server
-                val stream = withTimeout(3.seconds) { acceptStream() }
+            // Accept connections — each runs in its own coroutine scope
+            connections {
                 try {
-                    while (true) {
-                        val data = stream.read(30.seconds)
-                        if (data is ReadResult.Data) {
-                            stream.write(data.buffer, 10.seconds)
-                        } else {
-                            break
+                    // acceptStream has a timeout so health-check connections
+                    // (that connect but never open a stream) don't block the server
+                    val stream = withTimeout(3.seconds) { acceptStream() }
+                    try {
+                        while (true) {
+                            val data = stream.read(30.seconds)
+                            if (data is ReadResult.Data) {
+                                stream.write(data.buffer, 10.seconds)
+                            } else {
+                                break
+                            }
                         }
+                    } catch (_: Exception) {
+                    } finally {
+                        stream.close()
                     }
                 } catch (_: Exception) {
-                } finally {
-                    stream.close()
+                    // Health-check connection with no stream — just let it close
                 }
-            } catch (_: Exception) {
-                // Health-check connection with no stream — just let it close
             }
         }
     }

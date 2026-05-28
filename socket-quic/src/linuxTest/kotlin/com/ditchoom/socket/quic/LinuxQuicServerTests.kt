@@ -22,7 +22,6 @@ class LinuxQuicServerTests : QuicServerTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun <R> withServerEngine(block: suspend (QuicServerEngine) -> R): R = withQuicServerEngine(block)
-
-    override suspend fun <R> withClientEngine(block: suspend (QuicEngine) -> R): R = withQuicEngine(block)
+    // Native targets compile quiche via cinterop — wrapTestBody stays
+    // default (pass-through), no UnsatisfiedLinkError skip needed.
 }

@@ -34,50 +34,37 @@ class AndroidQuicConnectivityTests {
     /** Skip the entire class if the test server isn't reachable. */
     @Before
     fun checkServerReachable() {
-        val engine = defaultQuicEngine()
         try {
             runBlocking(Dispatchers.IO) {
-                engine.connect(serverHost, serverPort, testQuicOptions, timeout = 5.seconds) {}
+                withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 5.seconds) {}
             }
         } catch (_: Throwable) {
-            engine.close()
             assumeTrue("QUIC test server not reachable at $serverHost:$serverPort — run androidQuicIntegrationTest", false)
         }
-        engine.close()
     }
 
     @Test
     fun connectToLocalServer() =
         runBlocking(Dispatchers.IO) {
-            val engine = defaultQuicEngine()
-            try {
-                engine.connect(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
-                    // If we reach here, handshake completed successfully
-                }
-            } finally {
-                engine.close()
+            withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
+                // If we reach here, handshake completed successfully
             }
         }
 
     @Test
     fun echoOverQuic() =
         runBlocking(Dispatchers.IO) {
-            val engine = defaultQuicEngine()
-            try {
-                engine.connect(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
-                    val stream = openStream()
-                    val sendBuf = BufferFactory.Default.allocate(5)
-                    sendBuf.writeString("hello", Charset.UTF8)
-                    sendBuf.resetForRead()
-                    stream.write(sendBuf, 5.seconds)
+            withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
+                val stream = openStream()
+                val sendBuf = BufferFactory.Default.allocate(5)
+                sendBuf.writeString("hello", Charset.UTF8)
+                sendBuf.resetForRead()
+                stream.write(sendBuf, 5.seconds)
 
-                    val response = stream.read(5.seconds)
-                    assertIs<com.ditchoom.buffer.flow.ReadResult.Data>(response)
+                val response = stream.read(5.seconds)
+                assertIs<com.ditchoom.buffer.flow.ReadResult.Data>(response)
 
-                    stream.close()
-                }
-            } finally {
-                engine.close()
+                stream.close()
             }
         }
 }

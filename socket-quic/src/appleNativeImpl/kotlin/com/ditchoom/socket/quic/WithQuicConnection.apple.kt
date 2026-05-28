@@ -38,85 +38,79 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
 
-actual fun defaultQuicEngine(): QuicEngine = AppleQuicEngine()
-
 /**
- * Apple QUIC engine using Network.framework.
+ * Apple [withQuicConnection] using Network.framework.
  *
  * Zero-copy read path: Network.framework → dispatch_data_t → NSData → NSDataBuffer (no copy)
  * Zero-copy write path: NSDataBuffer → toNSData() → dispatch_data_t (no copy for NSData-backed buffers)
  *
  * Requires iOS 15+ / macOS 12+.
  */
-private class AppleQuicEngine : QuicEngine {
-    override suspend fun <R> connect(
-        hostname: String,
-        port: Int,
-        quicOptions: QuicOptions,
-        connectionOptions: ConnectionOptions,
-        timeout: Duration,
-        block: suspend QuicScope.() -> R,
-    ): R =
-        withTimeout(timeout) {
-            // Build ALPN array — pass as List which K/N bridges to NSArray
-            val alpnList: List<Any?> = quicOptions.alpnProtocols
+actual suspend fun <R> withQuicConnection(
+    hostname: String,
+    port: Int,
+    quicOptions: QuicOptions,
+    connectionOptions: ConnectionOptions,
+    timeout: Duration,
+    block: suspend QuicScope.() -> R,
+): R =
+    withTimeout(timeout) {
+        // Build ALPN array — pass as List which K/N bridges to NSArray
+        val alpnList: List<Any?> = quicOptions.alpnProtocols
 
-            val nwConn =
-                nw_helper_create_quic_connection(
-                    hostname,
-                    port.toUShort(),
-                    alpnList,
-                    NSNumber(bool = quicOptions.verifyPeer),
-                    quicOptions.idleTimeout.inWholeSeconds.toInt(),
-                    timeout.inWholeSeconds.toInt(),
-                ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection")
+        val nwConn =
+            nw_helper_create_quic_connection(
+                hostname,
+                port.toUShort(),
+                alpnList,
+                NSNumber(bool = quicOptions.verifyPeer),
+                quicOptions.idleTimeout.inWholeSeconds.toInt(),
+                timeout.inWholeSeconds.toInt(),
+            ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection")
 
-            // Wait for handshake completion
-            suspendCancellableCoroutine { cont ->
-                nw_helper_quic_set_state_handler(nwConn) { state, _, errorCode, errorDesc ->
-                    when (state) {
-                        3 -> { // ready
-                            if (cont.isActive) cont.resume(Unit)
-                        }
-                        4 -> { // failed
-                            if (cont.isActive) {
-                                cont.resumeWithException(
-                                    SocketConnectionException.Refused(
-                                        hostname,
-                                        port,
-                                        platformError = "QUIC handshake failed: code=$errorCode ${errorDesc ?: ""}",
-                                    ),
-                                )
-                            }
-                        }
-                        5 -> { // cancelled
-                            if (cont.isActive) {
-                                cont.resumeWithException(
-                                    SocketClosedException.General("QUIC connection cancelled"),
-                                )
-                            }
-                        }
-                        else -> {} // waiting=1, preparing=2 — in progress
+        // Wait for handshake completion
+        suspendCancellableCoroutine { cont ->
+            nw_helper_quic_set_state_handler(nwConn) { state, _, errorCode, errorDesc ->
+                when (state) {
+                    3 -> { // ready
+                        if (cont.isActive) cont.resume(Unit)
                     }
-                }
-
-                nw_helper_quic_start(nwConn)
-
-                cont.invokeOnCancellation {
-                    nw_helper_quic_cancel(nwConn)
+                    4 -> { // failed
+                        if (cont.isActive) {
+                            cont.resumeWithException(
+                                SocketConnectionException.Refused(
+                                    hostname,
+                                    port,
+                                    platformError = "QUIC handshake failed: code=$errorCode ${errorDesc ?: ""}",
+                                ),
+                            )
+                        }
+                    }
+                    5 -> { // cancelled
+                        if (cont.isActive) {
+                            cont.resumeWithException(
+                                SocketClosedException.General("QUIC connection cancelled"),
+                            )
+                        }
+                    }
+                    else -> {} // waiting=1, preparing=2 — in progress
                 }
             }
 
-            val quicConn = AppleQuicConnection(nwConn, connectionOptions.bufferFactory)
-            try {
-                quicConn.block()
-            } finally {
-                quicConn.close()
+            nw_helper_quic_start(nwConn)
+
+            cont.invokeOnCancellation {
+                nw_helper_quic_cancel(nwConn)
             }
         }
 
-    override fun close() {}
-}
+        val quicConn = AppleQuicConnection(nwConn, connectionOptions.bufferFactory)
+        try {
+            quicConn.block()
+        } finally {
+            quicConn.close()
+        }
+    }
 
 /**
  * Apple QUIC connection wrapping an NWConnection.

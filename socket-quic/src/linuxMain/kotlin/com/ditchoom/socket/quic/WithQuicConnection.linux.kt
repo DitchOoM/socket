@@ -29,7 +29,9 @@ import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,21 +51,21 @@ import platform.posix.socket
 import kotlin.random.Random
 import kotlin.time.Duration
 
-actual fun defaultQuicEngine(): QuicEngine = LinuxQuicEngine()
+private const val MAX_CONN_ID_LEN = 20
 
-private class LinuxQuicEngine : QuicEngine {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val api: QuicheApi = CinteropQuicheApi
-
-    override suspend fun <R> connect(
-        hostname: String,
-        port: Int,
-        quicOptions: QuicOptions,
-        connectionOptions: ConnectionOptions,
-        timeout: Duration,
-        block: suspend QuicScope.() -> R,
-    ): R =
-        withTimeout(timeout) {
+actual suspend fun <R> withQuicConnection(
+    hostname: String,
+    port: Int,
+    quicOptions: QuicOptions,
+    connectionOptions: ConnectionOptions,
+    timeout: Duration,
+    block: suspend QuicScope.() -> R,
+): R {
+    val api: QuicheApi = CinteropQuicheApi
+    val parentJob = SupervisorJob()
+    val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
+    try {
+        return withTimeout(timeout) {
             val bufferFactory =
                 com.ditchoom.buffer.BufferFactory
                     .deterministic()
@@ -181,8 +183,8 @@ private class LinuxQuicEngine : QuicEngine {
                         isServer = false,
                     )
 
-                val connJob = kotlinx.coroutines.SupervisorJob(scope.coroutineContext[kotlinx.coroutines.Job])
-                val connScope = CoroutineScope(scope.coroutineContext + connJob)
+                val connJob = SupervisorJob(parentScope.coroutineContext[Job])
+                val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
                 val quicConn = LinuxQuicConnection(driver, bufferFactory, connScope)
                 quicConn.start()
                 quicConn.awaitEstablished(timeout)
@@ -196,11 +198,8 @@ private class LinuxQuicEngine : QuicEngine {
                 }
             }
         }
-
-    override fun close() {}
-
-    companion object {
-        private const val MAX_CONN_ID_LEN = 20
+    } finally {
+        parentScope.cancel()
     }
 }
 

@@ -73,7 +73,7 @@ class QuicheDriver(
 
     /**
      * Client-mode recv buffer pool — mirrors the server-side pool in
-     * CommonJvmQuicServerEngine. Only allocated in [clientMode] because
+     * CommonJvmWithQuicServer. Only allocated in [clientMode] because
      * server-accepted drivers receive packets via commands.send() from the
      * server's receive loop and never run [udpReaderLoop].
      *

@@ -29,6 +29,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
@@ -50,19 +51,20 @@ import platform.posix.sockaddr_storage
 import platform.posix.socket
 import kotlin.time.Duration
 
-actual fun defaultQuicServerEngine(): QuicServerEngine = LinuxQuicServerEngine()
+private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
-private class LinuxQuicServerEngine : QuicServerEngine {
-    private val api: QuicheApi = CinteropQuicheApi
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    override suspend fun bind(
-        port: Int,
-        host: String?,
-        tlsConfig: QuicTlsConfig,
-        quicOptions: QuicOptions,
-        timeout: Duration,
-    ): QuicServer {
+actual suspend fun <R> withQuicServer(
+    port: Int,
+    host: String?,
+    tlsConfig: QuicTlsConfig,
+    quicOptions: QuicOptions,
+    @Suppress("UNUSED_PARAMETER") timeout: Duration,
+    block: suspend QuicServer.() -> R,
+): R {
+    val api: QuicheApi = CinteropQuicheApi
+    val parentJob = SupervisorJob()
+    val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
+    try {
         val bufferFactory = BufferFactory.deterministic()
 
         val config = api.configNew(QUICHE_PROTOCOL_VERSION)
@@ -87,6 +89,10 @@ private class LinuxQuicServerEngine : QuicServerEngine {
         alpnBuf.freeNativeMemory()
 
         applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config.handle.toCPointer()!!))
+
+        // Bind unused parameter (host not yet wired through to Linux path — defaults to INADDR_ANY).
+        @Suppress("UNUSED_VARIABLE")
+        val hostUnused = host
 
         // Create & bind UDP socket
         val fd = socket(AF_INET, SOCK_DGRAM, 0)
@@ -136,21 +142,23 @@ private class LinuxQuicServerEngine : QuicServerEngine {
             memcpy(dst, localAddr.ptr, sizeOf<sockaddr_in>().convert())
         }
 
-        return LinuxQuicServer(
-            api = api,
-            config = config,
-            serverChannel = IoUringUdpServerChannel(fd),
-            boundPort = boundPort,
-            localAddrBuf = localAddrBuf,
-            bufferFactory = bufferFactory,
-            scope = scope,
-        )
-    }
-
-    override fun close() {}
-
-    companion object {
-        private const val QUICHE_PROTOCOL_VERSION = 0x00000001
+        val server =
+            LinuxQuicServer(
+                api = api,
+                config = config,
+                serverChannel = IoUringUdpServerChannel(fd),
+                boundPort = boundPort,
+                localAddrBuf = localAddrBuf,
+                bufferFactory = bufferFactory,
+                scope = parentScope,
+            )
+        try {
+            return server.block()
+        } finally {
+            server.close()
+        }
+    } finally {
+        parentScope.cancel()
     }
 }
 
@@ -190,9 +198,10 @@ private class LinuxQuicServer(
     override suspend fun connections(handler: suspend QuicScope.() -> Unit) =
         // Structured concurrency: handler lifetime is bound to this connections()
         // invocation. Cancelling the caller cancels every in-flight handler — see
-        // CommonJvmQuicServerEngine.connections() for the long comment on why this
-        // matters (previously handlers were orphaned onto the engine's scope and
-        // surfaced as a CI hang in JvmQuicServerTestSuite.rapidBindConnectCloseCyclesAreClean).
+        // commonJvmWithQuicServer's JvmQuicServer.connections() for the long
+        // comment on why this matters (previously handlers were orphaned onto the
+        // engine's scope and surfaced as a CI hang in
+        // JvmQuicServerTestSuite.rapidBindConnectCloseCyclesAreClean).
         kotlinx.coroutines.coroutineScope {
             for (driver in acceptedDrivers) {
                 launch(Dispatchers.Default) {

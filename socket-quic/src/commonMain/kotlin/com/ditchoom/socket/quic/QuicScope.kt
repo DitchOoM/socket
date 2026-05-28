@@ -4,7 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 
 /**
- * A QUIC connection scope — the receiver inside [QuicEngine.connect] and [QuicServer.connections].
+ * A QUIC connection scope — the receiver inside [withQuicConnection] and [QuicServer.connections].
  *
  * Extends [CoroutineScope] so you can [launch][kotlinx.coroutines.launch] child coroutines
  * that are tied to the connection lifetime. When the connection closes, all children are
