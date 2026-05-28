@@ -46,8 +46,13 @@ import kotlin.time.Duration.Companion.seconds
  * fixed or @Ignored at the source — see TODO.md.
  */
 class AppleQuicConnectStartupProbe {
+    /**
+     * Iter 2 probe — already known to crash. Kept so we can confirm it
+     * still crashes after the iter 3 variants narrow the cause; if a
+     * subsequent fix lands, this test starts passing too.
+     */
     @Test
-    fun withQuicConnectionAgainstUnreachableHostDoesNotCrashRuntime() =
+    fun a1_unreachableHost_verifyPeerFalse() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
                 try {
@@ -60,16 +65,64 @@ class AppleQuicConnectStartupProbe {
                             idleTimeout = 1.seconds,
                         ),
                         timeout = 1.seconds,
-                    ) {
-                        // Never reached on an unreachable host. If the block
-                        // somehow runs, that's a separate surprise — we still
-                        // want the test to pass cleanly so the next iteration
-                        // can use a different probe.
-                    }
+                    ) { }
                 } catch (_: Throwable) {
-                    // Any throwable is fine — we're testing that the K/N
-                    // process SURVIVES the call, not that the call succeeds.
                 }
+            }
+        }
+
+    /**
+     * Iter 3 hypothesis: the always-accept verify_block installed when
+     * `verifyPeer = false` triggers an abort under recent macOS TLS
+     * hardening. nw_quic_helpers.h:58-63 calls
+     * `sec_protocol_options_set_verify_block(...)` with a block that
+     * unconditionally calls `complete(true)`. Apple has tightened cert
+     * verification semantics across Network.framework; a permissive
+     * verify block may now SIGABRT during `nw_parameters_create_quic`.
+     *
+     * Probe: same call but `verifyPeer = true`. The default verify path
+     * is taken (no override block). Against `192.0.2.1` we still expect
+     * a timeout/refused exception, but the K/N process should survive.
+     *
+     * - **Probe passes** → verify_block bypass is the culprit. Fix is
+     *   to drop the override block on recent macOS, or use a different
+     *   API (sec_protocol_options_append_tls_ciphersuite_group? or
+     *   actual cert pinning to the harness's CA).
+     * - **Probe still fails** → verify_block isn't the cause; iter 4
+     *   probes a different parameter.
+     */
+    @Test
+    fun a2_unreachableHost_verifyPeerTrue() =
+        runTest(timeout = 30.seconds) {
+            withContext(Dispatchers.Default) {
+                try {
+                    withQuicConnection(
+                        "192.0.2.1",
+                        14433,
+                        QuicOptions(
+                            alpnProtocols = listOf("h3"),
+                            verifyPeer = true,
+                            idleTimeout = 1.seconds,
+                        ),
+                        timeout = 1.seconds,
+                    ) { }
+                } catch (_: Throwable) {
+                }
+            }
+        }
+
+    /**
+     * Iter 3 hypothesis B: K/N coroutine machinery with
+     * `withContext(Dispatchers.Default)` on macosArm64 is broken in some
+     * way that interacts with the test runner. If even this trivial
+     * probe — no QUIC call at all — crashes the K/N process, the bug is
+     * way more fundamental than nw_quic_helpers.
+     */
+    @Test
+    fun a3_emptyWithContextDispatchersDefault_baseline() =
+        runTest(timeout = 30.seconds) {
+            withContext(Dispatchers.Default) {
+                // Empty.
             }
         }
 }
