@@ -54,7 +54,6 @@ class QuicHarnessIntegrationTests {
             // anchors trust to the harness's `quic.tech` cert and uses
             // a hostname-relaxed SSL policy.
             verifyPeer = false,
-            pinnedCaCertPath = QuicHarnessConfig.pinnedCaCertPath,
             idleTimeout = 10.seconds,
         )
     private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)

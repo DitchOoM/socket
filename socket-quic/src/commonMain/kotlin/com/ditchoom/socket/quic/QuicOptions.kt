@@ -104,32 +104,6 @@ data class QuicOptions(
     val disableActiveMigration: Boolean = false,
     /** Verify the peer's TLS certificate. */
     val verifyPeer: Boolean = true,
-    /**
-     * Path to a PEM-encoded CA certificate that the Apple
-     * Network.framework backend pins as the SOLE trust anchor. When
-     * set, a custom `sec_protocol_options_set_verify_block` is
-     * installed that:
-     *
-     *  - loads + parses the cert from this path,
-     *  - sets it as the only trust anchor via
-     *    `SecTrustSetAnchorCertificates` +
-     *    `SecTrustSetAnchorCertificatesOnly(true)`,
-     *  - applies `SecPolicyCreateSSL(true, NULL)` so the hostname check
-     *    is relaxed (lets a `127.0.0.1`-bound test server present a
-     *    `quic.tech` cert and still validate),
-     *  - calls `SecTrustEvaluateWithError` for real Apple-side trust
-     *    evaluation (not the "complete(true) without evaluation"
-     *    pattern that SIGABRTs under macOS TLS hardening — see PR #54
-     *    iter 1-5).
-     *
-     * No effect on non-Apple targets — those use quiche or driver-level
-     * options for the same concern (and `verifyPeer = false` works
-     * there because their TLS backends don't have Apple's hardening).
-     * String path (not ByteArray) keeps the no-ByteArray rule in
-     * CLAUDE.md intact; the Apple impl reads the PEM into NSData at
-     * connection time. Implementation in `nw_quic_helpers.h::nw_helper_create_quic_connection`.
-     */
-    val pinnedCaCertPath: String? = null,
     /** Enable Path MTU Discovery. */
     val enablePmtuDiscovery: Boolean = false,
     /** Enable 0-RTT early data. */

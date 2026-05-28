@@ -1052,27 +1052,11 @@ val generateQuicHarnessConfig =
                     append(" * Single source of truth: edit test-harness/harness.env and re-run\n")
                     append(" * `:socket-quic:generateQuicHarnessConfig` (auto-fired by every test task).\n")
                     append(" */\n")
-                    // Absolute path to the harness's PEM cert. Apple K/N tests pass
-                    // it through `QuicOptions.pinnedCaCertPath` so Network.framework's
-                    // verify_block can pin trust to the harness CA (the
-                    // self-signed `quic.tech` cert isn't in the system trust
-                    // store). Skipping verification via the previous
-                    // `complete(true)` bypass SIGABRT'd under macOS TLS hardening
-                    // — see PR #54 iter 1-5. Absolute path because K/N's
-                    // NSString.stringWithContentsOfFile resolves relative paths
-                    // against $HOME on iOS simulator.
-                    val certPath =
-                        projectDir
-                            .resolve("testcerts/cert.crt")
-                            .absolutePath
-                            .replace("\\", "\\\\")
                     append("internal object QuicHarnessConfig {\n")
                     append("    const val host: String = \"$host\"\n")
                     append("    const val quicEchoPort: Int = $port\n")
                     append("    /** ALPN advertised by the harness QUIC echo server (QuicEchoTestServer). */\n")
                     append("    const val alpn: String = \"test\"\n")
-                    append("    /** Absolute path to the PEM cert the harness echo presents (CN=quic.tech, self-signed). */\n")
-                    append("    const val pinnedCaCertPath: String = \"$certPath\"\n")
                     append("}\n")
                 },
             )
