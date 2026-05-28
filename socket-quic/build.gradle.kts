@@ -390,9 +390,25 @@ fun createBuildJvmJniShimTask(
                     } else {
                         emptyList()
                     }
+                // Pick the host or cross compiler based on the target arch.
+                // Cross-build is needed when `-PquicEchoAllArches=true` is
+                // set and the requested arch differs from the host — e.g.
+                // building linux-arm64 on a linux-x64 CI runner. The
+                // multi-arch quic-echo Docker image consumes the resulting
+                // jar with both arches' natives inside.
+                val hostArch =
+                    if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+                val cc =
+                    if (arch == hostArch) {
+                        "cc"
+                    } else if (arch == "arm64") {
+                        "aarch64-linux-gnu-gcc"
+                    } else {
+                        "x86_64-linux-gnu-gcc"
+                    }
                 cmd +=
                     listOf(
-                        "cc",
+                        cc,
                         "-shared",
                         "-fPIC",
                         "-O2",
@@ -482,6 +498,16 @@ val nativeLibsByPlatform =
         "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
     )
 
+// `-PquicEchoAllArches=true` gates building the non-host-arch JNI shim
+// during `stageQuicheNativeResources`. Off by default so local dev (which
+// generally needs only the host arch) stays fast. CI sets it to true so
+// the resulting `quicEchoJar` fat jar contains both linux-x64 AND
+// linux-arm64 (or both macos arches) natives — required for the multi-arch
+// `quic-echo` Docker image to run on both Linux x64 and Linux ARM64 CI
+// jobs out of the same artifact.
+val quicEchoAllArches =
+    providers.gradleProperty("quicEchoAllArches").orNull == "true"
+
 tasks.register<Copy>("stageQuicheNativeResources") {
     group = "build"
     description = "Copy built quiche native libs into jvmTest classpath (META-INF/native/<platform>/...)"
@@ -490,6 +516,22 @@ tasks.register<Copy>("stageQuicheNativeResources") {
         val libDir = projectDir.resolve("libs/quiche/$platform/lib")
         into("META-INF/native/$platform") {
             from(libDir) { include(*libs.toTypedArray()) }
+        }
+    }
+
+    // Multi-arch path: depend on both x64 + arm64 JNI shim builds so the
+    // staged dir has natives for both arches by the time `Copy` runs. We
+    // attach to `stageQuicheNativeResources` rather than `quicEchoJar`
+    // directly so any task depending on staging (including jvmTest itself)
+    // sees the same multi-arch set when the flag is on.
+    if (quicEchoAllArches) {
+        if (isLinux) {
+            jvmJniShimLinuxX64?.let { dependsOn(it) }
+            jvmJniShimLinuxArm64?.let { dependsOn(it) }
+        }
+        if (isMacOS) {
+            jvmJniShimMacosX64?.let { dependsOn(it) }
+            jvmJniShimMacosArm64?.let { dependsOn(it) }
         }
     }
 }
