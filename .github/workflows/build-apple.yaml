@@ -263,9 +263,38 @@ jobs:
           OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
           SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
           echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP"
+
+          mkdir -p /tmp/quic-audit
+          cat > /tmp/quic-audit/apple.txt <<EOF
+          platform=apple
+          ok=$OK
+          skip=$SKIP
+          EOF
+
+          {
+            echo "## QUIC harness — Apple (macOS host)"
+            echo ""
+            echo "| OK | SKIP |"
+            echo "|---|---|"
+            echo "| $OK | $SKIP |"
+            if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
+              echo ""
+              echo "⚠️ Every QuicHarnessIntegrationTest skipped — Apple QUIC client not actually validated."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
           if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
             echo "::warning::Every QuicHarnessIntegrationTest skipped on macOS — Apple QUIC client not actually validated"
           fi
+
+      - name: Upload Apple QUIC audit artifact
+        if: always() && steps.launch-quic-echo.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-audit-apple
+          path: /tmp/quic-audit/apple.txt
+          retention-days: 1
+          if-no-files-found: warn
 
       # Test reports on failure — see build-linux.yaml for the why.
       - name: Upload test reports (on failure)

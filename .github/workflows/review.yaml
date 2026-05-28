@@ -24,6 +24,88 @@ jobs:
     with:
       version: ${{ needs.build-linux.outputs.version }}
 
+  # Aggregates per-platform QUIC harness coverage into one markdown
+  # matrix visible in the workflow run summary. Each platform's audit
+  # step uploads a `quic-audit-<platform>` artifact with OK/SKIP counts;
+  # this job downloads them all, prints the combined table, and fails
+  # if any platform reports OK=0 with SKIP>0 (i.e., the QUIC client
+  # silently stopped exercising the harness).
+  #
+  # Android instrumented tests live in a separate workflow file
+  # (android_integration.yaml) and aren't covered here — cross-workflow
+  # artifact passing in GHA needs API-level coordination that's out of
+  # scope for this phase. The Android job's own audit step writes its
+  # summary to its own job page.
+  quic-interop-summary:
+    name: "QUIC Interop Summary"
+    needs: [build-linux, build-apple]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all QUIC audit artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: quic-audit-*
+          path: /tmp/quic-audit
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Build interop matrix
+        run: |
+          shopt -s nullglob
+          FILES=(/tmp/quic-audit/*.txt)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No QUIC audit artifacts found — every platform audit either"
+            echo "didn't upload (continue-on-error path) or this run pre-dates"
+            echo "the per-platform audit wireup."
+            {
+              echo "## QUIC Interop Summary"
+              echo ""
+              echo "_No audit artifacts uploaded by any platform job._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "## QUIC Interop Summary"
+            echo ""
+            echo "| Platform | OK | SKIP | Status |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          FAILED=0
+          for f in "${FILES[@]}"; do
+            platform=$(grep '^platform=' "$f" | cut -d= -f2)
+            ok=$(grep '^ok=' "$f" | cut -d= -f2)
+            skip=$(grep '^skip=' "$f" | cut -d= -f2)
+            ok=${ok:-0}
+            skip=${skip:-0}
+
+            if [ "$ok" -gt 0 ]; then
+              status="✅ exercised"
+            elif [ "$skip" -gt 0 ]; then
+              status="❌ all skipped"
+              FAILED=1
+            else
+              status="ℹ️ no data"
+            fi
+
+            echo "| $platform | $ok | $skip | $status |" >> "$GITHUB_STEP_SUMMARY"
+            echo "platform=$platform ok=$ok skip=$skip status=$status"
+          done
+
+          if [ "$FAILED" = "1" ]; then
+            {
+              echo ""
+              echo "❌ **At least one platform's QUIC harness coverage is broken** — every"
+              echo "test on that platform silently skipped via the connection-failure catch."
+              echo "Fix the harness wireup (port, host, jar build) or the test code that"
+              echo "stopped reaching it."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::QUIC interop matrix failed — see step summary"
+            exit 1
+          fi
+
   build-windows:
     name: "Windows JVM Tests"
     runs-on: windows-latest
