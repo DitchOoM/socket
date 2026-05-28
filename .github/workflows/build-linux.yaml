@@ -296,10 +296,25 @@ jobs:
               -keystore "$JAVA_HOME/lib/security/cacerts" \
               -storepass changeit -noprompt
 
+      # Build the quic-echo fat jar with BOTH linux-x64 AND linux-arm64 quiche
+      # natives baked in (gated by -PquicEchoAllArches=true). Done explicitly
+      # here so `harnessUp` downstream sees an up-to-date multi-arch jar and
+      # skips its own quicEchoJar dependency rebuild. The same jar then runs
+      # under both the linux-x64 and linux-arm64 manifests of the
+      # eclipse-temurin:21-jre-noble base image — required to bring quic-echo
+      # up on the Linux ARM64 (native) job (Phase 3) out of the same artifact.
+      # The cross-build uses aarch64-linux-gnu-gcc + the cargo arm64 target
+      # that this job already has installed for the K/Native ARM64 chain.
+      - name: Build multi-arch quic-echo fat jar
+        run: >-
+          ./gradlew :socket-quic:quicEchoJar -PquicEchoAllArches=true
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       - name: Run checks and tests
         run: >-
           ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
           :socket-quic:jvmProcessResources :socket-quic:ktlintCheck
+          -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # The quiche_conn_recv SIGABRT that previously required continue-on-error
@@ -387,6 +402,23 @@ jobs:
             build/bin/linuxArm64/debugTest/test.kexe
             socket-quic/build/bin/linuxArm64/debugTest/test.kexe
           retention-days: 1
+
+      # Upload the multi-arch quic-echo Docker context (jar + Dockerfile +
+      # testcerts) so the Linux ARM64 (native) job can pull it down and
+      # `docker compose up quic-echo` instead of skipping. The jar built
+      # above contains both linux-x64 + linux-arm64 quiche natives, so the
+      # same artifact runs under the arm64 manifest of the base image
+      # without further fiddling. Phase 3 of the QUIC CI coverage plan.
+      - name: Upload quic-echo Docker context
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-echo-docker-context
+          path: |
+            test-harness/quic-echo/quic-echo.jar
+            test-harness/quic-echo/Dockerfile
+            test-harness/quic-echo/testcerts/
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Publish to Maven Local
         run: ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
