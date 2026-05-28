@@ -7,76 +7,45 @@ import kotlin.test.Test
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * **Iteration 2 of the macOS K/N crash investigation** (PR #54).
+ * **Macos K/N crash investigation probes** (PR #54).
  *
- * Iter 1 (`--stacktrace --info` + `-Pkotlin.native.debug.exceptions=true`)
- * didn't surface anything because the crash is inside the K/N runtime
- * process — Gradle just sees its child die with exit code != 0 and reports
- * "Test running process exited unexpectedly. Current test:
- * harness_handshake_completesSuccessfully". No Kotlin stack trace, no
- * Network.framework error, no `harness OK` / `harness SKIP` marker because
- * the process died inside `withQuicConnection` before withHarness's
- * try/catch could reach its `println`.
+ * Iter 1 (--stacktrace --info) didn't surface a native stack — Gradle
+ * just sees its K/N child die. Iter 2 narrowed to "withQuicConnection
+ * startup itself crashes, not harness-specific" by hitting an
+ * unreachable RFC-5737 host. Iter 3 added two more probes but they
+ * never ran: K/N stops the test binary on the first crash, and tests
+ * execute in **source declaration order** (NOT alphabetical, as iter 3
+ * assumed) — so whichever crashing test is declared first kills the
+ * binary before later probes get their chance.
  *
- * This probe isolates whether the crash is in `withQuicConnection`'s
- * startup path (`nw_helper_create_quic_connection` C call, cinterop
- * `List<String>` → `NSArray` bridge for ALPN, etc.) or in something
- * harness-specific (the cert pinning, `verifyPeer = false` path, the
- * established connection's handshake).
+ * Iter 4 confirmed source-declaration ordering: the `z_*` probe (still
+ * declared first then) ran alone and crashed. Iter 5 reorders the
+ * source so the baselines (`a_*`, `b_*`) are declared BEFORE the
+ * known-crashing `z_*` — that guarantees they execute.
  *
- * It calls `withQuicConnection` against `192.0.2.1` (RFC-5737 TEST-NET-1,
- * documented as unreachable). The intent is for the connection to time
- * out after 1 second; we don't care about the failure mode, only that
- * the K/N process survives the call. We expect a `Throwable` (timeout
- * or refused). Anything caught is fine.
- *
- * - **Probe passes** → `withQuicConnection` startup is OK, the crash is
- *   harness-config-specific. Iter 3 narrows on ALPN list / verifyPeer.
- * - **Probe fails with "process exited unexpectedly"** → bug isolated to
- *   `withQuicConnection`'s startup itself. Iter 3 narrows on
- *   `nw_helper_create_quic_connection` parameters.
- *
- * Lives in `commonTest` so it runs on every platform target. On JVM /
- * Linux native, it should always pass (catches the timeout exception
- * cleanly). On macOS K/N, the test class name is alphabetically before
- * `QuicHarnessIntegrationTests`, so its result lands before the
- * harness-test failure in the test report.
- *
- * Delete this file once the macOS K/N crash is understood and either
- * fixed or @Ignored at the source — see TODO.md.
+ * Lives in commonTest so it also runs on JVM + Linux native, where
+ * everything should pass (timeout exceptions are normal). Delete once
+ * the macOS K/N crash is understood and either fixed or @Ignored at
+ * the source — see TODO.md.
  */
 class AppleQuicConnectStartupProbe {
     /**
-     * Iter 2 probe — already known to crash. Renamed `z_*` so it runs
-     * AFTER `a_*` and `b_*` below. K/N tests in a class run in alpha
-     * order and the FIRST to crash terminates the whole test binary,
-     * so on iter 3 (when this was `a1_*`) the other two probes never
-     * got their chance. Running this last guarantees the baseline +
-     * verify-peer-true probes have completed before the deterministic
-     * crash kills the process.
+     * Hypothesis B: K/N coroutine machinery with `withContext(Dispatchers.Default)`
+     * on macosArm64 is broken in some way that interacts with the test
+     * runner. If even this trivial probe — no QUIC call at all —
+     * crashes the K/N process, the bug is way more fundamental than
+     * nw_quic_helpers.
      */
     @Test
-    fun z_unreachableHost_verifyPeerFalse() =
+    fun a_emptyWithContextDispatchersDefault_baseline() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
-                try {
-                    withQuicConnection(
-                        "192.0.2.1",
-                        14433,
-                        QuicOptions(
-                            alpnProtocols = listOf("h3"),
-                            verifyPeer = false,
-                            idleTimeout = 1.seconds,
-                        ),
-                        timeout = 1.seconds,
-                    ) { }
-                } catch (_: Throwable) {
-                }
+                // Empty.
             }
         }
 
     /**
-     * Iter 3 hypothesis: the always-accept verify_block installed when
+     * Hypothesis A: the always-accept verify_block installed when
      * `verifyPeer = false` triggers an abort under recent macOS TLS
      * hardening. nw_quic_helpers.h:58-63 calls
      * `sec_protocol_options_set_verify_block(...)` with a block that
@@ -92,8 +61,9 @@ class AppleQuicConnectStartupProbe {
      *   to drop the override block on recent macOS, or use a different
      *   API (sec_protocol_options_append_tls_ciphersuite_group? or
      *   actual cert pinning to the harness's CA).
-     * - **Probe still fails** → verify_block isn't the cause; iter 4
-     *   probes a different parameter.
+     * - **Probe still fails** → verify_block isn't the cause; iter 6
+     *   probes a different parameter (ALPN bridge, port string,
+     *   nw_parameters_create_quic block contents).
      */
     @Test
     fun b_unreachableHost_verifyPeerTrue() =
@@ -116,17 +86,28 @@ class AppleQuicConnectStartupProbe {
         }
 
     /**
-     * Iter 3 hypothesis B: K/N coroutine machinery with
-     * `withContext(Dispatchers.Default)` on macosArm64 is broken in some
-     * way that interacts with the test runner. If even this trivial
-     * probe — no QUIC call at all — crashes the K/N process, the bug is
-     * way more fundamental than nw_quic_helpers.
+     * Known crash since iter 2. Kept LAST in source order so it doesn't
+     * pre-empt the baseline + verifyPeer=true probes. K/N test runner
+     * stops on the first crash; declaring this here means it runs
+     * after the two informative ones above.
      */
     @Test
-    fun a_emptyWithContextDispatchersDefault_baseline() =
+    fun z_unreachableHost_verifyPeerFalse() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
-                // Empty.
+                try {
+                    withQuicConnection(
+                        "192.0.2.1",
+                        14433,
+                        QuicOptions(
+                            alpnProtocols = listOf("h3"),
+                            verifyPeer = false,
+                            idleTimeout = 1.seconds,
+                        ),
+                        timeout = 1.seconds,
+                    ) { }
+                } catch (_: Throwable) {
+                }
             }
         }
 }
