@@ -73,6 +73,37 @@ jobs:
               && echo "Built Android x86_64 JNI shim"
           fi
 
+      # Bring up the docker quic-echo harness (same image / port as
+      # build-linux + build-apple) before the emulator starts. The
+      # Android emulator's 10.0.2.2 maps to the host's loopback, so
+      # AndroidQuicConnectivityTests + AndroidQuicMigrationTests reach
+      # `10.0.2.2:<QuicHarnessConfig.quicEchoPort>` over UDP through to
+      # the container bound on `127.0.0.1:14433/udp`.
+      #
+      # Previous setup ran no server at all and used `adb reverse
+      # tcp:4433 tcp:4433` — wrong on two counts: adb reverse only
+      # supports TCP (QUIC is UDP) and no QuicEchoTestServer ever
+      # started on the host. The result was a quiet skip of every
+      # instrumented QUIC test via the `assumeTrue(...)` in
+      # AndroidQuicConnectivityTests.checkServerReachable's catch
+      # block. This was the Android side of the same silent-skip
+      # failure mode being fixed across the comprehensive QUIC CI plan
+      # (macOS = PR #51, Linux ARM64 = PR #52).
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      # Build the quic-echo fat jar so docker compose's `build: ./quic-echo`
+      # has the COPY input it needs. Default (host-arch-only) is enough —
+      # the docker image base + jar are both linux-x64 for this job, which
+      # matches the ubuntu-latest runner. The container then exposes
+      # 14433/udp on the host's loopback, where the emulator reaches it via
+      # 10.0.2.2.
+      - name: Build quic-echo fat jar (Linux x64)
+        run: ./gradlew :socket-quic:quicEchoJar --no-configuration-cache
+
+      - name: Bring up quic-echo via the docker harness
+        run: cd test-harness && docker compose up -d --wait quic-echo
+
       - name: AVD cache
         uses: actions/cache@v4
         id: avd-cache
@@ -105,8 +136,39 @@ jobs:
           disable-animations: true
           script: |
             adb root || true
-            adb reverse tcp:4433 tcp:4433 || true
+            # The previous `adb reverse tcp:4433 tcp:4433` is gone: QUIC
+            # is UDP and adb reverse only handles TCP. The emulator
+            # reaches the host's docker-published 127.0.0.1:14433/udp
+            # via its built-in 10.0.2.2 host alias — no port forwarding
+            # needed. AndroidQuicConnectivityTests + AndroidQuicMigrationTests
+            # now point at 10.0.2.2:14433 (matches QuicHarnessConfig.quicEchoPort).
             ./gradlew connectedAndroidTest :socket-quic:connectedAndroidTest
+
+      # Mirror the audit step from build-apple.yaml + build-linux.yaml:
+      # count `harness OK` vs `harness SKIP` markers from
+      # QuicHarnessIntegrationTests' withHarness() across the
+      # connectedAndroidTest report XMLs. Surfaces a regression that
+      # silently breaks the Android QUIC client as a CI warning instead
+      # of letting it pass via the skip-on-failure catch.
+      - name: Audit QUIC harness coverage on Android
+        if: always()
+        continue-on-error: true
+        run: |
+          REPORT_ROOT=socket-quic/build/outputs/androidTest-results
+          if [ ! -d "$REPORT_ROOT" ]; then
+            echo "no android instrumented-test results — audit skipped"
+            exit 0
+          fi
+          OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          echo "QuicHarnessIntegrationTests on Android: OK=$OK, SKIP=$SKIP"
+          if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
+            echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
+          fi
+
+      - name: Bring down quic-echo harness
+        if: always()
+        run: cd test-harness && docker compose down -v
 
       - name: Kill emulator processes
         if: always()
