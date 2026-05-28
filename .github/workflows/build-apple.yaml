@@ -228,9 +228,17 @@ jobs:
 
       - name: Run socket-quic Apple native tests (Network.framework)
         continue-on-error: true
-        run: >-
-          ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        # Tee Gradle's stdout to /tmp/socket-quic-apple.log so the audit
+        # step below can grep `harness OK` / `harness SKIP` markers from
+        # QuicHarnessIntegrationTests.withHarness without relying on the
+        # K/N test framework writing them into JUnit XML's <system-out>
+        # block — which it doesn't, the way the JVM JUnit runner does.
+        # Same pattern the Linux ARM64 audit already uses.
+        run: |
+          set -o pipefail
+          ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test \
+            --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 \
+            | tee /tmp/socket-quic-apple.log
 
       - name: Stop quic-echo + capture log
         if: always() && steps.launch-quic-echo.outputs.ready == 'true'
@@ -251,17 +259,26 @@ jobs:
       # Audit step: count how many QuicHarnessIntegrationTests actually
       # exercised the harness vs silently skipped. Each test prints
       # `harness OK` on success or `harness SKIP: <reason>` on connection
-      # failure via QuicHarnessIntegrationTests.withHarness. The counts
-      # come from the JUnit XML's <system-out> blocks. Surfaces in the CI
-      # log so a regression that breaks the macOS QUIC client (every test
-      # quietly skips, suite stays green) is visible at a glance.
+      # failure via QuicHarnessIntegrationTests.withHarness. Source the
+      # counts from /tmp/socket-quic-apple.log (gradle stdout teed by
+      # the test step above) — the K/N test framework on Apple doesn't
+      # route println into the JUnit XML's <system-out> block the way
+      # the JVM runner does, so the previous version of this step (which
+      # grep'd socket-quic/build/test-results/*.xml) reported 0/0 every
+      # time. Surfaces in the CI log AND in the per-job step summary
+      # AND as a `quic-audit-apple` artifact for the cross-platform
+      # interop-matrix job to consume.
       - name: Audit QUIC harness coverage on macOS
         if: always() && steps.launch-quic-echo.outputs.ready == 'true'
         continue-on-error: true
         run: |
-          REPORT_ROOT=socket-quic/build/test-results
-          OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          LOG=/tmp/socket-quic-apple.log
+          OK=0
+          SKIP=0
+          if [ -f "$LOG" ]; then
+            OK=$(grep -c 'harness OK' "$LOG" || true)
+            SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
+          fi
           echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP"
 
           mkdir -p /tmp/quic-audit
