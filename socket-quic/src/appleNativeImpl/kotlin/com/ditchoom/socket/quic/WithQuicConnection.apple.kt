@@ -71,7 +71,9 @@ actual suspend fun <R> withQuicConnection(
         // trustedCaDer != nil — see nw_quic_helpers.h for the full
         // rationale (and PR #54 iter 1-5 for why the previous
         // complete(true)-no-evaluation bypass crashed K/N).
+        println("[kt withQuicConnection] before loadPemCertAsDer path=${quicOptions.pinnedCaCertPath ?: "<null>"}")
         val pinnedCaDer: NSData? = quicOptions.pinnedCaCertPath?.let { loadPemCertAsDer(it) }
+        println("[kt withQuicConnection] after loadPemCertAsDer pinnedCaDer.length=${pinnedCaDer?.length ?: 0u}")
 
         val nwConn =
             nw_helper_create_quic_connection(

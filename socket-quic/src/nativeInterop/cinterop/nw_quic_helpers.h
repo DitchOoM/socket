@@ -62,12 +62,19 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     int32_t idle_timeout_seconds,
     int32_t connection_timeout_seconds)
 {
+    fprintf(stderr, "[nw_quic create] entered host=%s port=%u alpn_count=%lu der_len=%lu\n",
+            host, port,
+            (unsigned long)alpn_protocols.count,
+            trusted_ca_der ? (unsigned long)trusted_ca_der.length : 0UL);
+    fflush(stderr);
+
     if (alpn_protocols.count == 0) return NULL;
 
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
     nw_endpoint_t endpoint = nw_endpoint_create_host(host, port_str);
+    fprintf(stderr, "[nw_quic create] nw_endpoint_create_host=%p\n", endpoint); fflush(stderr);
     if (!endpoint) return NULL;
 
     // Block-captured copy — the block runs asynchronously on the
@@ -76,18 +83,25 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     // retain semantics correctly under ARC.
     NSData * _Nullable pinnedCaDer = trusted_ca_der;
 
+    fprintf(stderr, "[nw_quic create] before nw_parameters_create_quic\n"); fflush(stderr);
+
     // Create QUIC parameters with TLS
     nw_parameters_t params = nw_parameters_create_quic(
         ^(nw_protocol_options_t _Nonnull tls_options) {
+            fprintf(stderr, "[nw_quic configure] entered tls_options=%p\n", tls_options); fflush(stderr);
             sec_protocol_options_t sec_options = nw_tls_copy_sec_protocol_options(tls_options);
+            fprintf(stderr, "[nw_quic configure] sec_options=%p\n", sec_options); fflush(stderr);
 
             // Set ALPN protocols
             for (NSString *proto in alpn_protocols) {
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
             }
+            fprintf(stderr, "[nw_quic configure] ALPN done\n"); fflush(stderr);
 
             // Certificate verification — proper pinning path or default system trust.
+            fprintf(stderr, "[nw_quic configure] pinnedCaDer=%p\n", pinnedCaDer); fflush(stderr);
             if (pinnedCaDer != nil) {
+                fprintf(stderr, "[nw_quic configure] about to install verify_block\n"); fflush(stderr);
                 sec_protocol_options_set_verify_block(sec_options,
                     ^(sec_protocol_metadata_t metadata, sec_trust_t sec_trust, sec_protocol_verify_complete_t complete) {
                         // Iter 7 instrumentation: fprintf(stderr) is line-buffered AND
@@ -145,14 +159,17 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
                         fprintf(stderr, "[nw_quic verify_block] complete() returned\n"); fflush(stderr);
                     },
                     dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+                fprintf(stderr, "[nw_quic configure] verify_block installed\n"); fflush(stderr);
             }
             // Else: no verify_block installed. Default system trust handles
             // it. `verify_certs == false` without a pinned CA is now a no-op
             // on Apple; production callers who need to skip verification
             // should pass an explicit always-accept CA (not recommended).
             (void)verify_certs;
+            fprintf(stderr, "[nw_quic configure] returning\n"); fflush(stderr);
         });
 
+    fprintf(stderr, "[nw_quic create] nw_parameters_create_quic returned params=%p\n", params); fflush(stderr);
     if (!params) return NULL;
 
     // Note: QUIC idle timeout is managed by Network.framework internally.
