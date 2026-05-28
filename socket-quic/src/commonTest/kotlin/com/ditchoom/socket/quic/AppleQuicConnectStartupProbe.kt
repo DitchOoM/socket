@@ -47,12 +47,16 @@ import kotlin.time.Duration.Companion.seconds
  */
 class AppleQuicConnectStartupProbe {
     /**
-     * Iter 2 probe — already known to crash. Kept so we can confirm it
-     * still crashes after the iter 3 variants narrow the cause; if a
-     * subsequent fix lands, this test starts passing too.
+     * Iter 2 probe — already known to crash. Renamed `z_*` so it runs
+     * AFTER `a_*` and `b_*` below. K/N tests in a class run in alpha
+     * order and the FIRST to crash terminates the whole test binary,
+     * so on iter 3 (when this was `a1_*`) the other two probes never
+     * got their chance. Running this last guarantees the baseline +
+     * verify-peer-true probes have completed before the deterministic
+     * crash kills the process.
      */
     @Test
-    fun a1_unreachableHost_verifyPeerFalse() =
+    fun z_unreachableHost_verifyPeerFalse() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
                 try {
@@ -92,7 +96,7 @@ class AppleQuicConnectStartupProbe {
      *   probes a different parameter.
      */
     @Test
-    fun a2_unreachableHost_verifyPeerTrue() =
+    fun b_unreachableHost_verifyPeerTrue() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
                 try {
@@ -119,7 +123,7 @@ class AppleQuicConnectStartupProbe {
      * way more fundamental than nw_quic_helpers.
      */
     @Test
-    fun a3_emptyWithContextDispatchersDefault_baseline() =
+    fun a_emptyWithContextDispatchersDefault_baseline() =
         runTest(timeout = 30.seconds) {
             withContext(Dispatchers.Default) {
                 // Empty.
