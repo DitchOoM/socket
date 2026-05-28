@@ -510,3 +510,33 @@ NSNumber * _Nonnull nw_helper_is_port_available(int32_t port)
     close(socketFD);
     return @(result != -1);
 }
+
+// ============================================================
+// Network path monitor
+// ============================================================
+
+nw_path_monitor_t _Nonnull nw_helper_create_path_monitor(void)
+{
+    return nw_path_monitor_create();
+}
+
+void nw_helper_path_monitor_set_update_handler(
+    nw_path_monitor_t _Nonnull monitor,
+    nw_helper_path_update_handler_t _Nonnull handler)
+{
+    nw_path_monitor_set_update_handler(monitor, ^(nw_path_t _Nonnull path) {
+        handler((int32_t)nw_path_get_status(path));
+    });
+}
+
+void nw_helper_path_monitor_start(nw_path_monitor_t _Nonnull monitor)
+{
+    nw_path_monitor_set_queue(monitor,
+        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    nw_path_monitor_start(monitor);
+}
+
+void nw_helper_path_monitor_cancel(nw_path_monitor_t _Nonnull monitor)
+{
+    nw_path_monitor_cancel(monitor);
+}

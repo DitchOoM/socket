@@ -21,11 +21,10 @@ class MockSocketTests {
             expected.writeByte(1)
             expected.writeByte(2)
             expected.writeByte(3)
-            // Leave position at end (like a real socket read) — caller calls resetForRead()
+            expected.resetForRead()
             mock.enqueueRead(expected)
 
             val result = mock.read(1.seconds)
-            result.resetForRead()
             assertEquals(3, result.remaining())
             assertEquals(1.toByte(), result.readByte())
             assertEquals(2.toByte(), result.readByte())
@@ -102,7 +101,6 @@ class MockSocketTests {
             mock.enqueueReadBytes(10, 20, 30)
 
             val result = mock.read(1.seconds)
-            result.resetForRead()
             assertEquals(3, result.remaining())
             assertEquals(10.toByte(), result.readByte())
             assertEquals(20.toByte(), result.readByte())

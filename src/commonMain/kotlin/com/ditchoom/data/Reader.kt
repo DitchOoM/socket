@@ -30,7 +30,6 @@ interface Reader {
         charset: Charset = Charset.UTF8,
         timeout: Duration = 15.seconds,
     ) = readFlow(timeout).map {
-        it.resetForRead()
         it.readString(it.remaining(), charset)
     }
 
@@ -52,7 +51,6 @@ interface Reader {
         timeout: Duration = 15.seconds,
     ): Int {
         val readBuffer = read(timeout)
-        readBuffer.resetForRead()
         val bytesRead = readBuffer.remaining()
         buffer.write(readBuffer)
         return bytesRead
@@ -64,7 +62,6 @@ interface Reader {
         timeout: Duration = 15.seconds,
     ): String {
         val buffer = read(timeout)
-        buffer.resetForRead()
         return buffer.readString(buffer.remaining(), charset)
     }
 }

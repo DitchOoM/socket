@@ -61,7 +61,6 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
                 port = port,
                 rawRead = { buf, t -> this.read(buf, t) },
                 rawWrite = { buf, t -> this.rawSocketWrite(buf, t) },
-                bufferFactory = bufferFactory,
             )
         handler.handshake(timeout)
         this.tlsHandler = handler

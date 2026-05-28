@@ -1,0 +1,7 @@
+language = C
+package = com.ditchoom.socket.quic.quiche
+
+headers = quiche.h
+
+compilerOpts.linux = -D_GNU_SOURCE
+linkerOpts.linux = -lpthread -ldl -lm

@@ -1,24 +1,27 @@
 
 [versions]
 kotlin = "2.3.0"
-# OpenSSL version for Linux native TLS - built automatically by Gradle
-openssl = "3.0.16"
-opensslSha256 = "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86"
 # liburing version for Linux io_uring async I/O - built automatically by Gradle
 liburing = "2.9"
 liburingSha256 = "897b1153b55543e8b92a5a3eb9b906537a5fedcf8afaf241f8b8787940c79f8d"
+# quiche (Cloudflare QUIC) for socket-quic module - built from source via Cargo
+quiche = "0.28.0"
+quicheSha256 = "2adb185e8557b3057cee76ba73d8afb20c25e3143a6296a5891ddc9b1fd81192"
 androidGradlePlugin = "8.13.2"
 ktlint = "14.0.1"
 mavenPublish = "0.35.0"
 dokka = "2.1.0"
 kotlinxCoroutines = "1.10.2"
 kotlinWrappers = "2025.12.6"
-buffer = "4.0.3"
+buffer = "5.2.0"
+ksp = "2.3.0"
 androidxCore = "1.17.0"
 
 [libraries]
 buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
 buffer-flow = { module = "com.ditchoom:buffer-flow", version.ref = "buffer" }
+buffer-codec = { module = "com.ditchoom:buffer-codec", version.ref = "buffer" }
+buffer-codec-processor = { module = "com.ditchoom:buffer-codec-processor", version.ref = "buffer" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "kotlinxCoroutines" }
@@ -32,3 +35,4 @@ android-library = { id = "com.android.library", version.ref = "androidGradlePlug
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
 maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
 dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

@@ -1,8 +1,8 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.JsBuffer
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
@@ -89,7 +89,7 @@ private fun String.substringFrom(marker: String): String {
 open class NodeSocket : ClientSocket {
     internal var isClosed = true
     internal var netSocket: Socket? = null
-    internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>()
+    internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
 
@@ -103,10 +103,13 @@ open class NodeSocket : ClientSocket {
     override suspend fun remotePort() = netSocket?.remotePort ?: -1
 
     override suspend fun read(timeout: Duration): ReadBuffer {
-        val socket = netSocket
-        if (socket == null || !isOpen()) {
-            throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
-        }
+        val socket =
+            netSocket
+                ?: throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
+        // Don't pre-check isOpen() — the channel may still have buffered data from
+        // "data" events that fired before a "close" event set isClosed=true.
+        // Draining the channel first prevents a race where fast-closing servers
+        // (like Autobahn) send a response and close before read() is called.
         socket.resume()
         val message =
             withTimeout(timeout) {
@@ -119,12 +122,11 @@ open class NodeSocket : ClientSocket {
                     )
                 }
             }
-        if (message.bytesRead < 0 || !isOpen()) {
+        if (message.bytesRead < 0) {
             throw SocketClosedException.General(
                 "Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError",
             )
         }
-        message.result.position(message.bytesRead)
         return message.result
     }
 
@@ -137,21 +139,23 @@ open class NodeSocket : ClientSocket {
             throw SocketClosedException.General("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val bytesToWrite = buffer.remaining()
-        val jsBuffer =
-            when (buffer) {
-                is JsBuffer -> buffer
-                is PlatformBuffer -> buffer.unwrap() as JsBuffer
-                else -> null
-            }
+        // unwrapFully traverses any BufferWrapper chain (PooledBuffer,
+        // TrackedSlice, LeakTrackingBuffer, …) so we reach the concrete
+        // JsBuffer regardless of how many decorators sit on top.
+        val unwrapped = buffer.unwrapFully()
         val dataToWrite =
-            if (jsBuffer != null) {
-                val array = jsBuffer.buffer
-                Uint8Array(array.buffer, array.byteOffset + buffer.position(), bytesToWrite)
+            if (unwrapped is JsBuffer) {
+                val array = unwrapped.buffer
+                Uint8Array(array.buffer, array.byteOffset + unwrapped.position(), bytesToWrite)
             } else {
-                // Fallback for non-PlatformBuffer types (e.g. TrackedSlice)
-                val savedPos = buffer.position()
+                // Non-JsBuffer ReadBuffer (e.g. FragmentedReadBuffer) — at the
+                // Node.js socket.write boundary a materialise-into-Uint8Array
+                // is unavoidable. ByteArray IS Int8Array at runtime on Kotlin/JS,
+                // so the unsafeCast below is zero-copy; the only allocation is
+                // the Int8Array that readByteArray produces.
+                @Suppress("NoByteArrayInProd") // JS platform boundary — no zero-copy path
                 val bytes = buffer.readByteArray(bytesToWrite)
-                buffer.position(savedPos)
+                buffer.position(buffer.position() - bytesToWrite) // undo readByteArray advance
                 Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, bytesToWrite)
             }
         writeMutex.withLock { socket.write(dataToWrite) }
@@ -200,12 +204,19 @@ class NodeClientSocket :
         val netSocket = connect(useTls, options, timeout)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
+        if (socketOptions.tcpNoDelay == true) {
+            netSocket.setNoDelay(true)
+        }
         netSocket.on("data") { data ->
             val result = int8ArrayOf(data)
             val buffer = JsBuffer(result)
             buffer.position(result.length)
             buffer.resetForRead()
             incomingMessageChannel.trySend(SocketDataRead(buffer, result.length))
+        }
+        netSocket.on("error") { _ ->
+            hadTransmissionError = true
+            cleanSocket(netSocket)
         }
         netSocket.on("close") { transmissionError ->
             hadTransmissionError = transmissionError.unsafeCast<Boolean>()
@@ -220,7 +231,13 @@ class NodeClientSocket :
         js(
             """
             if (Buffer.isBuffer(obj)) {
-                // Zero-copy view into the Node.js Buffer
+                if (obj.byteOffset > 0 || obj.byteLength < obj.buffer.byteLength) {
+                    // Buffer shares a pool ArrayBuffer — must copy to isolate
+                    var copy = new Uint8Array(obj.byteLength);
+                    copy.set(new Uint8Array(obj.buffer, obj.byteOffset, obj.byteLength));
+                    return new Int8Array(copy.buffer, 0, obj.byteLength);
+                }
+                // Dedicated ArrayBuffer — safe to view directly
                 return new Int8Array(obj.buffer, obj.byteOffset, obj.byteLength)
             } else {
                 var buf = Buffer.from(obj);

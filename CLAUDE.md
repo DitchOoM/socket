@@ -6,6 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kotlin Multiplatform library (`com.ditchoom:socket`) for cross-platform socket networking. Provides suspend-based async socket I/O with platform-native implementations.
 
+## No ByteArray in Production Code
+
+Production source sets (`*Main/`) must not allocate or accept `kotlin.ByteArray`. `ByteArray` in a hot path means a guaranteed copy; this library exists to avoid that. Use `ReadBuffer` / `WriteBuffer` / `PlatformBuffer` from the `com.ditchoom:buffer` dependency.
+
+**Platform boundaries** (JDBC `setBytes`, Node `socket.write`, Apple CF / CG / `NSData`, OpenSSL `SSL_write` fallback paths, etc.) sometimes genuinely require a `ByteArray` at the edge. For those, annotate the allocation with `@Suppress("NoByteArrayInProd")` and a one-line inline comment naming the specific driver/API surface — this keeps intentional boundary copies visible during review and prevents the suppression from propagating into hot-path code.
+
+Tests (`*Test/`) may use `ByteArray` freely — the discipline only applies to production source sets.
+
 ## Build Commands
 
 ```bash

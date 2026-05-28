@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.NetworkCapabilities.FULL_SOCKET_ACCESS
 import com.ditchoom.socket.NetworkCapabilities.WEBSOCKETS_ONLY
+import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.asDeferred
@@ -58,3 +59,7 @@ actual fun supportsIPv6(): Boolean = false // JS/browser doesn't have direct soc
 actual fun currentTimeMillis(): Long = Date.now().toLong()
 
 actual fun isRunningInSimulator(): Boolean = false
+
+internal actual fun isWindowsJvm(): Boolean = false
+
+internal actual fun harnessHost(): String = HarnessConfig.host

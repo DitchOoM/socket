@@ -1,0 +1,129 @@
+package com.ditchoom.socket.quic
+
+/**
+ * All possible QUIC errors modeled as a sealed hierarchy.
+ * No stringly-typed errors — every error has a concrete type.
+ * Maps to RFC 9000 §20 transport error codes and application/platform errors.
+ */
+sealed interface QuicError {
+    /** The error code as defined by RFC 9000, or -1 for non-transport errors. */
+    val code: Long
+
+    // Transport errors (RFC 9000 §20.1)
+    data object NoError : QuicError {
+        override val code: Long = 0x0
+    }
+
+    data class InternalError(
+        val detail: String,
+    ) : QuicError {
+        override val code: Long = 0x1
+    }
+
+    data object ConnectionRefused : QuicError {
+        override val code: Long = 0x2
+    }
+
+    data object FlowControlError : QuicError {
+        override val code: Long = 0x3
+    }
+
+    data object StreamLimitError : QuicError {
+        override val code: Long = 0x4
+    }
+
+    data class StreamStateError(
+        val streamId: QuicStreamId,
+    ) : QuicError {
+        override val code: Long = 0x5
+    }
+
+    data object FinalSizeError : QuicError {
+        override val code: Long = 0x6
+    }
+
+    data object FrameEncodingError : QuicError {
+        override val code: Long = 0x7
+    }
+
+    data class TransportParameterError(
+        val detail: String,
+    ) : QuicError {
+        override val code: Long = 0x8
+    }
+
+    data object ConnectionIdLimitError : QuicError {
+        override val code: Long = 0x9
+    }
+
+    data object ProtocolViolation : QuicError {
+        override val code: Long = 0xA
+    }
+
+    data object InvalidToken : QuicError {
+        override val code: Long = 0xB
+    }
+
+    data class CryptoBufferExceeded(
+        val detail: String,
+    ) : QuicError {
+        override val code: Long = 0xD
+    }
+
+    data object KeyUpdateError : QuicError {
+        override val code: Long = 0xE
+    }
+
+    data object AeadLimitReached : QuicError {
+        override val code: Long = 0xF
+    }
+
+    data object NoViablePath : QuicError {
+        override val code: Long = 0x10
+    }
+
+    /** TLS alert mapped to QUIC crypto error (0x100 + alert code). */
+    data class CryptoError(
+        val tlsAlert: Int,
+    ) : QuicError {
+        override val code: Long = 0x100L + tlsAlert
+    }
+
+    /** Application-level error (opaque code defined by the application protocol). */
+    data class ApplicationError(
+        val applicationCode: Long,
+    ) : QuicError {
+        override val code: Long = applicationCode
+    }
+
+    /** Platform-specific error that doesn't map to a QUIC transport code. */
+    data class PlatformError(
+        val cause: Throwable,
+    ) : QuicError {
+        override val code: Long = -1
+    }
+
+    companion object {
+        fun fromTransportCode(code: Long): QuicError =
+            when (code) {
+                0x0L -> NoError
+                0x1L -> InternalError("transport error 0x1")
+                0x2L -> ConnectionRefused
+                0x3L -> FlowControlError
+                0x4L -> StreamLimitError
+                0x5L -> StreamStateError(QuicStreamId(0))
+                0x6L -> FinalSizeError
+                0x7L -> FrameEncodingError
+                0x8L -> TransportParameterError("transport error 0x8")
+                0x9L -> ConnectionIdLimitError
+                0xAL -> ProtocolViolation
+                0xBL -> InvalidToken
+                0xDL -> CryptoBufferExceeded("transport error 0xD")
+                0xEL -> KeyUpdateError
+                0xFL -> AeadLimitReached
+                0x10L -> NoViablePath
+                in 0x100L..0x1FFL -> CryptoError((code - 0x100L).toInt())
+                else -> InternalError("unknown transport error code 0x${code.toString(16)}")
+            }
+    }
+}

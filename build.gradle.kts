@@ -33,7 +33,7 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
-    mavenLocal() // For local buffer library testing
+    mavenLocal()
     google()
     mavenCentral()
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }
@@ -49,216 +49,141 @@ fun KotlinNativeTarget.configureNWHelpersCinterop() {
     }
 }
 
-// OpenSSL version for Linux builds - defined in gradle/libs.versions.toml
-val opensslVersion = libs.versions.openssl.get()
-val opensslSha256 = libs.versions.opensslSha256.get()
-val opensslBuildDir = layout.buildDirectory.dir("openssl")
-val opensslIncludeDir = opensslBuildDir.map { it.dir("openssl-$opensslVersion/include") }
+// BoringSSL for Linux TLS — built from quiche's vendored submodule so the exact
+// same commit is shared between the base socket module and quiche (no symbol collision).
+val quicheVersion = libs.versions.quiche.get()
+val boringsslBuildDir = layout.buildDirectory.dir("boringssl")
 
-// OpenSSL configure options for minimal TLS build
-val opensslConfigureOptions =
-    listOf(
-        "no-shared",
-        "no-tests",
-        "no-legacy",
-        "no-engine",
-        "no-comp",
-        "no-dtls",
-        "no-dtls1",
-        "no-dtls1-method",
-        "no-ssl3",
-        "no-ssl3-method",
-        "no-idea",
-        "no-rc2",
-        "no-rc4",
-        "no-rc5",
-        "no-des",
-        "no-md4",
-        "no-mdc2",
-        "no-whirlpool",
-        "no-psk",
-        "no-srp",
-        "no-gost",
-        "no-cms",
-        "no-ts",
-        "no-ocsp",
-        "no-srtp",
-        "no-seed",
-        "no-bf",
-        "no-cast",
-        "no-camellia",
-        "no-aria",
-        "no-sm2",
-        "no-sm3",
-        "no-sm4",
-        "no-siphash",
-    )
-
-// Helper function to download and verify OpenSSL source
-fun downloadOpenSslSource(
-    buildDir: File,
-    version: String,
-    sha256: String,
-): File {
-    val tarball = File(buildDir, "openssl-$version.tar.gz")
-    val sourceDir = File(buildDir, "openssl-$version")
-
-    if (sourceDir.exists()) return sourceDir
-
-    buildDir.mkdirs()
-
-    // Download if not present
-    if (!tarball.exists()) {
-        println("Downloading OpenSSL $version...")
-        val url = URI("https://github.com/openssl/openssl/releases/download/openssl-$version/openssl-$version.tar.gz").toURL()
-        url.openStream().use { input ->
-            tarball.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-    }
-
-    // Verify SHA256
-    val digest = MessageDigest.getInstance("SHA-256")
-    tarball.inputStream().use { input ->
-        val buffer = ByteArray(8192)
-        var read: Int
-        while (input.read(buffer).also { read = it } != -1) {
-            digest.update(buffer, 0, read)
-        }
-    }
-    val actualSha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-    if (actualSha256 != sha256) {
-        tarball.delete()
-        throw GradleException("OpenSSL SHA256 mismatch: expected $sha256, got $actualSha256")
-    }
-
-    // Extract
-    println("Extracting OpenSSL source...")
-    ProcessBuilder("tar", "xzf", tarball.name)
-        .directory(buildDir)
-        .inheritIO()
-        .start()
-        .waitFor()
-
-    return sourceDir
-}
-
-// Task to build OpenSSL static libraries for a specific architecture
-fun createBuildOpenSslTask(arch: String): TaskProvider<Task> {
-    val taskName = "buildOpenSsl${arch.replaceFirstChar { it.uppercase() }}"
-    val opensslTarget = if (arch == "x64") "linux-x86_64" else "linux-aarch64"
-    val outputDir = projectDir.resolve("libs/openssl/linux-$arch")
-    val markerFile = outputDir.resolve("lib/.built-$opensslVersion")
+fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
+    val taskName = "buildBoringssl${arch.replaceFirstChar { it.uppercase() }}"
+    val outputDir = projectDir.resolve("libs/boringssl/linux-$arch")
+    val markerFile = outputDir.resolve("lib/.built-quiche-$quicheVersion")
 
     return tasks.register(taskName) {
         group = "build"
-        description = "Build OpenSSL static libraries for Linux $arch"
-
-        inputs.property("opensslVersion", opensslVersion)
-        inputs.property("opensslSha256", opensslSha256)
+        description = "Build BoringSSL static libraries for Linux $arch"
+        inputs.property("quicheVersion", quicheVersion)
         outputs.file(markerFile)
-
-        onlyIf {
-            !markerFile.exists()
-        }
+        onlyIf { !markerFile.exists() }
 
         doLast {
-            val buildDir = opensslBuildDir.get().asFile
-            val sourceDir = downloadOpenSslSource(buildDir, opensslVersion, opensslSha256)
+            val buildDir = boringsslBuildDir.get().asFile
 
-            // Check for cross-compiler if needed
-            val crossCompile =
-                if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
-                    val compiler = "aarch64-linux-gnu-gcc"
-                    val result = ProcessBuilder("which", compiler).start().waitFor()
-                    if (result != 0) {
-                        throw GradleException(
-                            """
-                            Cross-compiler not found for ARM64. Install with:
-                              sudo apt install gcc-aarch64-linux-gnu
-                            """.trimIndent(),
-                        )
-                    }
-                    "--cross-compile-prefix=aarch64-linux-gnu-"
-                } else {
-                    null
-                }
+            // Clone quiche (with --recursive) to get the exact BoringSSL submodule it vendors.
+            // This is the single source of truth — bumping the quiche version automatically
+            // updates BoringSSL to the matching commit.
+            val quicheDir = File(buildDir, "quiche-$quicheVersion")
+            if (!quicheDir.exists()) {
+                buildDir.mkdirs()
+                logger.lifecycle("Cloning quiche $quicheVersion (to get vendored BoringSSL)...")
+                val cloneResult =
+                    ProcessBuilder(
+                        "git",
+                        "clone",
+                        "--recursive",
+                        "--depth",
+                        "1",
+                        "--branch",
+                        quicheVersion,
+                        "https://github.com/cloudflare/quiche.git",
+                        quicheDir.name,
+                    ).directory(buildDir)
+                        .redirectErrorStream(true)
+                        .start()
+                        .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
+                        .waitFor()
+                if (cloneResult != 0) throw GradleException("Failed to clone quiche $quicheVersion")
+            }
+            val sourceDir = File(quicheDir, "quiche/deps/boringssl")
 
-            // Clean any previous build artifacts to avoid mixing architectures
-            logger.lifecycle("Cleaning previous OpenSSL build...")
-            ProcessBuilder("make", "clean")
-                .directory(sourceDir)
-                .inheritIO()
-                .start()
-                .waitFor()
+            // CMake configure — clean build dir to avoid stale state
+            val cmakeBuildDir = File(sourceDir, "build-$arch")
+            if (cmakeBuildDir.exists()) cmakeBuildDir.deleteRecursively()
+            cmakeBuildDir.mkdirs()
 
-            // Configure
-            // Use C11 standard to avoid glibc 2.38+ C23 functions (e.g., __isoc23_strtol)
-            // that aren't available in Kotlin/Native's older sysroot (glibc 2.19)
-            logger.lifecycle("Configuring OpenSSL $opensslVersion for $arch...")
-            val configureArgs =
+            logger.lifecycle("Configuring BoringSSL for $arch...")
+
+            val cmakeArgs =
                 mutableListOf(
-                    "./Configure",
-                    opensslTarget,
-                    "--prefix=/opt/openssl",
-                    "--libdir=lib",
+                    "cmake",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_C_FLAGS=-fPIC",
+                    "-DCMAKE_CXX_FLAGS=-fPIC",
+                    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+                    // Go generates optimized ASM for BoringSSL crypto
+                    "-DBUILD_SHARED_LIBS=OFF",
+                    "-G",
+                    "Unix Makefiles",
                 )
-            crossCompile?.let { configureArgs.add(it) }
-            configureArgs.addAll(opensslConfigureOptions)
 
-            val configureProcess =
-                ProcessBuilder(configureArgs)
-                    .directory(sourceDir)
-                    .inheritIO()
-            // Set CFLAGS to enforce C11 standard in environment
-            // For ARM64: disable outline atomics to avoid needing libgcc atomics helpers
-            val cflags =
-                if (arch == "arm64") {
-                    "-fPIC -std=gnu11 -mno-outline-atomics"
-                } else {
-                    "-fPIC -std=gnu11"
-                }
-            configureProcess.environment()["CFLAGS"] = cflags
-            val configureResult = configureProcess.start().waitFor()
-
-            if (configureResult != 0) {
-                throw GradleException("OpenSSL configure failed")
+            // Cross-compilation for ARM64
+            if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
+                cmakeArgs.addAll(
+                    listOf(
+                        "-DCMAKE_SYSTEM_NAME=Linux",
+                        "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
+                        "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
+                        "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
+                        // Disable outline atomics to avoid __aarch64_cas* symbols
+                        // (K/N linker doesn't have libgcc atomics helpers)
+                        "-DCMAKE_C_FLAGS=-fPIC -mno-outline-atomics",
+                        "-DCMAKE_CXX_FLAGS=-fPIC -mno-outline-atomics",
+                    ),
+                )
             }
 
-            // Build
-            logger.lifecycle("Building OpenSSL (this may take a few minutes)...")
+            cmakeArgs.add("..")
+
+            val configResult =
+                ProcessBuilder(cmakeArgs)
+                    .directory(cmakeBuildDir)
+                    .redirectErrorStream(true)
+                    .start()
+                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
+                    .waitFor()
+            if (configResult != 0) throw GradleException("BoringSSL cmake configure failed for $arch (exit $configResult)")
+            logger.lifecycle("BoringSSL cmake configured successfully for $arch")
+
+            // Build ssl and crypto targets only
+            logger.lifecycle("Building BoringSSL (this may take a few minutes)...")
             val cpuCount = Runtime.getRuntime().availableProcessors()
             val makeResult =
-                ProcessBuilder("make", "-j$cpuCount")
-                    .directory(sourceDir)
-                    .inheritIO()
+                ProcessBuilder("make", "-j$cpuCount", "ssl", "crypto")
+                    .directory(cmakeBuildDir)
+                    .redirectErrorStream(true)
                     .start()
+                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
                     .waitFor()
+            if (makeResult != 0) throw GradleException("BoringSSL make failed for $arch (exit $makeResult)")
 
-            if (makeResult != 0) {
-                throw GradleException("OpenSSL build failed")
-            }
-
-            // Copy libraries
+            // Copy libraries — search for them (cmake may put them in ssl/ and crypto/ subdirs or flat)
             outputDir.resolve("lib").mkdirs()
-            sourceDir.resolve("libssl.a").copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
-            sourceDir.resolve("libcrypto.a").copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
+            val sslLib =
+                cmakeBuildDir.walk().firstOrNull { it.name == "libssl.a" }
+                    ?: throw GradleException("libssl.a not found under ${cmakeBuildDir.absolutePath}")
+            val cryptoLib =
+                cmakeBuildDir.walk().firstOrNull { it.name == "libcrypto.a" }
+                    ?: throw GradleException("libcrypto.a not found under ${cmakeBuildDir.absolutePath}")
+            sslLib.copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
+            cryptoLib.copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
+            logger.lifecycle("Copied ${sslLib.absolutePath} and ${cryptoLib.absolutePath}")
 
-            // Copy headers so they're cached along with libraries
+            // Copy headers (same paths as OpenSSL: openssl/ssl.h, openssl/err.h, etc.)
+            // BoringSSL headers are under src/include/ (not top-level include/)
             val includeOutputDir = outputDir.resolve("include")
-            sourceDir.resolve("include").copyRecursively(includeOutputDir, overwrite = true)
+            val srcInclude = sourceDir.resolve("src/include")
+            val topInclude = sourceDir.resolve("include")
+            val includeSource = if (srcInclude.exists()) srcInclude else topInclude
+            includeSource.copyRecursively(includeOutputDir, overwrite = true)
 
-            // Write marker file
-            markerFile.writeText("OpenSSL $opensslVersion built on ${System.currentTimeMillis()}")
-
-            logger.lifecycle("OpenSSL $opensslVersion built successfully for $arch")
+            markerFile.writeText("BoringSSL from quiche $quicheVersion built on ${System.currentTimeMillis()}")
+            logger.lifecycle("BoringSSL (from quiche $quicheVersion) built successfully for $arch")
         }
     }
 }
 
-val buildOpenSslX64 = createBuildOpenSslTask("x64")
-val buildOpenSslArm64 = createBuildOpenSslTask("arm64")
+val buildBoringSslX64 = createBuildBoringSslTask("x64")
+val buildBoringSslArm64 = createBuildBoringSslTask("arm64")
 
 // liburing version for Linux builds - defined in gradle/libs.versions.toml
 val liburingVersion = libs.versions.liburing.get()
@@ -432,18 +357,17 @@ fun createBuildLiburingTask(arch: String): TaskProvider<Task> {
 val buildLiburingX64 = createBuildLiburingTask("x64")
 val buildLiburingArm64 = createBuildLiburingTask("arm64")
 
-// Configure cinterop for Linux targets with static OpenSSL and liburing
-// Requires: sudo apt install build-essential perl
+// Configure cinterop for Linux targets with BoringSSL (or OpenSSL fallback) and liburing
+// Requires: sudo apt install build-essential cmake
 // For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu
-// OpenSSL and liburing are built automatically by Gradle when needed
 fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
-    val opensslDir = projectDir.resolve("libs/openssl/linux-$arch")
-    val opensslLibDir = opensslDir.resolve("lib")
-    val opensslIncDir = opensslDir.resolve("include")
+    val boringsslDir = projectDir.resolve("libs/boringssl/linux-$arch")
+    val boringsslLibDir = boringsslDir.resolve("lib")
+    val boringsslIncDir = boringsslDir.resolve("include")
     val liburingDir = projectDir.resolve("libs/liburing/linux-$arch")
     val liburingLibDir = liburingDir.resolve("lib")
     val liburingIncludeDir = liburingDir.resolve("include")
-    val buildOpenSslTask = if (arch == "x64") buildOpenSslX64 else buildOpenSslArm64
+    val buildBoringSslTask = if (arch == "x64") buildBoringSslX64 else buildBoringSslArm64
     val buildLiburingTask = if (arch == "x64") buildLiburingX64 else buildLiburingArm64
 
     // System include paths for standard headers (not liburing - we build that ourselves)
@@ -477,7 +401,7 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
                 val modifiedContent =
                     baseDefContent.replace(
                         "linkerOpts.linux = -lssl -lcrypto -luring -lpthread -ldl",
-                        """libraryPaths.linux = ${opensslLibDir.absolutePath} ${liburingLibDir.absolutePath}
+                        """libraryPaths.linux = ${boringsslLibDir.absolutePath} ${liburingLibDir.absolutePath}
 staticLibraries.linux = libssl.a libcrypto.a liburing.a
 linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files""",
                     )
@@ -489,24 +413,26 @@ linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files"""
     compilations["main"].cinterops {
         create("LinuxSockets") {
             defFile(generatedDefFile)
-            // Include: system headers, our built liburing headers, and our built OpenSSL headers
+            // Include: system headers, our built liburing headers, and BoringSSL/OpenSSL headers
+            // BoringSSL headers FIRST — must shadow system OpenSSL headers
+            // to avoid cinterop picking up system's SSL_ctrl macro
             val allIncludes =
-                systemIncludeDirs +
+                listOf(boringsslIncDir.absolutePath) +
                     liburingIncludeDir.absolutePath +
-                    opensslIncDir.absolutePath
+                    systemIncludeDirs
             includeDirs(*allIncludes.toTypedArray())
 
             tasks.named(interopProcessingTaskName) {
                 dependsOn(generateDefTask)
-                dependsOn(buildOpenSslTask)
+                dependsOn(buildBoringSslTask)
                 dependsOn(buildLiburingTask)
             }
         }
     }
-    // Link against static OpenSSL and static liburing (for binaries built in this project)
+    // Link against BoringSSL/OpenSSL and liburing
     binaries.all {
         linkerOpts(
-            "-L${opensslLibDir.absolutePath}",
+            "-L${boringsslLibDir.absolutePath}",
             "-L${liburingLibDir.absolutePath}",
             "-lssl",
             "-lcrypto",
@@ -585,6 +511,7 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.buffer)
             api(libs.buffer.flow)
+            api(libs.buffer.codec)
             implementation(libs.kotlinx.coroutines.core)
         }
         androidMain.dependencies {
@@ -605,6 +532,9 @@ kotlin {
         val androidInstrumentedTest by getting {
             dependencies {
                 implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.test)
+                implementation("androidx.test:runner:1.6.2")
+                implementation("androidx.test.ext:junit:1.2.1")
             }
         }
         val androidUnitTest by getting {
@@ -661,6 +591,7 @@ android {
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
         minSdk = 21
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     namespace = "$group.${rootProject.name}"
 
@@ -802,4 +733,233 @@ tasks.register<Copy>("copyDokkaToDocusaurus") {
 
     from(layout.buildDirectory.dir("dokka/html"))
     into(layout.projectDirectory.dir("docs/static/api"))
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Test harness (local Docker Compose). Phase 1 — echo + http only.
+// Design: TESTING_STRATEGY.md  ·  Stack: test-harness/README.md
+// ──────────────────────────────────────────────────────────────────────
+
+val harnessDir = layout.projectDirectory.dir("test-harness")
+val harnessEnvFile = harnessDir.file("harness.env")
+val harnessGeneratedDir = layout.buildDirectory.dir("generated/harness/commonTest")
+
+// Reads test-harness/harness.env and writes a generated Kotlin object
+// onto commonTest's source path. One object, zero expect/actual — visible
+// identically on JVM, K/N, Apple, JS, and wasmJs (none of which need to
+// hand-roll a system-property reader). Edit harness.env, run this task,
+// every target sees the new value.
+val generateHarnessConfig by tasks.registering {
+    group = "verification"
+    description = "Generate HarnessConfig.kt from test-harness/harness.env"
+    val envFile = harnessEnvFile
+    val outDir = harnessGeneratedDir
+    inputs.file(envFile)
+    outputs.dir(outDir)
+    doLast {
+        val env =
+            envFile.asFile
+                .readLines()
+                .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+                .associate { line ->
+                    val i = line.indexOf('=')
+                    require(i > 0) { "Malformed harness.env line: '$line'" }
+                    line.substring(0, i).trim() to line.substring(i + 1).trim()
+                }
+
+        fun req(key: String): String = env[key] ?: error("Missing $key in $envFile")
+        val pkgDir = outDir.get().asFile.resolve("com/ditchoom/socket/harness")
+        pkgDir.mkdirs()
+        pkgDir.resolve("HarnessConfig.kt").writeText(
+            buildString {
+                append("// Generated from test-harness/harness.env — DO NOT EDIT.\n")
+                // Suppress ktlint's SCREAMING_SNAKE_CASE rule: we deliberately use camelCase
+                // for object members so call sites read like normal properties.
+                append("@file:Suppress(\"ktlint:standard:property-naming\")\n\n")
+                append("package com.ditchoom.socket.harness\n\n")
+                append("/**\n")
+                append(" * Endpoints for the local docker-compose test harness.\n")
+                append(" * Single source of truth: edit test-harness/harness.env and re-run\n")
+                append(" * `:generateHarnessConfig` (auto-fired by every test task).\n")
+                append(" */\n")
+                append("internal object HarnessConfig {\n")
+                append("    const val host: String = \"${req("HARNESS_HOST")}\"\n")
+                append("    const val echoPort: Int = ${req("ECHO_PORT")}\n")
+                append("    const val httpPort: Int = ${req("HTTP_PORT")}\n")
+                append("    const val tlsValidPort: Int = ${req("TLS_VALID_PORT")}\n")
+                append("    const val tlsSelfSignedPort: Int = ${req("TLS_SELF_SIGNED_PORT")}\n")
+                append("    const val tlsExpiredPort: Int = ${req("TLS_EXPIRED_PORT")}\n")
+                append("    const val tlsWrongHostPort: Int = ${req("TLS_WRONG_HOST_PORT")}\n")
+                append("    const val tlsUntrustedPort: Int = ${req("TLS_UNTRUSTED_PORT")}\n")
+                append("    const val tlsTls13Port: Int = ${req("TLS_TLS13_PORT")}\n")
+                append("    const val netemBlackholeHost: String = \"${req("NETEM_BLACKHOLE_HOST")}\"\n")
+                append("    const val netemBlackholePort: Int = ${req("NETEM_BLACKHOLE_PORT")}\n")
+                append("    const val toxiproxyApiPort: Int = ${req("TOXIPROXY_API_PORT")}\n")
+                append("    const val toxiproxyEchoPort: Int = ${req("TOXIPROXY_ECHO_PORT")}\n")
+                append("    const val toxiproxyHttpPort: Int = ${req("TOXIPROXY_HTTP_PORT")}\n")
+                append("    const val toxiproxyTlsPort: Int = ${req("TOXIPROXY_TLS_PORT")}\n")
+                append("    const val rstPort: Int = ${req("RST_PORT")}\n")
+                append("}\n")
+            },
+        )
+    }
+}
+
+kotlin.sourceSets.named("commonTest") {
+    kotlin.srcDir(generateHarnessConfig.map { harnessGeneratedDir })
+}
+
+tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
+    dependsOn(generateHarnessConfig)
+    // Surface assertion messages and exception traces in the gradle test
+    // output. Default `events("failed")` only logs "FAILED" + the top-frame
+    // class name (e.g. `AssertionError at Assert.java:89`) which makes CI
+    // failures un-actionable without downloading the HTML report.
+    testLogging {
+        events("failed", "skipped")
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
+}
+
+// Pin JVM tests to a single sequential fork. The JVM test surface uses
+// process-wide mutable globals (`useAsyncChannels`, `useNioBlocking` in
+// `commonJvmMain/Socket.kt`) that the Simple{Nio,NioNonBlocking,Async}-
+// SocketTests classes flip via @BeforeTest/@AfterTest save-and-restore.
+// That isolation only works inside a single fork running tests
+// sequentially; multiple forks (or in-fork parallelism) would race on the
+// shared globals and silently exercise the wrong client implementation —
+// the tests would still pass because they're impl-agnostic, but the
+// discriminating coverage would be lost.
+//
+// If you need to enable parallel JVM tests, first migrate those globals
+// to a CoroutineContext.Element or a per-call factory (see the long
+// comment in Socket.kt).
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    maxParallelForks = 1
+    setForkEvery(0L)
+}
+
+// ─── harnessUp / harnessDown ──────────────────────────────────────────
+// Both tolerant: missing Docker, Windows host, or HARNESS_DISABLED=true
+// → silent no-op. Tests then short-circuit at runtime via
+// isHarnessAvailable() and the suite stays green.
+
+fun runHarnessCmd(args: List<String>): Int {
+    if (System.getenv("HARNESS_DISABLED")?.lowercase() == "true") {
+        logger.lifecycle("harness: HARNESS_DISABLED=true — skipping `${args.joinToString(" ")}`")
+        return 0
+    }
+    if (org.gradle.internal.os.OperatingSystem
+            .current()
+            .isWindows
+    ) {
+        logger.lifecycle(
+            "harness: Windows host — skipping `${args.joinToString(" ")}`; " +
+                "run on Linux/macOS (or WSL) for harness coverage",
+        )
+        return 0
+    }
+    return try {
+        val proc =
+            ProcessBuilder(args)
+                .directory(harnessDir.asFile)
+                .redirectErrorStream(true)
+                .start()
+        proc.inputStream.bufferedReader().forEachLine { logger.lifecycle("harness: $it") }
+        proc.waitFor()
+    } catch (e: Exception) {
+        logger.lifecycle("harness: skipped — ${e.message}")
+        0
+    }
+}
+
+// Idempotent cert-matrix generation (TESTING_STRATEGY.md §2b). The script writes
+// to test-harness/tls/certs/, which is gitignored. Runs once; subsequent calls
+// short-circuit on the `.generated` marker file. Wired before `harnessUp` so
+// `docker compose up` sees the cert files on the mounted volume.
+val generateHarnessCerts by tasks.registering {
+    group = "verification"
+    description = "Generate the harness TLS cert matrix (./test-harness/tls/gen-certs.sh)."
+    val script = harnessDir.file("tls/gen-certs.sh")
+    val marker = harnessDir.file("tls/certs/.generated")
+    inputs.file(script)
+    outputs.file(marker)
+    doLast {
+        if (org.gradle.internal.os.OperatingSystem
+                .current()
+                .isWindows
+        ) {
+            logger.lifecycle("harness: Windows host — skipping cert generation (need bash + openssl)")
+            return@doLast
+        }
+        try {
+            val proc =
+                ProcessBuilder("bash", script.asFile.absolutePath)
+                    .directory(harnessDir.asFile)
+                    .redirectErrorStream(true)
+                    .start()
+            proc.inputStream.bufferedReader().forEachLine { logger.lifecycle("harness: $it") }
+            val rc = proc.waitFor()
+            if (rc != 0) {
+                logger.lifecycle("harness: gen-certs.sh returned $rc — TLS tests will skip via isHarnessAvailable()")
+            }
+        } catch (e: Exception) {
+            logger.lifecycle("harness: cert generation skipped — ${e.message}")
+        }
+    }
+}
+
+val harnessUp by tasks.registering {
+    group = "verification"
+    description = "Start the local test harness (docker compose up --wait). No-op if docker unavailable."
+    dependsOn(generateHarnessCerts)
+    // Phase 4 — make sure the quic-echo image's input artefact (a fat jar of
+    // QuicEchoTestServer + its test deps + the host's quiche native libs) is
+    // current before `docker compose up` reads it. Subproject task is wrapped
+    // in `tasks.named` so the dependency edge is resolved lazily — keeps the
+    // root build script orderable against the subproject's afterEvaluate.
+    dependsOn(project(":socket-quic").tasks.named("quicEchoJar"))
+    doLast {
+        val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait"))
+        if (rc != 0) {
+            logger.lifecycle(
+                "harness: `docker compose up` returned $rc — tests will skip harness scenarios " +
+                    "via isHarnessAvailable()",
+            )
+        }
+    }
+}
+
+val harnessDown by tasks.registering {
+    group = "verification"
+    description = "Stop the local test harness (docker compose down -v). No-op if docker unavailable."
+    doLast { runHarnessCmd(listOf("docker", "compose", "down", "-v")) }
+}
+
+// Wrap both the root module's test tasks AND :socket-quic's matching test
+// tasks with the harness lifecycle. Phase 4 adds quic-echo to the compose
+// stack, so :socket-quic:jvmTest's new QuicHarnessIntegrationTests need it
+// running. The exit gate is intentionally two separate gradle invocations
+// (HANDOFF.md Phase 4) so the root and socket-quic test tasks don't run
+// concurrently — JVM+native workload contention causes the in-process QUIC
+// tests' 10 s timeouts to miss on resource-constrained runners.
+//
+// jsNodeTest (Phase 5): Node has full socket access (`net.Socket`), so
+// isHarnessAvailable() returns true when the harness is up and Node-targeted
+// harness tests exercise the same conformance suites. Browser/wasmJs stays
+// WEBSOCKETS_ONLY and skips via the early-return path (HANDOFF.md §7.4) — no
+// special-case needed; on Windows CI the harnessUp task is a documented no-op
+// and the tests skip cleanly through isHarnessAvailable().
+listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->
+    tasks.matching { it.name == name }.configureEach {
+        dependsOn(harnessUp)
+        finalizedBy(harnessDown)
+    }
+    project(":socket-quic").tasks.matching { it.name == name }.configureEach {
+        dependsOn(harnessUp)
+        finalizedBy(harnessDown)
+    }
 }

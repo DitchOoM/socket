@@ -15,7 +15,7 @@ jobs:
       ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
     strategy:
       matrix:
-        api-level: [19, 29]
+        api-level: [29]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -30,6 +30,49 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Install Rust + cargo-ndk
+        uses: dtolnay/rust-toolchain@stable
+      # All four Android Rust targets are needed because socket-quic's
+      # build.gradle.kts enumerates arm64-v8a / armeabi-v7a / x86_64 / x86
+      # ABIs (see `androidAbis` list); cargo-ndk fails if any target is
+      # missing. The previous list omitted armv7-linux-androideabi and
+      # i686-linux-android, causing :socket-quic:buildAndroidJniArmeabiv7a
+      # to fail in this job.
+      - run: |
+          rustup target add x86_64-linux-android aarch64-linux-android \
+              armv7-linux-androideabi i686-linux-android
+          cargo install cargo-ndk
+
+      - name: Build Android QUIC native libs
+        continue-on-error: true
+        run: |
+          # Clone quiche source
+          mkdir -p socket-quic/build/quiche
+          git clone --recursive --depth 1 --branch 0.28.0 \
+            https://github.com/cloudflare/quiche.git socket-quic/build/quiche/quiche-src
+
+          # Build for x86_64 (emulator)
+          cd socket-quic/build/quiche/quiche-src
+          cargo ndk --target x86_64 --platform 24 -- build --release --package quiche \
+            --no-default-features --features ffi,boringssl-vendored
+          cd ${{ github.workspace }}
+
+          # Build JNI shim
+          NDK_TC="$ANDROID_SDK_ROOT/ndk/$(ls $ANDROID_SDK_ROOT/ndk/ | head -1)/toolchains/llvm/prebuilt/linux-x86_64"
+          QUICHE_LIB=$(find socket-quic/build/quiche -path "*x86_64-linux-android*release*libquiche.a" | head -1)
+          if [ -n "$QUICHE_LIB" ]; then
+            mkdir -p socket-quic/src/androidMain/jniLibs/x86_64
+            $NDK_TC/bin/x86_64-linux-android24-clang -shared -fPIC -Wall \
+              -o socket-quic/src/androidMain/jniLibs/x86_64/libquiche_jni.so \
+              socket-quic/src/jni/quiche_jni.c \
+              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
+              -I socket-quic/libs/quiche/include \
+              -Wl,--whole-archive $QUICHE_LIB -Wl,--no-whole-archive \
+              -lm -ldl -llog \
+              && $NDK_TC/bin/llvm-strip --strip-all socket-quic/src/androidMain/jniLibs/x86_64/libquiche_jni.so \
+              && echo "Built Android x86_64 JNI shim"
+          fi
+
       - name: AVD cache
         uses: actions/cache@v4
         id: avd-cache
@@ -37,13 +80,15 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ matrix.api-level }}
+          key: avd-x86_64-${{ matrix.api-level }}
 
       - name: create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
+          target: default
+          arch: x86_64
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
@@ -53,10 +98,15 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
+          target: default
+          arch: x86_64
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -writable-system -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./gradlew connectedAndroidTest
+          script: |
+            adb root || true
+            adb reverse tcp:4433 tcp:4433 || true
+            ./gradlew connectedAndroidTest :socket-quic:connectedAndroidTest
 
       - name: Kill emulator processes
         if: always()

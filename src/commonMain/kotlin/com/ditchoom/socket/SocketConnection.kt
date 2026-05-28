@@ -1,7 +1,8 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.ReadWriteBuffer
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
@@ -10,44 +11,36 @@ import com.ditchoom.buffer.stream.builder
 import kotlin.time.Duration
 
 /**
- * A composed socket connection that bundles a socket + buffer pool + stream processor.
+ * A composed socket connection bundling a socket + stream processor.
  *
- * Protocol implementations (WebSocket, MQTT, HTTP) build on this instead of managing
- * raw socket components directly.
- *
- * Create via [connect] for new connections or [wrap] for pre-existing sockets (e.g., tests).
+ * Buffer allocation is controlled by the caller via [ConnectionOptions.bufferFactory].
+ * An internal pool is constructed from that factory to back the stream processor and
+ * per-call helpers; the pool is never exposed.
  */
 class SocketConnection private constructor(
     val socket: ClientToServerSocket,
-    val pool: BufferPool,
+    val options: ConnectionOptions,
     val stream: SuspendingStreamProcessor,
-    private val options: ConnectionOptions,
 ) {
+    val bufferFactory: BufferFactory get() = options.bufferFactory
     val isOpen: Boolean get() = socket.isOpen()
 
     /**
-     * Reads data from socket into the stream processor using a pooled buffer.
+     * Reads data from socket into the stream processor.
      *
-     * Uses zero-copy path: acquires a buffer from the pool, reads directly into it,
-     * then transfers ownership to the stream processor. The buffer is freed if the
-     * read fails or returns no data.
+     * Delegates to socket.read(timeout) which returns a platform-native buffer
+     * (zero-copy on JS/Apple, SO_RCVBUF-sized on JVM/Linux). The buffer is
+     * transferred to the stream processor or freed if empty.
      */
     suspend fun readIntoStream(timeout: Duration = options.readTimeout): Int {
-        val buffer = pool.acquire(options.defaultBufferSize)
-        try {
-            val bytesRead = socket.read(buffer, timeout)
-            if (bytesRead > 0) {
-                buffer.setLimit(buffer.position())
-                buffer.position(0)
-                stream.append(buffer)
-            } else {
-                buffer.freeIfNeeded()
-            }
-            return bytesRead
-        } catch (e: Exception) {
+        val buffer = socket.read(timeout)
+        val bytesRead = buffer.remaining()
+        if (bytesRead > 0) {
+            stream.append(buffer)
+        } else {
             buffer.freeIfNeeded()
-            throw e
         }
+        return bytesRead
     }
 
     suspend fun write(
@@ -60,15 +53,18 @@ class SocketConnection private constructor(
         timeout: Duration = options.writeTimeout,
     ): Int = socket.writeGathered(buffers, timeout)
 
+    /**
+     * Allocates a buffer from [bufferFactory], runs [block] with it, and frees it on exit.
+     */
     inline fun <T> withBuffer(
         minSize: Int = 0,
-        block: (ReadWriteBuffer) -> T,
+        block: (PlatformBuffer) -> T,
     ): T {
-        val buf = pool.acquire(minSize)
+        val buf = bufferFactory.allocate(minSize)
         return try {
             block(buf)
         } finally {
-            pool.release(buf)
+            buf.freeIfNeeded()
         }
     }
 
@@ -85,13 +81,8 @@ class SocketConnection private constructor(
             val socket = ClientSocket.allocate()
             socket.bufferFactory = options.bufferFactory
             socket.open(port, options.connectionTimeout, hostname, options.socketOptions)
-            val pool =
-                BufferPool(
-                    maxPoolSize = options.maxPoolSize,
-                    threadingMode = options.threadingMode,
-                )
-            val stream = StreamProcessor.builder(pool).buildSuspending()
-            return SocketConnection(socket, pool, stream, options)
+            val stream = StreamProcessor.builder(BufferPool(factory = options.bufferFactory)).buildSuspending()
+            return SocketConnection(socket, options, stream)
         }
 
         suspend fun <T> connect(
@@ -113,13 +104,8 @@ class SocketConnection private constructor(
             options: ConnectionOptions = ConnectionOptions(),
         ): SocketConnection {
             socket.bufferFactory = options.bufferFactory
-            val pool =
-                BufferPool(
-                    maxPoolSize = options.maxPoolSize,
-                    threadingMode = options.threadingMode,
-                )
-            val stream = StreamProcessor.builder(pool).buildSuspending()
-            return SocketConnection(socket, pool, stream, options)
+            val stream = StreamProcessor.builder(BufferPool(factory = options.bufferFactory)).buildSuspending()
+            return SocketConnection(socket, options, stream)
         }
     }
 }

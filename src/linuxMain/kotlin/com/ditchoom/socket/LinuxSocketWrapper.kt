@@ -65,8 +65,8 @@ open class LinuxSocketWrapper : ClientSocket {
 
                 return when {
                     bytesRead > 0 -> {
-                        // Set buffer position to bytesRead so remaining() returns correct value
                         buffer.position(bytesRead)
+                        buffer.resetForRead()
                         buffer
                     }
                     bytesRead == 0 -> {
@@ -91,6 +91,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 return when {
                     bytesRead > 0 -> {
                         buffer.position(bytesRead)
+                        buffer.resetForRead()
                         buffer
                     }
                     bytesRead == 0 -> {

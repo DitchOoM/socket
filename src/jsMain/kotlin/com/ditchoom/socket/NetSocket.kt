@@ -84,6 +84,8 @@ external class Socket {
         callback: (() -> Unit)? = definedExternally,
     ): Socket
 
+    fun setNoDelay(noDelay: Boolean = definedExternally): Socket
+
     fun resume(): Socket
 
     fun end(callback: () -> Unit): Socket

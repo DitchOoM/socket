@@ -53,7 +53,7 @@ private const val EVENTFD_USER_DATA = 0L
  * regardless of how many concurrent operations are in flight.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal object IoUringManager {
+object IoUringManager {
     private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
 
     // Configuration is read from PlatformSocketConfig
@@ -911,7 +911,7 @@ internal const val DEFAULT_READ_BUFFER_SIZE = 65536
 @OptIn(ExperimentalForeignApi::class)
 internal fun getOpenSSLError(): String {
     val errorCode = ERR_get_error()
-    if (errorCode == 0UL) return "Unknown SSL error"
+    if (errorCode == 0u) return "Unknown SSL error"
 
     memScoped {
         val buffer = allocArray<ByteVar>(256)

@@ -32,7 +32,6 @@ class DataIntegrityTests {
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
                         val buffer = client.read(5.seconds)
-                        buffer.resetForRead()
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
                         client.close()
@@ -93,7 +92,6 @@ class DataIntegrityTests {
                     while (receivedBytes.size < size) {
                         try {
                             val buffer = client.read(10.seconds)
-                            buffer.resetForRead()
                             val chunk = buffer.readByteArray(buffer.remaining())
                             receivedBytes.addAll(chunk.toList())
                         } catch (e: SocketException) {
@@ -304,7 +302,6 @@ class DataIntegrityTests {
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
                         val buffer = client.read(5.seconds)
-                        buffer.resetForRead()
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
                         client.close()

@@ -1,7 +1,9 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -67,18 +69,44 @@ class LinuxClientSocket : ClientToServerSocket {
             val addrInfo = result.value ?: throw SocketUnknownHostException(host, "No address found")
 
             try {
-                // Create socket
-                sockfd = socket(addrInfo.pointed.ai_family, SOCK_STREAM, 0)
-                checkSocketResult(sockfd, "socket")
+                // Walk the addrinfo linked list and try each candidate in order. getaddrinfo
+                // returns multiple records for dual-stack hosts (AAAA + A, multiple IPv4s, etc.);
+                // attempting only the first record — as the prior code did — fails the entire
+                // connect when the head address is unreachable even though a later address would
+                // succeed. broker.hivemq.com is the canonical reproducer: its 8 AAAA records all
+                // ECONNREFUSED while the A record accepts. RFC 8305 / Happy Eyeballs racing is
+                // not implemented here; sequential fallback is enough to clear the common
+                // dual-stack-misconfiguration case.
+                var lastError: Exception? = null
+                var entryPtr: CPointer<addrinfo>? = addrInfo
+                while (entryPtr != null) {
+                    val entry = entryPtr.pointed
+                    val candidateFd = socket(entry.ai_family, SOCK_STREAM, 0)
+                    if (candidateFd < 0) {
+                        lastError = mapErrnoToException(errno, "socket")
+                        entryPtr = entry.ai_next
+                        continue
+                    }
+                    try {
+                        setNonBlocking(candidateFd)
+                        applySocketOptions(candidateFd, socketOptions)
+                        sockfd = candidateFd
+                        connectWithIoUring(entry.ai_addr!!, entry.ai_addrlen, timeout)
+                        // Connect succeeded — exit the fallback loop.
+                        lastError = null
+                        break
+                    } catch (e: Exception) {
+                        lastError = e
+                        closeSocket(candidateFd)
+                        sockfd = -1
+                        entryPtr = entry.ai_next
+                    }
+                }
 
-                // Set non-blocking for io_uring
-                setNonBlocking(sockfd)
-
-                // Apply socket options
-                applySocketOptions(sockfd, socketOptions)
-
-                // Connect using io_uring
-                connectWithIoUring(addrInfo.pointed.ai_addr!!, addrInfo.pointed.ai_addrlen, timeout)
+                if (sockfd < 0) {
+                    throw lastError
+                        ?: SocketConnectionException.Refused(host, port, platformError = "all addresses unreachable")
+                }
 
                 // Cache the socket's receive buffer size for efficient read operations
                 cachedReadBufferSize = getSocketReceiveBufferSize(sockfd)
@@ -160,6 +188,20 @@ class LinuxClientSocket : ClientToServerSocket {
 
         // Set hostname for SNI
         ssl_set_hostname(ssl, hostname)
+
+        // Enforce SAN/hostname matching when verifyHostname is on. Without this,
+        // SSL_VERIFY_PEER only checks the chain — a trusted cert with a SAN
+        // that doesn't cover the connected host still completes the handshake,
+        // which JVM, Apple, and JS all reject by default. The C wrapper picks
+        // between X509_VERIFY_PARAM_set1_host (DNS) and …set1_ip_asc (IP) by
+        // probing with inet_pton; see LinuxSockets.def.
+        if (currentTlsConfig.verifyHostname) {
+            if (ssl_set_verify_host(ssl, hostname) != 1) {
+                throw SSLProtocolException(
+                    "Failed to configure hostname verification for '$hostname'",
+                )
+            }
+        }
 
         // Attach socket to SSL
         SSL_set_fd(ssl, sockfd)
@@ -254,9 +296,8 @@ class LinuxClientSocket : ClientToServerSocket {
 
                 return when {
                     bytesRead > 0 -> {
-                        // Set position to bytesRead so resetForRead() works correctly
-                        // resetForRead() will set limit = position, then position = 0
                         buffer.position(bytesRead)
+                        buffer.resetForRead()
                         buffer
                     }
                     bytesRead == 0 -> {
@@ -289,9 +330,8 @@ class LinuxClientSocket : ClientToServerSocket {
 
                 return when {
                     bytesRead > 0 -> {
-                        // Set position to bytesRead so resetForRead() works correctly
-                        // resetForRead() will set limit = position, then position = 0
                         buffer.position(bytesRead)
+                        buffer.resetForRead()
                         buffer
                     }
                     bytesRead == 0 -> {
@@ -509,25 +549,30 @@ class LinuxClientSocket : ClientToServerSocket {
             }
         }
 
-        // Fallback: copy to temporary array
-        val bytes = buffer.readByteArray(remaining)
-        return bytes.usePinned { pinned ->
-            val ptr = pinned.addressOf(0)
+        // Fallback: neither native nor managed access (e.g. FragmentedReadBuffer).
+        // Stage into a deterministic native scratch buffer so sslWrite/io_uring
+        // get a pointer without going through a Kotlin-heap ByteArray. Scratch
+        // is freed unconditionally; source position is advanced by the actual
+        // bytes-sent count via handleWriteResult, not by the amount we staged.
+        val scratch = BufferFactory.deterministic().allocate(remaining)
+        try {
+            val sourcePos = buffer.position()
+            scratch.write(buffer) // consumes `remaining` bytes from source
+            buffer.position(sourcePos) // handleWriteResult will re-advance
+            scratch.resetForRead()
+            val ptr =
+                scratch.nativeMemoryAccess!!
+                    .nativeAddress
+                    .toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    sslWrite(ptr, bytes.size, timeout).toLong()
+                    sslWrite(ptr, remaining, timeout).toLong()
                 } else {
-                    writeWithIoUring(ptr, bytes.size, timeout).toLong()
+                    writeWithIoUring(ptr, remaining, timeout).toLong()
                 }
-            when {
-                bytesSent >= 0 -> bytesSent.toInt()
-                else ->
-                    if (ssl != null) {
-                        handleSslWriteError(bytesSent.toInt())
-                    } else {
-                        handleWriteError((-bytesSent).toInt())
-                    }
-            }
+            return handleWriteResult(buffer, bytesSent)
+        } finally {
+            scratch.freeNativeMemory()
         }
     }
 

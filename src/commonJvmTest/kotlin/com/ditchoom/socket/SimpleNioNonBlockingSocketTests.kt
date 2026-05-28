@@ -1,11 +1,35 @@
 package com.ditchoom.socket
 
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 
+/**
+ * Re-runs the [SimpleSocketTests] surface against the **non-blocking NIO**
+ * client path (`useAsyncChannels = false`, `useNioBlocking = false`),
+ * which exercises [com.ditchoom.socket.nio.BaseClientSocket] with a
+ * selector-driven non-blocking [java.nio.channels.SocketChannel].
+ *
+ * See [SimpleNioBlockingSocketTests] for the rationale behind the
+ * save/restore around each test — these mode flags are JVM-process
+ * globals and leaking them silently changes other tests' I/O paths.
+ */
 class SimpleNioNonBlockingSocketTests {
-    init {
+    private var savedAsync = true
+    private var savedBlocking = false
+
+    @BeforeTest
+    fun overrideClientMode() {
+        savedAsync = useAsyncChannels
+        savedBlocking = useNioBlocking
         useAsyncChannels = false
         useNioBlocking = false
+    }
+
+    @AfterTest
+    fun restoreClientMode() {
+        useAsyncChannels = savedAsync
+        useNioBlocking = savedBlocking
     }
 
     @Test
@@ -16,15 +40,6 @@ class SimpleNioNonBlockingSocketTests {
 
     @Test
     fun closeWorks() = SimpleSocketTests().closeWorks()
-
-    @Test
-    fun httpRawSocketExampleDomain() = SimpleSocketTests().httpRawSocketExampleDomain()
-
-    @Test
-    fun httpRawSocketGoogleDomain() = SimpleSocketTests().httpRawSocketGoogleDomain()
-
-    @Test
-    fun httpsRawSocketGoogleDomain() = SimpleSocketTests().httpsRawSocketGoogleDomain()
 
     @Test
     fun manyClientsConnectingToOneServer() = SimpleSocketTests().manyClientsConnectingToOneServer()

@@ -1,0 +1,4 @@
+# Local artifacts only — nothing in here yet, but as the harness grows
+# (generated TLS certs in Phase 2, etc.) they go here.
+tls/certs/
+*.local

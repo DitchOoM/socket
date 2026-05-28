@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.socket.NetworkCapabilities.FULL_SOCKET_ACCESS
 import com.ditchoom.socket.NetworkCapabilities.WEBSOCKETS_ONLY
+import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -70,3 +71,7 @@ actual fun supportsIPv6(): Boolean =
 actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
 actual fun isRunningInSimulator(): Boolean = false
+
+internal actual fun isWindowsJvm(): Boolean = System.getProperty("os.name", "").lowercase().contains("windows")
+
+internal actual fun harnessHost(): String = HarnessConfig.host

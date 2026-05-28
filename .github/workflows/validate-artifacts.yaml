@@ -26,6 +26,20 @@ jobs:
           name: maven-local-apple
           path: /tmp/apple-repo/com/ditchoom
 
+      - name: Download macOS quiche native libs
+        uses: actions/download-artifact@v4
+        with:
+          name: quiche-macos-natives
+          path: /tmp/quiche-macos-natives
+        continue-on-error: true  # may not exist if quiche build failed
+
+      - name: Download Linux quiche native libs
+        uses: actions/download-artifact@v4
+        with:
+          name: quiche-linux-natives
+          path: /tmp/quiche-linux-natives
+        continue-on-error: true  # may not exist if quiche build failed
+
       - name: Merge artifacts and module metadata
         run: |
           version="${{ inputs.version }}"
@@ -125,6 +139,52 @@ jobs:
 
             rm -rf "$WORK"
           fi
+
+      - name: Inject native libs into socket-quic JVM JAR
+        run: |
+          version="${{ inputs.version }}"
+          MERGED="/tmp/maven-local/com/ditchoom"
+          QUIC_JAR="$MERGED/socket-quic-jvm/$version/socket-quic-jvm-$version.jar"
+
+          if [ ! -f "$QUIC_JAR" ]; then
+            echo "Skipping native injection: socket-quic-jvm JAR not found"
+            exit 0
+          fi
+
+          # Re-nest under META-INF/native/<platform>/ so paths match
+          # NativeLibLoader's resource lookup. Each artifact's per-platform dir
+          # contains a `lib/` subdirectory (libs/quiche/<platform>/lib/); older
+          # uploads put libs at the platform root, so detect-and-strip `lib/`
+          # when present.
+          INJECT_DIR="/tmp/inject-natives"
+          mkdir -p "$INJECT_DIR/META-INF/native"
+
+          inject_natives() {
+            local artifact_dir=$1
+            local platform_glob=$2
+            local extension=$3
+            for dir in "$artifact_dir"/${platform_glob}/; do
+              [ -d "$dir" ] || continue
+              platform=$(basename "${dir%/}")
+              src="${dir%/}"
+              [ -d "$src/lib" ] && src="$src/lib"
+              mkdir -p "$INJECT_DIR/META-INF/native/$platform"
+              cp "$src"/*.${extension} "$INJECT_DIR/META-INF/native/$platform/" 2>/dev/null || true
+              echo "  Staged META-INF/native/$platform/ from $src"
+            done
+          }
+
+          [ -d /tmp/quiche-macos-natives ] && inject_natives /tmp/quiche-macos-natives 'macos-*' dylib
+          [ -d /tmp/quiche-linux-natives ] && inject_natives /tmp/quiche-linux-natives 'linux-*'   so
+
+          if [ -d "$INJECT_DIR/META-INF/native" ] && [ -n "$(find "$INJECT_DIR/META-INF/native" -type f)" ]; then
+            (cd "$INJECT_DIR" && zip -ur "$QUIC_JAR" META-INF/native/)
+            echo "socket-quic JVM JAR native libs:"
+            unzip -l "$QUIC_JAR" | grep "META-INF/native" || true
+          else
+            echo "No platform natives found to inject"
+          fi
+          rm -rf "$INJECT_DIR"
 
       - name: Upload merged artifacts
         uses: actions/upload-artifact@v4
@@ -246,7 +306,28 @@ jobs:
             fi
           fi
 
-          # ── 5. Signing coverage — detect uncovered file types ──
+          # ── 5. socket-quic JVM JAR native libs ──
+          # windows-x64 is intentionally NOT listed: no Windows quiche JNI
+          # native is currently built into the publish pipeline (the
+          # nativeLibsByPlatform map in socket-quic/build.gradle.kts excludes
+          # windows-*). Tracked in TODO.md \"Windows quiche JNI native\".
+          QUIC_JAR="$MERGED/socket-quic-jvm/${version}/socket-quic-jvm-${version}.jar"
+          if [ -f "$QUIC_JAR" ]; then
+            echo "socket-quic JVM JAR found"
+            for platform in linux-x64 linux-arm64 macos-arm64 macos-x64; do
+              LIB_PATTERN="META-INF/native/$platform/"
+              if unzip -l "$QUIC_JAR" | grep -q "$LIB_PATTERN"; then
+                echo "  native OK: $platform"
+              else
+                echo "  FAIL: missing native libs for $platform"
+                FAILED=true
+              fi
+            done
+          else
+            echo "INFO: socket-quic JVM JAR not found (expected if not published)"
+          fi
+
+          # ── 6. Signing coverage — detect uncovered file types ──
           SIGNED_EXTENSIONS="jar klib pom module aar json"
           UNCOVERED=$(find /tmp/maven-local -type f \
             ! -name "*.asc" ! -name "*.md5" ! -name "*.sha1" \

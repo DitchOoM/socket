@@ -1,17 +1,22 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
-import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.buffer.Default
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Configuration for [SocketConnection].
+ * Pure configuration for socket connections.
  *
- * Bundles socket options, timeouts, buffer pool sizing, and buffer allocation strategy
- * into a single object. The [bufferFactory] controls how internal read buffers are allocated,
- * allowing callers to inject pooled, shared memory, or managed allocation strategies.
+ * Buffer allocation is controlled by [bufferFactory]. Pass a leaf factory
+ * (e.g. [BufferFactory.Default], `BufferFactory.managed()`, `BufferFactory.shared()`).
+ * Socket internals build whatever pools they need from this factory; pool topology
+ * is an implementation detail and never crosses the public API.
+ *
+ * [defaultBufferSize] is the fallback allocation size used by the codec send path
+ * when [com.ditchoom.buffer.codec.WireSize.BackPatch] is reported (variable-length
+ * encodes whose size isn't known up front). Pre-allocation for
+ * [com.ditchoom.buffer.codec.WireSize.Exact] uses the codec's reported size.
  */
 data class ConnectionOptions(
     val socketOptions: SocketOptions = SocketOptions(),
@@ -19,7 +24,5 @@ data class ConnectionOptions(
     val readTimeout: Duration = 15.seconds,
     val writeTimeout: Duration = 15.seconds,
     val defaultBufferSize: Int = 8192,
-    val maxPoolSize: Int = 64,
-    val threadingMode: ThreadingMode = ThreadingMode.SingleThreaded,
-    val bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    val bufferFactory: BufferFactory = BufferFactory.Default,
 )

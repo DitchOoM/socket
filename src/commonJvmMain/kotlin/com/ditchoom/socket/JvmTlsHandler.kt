@@ -6,10 +6,13 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.NoSuchAlgorithmException
 import java.security.cert.X509Certificate
+import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
@@ -57,9 +60,21 @@ internal class JvmTlsHandler(
         engine = context.createSSLEngine(hostname, port)
         engine.useClientMode = true
 
-        if (config.verifyHostname && hostname != null) {
+        // SNI + hostname verification must be configured through a single
+        // SSLParameters round-trip. Assigning `engine.sslParameters = sslParams`
+        // with `serverNames = null` wipes the implicit SNI that
+        // createSSLEngine(host, port) sets, which caused handshakes against
+        // SNI-strict hosts (example.com, cloudflare.com) to fail. RFC 6066
+        // §3 forbids SNI values that look like IP literals, so guard on that
+        // when populating serverNames.
+        if (hostname != null) {
             val sslParams = engine.sslParameters
-            sslParams.endpointIdentificationAlgorithm = "HTTPS"
+            if (config.verifyHostname) {
+                sslParams.endpointIdentificationAlgorithm = "HTTPS"
+            }
+            if (!hostname.isIpLiteral()) {
+                sslParams.serverNames = listOf(SNIHostName(hostname))
+            }
             engine.sslParameters = sslParams
         }
 
@@ -78,33 +93,37 @@ internal class JvmTlsHandler(
         timeout: Duration,
     ): Int {
         val encrypted = allocateBuffer(engine.session.packetBufferSize)
-        val result =
-            try {
-                engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
-            } catch (e: javax.net.ssl.SSLHandshakeException) {
-                throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
-            } catch (e: javax.net.ssl.SSLException) {
-                throw SSLProtocolException(e.message ?: "TLS wrap error", e)
-            }
-        when (result.status!!) {
-            SSLEngineResult.Status.BUFFER_UNDERFLOW ->
-                throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
-            SSLEngineResult.Status.BUFFER_OVERFLOW ->
-                throw IllegalStateException("SSL Engine Buffer Overflow - wrap")
-            SSLEngineResult.Status.CLOSED,
-            SSLEngineResult.Status.OK,
-            -> {
-                encrypted.resetForRead()
-                var writtenBytes = 0
-                while (encrypted.hasRemaining()) {
-                    val bytesWrote = rawWrite(encrypted, timeout)
-                    if (bytesWrote < 0) {
-                        return -1
-                    }
-                    writtenBytes += bytesWrote
+        try {
+            val result =
+                try {
+                    engine.wrap(plainText.byteBuffer, encrypted.byteBuffer)
+                } catch (e: javax.net.ssl.SSLHandshakeException) {
+                    throw SSLHandshakeFailedException(e.message ?: "TLS handshake failed", e)
+                } catch (e: javax.net.ssl.SSLException) {
+                    throw SSLProtocolException(e.message ?: "TLS wrap error", e)
                 }
-                return writtenBytes
+            when (result.status!!) {
+                SSLEngineResult.Status.BUFFER_UNDERFLOW ->
+                    throw IllegalStateException("SSL Engine Buffer Underflow - wrap")
+                SSLEngineResult.Status.BUFFER_OVERFLOW ->
+                    throw IllegalStateException("SSL Engine Buffer Overflow - wrap")
+                SSLEngineResult.Status.CLOSED,
+                SSLEngineResult.Status.OK,
+                -> {
+                    encrypted.resetForRead()
+                    var writtenBytes = 0
+                    while (encrypted.hasRemaining()) {
+                        val bytesWrote = rawWrite(encrypted, timeout)
+                        if (bytesWrote < 0) {
+                            return -1
+                        }
+                        writtenBytes += bytesWrote
+                    }
+                    return writtenBytes
+                }
             }
+        } finally {
+            encrypted.freeIfNeeded()
         }
     }
 
@@ -168,7 +187,7 @@ internal class JvmTlsHandler(
 
     private suspend fun doHandshake(timeout: Duration) {
         var cachedBuffer: BaseJvmBuffer? = null
-        val emptyBuffer = EMPTY_BUFFER as BaseJvmBuffer
+        val emptyBuffer = EMPTY_BUFFER.unwrapFully() as BaseJvmBuffer
         while (engine.handshakeStatus != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
             when (engine.handshakeStatus) {
                 SSLEngineResult.HandshakeStatus.NEED_WRAP -> wrap(emptyBuffer, timeout)
@@ -210,15 +229,19 @@ internal class JvmTlsHandler(
         }
     }
 
-    private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size) as BaseJvmBuffer
+    private fun allocateBuffer(size: Int): BaseJvmBuffer = bufferFactory.allocate(size).unwrapFully() as BaseJvmBuffer
 
     private fun slicePlainText(plainText: BaseJvmBuffer): PlatformBuffer {
-        val position = plainText.position()
-        plainText.position(0)
-        plainText.setLimit(position)
-        val slicedBuffer = plainText.slice()
-        slicedBuffer.position(slicedBuffer.limit())
-        return slicedBuffer
+        plainText.resetForRead()
+        return plainText.slice()
+    }
+
+    private fun String.isIpLiteral(): Boolean {
+        if (startsWith('[') && endsWith(']')) return true // bracketed IPv6
+        if (contains(':')) return true // unbracketed IPv6
+        return split('.').let { parts ->
+            parts.size == 4 && parts.all { p -> p.length in 1..3 && p.all(Char::isDigit) }
+        }
     }
 
     /**

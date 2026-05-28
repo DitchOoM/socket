@@ -43,13 +43,25 @@ jobs:
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
 
-      - name: Cache OpenSSL x64
+      - name: Cache BoringSSL x64
+        uses: actions/cache@v4
+        with:
+          path: libs/boringssl/linux-x64
+          key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache BoringSSL ARM64
+        uses: actions/cache@v4
+        with:
+          path: libs/boringssl/linux-arm64
+          key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache OpenSSL x64 (legacy fallback)
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-x64
           key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
-      - name: Cache OpenSSL ARM64
+      - name: Cache OpenSSL ARM64 (legacy fallback)
         uses: actions/cache@v4
         with:
           path: libs/openssl/linux-arm64
@@ -67,31 +79,313 @@ jobs:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
-      - name: Install ARM64 cross-compilation toolchain
+      - name: Install cross-compilation toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential perl
+          sudo apt-get install -y build-essential perl pkg-config cmake nasm
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Desktop cross targets + all four Android NDK targets. The Android targets
+      # are needed by :socket-quic:buildAndroidJni* (cargo-ndk), which Gradle
+      # transitively invokes from :socket-quic:linkDebugTestLinuxArm64 /
+      # publishToMavenLocal even though this job runs on x64. Installing them
+      # here (instead of leaving cargo-ndk to fail later inside the continue-
+      # on-error \"Build quiche\" step) keeps the JNI build deterministic.
+      - name: Add Rust cross-compile targets
+        run: |
+          rustup target add aarch64-unknown-linux-gnu x86_64-pc-windows-gnu \
+              aarch64-linux-android armv7-linux-androideabi \
+              x86_64-linux-android i686-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --quiet
+
+      # Combined quiche + JNI shim cache — shims now live under
+      # socket-quic/libs/quiche/<platform>/lib/ alongside libquiche.{so,a},
+      # matching the local-dev path (createBuildQuicheSharedTask +
+      # buildJvmJniShim*), so a single platform dir covers both outputs.
+      # Hash quiche_jni.c too so shim edits invalidate the cache.
+      - name: Cache quiche Linux x64
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/libs/quiche/linux-x64
+          key: quiche-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+
+      - name: Cache quiche Linux ARM64
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/libs/quiche/linux-arm64
+          key: quiche-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+
+      # Cache the cargo target/ trees for all four quiche cross-compile
+      # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
+      # existing `Cache quiche Linux x64/arm64` entries above only preserve
+      # the FINAL JNI shim outputs under socket-quic/libs/quiche/<platform>/
+      # lib/ — they don't cover cargo's intermediate target/<triple>/release/
+      # where libquiche.a is built. Without this, even on full cache-hit the
+      # "Build quiche native libs" shell step unconditionally invokes cargo
+      # for all four targets, recompiling the whole quiche crate from scratch
+      # (~3-5 min × 4 targets). With target/ cached, cargo sees fingerprints
+      # match and the build is near-instant. Also preserves the cloned quiche
+      # source itself (saves ~5-30s git clone). Key includes the JNI shim
+      # source hash so the cache invalidates on either change.
+      # restore-keys gives a partial-hit on version bumps so cargo incremental
+      # recompile picks up from the previous build instead of from zero.
+      - name: Cache quiche cargo target/ (all triples)
+        uses: actions/cache@v4
+        with:
+          path: socket-quic/build/quiche
+          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-cargo-target-v1-
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
 
       - name: Get version
         id: version
         run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
 
+      - name: Build BoringSSL (shared with quiche)
+        run: ./gradlew :buildBoringsslX64 :buildBoringsslArm64 --no-configuration-cache
+
+      - name: Build quiche native libs (all platforms from Linux)
+        continue-on-error: true
+        run: |
+          set -e
+          WS="${{ github.workspace }}"
+          JNI_SRC="$WS/socket-quic/src/jni/quiche_jni.c"
+          QUICHE_H="$WS/socket-quic/libs/quiche/include"
+          # JNI shims go next to libquiche.{so,a} under libs/quiche/<platform>/lib/
+          # so the Gradle classifier-JAR pipeline (jvmNativesJar*) and jvmTest
+          # stager pick them up from the same place local dev writes them.
+          QUICHE_LIBS="$WS/socket-quic/libs/quiche"
+          ANDROID_JNI="$WS/socket-quic/src/androidMain/jniLibs"
+
+          # Build quiche static (Linux K/Native) + shared (Linux JVM)
+          ./gradlew :socket-quic:buildQuicheStaticX64 :socket-quic:buildQuicheStaticArm64 :socket-quic:buildQuicheSharedLinuxX64 --no-configuration-cache || true
+
+          # Ensure quiche source exists for JNI builds (Gradle may skip download on cache hit)
+          QUICHE_DIR=$(find socket-quic/build/quiche -maxdepth 1 -name "quiche-*" -type d 2>/dev/null | head -1)
+          if [ -z "$QUICHE_DIR" ]; then
+            QUICHE_DIR="/tmp/quiche-src"
+            git clone --recursive --depth 1 --branch 0.28.0 \
+              https://github.com/cloudflare/quiche.git "$QUICHE_DIR"
+          fi
+
+          build_jni() {
+            local TARGET=$1 CC=$2 STRIP=$3 DEST=$4 NAME=$5 EXTRA_LIBS=$6 BSSL_DIR=$7
+            local LIB=$(find "$QUICHE_DIR/target/$TARGET/release" -name "libquiche.a" 2>/dev/null | head -1)
+            [ -z "$LIB" ] && echo "No libquiche.a for $TARGET" && return
+            # Collect all static libs to link (quiche + BoringSSL if separate)
+            local ARCHIVES="$LIB"
+            if [ -n "$BSSL_DIR" ] && [ -f "$BSSL_DIR/lib/libcrypto.a" ]; then
+              ARCHIVES="$ARCHIVES $BSSL_DIR/lib/libcrypto.a $BSSL_DIR/lib/libssl.a"
+            fi
+            mkdir -p "$DEST"
+            $CC -shared -fPIC -Wall \
+              -o "$DEST/$NAME" "$JNI_SRC" \
+              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
+              -I"$QUICHE_H" \
+              -Wl,--whole-archive $ARCHIVES -Wl,--no-whole-archive \
+              -Wl,--allow-multiple-definition \
+              -lpthread -ldl -lm -lstdc++ $EXTRA_LIBS \
+              && $STRIP "$DEST/$NAME" \
+              && echo "Built $DEST/$NAME ($(du -h "$DEST/$NAME" | cut -f1))"
+          }
+
+          # Linux x64 JNI shim
+          echo "=== Linux x64 JNI ==="
+          BSSL="$WS/libs/boringssl/linux-x64"
+          QUICHE_BSSL_PATH=$BSSL cargo build --release --package quiche \
+            --target x86_64-unknown-linux-gnu --no-default-features --features ffi \
+            --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+          build_jni "x86_64-unknown-linux-gnu" "gcc" "strip --strip-all" "$QUICHE_LIBS/linux-x64/lib" "libquiche_jni.so" "" "$BSSL"
+
+          # Linux arm64 JNI shim
+          echo "=== Linux arm64 JNI ==="
+          BSSL_ARM="$WS/libs/boringssl/linux-arm64"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+          QUICHE_BSSL_PATH=$BSSL_ARM cargo build --release --package quiche \
+            --target aarch64-unknown-linux-gnu --no-default-features --features ffi \
+            --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+          build_jni "aarch64-unknown-linux-gnu" "aarch64-linux-gnu-gcc" "aarch64-linux-gnu-strip --strip-all" "$QUICHE_LIBS/linux-arm64/lib" "libquiche_jni.so" "" "$BSSL_ARM"
+
+          # Windows x64 JNI shim (cross-compile via MinGW)
+          echo "=== Windows x64 JNI ==="
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+            cargo build --release --package quiche \
+            --target x86_64-pc-windows-gnu --no-default-features --features ffi,boringssl-vendored \
+            --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+          WIN_LIB=$(find "$QUICHE_DIR/target/x86_64-pc-windows-gnu/release" -name "libquiche.a" 2>/dev/null | head -1)
+          if [ -n "$WIN_LIB" ]; then
+            mkdir -p "$QUICHE_LIBS/windows-x64/lib"
+            x86_64-w64-mingw32-gcc -shared -Wall \
+              -o "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" "$JNI_SRC" \
+              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
+              -I"$QUICHE_H" \
+              -Wl,--whole-archive "$WIN_LIB" -Wl,--no-whole-archive \
+              -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lpthread -lm -lstdc++ \
+              && x86_64-w64-mingw32-strip --strip-all "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" \
+              && echo "Built Windows x64: $(du -h "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" | cut -f1)"
+          fi
+
+          # Android arm64 JNI shim (via cargo-ndk)
+          echo "=== Android arm64 JNI ==="
+          if command -v cargo-ndk &>/dev/null && [ -d "$ANDROID_NDK_HOME" ]; then
+            cargo ndk --target arm64-v8a --platform 24 -- build --release --package quiche \
+              --no-default-features --features ffi,boringssl-vendored \
+              --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
+            NDK_CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+            NDK_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+            AND_LIB=$(find "$QUICHE_DIR/target/aarch64-linux-android/release" -name "libquiche.a" 2>/dev/null | head -1)
+            if [ -n "$AND_LIB" ]; then
+              mkdir -p "$ANDROID_JNI/arm64-v8a"
+              $NDK_CC -shared -fPIC -Wall \
+                -o "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" "$JNI_SRC" \
+                -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
+                -I"$QUICHE_H" \
+                -Wl,--whole-archive "$AND_LIB" -Wl,--no-whole-archive \
+                -lm -ldl -llog \
+                && $NDK_STRIP --strip-all "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" \
+                && echo "Built Android arm64: $(du -h "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" | cut -f1)"
+            fi
+          fi
+
+          echo "=== Done ==="
+          find "$QUICHE_LIBS" "$ANDROID_JNI" -name "*.so" -o -name "*.dll" -o -name "*.dylib" 2>/dev/null
+
+      - name: Verify JNI shims exist
+        run: |
+          echo "=== JVM native libs ==="
+          find socket-quic/libs/quiche -name "libquiche_jni.*" -o -name "quiche_jni.dll" 2>/dev/null || echo "WARN: no JNI shims found"
+          echo "=== Android native libs ==="
+          find socket-quic/src/androidMain/jniLibs -type f 2>/dev/null || echo "No Android JNI (expected on Linux)"
+
+      # Harness-backed tests use the in-repo Docker stack (`docker compose up`
+      # is wired via Gradle's harnessUp/harnessDown tasks). The TLS server
+      # certs are generated by this script; we inject the harness root CA into
+      # both the OS trust store (BoringSSL/K-N read /etc/ssl/certs) and the JVM
+      # keystore (JSSE reads $JAVA_HOME/lib/security/cacerts) so tlsDefault()
+      # accepts the harness cert chain.
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      - name: Trust harness CA (Linux)
+        run: |
+          sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
+          sudo update-ca-certificates
+
+      - name: Trust harness CA in JVM keystore (Linux)
+        run: |
+          sudo keytool -delete -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit 2>/dev/null || true
+          sudo keytool -importcert -trustcacerts \
+              -file test-harness/tls/certs/ca.crt \
+              -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit -noprompt
+
       - name: Run checks and tests
         run: >-
-          ./gradlew jvmTest jsTest linuxX64Test testDebugUnitTest ktlintCheck
+          ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
+          :socket-quic:jvmProcessResources :socket-quic:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      - name: Build ARM64 test binary
+      # The quiche_conn_recv SIGABRT that previously required continue-on-error
+      # was a JVM-side sockaddr lifetime bug (DirectByteBuffer Cleaner freeing
+      # the buffer that quiche_recv_info held a raw pointer to); fixed in 5e55a5f.
+      # The K/Native side was fixed earlier in b0a4f99. Both steps now run as
+      # hard requirements — a real test failure should fail the job.
+      #
+      # timeout-minutes: 8 caps a single hanging socket-quic test at 8min so it
+      # can't burn the 60-min job timeout and wipe subsequent steps. On run
+      # 26467344275 step 29 hung 53min on QuicLocalServerTests.serverAcceptsConnection
+      # before this guard existed; normal duration is ~30-60s, so 8min is
+      # ~8-16x headroom for the slowest legitimate flake. 9 alphabetically-late
+      # tests still skip on CI via assumeTrue gates (see HANDOFF.md / TODO.md
+      # for the resource-pressure root-cause story).
+      # --continue: without it, the first hanging test (typically
+      # bidirectionalStreamMuxExchange, alphabetically Q-ordered, currently re-
+      # gated) halts the whole task before the alphabetically-later tests run,
+      # which means each push only reveals one failure at a time. With
+      # --continue, every failing test gets to execute and report so we see the
+      # full failure surface in one CI cycle. Combined with the test-reports
+      # artifact upload below, this gives complete signal per run.
+      - name: Run socket-quic JVM tests
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic:jvmTest --continue
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Run socket-quic native tests (quiche cinterop)
+        run: >-
+          ./gradlew :socket-quic:linuxX64Test
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Build ARM64 test binaries
         run: >-
           ./gradlew linkDebugTestLinuxArm64
+          :socket-quic:linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      - name: Upload ARM64 test binary
+      # Test reports on failure — surfaces the full assertion message + stack
+      # trace that gradle's brief CI log otherwise truncates to
+      # `AssertionError at Assert.java:89`. Indispensable for diagnosing the
+      # next harness flake without having to push a re-run with debug prints.
+      - name: Upload test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-linux
+          path: |
+            build/reports/tests/
+            build/test-results/
+            socket-quic/build/reports/tests/
+            socket-quic/build/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload Android native libs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-native-libs
+          path: |
+            socket-quic/src/androidMain/jniLibs/
+          retention-days: 1
+          if-no-files-found: ignore
+
+      # Symmetric to build-apple.yaml's quiche-macos-natives. The publish step
+      # below uploads maven-local with the JAR but Gradle doesn't (currently)
+      # stage native libs into META-INF/native/<platform>/ at publish time —
+      # validate-artifacts.yaml injects them post-merge from this artifact.
+      - name: Upload quiche Linux native libs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiche-linux-natives
+          path: socket-quic/libs/quiche/linux-*/lib/
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Upload ARM64 test binaries
         uses: actions/upload-artifact@v4
         with:
           name: linux-arm64-test-binary
-          path: build/bin/linuxArm64/debugTest/test.kexe
+          path: |
+            build/bin/linuxArm64/debugTest/test.kexe
+            socket-quic/build/bin/linuxArm64/debugTest/test.kexe
           retention-days: 1
 
       - name: Publish to Maven Local
@@ -108,14 +402,54 @@ jobs:
     name: "Linux ARM64 (native)"
     needs: build
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
+      # Checkout is needed for test-harness/ scripts + docker-compose.yml.
+      # This job runs raw K/Native .kexe binaries and bypasses Gradle, so the
+      # harnessUp/harnessDown Gradle tasks never fire. We bring the harness
+      # up/down at the YAML level instead.
+      - uses: actions/checkout@v4
+
       - name: Download ARM64 test binary
         uses: actions/download-artifact@v4
         with:
           name: linux-arm64-test-binary
 
-      - name: Run ARM64 tests
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      # Linux trust-store injection covers the K/Native path too — BoringSSL
+      # in the .kexe reads /etc/ssl/certs/ at runtime. No JVM keystore step is
+      # needed for the .kexe (no JVM in this job).
+      - name: Trust harness CA (Linux)
         run: |
-          chmod +x test.kexe
-          ./test.kexe
+          sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
+          sudo update-ca-certificates
+
+      # quic-echo is intentionally skipped: its Dockerfile COPYs testcerts
+      # generated by :socket-quic:quicEchoJar (Gradle), but this job runs raw
+      # .kexe binaries with no Gradle invocation, so those cert files don't
+      # exist in the working tree and the image build fails ("testcerts/
+      # cert.key: not found"). QUIC harness tests on linuxArm64 skip via the
+      # QuicHarnessIntegrationTests `withHarness` guard anyway — there's no
+      # linuxArm64 quiche K/N native to bring up the client side.
+      - name: Bring up test harness (without quic-echo)
+        run: cd test-harness && docker compose up -d --wait echo http tls toxiproxy netem-blackhole rst
+
+      - name: Run ARM64 tests (base module)
+        run: |
+          chmod +x build/bin/linuxArm64/debugTest/test.kexe
+          ./build/bin/linuxArm64/debugTest/test.kexe
+
+      - name: Run ARM64 tests (socket-quic)
+        run: |
+          if [ -f socket-quic/build/bin/linuxArm64/debugTest/test.kexe ]; then
+            chmod +x socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+            ./socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+          else
+            echo "socket-quic ARM64 binary not found — skipping"
+          fi
+
+      - name: Bring down test harness
+        if: always()
+        run: cd test-harness && docker compose down -v

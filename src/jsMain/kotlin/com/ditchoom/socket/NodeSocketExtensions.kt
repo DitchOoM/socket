@@ -130,9 +130,43 @@ internal fun wrapNodeError(
             SocketConnectionException.HostUnreachable(errorStr)
         errorStr.contains("getaddrinfo") ->
             SocketUnknownHostException(host ?: "unknown host")
+        // Node.js surfaces TLS cert validation failures with OpenSSL X.509
+        // error codes (DEPTH_ZERO_SELF_SIGNED_CERT etc.) — the error message
+        // string for these doesn't always contain "ERR_TLS" or "SSL", so the
+        // catch-all below misses them and they leak as SocketIOException.
+        // The Tls{Conformance,ValidPath}ConformanceTests cert-rejection cases
+        // (tlsHarness{SelfSigned,Expired,UntrustedRoot,WrongHost}FailsWithDefault)
+        // assert SSLSocketException specifically — map cert codes here so the
+        // cross-platform contract holds on jsNode.
+        code in tlsCertErrorCodes ->
+            SSLHandshakeFailedException("Certificate validation failed: $errorStr")
+        code == "ERR_TLS_CERT_ALTNAME_INVALID" ->
+            SSLHandshakeFailedException("Hostname mismatch: $errorStr")
         errorStr.contains("ERR_TLS") || errorStr.contains("SSL") ->
             SSLProtocolException(errorStr)
         else ->
             SocketIOException("Failed to connect: $errorStr")
     }
 }
+
+/**
+ * OpenSSL X.509 error codes that Node.js surfaces verbatim via `error.code`
+ * when cert chain validation fails (Node `tls.connect` with
+ * `rejectUnauthorized: true`). The values come from openssl/x509.h —
+ * canonical list at https://nodejs.org/api/tls.html#x509-certificate-error-codes.
+ */
+private val tlsCertErrorCodes =
+    setOf(
+        "DEPTH_ZERO_SELF_SIGNED_CERT",
+        "SELF_SIGNED_CERT_IN_CHAIN",
+        "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        "UNABLE_TO_GET_ISSUER_CERT",
+        "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+        "CERT_HAS_EXPIRED",
+        "CERT_NOT_YET_VALID",
+        "CERT_UNTRUSTED",
+        "CERT_REJECTED",
+        "INVALID_CA",
+        "INVALID_PURPOSE",
+        "PATH_LENGTH_EXCEEDED",
+    )

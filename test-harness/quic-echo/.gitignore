@@ -1,0 +1,4 @@
+# Build artefacts produced by `:socket-quic:quicEchoJar`. The Dockerfile +
+# this .gitignore are committed; the jar + certs are regenerated each run.
+quic-echo.jar
+testcerts/

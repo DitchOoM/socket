@@ -1,9 +1,12 @@
 package com.ditchoom.socket
 
+import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -11,6 +14,19 @@ import kotlin.time.Duration.Companion.seconds
  * iOS Simulators in CI often have restricted network access to external hosts.
  */
 expect fun isRunningInSimulator(): Boolean
+
+/**
+ * `true` when the current process is a JVM running on Windows.
+ *
+ * Used as a coarse skip-guard for tests whose root cause sits in the JVM
+ * NIO2 layer on Windows (different exception-mapping semantics than POSIX
+ * — see JvmExceptionMapping.kt). The contract those tests cover is still
+ * exercised on Linux/macOS JVM, K/Native, JS, and Apple targets; the
+ * Windows skip is a TODO toward proper JVM/Windows exception mapping.
+ *
+ * Returns `false` on every non-JVM target (JS, K/Native, Apple, Wasm).
+ */
+internal expect fun isWindowsJvm(): Boolean
 
 /**
  * Platform-specific return type for test functions.
@@ -48,5 +64,77 @@ internal suspend fun Mutex.lockWithTimeout(
 ) {
     withTimeout(timeout) {
         lock(owner)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Harness reachability (see test-harness/ and TESTING_STRATEGY.md §3a)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Host the local test harness is reachable on for the current platform.
+ *
+ * JVM / K-Native / Apple: returns `HarnessConfig.host` (typically `127.0.0.1`)
+ * — harness and test share the runner.
+ *
+ * Browser (JS/wasmJs): same default. Browser targets do not exercise the
+ * socket harness today (no raw-socket surface), so this value is consumed
+ * only by potential future WebSocket-shape tests; switch the browser actual
+ * to `window.location.hostname` if that ever changes.
+ */
+internal expect fun harnessHost(): String
+
+/**
+ * `true` when the harness TCP echo endpoint is reachable from this process.
+ *
+ * Probes `HarnessConfig.echoPort` on [harnessHost] with a 500 ms budget.
+ * Used by harness-backed tests so the suite stays green when the local
+ * stack isn't up (e.g. local dev without Docker, or a CI runner where
+ * `harnessUp` no-op'd because the host isn't supported).
+ *
+ * Returns `false` immediately on browser/wasmJs (`WEBSOCKETS_ONLY`).
+ */
+internal suspend fun isHarnessAvailable(): Boolean {
+    if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return false
+    return try {
+        ClientSocket.connect(
+            port = HarnessConfig.echoPort,
+            hostname = harnessHost(),
+            timeout = 500.milliseconds,
+        ) { /* immediate close — we just needed to know the listener is alive */ }
+        true
+    } catch (_: Throwable) {
+        false
+    }
+}
+
+/**
+ * `true` when the harness `netem-blackhole` endpoint exists and is dropping
+ * SYN-ACKs as designed.
+ *
+ * Distinct from [isHarnessAvailable] because the L3 netem service is
+ * Linux-kernel-bound (NET_ADMIN + `tc qdisc`) and isn't part of the native
+ * macOS fixture (homebrew socat+nginx). A separate probe is needed because
+ * the netem topology *intentionally* stalls connects — a successful TCP
+ * connect to this host:port would be a misconfiguration, not availability.
+ *
+ * Probe semantics (200 ms budget):
+ *  - `TimeoutCancellationException` → SYN sent, SYN-ACK lost: netem is up
+ *  - any other throwable             → no route / no listener: netem is down
+ *  - probe returns successfully      → not the netem service (refuse this too)
+ */
+internal suspend fun isNetemAvailable(): Boolean {
+    if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return false
+    return try {
+        ClientSocket.connect(
+            port = HarnessConfig.netemBlackholePort,
+            hostname = HarnessConfig.netemBlackholeHost,
+            timeout = 200.milliseconds,
+        ) { /* unreachable when netem is working — SYN-ACK is dropped */ }
+        false
+    } catch (_: TimeoutCancellationException) {
+        true
+    } catch (_: Throwable) {
+        false
     }
 }
