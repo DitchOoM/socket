@@ -55,12 +55,14 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 actual suspend fun <R> withQuicServer(
     port: Int,
-    host: String?,
+    @Suppress("UNUSED_PARAMETER") host: String?,
     tlsConfig: QuicTlsConfig,
     quicOptions: QuicOptions,
     @Suppress("UNUSED_PARAMETER") timeout: Duration,
     block: suspend QuicServer.() -> R,
 ): R {
+    // Linux bind path defaults to INADDR_ANY; `host` is accepted for API parity
+    // with the JVM/Android impl but not yet wired through to inet_pton / bind.
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
@@ -89,10 +91,6 @@ actual suspend fun <R> withQuicServer(
         alpnBuf.freeNativeMemory()
 
         applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config.handle.toCPointer()!!))
-
-        // Bind unused parameter (host not yet wired through to Linux path — defaults to INADDR_ANY).
-        @Suppress("UNUSED_VARIABLE")
-        val hostUnused = host
 
         // Create & bind UDP socket
         val fd = socket(AF_INET, SOCK_DGRAM, 0)

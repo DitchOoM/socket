@@ -39,6 +39,34 @@ dependencies {
 
 Find the latest versions on [Maven Central](https://central.sonatype.com/search?q=com.ditchoom).
 
+### Sister module: `socket-quic`
+
+QUIC client and server live in a separate artifact so the core `socket` module stays small for TCP-only consumers. Same scope-based API shape, same buffer discipline:
+
+```kotlin
+dependencies {
+    implementation("com.ditchoom:socket-quic:<latest-version>")
+}
+
+// Client — handshake completes before the block runs; connection closes on block exit.
+withQuicConnection("example.com", 443, QuicOptions(alpnProtocols = listOf("h3"))) {
+    val stream = openStream()
+    stream.write(buf, 5.seconds)
+    val response = stream.read(5.seconds)
+    stream.close()
+}
+
+// Server — UDP socket bound for the block's lifetime.
+withQuicServer(port = 4433, tlsConfig = QuicTlsConfig(certChainPath, privKeyPath), quicOptions) {
+    connections {
+        val stream = acceptStream()
+        // … echo, multiplex, etc. …
+    }
+}
+```
+
+Backed by quiche on JVM/Android (JNI on JDK ≤20, FFM on JDK 21+), quiche cinterop on Linux native, and Network.framework on Apple. JS/wasmJs throw `UnsupportedOperationException` (no raw UDP). Stream multiplexing via `withQuicMux(..., codec) { … }` for codec-typed sessions.
+
 ## Error Handling
 
 All socket errors are thrown as subtypes of the `SocketException` sealed hierarchy — catch broad categories or specific failure modes:
