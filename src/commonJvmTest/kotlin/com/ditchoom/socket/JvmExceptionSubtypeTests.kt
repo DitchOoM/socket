@@ -1,10 +1,8 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.toReadBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -95,55 +93,5 @@ class JvmExceptionSubtypeTests {
                 ex.hostname == "nonexistent.jvm.test.invalid" || ex.message.contains("nonexistent.jvm.test.invalid"),
                 "Hostname should be preserved, got: hostname=${ex.hostname}, message=${ex.message}",
             )
-        }
-
-    // Replaced by ExceptionConformanceTests.writeAfterProxyDown_producesSocketClosedException +
-    // writeAfterPeerReset_producesSocketClosedException; remove after CI proves the harness path
-    // runs on every platform per TESTING_STRATEGY.md §6 Phase 5 green-throughout rule.
-    @Test
-    @Ignore
-    fun brokenPipeOrReset_isSocketClosedSubtype() =
-        runTestNoTimeSkipping {
-            val server = ServerSocket.allocate()
-            val serverFlow = server.bind()
-            val clientConnected = Mutex(locked = true)
-
-            val serverJob =
-                launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
-                        clientConnected.unlock()
-                        client.close()
-                    }
-                }
-
-            val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
-            clientConnected.lockWithTimeout()
-            kotlinx.coroutines.delay(200)
-
-            val ex =
-                try {
-                    repeat(200) {
-                        client.write(
-                            "x".repeat(8192).toReadBuffer(com.ditchoom.buffer.Charset.UTF8),
-                            1.seconds,
-                        )
-                        kotlinx.coroutines.delay(2)
-                    }
-                    fail("Should have thrown when writing to closed connection")
-                } catch (e: SocketClosedException) {
-                    e
-                }
-
-            // On JVM, writing to closed peer produces BrokenPipe or ConnectionReset
-            assertTrue(
-                ex is SocketClosedException.BrokenPipe ||
-                    ex is SocketClosedException.ConnectionReset,
-                "Expected BrokenPipe or ConnectionReset, got: ${ex::class.simpleName}",
-            )
-
-            client.close()
-            server.close()
-            serverJob.cancel()
         }
 }
