@@ -10,7 +10,7 @@ import kotlin.time.Duration.Companion.seconds
  * drivers destroyed, all handler coroutines cancelled.
  *
  * This is the only server-facing entry point — there is no
- * [QuicServerEngine] layer because quiche itself has no analog and the
+ * `QuicServerEngine` layer because quiche itself has no analog and the
  * previous factory shape was pure overhead that leaked on dropped error
  * paths. The scope-only block boundary is the lifecycle. See
  * `DRIVER_REDESIGN.md` → "Engine lifecycle" for the rationale.
