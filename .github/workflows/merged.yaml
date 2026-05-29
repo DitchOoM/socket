@@ -128,6 +128,79 @@ jobs:
     with:
       version: ${{ needs.build-linux.outputs.version }}
 
+  # Per-platform QUIC harness coverage matrix. Same job as the one in
+  # review.yaml — gates the release on QUIC validity in addition to the
+  # platform builds passing. See review.yaml for the design rationale.
+  quic-interop-summary:
+    name: "QUIC Interop Summary"
+    needs: [check-release, build-linux, build-apple]
+    if: needs.check-release.outputs.flow != 'skip'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all QUIC audit artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: quic-audit-*
+          path: /tmp/quic-audit
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Build interop matrix
+        run: |
+          shopt -s nullglob
+          FILES=(/tmp/quic-audit/*.txt)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No QUIC audit artifacts found"
+            {
+              echo "## QUIC Interop Summary"
+              echo ""
+              echo "_No audit artifacts uploaded by any platform job._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "## QUIC Interop Summary"
+            echo ""
+            echo "| Platform | OK | SKIP | Status |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          FAILED=0
+          for f in "${FILES[@]}"; do
+            platform=$(grep '^platform=' "$f" | cut -d= -f2)
+            launched=$(grep '^launched=' "$f" | cut -d= -f2)
+            ok=$(grep '^ok=' "$f" | cut -d= -f2)
+            skip=$(grep '^skip=' "$f" | cut -d= -f2)
+            intentional_skip=$(grep '^intentional_skip=' "$f" | cut -d= -f2)
+            launched=${launched:-unknown}
+            ok=${ok:-0}
+            skip=${skip:-0}
+            intentional_skip=${intentional_skip:-0}
+
+            if [ "$ok" -gt 0 ]; then
+              status="✅ exercised"
+            elif [ "$skip" -gt 0 ] && [ "$intentional_skip" = "$skip" ]; then
+              status="ℹ️ platform gap (known)"
+            elif [ "$skip" -gt 0 ]; then
+              status="❌ all skipped"
+              FAILED=1
+            elif [ "$launched" = "true" ]; then
+              status="❌ no markers despite launch"
+              FAILED=1
+            else
+              status="ℹ️ no data"
+            fi
+
+            echo "| $platform | $ok | $skip | $status |" >> "$GITHUB_STEP_SUMMARY"
+            echo "platform=$platform launched=$launched ok=$ok skip=$skip intentional=$intentional_skip status=$status"
+          done
+
+          if [ "$FAILED" = "1" ]; then
+            echo "::error::QUIC interop matrix failed — at least one platform's harness coverage broke"
+            exit 1
+          fi
+
   publish:
     needs: [check-release, validate]
     if: needs.check-release.outputs.flow == 'draft' || needs.check-release.outputs.flow == 'release'

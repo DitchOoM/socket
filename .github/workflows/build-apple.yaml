@@ -154,11 +154,191 @@ jobs:
           :socket-quic:jvmProcessResources
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      - name: Run socket-quic Apple native tests (Network.framework)
+      # QUIC harness on macOS — runs the JVM `QuicEchoTestServer` natively on
+      # the runner (no Docker; macos-latest's Colima/container-CLI fixtures
+      # all fail per HANDOFF.md Q1). The fat jar produced by
+      # `:socket-quic:quicEchoJar` includes the macOS quiche dylibs from the
+      # earlier build step, so it runs end-to-end with no extra runtime deps.
+      #
+      # Risk: the quiche-0.28 native panic from `quiche_conn_recv` (the same
+      # one that excludes `:socket-quic:jvmTest` on macOS) might trigger
+      # server-side here too. If it does, the deadlock is bounded by the
+      # `timeout` wrapper and `kill` cleanup; the Apple QUIC tests below
+      # still attempt to connect and silently skip on connection failure
+      # via QuicHarnessIntegrationTests.withHarness's catch. The
+      # `continue-on-error` on the launch step prevents a server-side
+      # panic from failing the whole job.
+      - name: Build quic-echo fat jar with macOS dylibs
         continue-on-error: true
         run: >-
-          ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test
+          ./gradlew :socket-quic:quicEchoJar
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Launch quic-echo on the macOS host
+        id: launch-quic-echo
+        continue-on-error: true
+        run: |
+          set -x
+          JAR=test-harness/quic-echo/quic-echo.jar
+          LOG=/tmp/quic-echo.log
+
+          if [ ! -f "$JAR" ]; then
+            echo "no quic-echo jar — skipping (likely missing macOS dylibs)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Mirror the Dockerfile's JVM flags — FFM access on, NIO
+          # reflective access opened for the buffer dependency's
+          # off-heap pinning. nohup + & detaches across step boundary;
+          # the cleanup step uses lsof on UDP 14433 to find and kill.
+          cd test-harness/quic-echo
+          nohup java \
+            --enable-native-access=ALL-UNNAMED \
+            --add-opens java.base/java.nio=ALL-UNNAMED \
+            -jar quic-echo.jar testcerts/cert.crt testcerts/cert.key 14433 \
+            > "$LOG" 2>&1 &
+          ECHO_PID=$!
+          echo "$ECHO_PID" > /tmp/quic-echo.pid
+          disown $ECHO_PID
+          cd - > /dev/null
+
+          # Wait for the "READY port=14433" stdout line from
+          # QuicEchoTestServer.main, max 30s. If it doesn't appear, we
+          # surface the log and let the QUIC tests skip via their catch.
+          for i in $(seq 1 30); do
+            if grep -q "READY port=14433" "$LOG" 2>/dev/null; then
+              echo "quic-echo ready after ${i}s (pid=$ECHO_PID)"
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Also detect early exit — if PID is gone, server crashed.
+            if ! kill -0 "$ECHO_PID" 2>/dev/null; then
+              echo "quic-echo exited before ready — tail of log:"
+              tail -50 "$LOG" 2>/dev/null || echo "(no log)"
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "quic-echo did NOT come up in 30s — tail of log:"
+          tail -50 "$LOG" 2>/dev/null || echo "(no log)"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+
+      - name: Run socket-quic Apple native tests (Network.framework)
+        continue-on-error: true
+        # Tee Gradle's stdout to /tmp/socket-quic-apple.log so the audit
+        # step below can grep `harness OK` / `harness SKIP` markers from
+        # QuicHarnessIntegrationTests.withHarness without relying on the
+        # K/N test framework writing them into JUnit XML's <system-out>
+        # block — which it doesn't, the way the JVM JUnit runner does.
+        # Same pattern the Linux ARM64 audit already uses.
+        #
+        # --stacktrace --info: K/N "Test running process exited unexpectedly"
+        # is a black box without these — the runtime SIGSEGV/SIGABRT leaves
+        # no stack in the default gradle output. --info plus -Pkotlin.native.
+        # debug.exceptions=true makes the K/N runtime surface the offending
+        # native stack instead of just dying. The next CI cycle should
+        # reveal whether the crash is in nw_helper_create_quic_connection,
+        # the cinterop NSArray bridge for the ALPN list, or somewhere
+        # deeper in Network.framework's QUIC init.
+        run: |
+          set -o pipefail
+          ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test \
+            --no-configuration-cache --stacktrace --info \
+            -Pkotlin.native.debug.exceptions=true \
+            ${{ inputs.gradle-args }} 2>&1 \
+            | tee /tmp/socket-quic-apple.log
+
+      - name: Stop quic-echo + capture log
+        if: always() && steps.launch-quic-echo.outputs.ready == 'true'
+        run: |
+          # The launched java process is detached; kill anything still
+          # holding 14433/udp. `lsof` is the cleanest cross-platform probe
+          # on macOS runners.
+          if command -v lsof >/dev/null; then
+            for pid in $(lsof -ti udp:14433 2>/dev/null); do
+              echo "killing pid=$pid (udp:14433)"
+              kill "$pid" 2>/dev/null || true
+            done
+          fi
+          pkill -f 'quic-echo.jar' 2>/dev/null || true
+          echo "--- quic-echo log tail ---"
+          tail -100 /tmp/quic-echo.log 2>/dev/null || echo "(no log)"
+
+      # Audit step: count how many QuicHarnessIntegrationTests actually
+      # exercised the harness vs silently skipped. Each test prints
+      # `harness OK` on success or `harness SKIP: <reason>` on connection
+      # failure via QuicHarnessIntegrationTests.withHarness. Source the
+      # counts from /tmp/socket-quic-apple.log (gradle stdout teed by
+      # the test step above) — the K/N test framework on Apple doesn't
+      # route println into the JUnit XML's <system-out> block the way
+      # the JVM runner does, so the previous version of this step (which
+      # grep'd socket-quic/build/test-results/*.xml) reported 0/0 every
+      # time. Surfaces in the CI log AND in the per-job step summary
+      # AND as a `quic-audit-apple` artifact for the cross-platform
+      # interop-matrix job to consume.
+      - name: Audit QUIC harness coverage on macOS
+        if: always() && steps.launch-quic-echo.outputs.ready == 'true'
+        continue-on-error: true
+        run: |
+          LOG=/tmp/socket-quic-apple.log
+          OK=0
+          SKIP=0
+          INTENTIONAL_SKIP=0
+          if [ -f "$LOG" ]; then
+            OK=$(grep -c 'harness OK' "$LOG" || true)
+            SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
+            # Skips marked "Apple K/N" come from QuicHarnessIntegrationTests'
+            # `isAppleKNative()` gate in withHarness (PR #54 iter 9) — they
+            # mean "the harness suite is intentionally not exercised on this
+            # platform because Network.framework's QUIC verify_block path is
+            # known-broken." We report these as intentional skips so the
+            # cross-platform matrix can render them as ℹ️ instead of ❌.
+            INTENTIONAL_SKIP=$(grep -c 'harness SKIP: Apple K/N' "$LOG" || true)
+          fi
+          echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP, INTENTIONAL=$INTENTIONAL_SKIP"
+
+          mkdir -p /tmp/quic-audit
+          # launched=true → audit step only runs when launch-quic-echo
+          # reported ready, so the harness is known-up.
+          # intentional_skip=N → tests that skipped via the platform gate,
+          # not via a connection failure. Summary uses this to distinguish
+          # "platform doesn't support QUIC harness yet" (ℹ️) from "QUIC
+          # client silently regressed" (❌).
+          cat > /tmp/quic-audit/apple.txt <<EOF
+          platform=apple
+          launched=true
+          ok=$OK
+          skip=$SKIP
+          intentional_skip=$INTENTIONAL_SKIP
+          EOF
+
+          {
+            echo "## QUIC harness — Apple (macOS host)"
+            echo ""
+            echo "| OK | SKIP |"
+            echo "|---|---|"
+            echo "| $OK | $SKIP |"
+            if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
+              echo ""
+              echo "⚠️ Every QuicHarnessIntegrationTest skipped — Apple QUIC client not actually validated."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
+            echo "::warning::Every QuicHarnessIntegrationTest skipped on macOS — Apple QUIC client not actually validated"
+          fi
+
+      - name: Upload Apple QUIC audit artifact
+        if: always() && steps.launch-quic-echo.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-audit-apple
+          path: /tmp/quic-audit/apple.txt
+          retention-days: 1
+          if-no-files-found: warn
 
       # Test reports on failure — see build-linux.yaml for the why.
       - name: Upload test reports (on failure)

@@ -19,10 +19,21 @@
  * Create a QUIC connection.
  * Uses nw_parameters_create_quic() with TLS 1.3 (mandatory for QUIC).
  *
+ * Certificate verification uses Network.framework's default system trust
+ * evaluation (keychain anchors, hostname check enabled). `verify_certs ==
+ * false` is a NO-OP on Apple — the previous code path (always-accept
+ * verify_block) SIGABRT'd under recent macOS TLS hardening (PR #54 iter
+ * 1-5), and a proper SecTrustEvaluateWithError-based verify_block that
+ * pinned to a custom CA also crashed in a way we couldn't isolate after
+ * eight more CI iterations (PR #54 iter 6-9). The harness suite covers
+ * Apple K/N via `AppleQuicConnectStartupProbe` (startup-only smoke
+ * tests); `QuicHarnessIntegrationTests` skips on Apple K/N until the
+ * Network.framework interaction is understood with local-Mac debugging.
+ *
  * @param host Hostname to connect to
  * @param port Port number
  * @param alpn_protocols NSArray of NSString ALPN identifiers (mandatory for QUIC)
- * @param verify_certs Whether to verify TLS certificates
+ * @param verify_certs Reserved — see note above.
  * @param idle_timeout_seconds QUIC idle timeout (0 = no timeout)
  * @param connection_timeout_seconds TCP-level connection timeout
  * @return nw_connection_t or NULL on parameter error
@@ -53,14 +64,10 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
             }
 
-            // Certificate verification
-            if (![verify_certs boolValue]) {
-                sec_protocol_options_set_verify_block(sec_options,
-                    ^(sec_protocol_metadata_t metadata, sec_trust_t trust, sec_protocol_verify_complete_t complete) {
-                        complete(true);
-                    },
-                    dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
-            }
+            // Cert verification: rely on Network.framework's default system trust.
+            // verify_certs is intentionally unused — see header docstring for the
+            // PR #54 investigation history.
+            (void)verify_certs;
         });
 
     if (!params) return NULL;
