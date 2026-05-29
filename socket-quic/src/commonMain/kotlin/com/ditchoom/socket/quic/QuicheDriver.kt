@@ -83,6 +83,14 @@ class QuicheDriver(
      * Dispatchers.Default coroutine — different threads under load.
      * maxPoolSize=64 → ~87 KB cached (64 × 1350), generous for a single
      * connection's in-flight datagram count.
+     *
+     * Ownership invariant: [bufferFactory] is a **leaf** factory per the
+     * `ConnectionOptions.bufferFactory` contract — this pool is built *from* it.
+     * Never pass an already-pooled factory: wrapping a pool in a pool is the
+     * `80575c1` double-wrap regression (the inner pool reclaims on
+     * `freeNativeMemory()` while the outer pool's accounting still counts the
+     * buffer, so the cap stops bounding RSS). Same shape as the server-side pool
+     * in CommonJvmWithQuicServer.
      */
     private val recvBufPool: BufferPool? =
         if (clientMode) {
