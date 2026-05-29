@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
@@ -55,7 +54,7 @@ interface QuicheStreamAdapter {
 class QuicheStreamByteStream(
     val streamId: QuicStreamId,
     private val adapter: QuicheStreamAdapter,
-    private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    private val bufferFactory: BufferFactory,
     private val bufferSize: Int = 65536,
 ) : ByteStream {
     @Volatile
