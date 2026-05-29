@@ -230,11 +230,13 @@ jobs:
           if [ -n "$WIN_LIB" ]; then
             mkdir -p "$QUICHE_LIBS/windows-x64/lib"
             x86_64-w64-mingw32-gcc -shared -Wall \
+              -static-libgcc -static-libstdc++ \
               -o "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" "$JNI_SRC" \
               -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
               -I"$QUICHE_H" \
               -Wl,--whole-archive "$WIN_LIB" -Wl,--no-whole-archive \
-              -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lpthread -lm -lstdc++ \
+              -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lm \
+              -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic \
               && x86_64-w64-mingw32-strip --strip-all "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" \
               && echo "Built Windows x64: $(du -h "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" | cut -f1)"
           fi
@@ -440,6 +442,20 @@ jobs:
         with:
           name: quiche-linux-natives
           path: socket-quic/libs/quiche/linux-*/lib/
+          retention-days: 1
+          if-no-files-found: ignore
+
+      # The Windows x64 JNI shim is cross-compiled above (MinGW) but the
+      # conformance suite runs on a separate windows-latest job (review.yaml's
+      # build-windows). Hand the DLL across via this artifact so that job can
+      # stage it and run :socket-quic:jvmTest. if-no-files-found: ignore keeps
+      # the Linux job green if the cross-compile didn't produce the DLL.
+      - name: Upload quiche Windows native lib
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiche-windows-natives
+          path: socket-quic/libs/quiche/windows-x64/lib/quiche_jni.dll
           retention-days: 1
           if-no-files-found: ignore
 

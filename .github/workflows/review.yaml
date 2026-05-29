@@ -125,6 +125,13 @@ jobs:
     name: "Windows JVM Tests"
     runs-on: windows-latest
     timeout-minutes: 30
+    # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
+    needs: build-linux
+    # continue-on-error stays during Windows-peer bring-up: the MinGW-cross-
+    # compiled DLL has not yet been proven to load on a bare windows-latest
+    # (static-libgcc/stdc++ link is the intended fix; CI is the only place to
+    # verify it). Drop this once :socket-quic:jvmTest is green here ≥2 runs —
+    # exit criterion per PLAN.md Phase 2 rule 4.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -134,15 +141,22 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
           cache: gradle
-      # socket-quic:jvmTest is excluded on Windows because no Windows quiche
-      # JNI native is packaged into the JAR — QuicheApiLoader throws
-      # NoClassDefFoundError. Building a windows-x64 native is tracked as a
-      # follow-up; see TODO.md. The leading colon on `:jvmTest` scopes the
-      # task to the root project; the unqualified `jvmTest` (Gradle multi-
-      # project name matching) ran across every subproject and would have
-      # pulled socket-quic:jvmTest back in.
+      # The Windows quiche JNI shim is cross-compiled on the Linux job and
+      # handed over as the quiche-windows-natives artifact. Drop it where
+      # stageQuicheNativeResources expects it (libs/quiche/windows-x64/lib/)
+      # so NativeLibLoader can extract quiche_jni.dll from the test classpath.
+      - name: Download Windows quiche native lib
+        uses: actions/download-artifact@v4
+        with:
+          name: quiche-windows-natives
+          path: socket-quic/libs/quiche/windows-x64/lib
+      # :jvmTest is the root project's suite. :socket-quic:jvmTest is now
+      # included (was excluded while no Windows native existed): the DLL above
+      # plus the windows-x64 entry in nativeLibsByPlatform let it stage + load.
+      # The leading colon scopes each task to its project; an unqualified
+      # `jvmTest` would match every subproject by name.
       - name: Run JVM tests
-        run: ./gradlew :jvmTest --no-configuration-cache
+        run: ./gradlew :jvmTest :socket-quic:jvmTest --no-configuration-cache
 
   docs:
     name: "Validate Docs Generation"
