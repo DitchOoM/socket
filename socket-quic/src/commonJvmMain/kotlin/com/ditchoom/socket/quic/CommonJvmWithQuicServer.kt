@@ -151,6 +151,15 @@ internal class JvmQuicServer(
      * (per-connection coroutine, can hop dispatchers under Dispatchers.IO).
      * maxPoolSize=64 → ~87 KB cached (64 × 1350) — caps steady-state RSS while
      * covering typical concurrent-driver counts.
+     *
+     * Ownership invariant: [bufferFactory] is a **leaf** factory per the
+     * `ConnectionOptions.bufferFactory` contract — this pool is built *from* it
+     * here. Never pass an already-pooled factory as `factory`: wrapping a pool
+     * in a pool is the `80575c1` double-wrap regression. A `BufferPool` whose
+     * leaf `factory` is itself a `BufferPool` makes `freeNativeMemory()` return
+     * the buffer to the inner pool while the outer pool's accounting still
+     * counts it, so neither pool reclaims correctly and the cap stops bounding
+     * RSS. Keep the leaf-factory-in, pool-built-here shape.
      */
     private val recvBufPool =
         BufferPool(
