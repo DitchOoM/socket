@@ -13,7 +13,7 @@ import kotlin.time.Duration.Companion.seconds
  * cancellation), the connection is closed (QUIC CONNECTION_CLOSE) and all
  * resources are released.
  *
- * This is the only client-facing entry point — there is no [QuicEngine]
+ * This is the only client-facing entry point — there is no `QuicEngine`
  * layer because quiche itself has no analog and the previous factory shape
  * was pure overhead that leaked on dropped error paths. The scope-only
  * block boundary is the lifecycle. See `DRIVER_REDESIGN.md` →

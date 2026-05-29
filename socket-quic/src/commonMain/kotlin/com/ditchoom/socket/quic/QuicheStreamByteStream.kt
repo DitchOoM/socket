@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
@@ -25,6 +24,25 @@ interface QuicheStreamAdapter {
      * Read from the quiche stream into a buffer allocated from [bufferFactory].
      * Returns [ReadResult.Data] with the buffer, [ReadResult.End] on FIN,
      * or throws on error/timeout.
+     *
+     * ### Buffer ownership
+     * On [ReadResult.Data], ownership of the returned buffer transfers to the
+     * caller. The implementation frees the buffer itself on every other path
+     * (FIN, error, closed channel) but **not** on the data path — there is no
+     * release point here by design. The caller must release it when fully
+     * consumed via `buffer.freeIfNeeded()` (equivalently
+     * `PlatformBuffer.freeNativeMemory()`), which is polymorphic on the
+     * concrete buffer: a no-op for heap buffers (the default
+     * [BufferFactory.Default], reclaimed by GC), an actual free for off-heap
+     * `deterministic()` buffers, and a pool-return for pooled factories.
+     *
+     * This is what makes a caller-supplied pooled or `deterministic()`
+     * [bufferFactory] safe: the codec/mux path already honors it — a
+     * `CodecConnection` hands the buffer to its `StreamProcessor`, which takes
+     * ownership and frees each chunk on consume and on `release()` — so
+     * injecting such a factory via `ConnectionOptions.bufferFactory` through
+     * `withQuicMux` leaks nothing. Only a consumer of the *raw* [read] API who
+     * ignores the returned buffer's ownership leaks under a non-GC factory.
      */
     suspend fun streamRead(
         streamId: QuicStreamId,
@@ -55,7 +73,7 @@ interface QuicheStreamAdapter {
 class QuicheStreamByteStream(
     val streamId: QuicStreamId,
     private val adapter: QuicheStreamAdapter,
-    private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
+    private val bufferFactory: BufferFactory,
     private val bufferSize: Int = 65536,
 ) : ByteStream {
     @Volatile
@@ -63,6 +81,16 @@ class QuicheStreamByteStream(
 
     override val isOpen: Boolean get() = !closed
 
+    /**
+     * Read the next chunk from the stream.
+     *
+     * On [ReadResult.Data] the returned buffer is **caller-owned** — release it
+     * via `buffer.freeIfNeeded()` once consumed. Harmless to skip under the
+     * default heap [BufferFactory.Default] (GC reclaims), but required to avoid
+     * a native leak under a `deterministic()` or pooled factory. See
+     * [QuicheStreamAdapter.streamRead] for the full ownership contract; the
+     * codec/mux path (`CodecConnection` → `StreamProcessor`) already honors it.
+     */
     override suspend fun read(timeout: Duration): ReadResult {
         check(!closed) { "QuicheStreamByteStream($streamId) is closed" }
         return adapter.streamRead(streamId, bufferFactory, bufferSize, timeout)
