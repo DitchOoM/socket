@@ -433,3 +433,13 @@ JNIEXPORT jint JNICALL JNI_FN(nSendInfoToAddrLen)(JNIEnv *env, jclass cls, jlong
     quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
     return (jint)info->to_len;
 }
+
+JNIEXPORT jlong JNICALL JNI_FN(nSendInfoFromAddr)(JNIEnv *env, jclass cls, jlong ptr) {
+    quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
+    return (jlong)(uintptr_t)&info->from;
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nSendInfoFromAddrLen)(JNIEnv *env, jclass cls, jlong ptr) {
+    quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
+    return (jint)info->from_len;
+}

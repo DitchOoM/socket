@@ -747,12 +747,23 @@ class FfmQuicheApi private constructor(
         return segment.get(JAVA_INT, SEND_INFO_TO_LEN_OFFSET.toLong())
     }
 
+    override fun sendInfoFromAddr(info: QuicheSendInfo): Long {
+        // from sockaddr_storage is the first field of quiche_send_info (offset 0).
+        return info.handle
+    }
+
+    override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int {
+        val segment = MemorySegment.ofAddress(info.handle).reinterpret(SEND_INFO_SIZE.toLong())
+        return segment.get(JAVA_INT, SEND_INFO_FROM_LEN_OFFSET.toLong())
+    }
+
     companion object {
         private const val QUICHE_ERR_DONE = -1L
         private const val RECV_INFO_SIZE = 32
         private const val SEND_INFO_SIZE = 288
         private const val SEND_INFO_TO_OFFSET = 136 // after sockaddr_storage(128) + socklen_t(4) + pad(4)
         private const val SEND_INFO_TO_LEN_OFFSET = 264 // after to sockaddr_storage(128)
+        private const val SEND_INFO_FROM_LEN_OFFSET = 128 // after from sockaddr_storage(128)
 
         fun create(libraryPath: String): FfmQuicheApi {
             val arena = Arena.ofAuto()

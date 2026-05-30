@@ -604,5 +604,16 @@ internal object CinteropQuicheApi : QuicheApi {
         return si.to_len.toInt()
     }
 
+    override fun sendInfoFromAddr(info: QuicheSendInfo): Long {
+        val si = info.handle.toCPointer<quiche_send_info>()!!.pointed
+        return si.from.ptr.rawValue
+            .toLong()
+    }
+
+    override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int {
+        val si = info.handle.toCPointer<quiche_send_info>()!!.pointed
+        return si.from_len.toInt()
+    }
+
     private const val QUICHE_ERR_DONE = -1
 }

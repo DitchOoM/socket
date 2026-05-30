@@ -358,4 +358,15 @@ interface QuicheApi {
     fun sendInfoToAddr(info: QuicheSendInfo): Long
 
     fun sendInfoToAddrLen(info: QuicheSendInfo): Int
+
+    /**
+     * Native pointer to the `from` (local egress) sockaddr quiche filled in after
+     * [connSend]. Mirror of [sendInfoToAddr]. Used by the multi-socket driver to
+     * route each outgoing datagram to the path socket bound to this local address
+     * (slice 3 connection migration). The pointer is into the send_info struct and
+     * is valid until the next [connSend] overwrites it.
+     */
+    fun sendInfoFromAddr(info: QuicheSendInfo): Long
+
+    fun sendInfoFromAddrLen(info: QuicheSendInfo): Int
 }
