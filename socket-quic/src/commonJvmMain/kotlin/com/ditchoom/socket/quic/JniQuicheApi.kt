@@ -368,6 +368,16 @@ object JniQuicheApi : QuicheApi {
 
     override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int = nSendInfoFromAddrLen(info.handle)
 
+    override fun sockAddrFamily(addr: Long): Int = nSockAddrFamily(addr)
+
+    override fun sockAddrPort(addr: Long): Int = nSockAddrPort(addr)
+
+    override fun sockAddrV4(addr: Long): Long = nSockAddrV4(addr)
+
+    override fun sockAddrV6Hi(addr: Long): Long = nSockAddrV6Hi(addr)
+
+    override fun sockAddrV6Lo(addr: Long): Long = nSockAddrV6Lo(addr)
+
     private const val QUICHE_ERR_DONE = -1L
 
     // --- JNI externals (raw Long — JNI doesn't understand inline classes) ---
@@ -614,6 +624,16 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nSendInfoFromAddr(ptr: Long): Long
 
     @JvmStatic private external fun nSendInfoFromAddrLen(ptr: Long): Int
+
+    @JvmStatic private external fun nSockAddrFamily(addr: Long): Int
+
+    @JvmStatic private external fun nSockAddrPort(addr: Long): Int
+
+    @JvmStatic private external fun nSockAddrV4(addr: Long): Long
+
+    @JvmStatic private external fun nSockAddrV6Hi(addr: Long): Long
+
+    @JvmStatic private external fun nSockAddrV6Lo(addr: Long): Long
 
     // --- Server-side JNI externals ---
     @JvmStatic private external fun nConfigLoadCertChainFromPemFile(

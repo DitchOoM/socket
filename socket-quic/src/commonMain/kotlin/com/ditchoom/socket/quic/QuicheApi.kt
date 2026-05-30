@@ -369,4 +369,25 @@ interface QuicheApi {
     fun sendInfoFromAddr(info: QuicheSendInfo): Long
 
     fun sendInfoFromAddrLen(info: QuicheSendInfo): Int
+
+    // --- sockaddr decode (slice 3 migration) ---
+    // Reverse of SockAddrUtil's encode. The JNI backend forwards to native helpers in
+    // quiche_jni.c (native code knows the platform's sockaddr layout — BSD sin_len,
+    // AF_INET6 = 10/30/23); FFM and cinterop read the struct directly. Used to turn the
+    // raw sockaddr quiche fills (sendInfo.from, path-event addresses) into a [PathKey].
+
+    /** IP version of the sockaddr at native [addr]: 4 (IPv4), 6 (IPv6), or 0 (unknown). */
+    fun sockAddrFamily(addr: Long): Int
+
+    /** UDP port (host byte order) of the sockaddr at [addr]. */
+    fun sockAddrPort(addr: Long): Int
+
+    /** IPv4 address bits of the sockaddr at [addr] — opaque identity, valid when family == 4. */
+    fun sockAddrV4(addr: Long): Long
+
+    /** High 8 bytes of the IPv6 address at [addr] — opaque identity, valid when family == 6. */
+    fun sockAddrV6Hi(addr: Long): Long
+
+    /** Low 8 bytes of the IPv6 address at [addr] — opaque identity, valid when family == 6. */
+    fun sockAddrV6Lo(addr: Long): Long
 }

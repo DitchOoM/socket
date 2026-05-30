@@ -277,6 +277,16 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun sendInfoFromAddrLen(info: QuicheSendInfo) = 0
 
+    override fun sockAddrFamily(addr: Long) = 0
+
+    override fun sockAddrPort(addr: Long) = 0
+
+    override fun sockAddrV4(addr: Long) = 0L
+
+    override fun sockAddrV6Hi(addr: Long) = 0L
+
+    override fun sockAddrV6Lo(addr: Long) = 0L
+
     // --- Path migration (no-ops) ---
     override fun connProbePath(
         conn: QuicheConn,
