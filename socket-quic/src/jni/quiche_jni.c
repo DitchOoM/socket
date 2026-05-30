@@ -62,6 +62,11 @@ JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialMaxData)(
     quiche_config_set_initial_max_data((quiche_config *)(uintptr_t)config, (uint64_t)v);
 }
 
+JNIEXPORT void JNICALL JNI_FN(nConfigSetActiveConnectionIdLimit)(
+    JNIEnv *env, jclass cls, jlong config, jlong v) {
+    quiche_config_set_active_connection_id_limit((quiche_config *)(uintptr_t)config, (uint64_t)v);
+}
+
 JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialMaxStreamDataBidiLocal)(
     JNIEnv *env, jclass cls, jlong config, jlong v) {
     quiche_config_set_initial_max_stream_data_bidi_local((quiche_config *)(uintptr_t)config, (uint64_t)v);

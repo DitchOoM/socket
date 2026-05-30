@@ -85,6 +85,11 @@ interface QuicheApi {
         v: Boolean,
     )
 
+    fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    )
+
     fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,

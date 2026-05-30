@@ -305,6 +305,10 @@ internal class LinuxQuicConfigCalls(
         com.ditchoom.socket.quic.quiche
             .quiche_config_set_disable_active_migration(cfg, v)
 
+    override fun setActiveConnectionIdLimit(v: Long) =
+        com.ditchoom.socket.quic.quiche
+            .quiche_config_set_active_connection_id_limit(cfg, v.convert())
+
     override fun verifyPeer(v: Boolean) =
         com.ditchoom.socket.quic.quiche
             .quiche_config_verify_peer(cfg, v)

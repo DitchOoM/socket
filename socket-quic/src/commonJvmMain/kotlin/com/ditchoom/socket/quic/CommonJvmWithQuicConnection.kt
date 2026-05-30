@@ -201,6 +201,8 @@ internal class CommonJvmQuicConfigCalls(
 
     override fun setDisableActiveMigration(v: Boolean) = api.configSetDisableActiveMigration(cfg, v)
 
+    override fun setActiveConnectionIdLimit(v: Long) = api.configSetActiveConnectionIdLimit(cfg, v)
+
     override fun verifyPeer(v: Boolean) = api.configVerifyPeer(cfg, v)
 
     override fun setCcAlgorithm(algo: Int) = api.configSetCcAlgorithm(cfg, algo)

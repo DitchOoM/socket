@@ -82,6 +82,11 @@ internal class StubQuicheApi : QuicheApi {
         v: Boolean,
     ) {}
 
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) {}
+
     override fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,

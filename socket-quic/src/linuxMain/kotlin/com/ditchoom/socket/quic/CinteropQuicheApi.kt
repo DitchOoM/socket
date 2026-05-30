@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_grease
 import com.ditchoom.socket.quic.quiche.quiche_config_load_cert_chain_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_load_priv_key_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_new
+import com.ditchoom.socket.quic.quiche.quiche_config_set_active_connection_id_limit
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
 import com.ditchoom.socket.quic.quiche.quiche_config_set_cc_algorithm
 import com.ditchoom.socket.quic.quiche.quiche_config_set_disable_active_migration
@@ -154,6 +155,11 @@ internal object CinteropQuicheApi : QuicheApi {
         config: QuicheConfig,
         v: Boolean,
     ) = quiche_config_set_disable_active_migration(config.handle.toCPointer()!!, v)
+
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_active_connection_id_limit(config.handle.toCPointer()!!, v.convert())
 
     override fun configVerifyPeer(
         config: QuicheConfig,

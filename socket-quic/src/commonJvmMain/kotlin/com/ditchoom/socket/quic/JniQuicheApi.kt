@@ -79,6 +79,11 @@ object JniQuicheApi : QuicheApi {
         v: Boolean,
     ) = nConfigSetDisableActiveMigration(config.handle, v)
 
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) = nConfigSetActiveConnectionIdLimit(config.handle, v)
+
     override fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,
@@ -407,6 +412,11 @@ object JniQuicheApi : QuicheApi {
     )
 
     @JvmStatic private external fun nConfigSetInitialMaxData(
+        config: Long,
+        v: Long,
+    )
+
+    @JvmStatic private external fun nConfigSetActiveConnectionIdLimit(
         config: Long,
         v: Long,
     )

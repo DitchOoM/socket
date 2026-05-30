@@ -54,6 +54,9 @@ class FfmQuicheApi private constructor(
     private val hSetMaxData by lazy {
         downcall("quiche_config_set_initial_max_data", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
     }
+    private val hSetActiveConnectionIdLimit by lazy {
+        downcall("quiche_config_set_active_connection_id_limit", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+    }
     private val hSetBidiLocal by lazy {
         downcall("quiche_config_set_initial_max_stream_data_bidi_local", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
     }
@@ -281,6 +284,13 @@ class FfmQuicheApi private constructor(
         v: Boolean,
     ) {
         hDisableMigration.invokeExact(seg(config.handle), v)
+    }
+
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) {
+        hSetActiveConnectionIdLimit.invokeExact(seg(config.handle), v)
     }
 
     override fun configVerifyPeer(
