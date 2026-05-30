@@ -77,7 +77,7 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
         ^(nw_protocol_options_t _Nonnull quic_options) {
             NWQ_TRACE("params-block enter");
             sec_protocol_options_t sec_options = nw_quic_copy_sec_protocol_options(quic_options);
-            NWQ_TRACE("params-block sec_options=%p", (void *)sec_options);
+            NWQ_TRACE("params-block sec_options=%s", sec_options ? "ok" : "NULL");
 
             for (NSString *proto in alpn_copy) {
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
