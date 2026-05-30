@@ -149,6 +149,32 @@ class FfmQuicheApi private constructor(
         )
     }
 
+    // --- Path migration handles ---
+    private val hConnProbePath by lazy {
+        downcall(
+            "quiche_conn_probe_path",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+        )
+    }
+    private val hConnMigrate by lazy {
+        downcall(
+            "quiche_conn_migrate",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+        )
+    }
+    private val hConnMigrateSource by lazy {
+        downcall(
+            "quiche_conn_migrate_source",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS),
+        )
+    }
+    private val hConnAvailableDcids by lazy {
+        downcall("quiche_conn_available_dcids", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
+    private val hConnScidsLeft by lazy {
+        downcall("quiche_conn_scids_left", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
+
     // --- Config ---
     override fun configNew(version: Int): QuicheConfig = QuicheConfig((hConfigNew.invokeExact(version) as MemorySegment).address())
 
@@ -408,6 +434,58 @@ class FfmQuicheApi private constructor(
             seg(0L),
             0L,
         ) as Int
+
+    // --- Path migration ---
+    override fun connProbePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int =
+        hConnProbePath.invokeExact(
+            seg(conn.handle),
+            seg(localAddr),
+            localLen,
+            seg(peerAddr),
+            peerLen,
+            seg(seqOut),
+        ) as Int
+
+    override fun connMigrate(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int =
+        hConnMigrate.invokeExact(
+            seg(conn.handle),
+            seg(localAddr),
+            localLen,
+            seg(peerAddr),
+            peerLen,
+            seg(seqOut),
+        ) as Int
+
+    override fun connMigrateSource(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        seqOut: Long,
+    ): Int =
+        hConnMigrateSource.invokeExact(
+            seg(conn.handle),
+            seg(localAddr),
+            localLen,
+            seg(seqOut),
+        ) as Int
+
+    override fun connAvailableDcids(conn: QuicheConn): Long = hConnAvailableDcids.invokeExact(seg(conn.handle)) as Long
+
+    override fun connScidsLeft(conn: QuicheConn): Long = hConnScidsLeft.invokeExact(seg(conn.handle)) as Long
 
     // --- Server-side ---
     private val hLoadCert by lazy {

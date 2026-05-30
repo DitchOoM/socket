@@ -234,6 +234,47 @@ JNIEXPORT jint JNICALL JNI_FN(nConnClose)(
         (const uint8_t *)(uintptr_t)reason_addr, (size_t)reason_len);
 }
 
+/* --- Path migration --- */
+
+JNIEXPORT jint JNICALL JNI_FN(nConnProbePath)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_addr, jint local_len,
+    jlong peer_addr, jint peer_len, jlong seq_out) {
+    return (jint)quiche_conn_probe_path(
+        (quiche_conn *)(uintptr_t)conn,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
+        (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len,
+        (uint64_t *)(uintptr_t)seq_out);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnMigrate)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_addr, jint local_len,
+    jlong peer_addr, jint peer_len, jlong seq_out) {
+    return (jint)quiche_conn_migrate(
+        (quiche_conn *)(uintptr_t)conn,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
+        (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len,
+        (uint64_t *)(uintptr_t)seq_out);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnMigrateSource)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_addr, jint local_len, jlong seq_out) {
+    return (jint)quiche_conn_migrate_source(
+        (quiche_conn *)(uintptr_t)conn,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
+        (uint64_t *)(uintptr_t)seq_out);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnAvailableDcids)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)quiche_conn_available_dcids((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnScidsLeft)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)quiche_conn_scids_left((quiche_conn *)(uintptr_t)conn);
+}
+
 /* --- Server-side --- */
 
 JNIEXPORT jint JNICALL JNI_FN(nConfigLoadCertChainFromPemFile)(
