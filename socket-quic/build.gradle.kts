@@ -496,6 +496,13 @@ val nativeLibsByPlatform =
         "linux-arm64" to listOf("libquiche.so", "libquiche_jni.so"),
         "macos-x64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
         "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
+        // Windows ships only the JNI shim: quiche is statically linked into
+        // quiche_jni.dll (boringssl-vendored + --whole-archive libquiche.a in
+        // build-linux.yaml's MinGW cross-compile), so there is no separate
+        // quiche.dll to extract — matching NativeLibLoader, which loads only
+        // quiche_jni.dll on Windows. Staged into the jvmTest classpath only;
+        // not in nativeClassifiers, so no windows publish artifact yet.
+        "windows-x64" to listOf("quiche_jni.dll"),
     )
 
 // `-PquicEchoAllArches=true` gates building the non-host-arch JNI shim

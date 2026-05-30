@@ -14,9 +14,9 @@ import java.net.InetSocketAddress
  * Zero-copy: the struct is written directly into a deterministic buffer's native memory.
  * The caller must free the buffer when done.
  *
- * Layout differs between BSD (macOS) and Linux:
+ * Layout differs between BSD (macOS) and Linux/Windows:
  *
- * Linux sockaddr_in (16 bytes):
+ * Linux/Windows sockaddr_in (16 bytes):
  *   [0..1]  sin_family  = AF_INET (2), little-endian
  *   [2..3]  sin_port, [4..7] sin_addr, [8..15] sin_zero
  *
@@ -25,7 +25,9 @@ import java.net.InetSocketAddress
  *   [1]     sin_family  = AF_INET (2)
  *   [2..3]  sin_port, [4..7] sin_addr, [8..15] sin_zero
  *
- * sin6_family / AF_INET6 also differ: 10 on Linux, 30 on BSD.
+ * Windows winsock has no sin_len (same as Linux), so it uses the non-BSD
+ * branch. sin6_family / AF_INET6 differs three ways: 10 on Linux, 30 on BSD,
+ * 23 on Windows — see [AF_INET6].
  */
 internal data class NativeSockAddr(
     val buffer: PlatformBuffer,
@@ -95,11 +97,26 @@ private val IS_BSD: Boolean by lazy {
     System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") || it.contains("bsd") }
 }
 
-// AF_INET = 2 on every POSIX
+private val IS_WINDOWS: Boolean by lazy {
+    System.getProperty("os.name").lowercase().contains("win")
+}
+
+// AF_INET = 2 on every POSIX and on Windows winsock.
 private const val AF_INET = 2
 
-// AF_INET6 is platform-specific — BSDs / Darwin use 30, Linux uses 10.
-private val AF_INET6: Int = if (IS_BSD) 30 else 10
+// AF_INET6 is platform-specific: Linux 10, BSD/Darwin 30, Windows (winsock) 23.
+// quiche compares sa_family against the value baked in for the target it was
+// compiled for, so a mismatch makes it reject the sockaddr with "unsupported
+// address type" (ffi.rs:2059) — a hard panic that crashes the JVM. This is not
+// theoretical on Windows: the JVM opens dual-stack IPv6 DatagramChannels by
+// default there, so channel.localAddress is routinely an Inet6Address even for
+// an IPv4 peer, forcing the IPv6 branch. Getting 23 right is mandatory.
+private val AF_INET6: Int =
+    when {
+        IS_BSD -> 30
+        IS_WINDOWS -> 23
+        else -> 10
+    }
 
 private const val SOCKADDR_IN_SIZE = 16
 private const val SOCKADDR_IN6_SIZE = 28
