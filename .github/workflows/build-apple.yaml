@@ -280,6 +280,30 @@ jobs:
             ${{ inputs.gradle-args }} 2>&1 \
             | tee /tmp/socket-quic-apple.log
 
+      # The Apple QUIC client crashes the K/N test binary (exit 133 / SIGTRAP)
+      # during the handshake with no Kotlin stack, even with
+      # -Pkotlin.native.debug.exceptions=true. macOS writes a full faulting-
+      # thread backtrace to ~/Library/Logs/DiagnosticReports/*.ips — dump the
+      # most recent test.kexe reports so we can see WHERE it dies (SecTrust /
+      # Network.framework QUIC / libquiche / cinterop bridge) instead of
+      # guessing. Phase 2 macOS-peer spike diagnostics.
+      - name: Dump K/N crash reports (Apple QUIC)
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "=== DiagnosticReports (test.kexe / socket-quic) ==="
+          for d in "$HOME/Library/Logs/DiagnosticReports" "/Library/Logs/DiagnosticReports"; do
+            [ -d "$d" ] || continue
+            ls -lt "$d" 2>/dev/null | head -20
+            for f in $(ls -t "$d"/*.ips "$d"/*.crash 2>/dev/null | head -5); do
+              echo "----- $f -----"
+              # .ips files are JSON-ish; print the whole thing — they're small
+              # and contain the faulting thread's symbolicated frames.
+              cat "$f" 2>/dev/null | head -300
+            done
+          done
+          echo "=== end crash reports ==="
+
       - name: Stop quic-echo + capture log
         if: always() && steps.launch-quic-echo.outputs.ready == 'true'
         run: |
