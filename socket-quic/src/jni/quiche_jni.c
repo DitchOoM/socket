@@ -255,6 +255,18 @@ JNIEXPORT jint JNICALL JNI_FN(nConnProbePath)(
         (uint64_t *)(uintptr_t)seq_out);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nConnNewScid)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong scid_addr, jint scid_len,
+    jlong reset_token_addr, jboolean retire_if_needed, jlong seq_out) {
+    return (jint)quiche_conn_new_scid(
+        (quiche_conn *)(uintptr_t)conn,
+        (const uint8_t *)(uintptr_t)scid_addr, (size_t)scid_len,
+        (const uint8_t *)(uintptr_t)reset_token_addr,
+        (bool)retire_if_needed,
+        (uint64_t *)(uintptr_t)seq_out);
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnMigrate)(
     JNIEnv *env, jclass cls,
     jlong conn, jlong local_addr, jint local_len,

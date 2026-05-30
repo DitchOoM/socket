@@ -23,6 +23,7 @@ import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.coroutineContext
+import kotlin.random.Random
 import kotlin.time.Duration
 
 /**
@@ -151,15 +152,18 @@ class QuicheDriver(
 
     private var activeKey: PathKey = primary.key
     private var pendingMigration: PendingMigration? = null
+    private var spareCidsIssued = false
 
     private val _pathState = MutableStateFlow(PathInfo())
     val pathState: StateFlow<PathInfo> = _pathState
 
     private var driverScope: CoroutineScope? = null
 
-    // Native scratch for probe/migrate seq-out and for the four sockaddr_storage out-words
-    // connPathEventNext fills. Allocated only for migration-capable clients.
-    private val seqScratch: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(8) else null
+    // Native scratch for the uint64 seq-out of new_scid/probe/migrate. Allocated for every
+    // connection — even non-migrating ones issue spare CIDs so a future peer migration works.
+    private val seqScratch: PlatformBuffer = bufferFactory.allocate(8)
+
+    // sockaddr_storage out-words connPathEventNext fills — only migration-capable clients poll events.
     private val peLocalOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(SOCKADDR_STORAGE_SIZE) else null
     private val peLocalLenOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(4) else null
     private val pePeerOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(SOCKADDR_STORAGE_SIZE) else null
@@ -300,6 +304,7 @@ class QuicheDriver(
     private fun updateState() {
         if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
             _state.value = QuicConnectionState.Established("h3")
+            issueSpareCids()
         }
         if (api.connIsClosed(conn) && _state.value !is QuicConnectionState.Closed) {
             _state.value = QuicConnectionState.Closed(null)
@@ -492,6 +497,37 @@ class QuicheDriver(
         entry.release()
     }
 
+    /**
+     * Supply spare source connection IDs to the peer once established. quiche does not
+     * auto-issue CIDs, so without this the peer has no spare destination CID to migrate
+     * to ([connAvailableDcids] stays 0). Issued once per connection (both ends), bounded
+     * by [connScidsLeft] (which reflects the peer's active_connection_id_limit).
+     */
+    private fun issueSpareCids() {
+        if (spareCidsIssued) return
+        spareCidsIssued = true
+        var count = 0
+        while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
+            val scid = generateScid(bufferFactory) // 20 random bytes, reset for read
+            val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
+            repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(Random.nextInt(256).toByte()) }
+            token.resetForRead()
+            val rc =
+                api.connNewScid(
+                    conn,
+                    scid.nativeMemoryAccess!!.nativeAddress.toLong(),
+                    QUIC_MAX_CONN_ID_LEN,
+                    token.nativeMemoryAccess!!.nativeAddress.toLong(),
+                    true,
+                    addr(seqScratch),
+                )
+            scid.freeNativeMemory()
+            token.freeNativeMemory()
+            if (rc < 0) break
+            count++
+        }
+    }
+
     private fun cleanup() {
         commands.close()
 
@@ -525,7 +561,7 @@ class QuicheDriver(
         api.recvInfoFree(recvInfo)
         api.sendInfoFree(sendInfo)
         udpSendBuf.freeNativeMemory()
-        seqScratch?.freeNativeMemory()
+        seqScratch.freeNativeMemory()
         peLocalOut?.freeNativeMemory()
         peLocalLenOut?.freeNativeMemory()
         pePeerOut?.freeNativeMemory()
@@ -566,6 +602,12 @@ class QuicheDriver(
 
         /** Size of a `sockaddr_storage` — the out-buffers quiche fills for path events. */
         const val SOCKADDR_STORAGE_SIZE = 128
+
+        /** QUIC stateless-reset token length (RFC 9000 §10.3) — fixed 16 bytes. */
+        const val STATELESS_RESET_TOKEN_LEN = 16
+
+        /** Cap on spare source CIDs issued per connection (bounded further by connScidsLeft). */
+        const val MAX_SPARE_SCIDS = 3
     }
 }
 

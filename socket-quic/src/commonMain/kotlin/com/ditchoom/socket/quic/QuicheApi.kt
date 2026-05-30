@@ -233,6 +233,22 @@ interface QuicheApi {
     ): Int
 
     /**
+     * Supply a spare source connection ID to the peer (`quiche_conn_new_scid`). quiche does
+     * not auto-issue CIDs — without this the peer never gets a NEW_CONNECTION_ID and has no
+     * spare destination CID to migrate to. [scidAddr] points at a [scidLen]-byte CID,
+     * [resetTokenAddr] at a 16-byte stateless-reset token; the issued sequence number is
+     * written to [seqOut]. Returns the sequence number (>= 0) or a negative quiche error.
+     */
+    fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int
+
+    /**
      * Migrate the connection to the given local/peer path. Returns 0 on success or a negative
      * quiche error code. [seqOut] is the native address of a `uint64_t` buffer the implementation
      * writes the migrated path's sequence number to.

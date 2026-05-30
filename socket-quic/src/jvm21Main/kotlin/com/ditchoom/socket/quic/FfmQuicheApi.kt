@@ -160,6 +160,13 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
         )
     }
+    private val hConnNewScid by lazy {
+        downcall(
+            "quiche_conn_new_scid",
+            // conn, scid*, scid_len(size_t), reset_token*, retire_if_needed(bool), scid_seq*
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_BOOLEAN, ADDRESS),
+        )
+    }
     private val hConnMigrate by lazy {
         downcall(
             "quiche_conn_migrate",
@@ -485,6 +492,23 @@ class FfmQuicheApi private constructor(
             localLen,
             seg(peerAddr),
             peerLen,
+            seg(seqOut),
+        ) as Int
+
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int =
+        hConnNewScid.invokeExact(
+            seg(conn.handle),
+            seg(scidAddr),
+            scidLen.toLong(),
+            seg(resetTokenAddr),
+            retireIfNeeded,
             seg(seqOut),
         ) as Int
 

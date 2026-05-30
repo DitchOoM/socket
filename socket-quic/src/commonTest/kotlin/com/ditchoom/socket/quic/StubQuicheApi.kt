@@ -302,6 +302,15 @@ internal class StubQuicheApi : QuicheApi {
         seqOut: Long,
     ) = 0
 
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ) = 0
+
     override fun connMigrate(
         conn: QuicheConn,
         localAddr: Long,

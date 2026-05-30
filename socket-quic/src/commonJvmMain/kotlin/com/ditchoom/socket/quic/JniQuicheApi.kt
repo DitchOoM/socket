@@ -233,6 +233,15 @@ object JniQuicheApi : QuicheApi {
         seqOut: Long,
     ): Int = nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
 
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int = nConnNewScid(conn.handle, scidAddr, scidLen, resetTokenAddr, retireIfNeeded, seqOut)
+
     override fun connMigrate(
         conn: QuicheConn,
         localAddr: Long,
@@ -583,6 +592,15 @@ object JniQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
+        seqOut: Long,
+    ): Int
+
+    @JvmStatic private external fun nConnNewScid(
+        conn: Long,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
         seqOut: Long,
     ): Int
 

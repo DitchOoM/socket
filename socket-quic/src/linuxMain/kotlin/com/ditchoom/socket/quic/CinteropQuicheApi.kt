@@ -39,6 +39,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_timed_out
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
+import com.ditchoom.socket.quic.quiche.quiche_conn_new_scid
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
@@ -356,6 +357,23 @@ internal object CinteropQuicheApi : QuicheApi {
             localLen.convert(),
             peerAddr.toCPointer()!!,
             peerLen.convert(),
+            seqOut.toCPointer<ULongVar>()!!,
+        )
+
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int =
+        quiche_conn_new_scid(
+            conn.handle.toCPointer()!!,
+            scidAddr.toCPointer()!!,
+            scidLen.convert(),
+            resetTokenAddr.toCPointer()!!,
+            retireIfNeeded,
             seqOut.toCPointer<ULongVar>()!!,
         )
 
