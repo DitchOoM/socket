@@ -15,6 +15,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 /* Package: com.ditchoom.socket.quic */
 /* Class: JniQuicheApi */
@@ -57,6 +60,11 @@ JNIEXPORT void JNICALL JNI_FN(nConfigSetMaxSendUdpPayloadSize)(
 JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialMaxData)(
     JNIEnv *env, jclass cls, jlong config, jlong v) {
     quiche_config_set_initial_max_data((quiche_config *)(uintptr_t)config, (uint64_t)v);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigSetActiveConnectionIdLimit)(
+    JNIEnv *env, jclass cls, jlong config, jlong v) {
+    quiche_config_set_active_connection_id_limit((quiche_config *)(uintptr_t)config, (uint64_t)v);
 }
 
 JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialMaxStreamDataBidiLocal)(
@@ -247,6 +255,18 @@ JNIEXPORT jint JNICALL JNI_FN(nConnProbePath)(
         (uint64_t *)(uintptr_t)seq_out);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nConnNewScid)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong scid_addr, jint scid_len,
+    jlong reset_token_addr, jboolean retire_if_needed, jlong seq_out) {
+    return (jint)quiche_conn_new_scid(
+        (quiche_conn *)(uintptr_t)conn,
+        (const uint8_t *)(uintptr_t)scid_addr, (size_t)scid_len,
+        (const uint8_t *)(uintptr_t)reset_token_addr,
+        (bool)retire_if_needed,
+        (uint64_t *)(uintptr_t)seq_out);
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnMigrate)(
     JNIEnv *env, jclass cls,
     jlong conn, jlong local_addr, jint local_len,
@@ -432,4 +452,54 @@ JNIEXPORT jlong JNICALL JNI_FN(nSendInfoToAddr)(JNIEnv *env, jclass cls, jlong p
 JNIEXPORT jint JNICALL JNI_FN(nSendInfoToAddrLen)(JNIEnv *env, jclass cls, jlong ptr) {
     quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
     return (jint)info->to_len;
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nSendInfoFromAddr)(JNIEnv *env, jclass cls, jlong ptr) {
+    quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
+    return (jlong)(uintptr_t)&info->from;
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nSendInfoFromAddrLen)(JNIEnv *env, jclass cls, jlong ptr) {
+    quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
+    return (jint)info->from_len;
+}
+
+/* --- sockaddr decode (slice 3 migration) ---
+ * Native code knows the platform's sockaddr layout (sa_family value, field
+ * offsets), so the JVM side never branches on OS for the JNI backend. The
+ * returned address bits are an opaque identity (network byte order, as stored)
+ * — only ever compared, never reconstructed. */
+
+JNIEXPORT jint JNICALL JNI_FN(nSockAddrFamily)(JNIEnv *env, jclass cls, jlong addr) {
+    struct sockaddr *sa = (struct sockaddr *)(uintptr_t)addr;
+    if (!sa) return 0;
+    if (sa->sa_family == AF_INET) return 4;
+    if (sa->sa_family == AF_INET6) return 6;
+    return 0;
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nSockAddrPort)(JNIEnv *env, jclass cls, jlong addr) {
+    struct sockaddr *sa = (struct sockaddr *)(uintptr_t)addr;
+    if (sa->sa_family == AF_INET) return (jint)ntohs(((struct sockaddr_in *)sa)->sin_port);
+    if (sa->sa_family == AF_INET6) return (jint)ntohs(((struct sockaddr_in6 *)sa)->sin6_port);
+    return 0;
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV4)(JNIEnv *env, jclass cls, jlong addr) {
+    struct sockaddr_in *sa = (struct sockaddr_in *)(uintptr_t)addr;
+    return (jlong)(uint32_t)sa->sin_addr.s_addr;
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV6Hi)(JNIEnv *env, jclass cls, jlong addr) {
+    struct sockaddr_in6 *sa = (struct sockaddr_in6 *)(uintptr_t)addr;
+    uint64_t hi;
+    memcpy(&hi, &sa->sin6_addr.s6_addr[0], 8);
+    return (jlong)hi;
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV6Lo)(JNIEnv *env, jclass cls, jlong addr) {
+    struct sockaddr_in6 *sa = (struct sockaddr_in6 *)(uintptr_t)addr;
+    uint64_t lo;
+    memcpy(&lo, &sa->sin6_addr.s6_addr[8], 8);
+    return (jlong)lo;
 }

@@ -102,6 +102,13 @@ data class QuicOptions(
     val initialCongestionWindowPackets: Long? = null,
     /** Disable active connection migration. */
     val disableActiveMigration: Boolean = false,
+    /**
+     * Number of connection IDs the endpoint is willing to maintain (RFC 9000 §5.1.1,
+     * `active_connection_id_limit`). Must be >= 2 for active migration: the peer issues
+     * up to this many NEW_CONNECTION_ID frames, and migrating to a new path consumes one
+     * spare destination CID. Default 4 leaves headroom for a few migrations.
+     */
+    val activeConnectionIdLimit: Long = 4,
     /** Verify the peer's TLS certificate. */
     val verifyPeer: Boolean = true,
     /** Enable Path MTU Discovery. */

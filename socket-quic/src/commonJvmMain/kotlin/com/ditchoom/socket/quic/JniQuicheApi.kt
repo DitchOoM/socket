@@ -79,6 +79,11 @@ object JniQuicheApi : QuicheApi {
         v: Boolean,
     ) = nConfigSetDisableActiveMigration(config.handle, v)
 
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) = nConfigSetActiveConnectionIdLimit(config.handle, v)
+
     override fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,
@@ -228,6 +233,15 @@ object JniQuicheApi : QuicheApi {
         seqOut: Long,
     ): Int = nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
 
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int = nConnNewScid(conn.handle, scidAddr, scidLen, resetTokenAddr, retireIfNeeded, seqOut)
+
     override fun connMigrate(
         conn: QuicheConn,
         localAddr: Long,
@@ -364,6 +378,20 @@ object JniQuicheApi : QuicheApi {
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo): Int = nSendInfoToAddrLen(info.handle)
 
+    override fun sendInfoFromAddr(info: QuicheSendInfo): Long = nSendInfoFromAddr(info.handle)
+
+    override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int = nSendInfoFromAddrLen(info.handle)
+
+    override fun sockAddrFamily(addr: Long): Int = nSockAddrFamily(addr)
+
+    override fun sockAddrPort(addr: Long): Int = nSockAddrPort(addr)
+
+    override fun sockAddrV4(addr: Long): Long = nSockAddrV4(addr)
+
+    override fun sockAddrV6Hi(addr: Long): Long = nSockAddrV6Hi(addr)
+
+    override fun sockAddrV6Lo(addr: Long): Long = nSockAddrV6Lo(addr)
+
     private const val QUICHE_ERR_DONE = -1L
 
     // --- JNI externals (raw Long — JNI doesn't understand inline classes) ---
@@ -393,6 +421,11 @@ object JniQuicheApi : QuicheApi {
     )
 
     @JvmStatic private external fun nConfigSetInitialMaxData(
+        config: Long,
+        v: Long,
+    )
+
+    @JvmStatic private external fun nConfigSetActiveConnectionIdLimit(
         config: Long,
         v: Long,
     )
@@ -562,6 +595,15 @@ object JniQuicheApi : QuicheApi {
         seqOut: Long,
     ): Int
 
+    @JvmStatic private external fun nConnNewScid(
+        conn: Long,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int
+
     @JvmStatic private external fun nConnMigrate(
         conn: Long,
         localAddr: Long,
@@ -606,6 +648,20 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nSendInfoToAddr(ptr: Long): Long
 
     @JvmStatic private external fun nSendInfoToAddrLen(ptr: Long): Int
+
+    @JvmStatic private external fun nSendInfoFromAddr(ptr: Long): Long
+
+    @JvmStatic private external fun nSendInfoFromAddrLen(ptr: Long): Int
+
+    @JvmStatic private external fun nSockAddrFamily(addr: Long): Int
+
+    @JvmStatic private external fun nSockAddrPort(addr: Long): Int
+
+    @JvmStatic private external fun nSockAddrV4(addr: Long): Long
+
+    @JvmStatic private external fun nSockAddrV6Hi(addr: Long): Long
+
+    @JvmStatic private external fun nSockAddrV6Lo(addr: Long): Long
 
     // --- Server-side JNI externals ---
     @JvmStatic private external fun nConfigLoadCertChainFromPemFile(

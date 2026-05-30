@@ -23,6 +23,7 @@ import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.coroutineContext
+import kotlin.random.Random
 import kotlin.time.Duration
 
 /**
@@ -47,6 +48,17 @@ class QuicheDriver(
     private val udpChannel: UdpChannel,
     private val clientMode: Boolean = true,
     private val isServer: Boolean = false,
+    /**
+     * Connection-migration wiring (slice 3). All default to "disabled" so server-accepted
+     * drivers, unit-test fakes, and the no-migration platforms keep their single-path
+     * behaviour untouched. A client setup that supports migration passes the peer sockaddr,
+     * the primary local sockaddr, and a [UdpChannelFactory] for opening additional paths.
+     */
+    private val peerAddr: Long = 0L,
+    private val peerLen: Int = 0,
+    private val primaryLocalAddr: Long = 0L,
+    private val primaryLocalLen: Int = 0,
+    private val udpChannelFactory: UdpChannelFactory? = null,
     /**
      * Called from [cleanup] after all quiche handles have been freed. Used by callers
      * to release platform-owned memory referenced by [recvInfo] (peer/local sockaddrs)
@@ -104,12 +116,80 @@ class QuicheDriver(
             null
         }
 
+    /**
+     * One network path the connection can send/receive on. The connection always has
+     * a [primary] path; active migration ([handleMigrate]) opens more. Routing stays
+     * dormant while there is a single path — [flushOutgoing] sends straight to
+     * [primary] and never decodes — so single-path behaviour is byte-for-byte unchanged.
+     */
+    private inner class PathEntry(
+        val key: PathKey,
+        val channel: UdpChannel,
+        val recvInfo: QuicheRecvInfo,
+        val localAddr: Long,
+        val localLen: Int,
+        val isPrimary: Boolean,
+        val release: () -> Unit,
+    ) {
+        var readerJob: Job? = null
+    }
+
+    private val primary =
+        PathEntry(
+            key = if (primaryLocalAddr != 0L) api.decodePathKey(primaryLocalAddr) else PathKey(0, 0, 0L, 0L),
+            channel = udpChannel,
+            recvInfo = recvInfo,
+            localAddr = primaryLocalAddr,
+            localLen = primaryLocalLen,
+            isPrimary = true,
+            // Primary sockaddr lifetime is owned by the connection setup's onCleanup; nothing to release here.
+            release = {},
+        )
+    private val paths = mutableMapOf(primary.key to primary)
+
+    /** True only for a client connection wired with a [UdpChannelFactory] and peer/local sockaddrs. */
+    private val migrationEnabled: Boolean = clientMode && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L
+
+    private var activeKey: PathKey = primary.key
+    private var pendingMigration: PendingMigration? = null
+    private var spareCidsIssued = false
+
+    private val _pathState = MutableStateFlow(PathInfo())
+    val pathState: StateFlow<PathInfo> = _pathState
+
+    private var driverScope: CoroutineScope? = null
+
+    // Native scratch for the uint64 seq-out of new_scid/probe/migrate. Allocated for every
+    // connection — even non-migrating ones issue spare CIDs so a future peer migration works.
+    private val seqScratch: PlatformBuffer = bufferFactory.allocate(8)
+
+    // sockaddr_storage out-words connPathEventNext fills — only migration-capable clients poll events.
+    private val peLocalOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(SOCKADDR_STORAGE_SIZE) else null
+    private val peLocalLenOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(4) else null
+    private val pePeerOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(SOCKADDR_STORAGE_SIZE) else null
+    private val pePeerLenOut: PlatformBuffer? = if (migrationEnabled) bufferFactory.allocate(4) else null
+
+    private fun addr(buf: PlatformBuffer?): Long = if (buf == null) 0L else buf.nativeMemoryAccess!!.nativeAddress.toLong()
+
+    private inner class PendingMigration(
+        val key: PathKey,
+        val localHost: String?,
+        val localPort: Int,
+        val result: CompletableDeferred<MigrationResult>,
+    )
+
     fun start(scope: CoroutineScope) {
+        driverScope = scope
         driverJob = scope.launch(Dispatchers.Default) { run() }
 
         if (clientMode) {
-            scope.launch(Dispatchers.Default) { udpReaderLoop() }
+            startReaderLoop(primary)
         }
+    }
+
+    private fun startReaderLoop(entry: PathEntry) {
+        val scope = driverScope ?: return
+        entry.readerJob = scope.launch(Dispatchers.Default) { udpReaderLoop(entry) }
     }
 
     /**
@@ -133,7 +213,11 @@ class QuicheDriver(
                     }
                 // null from onReceiveCatching means channel closed — exit
                 if (cmd == null && commands.isClosedForReceive) break
-                if (cmd != null) execute(cmd) else api.connOnTimeout(conn)
+                when {
+                    cmd is QuicheCmd.Migrate -> handleMigrate(cmd) // suspends: opens a socket
+                    cmd != null -> execute(cmd)
+                    else -> api.connOnTimeout(conn)
+                }
                 afterCommand()
             }
         } finally {
@@ -148,7 +232,10 @@ class QuicheDriver(
                     cmd.buf.nativeMemoryAccess!!
                         .nativeAddress
                         .toLong()
-                api.connRecv(conn, addr, cmd.len, recvInfo)
+                // Hand quiche the recv_info of the path the packet arrived on (local addr = that
+                // socket's). Null key / unknown path falls back to primary — single-path is unchanged.
+                val info = cmd.pathKey?.let { paths[it]?.recvInfo } ?: recvInfo
+                api.connRecv(conn, addr, cmd.len, info)
                 cmd.buf.freeNativeMemory()
             }
 
@@ -174,11 +261,19 @@ class QuicheDriver(
                 api.connClose(conn, cmd.error)
                 cmd.result.complete(Unit)
             }
+
+            is QuicheCmd.Migrate -> handleMigrateSync(cmd) // routed via run() to handleMigrate; defensive only
         }
+    }
+
+    /** Unreachable in practice — [run] routes [QuicheCmd.Migrate] to the suspending [handleMigrate]. */
+    private fun handleMigrateSync(cmd: QuicheCmd.Migrate) {
+        cmd.result.complete(MigrationResult.Failed("migrate dispatched on non-suspending path"))
     }
 
     private suspend fun afterCommand() {
         flushOutgoing()
+        if (migrationEnabled) drainPathEvents()
         discoverNewStreams()
         updateState()
     }
@@ -209,6 +304,7 @@ class QuicheDriver(
     private fun updateState() {
         if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
             _state.value = QuicConnectionState.Established("h3")
+            issueSpareCids()
         }
         if (api.connIsClosed(conn) && _state.value !is QuicConnectionState.Closed) {
             _state.value = QuicConnectionState.Closed(null)
@@ -220,8 +316,16 @@ class QuicheDriver(
         while (true) {
             val written = api.connSend(conn, sendAddr, MAX_DATAGRAM_SIZE, sendInfo)
             if (written <= 0) break
+            // Route by the local egress address quiche chose. With a single path this is
+            // dormant — send straight to primary, no decode — so the common case is unchanged.
+            val channel =
+                if (paths.size <= 1) {
+                    primary.channel
+                } else {
+                    paths[api.decodePathKey(api.sendInfoFromAddr(sendInfo))]?.channel ?: primary.channel
+                }
             try {
-                udpChannel.send(udpSendBuf, written)
+                channel.send(udpSendBuf, written)
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
             } catch (_: Exception) {
@@ -239,30 +343,188 @@ class QuicheDriver(
     }
 
     /**
-     * Client-mode: async UDP reader using [UdpChannel].
-     * Suspends until data arrives — zero CPU when no packets.
+     * Client-mode: async UDP reader for one [entry]'s socket. Suspends until data
+     * arrives — zero CPU when no packets. Tags each packet with [PathEntry.key] so
+     * the driver feeds quiche the right recv_info during migration.
      */
-    private suspend fun udpReaderLoop() {
+    private suspend fun udpReaderLoop(entry: PathEntry) {
         val pool = recvBufPool!!
         try {
             while (coroutineContext[Job]?.isActive != false) {
                 val buf = pool.allocate(MAX_DATAGRAM_SIZE)
                 val received =
                     try {
-                        udpChannel.receive(buf)
+                        entry.channel.receive(buf)
                     } catch (_: Exception) {
                         buf.freeNativeMemory()
                         if (commands.isClosedForSend) return
                         continue
                     }
                 if (received > 0) {
-                    commands.send(QuicheCmd.RecvPacket(buf, received))
+                    commands.send(QuicheCmd.RecvPacket(buf, received, entry.key))
                 } else {
                     buf.freeNativeMemory()
                 }
             }
         } catch (_: ClosedSendChannelException) {
             // Driver closed
+        }
+    }
+
+    /**
+     * Open a new local path, probe it, and arm [pendingMigration]; [drainPathEvents]
+     * completes the switch once the peer validates the path. Suspends to open the socket.
+     */
+    private suspend fun handleMigrate(cmd: QuicheCmd.Migrate) {
+        val factory = udpChannelFactory
+        if (!migrationEnabled || factory == null) {
+            cmd.result.complete(MigrationResult.Unsupported)
+            return
+        }
+        if (pendingMigration != null) {
+            cmd.result.complete(MigrationResult.Failed("a migration is already in progress"))
+            return
+        }
+        if (api.connAvailableDcids(conn) <= 0L) {
+            cmd.result.complete(MigrationResult.Failed("no spare destination connection id available"))
+            return
+        }
+
+        val newPath =
+            try {
+                factory.openPath(cmd.localHost, cmd.localPort)
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                cmd.result.complete(MigrationResult.Failed("openPath failed: ${e.message}"))
+                return
+            }
+
+        val key = api.decodePathKey(newPath.localSockAddrAddress)
+        val pathRecvInfo = api.recvInfoNew(peerAddr, peerLen, newPath.localSockAddrAddress, newPath.localSockAddrLength)
+        val entry =
+            PathEntry(
+                key = key,
+                channel = newPath.channel,
+                recvInfo = pathRecvInfo,
+                localAddr = newPath.localSockAddrAddress,
+                localLen = newPath.localSockAddrLength,
+                isPrimary = false,
+                release = newPath.release,
+            )
+        paths[key] = entry
+
+        val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, peerAddr, peerLen, addr(seqScratch))
+        if (rc < 0) {
+            teardownPath(entry)
+            cmd.result.complete(MigrationResult.Failed("probe_path failed: rc=$rc"))
+            return
+        }
+
+        pendingMigration = PendingMigration(key, cmd.localHost, cmd.localPort, cmd.result)
+        _pathState.value = PathInfo(MigrationPhase.Probing, cmd.localHost, cmd.localPort)
+        startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
+    }
+
+    /** Poll and react to quiche path events (validation, failure, path close). Migration-clients only. */
+    private fun drainPathEvents() {
+        while (true) {
+            val type = api.connPathEventNext(conn, addr(peLocalOut), addr(peLocalLenOut), addr(pePeerOut), addr(pePeerLenOut)) ?: break
+            when (type) {
+                QuichePathEventType.Validated -> {
+                    val key = api.decodePathKey(addr(peLocalOut))
+                    val pending = pendingMigration ?: continue
+                    if (pending.key != key) continue
+                    val entry = paths[key]
+                    if (entry == null) {
+                        completeMigration(pending, MigrationResult.Failed("validated path missing"), MigrationPhase.Failed)
+                        continue
+                    }
+                    _pathState.value = PathInfo(MigrationPhase.Validated, pending.localHost, pending.localPort)
+                    val rc = api.connMigrate(conn, entry.localAddr, entry.localLen, peerAddr, peerLen, addr(seqScratch))
+                    if (rc >= 0) {
+                        activeKey = key
+                        completeMigration(pending, MigrationResult.Succeeded(pending.localHost, pending.localPort), MigrationPhase.Migrated)
+                    } else {
+                        completeMigration(pending, MigrationResult.Failed("migrate failed: rc=$rc"), MigrationPhase.Failed)
+                    }
+                }
+
+                QuichePathEventType.FailedValidation -> {
+                    val key = api.decodePathKey(addr(peLocalOut))
+                    val pending = pendingMigration
+                    if (pending != null && pending.key == key) {
+                        paths[key]?.let { teardownPath(it) }
+                        completeMigration(pending, MigrationResult.Failed("path validation failed"), MigrationPhase.Failed)
+                    }
+                }
+
+                QuichePathEventType.Closed -> {
+                    val key = api.decodePathKey(addr(peLocalOut))
+                    paths[key]?.let { if (!it.isPrimary) teardownPath(it) }
+                }
+
+                QuichePathEventType.New,
+                QuichePathEventType.PeerMigrated,
+                QuichePathEventType.ReusedSourceConnectionId,
+                -> {
+                    // Server-side / informational events — no client action for active migration.
+                }
+            }
+        }
+    }
+
+    private fun completeMigration(
+        pending: PendingMigration,
+        result: MigrationResult,
+        phase: MigrationPhase,
+    ) {
+        _pathState.value = PathInfo(phase, pending.localHost, pending.localPort)
+        pending.result.complete(result)
+        pendingMigration = null
+    }
+
+    /** Cancel a non-primary path's reader, close its socket, and free its recv_info + sockaddr. */
+    private fun teardownPath(entry: PathEntry) {
+        if (entry.isPrimary) return
+        paths.remove(entry.key)
+        entry.readerJob?.cancel()
+        try {
+            entry.channel.close()
+        } catch (_: Exception) {
+        }
+        api.recvInfoFree(entry.recvInfo) // free recv_info before the sockaddr it references
+        entry.release()
+    }
+
+    /**
+     * Supply spare source connection IDs to the peer once established. quiche does not
+     * auto-issue CIDs, so without this the peer has no spare destination CID to migrate
+     * to ([connAvailableDcids] stays 0). Issued once per connection (both ends), bounded
+     * by [connScidsLeft] (which reflects the peer's active_connection_id_limit).
+     */
+    private fun issueSpareCids() {
+        if (spareCidsIssued) return
+        spareCidsIssued = true
+        var count = 0
+        while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
+            val scid = generateScid(bufferFactory) // 20 random bytes, reset for read
+            val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
+            repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(Random.nextInt(256).toByte()) }
+            token.resetForRead()
+            val rc =
+                api.connNewScid(
+                    conn,
+                    scid.nativeMemoryAccess!!.nativeAddress.toLong(),
+                    QUIC_MAX_CONN_ID_LEN,
+                    token.nativeMemoryAccess!!.nativeAddress.toLong(),
+                    true,
+                    addr(seqScratch),
+                )
+            scid.freeNativeMemory()
+            token.freeNativeMemory()
+            if (rc < 0) break
+            count++
         }
     }
 
@@ -274,14 +536,36 @@ class QuicheDriver(
             failCommand(cmd)
         }
 
+        // A migration still in flight when the connection dies never completes — fail it.
+        pendingMigration?.result?.complete(MigrationResult.Failed("connection closed"))
+        pendingMigration = null
+
         for (slot in streams.values) {
             slot.dataSignal.close()
         }
         streams.clear()
         api.connFree(conn)
+        // Tear down any non-primary migration paths: cancel reader, close socket, free
+        // recv_info before its sockaddr. Iterate a copy — teardown logic mutates `paths`.
+        for (entry in paths.values.toList()) {
+            if (entry.isPrimary) continue
+            entry.readerJob?.cancel()
+            try {
+                entry.channel.close()
+            } catch (_: Exception) {
+            }
+            api.recvInfoFree(entry.recvInfo)
+            entry.release()
+        }
+        paths.clear()
         api.recvInfoFree(recvInfo)
         api.sendInfoFree(sendInfo)
         udpSendBuf.freeNativeMemory()
+        seqScratch.freeNativeMemory()
+        peLocalOut?.freeNativeMemory()
+        peLocalLenOut?.freeNativeMemory()
+        pePeerOut?.freeNativeMemory()
+        pePeerLenOut?.freeNativeMemory()
         // commands.tryReceive() drain above freed any pending RecvPackets
         // back to the pool. Late releases from an in-flight udpReaderLoop
         // iteration are benign — they repopulate the pool, which is GC'd
@@ -304,6 +588,7 @@ class QuicheDriver(
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
             is QuicheCmd.StreamSend -> cmd.result.complete(-1)
             is QuicheCmd.Close -> cmd.result.complete(Unit)
+            is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Failed("connection closed"))
         }
     }
 
@@ -314,6 +599,15 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /** Size of a `sockaddr_storage` — the out-buffers quiche fills for path events. */
+        const val SOCKADDR_STORAGE_SIZE = 128
+
+        /** QUIC stateless-reset token length (RFC 9000 §10.3) — fixed 16 bytes. */
+        const val STATELESS_RESET_TOKEN_LEN = 16
+
+        /** Cap on spare source CIDs issued per connection (bounded further by connScidsLeft). */
+        const val MAX_SPARE_SCIDS = 3
     }
 }
 

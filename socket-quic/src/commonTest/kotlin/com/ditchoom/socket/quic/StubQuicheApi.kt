@@ -82,6 +82,11 @@ internal class StubQuicheApi : QuicheApi {
         v: Boolean,
     ) {}
 
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) {}
+
     override fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,
@@ -273,6 +278,20 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo) = 0
 
+    override fun sendInfoFromAddr(info: QuicheSendInfo) = 0L
+
+    override fun sendInfoFromAddrLen(info: QuicheSendInfo) = 0
+
+    override fun sockAddrFamily(addr: Long) = 0
+
+    override fun sockAddrPort(addr: Long) = 0
+
+    override fun sockAddrV4(addr: Long) = 0L
+
+    override fun sockAddrV6Hi(addr: Long) = 0L
+
+    override fun sockAddrV6Lo(addr: Long) = 0L
+
     // --- Path migration (no-ops) ---
     override fun connProbePath(
         conn: QuicheConn,
@@ -280,6 +299,15 @@ internal class StubQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
+        seqOut: Long,
+    ) = 0
+
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
         seqOut: Long,
     ) = 0
 

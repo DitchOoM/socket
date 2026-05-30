@@ -85,6 +85,11 @@ interface QuicheApi {
         v: Boolean,
     )
 
+    fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    )
+
     fun configVerifyPeer(
         config: QuicheConfig,
         v: Boolean,
@@ -228,6 +233,22 @@ interface QuicheApi {
     ): Int
 
     /**
+     * Supply a spare source connection ID to the peer (`quiche_conn_new_scid`). quiche does
+     * not auto-issue CIDs — without this the peer never gets a NEW_CONNECTION_ID and has no
+     * spare destination CID to migrate to. [scidAddr] points at a [scidLen]-byte CID,
+     * [resetTokenAddr] at a 16-byte stateless-reset token; the issued sequence number is
+     * written to [seqOut]. Returns the sequence number (>= 0) or a negative quiche error.
+     */
+    fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int
+
+    /**
      * Migrate the connection to the given local/peer path. Returns 0 on success or a negative
      * quiche error code. [seqOut] is the native address of a `uint64_t` buffer the implementation
      * writes the migrated path's sequence number to.
@@ -358,4 +379,36 @@ interface QuicheApi {
     fun sendInfoToAddr(info: QuicheSendInfo): Long
 
     fun sendInfoToAddrLen(info: QuicheSendInfo): Int
+
+    /**
+     * Native pointer to the `from` (local egress) sockaddr quiche filled in after
+     * [connSend]. Mirror of [sendInfoToAddr]. Used by the multi-socket driver to
+     * route each outgoing datagram to the path socket bound to this local address
+     * (slice 3 connection migration). The pointer is into the send_info struct and
+     * is valid until the next [connSend] overwrites it.
+     */
+    fun sendInfoFromAddr(info: QuicheSendInfo): Long
+
+    fun sendInfoFromAddrLen(info: QuicheSendInfo): Int
+
+    // --- sockaddr decode (slice 3 migration) ---
+    // Reverse of SockAddrUtil's encode. The JNI backend forwards to native helpers in
+    // quiche_jni.c (native code knows the platform's sockaddr layout — BSD sin_len,
+    // AF_INET6 = 10/30/23); FFM and cinterop read the struct directly. Used to turn the
+    // raw sockaddr quiche fills (sendInfo.from, path-event addresses) into a [PathKey].
+
+    /** IP version of the sockaddr at native [addr]: 4 (IPv4), 6 (IPv6), or 0 (unknown). */
+    fun sockAddrFamily(addr: Long): Int
+
+    /** UDP port (host byte order) of the sockaddr at [addr]. */
+    fun sockAddrPort(addr: Long): Int
+
+    /** IPv4 address bits of the sockaddr at [addr] — opaque identity, valid when family == 4. */
+    fun sockAddrV4(addr: Long): Long
+
+    /** High 8 bytes of the IPv6 address at [addr] — opaque identity, valid when family == 6. */
+    fun sockAddrV6Hi(addr: Long): Long
+
+    /** Low 8 bytes of the IPv6 address at [addr] — opaque identity, valid when family == 6. */
+    fun sockAddrV6Lo(addr: Long): Long
 }
