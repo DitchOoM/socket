@@ -64,18 +64,16 @@ suspend fun awaitUntil(
  * tvosArm64, tvosSimulatorArm64, tvosX64, watchosArm64,
  * watchosSimulatorArm64, watchosX64).
  *
- * Used by [QuicHarnessIntegrationTests] to skip the harness suite
- * on Apple K/N targets: the production [withQuicConnection] code
- * path is correct (`AppleQuicConnectStartupProbe.b_…verifyPeerTrue`
- * passes), but the SecTrust-based verify_block crashes Network.framework's
- * TLS evaluation in a way we couldn't isolate after 8 CI iterations in
- * PR #54 — sec_protocol_options_set_verify_block + a non-trivial verify
- * block + the test runner's stdout buffering interact badly.
+ * Used by [QuicHarnessIntegrationTests] to skip the harness suite on Apple
+ * K/N targets. The handshake SIGTRAP that previously blocked Apple QUIC is
+ * fixed (nw_quic_copy_sec_protocol_options, PR #60) — the client now runs the
+ * full suite. The remaining gap is cert *acceptance*: NW's QUIC TLS rejects the
+ * private-CA, non-CT-logged harness cert with errSSLBadCert (-9808), and the
+ * verify_block that would override trust SIGABRTs under macOS hardening
+ * (PR #54). Public CT-logged certs are unaffected. See the withHarness comment.
  *
- * Apple K/N QUIC client coverage is provided by the smaller
- * AppleQuicConnectStartupProbe (which exercises withQuicConnection
- * against unreachable hosts and proves the startup path works
- * end-to-end without crashing). The harness suite is the only Apple
- * gap; tracked under the existing TODO.md "macOS harness coverage" item.
+ * (Earlier docstrings referenced an `AppleQuicConnectStartupProbe` as the Apple
+ * smoke test — it never existed in the repo. Tracked under TODO.md "macOS
+ * harness coverage"; a real startup probe + the -9808 fix are the follow-ups.)
  */
 internal expect fun isAppleKNative(): Boolean

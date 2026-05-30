@@ -182,22 +182,10 @@ jobs:
         continue-on-error: true
         run: |
           set -x
-          CERTS=test-harness/tls/certs
           bash test-harness/tls/gen-certs.sh
           sudo security add-trusted-cert -d -r trustRoot \
-            -k /Library/Keychains/System.keychain "$CERTS/ca.crt"
-          # -9808 (errSSLBadCert) diagnostics — pin whether it's trust/chain/format.
-          # macOS ships LibreSSL: use -text/-dates (works), NOT -ext (unsupported).
-          echo "=== valid.crt details ==="
-          openssl x509 -in "$CERTS/valid.crt" -noout -subject -issuer -dates -text 2>/dev/null | \
-            grep -E "Subject:|Issuer:|Not Before|Not After|DNS:|IP Address|Public-Key|Signature Algorithm|Server Authentication|CA:" || true
-          echo "=== openssl chain verify (leaf vs CA) ==="
-          openssl verify -CAfile "$CERTS/ca.crt" "$CERTS/valid.crt" || true
-          echo "=== keychain: harness-root present? ==="
-          security find-certificate -c harness-root /Library/Keychains/System.keychain >/dev/null 2>&1 \
-            && echo "harness-root FOUND in System keychain" || echo "harness-root NOT FOUND"
-          echo "=== security verify-cert (ssl policy) ==="
-          security verify-cert -c "$CERTS/valid.crt" -p ssl 2>&1 || true
+            -k /Library/Keychains/System.keychain \
+            test-harness/tls/certs/ca.crt
 
       - name: Build quic-echo fat jar with macOS dylibs
         continue-on-error: true
@@ -289,30 +277,6 @@ jobs:
             -Pkotlin.native.debug.exceptions=true \
             ${{ inputs.gradle-args }} 2>&1 \
             | tee /tmp/socket-quic-apple.log
-
-      # The Apple QUIC client crashes the K/N test binary (exit 133 / SIGTRAP)
-      # during the handshake with no Kotlin stack, even with
-      # -Pkotlin.native.debug.exceptions=true. macOS writes a full faulting-
-      # thread backtrace to ~/Library/Logs/DiagnosticReports/*.ips — dump the
-      # most recent test.kexe reports so we can see WHERE it dies (SecTrust /
-      # Network.framework QUIC / libquiche / cinterop bridge) instead of
-      # guessing. Phase 2 macOS-peer spike diagnostics.
-      - name: Dump K/N crash reports (Apple QUIC)
-        if: always()
-        continue-on-error: true
-        run: |
-          echo "=== DiagnosticReports (test.kexe / socket-quic) ==="
-          for d in "$HOME/Library/Logs/DiagnosticReports" "/Library/Logs/DiagnosticReports"; do
-            [ -d "$d" ] || continue
-            ls -lt "$d" 2>/dev/null | head -20
-            for f in $(ls -t "$d"/*.ips "$d"/*.crash 2>/dev/null | head -5); do
-              echo "----- $f -----"
-              # .ips files are JSON-ish; print the whole thing — they're small
-              # and contain the faulting thread's symbolicated frames.
-              cat "$f" 2>/dev/null | head -300
-            done
-          done
-          echo "=== end crash reports ==="
 
       - name: Stop quic-echo + capture log
         if: always() && steps.launch-quic-echo.outputs.ready == 'true'
