@@ -259,6 +259,24 @@ interface QuicheApi {
     /** Returns the number of source connection IDs that are still left to be provided to the peer. */
     fun connScidsLeft(conn: QuicheConn): Long
 
+    /**
+     * Poll and CONSUME the next path event (frees it before returning). Returns the
+     * event type, or null if none pending. For every type except
+     * [QuichePathEventType.ReusedSourceConnectionId], fills the caller-provided
+     * sockaddr_storage native buffers [localOut]/[peerOut] and the socklen_t out-words
+     * [localLenOut]/[peerLenOut] with the event's local/peer addresses. For
+     * ReusedSourceConnectionId the type is returned but addresses are NOT surfaced
+     * (its extra old/new-tuple + CID-seq fields are out of scope this slice); set
+     * both length out-words to 0 in that case.
+     */
+    fun connPathEventNext(
+        conn: QuicheConn,
+        localOut: Long,
+        localLenOut: Long,
+        peerOut: Long,
+        peerLenOut: Long,
+    ): QuichePathEventType?
+
     // --- Server-side ---
 
     fun configLoadCertChainFromPemFile(
