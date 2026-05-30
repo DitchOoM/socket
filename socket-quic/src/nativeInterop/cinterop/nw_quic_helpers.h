@@ -12,6 +12,13 @@
 #import <Foundation/Foundation.h>
 #import <Network/Network.h>
 #import <dispatch/dispatch.h>
+#include <stdio.h>
+
+// Diagnostic tracing for the macOS-peer handshake SIGTRAP (exit 133). stderr is
+// flushed after every line so the last line printed before the trap localizes
+// it (NW params block / our K/N callback / downstream). Remove once the Apple
+// QUIC handshake is green. See PR #60 / TODO macOS-peer item.
+#define NWQ_TRACE(...) do { fprintf(stderr, "[nwquic] " __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); } while (0)
 
 #pragma mark - QUIC Connection Creation
 
@@ -47,6 +54,7 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     int32_t connection_timeout_seconds)
 {
     if (alpn_protocols.count == 0) return NULL;
+    NWQ_TRACE("create host=%s port=%u alpn=%lu", host, port, (unsigned long)alpn_protocols.count);
 
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%u", port);
@@ -54,15 +62,27 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     nw_endpoint_t endpoint = nw_endpoint_create_host(host, port_str);
     if (!endpoint) return NULL;
 
-    // Create QUIC parameters with TLS
-    nw_parameters_t params = nw_parameters_create_quic(
-        ^(nw_protocol_options_t _Nonnull tls_options) {
-            sec_protocol_options_t sec_options = nw_tls_copy_sec_protocol_options(tls_options);
+    // Retain an independent copy of the ALPN list so the async configure block
+    // below (run during nw_connection_start) never iterates a K/N-bridged
+    // NSArray proxy that may have been released by then (H3).
+    NSArray<NSString *> *alpn_copy = [alpn_protocols copy];
 
-            // Set ALPN protocols
-            for (NSString *proto in alpn_protocols) {
+    // Create QUIC parameters. The block configures the QUIC protocol options;
+    // ALPN comes from the QUIC-specific sec_protocol_options accessor
+    // (nw_quic_copy_sec_protocol_options) — NOT the generic TLS one. Calling
+    // nw_tls_copy_sec_protocol_options on a QUIC options object was the leading
+    // suspect for the handshake-start trap (H1): the block runs during
+    // nw_connection_start, matching "crashes the moment the handshake starts."
+    nw_parameters_t params = nw_parameters_create_quic(
+        ^(nw_protocol_options_t _Nonnull quic_options) {
+            NWQ_TRACE("params-block enter");
+            sec_protocol_options_t sec_options = nw_quic_copy_sec_protocol_options(quic_options);
+            NWQ_TRACE("params-block sec_options=%p", (void *)sec_options);
+
+            for (NSString *proto in alpn_copy) {
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
             }
+            NWQ_TRACE("params-block alpn set");
 
             // Cert verification: rely on Network.framework's default system trust.
             // verify_certs is intentionally unused — see header docstring for the
@@ -71,6 +91,7 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
         });
 
     if (!params) return NULL;
+    NWQ_TRACE("params created");
 
     // Note: QUIC idle timeout is managed by Network.framework internally.
     // The idle_timeout_seconds parameter is reserved for future use.
@@ -123,7 +144,9 @@ static inline void nw_helper_quic_set_state_handler(
                 }
             }
 
+            NWQ_TRACE("state-cb enter state=%d err=%d -> handler", mapped_state, err_code);
             handler(mapped_state, err_domain, err_code, err_desc);
+            NWQ_TRACE("state-cb handler returned (state=%d)", mapped_state);
         });
 }
 
@@ -234,8 +257,10 @@ static inline void nw_helper_quic_start(nw_connection_t _Nonnull connection) {
     dispatch_once(&quic_cb_queue_once, ^{
         quic_cb_queue = dispatch_queue_create("com.ditchoom.socket.quic.nw", DISPATCH_QUEUE_SERIAL);
     });
+    NWQ_TRACE("start: set_queue + nw_connection_start");
     nw_connection_set_queue(connection, quic_cb_queue);
     nw_connection_start(connection);
+    NWQ_TRACE("start: nw_connection_start returned");
 }
 
 static inline void nw_helper_quic_cancel(nw_connection_t _Nonnull connection) {
