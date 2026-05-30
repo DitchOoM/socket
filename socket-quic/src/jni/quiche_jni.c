@@ -275,6 +275,49 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnScidsLeft)(JNIEnv *env, jclass cls, jlong co
     return (jlong)quiche_conn_scids_left((quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nConnPathEventNext)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_out, jlong local_len_out,
+    jlong peer_out, jlong peer_len_out) {
+    quiche_path_event *ev = quiche_conn_path_event_next((quiche_conn *)(uintptr_t)conn);
+    if (!ev) return -1;
+    int t = quiche_path_event_type(ev);
+    switch (t) {
+        case 0:
+            quiche_path_event_new(ev,
+                (struct sockaddr_storage *)(uintptr_t)local_out, (socklen_t *)(uintptr_t)local_len_out,
+                (struct sockaddr_storage *)(uintptr_t)peer_out, (socklen_t *)(uintptr_t)peer_len_out);
+            break;
+        case 1:
+            quiche_path_event_validated(ev,
+                (struct sockaddr_storage *)(uintptr_t)local_out, (socklen_t *)(uintptr_t)local_len_out,
+                (struct sockaddr_storage *)(uintptr_t)peer_out, (socklen_t *)(uintptr_t)peer_len_out);
+            break;
+        case 2:
+            quiche_path_event_failed_validation(ev,
+                (struct sockaddr_storage *)(uintptr_t)local_out, (socklen_t *)(uintptr_t)local_len_out,
+                (struct sockaddr_storage *)(uintptr_t)peer_out, (socklen_t *)(uintptr_t)peer_len_out);
+            break;
+        case 3:
+            quiche_path_event_closed(ev,
+                (struct sockaddr_storage *)(uintptr_t)local_out, (socklen_t *)(uintptr_t)local_len_out,
+                (struct sockaddr_storage *)(uintptr_t)peer_out, (socklen_t *)(uintptr_t)peer_len_out);
+            break;
+        case 5:
+            quiche_path_event_peer_migrated(ev,
+                (struct sockaddr_storage *)(uintptr_t)local_out, (socklen_t *)(uintptr_t)local_len_out,
+                (struct sockaddr_storage *)(uintptr_t)peer_out, (socklen_t *)(uintptr_t)peer_len_out);
+            break;
+        case 4:
+            /* ReusedSourceConnectionId: extra old/new-tuple + CID-seq fields out of scope; surface no addresses. */
+            *(socklen_t *)(uintptr_t)local_len_out = 0;
+            *(socklen_t *)(uintptr_t)peer_len_out = 0;
+            break;
+    }
+    quiche_path_event_free(ev);
+    return (jint)t;
+}
+
 /* --- Server-side --- */
 
 JNIEXPORT jint JNICALL JNI_FN(nConfigLoadCertChainFromPemFile)(

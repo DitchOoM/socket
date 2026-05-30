@@ -39,6 +39,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_is_timed_out
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
+import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
@@ -51,6 +52,13 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_writable
 import com.ditchoom.socket.quic.quiche.quiche_connect
 import com.ditchoom.socket.quic.quiche.quiche_header_info
 import com.ditchoom.socket.quic.quiche.quiche_negotiate_version
+import com.ditchoom.socket.quic.quiche.quiche_path_event_closed
+import com.ditchoom.socket.quic.quiche.quiche_path_event_failed_validation
+import com.ditchoom.socket.quic.quiche.quiche_path_event_free
+import com.ditchoom.socket.quic.quiche.quiche_path_event_new
+import com.ditchoom.socket.quic.quiche.quiche_path_event_peer_migrated
+import com.ditchoom.socket.quic.quiche.quiche_path_event_type
+import com.ditchoom.socket.quic.quiche.quiche_path_event_validated
 import com.ditchoom.socket.quic.quiche.quiche_recv_info
 import com.ditchoom.socket.quic.quiche.quiche_send_info
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
@@ -377,6 +385,66 @@ internal object CinteropQuicheApi : QuicheApi {
     override fun connAvailableDcids(conn: QuicheConn): Long = quiche_conn_available_dcids(conn.handle.toCPointer()!!).toLong()
 
     override fun connScidsLeft(conn: QuicheConn): Long = quiche_conn_scids_left(conn.handle.toCPointer()!!).toLong()
+
+    override fun connPathEventNext(
+        conn: QuicheConn,
+        localOut: Long,
+        localLenOut: Long,
+        peerOut: Long,
+        peerLenOut: Long,
+    ): QuichePathEventType? {
+        val ev = quiche_conn_path_event_next(conn.handle.toCPointer()!!) ?: return null
+        val t = quiche_path_event_type(ev).value.toInt()
+        when (t) {
+            0 ->
+                quiche_path_event_new(
+                    ev,
+                    localOut.toCPointer()!!,
+                    localLenOut.toCPointer()!!,
+                    peerOut.toCPointer()!!,
+                    peerLenOut.toCPointer()!!,
+                )
+            1 ->
+                quiche_path_event_validated(
+                    ev,
+                    localOut.toCPointer()!!,
+                    localLenOut.toCPointer()!!,
+                    peerOut.toCPointer()!!,
+                    peerLenOut.toCPointer()!!,
+                )
+            2 ->
+                quiche_path_event_failed_validation(
+                    ev,
+                    localOut.toCPointer()!!,
+                    localLenOut.toCPointer()!!,
+                    peerOut.toCPointer()!!,
+                    peerLenOut.toCPointer()!!,
+                )
+            3 ->
+                quiche_path_event_closed(
+                    ev,
+                    localOut.toCPointer()!!,
+                    localLenOut.toCPointer()!!,
+                    peerOut.toCPointer()!!,
+                    peerLenOut.toCPointer()!!,
+                )
+            4 -> {
+                // ReusedSourceConnectionId: extra old/new-tuple + CID-seq fields out of scope; surface no addresses.
+                localLenOut.toCPointer<UIntVar>()!!.pointed.value = 0u
+                peerLenOut.toCPointer<UIntVar>()!!.pointed.value = 0u
+            }
+            5 ->
+                quiche_path_event_peer_migrated(
+                    ev,
+                    localOut.toCPointer()!!,
+                    localLenOut.toCPointer()!!,
+                    peerOut.toCPointer()!!,
+                    peerLenOut.toCPointer()!!,
+                )
+        }
+        quiche_path_event_free(ev)
+        return QuichePathEventType.entries[t]
+    }
 
     // --- Server-side ---
 

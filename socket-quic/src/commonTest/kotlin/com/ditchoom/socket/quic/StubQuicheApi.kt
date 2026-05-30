@@ -302,4 +302,12 @@ internal class StubQuicheApi : QuicheApi {
     override fun connAvailableDcids(conn: QuicheConn) = 0L
 
     override fun connScidsLeft(conn: QuicheConn) = 0L
+
+    override fun connPathEventNext(
+        conn: QuicheConn,
+        localOut: Long,
+        localLenOut: Long,
+        peerOut: Long,
+        peerLenOut: Long,
+    ): QuichePathEventType? = null
 }

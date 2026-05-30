@@ -174,6 +174,30 @@ class FfmQuicheApi private constructor(
     private val hConnScidsLeft by lazy {
         downcall("quiche_conn_scids_left", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
     }
+    private val hConnPathEventNext by lazy {
+        downcall("quiche_conn_path_event_next", FunctionDescriptor.of(ADDRESS, ADDRESS))
+    }
+    private val hPathEventType by lazy {
+        downcall("quiche_path_event_type", FunctionDescriptor.of(JAVA_INT, ADDRESS))
+    }
+    private val hPathEventNew by lazy {
+        downcall("quiche_path_event_new", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hPathEventValidated by lazy {
+        downcall("quiche_path_event_validated", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hPathEventFailedValidation by lazy {
+        downcall("quiche_path_event_failed_validation", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hPathEventClosed by lazy {
+        downcall("quiche_path_event_closed", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hPathEventPeerMigrated by lazy {
+        downcall("quiche_path_event_peer_migrated", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hPathEventFree by lazy {
+        downcall("quiche_path_event_free", FunctionDescriptor.ofVoid(ADDRESS))
+    }
 
     // --- Config ---
     override fun configNew(version: Int): QuicheConfig = QuicheConfig((hConfigNew.invokeExact(version) as MemorySegment).address())
@@ -486,6 +510,32 @@ class FfmQuicheApi private constructor(
     override fun connAvailableDcids(conn: QuicheConn): Long = hConnAvailableDcids.invokeExact(seg(conn.handle)) as Long
 
     override fun connScidsLeft(conn: QuicheConn): Long = hConnScidsLeft.invokeExact(seg(conn.handle)) as Long
+
+    override fun connPathEventNext(
+        conn: QuicheConn,
+        localOut: Long,
+        localLenOut: Long,
+        peerOut: Long,
+        peerLenOut: Long,
+    ): QuichePathEventType? {
+        val ev = hConnPathEventNext.invokeExact(seg(conn.handle)) as MemorySegment
+        if (ev.address() == 0L) return null
+        val type = hPathEventType.invokeExact(ev) as Int
+        when (type) {
+            0 -> hPathEventNew.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+            1 -> hPathEventValidated.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+            2 -> hPathEventFailedValidation.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+            3 -> hPathEventClosed.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+            4 -> {
+                // ReusedSourceConnectionId: extra old/new-tuple + CID-seq fields out of scope; surface no addresses.
+                seg(localLenOut).reinterpret(JAVA_INT.byteSize()).set(JAVA_INT, 0, 0)
+                seg(peerLenOut).reinterpret(JAVA_INT.byteSize()).set(JAVA_INT, 0, 0)
+            }
+            5 -> hPathEventPeerMigrated.invokeExact(ev, seg(localOut), seg(localLenOut), seg(peerOut), seg(peerLenOut))
+        }
+        hPathEventFree.invokeExact(ev)
+        return QuichePathEventType.entries[type]
+    }
 
     // --- Server-side ---
     private val hLoadCert by lazy {

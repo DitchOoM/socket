@@ -248,6 +248,17 @@ object JniQuicheApi : QuicheApi {
 
     override fun connScidsLeft(conn: QuicheConn): Long = nConnScidsLeft(conn.handle)
 
+    override fun connPathEventNext(
+        conn: QuicheConn,
+        localOut: Long,
+        localLenOut: Long,
+        peerOut: Long,
+        peerLenOut: Long,
+    ): QuichePathEventType? {
+        val raw = nConnPathEventNext(conn.handle, localOut, localLenOut, peerOut, peerLenOut)
+        return if (raw < 0) null else QuichePathEventType.entries[raw]
+    }
+
     // --- Server-side ---
     override fun configLoadCertChainFromPemFile(
         config: QuicheConfig,
@@ -570,6 +581,14 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnAvailableDcids(conn: Long): Long
 
     @JvmStatic private external fun nConnScidsLeft(conn: Long): Long
+
+    @JvmStatic private external fun nConnPathEventNext(
+        conn: Long,
+        localOut: Long,
+        localLenOut: Long,
+        peerOut: Long,
+        peerLenOut: Long,
+    ): Int
 
     @JvmStatic private external fun nRecvInfoNew(
         fromAddr: Long,
