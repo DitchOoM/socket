@@ -182,12 +182,22 @@ jobs:
         continue-on-error: true
         run: |
           set -x
+          CERTS=test-harness/tls/certs
           bash test-harness/tls/gen-certs.sh
           sudo security add-trusted-cert -d -r trustRoot \
-            -k /Library/Keychains/System.keychain \
-            test-harness/tls/certs/ca.crt
-          echo "valid.crt SAN:"
-          openssl x509 -in test-harness/tls/certs/valid.crt -noout -ext subjectAltName || true
+            -k /Library/Keychains/System.keychain "$CERTS/ca.crt"
+          # -9808 (errSSLBadCert) diagnostics — pin whether it's trust/chain/format.
+          # macOS ships LibreSSL: use -text/-dates (works), NOT -ext (unsupported).
+          echo "=== valid.crt details ==="
+          openssl x509 -in "$CERTS/valid.crt" -noout -subject -issuer -dates -text 2>/dev/null | \
+            grep -E "Subject:|Issuer:|Not Before|Not After|DNS:|IP Address|Public-Key|Signature Algorithm|Server Authentication|CA:" || true
+          echo "=== openssl chain verify (leaf vs CA) ==="
+          openssl verify -CAfile "$CERTS/ca.crt" "$CERTS/valid.crt" || true
+          echo "=== keychain: harness-root present? ==="
+          security find-certificate -c harness-root /Library/Keychains/System.keychain >/dev/null 2>&1 \
+            && echo "harness-root FOUND in System keychain" || echo "harness-root NOT FOUND"
+          echo "=== security verify-cert (ssl policy) ==="
+          security verify-cert -c "$CERTS/valid.crt" -p ssl 2>&1 || true
 
       - name: Build quic-echo fat jar with macOS dylibs
         continue-on-error: true

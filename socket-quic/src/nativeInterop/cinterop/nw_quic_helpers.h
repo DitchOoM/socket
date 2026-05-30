@@ -144,7 +144,9 @@ static inline void nw_helper_quic_set_state_handler(
                 }
             }
 
-            NWQ_TRACE("state-cb enter state=%d err=%d -> handler", mapped_state, err_code);
+            NWQ_TRACE("state-cb enter state=%d domain=%d code=%d desc=%s -> handler",
+                      mapped_state, err_domain, err_code,
+                      err_desc ? err_desc.UTF8String : "(nil)");
             handler(mapped_state, err_domain, err_code, err_desc);
             NWQ_TRACE("state-cb handler returned (state=%d)", mapped_state);
         });
