@@ -272,4 +272,34 @@ internal class StubQuicheApi : QuicheApi {
     override fun sendInfoToAddr(info: QuicheSendInfo) = 0L
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo) = 0
+
+    // --- Path migration (no-ops) ---
+    override fun connProbePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ) = 0
+
+    override fun connMigrate(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ) = 0
+
+    override fun connMigrateSource(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        seqOut: Long,
+    ) = 0
+
+    override fun connAvailableDcids(conn: QuicheConn) = 0L
+
+    override fun connScidsLeft(conn: QuicheConn) = 0L
 }
