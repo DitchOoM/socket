@@ -218,7 +218,23 @@ static inline void nw_helper_quic_send(
 #pragma mark - QUIC Connection Start/Cancel
 
 static inline void nw_helper_quic_start(nw_connection_t _Nonnull connection) {
-    nw_connection_set_queue(connection, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    // Network.framework delivers ALL handler blocks (state-changed, receive,
+    // send-complete) on the queue set here. A global *concurrent* queue lets
+    // those blocks run simultaneously on different threads — each invokes a
+    // Kotlin/Native lambda that resumes a coroutine continuation, so concurrent
+    // delivery means concurrent K/N callbacks racing on the same continuation
+    // and shared state. That is a K/N foreign-thread hazard and the leading
+    // suspect for the handshake SIGTRAP (exit 133) seen in the macOS-peer spike.
+    // Use a dedicated SERIAL queue so callbacks are delivered one at a time,
+    // as nw_connection expects. One shared serial queue is safe here: every
+    // handler only resumes a continuation (non-blocking), so no cross-connection
+    // deadlock is possible.
+    static dispatch_queue_t quic_cb_queue;
+    static dispatch_once_t quic_cb_queue_once;
+    dispatch_once(&quic_cb_queue_once, ^{
+        quic_cb_queue = dispatch_queue_create("com.ditchoom.socket.quic.nw", DISPATCH_QUEUE_SERIAL);
+    });
+    nw_connection_set_queue(connection, quic_cb_queue);
     nw_connection_start(connection);
 }
 
