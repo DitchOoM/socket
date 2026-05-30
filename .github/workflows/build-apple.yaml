@@ -168,6 +168,27 @@ jobs:
       # via QuicHarnessIntegrationTests.withHarness's catch. The
       # `continue-on-error` on the launch step prevents a server-side
       # panic from failing the whole job.
+      # QUIC peer TLS trust (Phase 2 macOS-peer spike). Apple's Network.framework
+      # always evaluates the QUIC peer against the system trust store — a custom
+      # verify_block SIGABRTs under recent macOS hardening (PR #54), so we make
+      # *default* trust succeed instead of bypassing it: generate the harness
+      # cert matrix and add the harness-root CA to the System keychain. The peer
+      # then runs with valid.crt (SAN DNS:localhost + IP 127.0.0.1), and the
+      # Apple QuicHarnessIntegrationTests connect via "localhost" so the hostname
+      # check passes. Mirrors build-linux.yaml's "Trust harness CA" step.
+      # continue-on-error: a keychain/openssl hiccup must not fail the job — the
+      # QUIC tests skip via withHarness's catch if trust isn't established.
+      - name: Trust harness CA for Apple QUIC peer
+        continue-on-error: true
+        run: |
+          set -x
+          bash test-harness/tls/gen-certs.sh
+          sudo security add-trusted-cert -d -r trustRoot \
+            -k /Library/Keychains/System.keychain \
+            test-harness/tls/certs/ca.crt
+          echo "valid.crt SAN:"
+          openssl x509 -in test-harness/tls/certs/valid.crt -noout -ext subjectAltName || true
+
       - name: Build quic-echo fat jar with macOS dylibs
         continue-on-error: true
         run: >-
@@ -188,6 +209,14 @@ jobs:
             exit 0
           fi
 
+          # Serve the CA-signed harness cert (SAN DNS:localhost) so the Apple
+          # client validates against the System-keychain-trusted CA above.
+          # Fall back to the bundled self-signed cert if gen-certs didn't run
+          # (the Apple QUIC tests then skip on the trust failure, as before).
+          CERT="$GITHUB_WORKSPACE/test-harness/tls/certs/valid.crt"
+          KEY="$GITHUB_WORKSPACE/test-harness/tls/certs/valid.key"
+          if [ ! -f "$CERT" ]; then CERT=testcerts/cert.crt; KEY=testcerts/cert.key; fi
+
           # Mirror the Dockerfile's JVM flags — FFM access on, NIO
           # reflective access opened for the buffer dependency's
           # off-heap pinning. nohup + & detaches across step boundary;
@@ -196,7 +225,7 @@ jobs:
           nohup java \
             --enable-native-access=ALL-UNNAMED \
             --add-opens java.base/java.nio=ALL-UNNAMED \
-            -jar quic-echo.jar testcerts/cert.crt testcerts/cert.key 14433 \
+            -jar quic-echo.jar "$CERT" "$KEY" 14433 \
             > "$LOG" 2>&1 &
           ECHO_PID=$!
           echo "$ECHO_PID" > /tmp/quic-echo.pid
