@@ -20,19 +20,22 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Harness-equivalent of [QuicIntegrationTests]. Connects to the local
- * docker-compose `quic-echo` service (UDP `QuicHarnessConfig.quicEchoPort`,
- * default 14433) instead of `cloudflare-quic.com:443`.
+ * `quic-echo` peer (UDP `QuicHarnessConfig.quicEchoPort`, default 14433)
+ * instead of `cloudflare-quic.com:443` — under docker-compose on Linux, or
+ * launched directly on the macos-latest runner (no Docker) for the Apple path.
  *
- * The harness server is QuicEchoTestServer with a self-signed cert
- * (CN=quic.tech in socket-quic/testcerts/cert.crt). The client uses
- * `verifyPeer = false` because:
- *   1. The cert's CN doesn't match `127.0.0.1` (and SAN doesn't either —
- *      it's the upstream cloudflare/quiche example cert reused from
- *      socket-quic's Android instrumented-test path).
- *   2. We're testing the QUIC client API surface (handshake, stream open,
- *      write+read, multi-stream IDs) — not certificate validation.
- *      Cert-validation belongs to TLS/QUIC-TLS-specific tests outside
- *      this file.
+ * TLS trust is platform-specific (see the `appleSystemTrust` field). Non-Apple
+ * targets connect with `verifyPeer = false` and accept the peer cert directly
+ * (quiche + the JVM TLS stack) — we're exercising the QUIC client API surface
+ * (handshake, stream open, write+read, multi-stream IDs), not cert validation.
+ * Apple's Network.framework always evaluates the peer against the system trust
+ * store (it can't bypass it without crashing — PR #54), so build-apple.yaml
+ * trusts the harness CA and runs the peer with the SAN-matching `valid.crt`,
+ * and the Apple path connects via `localhost` with `verifyPeer = true`. The
+ * Apple suite currently SKIPs (see [withHarness]): the prior handshake SIGTRAP
+ * is fixed, but NW's QUIC TLS still rejects the private-CA (non-CT-logged)
+ * harness cert with errSSLBadCert (-9808). That config is what the future fix
+ * will use; the skip is the documented remaining gap.
  *
  * Tests gracefully skip when the harness isn't reachable (local dev
  * without Docker, CI fallback paths) — same withConnect-or-skip pattern
@@ -40,22 +43,31 @@ import kotlin.time.Duration.Companion.seconds
  */
 class QuicHarnessIntegrationTests {
     private val bufferFactory = BufferFactory.deterministic()
+
+    // Apple's Network.framework always evaluates the peer against the system
+    // trust store: a custom verify_block SIGABRTs under recent macOS TLS
+    // hardening (PR #54 iter 1-8), so `verify_certs` is intentionally unused in
+    // nw_quic_helpers.h. So the Apple path makes *default* trust succeed rather
+    // than bypassing it — build-apple.yaml trusts the harness CA (ca.crt) in
+    // the System keychain and runs the peer with valid.crt (SAN DNS:localhost),
+    // and we connect via "localhost" so the hostname matches the SAN.
+    // verifyPeer = true selects that default-trust path and installs no
+    // verify_block. Other targets keep verifyPeer = false: quiche and the JVM
+    // TLS stack accept the self-signed peer cert directly.
+    private val appleSystemTrust = isAppleKNative()
     private val quicOptions =
         QuicOptions(
             // ALPN must match what QuicEchoTestServer advertises — see
             // QuicEchoTestServer.kt's `alpnProtocols = listOf("test")`.
             alpnProtocols = listOf(QuicHarnessConfig.alpn),
-            // Self-signed harness cert; see file-level comment above.
-            // On non-Apple targets `verifyPeer = false` simply skips
-            // verification (quiche + JVM TLS accept this); on Apple
-            // skipping verification SIGABRTs under TLS hardening (see
-            // PR #54 iter 1-5), so we additionally pin the harness CA via
-            // `pinnedCaCertPath` — Network.framework's verify block
-            // anchors trust to the harness's `quic.tech` cert and uses
-            // a hostname-relaxed SSL policy.
-            verifyPeer = false,
+            verifyPeer = appleSystemTrust,
             idleTimeout = 10.seconds,
         )
+
+    // Apple connects via the SAN-matching DNS name "localhost" (valid.crt has
+    // DNS:localhost) so Network.framework's hostname check passes; other targets
+    // use the configured harness host (127.0.0.1).
+    private val harnessHost = if (appleSystemTrust) "localhost" else QuicHarnessConfig.host
     private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
 
     /**
@@ -71,22 +83,26 @@ class QuicHarnessIntegrationTests {
      * pass CI by accident.
      */
     private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
-        if (isAppleKNative()) {
-            // Apple K/N path is currently broken — withQuicConnection's
-            // SecTrust-based verify_block crashes Network.framework's TLS
-            // evaluation. After 8 CI iterations in PR #54 we couldn't
-            // isolate exactly which Sec* call dies; the production code
-            // path itself is correct (AppleQuicConnectStartupProbe.b_…
-            // verifyPeerTrue passes — verify_block isn't installed there),
-            // so we skip the harness suite on Apple K/N targets until
-            // this is fixed. Apple K/N coverage of withQuicConnection's
-            // startup path is preserved by AppleQuicConnectStartupProbe.
-            println("[QuicHarnessIntegrationTests] harness SKIP: Apple K/N — see PR #54 investigation")
+        if (appleSystemTrust) {
+            // Apple K/N: the handshake SIGTRAP is FIXED (nw_quic_copy_sec_protocol_options,
+            // PR #60) — the client now runs the full suite. The remaining gap is cert
+            // *acceptance*: the handshake reaches `preparing`, then Network.framework's
+            // QUIC TLS rejects the harness cert with errSSLBadCert (-9808). The harness
+            // uses a private CA whose leaf isn't Certificate-Transparency-logged, and
+            // Apple's QUIC path won't validate a private-CA cert without a verify_block
+            // override (which SIGABRTs under macOS hardening). Public, CT-logged web
+            // certs are unaffected — this is specific to the private-CA harness peer.
+            // Resolve with local-Mac debugging, or prove the Apple client against a
+            // public CT-logged QUIC server. Intentional skip (audit renders it as a
+            // known gap, not a regression); the marker text is matched by the CI audit.
+            println(
+                "[QuicHarnessIntegrationTests] harness SKIP: Apple K/N — errSSLBadCert -9808 on private-CA cert (crash fixed, cert-acceptance gap, PR #60)",
+            )
             return
         }
         try {
             withQuicConnection(
-                QuicHarnessConfig.host,
+                harnessHost,
                 QuicHarnessConfig.quicEchoPort,
                 quicOptions,
                 connOptions,
@@ -97,8 +113,11 @@ class QuicHarnessIntegrationTests {
         } catch (t: Throwable) {
             // Harness not up, native lib not built, or connection failed —
             // skip silently from the test framework's perspective (no
-            // assertion) but emit a grep-able signal so we can audit
-            // whether tests are actually running.
+            // assertion) but emit a grep-able signal so we can audit whether
+            // tests are actually running. On Apple this also catches a TLS
+            // validation failure: verifyPeer = true installs no verify_block,
+            // so a trust/hostname reject throws here rather than crashing the
+            // K/N runtime — keeping the spike safe to run ungated.
             println("[QuicHarnessIntegrationTests] harness SKIP: ${t::class.simpleName}: ${t.message}")
         }
     }

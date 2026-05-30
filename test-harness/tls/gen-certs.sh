@@ -55,8 +55,14 @@ keyUsage = critical,digitalSignature,keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = $sans
 EOF
+    # 397 days: Apple's TLS stack (Network.framework / Security) rejects any
+    # server *leaf* cert with validity > 398 days (errSSLBadCert / -9808),
+    # which blocked the macOS QUIC handshake. The CA stays long-lived (the 398
+    # rule is leaf-only). CI regenerates certs every run, so 397d never expires
+    # in practice. BoringSSL/JVM (Linux harness) don't care about the shorter
+    # validity, so this is safe cross-platform.
     openssl x509 -req -in "$name.csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial \
-        -out "$name.crt" -days 3650 -sha256 -extfile "$name.ext" 2>/dev/null
+        -out "$name.crt" -days 397 -sha256 -extfile "$name.ext" 2>/dev/null
     rm -f "$name.csr" "$name.ext"
 }
 

@@ -19,16 +19,20 @@
  * Create a QUIC connection.
  * Uses nw_parameters_create_quic() with TLS 1.3 (mandatory for QUIC).
  *
+ * The QUIC options block above takes the QUIC protocol options object;
+ * ALPN must be set via nw_quic_copy_sec_protocol_options (NOT the generic
+ * nw_tls_copy_*, which on a QUIC options object produced the handshake-start
+ * SIGTRAP fixed in PR #60).
+ *
  * Certificate verification uses Network.framework's default system trust
- * evaluation (keychain anchors, hostname check enabled). `verify_certs ==
- * false` is a NO-OP on Apple — the previous code path (always-accept
- * verify_block) SIGABRT'd under recent macOS TLS hardening (PR #54 iter
- * 1-5), and a proper SecTrustEvaluateWithError-based verify_block that
- * pinned to a custom CA also crashed in a way we couldn't isolate after
- * eight more CI iterations (PR #54 iter 6-9). The harness suite covers
- * Apple K/N via `AppleQuicConnectStartupProbe` (startup-only smoke
- * tests); `QuicHarnessIntegrationTests` skips on Apple K/N until the
- * Network.framework interaction is understood with local-Mac debugging.
+ * evaluation (keychain anchors, hostname check enabled). `verify_certs` is a
+ * NO-OP on Apple — an always-accept verify_block and a SecTrust-pinned
+ * verify_block both SIGABRT'd under recent macOS TLS hardening (PR #54).
+ * `QuicHarnessIntegrationTests` currently skips on Apple K/N: with the SIGTRAP
+ * fixed, the handshake reaches `preparing` but NW rejects the private-CA,
+ * non-CT-logged harness cert with errSSLBadCert (-9808) — see that test's
+ * withHarness comment. (There is no AppleQuicConnectStartupProbe; earlier
+ * docstrings referenced one that never existed.)
  *
  * @param host Hostname to connect to
  * @param port Port number
@@ -54,13 +58,22 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     nw_endpoint_t endpoint = nw_endpoint_create_host(host, port_str);
     if (!endpoint) return NULL;
 
-    // Create QUIC parameters with TLS
-    nw_parameters_t params = nw_parameters_create_quic(
-        ^(nw_protocol_options_t _Nonnull tls_options) {
-            sec_protocol_options_t sec_options = nw_tls_copy_sec_protocol_options(tls_options);
+    // Retain an independent copy of the ALPN list so the async configure block
+    // below (run during nw_connection_start) never iterates a K/N-bridged
+    // NSArray proxy that may have been released by then (H3).
+    NSArray<NSString *> *alpn_copy = [alpn_protocols copy];
 
-            // Set ALPN protocols
-            for (NSString *proto in alpn_protocols) {
+    // Create QUIC parameters. The block configures the QUIC protocol options;
+    // ALPN comes from the QUIC-specific sec_protocol_options accessor
+    // (nw_quic_copy_sec_protocol_options) — NOT the generic TLS one. Calling
+    // nw_tls_copy_sec_protocol_options on a QUIC options object was the leading
+    // suspect for the handshake-start trap (H1): the block runs during
+    // nw_connection_start, matching "crashes the moment the handshake starts."
+    nw_parameters_t params = nw_parameters_create_quic(
+        ^(nw_protocol_options_t _Nonnull quic_options) {
+            sec_protocol_options_t sec_options = nw_quic_copy_sec_protocol_options(quic_options);
+
+            for (NSString *proto in alpn_copy) {
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
             }
 
@@ -218,7 +231,23 @@ static inline void nw_helper_quic_send(
 #pragma mark - QUIC Connection Start/Cancel
 
 static inline void nw_helper_quic_start(nw_connection_t _Nonnull connection) {
-    nw_connection_set_queue(connection, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+    // Network.framework delivers ALL handler blocks (state-changed, receive,
+    // send-complete) on the queue set here. A global *concurrent* queue lets
+    // those blocks run simultaneously on different threads — each invokes a
+    // Kotlin/Native lambda that resumes a coroutine continuation, so concurrent
+    // delivery means concurrent K/N callbacks racing on the same continuation
+    // and shared state. That is a K/N foreign-thread hazard and the leading
+    // suspect for the handshake SIGTRAP (exit 133) seen in the macOS-peer spike.
+    // Use a dedicated SERIAL queue so callbacks are delivered one at a time,
+    // as nw_connection expects. One shared serial queue is safe here: every
+    // handler only resumes a continuation (non-blocking), so no cross-connection
+    // deadlock is possible.
+    static dispatch_queue_t quic_cb_queue;
+    static dispatch_once_t quic_cb_queue_once;
+    dispatch_once(&quic_cb_queue_once, ^{
+        quic_cb_queue = dispatch_queue_create("com.ditchoom.socket.quic.nw", DISPATCH_QUEUE_SERIAL);
+    });
+    nw_connection_set_queue(connection, quic_cb_queue);
     nw_connection_start(connection);
 }
 
