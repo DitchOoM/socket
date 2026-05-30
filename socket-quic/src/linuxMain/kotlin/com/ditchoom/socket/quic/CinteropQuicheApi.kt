@@ -30,14 +30,19 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_recv_udp_payload_si
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_send_udp_payload_size
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
+import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_closed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_timed_out
+import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
+import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
+import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
+import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
@@ -319,6 +324,59 @@ internal object CinteropQuicheApi : QuicheApi {
             null,
             0.convert(),
         ).toInt()
+
+    // --- Path migration ---
+
+    override fun connProbePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int =
+        quiche_conn_probe_path(
+            conn.handle.toCPointer()!!,
+            localAddr.toCPointer()!!,
+            localLen.convert(),
+            peerAddr.toCPointer()!!,
+            peerLen.convert(),
+            seqOut.toCPointer<ULongVar>()!!,
+        )
+
+    override fun connMigrate(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int =
+        quiche_conn_migrate(
+            conn.handle.toCPointer()!!,
+            localAddr.toCPointer()!!,
+            localLen.convert(),
+            peerAddr.toCPointer()!!,
+            peerLen.convert(),
+            seqOut.toCPointer<ULongVar>()!!,
+        )
+
+    override fun connMigrateSource(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        seqOut: Long,
+    ): Int =
+        quiche_conn_migrate_source(
+            conn.handle.toCPointer()!!,
+            localAddr.toCPointer()!!,
+            localLen.convert(),
+            seqOut.toCPointer<ULongVar>()!!,
+        )
+
+    override fun connAvailableDcids(conn: QuicheConn): Long = quiche_conn_available_dcids(conn.handle.toCPointer()!!).toLong()
+
+    override fun connScidsLeft(conn: QuicheConn): Long = quiche_conn_scids_left(conn.handle.toCPointer()!!).toLong()
 
     // --- Server-side ---
 

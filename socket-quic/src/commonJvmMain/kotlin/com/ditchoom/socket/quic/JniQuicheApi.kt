@@ -218,6 +218,36 @@ object JniQuicheApi : QuicheApi {
         error: QuicError,
     ): Int = nConnClose(conn.handle, error is QuicError.ApplicationError, error.code, 0L, 0)
 
+    // --- Path migration ---
+    override fun connProbePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int = nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
+
+    override fun connMigrate(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int = nConnMigrate(conn.handle, localAddr, localLen, peerAddr, peerLen, seqOut)
+
+    override fun connMigrateSource(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        seqOut: Long,
+    ): Int = nConnMigrateSource(conn.handle, localAddr, localLen, seqOut)
+
+    override fun connAvailableDcids(conn: QuicheConn): Long = nConnAvailableDcids(conn.handle)
+
+    override fun connScidsLeft(conn: QuicheConn): Long = nConnScidsLeft(conn.handle)
+
     // --- Server-side ---
     override fun configLoadCertChainFromPemFile(
         config: QuicheConfig,
@@ -510,6 +540,36 @@ object JniQuicheApi : QuicheApi {
         reasonAddr: Long,
         reasonLen: Int,
     ): Int
+
+    // --- Path migration JNI externals ---
+    @JvmStatic private external fun nConnProbePath(
+        conn: Long,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int
+
+    @JvmStatic private external fun nConnMigrate(
+        conn: Long,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int
+
+    @JvmStatic private external fun nConnMigrateSource(
+        conn: Long,
+        localAddr: Long,
+        localLen: Int,
+        seqOut: Long,
+    ): Int
+
+    @JvmStatic private external fun nConnAvailableDcids(conn: Long): Long
+
+    @JvmStatic private external fun nConnScidsLeft(conn: Long): Long
 
     @JvmStatic private external fun nRecvInfoNew(
         fromAddr: Long,

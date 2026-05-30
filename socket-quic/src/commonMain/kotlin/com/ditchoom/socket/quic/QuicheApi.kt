@@ -211,6 +211,54 @@ interface QuicheApi {
         error: QuicError,
     ): Int
 
+    // --- Path migration ---
+
+    /**
+     * Probe the given path for reachability. Returns 0 on success or a negative quiche error code.
+     * [seqOut] is the native address of a `uint64_t` buffer the implementation writes the probed
+     * path's sequence number to.
+     */
+    fun connProbePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int
+
+    /**
+     * Migrate the connection to the given local/peer path. Returns 0 on success or a negative
+     * quiche error code. [seqOut] is the native address of a `uint64_t` buffer the implementation
+     * writes the migrated path's sequence number to.
+     */
+    fun connMigrate(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        seqOut: Long,
+    ): Int
+
+    /**
+     * Migrate the connection's source (local) address only. Returns 0 on success or a negative
+     * quiche error code. [seqOut] is the native address of a `uint64_t` buffer the implementation
+     * writes the migrated path's sequence number to.
+     */
+    fun connMigrateSource(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        seqOut: Long,
+    ): Int
+
+    /** Returns the number of source connection IDs that are available to migrate to. */
+    fun connAvailableDcids(conn: QuicheConn): Long
+
+    /** Returns the number of source connection IDs that are still left to be provided to the peer. */
+    fun connScidsLeft(conn: QuicheConn): Long
+
     // --- Server-side ---
 
     fun configLoadCertChainFromPemFile(
