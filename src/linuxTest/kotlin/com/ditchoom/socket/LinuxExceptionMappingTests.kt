@@ -51,6 +51,22 @@ class LinuxExceptionMappingTests {
     }
 
     @Test
+    fun ebadf_producesSocketClosed() {
+        // EBADF surfaces when an in-flight send/recv hits an fd the peer-close race already
+        // closed (closeInternal set sockfd = -1). The fd is gone → the socket is closed.
+        val ex = mapErrnoToException(EBADF, "send")
+        assertIs<SocketClosedException>(ex)
+    }
+
+    @Test
+    fun ecanceled_producesSocketClosed() {
+        // io_uring completes in-flight SQEs with -ECANCELED when their fd is closed (a deliberate
+        // close, not coroutine cancellation — that path rethrows CancellationException upstream).
+        val ex = mapErrnoToException(ECANCELED, "recv")
+        assertIs<SocketClosedException>(ex)
+    }
+
+    @Test
     fun enetunreach_producesNetworkUnreachable() {
         val ex = mapErrnoToException(ENETUNREACH, "connect")
         assertIs<SocketConnectionException.NetworkUnreachable>(ex)
@@ -151,6 +167,20 @@ class LinuxExceptionMappingTests {
                 e
             }
         assertIs<SocketClosedException.BrokenPipe>(ex)
+    }
+
+    @Test
+    fun throwFromResult_ebadf() {
+        // The exact path the failing harness test hit: an io_uring send returned -EBADF (the read
+        // path had already closed the fd), throwFromResult negates it and maps. Must be a clean
+        // SocketClosedException, not the generic SocketIOException that escaped the test's catch.
+        val ex =
+            try {
+                throwFromResult(-EBADF, "send")
+            } catch (e: SocketException) {
+                e
+            }
+        assertIs<SocketClosedException>(ex)
     }
 
     @Test

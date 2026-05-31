@@ -636,6 +636,15 @@ internal fun mapErrnoToException(
         ECONNREFUSED -> SocketConnectionException.Refused(null, 0, platformError = message)
         ECONNRESET, ECONNABORTED -> SocketClosedException.ConnectionReset(message)
         ENOTCONN, EPIPE, ESHUTDOWN -> SocketClosedException.BrokenPipe(message)
+        // The socket's fd is gone underneath an in-flight op — the connection is closed.
+        // EBADF: the read path won the peer-close race, ran closeInternal() (fd → -1), and a
+        //   concurrent send/recv then hit the closed fd. ECANCELED: io_uring cancels in-flight
+        //   SQEs when their fd is closed (coroutine cancellation is handled separately in
+        //   submitAndWait, which rethrows CancellationException before reaching here). Both mean
+        //   "socket closed", so they must surface as SocketClosedException — not the generic
+        //   SocketIOException — to honour the read/write contract regardless of which errno the
+        //   kernel happens to deliver. See LinuxConcurrentCloseTests + LinuxExceptionMappingTests.
+        EBADF, ECANCELED -> SocketClosedException.General(message)
         ENETUNREACH -> SocketConnectionException.NetworkUnreachable(message)
         EHOSTUNREACH -> SocketConnectionException.HostUnreachable(message)
         ETIMEDOUT, ETIME -> SocketTimeoutException("$operation timed out")
