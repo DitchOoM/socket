@@ -181,6 +181,23 @@ actual suspend fun <R> withQuicConnection(
                         udpChannel = udpChannel,
                         clientMode = true,
                         isServer = false,
+                        // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs
+                        // (kept pinned via onCleanup for the driver's life) and a factory that opens
+                        // additional io_uring path sockets to the same peer. Mirrors the JVM client.
+                        peerAddr = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        peerLen = peerSockAddrLen.toInt(),
+                        primaryLocalAddr = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        primaryLocalLen = sizeOf<sockaddr_in>().toInt(),
+                        udpChannelFactory =
+                            IoUringUdpChannelFactory(
+                                peerSockAddrAddress = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                peerSockAddrLen = peerSockAddrLen.toInt(),
+                                bufferFactory = bufferFactory,
+                            ),
+                        onCleanup = {
+                            peerAddrBuf.freeNativeMemory()
+                            localAddrBuf.freeNativeMemory()
+                        },
                     )
 
                 val connJob = SupervisorJob(parentScope.coroutineContext[Job])
@@ -191,10 +208,9 @@ actual suspend fun <R> withQuicConnection(
                 try {
                     quicConn.block()
                 } finally {
+                    // Sockaddr buffers are freed by the driver's onCleanup (after quiche is done
+                    // dereferencing recvInfo.from/to during destroy) — matches the JVM client.
                     quicConn.close()
-                    // Free sockaddr buffers after driver cleanup
-                    peerAddrBuf.freeNativeMemory()
-                    localAddrBuf.freeNativeMemory()
                 }
             }
         }
@@ -240,6 +256,20 @@ private class LinuxQuicConnection(
     override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
+
+    override val pathState: StateFlow<PathInfo> = driver.pathState
+
+    override suspend fun migrate(
+        localHost: String?,
+        localPort: Int,
+    ): MigrationResult =
+        try {
+            val deferred = CompletableDeferred<MigrationResult>()
+            driver.commands.send(QuicheCmd.Migrate(localHost, localPort, deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            MigrationResult.Failed("connection closed")
+        }
 
     override suspend fun close(error: QuicError) {
         try {
