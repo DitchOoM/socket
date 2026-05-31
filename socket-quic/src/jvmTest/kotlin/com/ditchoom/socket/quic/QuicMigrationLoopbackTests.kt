@@ -52,11 +52,26 @@ class QuicMigrationLoopbackTests {
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
+    // When QUIC_MIGRATION_REQUIRE_RUN is set (CI on platforms that *must* be able
+    // to run this — e.g. Linux, where the native is built fresh and 127.0.0.2 is
+    // bindable), an otherwise-clean skip becomes a hard failure. Otherwise a silent
+    // skip on a broken native or unbindable alias reads as a green pass, which is
+    // exactly how the FFM migration crash went unnoticed. Elsewhere (macOS without
+    // a loopback alias, etc.) the skip stays a skip.
+    private val requireRun: Boolean =
+        System.getenv("QUIC_MIGRATION_REQUIRE_RUN")?.lowercase() in setOf("1", "true", "yes")
+
+    private fun skipOrFail(reason: String): Nothing {
+        if (requireRun) kotlin.test.fail("QUIC_MIGRATION_REQUIRE_RUN set but test could not run: $reason")
+        assumeTrue(reason, false)
+        error("unreachable") // assumeTrue(false) aborts via AssumptionViolatedException
+    }
+
     private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
         try {
             block()
         } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
+            skipOrFail("Native lib not available: ${e.message}")
         }
     }
 
@@ -67,7 +82,7 @@ class QuicMigrationLoopbackTests {
                 .open()
                 .use { it.bind(InetSocketAddress("127.0.0.2", 0)) }
         } catch (e: Exception) {
-            assumeTrue("Loopback alias 127.0.0.2 not bindable on this host: ${e.message}", false)
+            skipOrFail("Loopback alias 127.0.0.2 not bindable on this host: ${e.message}")
         }
     }
 
