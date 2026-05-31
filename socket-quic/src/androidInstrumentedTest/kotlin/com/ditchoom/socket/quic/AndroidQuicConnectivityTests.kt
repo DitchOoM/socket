@@ -4,12 +4,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.seconds
 
@@ -90,6 +92,39 @@ class AndroidQuicConnectivityTests {
                 val response = stream.read(5.seconds)
                 assertIs<com.ditchoom.buffer.flow.ReadResult.Data>(response)
 
+                stream.close()
+            }
+        }
+
+    private suspend fun QuicByteStream.echoOnce(payload: String): String {
+        val out = BufferFactory.Default.allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        write(out, 5.seconds)
+        val resp = read(5.seconds)
+        return if (resp is ReadResult.Data) resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8) else "no_data"
+    }
+
+    /**
+     * Active connection migration (RFC 9000 §9) on the Android/JNI runtime — the real-device
+     * counterpart of the JVM/K-N loopback tests, and the first test that actually calls
+     * [QuicScope.migrate] on Android (the [AndroidQuicMigrationTests] suite only does passive
+     * resilience). [migrate] rebinds a fresh local 4-tuple (new ephemeral source port) to the
+     * same docker quic-echo server, exercising the JNI `connNewScid`, client path-routing decode,
+     * and `connMigrate`. The echo server has server-side path routing (PR #63) so it validates
+     * the new path; we assert migration succeeds and the stream still round-trips.
+     */
+    @Test
+    fun streamSurvivesActiveMigration() =
+        runBlocking(Dispatchers.IO) {
+            withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
+                val stream = openStream()
+                assertEquals("before", stream.echoOnce("before"))
+
+                val result = migrate(localHost = null, localPort = 0)
+                assertIs<MigrationResult.Succeeded>(result)
+
+                assertEquals("after", stream.echoOnce("after"), "stream did not round-trip after migration")
                 stream.close()
             }
         }
