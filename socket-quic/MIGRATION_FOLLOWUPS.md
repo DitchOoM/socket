@@ -26,40 +26,73 @@ implemented and **proven end-to-end on JVM/FFM**:
 
 **Proven by:** `QuicMigrationLoopbackTests.streamSurvivesActiveMigrationToLoopbackAlias`
 (client 127.0.0.1 → `migrate("127.0.0.2")` → stream survives), green on
-`build-linux` (JVM/FFM). Plus `SockAddrDecodeTest` for the PathKey round-trip.
+`build-linux`. Plus `SockAddrDecodeTest` for the PathKey round-trip.
+
+> **Correction (PR #64, 2026-05-31):** PR #63 was proven on the **JNI** backend,
+> not FFM. `:socket-quic:jvmTest` resolves `loadQuicheApi()` to the base
+> `commonJvmMain` JNI loader on every JDK (the java21/FFM output is not on the
+> Test runtime classpath), so the JDK 21 build-linux job ran JNI all along. FFM
+> was in fact **non-functional on Linux** (see Gap 1/2 below for the full story);
+> PR #64 fixed it and added real FFM + JDK-17/JNI coverage.
 
 ---
 
 ## The coverage gaps (why "lots of blind spots" is correct)
 
-socket-quic has **four** `QuicheApi` backends and CI exercises them very unevenly:
+socket-quic has **four** `QuicheApi` backends. The table below is **corrected as
+of PR #64** — the original handoff had the FFM/JNI rows backwards (it assumed the
+multi-release JAR shadowing that applies to *production consumers* also applied to
+the `jvmTest` task; it does not, because jvmTest runs against exploded class dirs,
+not the MR-JAR):
 
 | Backend | Used by | Runs in CI | Migration exercised at runtime? |
 |---|---|---|---|
-| **FFM** (Panama) | JVM on **JDK 21+** | ✅ `:socket-quic:jvmTest` (build-linux) | ✅ **yes** — the whole feature (client + in-repo server) |
-| **JNI** (C shim) | **Android**, JVM JDK<21 | shim *built*; Android emulator runs it | ❌ **no** — Android tests are client-only vs an external echo server and never call `migrate()` |
+| **JNI** (C shim) | **Android**, JVM JDK<21, **and `:socket-quic:jvmTest` on every JDK** | ✅ `:socket-quic:jvmTest` (build-linux, default + JDK-17 step) | ✅ **yes** — `QuicMigrationLoopbackTests` (client + in-repo server) since PR #63; JDK-17 step added in #64 |
+| **FFM** (Panama) | production JVM consumers on **JDK 21+** (via MR-JAR) | ✅ `:socket-quic:jvmTest -PquicheJvmBackend=ffm` (build-linux, added in #64) | ✅ **yes, since PR #64** — was broken+unrun on Linux before (silent JNI fallback) |
 | **cinterop** (K/N) | linux/macOS/iOS native | ✅ `linuxX64Test`, apple K/N | ❌ `migrate()` returns `Unsupported` (no K/N `UdpChannelFactory`) |
 | **Stub** | unit tests | ✅ | n/a (fake) |
 
-### Gap 1 — JNI backend is never runtime-tested for migration  *(highest leverage)*
-CI's only JVM job runs on **JDK 21 → FFM**. The JNI shim *compiles* (signature
-breaks are caught), but its migration paths never *execute*. A logic/byte-order
-bug in `quiche_jni.c` would not be caught by any running test.
-- **Fix:** add a **JDK-17 matrix entry** that runs `:socket-quic:jvmTest`
-  (incl. `QuicMigrationLoopbackTests`) — same tests, JNI backend. This alone
-  runtime-proves `connNewScid`, the sockaddr decode, and server routing on JNI.
-- **Effort:** low (CI matrix). **Files:** `.github/workflows/build-linux.yaml`
-  or `review.yaml`. Needs the JNI shim staged for the JDK-17 run.
+### Gap 1 — ~~JNI backend is never runtime-tested for migration~~  ✅ CLOSED (PR #64) — the premise was inverted
+**Original (wrong) claim:** "CI's only JVM job runs JDK 21 → FFM, so the JNI shim's
+migration paths never execute."
 
-### Gap 2 — JNI sockaddr byte-order fix isn't exercised where it matters
+**What was actually true:** `:socket-quic:jvmTest` resolves `loadQuicheApi()` to the
+base `commonJvmMain` **JNI** loader on *every* JDK — the java21/FFM compilation
+output is not on the Test runtime classpath (the MR-JAR shadowing only applies to
+packaged consumers, not the test task running off exploded class dirs). So the JDK
+21 build-linux job had been exercising **JNI all along**: `QuicMigrationLoopbackTests`
+already runtime-proved `connNewScid`, the sockaddr decode, and server routing on JNI
+since PR #63. The genuinely-untested backend was **FFM** — and worse, FFM was
+*non-functional* on Linux:
+
+- The jvm21 loader targeted the pure `libquiche.so`, which is built against an
+  *external* BoringSSL (`--features ffi`) and `dlopen`s with unresolved
+  `SSL_*`/`CRYPTO_*` symbols (and often isn't even shipped). `FfmQuicheApi.create()`
+  always threw → the loader **silently fell back to JNI** everywhere (incl. the
+  quic-echo MR-JAR server).
+- That fallback hid a **JVM-crashing FFM bug**: `FfmQuicheApi.sendInfoToAddr` read
+  the *inline* `quiche_send_info.to` sockaddr_storage as a *pointer* (recv_info has
+  pointer fields; send_info has inline storage), so `sockAddrFamily` dereferenced
+  garbage → SIGSEGV on **every flush** (`decodePathKey` runs per-send).
+
+**Fixed in PR #64:** (a) `sendInfoToAddr` returns `handle + SEND_INFO_TO_OFFSET`
+(= `&info->to`, mirrors `sendInfoFromAddr`); (b) the loader loads the self-contained
+`libquiche_jni.*` (re-exports the full quiche C API, dlopens cleanly) and is now
+**deterministic — throws instead of silently degrading to JNI** on JDK 21+; (c)
+build-linux runs `:socket-quic:jvmTest` **3×** — JNI/21, FFM/21
+(`-PquicheJvmBackend=ffm`), JNI/17 (`-PjvmTestLauncher=17`) — all with
+`QUIC_MIGRATION_REQUIRE_RUN=1` so a silent migration-test skip hard-fails. CI green:
+the loopback test ran+passed on all three; FFM full suite 165/165 on Linux for the
+first time.
+
+### Gap 2 — ~~JNI sockaddr byte-order fix isn't exercised where it matters~~  ✅ CLOSED (PR #64)
 PR #63 canonicalized JNI `sockAddrV4/V6Hi/V6Lo` to big-endian (to match
-FFM/cinterop) so `PathKey` reconstructs unambiguously. But the *only* consumer of
-the canonical value is `PathKey.toInetSocketAddress()` on the **server egress**
-path, which is JVM-only and runs on **FFM** (where decode was already correct).
-Client-side path lookup only needs *distinctness*, not absolute value, so it
-works on any backend regardless. Net: the JNI byte-order fix is defensive and
-**untested at runtime**. → Closed by Gap 1's JDK-17 run (it would exercise JNI
-server reconstruction via the loopback test).
+FFM/cinterop) so `PathKey` reconstructs unambiguously. The original note worried it
+was untested because it assumed server reconstruction ran on FFM. In fact server
+reconstruction (`PathKey.toInetSocketAddress()` on the egress path) runs on **JNI**
+in `:socket-quic:jvmTest` (see Gap 1), so the JNI byte-order path *was* exercised by
+the loopback test since PR #63 — and is now additionally exercised on a real JDK-17
+JNI runtime by PR #64's matrix.
 
 ### Gap 3 — `AndroidQuicMigrationTests` is misnamed: it never migrates
 The Android instrumented "migration" suite (`connectionSurvivesTemporaryNetworkLoss`,
@@ -122,12 +155,12 @@ event is not surfaced to the app; it relies on quiche's internal frame handling
 ---
 
 ## Suggested order for the next session
-1. **Gap 1** (JDK-17/JNI test run) — cheapest, retroactively validates all the
-   JNI work already merged. Do this first.
-2. **Gap 6** (bound the recv_info cache) — quick hardening of merged code.
-3. **Gap 7** (Windows artifact resilience) — stop the cosmetic red.
-4. **Gap 4** (K/N `UdpChannelFactory`) then **Gap 8** (passive netem) — the
+- ~~**Gap 1** / **Gap 2**~~ — ✅ done in PR #64 (FFM crash fix + deterministic
+  loader + FFM/JDK-17 jvmTest matrix).
+1. **Gap 6** (bound the recv_info cache) — quick hardening of merged code.
+2. **Gap 7** (Windows artifact resilience) — stop the cosmetic red.
+3. **Gap 4** (K/N `UdpChannelFactory`) then **Gap 8** (passive netem) — the
    bigger feature-coverage items.
-5. **Gap 3** (real Android active-migration test) alongside Gap 1.
+4. **Gap 3** (real Android active-migration test).
 
 Design context: `socket-quic/MIGRATION_SLICE3.md`. Repo TODO: `TODO.md`.
