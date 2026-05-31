@@ -136,13 +136,27 @@ jobs:
           disable-animations: true
           script: |
             adb root || true
+            adb wait-for-device
             # The previous `adb reverse tcp:4433 tcp:4433` is gone: QUIC
             # is UDP and adb reverse only handles TCP. The emulator
             # reaches the host's docker-published 127.0.0.1:14433/udp
             # via its built-in 10.0.2.2 host alias — no port forwarding
             # needed. AndroidQuicConnectivityTests + AndroidQuicMigrationTests
             # now point at 10.0.2.2:14433 (matches QuicHarnessConfig.quicEchoPort).
+            #
+            # Start the host-side NetworkControlServer (TCP :9998 + `adb reverse
+            # tcp:9998`) BEFORE the tests so AndroidQuicMigrationTests' netem /
+            # resilience suite actually RUNS instead of skipping on
+            # `NetworkControl.isAvailable() == false`. The server drives
+            # `adb shell su 0 iptables/tc/settings` on the rooted emulator (the
+            # `adb root` above) to toggle UDP / latency / airplane-mode while the
+            # device-side TCP control channel (10.0.2.2:9998) stays up. This is
+            # issue #72 Task 1 — the docker quic-echo (14433/udp) stays up for the
+            # connect + migration tests. Run as a separate Gradle invocation so its
+            # detached host JVM is alive before connectedAndroidTest starts.
+            ./gradlew :socket-quic:startNetworkControlServer
             ./gradlew connectedAndroidTest :socket-quic:connectedAndroidTest
+            ./gradlew :socket-quic:stopNetworkControlServer || true
 
       # Mirror the audit step from build-apple.yaml + build-linux.yaml:
       # count `harness OK` vs `harness SKIP` markers from
