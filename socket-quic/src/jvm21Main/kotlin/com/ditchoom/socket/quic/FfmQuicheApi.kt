@@ -772,9 +772,14 @@ class FfmQuicheApi private constructor(
     }
 
     override fun sendInfoToAddr(info: QuicheSendInfo): Long {
-        // to field starts at offset 136 (after from sockaddr_storage 128 + from_len 4 + padding 4)
-        val segment = MemorySegment.ofAddress(info.handle).reinterpret(SEND_INFO_SIZE.toLong())
-        return segment.get(ADDRESS, SEND_INFO_TO_OFFSET.toLong()).address()
+        // In quiche_send_info, `to` is an INLINE struct sockaddr_storage (unlike
+        // quiche_recv_info, whose to/from are pointers). So its address is
+        // `&info->to` = handle + offset, NOT a pointer value stored at that offset.
+        // The old code read 8 bytes at the offset and treated them as a pointer,
+        // yielding a garbage address that SIGSEGV'd in sockAddrFamily on every
+        // flush (decodePathKey runs per-send). Mirror sendInfoFromAddr, which
+        // returns the inline `from` at offset 0. Matches JNI nSendInfoToAddr (&info->to).
+        return info.handle + SEND_INFO_TO_OFFSET
     }
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo): Int {
