@@ -20,14 +20,20 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * End-to-end active connection migration over loopback (slice 3b harness).
  *
- * The client connects on 127.0.0.1, then [QuicScope.migrate]s to the loopback
- * alias 127.0.0.2 (all of 127.0.0.0/8 is loopback on Linux — no NIC/netem/root).
- * The driver opens a second socket bound to 127.0.0.2, probes it, and on
- * validation switches the active path. We assert migration succeeds and that the
- * stream still round-trips afterwards — proving streams survive the path switch.
+ * The client connects on 127.0.0.1, then [QuicScope.migrate]s to a new local path.
+ * The driver opens a second socket bound to that path, probes it, and on validation
+ * switches the active path. We assert migration succeeds and that the stream still
+ * round-trips afterwards — proving streams survive the path switch.
  *
- * Runs in CI (needs the built quiche native lib + Linux loopback aliasing); skips
- * cleanly elsewhere.
+ * Two variants, differing only in the new local path:
+ *  - [streamSurvivesActiveMigrationToNewLocalPort] migrates to a fresh ephemeral
+ *    port on 127.0.0.1 — a distinct 4-tuple, so quiche runs full path validation.
+ *    Needs no privileged setup, so it runs everywhere (the must-run case).
+ *  - [streamSurvivesActiveMigrationToLoopbackAlias] migrates to 127.0.0.2, adding
+ *    address-change coverage. Free on Linux (all 127.0.0.0/8 is loopback); needs a
+ *    privileged `ifconfig lo0 alias` on BSD/macOS, so it skips cleanly there.
+ *
+ * Runs in CI (needs the built quiche native lib); skips cleanly without a native lib.
  *
  * Exercises the full two-party path-validation handshake: the in-repo echo server feeds quiche
  * the real per-datagram source as recvInfo.from (so a migrated client's new address is seen as a
@@ -75,15 +81,24 @@ class QuicMigrationLoopbackTests {
         }
     }
 
-    /** Verify 127.0.0.2 is bindable (Linux: yes by default; macOS needs an alias) — skip if not. */
+    /**
+     * Verify 127.0.0.2 is bindable (Linux: yes by default; macOS/BSD needs a
+     * privileged `ifconfig lo0 alias` that we don't require). This is a plain
+     * skip that QUIC_MIGRATION_REQUIRE_RUN does NOT escalate: the alias test is
+     * supplemental IP-change coverage, while [streamSurvivesActiveMigrationToNewLocalPort]
+     * carries the unprivileged must-run migration guarantee on every platform.
+     */
     private fun assumeLoopbackAliasBindable() {
-        try {
-            java.nio.channels.DatagramChannel
-                .open()
-                .use { it.bind(InetSocketAddress("127.0.0.2", 0)) }
-        } catch (e: Exception) {
-            skipOrFail("Loopback alias 127.0.0.2 not bindable on this host: ${e.message}")
-        }
+        val bindable =
+            try {
+                java.nio.channels.DatagramChannel
+                    .open()
+                    .use { it.bind(InetSocketAddress("127.0.0.2", 0)) }
+                true
+            } catch (e: Exception) {
+                false
+            }
+        assumeTrue("Loopback alias 127.0.0.2 not bindable on this host (needs a privileged alias)", bindable)
     }
 
     private suspend fun QuicByteStream.echoOnce(payload: String): String {
@@ -96,68 +111,88 @@ class QuicMigrationLoopbackTests {
     }
 
     @Test
+    fun streamSurvivesActiveMigrationToNewLocalPort() =
+        runBlocking(Dispatchers.IO) {
+            // Migrating to a fresh ephemeral source port on 127.0.0.1 is a distinct
+            // 4-tuple (PathKey includes the port — see SockAddrDecodeTest), so quiche
+            // runs the full PATH_CHALLENGE/RESPONSE validation exactly as it would for
+            // a new IP. Unlike the 127.0.0.2 variant this needs no loopback alias, so
+            // it runs unprivileged on every platform — including BSD/macOS, where only
+            // 127.0.0.1 is bound by default. This is the path #70 wanted exercised on
+            // BSD layout (sendInfoToAddr/decodePathKey during a real flush).
+            migrationTest(localHost = "127.0.0.1", localPort = 0)
+        }
+
+    @Test
     fun streamSurvivesActiveMigrationToLoopbackAlias() =
         runBlocking(Dispatchers.IO) {
             assumeLoopbackAliasBindable()
-            skipOnMissingNativeLib {
-                withTimeout(20.seconds) {
-                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        // Echo loop: mirror every message back until the stream ends.
-                        val serverJob =
-                            launch(Dispatchers.IO) {
-                                connections {
-                                    val stream = acceptStream()
-                                    while (true) {
-                                        val data = stream.read(8.seconds)
-                                        if (data is ReadResult.Data) {
-                                            stream.write(data.buffer, 5.seconds)
-                                        } else {
-                                            break
-                                        }
+            migrationTest(localHost = "127.0.0.2", localPort = 0)
+        }
+
+    private suspend fun migrationTest(
+        localHost: String,
+        localPort: Int,
+    ) {
+        skipOnMissingNativeLib {
+            withTimeout(20.seconds) {
+                withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                    // Echo loop: mirror every message back until the stream ends.
+                    val serverJob =
+                        launch(Dispatchers.IO) {
+                            connections {
+                                val stream = acceptStream()
+                                while (true) {
+                                    val data = stream.read(8.seconds)
+                                    if (data is ReadResult.Data) {
+                                        stream.write(data.buffer, 5.seconds)
+                                    } else {
+                                        break
                                     }
-                                    stream.close()
                                 }
+                                stream.close()
                             }
-                        delay(100)
-
-                        val migrationResult = CompletableDeferred<MigrationResult>()
-                        val beforeEcho = CompletableDeferred<String>()
-                        val afterEcho = CompletableDeferred<String>()
-
-                        val clientJob =
-                            launch(Dispatchers.IO) {
-                                // Connect on 127.0.0.1 so the peer is reachable from the 127.0.0.2 path too.
-                                withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
-                                    val stream = openStream()
-                                    beforeEcho.complete(stream.echoOnce("before"))
-
-                                    // Active migration to a different loopback source address.
-                                    val result = migrate(localHost = "127.0.0.2", localPort = 0)
-                                    migrationResult.complete(result)
-
-                                    afterEcho.complete(stream.echoOnce("after"))
-                                    stream.close()
-                                }
-                            }
-
-                        try {
-                            assertEquals("before", withTimeout(12.seconds) { beforeEcho.await() })
-                            val result = withTimeout(12.seconds) { migrationResult.await() }
-                            assertTrue(
-                                result is MigrationResult.Succeeded,
-                                "expected migration to succeed, got $result",
-                            )
-                            assertEquals(
-                                "after",
-                                withTimeout(12.seconds) { afterEcho.await() },
-                                "stream did not round-trip after migration",
-                            )
-                        } finally {
-                            clientJob.cancel()
-                            serverJob.cancel()
                         }
+                    delay(100)
+
+                    val migrationResult = CompletableDeferred<MigrationResult>()
+                    val beforeEcho = CompletableDeferred<String>()
+                    val afterEcho = CompletableDeferred<String>()
+
+                    val clientJob =
+                        launch(Dispatchers.IO) {
+                            // Connect on 127.0.0.1 so the peer is reachable from the migrated path too.
+                            withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                beforeEcho.complete(stream.echoOnce("before"))
+
+                                // Active migration to a new local source (different port and/or address).
+                                val result = migrate(localHost = localHost, localPort = localPort)
+                                migrationResult.complete(result)
+
+                                afterEcho.complete(stream.echoOnce("after"))
+                                stream.close()
+                            }
+                        }
+
+                    try {
+                        assertEquals("before", withTimeout(12.seconds) { beforeEcho.await() })
+                        val result = withTimeout(12.seconds) { migrationResult.await() }
+                        assertTrue(
+                            result is MigrationResult.Succeeded,
+                            "expected migration to succeed, got $result",
+                        )
+                        assertEquals(
+                            "after",
+                            withTimeout(12.seconds) { afterEcho.await() },
+                            "stream did not round-trip after migration",
+                        )
+                    } finally {
+                        clientJob.cancel()
+                        serverJob.cancel()
                     }
                 }
             }
         }
+    }
 }

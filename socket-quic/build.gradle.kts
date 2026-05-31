@@ -338,9 +338,21 @@ fun createBuildJvmJniShimTask(
         description = "Build quiche JNI shim for $os-$arch (JDK 8–20 fallback path)"
         dependsOn(buildShared)
         inputs.property("quicheVersion", quicheVersion)
-        inputs.file("src/jni/quiche_jni.c")
-        outputs.file(markerFile)
-        onlyIf { !markerFile.exists() }
+        val jniSourceFile = projectDir.resolve("src/jni/quiche_jni.c")
+        inputs.file(jniSourceFile)
+        outputs.files(outputLib, markerFile)
+        // Rebuild when the marker is missing, the shim itself is gone, OR the JNI
+        // source has been edited since the marker was written. The marker is keyed
+        // only on quiche *version*, so without the source-mtime check an edit to
+        // quiche_jni.c (e.g. #63 adding nSockAddr*) leaves a stale shim in place —
+        // exactly what made macOS jvmTest fail with UnsatisfiedLinkError on a
+        // version-matched-but-stale dylib. CI side-steps this by keying its native
+        // cache on hashFiles(quiche_jni.c); local dev needs this guard.
+        onlyIf {
+            !markerFile.exists() ||
+                !outputLib.exists() ||
+                jniSourceFile.lastModified() > markerFile.lastModified()
+        }
 
         doLast {
             val quicheStatic = outputDir.resolve("libquiche.a")
