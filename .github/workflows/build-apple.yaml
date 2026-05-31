@@ -91,23 +91,41 @@ jobs:
             cd ${{ github.workspace }}
 
             QUICHE_DYLIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.dylib"
+            QUICHE_STATIC="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.a"
             if [ -f "$QUICHE_DYLIB" ]; then
               mkdir -p $DEST
               cp "$QUICHE_DYLIB" "$DEST/libquiche.dylib"
               strip -x "$DEST/libquiche.dylib"
-              # Build thin JNI shim that links to quiche dynamically
-              # (static linking Rust .a into C .so breaks Rust runtime init → panic)
-              cc -shared -fPIC -Wall \
+              cp "$QUICHE_STATIC" "$DEST/libquiche.a"
+              # Build a SELF-CONTAINED JNI shim: -force_load pulls every quiche
+              # (+ vendored BoringSSL) symbol from libquiche.a into the dylib, so
+              # it re-exports the full quiche C API. This is required by BOTH
+              # backends on JDK 21+:
+              #   - JNI: resolves Java_..._n* without a runtime dep on libquiche.dylib.
+              #   - FFM: SymbolLookup.libraryLookup() only finds symbols *defined*
+              #     by the dylib, not its dynamic deps, so a thin `-lquiche` shim
+              #     would let create() succeed then throw UnsatisfiedLinkError on the
+              #     first quiche_* downcall. Mirrors createBuildJvmJniShimTask (macOS).
+              # (The old "static linking breaks Rust runtime init → panic" note was
+              # stale: quiche 0.28 + the 5e55a5f sockaddr-lifetime fix run the
+              # force_load static shim cleanly — locally verified on macos-arm64.)
+              cc -dynamiclib -O2 -Wall \
                 -o $DEST/libquiche_jni.dylib \
                 socket-quic/src/jni/quiche_jni.c \
                 -I${JAVA_HOME}/include -I${JAVA_HOME}/include/darwin \
                 -I socket-quic/libs/quiche/include \
-                -L$DEST -lquiche \
-                -Wl,-rpath,@loader_path \
+                -Wl,-force_load,"$DEST/libquiche.a" \
+                -Wl,-install_name,@rpath/libquiche_jni.dylib \
                 -target $(echo $RUST_TARGET | sed 's/aarch64/arm64/;s/x86_64/x86_64/') \
                 && strip -x $DEST/libquiche_jni.dylib \
                 && echo "Built $DEST/libquiche_jni.dylib ($(du -h $DEST/libquiche_jni.dylib | cut -f1))" \
                 && echo "With $DEST/libquiche.dylib ($(du -h $DEST/libquiche.dylib | cut -f1))"
+              # Write the Gradle build markers so prepareQuicheNativeLib treats these
+              # as authoritative and does NOT trigger a second from-source quiche
+              # build inside the 60-min job. Keyed on quiche version, matching the
+              # markers createBuildJvmShared*/createBuildJvmJniShimTask write.
+              echo "quiche 0.28.0 (CI macOS prebuilt)" > "$DEST/.built-0.28.0"
+              echo "quiche 0.28.0 JNI shim (CI macOS prebuilt)" > "$DEST/.jni-built-0.28.0"
             else
               echo "WARN: libquiche.dylib not found at $QUICHE_DYLIB"
             fi
@@ -139,19 +157,48 @@ jobs:
       - name: Disable harness on macOS (no working Docker fixture)
         run: echo "HARNESS_DISABLED=true" >> $GITHUB_ENV
 
-      # :socket-quic:jvmTest is excluded on macOS for the same reason it's
-      # excluded on Windows and isolated as continue-on-error on Linux: the
-      # quiche-0.28 native panic from `quiche_conn_recv`
-      # (quiche/src/ffi.rs:2059:14). On Linux it SIGABRTs cleanly; on macOS
-      # it deadlocks the JVM, which exhausts the job's 60-min timeout
-      # without producing a useful failure mode. Tracked in TODO.md as the
-      # \"socket-quic:jvmTest quiche-0.28 panic\" item; same path forward
-      # for both platforms.
       - name: Run Apple tests
         run: >-
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
           :socket-quic:jvmProcessResources
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # :socket-quic:jvmTest on macOS — re-enabled (issue #70). It was excluded
+      # because of the quiche-0.28 `quiche_conn_recv` panic (quiche/src/ffi.rs:2059
+      # "unsupported address type"); that was a dangling-sockaddr GC race fixed in
+      # 5e55a5f (commonJvmMain/commonMain, so it covers the macOS JNI path too).
+      # Verified locally on macos-arm64: 166/166 green on JNI and on FFM.
+      #
+      # This is the only place FFM-on-macOS runs, and the only place the IS_BSD
+      # sockaddr paths (sin_len byte 0, AF_INET6==30, sendInfoToAddr/decodePathKey
+      # during a real migration) execute — FFM is the deterministic JDK 21+ macOS
+      # backend, so these had never run in CI before.
+      #
+      # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test
+      # into a hard failure, so a broken native can't pass as green. The must-run
+      # case (streamSurvivesActiveMigrationToNewLocalPort) migrates to a fresh
+      # ephemeral source port on 127.0.0.1 — a distinct 4-tuple, fully validated by
+      # quiche — so it needs NO privileged loopback alias. The 127.0.0.2 variant
+      # (which would need `ifconfig lo0 alias`) stays a clean skip here.
+      - name: Run socket-quic JVM tests (JNI)
+        timeout-minutes: 8
+        env:
+          QUIC_MIGRATION_REQUIRE_RUN: "1"
+        run: >-
+          ./gradlew :socket-quic:jvmTest --continue
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Same suite on the FFM backend. -PquicheJvmBackend=ffm prepends the java21
+      # (FFM) output so its loader shadows the base JNI one, then loads the
+      # self-contained shim via Panama. Exercises FfmQuicheApi's IS_BSD decode and
+      # the FFM migration flush path on BSD layout.
+      - name: Run socket-quic JVM tests (FFM backend)
+        timeout-minutes: 8
+        env:
+          QUIC_MIGRATION_REQUIRE_RUN: "1"
+        run: >-
+          ./gradlew :socket-quic:jvmTest -PquicheJvmBackend=ffm --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # QUIC harness on macOS — runs the JVM `QuicEchoTestServer` natively on
@@ -160,14 +207,13 @@ jobs:
       # `:socket-quic:quicEchoJar` includes the macOS quiche dylibs from the
       # earlier build step, so it runs end-to-end with no extra runtime deps.
       #
-      # Risk: the quiche-0.28 native panic from `quiche_conn_recv` (the same
-      # one that excludes `:socket-quic:jvmTest` on macOS) might trigger
-      # server-side here too. If it does, the deadlock is bounded by the
-      # `timeout` wrapper and `kill` cleanup; the Apple QUIC tests below
-      # still attempt to connect and silently skip on connection failure
-      # via QuicHarnessIntegrationTests.withHarness's catch. The
-      # `continue-on-error` on the launch step prevents a server-side
-      # panic from failing the whole job.
+      # The quiche-0.28 `quiche_conn_recv` panic that used to threaten this
+      # server is fixed (5e55a5f) and :socket-quic:jvmTest now runs green on
+      # macOS above, so this is no longer the hazard it was. The defensive
+      # `continue-on-error` + `timeout`/`kill` cleanup stay: the Apple QUIC
+      # tests still connect and silently skip on connection failure via
+      # QuicHarnessIntegrationTests.withHarness's catch, so a server-side
+      # hiccup never fails the whole job.
       # QUIC peer TLS trust (Phase 2 macOS-peer spike). Apple's Network.framework
       # always evaluates the QUIC peer against the system trust store — a custom
       # verify_block SIGABRTs under recent macOS hardening (PR #54), so we make
