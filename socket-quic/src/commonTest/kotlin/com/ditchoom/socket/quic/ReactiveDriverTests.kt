@@ -1,9 +1,12 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -235,6 +238,68 @@ class ReactiveDriverTests {
                 driver.destroy()
             }
             Unit
+        }
+
+    /**
+     * **Deterministic** isolation / regression guard for the Close→state ordering race that flaked
+     * [connection_close_sets_closed_state] on linuxX64 (observed in a release deploy:
+     * "Expected ... Closed, actual ... Established").
+     *
+     * Invariant: the instant the `Close` command's result deferred completes, the driver has
+     * already synced connection state — so a caller awaiting `close()` observes the resulting state
+     * with no scheduling-dependent gap. The root fix ([QuicheDriver.execute] calls `updateState()`
+     * before completing the Close deferred) establishes this happens-before *on the driver
+     * coroutine*.
+     *
+     * Rather than race the scheduler (probabilistic), this **pins** the driver: at close time the
+     * stub emits exactly one datagram (the first [connSend] after [connClose], via
+     * [StubQuicheApi.emitOneDatagramOnClose]) and the UDP channel's `send` suspends on a gate. That
+     * send is the *only* one in this test, so `afterCommand()` is parked inside `flushOutgoing` —
+     * *after* `execute()` completed the Close deferred, but *before* `afterCommand()`'s own
+     * `updateState()` can run. When `done.await()` returns, `updateState()` provably has not run
+     * yet. With the fix, state was already synced inside `execute()` → `Closed`. Without it, this
+     * reads `Established` every time — no timing luck either way. (Verified: fails deterministically
+     * when the `updateState()` call in the Close branch is removed.)
+     */
+    @Test
+    fun close_completes_only_after_state_is_synced() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.established = true
+            api.emitOneDatagramOnClose = true
+            val udpGate = CompletableDeferred<Unit>()
+            val gatedUdp =
+                object : UdpChannel {
+                    override suspend fun receive(buffer: PlatformBuffer): Int = awaitCancellation()
+
+                    // The only send in this test is the single close-time datagram, so pin
+                    // unconditionally — this parks the driver in afterCommand() before updateState().
+                    override suspend fun send(
+                        buffer: PlatformBuffer,
+                        len: Int,
+                        dest: PathKey?,
+                    ) = udpGate.await()
+
+                    override fun close() {}
+                }
+            val driver = createTestDriver(api, udpChannel = gatedUdp)
+            driver.start(this)
+            try {
+                // Barrier: let the startup afterCommand finish (state → Established, its flush
+                // already done) before arming `closed`, so the startup path can't see closed early.
+                withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Established } }
+                api.closed = true
+                val done = CompletableDeferred<Unit>()
+                driver.commands.send(QuicheCmd.Close(QuicError.NoError, done))
+                withTimeout(2.seconds) { done.await() }
+                assertIs<QuicConnectionState.Closed>(
+                    driver.state.value,
+                    "Close completed before the connection state was synced to Closed",
+                )
+            } finally {
+                udpGate.complete(Unit) // release the pinned driver so it can finish + clean up
+                driver.destroy()
+            }
         }
 
     // ---- UDP send-error handling (regression: shutdown-leak flake) ----
