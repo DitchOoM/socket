@@ -37,6 +37,38 @@ implemented and **proven end-to-end on JVM/FFM**:
 
 ---
 
+## ✅ Resolution summary (2026-05-31) — all gaps closed except Gap 5
+
+Worked through the gaps in a series of small PRs. Current published release:
+**`v3.2.1`** (the only production change in the batch was the Android atomicfu fix
+in #67; #68/#69 are CI/test-only and merged with the `skip-release` label, so they
+did not cut new versions).
+
+| Gap | Status | PR | Notes |
+|---|---|---|---|
+| 1 — JNI migration runtime-tested | ✅ closed | #64 | premise was inverted; jvmTest already ran JNI. **Found & fixed:** FFM was non-functional on Linux (loaded an unloadable `libquiche.so` → silent JNI fallback) and FFM migration **SIGSEGV'd** (`sendInfoToAddr` read an inline sockaddr as a pointer). Deterministic loader (no silent fallback) + FFM/JDK-17 jvmTest matrix added. |
+| 2 — JNI byte-order exercised | ✅ closed | #64 | server reconstruction runs on JNI in jvmTest; also on JDK-17. |
+| 6 — server `recv_info` cache bounded | ✅ closed | #65 | LRU cap 256, **reference-counted** eviction (UNLIMITED command channel ⇒ free-on-evict was a UAF). |
+| 4 — K/N connection migration | ✅ closed | #66 | `IoUringUdpChannelFactory` + `migrate()` + K/N server routing (per-source recv_info, `sendInfo.to` egress, SCID registration) + loopback test. |
+| 3 — Android active migration | ✅ closed | #67 | real `migrate()` instrumented test. **Found & fixed:** `buffer-android` needs `kotlinx.atomicfu.AtomicFU` at runtime but doesn't declare it → all Android QUIC connect tests had been **silently skipping** in CI; added atomicfu to `androidMain`. Validated on a local x86_64 emulator. |
+| 7 — Windows DLL resilience | ✅ closed | #68 | `build-windows` tolerates a missing cross-compiled DLL (green instead of cosmetic red); still runs tests when present. |
+| 8 — passive (NAT-rebind) migration | ✅ closed | #69 | userspace rebinding UDP proxy (no root/netns/tc) proves the server keeps a stream alive through a source rebind with **no** client `migrate()`. |
+| **5 — macOS QUIC validation** | ⏳ **open** | — | `:socket-quic:jvmTest` excluded on macOS (quiche-0.28 `quiche_conn_recv` panic) ⇒ FFM-on-macOS + iOS/macOS K/N migration untested. Being handled separately on Apple hardware. PR #64 raised its importance: FFM is now the deterministic macOS/Windows JDK 21+ backend and its `IS_BSD` sockaddr paths have never run. |
+
+**New follow-ups surfaced this session (not original gaps):**
+- **Make Windows blocking** — drop `build-windows`'s job-level `continue-on-error`
+  once Windows `jvmTest` is green ≥2 runs (now observable after #68).
+- **CI version-race hardening** — `validate-artifacts` in a PR's `review.yaml`
+  fails spuriously when a release publishes mid-CI (it resolves a not-yet/never-
+  published version). Releases themselves serialize via `concurrency: deploy`, so
+  this is review-vs-release, not release-vs-release. Worth making `getNextVersion`
+  race-proof. Mitigation in use: `skip-release` label for CI/test-only PRs.
+- **atomicfu in the base `socket` module** — the same `buffer-android` atomicfu gap
+  likely affects base-`socket` Android consumers; #67 only fixed socket-quic's
+  `androidMain`. Verify + propagate.
+
+---
+
 ## The coverage gaps (why "lots of blind spots" is correct)
 
 socket-quic has **four** `QuicheApi` backends. The table below is **corrected as
@@ -155,12 +187,13 @@ event is not surfaced to the app; it relies on quiche's internal frame handling
 ---
 
 ## Suggested order for the next session
-- ~~**Gap 1** / **Gap 2**~~ — ✅ done in PR #64 (FFM crash fix + deterministic
-  loader + FFM/JDK-17 jvmTest matrix).
-1. **Gap 6** (bound the recv_info cache) — quick hardening of merged code.
-2. **Gap 7** (Windows artifact resilience) — stop the cosmetic red.
-3. **Gap 4** (K/N `UdpChannelFactory`) then **Gap 8** (passive netem) — the
-   bigger feature-coverage items.
-4. **Gap 3** (real Android active-migration test).
+- ~~Gaps 1, 2 (#64) · 6 (#65) · 4 (#66) · 3 (#67) · 7 (#68) · 8 (#69)~~ — ✅ all done
+  (see the Resolution summary at the top).
+1. **Gap 5** (macOS QUIC validation) — the only remaining original gap; needs Apple
+   hardware. Re-enable `:socket-quic:jvmTest` on the macOS runner once the
+   quiche-0.28 `quiche_conn_recv` panic is resolved; validate FFM-on-macOS (the
+   `IS_BSD` sockaddr paths) and iOS/macOS K/N migration.
+2. **New follow-ups** (see top): make Windows blocking (drop `continue-on-error`),
+   harden the CI version-race, and propagate the atomicfu fix to base `socket`.
 
 Design context: `socket-quic/MIGRATION_SLICE3.md`. Repo TODO: `TODO.md`.
