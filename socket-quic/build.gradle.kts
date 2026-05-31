@@ -549,6 +549,55 @@ afterEvaluate {
         // Put staged natives on the test runtime classpath so NativeLibLoader
         // can extract them as classloader resources.
         classpath += files(stagedNativeResourcesDir)
+
+        // --- Backend selector ---------------------------------------------------
+        // By default this task resolves `loadQuicheApi()` to the base commonJvmMain
+        // JNI loader: the java21/FFM compilation output is deliberately NOT on the
+        // Test runtime classpath, so the base `QuicheApiLoaderKt` (→ JniQuicheApi)
+        // is the only one present. That means `:socket-quic:jvmTest` exercises the
+        // *JNI* backend on every JDK — including the JDK 21 CI job — NOT FFM.
+        //
+        // Passing `-PquicheJvmBackend=ffm` prepends the java21 (FFM) compilation
+        // output ahead of the base output, so its `QuicheApiLoaderKt` shadows the
+        // base one — the same multi-release-JAR class shadowing that production
+        // JDK 21+ consumers get, reproduced here via classpath order. FFM then
+        // loads the pure `libquiche.{so,dylib}` via Panama (falling back to JNI
+        // only if that lib is absent). Requires a JDK 21+ launcher (FFM bindings
+        // are JVM-21 bytecode). This is what gives CI an FFM-backed test run.
+        if (providers.gradleProperty("quicheJvmBackend").orNull == "ffm") {
+            dependsOn("compileJava21KotlinJvm")
+            val ffmOutput =
+                kotlin
+                    .jvm()
+                    .compilations["java21"]
+                    .output.allOutputs
+            classpath = files(ffmOutput) + classpath
+        }
+
+        // --- Launcher selector --------------------------------------------------
+        // The build/toolchain is JDK 21 (required to compile the FFM bindings),
+        // but the JNI backend (base loader + tests are JVM-8 bytecode) runs on
+        // older JVMs too. `-PjvmTestLauncher=17` points *this Test task* at a
+        // JDK 17 launcher so CI can exercise JNI on the runtime that Android /
+        // legacy-JVM consumers actually use, while the rest of the build stays on
+        // 21. The java21/FFM classes aren't on the JNI classpath, so there is no
+        // UnsupportedClassVersionError. Do not combine with `quicheJvmBackend=ffm`.
+        providers.gradleProperty("jvmTestLauncher").orNull?.let { version ->
+            val launcherVersion = version.toInt()
+            val toolchains = project.extensions.getByType<JavaToolchainService>()
+            javaLauncher.set(
+                toolchains.launcherFor {
+                    languageVersion.set(JavaLanguageVersion.of(launcherVersion))
+                },
+            )
+            if (launcherVersion < 21) {
+                // `--enable-native-access` (added globally above for FFM/Panama) is
+                // pointless for the JNI backend and some older JVMs reject the
+                // unknown flag outright, which would kill the test worker at startup.
+                // Strip it; --add-opens java.base/java.nio stays (valid + harmless).
+                jvmArgs = jvmArgs.orEmpty().filterNot { it.contains("enable-native-access") }
+            }
+        }
     }
 }
 
