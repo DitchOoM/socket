@@ -32,6 +32,8 @@ internal interface QuicConfigCalls {
 
     fun setDisableActiveMigration(v: Boolean)
 
+    fun setActiveConnectionIdLimit(v: Long)
+
     fun verifyPeer(v: Boolean)
 
     fun setCcAlgorithm(algo: Int)
@@ -78,6 +80,7 @@ internal fun applyQuicOptions(
     fc.maxStreamWindow?.let { calls.setMaxStreamWindow(it) }
 
     calls.setDisableActiveMigration(options.disableActiveMigration)
+    calls.setActiveConnectionIdLimit(options.activeConnectionIdLimit)
     calls.verifyPeer(options.verifyPeer)
 
     // Congestion control

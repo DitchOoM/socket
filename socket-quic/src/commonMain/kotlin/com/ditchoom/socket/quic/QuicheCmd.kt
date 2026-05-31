@@ -10,10 +10,21 @@ import kotlinx.coroutines.CompletableDeferred
  * All parameters use value classes or sealed types — no raw Long mixing possible.
  */
 sealed interface QuicheCmd {
-    /** Feed an incoming UDP packet to quiche. [buf] ownership transfers to the driver (freed after processing). */
+    /**
+     * Feed an incoming UDP packet to quiche. [buf] ownership transfers to the driver (freed after processing).
+     * [pathKey] identifies which local path socket received it (null = the connection's primary path), so the
+     * driver hands quiche the matching recv_info during connection migration (slice 3).
+     *
+     * [recvInfoOverride] lets the *server* supply a per-datagram recv_info whose `from` is the actual datagram
+     * source — required for passive (peer) migration, where one server socket sees a client's source address
+     * change. The caller owns the recv_info's lifetime (the server caches them per source). When set it takes
+     * precedence over [pathKey]; clients leave it null and use [pathKey] path routing instead.
+     */
     class RecvPacket(
         val buf: PlatformBuffer,
         val len: Int,
+        val pathKey: PathKey? = null,
+        val recvInfoOverride: QuicheRecvInfo? = null,
     ) : QuicheCmd
 
     /** Allocate the next stream ID and create a [StreamSlot]. */
@@ -42,5 +53,16 @@ sealed interface QuicheCmd {
     class Close(
         val error: QuicError,
         val result: CompletableDeferred<Unit>,
+    ) : QuicheCmd
+
+    /**
+     * Actively migrate the connection to a new local path bound to [localHost]:[localPort]
+     * (null host = default interface, 0 port = ephemeral). The driver opens the path socket,
+     * probes it, and on validation switches the active path (slice 3).
+     */
+    class Migrate(
+        val localHost: String?,
+        val localPort: Int,
+        val result: CompletableDeferred<MigrationResult>,
     ) : QuicheCmd
 }

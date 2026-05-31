@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_grease
 import com.ditchoom.socket.quic.quiche.quiche_config_load_cert_chain_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_load_priv_key_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_new
+import com.ditchoom.socket.quic.quiche.quiche_config_set_active_connection_id_limit
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
 import com.ditchoom.socket.quic.quiche.quiche_config_set_cc_algorithm
 import com.ditchoom.socket.quic.quiche.quiche_config_set_disable_active_migration
@@ -38,6 +39,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_timed_out
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
+import com.ditchoom.socket.quic.quiche.quiche_conn_new_scid
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
@@ -71,6 +73,7 @@ import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
@@ -153,6 +156,11 @@ internal object CinteropQuicheApi : QuicheApi {
         config: QuicheConfig,
         v: Boolean,
     ) = quiche_config_set_disable_active_migration(config.handle.toCPointer()!!, v)
+
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) = quiche_config_set_active_connection_id_limit(config.handle.toCPointer()!!, v.convert())
 
     override fun configVerifyPeer(
         config: QuicheConfig,
@@ -349,6 +357,23 @@ internal object CinteropQuicheApi : QuicheApi {
             localLen.convert(),
             peerAddr.toCPointer()!!,
             peerLen.convert(),
+            seqOut.toCPointer<ULongVar>()!!,
+        )
+
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int =
+        quiche_conn_new_scid(
+            conn.handle.toCPointer()!!,
+            scidAddr.toCPointer()!!,
+            scidLen.convert(),
+            resetTokenAddr.toCPointer()!!,
+            retireIfNeeded,
             seqOut.toCPointer<ULongVar>()!!,
         )
 
@@ -603,6 +628,58 @@ internal object CinteropQuicheApi : QuicheApi {
         val si = info.handle.toCPointer<quiche_send_info>()!!.pointed
         return si.to_len.toInt()
     }
+
+    override fun sendInfoFromAddr(info: QuicheSendInfo): Long {
+        val si = info.handle.toCPointer<quiche_send_info>()!!.pointed
+        return si.from.ptr.rawValue
+            .toLong()
+    }
+
+    override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int {
+        val si = info.handle.toCPointer<quiche_send_info>()!!.pointed
+        return si.from_len.toInt()
+    }
+
+    // --- sockaddr decode (slice 3 migration) ---
+    // Linux layout is fixed (sa_family uint16 LE at byte 0, sin_port at 2,
+    // sin_addr at 4, sin6_addr at 8); read the bytes directly. Apple is out of
+    // scope for slice 3, so no BSD branch here.
+
+    private fun u8(
+        addr: Long,
+        off: Int,
+    ): Int =
+        addr
+            .toCPointer<UByteVar>()!![off]
+            .toInt() and 0xFF
+
+    private fun beLong(
+        addr: Long,
+        off: Int,
+    ): Long {
+        var v = 0L
+        for (i in off until off + 8) v = (v shl 8) or u8(addr, i).toLong()
+        return v
+    }
+
+    override fun sockAddrFamily(addr: Long): Int =
+        when (u8(addr, 0) or (u8(addr, 1) shl 8)) {
+            platform.posix.AF_INET -> 4
+            platform.posix.AF_INET6 -> 6
+            else -> 0
+        }
+
+    override fun sockAddrPort(addr: Long): Int = (u8(addr, 2) shl 8) or u8(addr, 3)
+
+    override fun sockAddrV4(addr: Long): Long {
+        var v = 0L
+        for (i in 4 until 8) v = (v shl 8) or u8(addr, i).toLong()
+        return v
+    }
+
+    override fun sockAddrV6Hi(addr: Long): Long = beLong(addr, 8)
+
+    override fun sockAddrV6Lo(addr: Long): Long = beLong(addr, 16)
 
     private const val QUICHE_ERR_DONE = -1
 }

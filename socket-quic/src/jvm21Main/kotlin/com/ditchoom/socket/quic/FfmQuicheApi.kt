@@ -9,6 +9,7 @@ import java.lang.foreign.MemorySegment
 import java.lang.foreign.SymbolLookup
 import java.lang.foreign.ValueLayout.ADDRESS
 import java.lang.foreign.ValueLayout.JAVA_BOOLEAN
+import java.lang.foreign.ValueLayout.JAVA_BYTE
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
@@ -52,6 +53,9 @@ class FfmQuicheApi private constructor(
     }
     private val hSetMaxData by lazy {
         downcall("quiche_config_set_initial_max_data", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
+    }
+    private val hSetActiveConnectionIdLimit by lazy {
+        downcall("quiche_config_set_active_connection_id_limit", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
     }
     private val hSetBidiLocal by lazy {
         downcall("quiche_config_set_initial_max_stream_data_bidi_local", FunctionDescriptor.ofVoid(ADDRESS, JAVA_LONG))
@@ -154,6 +158,13 @@ class FfmQuicheApi private constructor(
         downcall(
             "quiche_conn_probe_path",
             FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, JAVA_INT, ADDRESS),
+        )
+    }
+    private val hConnNewScid by lazy {
+        downcall(
+            "quiche_conn_new_scid",
+            // conn, scid*, scid_len(size_t), reset_token*, retire_if_needed(bool), scid_seq*
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_BOOLEAN, ADDRESS),
         )
     }
     private val hConnMigrate by lazy {
@@ -280,6 +291,13 @@ class FfmQuicheApi private constructor(
         v: Boolean,
     ) {
         hDisableMigration.invokeExact(seg(config.handle), v)
+    }
+
+    override fun configSetActiveConnectionIdLimit(
+        config: QuicheConfig,
+        v: Long,
+    ) {
+        hSetActiveConnectionIdLimit.invokeExact(seg(config.handle), v)
     }
 
     override fun configVerifyPeer(
@@ -474,6 +492,23 @@ class FfmQuicheApi private constructor(
             localLen,
             seg(peerAddr),
             peerLen,
+            seg(seqOut),
+        ) as Int
+
+    override fun connNewScid(
+        conn: QuicheConn,
+        scidAddr: Long,
+        scidLen: Int,
+        resetTokenAddr: Long,
+        retireIfNeeded: Boolean,
+        seqOut: Long,
+    ): Int =
+        hConnNewScid.invokeExact(
+            seg(conn.handle),
+            seg(scidAddr),
+            scidLen.toLong(),
+            seg(resetTokenAddr),
+            retireIfNeeded,
             seg(seqOut),
         ) as Int
 
@@ -747,12 +782,84 @@ class FfmQuicheApi private constructor(
         return segment.get(JAVA_INT, SEND_INFO_TO_LEN_OFFSET.toLong())
     }
 
+    override fun sendInfoFromAddr(info: QuicheSendInfo): Long {
+        // from sockaddr_storage is the first field of quiche_send_info (offset 0).
+        return info.handle
+    }
+
+    override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int {
+        val segment = MemorySegment.ofAddress(info.handle).reinterpret(SEND_INFO_SIZE.toLong())
+        return segment.get(JAVA_INT, SEND_INFO_FROM_LEN_OFFSET.toLong())
+    }
+
+    // --- sockaddr decode (slice 3 migration) ---
+    // FFM reads the struct directly. The JVM runs on Linux/macOS/Windows, so this
+    // must mirror SockAddrUtil's encode layout: BSD puts sin_len at byte 0 and
+    // sa_family at byte 1; Linux/Windows put sa_family as a uint16 at byte 0.
+    // AF_INET = 2 everywhere; AF_INET6 = 10 (Linux) / 30 (BSD) / 23 (Windows).
+    // sin_port is at offset 2, sin_addr at 4, sin6_addr at 8 in both layouts.
+
+    private fun ss(addr: Long): MemorySegment = MemorySegment.ofAddress(addr).reinterpret(SOCKADDR_STORAGE_SIZE)
+
+    private fun u8(
+        seg: MemorySegment,
+        off: Int,
+    ): Int = seg.get(JAVA_BYTE, off.toLong()).toInt() and 0xFF
+
+    private fun beLong(
+        seg: MemorySegment,
+        off: Int,
+    ): Long {
+        var v = 0L
+        for (i in off until off + 8) v = (v shl 8) or u8(seg, i).toLong()
+        return v
+    }
+
+    override fun sockAddrFamily(addr: Long): Int {
+        val seg = ss(addr)
+        val fam = if (IS_BSD) u8(seg, 1) else u8(seg, 0) or (u8(seg, 1) shl 8)
+        return when (fam) {
+            AF_INET -> 4
+            AF_INET6 -> 6
+            else -> 0
+        }
+    }
+
+    override fun sockAddrPort(addr: Long): Int {
+        val seg = ss(addr)
+        return (u8(seg, 2) shl 8) or u8(seg, 3)
+    }
+
+    override fun sockAddrV4(addr: Long): Long {
+        val seg = ss(addr)
+        var v = 0L
+        for (i in 4 until 8) v = (v shl 8) or u8(seg, i).toLong()
+        return v
+    }
+
+    override fun sockAddrV6Hi(addr: Long): Long = beLong(ss(addr), 8)
+
+    override fun sockAddrV6Lo(addr: Long): Long = beLong(ss(addr), 16)
+
     companion object {
+        private const val SOCKADDR_STORAGE_SIZE = 128L
+        private const val AF_INET = 2
+        private val IS_BSD: Boolean =
+            System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") || it.contains("bsd") }
+        private val IS_WINDOWS: Boolean = System.getProperty("os.name").lowercase().contains("win")
+        private val AF_INET6: Int =
+            when {
+                IS_BSD -> 30
+                IS_WINDOWS -> 23
+                else -> 10
+            }
+
         private const val QUICHE_ERR_DONE = -1L
         private const val RECV_INFO_SIZE = 32
         private const val SEND_INFO_SIZE = 288
         private const val SEND_INFO_TO_OFFSET = 136 // after sockaddr_storage(128) + socklen_t(4) + pad(4)
         private const val SEND_INFO_TO_LEN_OFFSET = 264 // after to sockaddr_storage(128)
+        private const val SEND_INFO_FROM_LEN_OFFSET = 128 // after from sockaddr_storage(128)
 
         fun create(libraryPath: String): FfmQuicheApi {
             val arena = Arena.ofAuto()

@@ -52,6 +52,20 @@ internal class JvmQuicConnection(
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
 
+    override val pathState: StateFlow<PathInfo> = driver.pathState
+
+    override suspend fun migrate(
+        localHost: String?,
+        localPort: Int,
+    ): MigrationResult =
+        try {
+            val deferred = CompletableDeferred<MigrationResult>()
+            driver.commands.send(QuicheCmd.Migrate(localHost, localPort, deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            MigrationResult.Failed("connection closed")
+        }
+
     override suspend fun close(error: QuicError) {
         try {
             val deferred = CompletableDeferred<Unit>()

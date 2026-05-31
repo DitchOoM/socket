@@ -2,6 +2,8 @@ package com.ditchoom.socket.quic
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * A QUIC connection scope — the receiver inside [withQuicConnection] and [QuicServer.connections].
@@ -28,4 +30,22 @@ interface QuicScope : CoroutineScope {
 
     /** Flow of all peer-initiated streams. Completes when the connection closes. */
     fun streams(): Flow<QuicByteStream>
+
+    /**
+     * Actively migrate the connection to a new local path (RFC 9000 §9). The driver opens a UDP
+     * socket bound to [localHost]:[localPort] (null host = default interface, 0 port = ephemeral),
+     * probes the path, and switches the connection's active path once the peer validates it. Streams
+     * keep flowing across the switch.
+     *
+     * Returns [MigrationResult.Unsupported] on platforms without controllable migration (Apple, JS)
+     * and on server-accepted connections. The default implementation is [MigrationResult.Unsupported].
+     */
+    suspend fun migrate(
+        localHost: String? = null,
+        localPort: Int = 0,
+    ): MigrationResult = MigrationResult.Unsupported
+
+    /** Current migration/path state. Defaults to a never-migrating [PathInfo]. */
+    val pathState: StateFlow<PathInfo>
+        get() = MutableStateFlow(PathInfo())
 }

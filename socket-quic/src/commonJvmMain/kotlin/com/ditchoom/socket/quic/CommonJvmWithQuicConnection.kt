@@ -121,6 +121,14 @@ internal suspend fun <R> commonJvmWithQuicConnection(
                         udpChannel = udpChannel,
                         clientMode = true,
                         isServer = false,
+                        // Connection-migration wiring (slice 3): the peer + primary local sockaddrs
+                        // (kept pinned by onCleanup for the driver's life) and a factory for opening
+                        // additional path sockets to the same peer.
+                        peerAddr = connPeerSockAddr.address,
+                        peerLen = connPeerSockAddr.length,
+                        primaryLocalAddr = connLocalSockAddr.address,
+                        primaryLocalLen = connLocalSockAddr.length,
+                        udpChannelFactory = NioUdpChannelFactory(InetSocketAddress(hostname, port), bufferFactory),
                         onCleanup = {
                             connPeerSockAddr.free()
                             connLocalSockAddr.free()
@@ -192,6 +200,8 @@ internal class CommonJvmQuicConfigCalls(
     override fun setMaxStreamWindow(v: Long) = api.configSetMaxStreamWindow(cfg, v)
 
     override fun setDisableActiveMigration(v: Boolean) = api.configSetDisableActiveMigration(cfg, v)
+
+    override fun setActiveConnectionIdLimit(v: Long) = api.configSetActiveConnectionIdLimit(cfg, v)
 
     override fun verifyPeer(v: Boolean) = api.configVerifyPeer(cfg, v)
 

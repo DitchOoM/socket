@@ -26,6 +26,7 @@ class StubUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
+        dest: PathKey?,
     ) {
         sendCount++
         sendBehavior(buffer, len)
