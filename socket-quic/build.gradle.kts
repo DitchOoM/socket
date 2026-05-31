@@ -583,12 +583,20 @@ afterEvaluate {
         // 21. The java21/FFM classes aren't on the JNI classpath, so there is no
         // UnsupportedClassVersionError. Do not combine with `quicheJvmBackend=ffm`.
         providers.gradleProperty("jvmTestLauncher").orNull?.let { version ->
+            val launcherVersion = version.toInt()
             val toolchains = project.extensions.getByType<JavaToolchainService>()
             javaLauncher.set(
                 toolchains.launcherFor {
-                    languageVersion.set(JavaLanguageVersion.of(version.toInt()))
+                    languageVersion.set(JavaLanguageVersion.of(launcherVersion))
                 },
             )
+            if (launcherVersion < 21) {
+                // `--enable-native-access` (added globally above for FFM/Panama) is
+                // pointless for the JNI backend and some older JVMs reject the
+                // unknown flag outright, which would kill the test worker at startup.
+                // Strip it; --add-opens java.base/java.nio stays (valid + harmless).
+                jvmArgs = jvmArgs.orEmpty().filterNot { it.contains("enable-native-access") }
+            }
         }
     }
 }
