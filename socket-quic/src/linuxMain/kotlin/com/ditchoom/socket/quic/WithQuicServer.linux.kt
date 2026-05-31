@@ -49,6 +49,7 @@ import platform.posix.ntohs
 import platform.posix.sockaddr_in
 import platform.posix.sockaddr_storage
 import platform.posix.socket
+import kotlin.concurrent.AtomicInt
 import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
@@ -182,11 +183,84 @@ private class LinuxQuicServer(
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
 
     /**
+     * Passive-migration support (mirrors [JvmQuicServer]): one server socket sees a client's
+     * source change after it migrates (RFC 9000 §9). quiche needs the *actual* per-datagram
+     * source as recv_info.from to recognise the new path, so cache one recv_info per distinct
+     * source (its `to` is the server's fixed local addr in [localAddrBuf]).
+     *
+     * Bounded ([maxPeerRecvInfos]) + reference-counted, identical to the JVM server: the cached
+     * pointer is handed to a driver over an UNLIMITED command channel, so eviction frees only an
+     * entry whose [CachedRecvInfo.inFlight] is zero (released via [QuicheCmd.RecvPacket.
+     * onRecvInfoConsumed]). Access order is maintained manually (remove+reinsert on hit) since
+     * K/N's LinkedHashMap has no accessOrder constructor. Receive-loop coroutine is the only
+     * writer; [inFlight] is the only field a driver coroutine touches.
+     */
+    private val maxPeerRecvInfos = 256
+    private val peerRecvInfos = LinkedHashMap<PathKey, CachedRecvInfo>()
+
+    private class CachedRecvInfo(
+        val info: QuicheRecvInfo,
+        val fromBuf: PlatformBuffer,
+    ) {
+        val inFlight = AtomicInt(0)
+    }
+
+    private fun recvInfoFor(
+        peerAddr: Long,
+        peerAddrLen: Int,
+    ): CachedRecvInfo {
+        val key = api.decodePathKey(peerAddr)
+        peerRecvInfos.remove(key)?.let {
+            peerRecvInfos[key] = it // bump to most-recently-used
+            return it
+        }
+        // Miss: pin a copy of this source's sockaddr (recvFrom's buffer is reused next call) and
+        // build a recv_info from = source, to = the server's fixed local addr.
+        val fromBuf = bufferFactory.allocate(peerAddrLen)
+        val dst = fromBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
+        memcpy(dst, peerAddr.toCPointer<ByteVar>()!!, peerAddrLen.convert())
+        val info =
+            api.recvInfoNew(
+                fromBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                peerAddrLen,
+                localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                sizeOf<sockaddr_in>().toInt(),
+            )
+        val cached = CachedRecvInfo(info, fromBuf)
+        peerRecvInfos[key] = cached
+        evictIdlePeerRecvInfo()
+        return cached
+    }
+
+    /** Free the least-recently-used cached recv_info whose [inFlight] is zero once over cap. */
+    private fun evictIdlePeerRecvInfo() {
+        if (peerRecvInfos.size <= maxPeerRecvInfos) return
+        val iterator = peerRecvInfos.entries.iterator() // insertion order == access order (maintained above)
+        while (iterator.hasNext()) {
+            val cached = iterator.next().value
+            if (cached.inFlight.value == 0) {
+                api.recvInfoFree(cached.info)
+                cached.fromBuf.freeNativeMemory()
+                iterator.remove()
+                return
+            }
+        }
+    }
+
+    /**
      * Queue for drivers that need their [connectionsByDcid] entries removed.
      * Connection handlers add drivers here after close; the receive loop drains it.
      * This keeps all map mutations on the receive loop coroutine.
      */
     private val driverCleanupCh = Channel<QuicheDriver>(Channel.UNLIMITED)
+
+    /**
+     * Queue of spare-SCID registrations from drivers' [QuicheDriver.onScidIssued] (fired on a
+     * driver coroutine when it issues spare CIDs at establishment). The receive loop drains it
+     * into [connectionsByDcid] so a migrating peer's new DCID (a server-issued SCID) routes to the
+     * right driver — without this, active migration fails path validation. Mirrors [JvmQuicServer].
+     */
+    private val scidRegistrationCh = Channel<Pair<ConnectionIdKey, QuicheDriver>>(Channel.UNLIMITED)
 
     @kotlin.concurrent.Volatile
     private var closed = false
@@ -239,8 +313,17 @@ private class LinuxQuicServer(
             driver.destroy()
         }
         connectionsByDcid.clear()
+        // Drivers destroyed (their drain released every in-flight ref) — free the per-source
+        // recv_info cache. Each recv_info before its `from` buffer; localAddrBuf (the shared `to`)
+        // is freed last, below.
+        for (cached in peerRecvInfos.values) {
+            api.recvInfoFree(cached.info)
+            cached.fromBuf.freeNativeMemory()
+        }
+        peerRecvInfos.clear()
         api.configFree(config)
         acceptedDrivers.close()
+        scidRegistrationCh.close()
         serverChannel.freeBuffers()
         localAddrBuf.freeNativeMemory()
     }
@@ -265,6 +348,8 @@ private class LinuxQuicServer(
             while (!closed) {
                 // Remove entries for drivers closed by connection handlers
                 drainCleanupChannel()
+                // Register spare SCIDs issued by drivers so a migrating peer's new DCID routes.
+                drainScidRegistrations()
 
                 // Allocate a fresh buffer per packet — ownership transfers to driver (zero-copy)
                 val recvBuf = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
@@ -314,8 +399,21 @@ private class LinuxQuicServer(
 
                 val existingDriver = connectionsByDcid[dcidKey]
                 if (existingDriver != null) {
-                    val sendResult = existingDriver.commands.trySend(QuicheCmd.RecvPacket(recvBuf, recvResult.bytesReceived))
+                    // Per-source recv_info so quiche sees a migrated client's new source as a new
+                    // path. Hold an in-flight ref so the cache can't evict+free it while queued.
+                    val cached = recvInfoFor(recvResult.peerAddr.rawValue.toLong(), recvResult.peerAddrLen.toInt())
+                    cached.inFlight.incrementAndGet()
+                    val sendResult =
+                        existingDriver.commands.trySend(
+                            QuicheCmd.RecvPacket(
+                                recvBuf,
+                                recvResult.bytesReceived,
+                                recvInfoOverride = cached.info,
+                                onRecvInfoConsumed = { cached.inFlight.decrementAndGet() },
+                            ),
+                        )
                     if (sendResult.isFailure) {
+                        cached.inFlight.decrementAndGet()
                         recvBuf.freeNativeMemory()
                         // Remove ALL entries for this dead driver, not just the one we hit
                         connectionsByDcid.keys.removeAll { connectionsByDcid[it] === existingDriver }
@@ -350,6 +448,18 @@ private class LinuxQuicServer(
         while (true) {
             val driver = driverCleanupCh.tryReceive().getOrNull() ?: break
             connectionsByDcid.keys.removeAll { connectionsByDcid[it] === driver }
+        }
+    }
+
+    /**
+     * Register spare SCIDs issued by drivers — maps each to its driver so a migrating peer's new
+     * DCID routes correctly. Receive-loop coroutine only. A registration for an already-removed
+     * driver is harmless: [drainCleanupChannel] runs first each iteration.
+     */
+    private fun drainScidRegistrations() {
+        while (true) {
+            val (key, driver) = scidRegistrationCh.tryReceive().getOrNull() ?: break
+            connectionsByDcid[key] = driver
         }
     }
 
@@ -420,7 +530,11 @@ private class LinuxQuicServer(
         api.connRecv(conn, recvAddr, recvResult.bytesReceived, recvInfo)
         recvBuf.freeNativeMemory()
 
-        val udpChannel = ServerConnectionUdpChannel(serverChannel, peerAddrCopy.ptr, peerAddrLen.convert())
+        val udpChannel = ServerConnectionUdpChannel(serverChannel, peerAddrCopy.ptr, peerAddrLen.convert(), bufferFactory)
+        // Self-reference for onScidIssued: the driver doesn't exist when we build the callback, so
+        // capture it via this holder, set right after construction. The callback only fires at
+        // establishment (well after this), so the holder is always populated by then.
+        var driverRef: QuicheDriver? = null
         val driver =
             QuicheDriver(
                 api = api,
@@ -431,7 +545,13 @@ private class LinuxQuicServer(
                 udpChannel = udpChannel,
                 clientMode = false,
                 isServer = true,
+                onScidIssued = { scid, len ->
+                    // Snapshot the CID (scid is freed right after this returns) and hand the
+                    // registration to the receive loop, which owns connectionsByDcid.
+                    driverRef?.let { d -> scidRegistrationCh.trySend(ConnectionIdKey.fromNative(scid, len) to d) }
+                },
             )
+        driverRef = driver
 
         driver.start(scope)
 
