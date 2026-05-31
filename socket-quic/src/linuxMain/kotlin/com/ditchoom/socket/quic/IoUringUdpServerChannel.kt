@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.IoUringManager
@@ -28,6 +29,58 @@ import platform.posix.sockaddr_in6
 import platform.posix.sockaddr_storage
 import platform.posix.socklen_t
 import kotlin.time.Duration.Companion.seconds
+
+/**
+ * Reconstruct the network-order sockaddr bytes for [this] path key into a fresh buffer — the
+ * inverse of [CinteropQuicheApi]'s sockaddr decode, used for server egress to a migrated peer's
+ * new source (`sendInfo.to`). Returns the buffer + its sockaddr length, or null for an unknown
+ * family. IPv4 → `sockaddr_in` (16B), IPv6 → `sockaddr_in6` (28B). Caller frees the buffer.
+ */
+internal fun PathKey.toSockAddrBuffer(bufferFactory: BufferFactory): Pair<PlatformBuffer, Int>? {
+    // Emit `size` sockaddr bytes into the buffer's native memory (the raw send reads from its
+    // nativeAddress, position-independent). [leading] holds the meaningful prefix bytes (including
+    // any interior zeros); the remainder is zero-filled (buffers aren't guaranteed zero-init).
+    fun build(
+        size: Int,
+        leading: List<Int>,
+    ): Pair<PlatformBuffer, Int> {
+        val buf = bufferFactory.allocate(size)
+        for (i in 0 until size) buf.writeByte((if (i < leading.size) leading[i] else 0).toByte())
+        buf.resetForRead()
+        return buf to size
+    }
+    return when (family) {
+        4 ->
+            build(
+                sizeOf<sockaddr_in>().toInt(),
+                listOf(
+                    AF_INET and 0xFF,
+                    (AF_INET shr 8) and 0xFF, // sin_family (host order; Linux is LE)
+                    (port shr 8) and 0xFF,
+                    port and 0xFF, // sin_port (network order)
+                    // sin_addr (network order)
+                    ((lo shr 24) and 0xFF).toInt(),
+                    ((lo shr 16) and 0xFF).toInt(),
+                    ((lo shr 8) and 0xFF).toInt(),
+                    (lo and 0xFF).toInt(),
+                ),
+            )
+        6 ->
+            build(
+                sizeOf<sockaddr_in6>().toInt(),
+                buildList {
+                    add(AF_INET6 and 0xFF)
+                    add((AF_INET6 shr 8) and 0xFF)
+                    add((port shr 8) and 0xFF)
+                    add(port and 0xFF)
+                    repeat(4) { add(0) } // sin6_flowinfo
+                    for (i in 0 until 8) add(((hi shr (56 - 8 * i)) and 0xFF).toInt()) // sin6_addr high 8
+                    for (i in 0 until 8) add(((lo shr (56 - 8 * i)) and 0xFF).toInt()) // sin6_addr low 8
+                },
+            )
+        else -> null
+    }
+}
 
 /**
  * Result of [IoUringUdpServerChannel.recvFrom].
@@ -211,7 +264,15 @@ internal class ServerConnectionUdpChannel(
     private val serverChannel: IoUringUdpServerChannel,
     private val peerAddr: CPointer<sockaddr_storage>,
     private val peerAddrLen: socklen_t,
+    private val bufferFactory: BufferFactory,
 ) : UdpChannel {
+    // 1-entry cache for the last sendInfo.to reconstruction. After a migration the server targets
+    // the same new source on consecutive datagrams, so this keeps egress alloc-free in steady
+    // state. Mirrors NioUdpChannel's lastDestKey/lastDestAddr cache.
+    private var lastDestKey: PathKey? = null
+    private var lastDestBuf: PlatformBuffer? = null
+    private var lastDestLen: Int = 0
+
     override suspend fun receive(buffer: PlatformBuffer): Int =
         error("Server connections receive via central loop, not per-connection UdpChannel")
 
@@ -219,12 +280,31 @@ internal class ServerConnectionUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) = // [dest]-based server egress routing (passive migration) is JVM-only for now; the Linux
-        // server sends to its fixed per-connection peerAddr. Linux server migration is a follow-up.
+    ) {
+        // [dest] is quiche's sendInfo.to: after a peer migrates, replies must follow it to its new
+        // source. Reconstruct that sockaddr (cached) and send there; with no dest, use the fixed peer.
+        if (dest != null && dest.family != 0) {
+            if (dest != lastDestKey) {
+                lastDestBuf?.freeNativeMemory()
+                val reconstructed = dest.toSockAddrBuffer(bufferFactory)
+                lastDestBuf = reconstructed?.first
+                lastDestLen = reconstructed?.second ?: 0
+                lastDestKey = dest
+            }
+            val destBuf = lastDestBuf
+            if (destBuf != null) {
+                val destPtr = destBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<sockaddr>()!!
+                serverChannel.sendTo(buffer, len, destPtr, lastDestLen.convert())
+                return
+            }
+        }
         serverChannel.sendTo(buffer, len, peerAddr.reinterpret(), peerAddrLen)
+    }
 
-    /** Frees the per-connection peer address copy. Does NOT close the shared server socket. */
+    /** Frees the per-connection peer address copy + any cached dest. Does NOT close the shared socket. */
     override fun close() {
+        lastDestBuf?.freeNativeMemory()
+        lastDestBuf = null
         nativeHeap.free(peerAddr.pointed)
     }
 }
