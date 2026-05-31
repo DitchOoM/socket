@@ -177,6 +177,14 @@ internal class JvmQuicServer(
     private val driverCleanupQueue = ConcurrentLinkedQueue<QuicheDriver>()
 
     /**
+     * Thread-safe queue of spare-SCID registrations from drivers' [QuicheDriver.onScidIssued]
+     * (fired on a driver coroutine). The receive loop drains it into [connectionsByDcid] so a
+     * migrating peer's new DCID routes to the right driver. Mirrors [driverCleanupQueue]: keeps
+     * all map mutations on the receive-loop thread (no concurrent map needed).
+     */
+    private val scidRegistrationQueue = ConcurrentLinkedQueue<Pair<ConnectionIdKey, QuicheDriver>>()
+
+    /**
      * Passive-migration support: one server socket sees a client's source address change
      * after the client migrates (RFC 9000 §9). quiche needs the *actual* per-datagram source
      * as recv_info.from to recognise the new path, so we cache one recv_info per distinct
@@ -311,9 +319,11 @@ internal class JvmQuicServer(
                 if (closed) break
                 selector.selectedKeys().clear()
 
-                // Remove entries for drivers that have been closed by connection handlers.
-                // This runs on the receive loop thread — sole writer to connectionsByDcid.
+                // Remove entries for drivers that have been closed by connection handlers,
+                // and register spare SCIDs issued by drivers. Both run on the receive loop
+                // thread — sole writer to connectionsByDcid.
                 drainCleanupQueue()
+                drainScidRegistrations()
 
                 // Drain all available packets after select returns
                 while (true) {
@@ -431,6 +441,19 @@ internal class JvmQuicServer(
     }
 
     /**
+     * Register spare SCIDs issued by drivers — maps each to its driver so a migrating peer's
+     * new DCID routes correctly. Called from the receive loop thread only. A registration for an
+     * already-removed driver is harmless: [drainCleanupQueue] runs first each wakeup, and the
+     * connection handler's cleanup re-adds to [driverCleanupQueue] which is drained next time.
+     */
+    private fun drainScidRegistrations() {
+        while (true) {
+            val (key, driver) = scidRegistrationQueue.poll() ?: break
+            connectionsByDcid[key] = driver
+        }
+    }
+
+    /**
      * Write a native size_t value into a buffer for quiche_header_info output params.
      */
     private fun initSizeTBuffer(
@@ -506,6 +529,10 @@ internal class JvmQuicServer(
         // lifetime — recvInfo holds only raw Long pointers into their PlatformBuffers,
         // so without this the buffers become GC-eligible immediately and DirectByteBuffer
         // Cleaner can free the memory mid-connection (see quiche/src/ffi.rs:2059 panic).
+        // Self-reference for the onScidIssued callback: the driver doesn't exist yet when we build
+        // the callback, so capture it via this holder, set right after construction. The callback
+        // only fires on establishment (well after this), so the holder is always populated by then.
+        var driverRef: QuicheDriver? = null
         val driver =
             QuicheDriver(
                 api = api,
@@ -520,7 +547,16 @@ internal class JvmQuicServer(
                     peerSockAddr.free()
                     localSockAddr.free()
                 },
+                onScidIssued = { scid, len ->
+                    // Snapshot the CID bytes now (scid is freed right after this returns) and hand
+                    // the registration to the receive loop, which owns connectionsByDcid.
+                    driverRef?.let { d ->
+                        scidRegistrationQueue.add(ConnectionIdKey.from(scid, len) to d)
+                        receiveSelector?.wakeup()
+                    }
+                },
             )
+        driverRef = driver
 
         driver.start(scope)
 

@@ -69,6 +69,15 @@ class QuicheDriver(
      * quiche/src/ffi.rs:2059 ("unsupported address type").
      */
     private val onCleanup: () -> Unit = {},
+    /**
+     * Server-only: invoked with each spare source CID issued by [issueSpareCids], before that
+     * scid buffer is freed. The server registers the CID in its DCID->driver routing map, because
+     * a migrating peer switches to a *new* DCID (one of these issued CIDs) on the new path; without
+     * the mapping those packets miss the demux, look like a new connection, and get dropped — the
+     * server never sees the PATH_CHALLENGE and validation fails. Clients leave it null (they demux
+     * incoming packets by their per-path socket, not by an app-level DCID map).
+     */
+    private val onScidIssued: ((PlatformBuffer, Int) -> Unit)? = null,
 ) {
     val commands = Channel<QuicheCmd>(Channel.UNLIMITED)
 
@@ -528,6 +537,8 @@ class QuicheDriver(
                     true,
                     addr(seqScratch),
                 )
+            // Surface the issued CID (server registers it for routing) before freeing the buffer.
+            if (rc >= 0) onScidIssued?.invoke(scid, QUIC_MAX_CONN_ID_LEN)
             scid.freeNativeMemory()
             token.freeNativeMemory()
             if (rc < 0) break
