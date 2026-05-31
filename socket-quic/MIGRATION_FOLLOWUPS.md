@@ -56,16 +56,27 @@ did not cut new versions).
 | **5 — macOS QUIC validation** | ⏳ **open** | — | `:socket-quic:jvmTest` excluded on macOS (quiche-0.28 `quiche_conn_recv` panic) ⇒ FFM-on-macOS + iOS/macOS K/N migration untested. Being handled separately on Apple hardware. PR #64 raised its importance: FFM is now the deterministic macOS/Windows JDK 21+ backend and its `IS_BSD` sockaddr paths have never run. |
 
 **New follow-ups surfaced this session (not original gaps):**
-- **Make Windows blocking** — drop `build-windows`'s job-level `continue-on-error`
-  once Windows `jvmTest` is green ≥2 runs (now observable after #68).
-- **CI version-race hardening** — `validate-artifacts` in a PR's `review.yaml`
-  fails spuriously when a release publishes mid-CI (it resolves a not-yet/never-
-  published version). Releases themselves serialize via `concurrency: deploy`, so
-  this is review-vs-release, not release-vs-release. Worth making `getNextVersion`
-  race-proof. Mitigation in use: `skip-release` label for CI/test-only PRs.
-- **atomicfu in the base `socket` module** — the same `buffer-android` atomicfu gap
-  likely affects base-`socket` Android consumers; #67 only fixed socket-quic's
-  `androidMain`. Verify + propagate.
+- ✅ **CI version-race hardening** — done in **PR #71**. `validate-artifacts` now
+  derives the version from the downloaded maven-local artifacts (what was actually
+  built) instead of the race-prone `getNextVersion` workflow input, so it no longer
+  fails spuriously when a release publishes mid-CI (e.g. #67's `validate` resolving
+  `socket:3.1.10` while `3.2.0` published). No silent fallback — fails loudly if no
+  built version is present. `skip-release` label remains the mitigation for the
+  separate review-vs-release timing on CI/test-only PRs.
+- ✅ **atomicfu in the base `socket` module** — investigated: **not affected.** The
+  only buffer-android class referencing `kotlinx.atomicfu.AtomicFU` is
+  `com.ditchoom.buffer.pool.LockFreeBufferPool`, i.e. atomicfu is needed only when
+  `BufferPool` is used. socket-quic uses it (recv pool) → #67 fix; base socket's TCP
+  path doesn't (`LoopbackEchoInstrumentedTest` passes in CI). True root cause is
+  upstream — `com.ditchoom:buffer` ships `LockFreeBufferPool` needing atomicfu
+  without declaring it; #67 is a consumer-side workaround. **Upstream buffer-lib
+  issue worth filing**, but nothing to fix in this repo.
+- ⏳ **Make Windows blocking — DEFERRED.** Precondition (Windows `jvmTest` green ≥2
+  runs) is unmet: the MinGW-cross-compiled DLL is consistently **absent** (#68/#69
+  both skipped `Run JVM tests`), so the tests never actually run. Real prerequisite
+  is making the DLL reliably build — the "build natively on `windows-latest`" option
+  (a new Rust + quiche + MSVC JNI-shim pipeline; can't be validated off a Windows
+  runner). Do that first, get ≥2 green runs, *then* drop `continue-on-error`.
 
 ---
 
@@ -190,10 +201,17 @@ event is not surfaced to the app; it relies on quiche's internal frame handling
 - ~~Gaps 1, 2 (#64) · 6 (#65) · 4 (#66) · 3 (#67) · 7 (#68) · 8 (#69)~~ — ✅ all done
   (see the Resolution summary at the top).
 1. **Gap 5** (macOS QUIC validation) — the only remaining original gap; needs Apple
-   hardware. Re-enable `:socket-quic:jvmTest` on the macOS runner once the
-   quiche-0.28 `quiche_conn_recv` panic is resolved; validate FFM-on-macOS (the
-   `IS_BSD` sockaddr paths) and iOS/macOS K/N migration.
-2. **New follow-ups** (see top): make Windows blocking (drop `continue-on-error`),
-   harden the CI version-race, and propagate the atomicfu fix to base `socket`.
+   hardware. Tracked in **issue #70**. Re-enable `:socket-quic:jvmTest` on the macOS
+   runner once the quiche-0.28 `quiche_conn_recv` panic is resolved; validate
+   FFM-on-macOS (the `IS_BSD` sockaddr paths) and iOS/macOS K/N migration.
+2. **Build the Windows quiche DLL natively on `windows-latest`** — the prerequisite
+   for making `build-windows` blocking (deferred; see follow-ups above). The
+   cross-compiled DLL is consistently absent, so Windows tests never run.
+3. *(optional, upstream)* file a `com.ditchoom:buffer` issue: `buffer-android`'s
+   `LockFreeBufferPool` references `kotlinx.atomicfu.AtomicFU` without declaring the
+   atomicfu dependency.
+
+(Version-race hardening and the atomicfu base-`socket` investigation are done — see
+the follow-ups section above.)
 
 Design context: `socket-quic/MIGRATION_SLICE3.md`. Repo TODO: `TODO.md`.
