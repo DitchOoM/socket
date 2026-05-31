@@ -1257,6 +1257,16 @@ kotlin {
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
+        androidMain.dependencies {
+            // com.ditchoom:buffer-android:5.2.0 references kotlinx.atomicfu.AtomicFU at runtime but
+            // doesn't declare the atomicfu dependency in its module metadata, so it isn't on a
+            // consumer's runtime classpath — any Android app exercising the QUIC connect/StateFlow
+            // path crashes with NoClassDefFoundError: kotlinx.atomicfu.AtomicFU. (JVM is unaffected:
+            // coroutines/buffer JVM artifacts are atomicfu-transformed.) Provide the runtime atomicfu
+            // so Android consumers — and the instrumented tests, which silently skipped on this for
+            // ages via their connect-failure catch — actually work. Version matches coroutines 1.10.2.
+            implementation("org.jetbrains.kotlinx:atomicfu:0.27.0")
+        }
         val commonJvmTest by creating {
             dependsOn(commonTest.get())
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
