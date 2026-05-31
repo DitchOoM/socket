@@ -40,9 +40,29 @@ jobs:
           path: /tmp/quiche-linux-natives
         continue-on-error: true  # may not exist if quiche build failed
 
+      # Validate the version that was ACTUALLY built into maven-local, not the
+      # workflow input. build-linux's getNextVersion reads Maven Central, and if a
+      # release publishes mid-CI the input version can diverge from the version
+      # build-linux actually stamped onto the artifacts here — then every resolution
+      # below looks for a version that was never published and fails spuriously (the
+      # known version-race red on otherwise-fine PRs). Deriving from the downloaded
+      # artifacts is race-proof: we validate whatever was genuinely built.
+      - name: Resolve built version
+        run: |
+          version=$(ls /tmp/linux-repo/com/ditchoom/socket/ 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          if [ -z "$version" ]; then
+            echo "::error::No socket version present in the downloaded maven-local " \
+              "(/tmp/linux-repo/com/ditchoom/socket/). build-linux's publish didn't produce " \
+              "the artifacts — failing loudly rather than guessing a version to validate."
+            exit 1
+          fi
+          echo "RESOLVED_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Validating version: ${version} (workflow input was '${{ inputs.version }}')"
+
       - name: Merge artifacts and module metadata
         run: |
-          version="${{ inputs.version }}"
+          version="${RESOLVED_VERSION}"
           LINUX_BASE="/tmp/linux-repo/com/ditchoom"
           APPLE_BASE="/tmp/apple-repo/com/ditchoom"
           MERGED="/tmp/maven-local/com/ditchoom"
@@ -142,7 +162,7 @@ jobs:
 
       - name: Inject native libs into socket-quic JVM JAR
         run: |
-          version="${{ inputs.version }}"
+          version="${RESOLVED_VERSION}"
           MERGED="/tmp/maven-local/com/ditchoom"
           QUIC_JAR="$MERGED/socket-quic-jvm/$version/socket-quic-jvm-$version.jar"
 
@@ -213,13 +233,13 @@ jobs:
       - name: Validate with Gradle resolution
         run: |
           gradle -p .ci/validate-resolution resolveAll \
-            -PsocketVersion=${{ inputs.version }} \
+            -PsocketVersion=${{ env.RESOLVED_VERSION }} \
             -PmavenRepoPath=/tmp/maven-local \
             --no-daemon
 
       - name: Validate artifacts
         run: |
-          version="${{ inputs.version }}"
+          version="${RESOLVED_VERSION}"
           MERGED="/tmp/maven-local/com/ditchoom"
           FAILED=false
 
