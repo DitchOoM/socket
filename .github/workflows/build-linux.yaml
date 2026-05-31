@@ -318,9 +318,17 @@ jobs:
           ./gradlew :socket-quic:quicEchoJar -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # NOTE: :jsTest above is the ROOT project's JS suite. :socket-quic:jsNodeTest
+      # is a SEPARATE task (the socket-quic module's common QUIC suite + JS gap
+      # tests, running on Node) that was never wired in — so Node QUIC went
+      # entirely unvalidated in CI (#74 Task 2). It needs no native quiche (the
+      # JS impls are documented placeholders that throw), so it just rides the
+      # Node already on this runner. Browser/wasmJs stay out (no raw UDP / lower
+      # priority per #74).
       - name: Run checks and tests
         run: >-
           ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
+          :socket-quic:jsNodeTest
           :socket-quic:jvmProcessResources :socket-quic:ktlintCheck
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
