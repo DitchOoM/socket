@@ -218,7 +218,10 @@ internal class ServerConnectionUdpChannel(
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
-    ) = serverChannel.sendTo(buffer, len, peerAddr.reinterpret(), peerAddrLen)
+        dest: PathKey?,
+    ) = // [dest]-based server egress routing (passive migration) is JVM-only for now; the Linux
+        // server sends to its fixed per-connection peerAddr. Linux server migration is a follow-up.
+        serverChannel.sendTo(buffer, len, peerAddr.reinterpret(), peerAddrLen)
 
     /** Frees the per-connection peer address copy. Does NOT close the shared server socket. */
     override fun close() {

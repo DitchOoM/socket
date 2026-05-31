@@ -12,10 +12,16 @@ interface UdpChannel {
     /** Receive one UDP datagram into [buffer]. Suspends until data arrives. Returns bytes received. */
     suspend fun receive(buffer: PlatformBuffer): Int
 
-    /** Send [len] bytes from [buffer] to the connected peer. */
+    /**
+     * Send [len] bytes from [buffer]. When [dest] is null, send to the channel's connected/fixed
+     * peer (the common case). When non-null — set by the server egress path from quiche's
+     * `sendInfo.to` — send to that address instead, so replies follow a migrated peer to its new
+     * source address. Channels that cannot target an arbitrary destination ignore [dest].
+     */
     suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
+        dest: PathKey? = null,
     )
 
     /** Close the underlying socket. */

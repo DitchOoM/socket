@@ -14,11 +14,17 @@ sealed interface QuicheCmd {
      * Feed an incoming UDP packet to quiche. [buf] ownership transfers to the driver (freed after processing).
      * [pathKey] identifies which local path socket received it (null = the connection's primary path), so the
      * driver hands quiche the matching recv_info during connection migration (slice 3).
+     *
+     * [recvInfoOverride] lets the *server* supply a per-datagram recv_info whose `from` is the actual datagram
+     * source — required for passive (peer) migration, where one server socket sees a client's source address
+     * change. The caller owns the recv_info's lifetime (the server caches them per source). When set it takes
+     * precedence over [pathKey]; clients leave it null and use [pathKey] path routing instead.
      */
     class RecvPacket(
         val buf: PlatformBuffer,
         val len: Int,
         val pathKey: PathKey? = null,
+        val recvInfoOverride: QuicheRecvInfo? = null,
     ) : QuicheCmd
 
     /** Allocate the next stream ID and create a [StreamSlot]. */

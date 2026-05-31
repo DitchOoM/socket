@@ -485,21 +485,27 @@ JNIEXPORT jint JNICALL JNI_FN(nSockAddrPort)(JNIEnv *env, jclass cls, jlong addr
     return 0;
 }
 
+// Canonical decode: address bytes are returned in network order interpreted
+// big-endian, matching FfmQuicheApi (the reference). This gives PathKey one
+// meaning across backends so PathKey.toInetSocketAddress() reconstructs
+// unambiguously (V4 127.0.0.1 -> 0x7F000001; V6 halves big-endian).
 JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV4)(JNIEnv *env, jclass cls, jlong addr) {
     struct sockaddr_in *sa = (struct sockaddr_in *)(uintptr_t)addr;
-    return (jlong)(uint32_t)sa->sin_addr.s_addr;
+    return (jlong)(uint32_t)ntohl(sa->sin_addr.s_addr);
 }
 
 JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV6Hi)(JNIEnv *env, jclass cls, jlong addr) {
     struct sockaddr_in6 *sa = (struct sockaddr_in6 *)(uintptr_t)addr;
-    uint64_t hi;
-    memcpy(&hi, &sa->sin6_addr.s6_addr[0], 8);
+    const uint8_t *b = (const uint8_t *)&sa->sin6_addr.s6_addr[0];
+    uint64_t hi = 0;
+    for (int i = 0; i < 8; i++) hi = (hi << 8) | b[i];
     return (jlong)hi;
 }
 
 JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV6Lo)(JNIEnv *env, jclass cls, jlong addr) {
     struct sockaddr_in6 *sa = (struct sockaddr_in6 *)(uintptr_t)addr;
-    uint64_t lo;
-    memcpy(&lo, &sa->sin6_addr.s6_addr[8], 8);
+    const uint8_t *b = (const uint8_t *)&sa->sin6_addr.s6_addr[8];
+    uint64_t lo = 0;
+    for (int i = 0; i < 8; i++) lo = (lo << 8) | b[i];
     return (jlong)lo;
 }

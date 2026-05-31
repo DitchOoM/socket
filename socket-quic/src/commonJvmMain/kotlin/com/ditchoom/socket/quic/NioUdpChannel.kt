@@ -57,15 +57,33 @@ internal class NioUdpChannel(
         return channel.read(bb)
     }
 
+    // 1-entry cache for the last sendInfo.to reconstruction. Server egress targets the same
+    // destination on consecutive datagrams in steady state, so this keeps the common path free
+    // of per-datagram InetSocketAddress/InetAddress allocation; it only rebuilds when the peer's
+    // address actually changes (i.e. a migration).
+    private var lastDestKey: PathKey? = null
+    private var lastDestAddr: InetSocketAddress? = null
+
     override suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
+        dest: PathKey?,
     ) {
         val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
         bb.clear()
         bb.limit(len)
-        if (peerAddr != null) {
-            channel.send(bb, peerAddr)
+        val target =
+            if (dest != null) {
+                if (dest != lastDestKey) {
+                    lastDestAddr = dest.toInetSocketAddress()
+                    lastDestKey = dest
+                }
+                lastDestAddr ?: peerAddr
+            } else {
+                peerAddr
+            }
+        if (target != null) {
+            channel.send(bb, target)
         } else {
             channel.write(bb)
         }

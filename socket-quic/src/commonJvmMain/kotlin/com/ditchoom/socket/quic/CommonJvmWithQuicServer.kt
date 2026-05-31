@@ -176,6 +176,32 @@ internal class JvmQuicServer(
      */
     private val driverCleanupQueue = ConcurrentLinkedQueue<QuicheDriver>()
 
+    /**
+     * Passive-migration support: one server socket sees a client's source address change
+     * after the client migrates (RFC 9000 §9). quiche needs the *actual* per-datagram source
+     * as recv_info.from to recognise the new path, so we cache one recv_info per distinct
+     * source (its `to` is the server's fixed local addr). Touched only on the receive-loop
+     * thread; freed in [close] after every driver is destroyed. Bounded by the number of
+     * distinct source addresses seen on this socket.
+     */
+    private val peerRecvInfos = mutableMapOf<InetSocketAddress, QuicheRecvInfo>()
+    private val recvInfoSockAddrs = mutableListOf<NativeSockAddr>()
+    private var serverLocalSockAddr: NativeSockAddr? = null
+
+    private fun recvInfoFor(source: InetSocketAddress): QuicheRecvInfo {
+        peerRecvInfos[source]?.let { return it }
+        val local =
+            serverLocalSockAddr ?: localAddr.toNativeSockAddr(bufferFactory).also {
+                serverLocalSockAddr = it
+                recvInfoSockAddrs.add(it)
+            }
+        val from = source.toNativeSockAddr(bufferFactory)
+        recvInfoSockAddrs.add(from)
+        val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
+        peerRecvInfos[source] = info
+        return info
+    }
+
     @Volatile private var closed = false
 
     @Volatile private var receiveSelector: Selector? = null
@@ -221,6 +247,13 @@ internal class JvmQuicServer(
             driver.destroy()
         }
         connectionsByDcid.clear()
+        // Drivers destroyed (no connRecv can be in flight) — free the per-source recv_info
+        // cache. Free each recv_info before the sockaddrs it points at.
+        for (info in peerRecvInfos.values) api.recvInfoFree(info)
+        peerRecvInfos.clear()
+        for (sa in recvInfoSockAddrs) sa.free()
+        recvInfoSockAddrs.clear()
+        serverLocalSockAddr = null
         // Drivers have drained — safe to free cached recv buffers. Any release
         // after this point would silently repopulate the pool (benign, but
         // buffers would leak until server GC), which is why this follows the
@@ -342,8 +375,13 @@ internal class JvmQuicServer(
 
                     val existingDriver = connectionsByDcid[dcidKey]
                     if (existingDriver != null) {
-                        // Zero-copy: transfer buffer ownership to driver
-                        val sendResult = existingDriver.commands.trySend(QuicheCmd.RecvPacket(recvBuf, received))
+                        // Zero-copy: transfer buffer ownership to driver. The per-source recv_info
+                        // lets quiche see the real datagram origin so a migrated client's new source
+                        // is recognised as a new path (passive migration).
+                        val sendResult =
+                            existingDriver.commands.trySend(
+                                QuicheCmd.RecvPacket(recvBuf, received, recvInfoOverride = recvInfoFor(peerInetAddr)),
+                            )
                         if (sendResult.isFailure) {
                             recvBuf.freeNativeMemory()
                             // Remove ALL entries for this dead driver, not just the one we hit

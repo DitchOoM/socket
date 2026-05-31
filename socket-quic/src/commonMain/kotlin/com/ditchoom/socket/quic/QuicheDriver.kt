@@ -232,9 +232,11 @@ class QuicheDriver(
                     cmd.buf.nativeMemoryAccess!!
                         .nativeAddress
                         .toLong()
-                // Hand quiche the recv_info of the path the packet arrived on (local addr = that
-                // socket's). Null key / unknown path falls back to primary — single-path is unchanged.
-                val info = cmd.pathKey?.let { paths[it]?.recvInfo } ?: recvInfo
+                // Hand quiche the recv_info for this packet. Server: a per-datagram override whose
+                // `from` is the real source (passive migration). Client: the path the packet arrived
+                // on (local addr = that socket's). Null/unknown falls back to primary — single-path
+                // is unchanged.
+                val info = cmd.recvInfoOverride ?: cmd.pathKey?.let { paths[it]?.recvInfo } ?: recvInfo
                 api.connRecv(conn, addr, cmd.len, info)
                 cmd.buf.freeNativeMemory()
             }
@@ -324,8 +326,13 @@ class QuicheDriver(
                 } else {
                     paths[api.decodePathKey(api.sendInfoFromAddr(sendInfo))]?.channel ?: primary.channel
                 }
+            // Server egress follows the peer: send to the destination quiche chose (sendInfo.to) so
+            // a migrated client's new source receives replies. Clients leave this null and rely on
+            // their connected/path sockets. NioUdpChannel caches the reconstruction (steady state
+            // targets one address), so the non-migrating server path stays allocation-free.
+            val dest = if (isServer) api.decodePathKey(api.sendInfoToAddr(sendInfo)) else null
             try {
-                channel.send(udpSendBuf, written)
+                channel.send(udpSendBuf, written, dest)
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
             } catch (_: Exception) {
