@@ -69,8 +69,7 @@ did not cut new versions).
   `BufferPool` is used. socket-quic uses it (recv pool) → #67 fix; base socket's TCP
   path doesn't (`LoopbackEchoInstrumentedTest` passes in CI). True root cause is
   upstream — `com.ditchoom:buffer` ships `LockFreeBufferPool` needing atomicfu
-  without declaring it; #67 is a consumer-side workaround. **Upstream buffer-lib
-  issue worth filing**, but nothing to fix in this repo.
+  without declaring it; #67 is a consumer-side workaround. Filed upstream: **DitchOoM/buffer#164**. Nothing to fix in this repo.
 - ⏳ **Make Windows blocking — DEFERRED.** Precondition (Windows `jvmTest` green ≥2
   runs) is unmet: the MinGW-cross-compiled DLL is consistently **absent** (#68/#69
   both skipped `Run JVM tests`), so the tests never actually run. Real prerequisite
@@ -207,9 +206,7 @@ event is not surfaced to the app; it relies on quiche's internal frame handling
 2. **Build the Windows quiche DLL natively on `windows-latest`** — the prerequisite
    for making `build-windows` blocking (deferred; see follow-ups above). The
    cross-compiled DLL is consistently absent, so Windows tests never run.
-3. *(optional, upstream)* file a `com.ditchoom:buffer` issue: `buffer-android`'s
-   `LockFreeBufferPool` references `kotlinx.atomicfu.AtomicFU` without declaring the
-   atomicfu dependency.
+3. ~~file the upstream `com.ditchoom:buffer` atomicfu issue~~ — ✅ filed: DitchOoM/buffer#164.
 
 (Version-race hardening and the atomicfu base-`socket` investigation are done — see
 the follow-ups section above.)
