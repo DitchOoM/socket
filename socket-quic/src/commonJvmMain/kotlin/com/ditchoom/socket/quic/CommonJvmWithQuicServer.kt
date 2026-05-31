@@ -29,6 +29,7 @@ import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
@@ -188,26 +189,66 @@ internal class JvmQuicServer(
      * Passive-migration support: one server socket sees a client's source address change
      * after the client migrates (RFC 9000 §9). quiche needs the *actual* per-datagram source
      * as recv_info.from to recognise the new path, so we cache one recv_info per distinct
-     * source (its `to` is the server's fixed local addr). Touched only on the receive-loop
-     * thread; freed in [close] after every driver is destroyed. Bounded by the number of
-     * distinct source addresses seen on this socket.
+     * source (its `to` is the server's fixed local addr, shared via [serverLocalSockAddr]).
+     *
+     * Bounded LRU ([maxPeerRecvInfos]) so a peer spraying spoofed source addresses on an
+     * established connection can't grow native memory without bound (the cache miss path
+     * allocates a recv_info + sockaddr per distinct source). Access-ordered so eviction
+     * targets idle sources. A cached recv_info pointer is handed to a driver via an UNLIMITED
+     * command channel, so a lagging driver may still hold it after the source goes idle;
+     * [CachedRecvInfo.inFlight] tracks outstanding references (released by the driver via
+     * [QuicheCmd.RecvPacket.onRecvInfoConsumed]) so eviction never frees one that's still in use.
+     *
+     * Touched only on the receive-loop thread (single writer); [inFlight] is the only field a
+     * driver thread mutates. Freed in [close] after every driver is destroyed.
      */
-    private val peerRecvInfos = mutableMapOf<InetSocketAddress, QuicheRecvInfo>()
-    private val recvInfoSockAddrs = mutableListOf<NativeSockAddr>()
+    private val maxPeerRecvInfos = 256
+
+    // accessOrder = true → iteration/eviction visits least-recently-used first.
+    private val peerRecvInfos =
+        LinkedHashMap<InetSocketAddress, CachedRecvInfo>(16, 0.75f, true)
     private var serverLocalSockAddr: NativeSockAddr? = null
 
-    private fun recvInfoFor(source: InetSocketAddress): QuicheRecvInfo {
-        peerRecvInfos[source]?.let { return it }
+    private class CachedRecvInfo(
+        val info: QuicheRecvInfo,
+        val from: NativeSockAddr,
+    ) {
+        /** Packets handed to a driver but not yet consumed; guards against evict-while-in-use. */
+        val inFlight = AtomicInteger(0)
+    }
+
+    private fun recvInfoFor(source: InetSocketAddress): CachedRecvInfo {
+        peerRecvInfos[source]?.let { return it } // get() promotes to most-recently-used
         val local =
             serverLocalSockAddr ?: localAddr.toNativeSockAddr(bufferFactory).also {
                 serverLocalSockAddr = it
-                recvInfoSockAddrs.add(it)
             }
         val from = source.toNativeSockAddr(bufferFactory)
-        recvInfoSockAddrs.add(from)
         val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
-        peerRecvInfos[source] = info
-        return info
+        val cached = CachedRecvInfo(info, from)
+        peerRecvInfos[source] = cached
+        evictIdlePeerRecvInfo()
+        return cached
+    }
+
+    /**
+     * Free the least-recently-used cached recv_info whose [CachedRecvInfo.inFlight] is zero once
+     * over [maxPeerRecvInfos]. If every over-cap entry is still in flight (pathological), skip
+     * rather than risk a use-after-free — we briefly exceed the cap and the next miss retries.
+     * Receive-loop thread only.
+     */
+    private fun evictIdlePeerRecvInfo() {
+        if (peerRecvInfos.size <= maxPeerRecvInfos) return
+        val iterator = peerRecvInfos.entries.iterator() // access order: eldest first
+        while (iterator.hasNext()) {
+            val cached = iterator.next().value
+            if (cached.inFlight.get() == 0) {
+                api.recvInfoFree(cached.info)
+                cached.from.free()
+                iterator.remove()
+                return
+            }
+        }
     }
 
     @Volatile private var closed = false
@@ -255,12 +296,15 @@ internal class JvmQuicServer(
             driver.destroy()
         }
         connectionsByDcid.clear()
-        // Drivers destroyed (no connRecv can be in flight) — free the per-source recv_info
-        // cache. Free each recv_info before the sockaddrs it points at.
-        for (info in peerRecvInfos.values) api.recvInfoFree(info)
+        // Drivers destroyed (their drain released every in-flight ref) — free the per-source
+        // recv_info cache. Free each recv_info before the `from` sockaddr it points at, then the
+        // shared `to` sockaddr last (every recv_info pointed at it).
+        for (cached in peerRecvInfos.values) {
+            api.recvInfoFree(cached.info)
+            cached.from.free()
+        }
         peerRecvInfos.clear()
-        for (sa in recvInfoSockAddrs) sa.free()
-        recvInfoSockAddrs.clear()
+        serverLocalSockAddr?.free()
         serverLocalSockAddr = null
         // Drivers have drained — safe to free cached recv buffers. Any release
         // after this point would silently repopulate the pool (benign, but
@@ -387,12 +431,22 @@ internal class JvmQuicServer(
                     if (existingDriver != null) {
                         // Zero-copy: transfer buffer ownership to driver. The per-source recv_info
                         // lets quiche see the real datagram origin so a migrated client's new source
-                        // is recognised as a new path (passive migration).
+                        // is recognised as a new path (passive migration). Hold an in-flight ref so
+                        // the cache can't evict+free this recv_info while the driver still has it queued.
+                        val cached = recvInfoFor(peerInetAddr)
+                        cached.inFlight.incrementAndGet()
                         val sendResult =
                             existingDriver.commands.trySend(
-                                QuicheCmd.RecvPacket(recvBuf, received, recvInfoOverride = recvInfoFor(peerInetAddr)),
+                                QuicheCmd.RecvPacket(
+                                    recvBuf,
+                                    received,
+                                    recvInfoOverride = cached.info,
+                                    onRecvInfoConsumed = { cached.inFlight.decrementAndGet() },
+                                ),
                             )
                         if (sendResult.isFailure) {
+                            // Not delivered → onRecvInfoConsumed won't fire; release the ref here.
+                            cached.inFlight.decrementAndGet()
                             recvBuf.freeNativeMemory()
                             // Remove ALL entries for this dead driver, not just the one we hit
                             connectionsByDcid.entries.removeIf { it.value === existingDriver }

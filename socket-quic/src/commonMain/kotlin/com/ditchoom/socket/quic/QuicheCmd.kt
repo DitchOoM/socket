@@ -19,12 +19,19 @@ sealed interface QuicheCmd {
      * source — required for passive (peer) migration, where one server socket sees a client's source address
      * change. The caller owns the recv_info's lifetime (the server caches them per source). When set it takes
      * precedence over [pathKey]; clients leave it null and use [pathKey] path routing instead.
+     *
+     * [onRecvInfoConsumed] is invoked exactly once after the driver is done with [recvInfoOverride] — both on
+     * the normal path (after `connRecv`) and when this command is dropped without processing (failCommand). The
+     * server uses it to track in-flight references so it can safely evict/free a cached recv_info only once no
+     * queued packet can still dereference it (the driver's command channel is UNLIMITED, so a lagging driver may
+     * hold a recv_info long after the source went idle). Null for the client/path-routed cases the server doesn't own.
      */
     class RecvPacket(
         val buf: PlatformBuffer,
         val len: Int,
         val pathKey: PathKey? = null,
         val recvInfoOverride: QuicheRecvInfo? = null,
+        val onRecvInfoConsumed: (() -> Unit)? = null,
     ) : QuicheCmd
 
     /** Allocate the next stream ID and create a [StreamSlot]. */

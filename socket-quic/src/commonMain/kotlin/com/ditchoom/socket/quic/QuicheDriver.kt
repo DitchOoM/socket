@@ -248,6 +248,9 @@ class QuicheDriver(
                 val info = cmd.recvInfoOverride ?: cmd.pathKey?.let { paths[it]?.recvInfo } ?: recvInfo
                 api.connRecv(conn, addr, cmd.len, info)
                 cmd.buf.freeNativeMemory()
+                // Signal the server it may now release the cached recv_info (quiche copied
+                // what it needs during connRecv; the pointer is no longer referenced).
+                cmd.onRecvInfoConsumed?.invoke()
             }
 
             is QuicheCmd.OpenStream -> {
@@ -598,7 +601,11 @@ class QuicheDriver(
 
     private fun failCommand(cmd: QuicheCmd) {
         when (cmd) {
-            is QuicheCmd.RecvPacket -> cmd.buf.freeNativeMemory()
+            is QuicheCmd.RecvPacket -> {
+                cmd.buf.freeNativeMemory()
+                // Dropped without connRecv — still release the server's in-flight ref.
+                cmd.onRecvInfoConsumed?.invoke()
+            }
             is QuicheCmd.OpenStream ->
                 cmd.result.completeExceptionally(
                     SocketClosedException.General("connection closed"),
