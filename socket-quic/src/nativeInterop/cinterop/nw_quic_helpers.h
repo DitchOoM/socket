@@ -147,8 +147,17 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
                         SecTrustSetAnchorCertificates(trust_ref, anchors);
                         SecTrustSetAnchorCertificatesOnly(trust_ref, true);
 
+                        // Offline evaluation: a pinned private CA has no OCSP/CRL
+                        // responder and no intermediates to fetch, and on a headless
+                        // CI macOS runner a network fetch via trustd can hang (the
+                        // block then never calls complete() → handshake stalls →
+                        // connect timeout). Forcing no network keeps it deterministic.
+                        SecTrustSetNetworkFetchAllowed(trust_ref, false);
+
+                        fprintf(stderr, "[quic-verify] enter anchors=%ld\n", (long)CFArrayGetCount(anchors)); // DIAG #81
                         CFErrorRef error = NULL;
                         bool valid = SecTrustEvaluateWithError(trust_ref, &error);
+                        fprintf(stderr, "[quic-verify] done valid=%d\n", (int)valid); // DIAG #81
                         if (error) CFRelease(error);
 
                         CFRelease(anchors);

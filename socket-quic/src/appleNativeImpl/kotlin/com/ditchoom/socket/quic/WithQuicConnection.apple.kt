@@ -81,6 +81,7 @@ actual suspend fun <R> withQuicConnection(
         // Wait for handshake completion
         suspendCancellableCoroutine { cont ->
             nw_helper_quic_set_state_handler(nwConn) { state, _, errorCode, errorDesc ->
+                println("[quic-state] state=$state code=$errorCode ${errorDesc ?: ""}") // DIAG #81
                 when (state) {
                     3 -> { // ready
                         if (cont.isActive) cont.resume(Unit)
