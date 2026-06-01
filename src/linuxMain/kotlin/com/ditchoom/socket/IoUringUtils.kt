@@ -578,6 +578,38 @@ object IoUringManager {
     }
 
     /**
+     * Test-observable count of cancel SQEs submitted via [cancelOperation].
+     * A deterministic test asserts this increments when close() cancels a parked
+     * read, instead of racing close() vs read() on wall-clock timing (issue #83).
+     */
+    internal val cancelSubmitCount = AtomicInt(0)
+
+    /**
+     * Submit a fire-and-forget io_uring cancel for an in-flight operation identified
+     * by [userData], so a concurrently-parked recv completes promptly with -ECANCELED
+     * instead of waiting out its full timeout.
+     *
+     * On Linux ARM64, closing the fd alone did NOT promptly cancel a parked recv
+     * (issue #83) — the read ran out its timeout and surfaced SocketTimeoutException
+     * rather than SocketClosedException. JVM (NIO2) raises AsynchronousCloseException
+     * immediately. Submitting an explicit cancel on close() makes the behavior prompt
+     * and identical across architectures. Cancel-by-userData (not by fd) is safe even
+     * after the fd is closed/reused, since the kernel matches the in-flight SQE by its
+     * user_data, not by fd number.
+     *
+     * Non-suspend: safe to call from the non-suspend closeInternal() path. No-op if the
+     * event loop isn't running (then there is no parked op to cancel).
+     */
+    fun cancelOperation(userData: Long) {
+        if (userData == 0L) return
+        if (pollerStarted.value != 1) return
+        cancelSubmitCount.incrementAndGet()
+        submitNoWaitUnsafe { sqe ->
+            io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+        }
+    }
+
+    /**
      * Cleanup resources. Call when shutting down.
      *
      * Wakes the event loop via eventfd, waits for it to exit, then tears down
