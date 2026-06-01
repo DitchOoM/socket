@@ -21,6 +21,21 @@ internal class StubQuicheApi : QuicheApi {
      */
     @Volatile var connSendOnce: Int? = null
 
+    /**
+     * When true, the FIRST [connSend] observed *after [connClose] has been called* returns one
+     * datagram (1300B), then stops. This deterministically forces a single
+     * [QuicheDriver.flushOutgoing] -> [UdpChannel.send] during the *close* command's afterCommand —
+     * and only then, since every pre-close send happens before [connClose]. Tests gate that send to
+     * pin the driver between completing the Close deferred and running updateState(), with no
+     * dependence on connSendOnce timing or scheduler luck. See
+     * ReactiveDriverTests.close_completes_only_after_state_is_synced.
+     */
+    @Volatile var emitOneDatagramOnClose = false
+
+    @Volatile private var closeInitiated = false
+
+    @Volatile private var closeDatagramEmitted = false
+
     // --- Config (all no-ops) ---
     override fun configNew(version: Int) = QuicheConfig(1L)
 
@@ -167,6 +182,10 @@ internal class StubQuicheApi : QuicheApi {
         bufLen: Int,
         sendInfo: QuicheSendInfo,
     ): Int {
+        if (emitOneDatagramOnClose && closeInitiated && !closeDatagramEmitted) {
+            closeDatagramEmitted = true
+            return 1300
+        }
         val once = connSendOnce
         if (once != null) {
             connSendOnce = null
@@ -203,7 +222,10 @@ internal class StubQuicheApi : QuicheApi {
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
-    ) = 0
+    ): Int {
+        closeInitiated = true
+        return 0
+    }
 
     // --- Server (no-ops) ---
     override fun configLoadCertChainFromPemFile(

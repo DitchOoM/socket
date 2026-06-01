@@ -273,6 +273,17 @@ class QuicheDriver(
 
             is QuicheCmd.Close -> {
                 api.connClose(conn, cmd.error)
+                // Sync state from quiche BEFORE signalling the close completed, so a caller
+                // awaiting Close() deterministically observes the resulting connection state
+                // (Closed once quiche reports the conn closed). Without this, run()'s
+                // afterCommand() -> updateState() runs only *after* execute() returns, so the
+                // result deferred could complete before the StateFlow flips — a happens-before
+                // gap that flaked ReactiveDriverTests.connection_close_sets_closed_state under
+                // Dispatchers.Default. updateState() is idempotent, so the afterCommand() call
+                // that follows is a harmless no-op; for real quiche (where connIsClosed lags
+                // connClose until the close frame drains) this is a no-op here too — state still
+                // transitions later via the normal loop, exactly as before.
+                updateState()
                 cmd.result.complete(Unit)
             }
 
