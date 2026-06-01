@@ -687,22 +687,38 @@ class DriverStreamAdapter(
 
         try {
             return withTimeout(timeout) {
+                // The FIN may have arrived coalesced with the last data chunk on a previous read()
+                // (which returned that Data and recorded the FIN here). quiche has already delivered it,
+                // so there is no further data and no readable-signal coming — return End now instead of
+                // issuing a StreamRecv that returns Done and parking on dataSignal forever.
+                if (slot.finReceived) {
+                    buffer.freeNativeMemory()
+                    return@withTimeout ReadResult.End
+                }
                 while (true) {
                     val deferred = CompletableDeferred<StreamRecvResult>()
                     driver.commands.send(QuicheCmd.StreamRecv(streamId.id, addr, bufferSize, deferred))
                     when (val result = deferred.await()) {
                         is StreamRecvResult.Data -> {
-                            if (result.bytesRead == 0 && result.fin) {
-                                buffer.freeNativeMemory()
-                                return@withTimeout ReadResult.End
-                            }
+                            // Record the FIN whether or not this chunk also carried data — a coalesced
+                            // FIN (bytes > 0 && fin) is otherwise dropped, wedging the next read().
+                            if (result.fin) slot.finReceived = true
                             if (result.bytesRead > 0) {
                                 buffer.position(result.bytesRead)
                                 buffer.resetForRead()
                                 return@withTimeout ReadResult.Data(buffer)
                             }
+                            // bytesRead == 0 implies a pure FIN (fin == true) — clean end of stream.
+                            buffer.freeNativeMemory()
+                            return@withTimeout ReadResult.End
                         }
                         is StreamRecvResult.Done -> {
+                            // Defensive: if the FIN was consumed earlier (coalesced with data), no signal
+                            // is coming — end now rather than park forever.
+                            if (slot.finReceived) {
+                                buffer.freeNativeMemory()
+                                return@withTimeout ReadResult.End
+                            }
                             slot.dataSignal.receive()
                             continue
                         }

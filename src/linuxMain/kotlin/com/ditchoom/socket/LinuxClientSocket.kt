@@ -8,6 +8,7 @@ import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
+import kotlin.concurrent.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.TimeSource
@@ -32,6 +33,15 @@ class LinuxClientSocket : ClientToServerSocket {
      * Can be overridden by PlatformSocketConfig.readBufferSize if configured.
      */
     private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
+
+    /**
+     * user_data of the recv currently parked in io_uring, or 0 when no read is in flight.
+     * Set on the event loop thread once the recv SQE is prepared (see [readWithIoUring])
+     * so a concurrent [close] can cancel it; cleared when the read returns. Lets close()
+     * promptly complete a parked recv with -ECANCELED instead of waiting out its timeout
+     * (issue #83).
+     */
+    private val pendingReadUserData = AtomicLong(0L)
 
     override fun isOpen(): Boolean = sockfd >= 0
 
@@ -483,8 +493,18 @@ class LinuxClientSocket : ClientToServerSocket {
         timeout: Duration,
     ): Int {
         val fd = sockfd
-        return IoUringManager.submitAndWait(timeout) { sqe, _ ->
-            io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
+        // Register the userData up front so close() can cancel this recv by id. Mark
+        // it parked inside prepareOp — which runs on the event loop thread AFTER the
+        // recv is registered in pendingOps — so a concurrent close() can never enqueue
+        // its cancel ahead of this recv in the FIFO submission channel. (issue #83)
+        val (userData, deferred) = IoUringManager.registerOperation()
+        return try {
+            IoUringManager.submitRegistered(userData, deferred, timeout) { sqe ->
+                io_uring_prep_recv(sqe, fd, ptr, size.convert(), 0)
+                pendingReadUserData.value = userData
+            }
+        } finally {
+            pendingReadUserData.compareAndSet(userData, 0L)
         }
     }
 
@@ -675,6 +695,12 @@ class LinuxClientSocket : ClientToServerSocket {
 
     private fun closeInternal() {
         val wasOpen = sockfd >= 0
+        // Promptly cancel a concurrently-parked recv so it returns -ECANCELED (→
+        // SocketClosedException) instead of waiting out its full timeout. Closing the
+        // fd alone is not prompt on Linux ARM64 (issue #83). Submit the cancel before
+        // closing the fd; it targets the recv by user_data, so it is correct regardless
+        // of fd state. A same-coroutine close (read already returned) sees 0 here.
+        IoUringManager.cancelOperation(pendingReadUserData.getAndSet(0L))
         ssl?.let {
             SSL_shutdown(it)
             SSL_free(it)
@@ -698,4 +724,11 @@ class LinuxClientSocket : ClientToServerSocket {
     override suspend fun close() {
         closeInternal()
     }
+
+    /**
+     * Test hook: user_data of the recv currently parked in io_uring, or 0 if no read is
+     * in flight. Lets a deterministic test wait until a read is observably parked before
+     * racing close() against it (issue #83) instead of guessing with a fixed delay.
+     */
+    internal fun parkedReadUserDataForTest(): Long = pendingReadUserData.value
 }
