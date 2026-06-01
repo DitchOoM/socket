@@ -11,6 +11,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Network/Network.h>
+#import <Security/Security.h>
 #import <dispatch/dispatch.h>
 
 #pragma mark - QUIC Connection Creation
@@ -24,20 +25,33 @@
  * nw_tls_copy_*, which on a QUIC options object produced the handshake-start
  * SIGTRAP fixed in PR #60).
  *
- * Certificate verification uses Network.framework's default system trust
- * evaluation (keychain anchors, hostname check enabled). `verify_certs` is a
- * NO-OP on Apple — an always-accept verify_block and a SecTrust-pinned
- * verify_block both SIGABRT'd under recent macOS TLS hardening (PR #54).
- * `QuicHarnessIntegrationTests` currently skips on Apple K/N: with the SIGTRAP
- * fixed, the handshake reaches `preparing` but NW rejects the private-CA,
- * non-CT-logged harness cert with errSSLBadCert (-9808) — see that test's
- * withHarness comment. (There is no AppleQuicConnectStartupProbe; earlier
- * docstrings referenced one that never existed.)
+ * Certificate verification (issue #81):
+ *   - **trusted_ca_ders non-empty** → install a verify_block that evaluates the
+ *     peer chain against the supplied DER-encoded CAs as the SOLE trust anchors
+ *     (`SecTrustSetAnchorCertificatesOnly`), via `SecTrustEvaluateWithError`.
+ *     Network.framework's own SSL policy (hostname + serverAuth EKU) is kept,
+ *     so the hostname must still match a SAN. Pinning to custom anchors is
+ *     CT-exempt, so a private-CA / non-CT-logged harness leaf is accepted
+ *     without the errSSLBadCert (-9808) the default QUIC trust path returns.
+ *     This is real chain validation — NOT an always-accept bypass — and it is
+ *     what lets `QuicHarnessIntegrationTests` run (not skip) on Apple K/N.
+ *   - **trusted_ca_ders nil/empty** → no verify_block; Network.framework's
+ *     default system trust evaluation runs (keychain anchors, hostname check).
+ *     This is the production path for real, CT-logged server certs.
+ *
+ * The verify_block MUST be attached to the QUIC sec_protocol_options obtained
+ * via nw_quic_copy_sec_protocol_options (NOT the generic nw_tls_copy_*). PR #54
+ * attached its verify_block to nw_tls_copy_sec_protocol_options applied to a
+ * QUIC options object — the same wrong-accessor defect PR #60 fixed for ALPN —
+ * which is what actually SIGABRT'd, not "macOS TLS hardening" as first believed.
  *
  * @param host Hostname to connect to
  * @param port Port number
  * @param alpn_protocols NSArray of NSString ALPN identifiers (mandatory for QUIC)
- * @param verify_certs Reserved — see note above.
+ * @param verify_certs Reserved for parity with the quiche path; when
+ *                     trusted_ca_ders is empty, NW default trust always runs.
+ * @param trusted_ca_ders NSArray of DER-encoded CA certs (NSData) to pin as the
+ *                        sole anchors, or nil/empty to use NW's default trust.
  * @param idle_timeout_seconds QUIC idle timeout (0 = no timeout)
  * @param connection_timeout_seconds TCP-level connection timeout
  * @return nw_connection_t or NULL on parameter error
@@ -47,6 +61,7 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     uint16_t port,
     NSArray<NSString *> * _Nonnull alpn_protocols,
     NSNumber * _Nonnull verify_certs,
+    NSArray<NSData *> * _Nullable trusted_ca_ders,
     int32_t idle_timeout_seconds,
     int32_t connection_timeout_seconds)
 {
@@ -63,12 +78,21 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
     // NSArray proxy that may have been released by then (H3).
     NSArray<NSString *> *alpn_copy = [alpn_protocols copy];
 
+    (void)verify_certs; // see docstring — meaningful switch is trusted_ca_ders
+
+    // Block-captured retained copy: the verify_block runs asynchronously during
+    // the handshake, so the DER bytes must outlive this function. Block-capture
+    // retains the array (and its elements) when the block is copied to the heap,
+    // independent of the K/N-bridged original (same H3 guard as alpn_copy above).
+    NSArray<NSData *> * _Nullable pinned_ca_ders =
+        (trusted_ca_ders.count > 0) ? [trusted_ca_ders copy] : nil;
+
     // Create QUIC parameters. The block configures the QUIC protocol options;
-    // ALPN comes from the QUIC-specific sec_protocol_options accessor
-    // (nw_quic_copy_sec_protocol_options) — NOT the generic TLS one. Calling
-    // nw_tls_copy_sec_protocol_options on a QUIC options object was the leading
-    // suspect for the handshake-start trap (H1): the block runs during
-    // nw_connection_start, matching "crashes the moment the handshake starts."
+    // ALPN and any verify_block come from the QUIC-specific sec_protocol_options
+    // accessor (nw_quic_copy_sec_protocol_options) — NOT the generic TLS one.
+    // Attaching to nw_tls_copy_sec_protocol_options on a QUIC options object is
+    // the wrong-accessor defect behind both the PR #60 ALPN SIGTRAP and the
+    // PR #54 verify_block SIGABRT (see docstring).
     nw_parameters_t params = nw_parameters_create_quic(
         ^(nw_protocol_options_t _Nonnull quic_options) {
             sec_protocol_options_t sec_options = nw_quic_copy_sec_protocol_options(quic_options);
@@ -77,10 +101,63 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
             }
 
-            // Cert verification: rely on Network.framework's default system trust.
-            // verify_certs is intentionally unused — see header docstring for the
-            // PR #54 investigation history.
-            (void)verify_certs;
+            // CA-pinning verify_block (issue #81). Only installed when CAs are
+            // supplied; the production default (nil) keeps NW's default system
+            // trust. The block does REAL chain validation against the pinned CAs
+            // as the sole anchors — pinning makes the chain CT-exempt, which is
+            // what clears the -9808 the default QUIC trust path returns for the
+            // private-CA harness leaf. Delivered on a dedicated serial queue;
+            // the block is pure C / Security-framework and captures no K/N state.
+            if (pinned_ca_ders != nil) {
+                static dispatch_queue_t verify_queue;
+                static dispatch_once_t verify_queue_once;
+                dispatch_once(&verify_queue_once, ^{
+                    verify_queue = dispatch_queue_create("com.ditchoom.socket.quic.verify", DISPATCH_QUEUE_SERIAL);
+                });
+                sec_protocol_options_set_verify_block(sec_options,
+                    ^(sec_protocol_metadata_t metadata, sec_trust_t sec_trust, sec_protocol_verify_complete_t complete) {
+                        (void)metadata;
+                        // sec_trust_t free-bridges to SecTrustRef (Network/Security
+                        // toll-free types, per WWDC 2018 "Network Framework").
+                        SecTrustRef trust_ref = sec_trust_copy_ref(sec_trust);
+                        if (!trust_ref) { complete(false); return; }
+
+                        // Build the anchor set from every supplied CA DER.
+                        CFMutableArrayRef anchors =
+                            CFArrayCreateMutable(kCFAllocatorDefault, pinned_ca_ders.count, &kCFTypeArrayCallBacks);
+                        for (NSData *der in pinned_ca_ders) {
+                            SecCertificateRef ca_cert = SecCertificateCreateWithData(
+                                kCFAllocatorDefault, (__bridge CFDataRef)der);
+                            if (ca_cert) {
+                                CFArrayAppendValue(anchors, ca_cert);
+                                CFRelease(ca_cert);
+                            }
+                        }
+                        if (CFArrayGetCount(anchors) == 0) {
+                            CFRelease(anchors);
+                            CFRelease(trust_ref);
+                            complete(false);
+                            return;
+                        }
+
+                        // Pin: our CAs are the SOLE acceptable anchors. We do NOT
+                        // replace NW's policies, so the hostname/serverAuth SSL
+                        // policy it configured still applies (the leaf SAN must
+                        // match the connect host).
+                        SecTrustSetAnchorCertificates(trust_ref, anchors);
+                        SecTrustSetAnchorCertificatesOnly(trust_ref, true);
+
+                        CFErrorRef error = NULL;
+                        bool valid = SecTrustEvaluateWithError(trust_ref, &error);
+                        if (error) CFRelease(error);
+
+                        CFRelease(anchors);
+                        CFRelease(trust_ref);
+
+                        complete(valid);
+                    },
+                    verify_queue);
+            }
         });
 
     if (!params) return NULL;

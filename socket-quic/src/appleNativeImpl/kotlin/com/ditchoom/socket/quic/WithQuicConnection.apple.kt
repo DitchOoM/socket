@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSData
+import platform.Foundation.NSDataBase64DecodingIgnoreUnknownCharacters
 import platform.Foundation.NSNumber
 import platform.Foundation.create
 import platform.Network.nw_connection_t
@@ -58,12 +59,21 @@ actual suspend fun <R> withQuicConnection(
         // Build ALPN array — pass as List which K/N bridges to NSArray
         val alpnList: List<Any?> = quicOptions.alpnProtocols
 
+        // Pinned-CA trust anchors (issue #81): PEM → DER NSData, bridged to
+        // NSArray<NSData *>. Empty → null so the native helper keeps NW's default
+        // system trust. See nw_quic_helpers.h for the verify_block.
+        val caDerList: List<NSData>? =
+            quicOptions.trustedCaCertificatesPem
+                .flatMap { pemToDerCertificates(it) }
+                .ifEmpty { null }
+
         val nwConn =
             nw_helper_create_quic_connection(
                 hostname,
                 port.toUShort(),
                 alpnList,
                 NSNumber(bool = quicOptions.verifyPeer),
+                caDerList,
                 quicOptions.idleTimeout.inWholeSeconds.toInt(),
                 timeout.inWholeSeconds.toInt(),
             ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection")
@@ -260,4 +270,34 @@ private fun ReadBuffer.toNSData(): NSData {
 
     // Last resort: empty data
     return NSData()
+}
+
+/**
+ * Parse every `-----BEGIN CERTIFICATE-----` block in [pem] into DER-encoded
+ * [NSData] for `SecCertificateCreateWithData`. Issue #81: lets the Apple QUIC
+ * verify_block pin a private-CA trust anchor without touching the OS keychain.
+ *
+ * Foundation decodes the base64 body straight into DER-backed [NSData] — no
+ * intermediate `ByteArray`.
+ */
+@OptIn(kotlinx.cinterop.BetaInteropApi::class)
+private fun pemToDerCertificates(pem: String): List<NSData> {
+    val begin = "-----BEGIN CERTIFICATE-----"
+    val end = "-----END CERTIFICATE-----"
+    val ders = mutableListOf<NSData>()
+    var search = 0
+    while (true) {
+        val b = pem.indexOf(begin, search)
+        if (b < 0) break
+        val e = pem.indexOf(end, b + begin.length)
+        if (e < 0) break
+        val body = pem.substring(b + begin.length, e)
+        NSData
+            .create(
+                base64EncodedString = body,
+                options = NSDataBase64DecodingIgnoreUnknownCharacters,
+            )?.let { ders += it }
+        search = e + end.length
+    }
+    return ders
 }

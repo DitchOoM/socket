@@ -111,6 +111,21 @@ data class QuicOptions(
     val activeConnectionIdLimit: Long = 4,
     /** Verify the peer's TLS certificate. */
     val verifyPeer: Boolean = true,
+    /**
+     * Trusted CA certificates (PEM, one `-----BEGIN CERTIFICATE-----` block per entry)
+     * to pin as the accepted trust anchors instead of the system trust store. Empty
+     * (the default) uses the platform's default trust evaluation.
+     *
+     * Use this to talk to a server whose chain roots in a private CA (e.g. a local
+     * test harness) without installing that CA into the OS keychain.
+     *
+     * **Platform support:** wired on Apple (Network.framework) today, where a pinned
+     * anchor is also Certificate-Transparency-exempt. On the quiche-backed targets
+     * (JVM/Android/Linux) this is not yet applied — those paths use [verifyPeer] and
+     * quiche's own `quiche_config_load_verify_locations_from_file`; symmetric wiring
+     * is a follow-up. Validation is real chain evaluation, not a bypass.
+     */
+    val trustedCaCertificatesPem: List<String> = emptyList(),
     /** Enable Path MTU Discovery. */
     val enablePmtuDiscovery: Boolean = false,
     /** Enable 0-RTT early data. */
