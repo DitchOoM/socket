@@ -214,24 +214,22 @@ jobs:
       # tests still connect and silently skip on connection failure via
       # QuicHarnessIntegrationTests.withHarness's catch, so a server-side
       # hiccup never fails the whole job.
-      # QUIC peer TLS trust (Phase 2 macOS-peer spike). Apple's Network.framework
-      # always evaluates the QUIC peer against the system trust store — a custom
-      # verify_block SIGABRTs under recent macOS hardening (PR #54), so we make
-      # *default* trust succeed instead of bypassing it: generate the harness
-      # cert matrix and add the harness-root CA to the System keychain. The peer
-      # then runs with valid.crt (SAN DNS:localhost + IP 127.0.0.1), and the
-      # Apple QuicHarnessIntegrationTests connect via "localhost" so the hostname
-      # check passes. Mirrors build-linux.yaml's "Trust harness CA" step.
-      # continue-on-error: a keychain/openssl hiccup must not fail the job — the
-      # QUIC tests skip via withHarness's catch if trust isn't established.
-      - name: Trust harness CA for Apple QUIC peer
+      # QUIC peer TLS certs. Apple's Network.framework always evaluates the QUIC
+      # peer cert, but the Apple QuicHarnessIntegrationTests now PIN the harness
+      # CA directly via QuicOptions.trustedCaCertificatesPem (a verify_block on
+      # the QUIC sec_protocol_options — issue #81), so no System-keychain trust
+      # step is needed. We only generate the cert matrix here: the build embeds
+      # ca.crt into QuicHarnessConfig.caCertPem (codegen) for the test to pin,
+      # and the peer serves valid.crt (SAN DNS:localhost + IP 127.0.0.1); the
+      # Apple client connects via "localhost" so NW's hostname check passes.
+      # (The PR #54 verify_block SIGABRT was a wrong-accessor bug, not macOS
+      # hardening — see issue #81.) continue-on-error: a gen-certs hiccup must
+      # not fail the job — the QUIC tests skip via withHarness's catch instead.
+      - name: Generate harness certs for Apple QUIC peer
         continue-on-error: true
         run: |
           set -x
           bash test-harness/tls/gen-certs.sh
-          sudo security add-trusted-cert -d -r trustRoot \
-            -k /Library/Keychains/System.keychain \
-            test-harness/tls/certs/ca.crt
 
       - name: Build quic-echo fat jar with macOS dylibs
         continue-on-error: true
@@ -254,9 +252,10 @@ jobs:
           fi
 
           # Serve the CA-signed harness cert (SAN DNS:localhost) so the Apple
-          # client validates against the System-keychain-trusted CA above.
-          # Fall back to the bundled self-signed cert if gen-certs didn't run
-          # (the Apple QUIC tests then skip on the trust failure, as before).
+          # client validates against the harness CA it pins via
+          # QuicOptions.trustedCaCertificatesPem. Fall back to the bundled
+          # self-signed cert if gen-certs didn't run (the Apple QUIC tests then
+          # skip on the trust failure, as before).
           CERT="$GITHUB_WORKSPACE/test-harness/tls/certs/valid.crt"
           KEY="$GITHUB_WORKSPACE/test-harness/tls/certs/valid.key"
           if [ ! -f "$CERT" ]; then CERT=testcerts/cert.crt; KEY=testcerts/cert.key; fi
@@ -363,13 +362,14 @@ jobs:
           if [ -f "$LOG" ]; then
             OK=$(grep -c 'harness OK' "$LOG" || true)
             SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
-            # Skips marked "Apple K/N" come from QuicHarnessIntegrationTests'
-            # `isAppleKNative()` gate in withHarness (PR #54 iter 9) — they
-            # mean "the harness suite is intentionally not exercised on this
-            # platform because Network.framework's QUIC verify_block path is
-            # known-broken." We report these as intentional skips so the
-            # cross-platform matrix can render them as ℹ️ instead of ❌.
-            INTENTIONAL_SKIP=$(grep -c 'harness SKIP: Apple K/N' "$LOG" || true)
+            # macOS K/N runs the harness for real now (CA-pinning verify_block —
+            # issue #81), so we expect OK>0 there. The iOS/tvOS/watchOS *simulator*
+            # has no usable QUIC/UDP path on the CI host (public-endpoint interop
+            # times out there too), so those tests skip intentionally with an
+            # "Apple simulator" marker. Count those as intentional so the matrix
+            # renders the simulator as a known gap (ℹ️), not a regression (❌). Any
+            # other SKIP means a real macOS connection failure (peer down).
+            INTENTIONAL_SKIP=$(grep -c 'harness SKIP: Apple simulator' "$LOG" || true)
           fi
           echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP, INTENTIONAL=$INTENTIONAL_SKIP"
 

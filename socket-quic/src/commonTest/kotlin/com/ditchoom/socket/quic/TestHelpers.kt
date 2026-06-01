@@ -77,3 +77,14 @@ suspend fun awaitUntil(
  * harness coverage"; a real startup probe + the -9808 fix are the follow-ups.)
  */
 internal expect fun isAppleKNative(): Boolean
+
+/**
+ * True on Apple non-macOS targets that run as a **simulator** (iOS/tvOS/watchOS).
+ *
+ * The iOS Simulator on the CI macOS host has no usable QUIC/UDP path — even the
+ * public-endpoint interop tests (cloudflare/google) time out there — so the local
+ * `quic-echo` harness can't be exercised. macOS K/N (where the QUIC client is
+ * really validated) returns false. Used to skip the harness suite intentionally
+ * on the simulator instead of letting it flake as connection timeouts (issue #81).
+ */
+internal expect fun isAppleSimulator(): Boolean

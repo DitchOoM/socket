@@ -30,6 +30,22 @@ rm -rf "$CERT_DIR"
 mkdir -p "$CERT_DIR"
 cd "$CERT_DIR"
 
+# Minimal req config — the SOLE source of extensions for every `openssl req`
+# below. OpenSSL 1.1.1 (the macOS-runner toolchain) does NOT dedupe `-addext`
+# against the default openssl.cnf's `[req] x509_extensions = v3_ca`, so it emits
+# DUPLICATE Basic Constraints / Subject Key Identifier extensions on the CA —
+# which Apple's macOS-15 Security framework rejects as non-standards-compliant
+# (errSecCertificate… -67903 → QUIC errSSLBadCert -9808). OpenSSL 3.x silently
+# dedupes, hiding the bug locally. A config with no x509_extensions/req_extensions
+# makes `-addext` (and the leaf `-extfile`) the only extension source, so the
+# output is identical and duplicate-free across openssl versions. (Issue #81.)
+REQ_CNF="$PWD/req-minimal.cnf"
+cat > "$REQ_CNF" <<'CFG'
+[req]
+distinguished_name = dn
+[dn]
+CFG
+
 # ── harness-root CA — the cert authority we want every platform to TRUST ──────
 # subjectKeyIdentifier on the CA is required so leaves can carry a matching
 # authorityKeyIdentifier=keyid (below): Apple's Security/Network.framework trust
@@ -38,7 +54,7 @@ cd "$CERT_DIR"
 # Harmless on BoringSSL/JVM — they don't require it.
 openssl genrsa -out ca.key 2048 2>/dev/null
 openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt \
-    -subj "/CN=harness-root" \
+    -subj "/CN=harness-root" -config "$REQ_CNF" \
     -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
     -addext "keyUsage=critical,keyCertSign,cRLSign" \
     -addext "subjectKeyIdentifier=hash"
@@ -46,7 +62,7 @@ openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt \
 # ── untrusted-root CA — a DIFFERENT CA, deliberately not given to platforms ───
 openssl genrsa -out untrusted-ca.key 2048 2>/dev/null
 openssl req -x509 -new -nodes -key untrusted-ca.key -sha256 -days 3650 -out untrusted-ca.crt \
-    -subj "/CN=untrusted-root" \
+    -subj "/CN=untrusted-root" -config "$REQ_CNF" \
     -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
     -addext "keyUsage=critical,keyCertSign,cRLSign"
 
@@ -54,7 +70,7 @@ openssl req -x509 -new -nodes -key untrusted-ca.key -sha256 -days 3650 -out untr
 sign_leaf() {
     local name="$1" cn="$2" sans="$3" ca_crt="$4" ca_key="$5"
     openssl genrsa -out "$name.key" 2048 2>/dev/null
-    openssl req -new -key "$name.key" -out "$name.csr" -subj "/CN=$cn"
+    openssl req -new -key "$name.key" -out "$name.csr" -subj "/CN=$cn" -config "$REQ_CNF"
     # subjectKeyIdentifier + authorityKeyIdentifier: Apple's modern TLS trust
     # evaluation (Security.framework, used by Network.framework's QUIC path)
     # expects leaves to carry an SKI and an AKI that keyid-matches the issuer's
@@ -88,7 +104,7 @@ sign_leaf valid "valid.test" "DNS:valid.test,DNS:localhost,IP:127.0.0.1" ca.crt 
 # ── self-signed (leaf is its own root, no CA chain) ───────────────────────────
 openssl genrsa -out self-signed.key 2048 2>/dev/null
 openssl req -x509 -new -nodes -key self-signed.key -sha256 -days 3650 -out self-signed.crt \
-    -subj "/CN=self-signed.test" \
+    -subj "/CN=self-signed.test" -config "$REQ_CNF" \
     -addext "basicConstraints=critical,CA:FALSE" \
     -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
     -addext "extendedKeyUsage=serverAuth" \
@@ -115,7 +131,7 @@ copy_extensions  = copy
 commonName = supplied
 EOF
 openssl genrsa -out expired.key 2048 2>/dev/null
-openssl req -new -key expired.key -out expired.csr \
+openssl req -new -key expired.key -out expired.csr -config "$REQ_CNF" \
     -subj "/CN=expired.test" \
     -addext "subjectAltName=DNS:expired.test,DNS:localhost,IP:127.0.0.1" \
     -addext "extendedKeyUsage=serverAuth"
@@ -141,8 +157,8 @@ sign_leaf untrusted-root "untrusted-root.test" \
     "DNS:untrusted-root.test,DNS:localhost,IP:127.0.0.1" \
     untrusted-ca.crt untrusted-ca.key
 
-# Cleanup serial files openssl drops
-rm -f ./*.srl
+# Cleanup serial files openssl drops + the minimal req config
+rm -f ./*.srl "$REQ_CNF"
 
 touch .generated
 echo "OK: harness TLS cert matrix generated in $(pwd)"
