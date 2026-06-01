@@ -331,10 +331,26 @@ class QuicheDriver(
             _state.value = QuicConnectionState.Established("h3")
             issueSpareCids()
         }
-        if (api.connIsClosed(conn) && _state.value !is QuicConnectionState.Closed) {
-            _state.value = QuicConnectionState.Closed(null)
-            commands.close()
+        if (api.connIsClosed(conn)) {
+            transitionToClosed()
         }
+    }
+
+    /**
+     * Transition to [QuicConnectionState.Closed], closing the command channel **before** publishing
+     * the new state. These are two coupled signals; a caller/test that keys off `state == Closed`
+     * (e.g. `state.first { it is Closed }`) must be able to rely on `commands.isClosedForSend` being
+     * true the instant it observes Closed. Publishing the StateFlow value first left a happens-before
+     * gap — on the multi-threaded dispatcher an observer could interleave between the two lines and
+     * see Closed with the channel still open, which flaked
+     * ReactiveDriverTests.flushOutgoing_transitionsToClosedOnUdpError. Closing first makes the
+     * channel-close happen-before the state observation (via the StateFlow publication).
+     * Idempotent — no-op if already Closed.
+     */
+    private fun transitionToClosed() {
+        if (_state.value is QuicConnectionState.Closed) return
+        commands.close()
+        _state.value = QuicConnectionState.Closed(null)
     }
 
     private suspend fun flushOutgoing() {
@@ -363,10 +379,7 @@ class QuicheDriver(
                 // The connection cannot make further progress — short-circuit to Closed and
                 // let the driver loop unwind via cleanup(). Letting the exception escape
                 // would leak it as an uncaught coroutine failure into the parent scope.
-                if (_state.value !is QuicConnectionState.Closed) {
-                    _state.value = QuicConnectionState.Closed(null)
-                    commands.close()
-                }
+                transitionToClosed()
                 return
             }
         }
