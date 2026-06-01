@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
@@ -371,6 +372,45 @@ class ReactiveDriverTests {
 
             driver.destroy()
             Unit
+        }
+
+    // ---- streamWrite back-pressure (QUICHE_ERR_DONE) ----
+
+    /**
+     * Regression for the write-path back-pressure fix (#87 suite 3): quiche returns `QUICHE_ERR_DONE`
+     * (-1) from `conn_stream_send` when the stream is flow-control blocked with no capacity. That is
+     * back-pressure, not failure — [DriverStreamAdapter.streamWrite] must report 0 bytes accepted so the
+     * caller retries, NOT throw. It previously threw `SocketClosedException` on any `written < 0`, which
+     * made a write larger than the current window fail. A real (more-negative) error still throws.
+     */
+    @Test
+    fun streamWrite_mapsQuicheErrDoneToZeroBackpressure() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val buf = bufferFactory.allocate(64)
+
+                // QUICHE_ERR_DONE (-1) -> 0 bytes accepted (back-pressure), no throw.
+                api.connStreamSendResult = -1
+                assertEquals(0, adapter.streamWrite(QuicStreamId(0L), buf, 2.seconds), "Done must map to 0, not throw")
+
+                // A normal (partial or full) accept passes through unchanged.
+                api.connStreamSendResult = 64
+                assertEquals(64, adapter.streamWrite(QuicStreamId(0L), buf, 2.seconds))
+
+                // A real negative error code still throws.
+                api.connStreamSendResult = -7
+                assertFailsWith<SocketClosedException>("a real error must still throw") {
+                    adapter.streamWrite(QuicStreamId(0L), buf, 2.seconds)
+                }
+
+                buf.freeNativeMemory()
+            } finally {
+                driver.destroy()
+            }
         }
 
     // ---- Helpers ----

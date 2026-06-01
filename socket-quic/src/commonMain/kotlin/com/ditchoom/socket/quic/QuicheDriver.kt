@@ -657,6 +657,14 @@ class QuicheDriver(
 
         /** Cap on spare source CIDs issued per connection (bounded further by connScidsLeft). */
         const val MAX_SPARE_SCIDS = 3
+
+        /**
+         * `QUICHE_ERR_DONE` (RFC-agnostic quiche sentinel). On a stream *write* it means the stream is
+         * flow-control blocked with no capacity right now — back-pressure, not failure — and the caller
+         * should retry once the peer's `MAX_STREAM_DATA` / `MAX_DATA` reopens the window. (The read path
+         * already maps it to [StreamRecvResult.Done].)
+         */
+        const val QUICHE_ERR_DONE = -1
     }
 }
 
@@ -729,9 +737,14 @@ class DriverStreamAdapter(
                 val deferred = CompletableDeferred<Int>()
                 driver.commands.send(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred))
                 deferred.await()
-            }.also { written ->
-                if (written < 0) {
-                    throw SocketClosedException.General("quiche stream write error: $written")
+            }.let { written ->
+                when {
+                    // Flow-control blocked: 0 bytes accepted. Report back-pressure (not an error) so the
+                    // caller retries when the window reopens — otherwise a write larger than the current
+                    // window throws. Symmetric with the read path's StreamRecvResult.Done handling.
+                    written == QuicheDriver.QUICHE_ERR_DONE -> 0
+                    written < 0 -> throw SocketClosedException.General("quiche stream write error: $written")
+                    else -> written
                 }
             }
         } catch (_: ClosedSendChannelException) {
