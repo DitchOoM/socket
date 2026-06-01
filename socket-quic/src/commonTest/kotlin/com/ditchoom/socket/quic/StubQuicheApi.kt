@@ -201,13 +201,16 @@ internal class StubQuicheApi : QuicheApi {
         bufLen: Int,
     ) = streamRecvResult
 
+    /** When set, [connStreamSend] returns this instead of [bufLen] — e.g. -1 (QUICHE_ERR_DONE) or a real error. */
+    @Volatile var connStreamSendResult: Int? = null
+
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ) = bufLen
+    ) = connStreamSendResult ?: bufLen
 
     override fun connIsEstablished(conn: QuicheConn) = established
 
