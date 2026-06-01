@@ -194,12 +194,18 @@ internal class StubQuicheApi : QuicheApi {
         return 0
     }
 
+    /**
+     * If non-empty, each [connStreamRecv] pops the next result (modelling quiche's sequence, e.g. a
+     * data-chunk-with-FIN followed by Done). Falls back to [streamRecvResult] once drained.
+     */
+    val streamRecvSequence: ArrayDeque<StreamRecvResult> = ArrayDeque()
+
     override fun connStreamRecv(
         conn: QuicheConn,
         streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
-    ) = streamRecvResult
+    ) = streamRecvSequence.removeFirstOrNull() ?: streamRecvResult
 
     /** When set, [connStreamSend] returns this instead of [bufLen] — e.g. -1 (QUICHE_ERR_DONE) or a real error. */
     @Volatile var connStreamSendResult: Int? = null
