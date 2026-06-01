@@ -293,7 +293,15 @@ static inline void nw_helper_quic_send(
         ? NW_CONNECTION_FINAL_MESSAGE_CONTEXT
         : NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT;
 
-    nw_connection_send(connection, dispatch_data, context, [is_complete boolValue],
+    // Always mark the message complete (the 4th arg below is `true`, not
+    // [is_complete boolValue]). For a byte-stream (TCP / QUIC stream) completing
+    // a DEFAULT_MESSAGE is just a flush boundary and keeps the stream open — only
+    // the FINAL_MESSAGE context half-closes the send side. Leaving a normal write
+    // incomplete (is_complete=false) pins an open default message, and
+    // Network.framework then queues every subsequent send — including the
+    // FINAL_MESSAGE FIN from stream close() — behind that never-completed message,
+    // so the FIN's send-complete callback never fires and close() hangs. (Issue #81.)
+    nw_connection_send(connection, dispatch_data, context, true,
         ^(nw_error_t _Nullable error) {
             int32_t err_domain = 0;
             int32_t err_code = 0;

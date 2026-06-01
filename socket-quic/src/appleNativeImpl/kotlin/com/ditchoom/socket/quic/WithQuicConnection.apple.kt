@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSData
 import platform.Foundation.NSDataBase64DecodingIgnoreUnknownCharacters
 import platform.Foundation.NSNumber
@@ -38,6 +39,7 @@ import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Apple [withQuicConnection] using Network.framework.
@@ -189,9 +191,15 @@ private class NWQuicByteStream(
                 nw_helper_quic_receive(nwConn, 1u, 65536u) { data, isComplete, _, errorCode, _ ->
                     when {
                         data != null && data.length.toInt() > 0 -> {
-                            // Zero-copy: wrap NSData directly
+                            // Zero-copy: wrap NSData directly. position()+resetForRead()
+                            // flips the buffer to read mode (limit=length, position=0) so
+                            // ReadResult.Data hands the caller a read-positioned buffer with
+                            // remaining()==length — without the flip it stays write-positioned
+                            // (remaining()==0) and the read appears empty (cf.
+                            // DriverStreamAdapter.streamRead in QuicheDriver.kt). (Issue #81.)
                             val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
                             buffer.position(data.length.toInt())
+                            buffer.resetForRead()
                             if (cont.isActive) cont.resume(ReadResult.Data(buffer))
                         }
                         isComplete?.boolValue == true -> {
@@ -234,13 +242,27 @@ private class NWQuicByteStream(
     override suspend fun close() {
         if (streamClosed) return
         streamClosed = true
-        // Send FIN: empty data with is_complete=true
-        suspendCancellableCoroutine { cont ->
-            val emptyData = NSData()
-            nw_helper_quic_send(nwConn, emptyData, NSNumber(bool = true)) { _, _, _ ->
-                if (cont.isActive) cont.resume(Unit)
+        // Send FIN: empty data with is_complete=true (FINAL_MESSAGE context).
+        // Bounded by a timeout: stream teardown must never block forever on the
+        // send-complete callback. The root-cause hang (a prior write leaving the
+        // DEFAULT message open and queuing this FIN behind it) is fixed in
+        // nw_quic_helpers.h, but a best-effort, bounded close is the correct
+        // contract regardless. (Issue #81.)
+        withTimeoutOrNull(FIN_TIMEOUT) {
+            suspendCancellableCoroutine { cont ->
+                val emptyData = NSData()
+                nw_helper_quic_send(nwConn, emptyData, NSNumber(bool = true)) { _, _, _ ->
+                    if (cont.isActive) cont.resume(Unit)
+                }
             }
         }
+    }
+
+    private companion object {
+        // Upper bound for flushing the stream FIN during close(). The FIN should
+        // complete near-instantly once the send queue is unblocked; this only
+        // guards against a wedged Network.framework send callback.
+        private val FIN_TIMEOUT: Duration = 5.seconds
     }
 }
 
