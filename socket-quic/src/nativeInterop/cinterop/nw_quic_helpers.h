@@ -147,37 +147,14 @@ static inline nw_connection_t _Nullable nw_helper_create_quic_connection(
                         SecTrustSetAnchorCertificates(trust_ref, anchors);
                         SecTrustSetAnchorCertificatesOnly(trust_ref, true);
 
-                        // Offline evaluation: a pinned private CA has no OCSP/CRL
-                        // responder and no intermediates to fetch, and on a headless
-                        // CI macOS runner a network fetch via trustd can hang (the
-                        // block then never calls complete() → handshake stalls →
-                        // connect timeout). Forcing no network keeps it deterministic.
+                        // Offline evaluation: a pinned private CA has no CT log,
+                        // OCSP/CRL responder, or intermediates to fetch, so disable
+                        // network fetch — the evaluation is fully local and
+                        // deterministic (and can't stall on trustd network I/O).
                         SecTrustSetNetworkFetchAllowed(trust_ref, false);
 
-                        fprintf(stderr, "[quic-verify] enter anchors=%ld\n", (long)CFArrayGetCount(anchors)); // DIAG #81
                         CFErrorRef error = NULL;
                         bool valid = SecTrustEvaluateWithError(trust_ref, &error);
-                        if (!valid && error) { // DIAG #81: capture the exact macOS rejection reason
-                            CFStringRef d = CFErrorCopyDescription(error);
-                            char buf[600] = {0};
-                            if (d) CFStringGetCString(d, buf, sizeof(buf), kCFStringEncodingUTF8);
-                            fprintf(stderr, "[quic-verify] reject code=%ld desc=%s\n", (long)CFErrorGetCode(error), buf);
-                            if (d) CFRelease(d);
-                            // Also dump the per-cert trust result dictionary, which
-                            // names the specific failing policy check (CT, EKU, etc.).
-                            CFDictionaryRef res = SecTrustCopyResult(trust_ref);
-                            if (res) {
-                                CFDataRef props = CFPropertyListCreateData(
-                                    kCFAllocatorDefault, res, kCFPropertyListXMLFormat_v1_0, 0, NULL);
-                                if (props) {
-                                    fprintf(stderr, "[quic-verify] result=%.*s\n",
-                                            (int)CFDataGetLength(props), (const char *)CFDataGetBytePtr(props));
-                                    CFRelease(props);
-                                }
-                                CFRelease(res);
-                            }
-                        }
-                        fprintf(stderr, "[quic-verify] done valid=%d\n", (int)valid); // DIAG #81
                         if (error) CFRelease(error);
 
                         CFRelease(anchors);
