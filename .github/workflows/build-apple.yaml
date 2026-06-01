@@ -362,14 +362,14 @@ jobs:
           if [ -f "$LOG" ]; then
             OK=$(grep -c 'harness OK' "$LOG" || true)
             SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
-            # Apple now runs the harness suite for real — the CA-pinning
-            # verify_block (issue #81) removed the old `isAppleKNative()` skip,
-            # so we expect OK>0 and no intentional skips. The "Apple K/N"
-            # intentional-skip marker no longer exists; this grep stays (now
-            # yielding 0) only to keep the apple.txt schema stable for the
-            # cross-platform matrix consumer. A non-zero SKIP here now means a
-            # real connection failure (peer down), not a known gap.
-            INTENTIONAL_SKIP=$(grep -c 'harness SKIP: Apple K/N' "$LOG" || true)
+            # macOS K/N runs the harness for real now (CA-pinning verify_block —
+            # issue #81), so we expect OK>0 there. The iOS/tvOS/watchOS *simulator*
+            # has no usable QUIC/UDP path on the CI host (public-endpoint interop
+            # times out there too), so those tests skip intentionally with an
+            # "Apple simulator" marker. Count those as intentional so the matrix
+            # renders the simulator as a known gap (ℹ️), not a regression (❌). Any
+            # other SKIP means a real macOS connection failure (peer down).
+            INTENTIONAL_SKIP=$(grep -c 'harness SKIP: Apple simulator' "$LOG" || true)
           fi
           echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP, INTENTIONAL=$INTENTIONAL_SKIP"
 

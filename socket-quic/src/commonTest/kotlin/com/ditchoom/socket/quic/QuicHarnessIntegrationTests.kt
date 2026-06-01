@@ -73,6 +73,13 @@ class QuicHarnessIntegrationTests {
     private val harnessHost = if (applePinnedTrust) "localhost" else QuicHarnessConfig.host
     private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
 
+    // CI macOS QUIC handshakes against the JVM quic-echo peer run ~3–5s (cold
+    // peer + shared-runner load) vs ~30ms locally, so a tight 5s connect timeout
+    // flaked. Give the handshake generous headroom (well within the per-test
+    // runTest budget); stream ops are fast once connected. (Issue #81.)
+    private val connectTimeout = 20.seconds
+    private val opTimeout = 10.seconds
+
     /**
      * Run [block] inside a QUIC connection to the harness echo, or skip if
      * unreachable.
@@ -86,13 +93,22 @@ class QuicHarnessIntegrationTests {
      * pass CI by accident.
      */
     private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
+        if (isAppleSimulator()) {
+            // iOS/tvOS/watchOS simulator on the CI macOS host has no usable
+            // QUIC/UDP path — public-endpoint interop times out there too — so the
+            // local harness can't run. Skip intentionally (not a flaky timeout);
+            // the QUIC client is validated on macOS K/N. Marker matched by the CI
+            // audit's intentional-skip grep. (Issue #81.)
+            println("[QuicHarnessIntegrationTests] harness SKIP: Apple simulator — no QUIC/UDP in CI (issue #81)")
+            return
+        }
         try {
             withQuicConnection(
                 harnessHost,
                 QuicHarnessConfig.quicEchoPort,
                 quicOptions,
                 connOptions,
-                5.seconds,
+                connectTimeout,
                 block,
             )
             println("[QuicHarnessIntegrationTests] harness OK")
@@ -110,7 +126,7 @@ class QuicHarnessIntegrationTests {
     /** Drop-in replacement for [QuicIntegrationTests.handshake_completesSuccessfully]. */
     @Test
     fun harness_handshake_completesSuccessfully() =
-        runTest(timeout = 30.seconds) {
+        runTest(timeout = 60.seconds) {
             withContext(Dispatchers.Default) {
                 withHarness {
                     // Scope-based connect: if the block runs, handshake succeeded.
@@ -121,7 +137,7 @@ class QuicHarnessIntegrationTests {
     /** Drop-in replacement for [QuicIntegrationTests.openStream_returnsOpenStream]. */
     @Test
     fun harness_openStream_returnsOpenStream() =
-        runTest(timeout = 30.seconds) {
+        runTest(timeout = 60.seconds) {
             withContext(Dispatchers.Default) {
                 withHarness {
                     val stream = openStream()
@@ -136,7 +152,7 @@ class QuicHarnessIntegrationTests {
     /** Drop-in replacement for [QuicIntegrationTests.multipleStreams_haveDistinctIds]. */
     @Test
     fun harness_multipleStreams_haveDistinctIds() =
-        runTest(timeout = 30.seconds) {
+        runTest(timeout = 60.seconds) {
             withContext(Dispatchers.Default) {
                 withHarness {
                     val s0 = openStream()
@@ -164,14 +180,14 @@ class QuicHarnessIntegrationTests {
      */
     @Test
     fun harness_writeToStream_succeeds() =
-        runTest(timeout = 30.seconds) {
+        runTest(timeout = 60.seconds) {
             withContext(Dispatchers.Default) {
                 withHarness {
                     val stream = openStream()
                     bufferFactory.allocate(16).use { buf ->
                         buf.writeString("PING\n", Charset.UTF8)
                         buf.resetForRead()
-                        val written = stream.write(buf, 5.seconds)
+                        val written = stream.write(buf, opTimeout)
                         assertTrue(written.count > 0)
                     }
                     stream.close()
@@ -188,7 +204,7 @@ class QuicHarnessIntegrationTests {
      */
     @Test
     fun harness_writeAndRead_serverResponds() =
-        runTest(timeout = 30.seconds) {
+        runTest(timeout = 60.seconds) {
             withContext(Dispatchers.Default) {
                 withHarness {
                     val stream = openStream()
@@ -196,9 +212,9 @@ class QuicHarnessIntegrationTests {
                     bufferFactory.allocate(16).use { buf ->
                         buf.writeString(payload, Charset.UTF8)
                         buf.resetForRead()
-                        stream.write(buf, 5.seconds)
+                        stream.write(buf, opTimeout)
                     }
-                    val result = withTimeoutOrNull(5.seconds) { stream.read(5.seconds) }
+                    val result = withTimeoutOrNull(opTimeout) { stream.read(opTimeout) }
                     if (result is ReadResult.Data) {
                         assertTrue(result.buffer.remaining() > 0)
                         result.buffer.freeIfNeeded()
