@@ -231,6 +231,19 @@ jobs:
           set -x
           bash test-harness/tls/gen-certs.sh
 
+      # DIAG #81: dump the exact CA/leaf the runner generated + openssl version.
+      # macOS 15 SecTrust rejects harness-root as "not standards compliant"
+      # (-67903) where local macOS 26 accepts it; this shows precisely which
+      # extension/attribute is non-compliant so the gen-certs fix is exact.
+      - name: DIAG dump harness certs (#81)
+        continue-on-error: true
+        run: |
+          openssl version
+          echo "===== ca.crt ====="
+          openssl x509 -in test-harness/tls/certs/ca.crt -text -noout
+          echo "===== valid.crt ====="
+          openssl x509 -in test-harness/tls/certs/valid.crt -text -noout
+
       - name: Build quic-echo fat jar with macOS dylibs
         continue-on-error: true
         run: >-
