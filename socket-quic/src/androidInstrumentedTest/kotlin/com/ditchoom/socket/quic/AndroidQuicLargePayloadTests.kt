@@ -11,7 +11,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -20,7 +19,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -125,10 +123,12 @@ class AndroidQuicLargePayloadTests {
         writeAll(buf)
     }
 
+    // No delay-poll on back-pressure: a full flow-control window makes `write` park reactively on the
+    // stream's writable-signal and resume when the peer's MAX_STREAM_DATA reopens it.
     private suspend fun QuicByteStream.writeAll(buf: PlatformBuffer) {
         while (buf.remaining() > 0) {
             val n = write(buf, 15.seconds).count
-            if (n > 0) buf.position(buf.position() + n) else delay(2.milliseconds)
+            buf.position(buf.position() + n)
         }
     }
 

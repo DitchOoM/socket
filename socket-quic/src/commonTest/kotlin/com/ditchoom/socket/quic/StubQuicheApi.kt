@@ -285,9 +285,18 @@ internal class StubQuicheApi : QuicheApi {
     // --- Stream iteration ---
     override fun connReadable(conn: QuicheConn) = QuicheStreamIter(0L)
 
-    override fun connWritable(conn: QuicheConn) = QuicheStreamIter(0L)
+    /**
+     * Stream IDs to report as writable on the next [connWritable] poll, drained by [streamIterNext].
+     * The driver calls `connWritable` once per `afterCommand` and drains the iterator, so a test arms
+     * this right before triggering one command to fire exactly one `writableSignal` wakeup. Non-empty
+     * ⇒ [connWritable] returns a live iterator handle (1L). (The stub's `connReadable` stays exhausted,
+     * so `streamIterNext` is only ever exercised by the writable path.)
+     */
+    val writableStreams: ArrayDeque<Long> = ArrayDeque()
 
-    override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? = null
+    override fun connWritable(conn: QuicheConn) = if (writableStreams.isEmpty()) QuicheStreamIter(0L) else QuicheStreamIter(1L)
+
+    override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? = writableStreams.removeFirstOrNull()?.let { QuicStreamId(it) }
 
     override fun streamIterFree(iter: QuicheStreamIter) {}
 

@@ -9,12 +9,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -153,15 +151,15 @@ abstract class QuicLargePayloadTestSuite {
         }
     }
 
-    /** Write the whole buffer, advancing by the accepted count; a 0-accept is window-full back-pressure. */
+    /**
+     * Write the whole buffer, advancing by the accepted count. No delay-poll on back-pressure: a full
+     * flow-control window makes `write` park reactively on the stream's writable-signal and resume when
+     * the peer's `MAX_STREAM_DATA` reopens it, so each call returns only once it has made progress.
+     */
     private suspend fun QuicByteStream.writeAll(buf: PlatformBuffer) {
         while (buf.remaining() > 0) {
             val n = write(buf, 15.seconds).count
-            if (n > 0) {
-                buf.position(buf.position() + n)
-            } else {
-                delay(2.milliseconds) // window full — let the peer's MAX_STREAM_DATA land, then retry
-            }
+            buf.position(buf.position() + n)
         }
     }
 

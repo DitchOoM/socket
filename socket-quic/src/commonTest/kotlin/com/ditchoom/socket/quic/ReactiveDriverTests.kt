@@ -378,43 +378,123 @@ class ReactiveDriverTests {
             Unit
         }
 
-    // ---- streamWrite back-pressure (QUICHE_ERR_DONE) ----
+    // ---- streamWrite reactive back-pressure (writable-signal) ----
 
     /**
-     * Regression for the write-path back-pressure fix (#87 suite 3): quiche returns `QUICHE_ERR_DONE`
-     * (-1) from `conn_stream_send` when the stream is flow-control blocked with no capacity. That is
-     * back-pressure, not failure — [DriverStreamAdapter.streamWrite] must report 0 bytes accepted so the
-     * caller retries, NOT throw. It previously threw `SocketClosedException` on any `written < 0`, which
-     * made a write larger than the current window fail. A real (more-negative) error still throws.
+     * The write-path mirror of the read-path `dataSignal` tests. quiche returns `QUICHE_ERR_DONE` (-1)
+     * from `conn_stream_send` when the stream's flow-control window is full. That is back-pressure, not
+     * failure — and rather than surface a spurious 0 for the caller to delay-poll on (the old behaviour),
+     * [DriverStreamAdapter.streamWrite] now **parks reactively** on [StreamSlot.writableSignal] until the
+     * driver observes the stream become writable again (`signalWritableStreams` drains
+     * [QuicheApi.connWritable]), then retries. Deterministic via [StubQuicheApi.connStreamSendResult] +
+     * [StubQuicheApi.writableStreams]; negative-check = drop the `signalWritableStreams()` wiring and this
+     * hangs to the `withTimeout`.
      */
     @Test
-    fun streamWrite_mapsQuicheErrDoneToZeroBackpressure() =
+    fun streamWrite_parksOnFullWindow_thenProgressesWhenWritableSignalFires() =
         runQuicTest {
             val api = StubQuicheApi()
             val driver = createTestDriver(api)
             driver.start(this)
             try {
-                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+                val slot = sendOpenStream(driver) // registered in the driver's streams map, so it can be signalled
+                val adapter = DriverStreamAdapter(driver, slot)
                 val buf = bufferFactory.allocate(64)
 
-                // QUICHE_ERR_DONE (-1) -> 0 bytes accepted (back-pressure), no throw.
+                // Window full: every StreamSend returns QUICHE_ERR_DONE -> the writer must PARK, not return 0.
                 api.connStreamSendResult = -1
-                assertEquals(0, adapter.streamWrite(QuicStreamId(0L), buf, 2.seconds), "Done must map to 0, not throw")
+                val write = async { adapter.streamWrite(slot.id, buf, 5.seconds) }
+                yield()
+                assertNull(
+                    withTimeoutOrNull(200) { write.await() },
+                    "writer must park on a full window, not return 0",
+                )
 
-                // A normal (partial or full) accept passes through unchanged.
+                // Reopen the window AND report the stream writable, then run one afterCommand (any command):
+                // the driver drains connWritable -> writableSignal.trySend -> the parked writer wakes & retries.
                 api.connStreamSendResult = 64
-                assertEquals(64, adapter.streamWrite(QuicStreamId(0L), buf, 2.seconds))
+                api.writableStreams.addLast(slot.id.id)
+                sendOpenStream(driver)
 
-                // A real negative error code still throws.
+                assertEquals(64, withTimeout(2.seconds) { write.await() }, "writer must resume once the window reopens")
+
+                buf.freeNativeMemory()
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /** A real (more-negative) quiche stream error is not back-pressure — it must still throw, not park. */
+    @Test
+    fun streamWrite_realErrorThrows() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val slot = sendOpenStream(driver)
+                val adapter = DriverStreamAdapter(driver, slot)
+                val buf = bufferFactory.allocate(64)
+
                 api.connStreamSendResult = -7
                 assertFailsWith<SocketClosedException>("a real error must still throw") {
-                    adapter.streamWrite(QuicStreamId(0L), buf, 2.seconds)
+                    withTimeout(2.seconds) { adapter.streamWrite(slot.id, buf, 2.seconds) }
                 }
 
                 buf.freeNativeMemory()
             } finally {
                 driver.destroy()
             }
+        }
+
+    /** An empty write is a 0-byte no-op — it must never park, even when the window is full. */
+    @Test
+    fun streamWrite_emptyBuffer_returnsZeroWithoutParking() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val slot = sendOpenStream(driver)
+                val adapter = DriverStreamAdapter(driver, slot)
+                val empty = bufferFactory.allocate(0)
+
+                api.connStreamSendResult = -1 // "window full" — an empty write must still return 0 immediately
+                assertEquals(0, withTimeout(2.seconds) { adapter.streamWrite(slot.id, empty, 2.seconds) })
+
+                empty.freeNativeMemory()
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /** A writer parked on a full window must wake into [SocketClosedException] when the connection closes. */
+    @Test
+    fun streamWrite_connectionClosedWhileParked_throwsSocketClosed() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val driver = createTestDriver(api)
+            driver.start(this)
+            val slot = sendOpenStream(driver)
+            val adapter = DriverStreamAdapter(driver, slot)
+            val buf = bufferFactory.allocate(64)
+
+            api.connStreamSendResult = -1 // window full -> writer parks on writableSignal
+            // runCatching so the eventual SocketClosedException is captured in the result, not propagated
+            // to this scope as an uncaught async-child failure (which would fail the test before we assert).
+            val write = async { runCatching { adapter.streamWrite(slot.id, buf, 5.seconds) } }
+            yield()
+            assertNull(withTimeoutOrNull(200) { write.await() }, "writer should be parked")
+
+            driver.destroy() // closes commands -> cleanup() closes writableSignal -> parked writer unblocks
+
+            val result = withTimeout(2.seconds) { write.await() }
+            assertIs<SocketClosedException>(
+                result.exceptionOrNull(),
+                "closing while parked must surface as SocketClosedException",
+            )
+
+            buf.freeNativeMemory()
         }
 
     // ---- streamRead FIN coalesced with data (#91) ----
