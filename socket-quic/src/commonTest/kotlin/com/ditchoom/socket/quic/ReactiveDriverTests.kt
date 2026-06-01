@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
@@ -408,6 +410,41 @@ class ReactiveDriverTests {
                 }
 
                 buf.freeNativeMemory()
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    // ---- streamRead FIN coalesced with data (#91) ----
+
+    /**
+     * Regression for #91: when the final stream chunk delivers data **and** the FIN together
+     * (`stream_recv` → bytes > 0 && fin), [DriverStreamAdapter.streamRead] returns that Data — and must
+     * carry the FIN forward so the *next* read returns [ReadResult.End]. It previously dropped the FIN
+     * and parked on the stream's `dataSignal` forever (quiche had already delivered the FIN, so no
+     * further data or readable-signal was coming) — an intermittent hang of one of N bulk streams,
+     * deterministic here via [StubQuicheApi.streamRecvSequence].
+     */
+    @Test
+    fun streamRead_finCoalescedWithData_yieldsEndOnNextRead() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            // Last chunk: 10 bytes + FIN together; the finished stream then reports Done.
+            api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 10, fin = true))
+            api.streamRecvResult = StreamRecvResult.Done
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+
+                val first = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
+                assertIs<ReadResult.Data>(first, "first read should deliver the coalesced data chunk")
+                first.buffer.freeIfNeeded()
+
+                // With the FIN dropped this would park on dataSignal and the streamRead withTimeout would
+                // throw; the fix must return End instead.
+                val second = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
+                assertIs<ReadResult.End>(second, "FIN coalesced with data must yield End on the next read, not hang")
             } finally {
                 driver.destroy()
             }
