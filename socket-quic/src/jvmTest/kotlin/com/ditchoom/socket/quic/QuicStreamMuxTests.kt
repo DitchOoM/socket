@@ -92,13 +92,15 @@ class QuicStreamMuxTests {
     fun bidirectionalStreamMuxExchange() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib {
-                withTimeout(15.seconds) {
+                // 30s whole-test budget: the client connect alone defaults to 15s, so the old 15s
+                // cap was inconsistent with the work below (connect + send + receive) and a
+                // slow-but-correct run could time out opaquely. (Same shape as the migration-test
+                // de-flake.)
+                withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val muxResult = CompletableDeferred<String>()
-
                         val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
 
-                        // Server: accept bidi stream via StreamMux, echo
+                        // Server: accept bidi stream via StreamMux, echo.
                         val serverDispatched = CompletableDeferred<Unit>()
                         val serverJob =
                             launch(Dispatchers.IO) {
@@ -113,24 +115,23 @@ class QuicStreamMuxTests {
                             }
                         serverDispatched.await()
 
-                        // Client: send via StreamMux
-                        val clientJob =
-                            launch(Dispatchers.IO) {
+                        try {
+                            // Run the client INLINE (not in a child launch funneling the result
+                            // through an unbounded CompletableDeferred.await): a per-op withTimeout
+                            // throws a CancellationException that would cancel a child coroutine
+                            // silently, leaving the await to time out opaquely and masking the real
+                            // cause. Inline, any failure propagates straight to the test.
+                            val response =
                                 withQuicMux("localhost", port, testQuicOptions, TestCodec, connectionOptions = opts) {
                                     val conn = openBidirectional()
                                     assertTrue(conn.id >= 0)
                                     conn.send("hello")
-                                    val response = conn.receive().first()
-                                    muxResult.complete(response)
+                                    val r = conn.receive().first()
                                     conn.close()
+                                    r
                                 }
-                            }
-
-                        try {
-                            val result = withTimeout(10.seconds) { muxResult.await() }
-                            assertEquals("echo: hello", result)
+                            assertEquals("echo: hello", response)
                         } finally {
-                            clientJob.cancel()
                             serverJob.cancel()
                         }
                     }
