@@ -27,10 +27,18 @@ import kotlin.time.Duration.Companion.seconds
  * and actual channel pumping and don't want virtual-time
  * fast-forwarding to skip over `withTimeout` budgets.
  */
-fun runQuicTest(block: suspend CoroutineScope.() -> Unit): TestResult =
-    runTest(timeout = 30.seconds) {
+fun runQuicTest(
+    timeout: Duration = 15.seconds,
+    block: suspend CoroutineScope.() -> Unit,
+): TestResult =
+    // runTest's own budget must exceed the wall-clock [timeout] (plus margin for
+    // setup/teardown) or it, not our withTimeout, fires first with a less useful
+    // message. Tests that legitimately need more than the 15s default (e.g. the
+    // passive-migration test, which does connect + echo + a NAT rebind + a
+    // recovery round-trip) pass a larger [timeout].
+    runTest(timeout = timeout + 15.seconds) {
         withContext(Dispatchers.Default) {
-            withTimeout(15.seconds) { block() }
+            withTimeout(timeout) { block() }
         }
     }
 

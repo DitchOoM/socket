@@ -4,10 +4,10 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -50,18 +50,27 @@ abstract class QuicPassiveMigrationTestSuite {
             idleTimeout = 10.seconds,
         )
 
-    private suspend fun QuicByteStream.echoOnce(payload: String): String {
+    private suspend fun QuicByteStream.echoOnce(
+        payload: String,
+        readTimeout: Duration,
+    ): String {
         val out = BufferFactory.deterministic().allocate(payload.length)
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         write(out, 5.seconds)
-        val resp = read(5.seconds)
+        val resp = read(readTimeout)
         return if (resp is ReadResult.Data) resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8) else "no_data"
     }
 
     @Test
     fun streamSurvivesPassiveSourceRebind() =
-        runQuicTest {
+        // Generous whole-test budget. This does connect + echo + a NAT rebind + a
+        // post-rebind echo; a passive rebind drops in-flight packets, so the "after"
+        // round-trip can need a QUIC PTO-driven retransmit and/or path validation —
+        // legitimately several seconds under loss + CI load. (The old 15s default was
+        // also inconsistent with the per-op timeouts below, which summed to more than
+        // that, so a slow-but-correct run timed out opaquely. Flaky on #103 CI.)
+        runQuicTest(timeout = 40.seconds) {
             wrapTestBody {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
                     // Echo loop: mirror every message back until the stream ends.
@@ -82,36 +91,33 @@ abstract class QuicPassiveMigrationTestSuite {
                         }
 
                     val proxy = createRebindingProxy(port)
-                    val beforeEcho = CompletableDeferred<String>()
-                    val afterEcho = CompletableDeferred<String>()
-
-                    val clientJob =
-                        launch {
-                            // Client connects to the proxy, unaware of the rebind that happens on
-                            // the proxy's upstream (server-facing) socket.
-                            withQuicConnection("127.0.0.1", proxy.proxyPort, testQuicOptions, timeout = 10.seconds) {
-                                val stream = openStream()
-                                beforeEcho.complete(stream.echoOnce("before"))
-
-                                // Passive rebind: the proxy's source toward the server changes, with
-                                // NO client-side migrate(). The server must keep the stream alive via
-                                // per-source recv_info + sendInfo.to routing.
-                                proxy.rebind()
-
-                                afterEcho.complete(stream.echoOnce("after"))
-                                stream.close()
-                            }
-                        }
-
                     try {
-                        assertEquals("before", beforeEcho.await())
-                        assertEquals(
-                            "after",
-                            afterEcho.await(),
-                            "stream did not round-trip after passive source rebind",
-                        )
+                        // Run the client INLINE (not in a child launch funneling results through
+                        // CompletableDeferred.await): a per-op `withTimeout` throws a
+                        // CancellationException, which would cancel a child coroutine silently and
+                        // leave an unbounded await() hanging until the whole-test timeout — masking
+                        // the real failure as an opaque 15s timeout. Inline, any failure propagates
+                        // straight to the test with its true cause and phase.
+                        withQuicConnection("127.0.0.1", proxy.proxyPort, testQuicOptions, timeout = 10.seconds) {
+                            val stream = openStream()
+                            assertEquals("before", stream.echoOnce("before", readTimeout = 5.seconds))
+
+                            // Passive rebind: the proxy's source toward the server changes, with NO
+                            // client-side migrate(). The server must keep the stream alive via
+                            // per-source recv_info + sendInfo.to routing.
+                            proxy.rebind()
+
+                            // Allow the post-rebind round-trip to absorb migration recovery
+                            // (retransmit + path validation). Bounded well under the 10s idle timeout
+                            // so a genuine "never recovers" still fails promptly rather than hanging.
+                            assertEquals(
+                                "after",
+                                stream.echoOnce("after", readTimeout = 9.seconds),
+                                "stream did not round-trip after passive source rebind",
+                            )
+                            stream.close()
+                        }
                     } finally {
-                        clientJob.cancel()
                         serverJob.cancel()
                         proxy.close()
                     }
