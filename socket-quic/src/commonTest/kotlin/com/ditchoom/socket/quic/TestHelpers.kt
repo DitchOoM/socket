@@ -27,10 +27,18 @@ import kotlin.time.Duration.Companion.seconds
  * and actual channel pumping and don't want virtual-time
  * fast-forwarding to skip over `withTimeout` budgets.
  */
-fun runQuicTest(block: suspend CoroutineScope.() -> Unit): TestResult =
-    runTest(timeout = 30.seconds) {
+fun runQuicTest(
+    timeout: Duration = 15.seconds,
+    block: suspend CoroutineScope.() -> Unit,
+): TestResult =
+    // runTest's own budget must exceed the wall-clock [timeout] (plus margin for
+    // setup/teardown) or it, not our withTimeout, fires first with a less useful
+    // message. Tests that legitimately need more than the 15s default (e.g. the
+    // passive-migration test, which does connect + echo + a NAT rebind + a
+    // recovery round-trip) pass a larger [timeout].
+    runTest(timeout = timeout + 15.seconds) {
         withContext(Dispatchers.Default) {
-            withTimeout(15.seconds) { block() }
+            withTimeout(timeout) { block() }
         }
     }
 
@@ -79,12 +87,32 @@ suspend fun awaitUntil(
 internal expect fun isAppleKNative(): Boolean
 
 /**
- * True on Apple non-macOS targets that run as a **simulator** (iOS/tvOS/watchOS).
+ * True when the QUIC harness suite must be skipped because it's running on an Apple
+ * simulator that can't exercise Network.framework QUIC.
  *
- * The iOS Simulator on the CI macOS host has no usable QUIC/UDP path — even the
- * public-endpoint interop tests (cloudflare/google) time out there — so the local
- * `quic-echo` harness can't be exercised. macOS K/N (where the QUIC client is
- * really validated) returns false. Used to skip the harness suite intentionally
- * on the simulator instead of letting it flake as connection timeouts (issue #81).
+ * NOT a platform limitation — QUIC works fine on the iOS Simulator. The blocker is
+ * the Kotlin/Native test runner: KGP launches simulator tests with
+ * `simctl spawn --standalone`, which runs the test binary OUTSIDE the simulator's
+ * `launchd_sim` service context. Network.framework's QUIC datapath needs those
+ * network daemons (nehelper / nw services), so under `--standalone` an
+ * `nw_parameters_create_quic` connection hangs in `preparing` and never reaches
+ * `ready`. Raw-socket TCP doesn't need them, which is why the rest of the Apple
+ * suite passes and hides this.
+ *
+ * Proven empirically (2026-06-02, iOS 26.5 build 23F77, iPhone 17 Pro sim), all
+ * against the SAME device + OS:
+ *   - our K/N `test.kexe` via `simctl spawn --standalone`     → public QUIC TIMEOUT (even at 45s)
+ *   - our K/N `test.kexe` via `simctl spawn` (no --standalone) → public QUIC OK in 87ms
+ *   - a normally-launched Swift NW QUIC app                    → READY in 36-47ms
+ *   - physical iPhone (iOS 26.5)                               → READY in 42-50ms
+ *
+ * The fix: run the iOS-simulator test task with `standalone = false` against a
+ * pre-booted simulator. The Gradle build flips that on (and sets `QUIC_SIM_BOOTED=1`)
+ * only when `-PiosSimulatorDevice=<udid>` is supplied — CI does this after
+ * `simctl boot`. In that booted mode this returns false on the iOS simulator and the
+ * harness runs. Without it (local `./gradlew check`, which keeps KGP's auto-boot +
+ * `--standalone`) it returns true and the harness self-skips rather than hanging.
+ * tvOS/watchOS simulators always skip (out of scope for now). macOS K/N (no
+ * simulator, real network stack) returns false and validates the QUIC client.
  */
-internal expect fun isAppleSimulator(): Boolean
+internal expect fun shouldSkipQuicHarnessOnSimulator(): Boolean

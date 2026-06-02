@@ -93,13 +93,14 @@ class QuicHarnessIntegrationTests {
      * pass CI by accident.
      */
     private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
-        if (isAppleSimulator()) {
-            // iOS/tvOS/watchOS simulator on the CI macOS host has no usable
-            // QUIC/UDP path — public-endpoint interop times out there too — so the
-            // local harness can't run. Skip intentionally (not a flaky timeout);
-            // the QUIC client is validated on macOS K/N. Marker matched by the CI
-            // audit's intentional-skip grep. (Issue #81.)
-            println("[QuicHarnessIntegrationTests] harness SKIP: Apple simulator — no QUIC/UDP in CI (issue #81)")
+        if (shouldSkipQuicHarnessOnSimulator()) {
+            // Apple simulator launched via KGP's default `simctl spawn --standalone`,
+            // which runs outside launchd_sim's network services so NW QUIC can't
+            // connect. Skip intentionally (not a flaky timeout). The iOS simulator
+            // runs the harness in CI's booted mode (standalone=false + QUIC_SIM_BOOTED);
+            // tvOS/watchOS stay skipped for now; macOS K/N always runs it. Marker
+            // matched by the CI audit's intentional-skip grep. (Issue #81.)
+            println("[QuicHarnessIntegrationTests] harness SKIP: Apple simulator under --standalone (issue #81)")
             return
         }
         try {

@@ -5,7 +5,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -20,6 +19,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -45,12 +45,15 @@ class AndroidQuicPassiveMigrationTests {
 
     private val tlsConfig get() = AndroidTestCerts.tlsConfig
 
-    private suspend fun QuicByteStream.echoOnce(payload: String): String {
+    private suspend fun QuicByteStream.echoOnce(
+        payload: String,
+        readTimeout: Duration,
+    ): String {
         val out = BufferFactory.Default.allocate(payload.length)
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         write(out, 5.seconds)
-        val resp = read(5.seconds)
+        val resp = read(readTimeout)
         return if (resp is ReadResult.Data) resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8) else "no_data"
     }
 
@@ -66,7 +69,11 @@ class AndroidQuicPassiveMigrationTests {
     fun streamSurvivesPassiveSourceRebind() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib {
-                withTimeout(25.seconds) {
+                // Generous whole-test budget: connect + echo + a NAT rebind + a post-rebind echo.
+                // A passive rebind drops in-flight packets, so the "after" round-trip can need a QUIC
+                // PTO-driven retransmit and/or path validation — legitimately several seconds under
+                // loss + device load. (Mirrors the JVM/Linux QuicPassiveMigrationTestSuite fix.)
+                withTimeout(40.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob =
                             launch(Dispatchers.IO) {
@@ -86,34 +93,31 @@ class AndroidQuicPassiveMigrationTests {
                         delay(100)
 
                         val proxy = RebindingUdpProxy(serverPort = port)
-                        val beforeEcho = CompletableDeferred<String>()
-                        val afterEcho = CompletableDeferred<String>()
-
-                        val clientJob =
-                            launch(Dispatchers.IO) {
-                                withQuicConnection("127.0.0.1", proxy.proxyPort, testQuicOptions, timeout = 10.seconds) {
-                                    val stream = openStream()
-                                    beforeEcho.complete(stream.echoOnce("before"))
-
-                                    // Passive rebind: the proxy's source toward the server changes,
-                                    // with NO client-side migrate(). The server must keep the stream
-                                    // alive via per-source recv_info + sendInfo.to routing.
-                                    proxy.rebind()
-
-                                    afterEcho.complete(stream.echoOnce("after"))
-                                    stream.close()
-                                }
-                            }
-
                         try {
-                            assertEquals("before", withTimeout(12.seconds) { beforeEcho.await() })
-                            assertEquals(
-                                "after",
-                                withTimeout(15.seconds) { afterEcho.await() },
-                                "stream did not round-trip after passive source rebind",
-                            )
+                            // Run the client INLINE (not in a child launch funneling results through
+                            // CompletableDeferred.await): a per-op `withTimeout` throws a
+                            // CancellationException, which would cancel a child coroutine silently and
+                            // leave the await to time out opaquely, masking the real cause. Inline,
+                            // any failure propagates straight to the test with its true cause/phase.
+                            withQuicConnection("127.0.0.1", proxy.proxyPort, testQuicOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                assertEquals("before", stream.echoOnce("before", readTimeout = 5.seconds))
+
+                                // Passive rebind: the proxy's source toward the server changes, with
+                                // NO client-side migrate(). The server must keep the stream alive via
+                                // per-source recv_info + sendInfo.to routing.
+                                proxy.rebind()
+
+                                // Allow the post-rebind round-trip to absorb migration recovery
+                                // (retransmit + path validation), bounded under the 10s idle timeout.
+                                assertEquals(
+                                    "after",
+                                    stream.echoOnce("after", readTimeout = 9.seconds),
+                                    "stream did not round-trip after passive source rebind",
+                                )
+                                stream.close()
+                            }
                         } finally {
-                            clientJob.cancel()
                             serverJob.cancel()
                             proxy.close()
                         }
