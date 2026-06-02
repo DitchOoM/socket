@@ -8,6 +8,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -21,6 +22,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -446,6 +448,101 @@ class ReactiveDriverTests {
                 val second = adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 2.seconds)
                 assertIs<ReadResult.End>(second, "FIN coalesced with data must yield End on the next read, not hang")
             } finally {
+                driver.destroy()
+            }
+        }
+
+    // ---- stream-command buffer lifetime under cancellation (native heap-corruption regression) ----
+    //
+    // An address-bearing StreamRecv / StreamSend carries a buffer's *raw native address* into the driver's
+    // UNLIMITED command channel. The enqueue (`commands.send`) never suspends, so by the time a read/write's
+    // timeout or an external cancel can unwind the caller, the command is already queued — and the driver
+    // will later dereference that address (StreamRecv WRITES received bytes into it; StreamSend READS from
+    // it). If the caller is allowed to unwind and release the buffer first (free a deterministic buffer, or
+    // simply drop the last reference to a GC-backed one so its Cleaner reclaims the native memory), quiche
+    // then touches freed memory. For the read path that is a write-after-free → glibc free-list corruption →
+    // the rare "SIGSEGV in malloc" crash that failed the JDK17/JNI deploy step.
+    //
+    // The fix: [DriverStreamAdapter.streamRead]/[streamWrite] wait — non-cancellably — for any in-flight
+    // command to complete before unwinding, so the buffer is provably no longer referenced by quiche when it
+    // is released. These pin the driver at its startup flush (one gated UDP datagram) so the enqueued command
+    // is *guaranteed* unprocessed when the timeout fires, then assert the call does NOT unwind until the
+    // driver is released and finishes the command — deterministic, no scheduler races.
+    //
+    // Negative check: delete the `inFlight?.let { withContext(NonCancellable) { it.join() } }` guard and both
+    // `assertNull` checks fail — the call unwinds at its ~150 ms timeout, well inside the 600 ms window.
+
+    private fun gatedStartupDriver(
+        api: StubQuicheApi,
+        udpGate: CompletableDeferred<Unit>,
+    ): QuicheDriver {
+        // connSendOnce makes the startup afterCommand() emit exactly one datagram; the UDP channel's send
+        // parks on the gate, so the driver is stuck in its initial flush — *before* its loop can dequeue any
+        // stream command — until the test releases the gate.
+        api.connSendOnce = 1300
+        val gatedUdp =
+            object : UdpChannel {
+                override suspend fun receive(buffer: PlatformBuffer): Int = awaitCancellation()
+
+                override suspend fun send(
+                    buffer: PlatformBuffer,
+                    len: Int,
+                    dest: PathKey?,
+                ) = udpGate.await()
+
+                override fun close() {}
+            }
+        return createTestDriver(api, udpChannel = gatedUdp)
+    }
+
+    @Test
+    fun streamRead_cancelledWithInflightRecv_waitsForDriverBeforeReleasingBuffer() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvResult = StreamRecvResult.Done
+            val udpGate = CompletableDeferred<Unit>()
+            val driver = gatedStartupDriver(api, udpGate)
+            driver.start(this)
+            val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+            try {
+                // streamRead enqueues a StreamRecv the gated driver cannot process yet, then its 150 ms
+                // timeout fires while that command is still queued.
+                val read = async { runCatching { adapter.streamRead(QuicStreamId(0L), bufferFactory, 1024, 150.milliseconds) } }
+                // With the fix, `read` is parked in the in-flight join (driver still gated) — it must not
+                // unwind within a window well past its own timeout.
+                assertNull(
+                    withTimeoutOrNull(600) { read.await() },
+                    "streamRead unwound while its StreamRecv was still in-flight — the driver could write into the released buffer",
+                )
+                // Release the driver: it dequeues the StreamRecv, completes the deferred, and the join wakes.
+                udpGate.complete(Unit)
+                withTimeout(2.seconds) { read.await() }
+            } finally {
+                if (!udpGate.isCompleted) udpGate.complete(Unit)
+                driver.destroy()
+            }
+        }
+
+    @Test
+    fun streamWrite_cancelledWithInflightSend_waitsForDriverBeforeReturning() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val udpGate = CompletableDeferred<Unit>()
+            val driver = gatedStartupDriver(api, udpGate)
+            driver.start(this)
+            val adapter = DriverStreamAdapter(driver, StreamSlot(QuicStreamId(0L)))
+            val buf = bufferFactory.allocate(64)
+            try {
+                val write = async { runCatching { adapter.streamWrite(QuicStreamId(0L), buf, 150.milliseconds) } }
+                assertNull(
+                    withTimeoutOrNull(600) { write.await() },
+                    "streamWrite unwound while its StreamSend was still in-flight — the driver could read the released buffer",
+                )
+                udpGate.complete(Unit)
+                withTimeout(2.seconds) { write.await() }
+            } finally {
+                if (!udpGate.isCompleted) udpGate.complete(Unit)
+                buf.freeNativeMemory()
                 driver.destroy()
             }
         }

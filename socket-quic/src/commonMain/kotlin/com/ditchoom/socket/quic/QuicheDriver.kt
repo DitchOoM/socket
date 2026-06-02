@@ -14,6 +14,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
@@ -685,6 +687,16 @@ class DriverStreamAdapter(
         val buffer = bufferFactory.allocate(bufferSize)
         val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong()
 
+        // A StreamRecv we enqueued but the driver has not yet completed. While this is set, the driver may
+        // still be about to WRITE received bytes into `addr` inside connStreamRecv. The command channel is
+        // UNLIMITED so `commands.send` never suspends — by the time a timeout or external cancellation can
+        // unwind us, the command is already queued. If we let `buffer` be released here (freed below, or for
+        // a heap/GC-backed buffer simply dropped so its Cleaner reclaims the native memory) before the
+        // driver finishes, quiche writes into freed memory and corrupts the native heap (the rare
+        // "SIGSEGV in malloc" crash). So on every exit we first wait — non-cancellably — for any in-flight
+        // StreamRecv to complete, then release the buffer.
+        var inFlight: CompletableDeferred<StreamRecvResult>? = null
+        var transferred = false
         try {
             return withTimeout(timeout) {
                 // The FIN may have arrived coalesced with the last data chunk on a previous read()
@@ -692,13 +704,17 @@ class DriverStreamAdapter(
                 // so there is no further data and no readable-signal coming — return End now instead of
                 // issuing a StreamRecv that returns Done and parking on dataSignal forever.
                 if (slot.finReceived) {
-                    buffer.freeNativeMemory()
                     return@withTimeout ReadResult.End
                 }
                 while (true) {
                     val deferred = CompletableDeferred<StreamRecvResult>()
                     driver.commands.send(QuicheCmd.StreamRecv(streamId.id, addr, bufferSize, deferred))
-                    when (val result = deferred.await()) {
+                    // Mark in-flight only AFTER a successful enqueue: if send threw (channel closed) the
+                    // command never reached the driver, so there is nothing to join (joining it would hang).
+                    inFlight = deferred
+                    val result = deferred.await()
+                    inFlight = null
+                    when (result) {
                         is StreamRecvResult.Data -> {
                             // Record the FIN whether or not this chunk also carried data — a coalesced
                             // FIN (bytes > 0 && fin) is otherwise dropped, wedging the next read().
@@ -706,24 +722,23 @@ class DriverStreamAdapter(
                             if (result.bytesRead > 0) {
                                 buffer.position(result.bytesRead)
                                 buffer.resetForRead()
+                                // Ownership transfers to the caller — do not release in the finally.
+                                transferred = true
                                 return@withTimeout ReadResult.Data(buffer)
                             }
                             // bytesRead == 0 implies a pure FIN (fin == true) — clean end of stream.
-                            buffer.freeNativeMemory()
                             return@withTimeout ReadResult.End
                         }
                         is StreamRecvResult.Done -> {
                             // Defensive: if the FIN was consumed earlier (coalesced with data), no signal
                             // is coming — end now rather than park forever.
                             if (slot.finReceived) {
-                                buffer.freeNativeMemory()
                                 return@withTimeout ReadResult.End
                             }
                             slot.dataSignal.receive()
                             continue
                         }
                         is StreamRecvResult.Error -> {
-                            buffer.freeNativeMemory()
                             return@withTimeout ReadResult.End
                         }
                     }
@@ -732,11 +747,15 @@ class DriverStreamAdapter(
                 ReadResult.End
             }
         } catch (_: ClosedSendChannelException) {
-            buffer.freeNativeMemory()
             return ReadResult.End
         } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
-            buffer.freeNativeMemory()
             return ReadResult.End
+        } finally {
+            // The driver ALWAYS completes the deferred — in execute() after connStreamRecv, or in
+            // cleanup()/failCommand() on teardown (which does NOT dereference `addr`) — so this join can
+            // never hang. After it returns, quiche is provably done with `addr`; only then release.
+            inFlight?.let { withContext(NonCancellable) { it.join() } }
+            if (!transferred) buffer.freeNativeMemory()
         }
     }
 
@@ -748,10 +767,20 @@ class DriverStreamAdapter(
         val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong() + buffer.position()
         val remaining = buffer.remaining()
 
+        // A StreamSend we enqueued but the driver has not yet completed. While this is set, the driver may
+        // still READ `addr` inside connStreamSend. The caller owns `buffer` and frees it (or drops its last
+        // reference) the instant we return — so on cancellation we must wait for the in-flight send to finish
+        // first; otherwise quiche reads freed/Cleaner-reclaimed memory. (A read-after-free is less likely to
+        // corrupt the heap than the read path's write-after-free, but it can still fault on an unmapped page,
+        // and the lifetime contract must hold symmetrically.)
+        var inFlight: CompletableDeferred<Int>? = null
         return try {
             withTimeout(timeout) {
                 val deferred = CompletableDeferred<Int>()
                 driver.commands.send(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred))
+                // Mark in-flight only AFTER a successful enqueue (see streamRead); joining a never-enqueued
+                // deferred would hang.
+                inFlight = deferred
                 deferred.await()
             }.let { written ->
                 when {
@@ -765,6 +794,12 @@ class DriverStreamAdapter(
             }
         } catch (_: ClosedSendChannelException) {
             throw SocketClosedException.General("connection closed")
+        } finally {
+            // Wait — non-cancellably — for any in-flight StreamSend to finish reading `addr` before we
+            // return to the caller who will free `buffer`. The driver always completes the deferred
+            // (execute() after connStreamSend, or failCommand() on teardown), so this never hangs; on the
+            // normal path the deferred is already complete, so the join returns immediately.
+            inFlight?.let { withContext(NonCancellable) { it.join() } }
         }
     }
 
