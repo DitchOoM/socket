@@ -29,7 +29,11 @@ jobs:
   publish:
     name: "Sign, Bundle & Upload"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Must exceed the "Poll deployment status" ceiling (240 × 30s = 2h) plus the
+    # sign/bundle/upload steps. At 30 the job was killed mid-poll while Central was
+    # still PUBLISHING — 3.2.12 published itself (publishingType=AUTOMATIC) but CI
+    # reported the deploy as failed. 150 = 2h poll + headroom.
+    timeout-minutes: 150
     outputs:
       deployment-id: ${{ steps.upload.outputs.deployment-id }}
     steps:
