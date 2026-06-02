@@ -302,7 +302,29 @@ class QuicheDriver(
         flushOutgoing()
         if (migrationEnabled) drainPathEvents()
         discoverNewStreams()
+        signalWritableStreams()
         updateState()
+    }
+
+    /**
+     * Wake any writer parked on a stream whose flow-control window just reopened. The write-path mirror
+     * of [discoverNewStreams]: quiche surfaces newly-writable streams via [QuicheApi.connWritable] (e.g.
+     * after a `MAX_STREAM_DATA` / `MAX_DATA` frame arrived in the command we just processed). Unlike the
+     * read path this **never creates a slot** — a writable stream we don't track is one nobody is writing
+     * to, so there is nothing to wake and a phantom slot would be an impossible state. The signal is
+     * CONFLATED, so signalling a stream with no parked writer is a harmless no-op.
+     */
+    private fun signalWritableStreams() {
+        val iter = api.connWritable(conn)
+        if (iter.isExhausted) return
+        try {
+            while (true) {
+                val streamId = api.streamIterNext(iter) ?: break
+                streams[streamId.id]?.writableSignal?.trySend(Unit)
+            }
+        } finally {
+            api.streamIterFree(iter)
+        }
     }
 
     private fun discoverNewStreams() {
@@ -589,6 +611,9 @@ class QuicheDriver(
 
         for (slot in streams.values) {
             slot.dataSignal.close()
+            // Unblock any writer parked on a reopened-window signal — without this it would hang until
+            // its withTimeout fired. streamWrite maps the resulting closed-channel to SocketClosedException.
+            slot.writableSignal.close()
         }
         streams.clear()
         api.connFree(conn)
@@ -764,41 +789,57 @@ class DriverStreamAdapter(
         buffer: ReadBuffer,
         timeout: Duration,
     ): Int {
-        val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong() + buffer.position()
         val remaining = buffer.remaining()
+        // Empty input: nothing to send (quiche would report 0). Return before touching the buffer's
+        // native address — a zero-length buffer may not expose one — and never park on an empty write.
+        if (remaining == 0) return 0
+        val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong() + buffer.position()
 
         // A StreamSend we enqueued but the driver has not yet completed. While this is set, the driver may
         // still READ `addr` inside connStreamSend. The caller owns `buffer` and frees it (or drops its last
-        // reference) the instant we return — so on cancellation we must wait for the in-flight send to finish
+        // reference) the instant we return — so on cancellation we must wait for any in-flight send to finish
         // first; otherwise quiche reads freed/Cleaner-reclaimed memory. (A read-after-free is less likely to
         // corrupt the heap than the read path's write-after-free, but it can still fault on an unmapped page,
         // and the lifetime contract must hold symmetrically.)
         var inFlight: CompletableDeferred<Int>? = null
         return try {
             withTimeout(timeout) {
-                val deferred = CompletableDeferred<Int>()
-                driver.commands.send(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred))
-                // Mark in-flight only AFTER a successful enqueue (see streamRead); joining a never-enqueued
-                // deferred would hang.
-                inFlight = deferred
-                deferred.await()
-            }.let { written ->
-                when {
-                    // Flow-control blocked: 0 bytes accepted. Report back-pressure (not an error) so the
-                    // caller retries when the window reopens — otherwise a write larger than the current
-                    // window throws. Symmetric with the read path's StreamRecvResult.Done handling.
-                    written == QuicheDriver.QUICHE_ERR_DONE -> 0
-                    written < 0 -> throw SocketClosedException.General("quiche stream write error: $written")
-                    else -> written
+                while (true) {
+                    val deferred = CompletableDeferred<Int>()
+                    driver.commands.send(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred))
+                    // Mark in-flight only AFTER a successful enqueue (see streamRead).
+                    inFlight = deferred
+                    val written = deferred.await()
+                    inFlight = null
+                    when (written) {
+                        // Flow-control blocked (QUICHE_ERR_DONE, or a defensive 0 with bytes still pending):
+                        // the stream's window is full. Park on writableSignal until the driver observes the
+                        // stream become writable again (a MAX_STREAM_DATA / MAX_DATA frame reopened it), then
+                        // retry. Reactive — no delay-poll. The CONFLATED signal makes this lost-wakeup-free:
+                        // any signal fired after this `await` returned DONE is buffered until we receive it.
+                        QuicheDriver.QUICHE_ERR_DONE, 0 -> slot.writableSignal.receive()
+                        // Progress: quiche accepted ≥1 byte. Return the (possibly partial) count — the buffer
+                        // is untouched (zero-copy); the caller advances by it and re-enters for the remainder.
+                        else ->
+                            if (written > 0) {
+                                return@withTimeout written
+                            } else {
+                                throw SocketClosedException.General("quiche stream write error: $written")
+                            }
+                    }
                 }
+                @Suppress("UNREACHABLE_CODE")
+                0
             }
         } catch (_: ClosedSendChannelException) {
+            throw SocketClosedException.General("connection closed")
+        } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
+            // writableSignal was closed by cleanup() — the connection went away while we were parked.
             throw SocketClosedException.General("connection closed")
         } finally {
             // Wait — non-cancellably — for any in-flight StreamSend to finish reading `addr` before we
             // return to the caller who will free `buffer`. The driver always completes the deferred
-            // (execute() after connStreamSend, or failCommand() on teardown), so this never hangs; on the
-            // normal path the deferred is already complete, so the join returns immediately.
+            // (execute() after connStreamSend, or failCommand() on teardown), so this never hangs.
             inFlight?.let { withContext(NonCancellable) { it.join() } }
         }
     }
