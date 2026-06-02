@@ -1632,7 +1632,8 @@ ktlint {
 // `./gradlew check` still works locally with no manual boot (the QUIC harness then
 // self-skips on the simulator). tvOS/watchOS are intentionally left as-is for now.
 providers.gradleProperty("iosSimulatorDevice").orNull?.takeIf { it.isNotBlank() }?.let { simDevice ->
-    tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest>()
+    tasks
+        .withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest>()
         .matching { it.name == "iosSimulatorArm64Test" }
         .configureEach {
             standalone.set(false)
