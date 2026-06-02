@@ -311,15 +311,34 @@ jobs:
         # is a black box without these — the runtime SIGSEGV/SIGABRT leaves
         # no stack in the default gradle output. --info plus -Pkotlin.native.
         # debug.exceptions=true makes the K/N runtime surface the offending
-        # native stack instead of just dying. The next CI cycle should
-        # reveal whether the crash is in nw_helper_create_quic_connection,
-        # the cinterop NSArray bridge for the ALPN list, or somewhere
-        # deeper in Network.framework's QUIC init.
+        # native stack instead of just dying.
+        #
+        # iOS-simulator QUIC harness (issue #81): KGP's default `simctl spawn
+        # --standalone` runs the test binary OUTSIDE launchd_sim's network
+        # services, where Network.framework QUIC can't connect (raw-socket TCP
+        # is unaffected, which masked this for a long time). Boot an available
+        # iPhone simulator and pass its UDID via -PiosSimulatorDevice — the
+        # socket-quic build then runs iosSimulatorArm64Test with standalone=false
+        # against that booted sim and exports QUIC_SIM_BOOTED=1, so the QUIC
+        # harness runs there (proven locally: 5/5 `harness OK`) instead of
+        # self-skipping. If no sim is available it falls back to a clean skip.
         run: |
           set -o pipefail
+          SIM_UDID=$(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); c=[x for rt,l in d['devices'].items() if 'iOS' in rt for x in l if 'iPhone' in x['name']]; print(c[-1]['udid'] if c else '')")
+          SIM_ARG=""
+          if [ -n "$SIM_UDID" ]; then
+            echo "Booting iOS simulator $SIM_UDID for the QUIC harness"
+            xcrun simctl boot "$SIM_UDID" || true
+            xcrun simctl bootstatus "$SIM_UDID" -b || true
+            SIM_ARG="-PiosSimulatorDevice=$SIM_UDID"
+          else
+            echo "No iPhone simulator available — QUIC harness will self-skip on the sim"
+          fi
           ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test \
             --no-configuration-cache --stacktrace --info \
             -Pkotlin.native.debug.exceptions=true \
+            $SIM_ARG \
             ${{ inputs.gradle-args }} 2>&1 \
             | tee /tmp/socket-quic-apple.log
 

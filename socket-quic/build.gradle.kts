@@ -1621,3 +1621,25 @@ ktlint {
         exclude("**/build/**")
     }
 }
+
+// iOS-simulator QUIC harness (issue #81). KGP's default `simctl spawn --standalone`
+// runs tests outside launchd_sim's network services, which breaks Network.framework
+// QUIC (raw-socket TCP is unaffected). When CI supplies a booted device via
+// `-PiosSimulatorDevice=<udid>` (after `xcrun simctl boot`), run the iOS simulator
+// test task inside that booted simulator (standalone=false) and export
+// QUIC_SIM_BOOTED so QuicHarnessIntegrationTests un-skips there. Without the
+// property, KGP's auto-boot + `--standalone` behavior is unchanged, so
+// `./gradlew check` still works locally with no manual boot (the QUIC harness then
+// self-skips on the simulator). tvOS/watchOS are intentionally left as-is for now.
+providers.gradleProperty("iosSimulatorDevice").orNull?.takeIf { it.isNotBlank() }?.let { simDevice ->
+    tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest>()
+        .matching { it.name == "iosSimulatorArm64Test" }
+        .configureEach {
+            standalone.set(false)
+            device.set(simDevice)
+            // `simctl spawn` only forwards env vars to the child when they carry the
+            // SIMCTL_CHILD_ prefix (which it strips), so the test process sees
+            // QUIC_SIM_BOOTED=1. A bare QUIC_SIM_BOOTED would stay on xcrun and never reach it.
+            environment("SIMCTL_CHILD_QUIC_SIM_BOOTED", "1")
+        }
+}
