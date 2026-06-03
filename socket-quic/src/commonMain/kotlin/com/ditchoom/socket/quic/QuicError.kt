@@ -64,6 +64,18 @@ sealed interface QuicError {
         override val code: Long = 0xB
     }
 
+    /**
+     * Transport-level APPLICATION_ERROR (RFC 9000 §20.1, code 0x0c).
+     *
+     * Signals an application-caused close in a context that only permits a *transport*
+     * CONNECTION_CLOSE frame (type 0x1c) — typically during the handshake, before the
+     * application can use a type-0x1d frame. Distinct from [ApplicationError], which carries
+     * an application-protocol-defined close code sent in a type-0x1d frame.
+     */
+    data object TransportApplicationError : QuicError {
+        override val code: Long = 0xC
+    }
+
     data class CryptoBufferExceeded(
         val detail: String,
     ) : QuicError {
@@ -81,6 +93,16 @@ sealed interface QuicError {
     data object NoViablePath : QuicError {
         override val code: Long = 0x10
     }
+
+    /**
+     * A transport error code this library does not recognize — reserved, currently unassigned,
+     * or defined by a future QUIC extension. Preserves the original wire [code] instead of
+     * collapsing it to [InternalError], so the numeric value survives decoding for diagnostics
+     * and forward compatibility.
+     */
+    data class UnknownTransport(
+        override val code: Long,
+    ) : QuicError
 
     /** TLS alert mapped to QUIC crypto error (0x100 + alert code). */
     data class CryptoError(
@@ -118,12 +140,13 @@ sealed interface QuicError {
                 0x9L -> ConnectionIdLimitError
                 0xAL -> ProtocolViolation
                 0xBL -> InvalidToken
+                0xCL -> TransportApplicationError
                 0xDL -> CryptoBufferExceeded("transport error 0xD")
                 0xEL -> KeyUpdateError
                 0xFL -> AeadLimitReached
                 0x10L -> NoViablePath
                 in 0x100L..0x1FFL -> CryptoError((code - 0x100L).toInt())
-                else -> InternalError("unknown transport error code 0x${code.toString(16)}")
+                else -> UnknownTransport(code)
             }
     }
 }

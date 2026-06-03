@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.SocketClosedException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -155,16 +156,27 @@ class QuicErrorTests {
     // --- Unknown codes ---
 
     @Test
-    fun fromTransportCode_unknownCode_mapsToInternalError() {
+    fun fromTransportCode_unknownCode_mapsToUnknownTransport_preservingCode() {
         val error = QuicError.fromTransportCode(0xFFFF)
-        assertIs<QuicError.InternalError>(error)
+        assertIs<QuicError.UnknownTransport>(error)
+        // The wire code survives decoding instead of collapsing to InternalError.
+        assertEquals(0xFFFFL, error.code)
     }
 
     @Test
-    fun fromTransportCode_reservedCode0xC_mapsToInternalError() {
-        // 0xC is reserved/unused in RFC 9000
+    fun fromTransportCode_unassignedCodeAboveCryptoRange_mapsToUnknownTransport() {
+        // 0x200 is above the CRYPTO_ERROR range (0x100..0x1ff) and currently unassigned.
+        val error = QuicError.fromTransportCode(0x200)
+        assertIs<QuicError.UnknownTransport>(error)
+        assertEquals(0x200L, error.code)
+    }
+
+    @Test
+    fun fromTransportCode_applicationError_0xC() {
+        // RFC 9000 §20.1: 0x0c is APPLICATION_ERROR (transport-level), not reserved.
         val error = QuicError.fromTransportCode(0xC)
-        assertIs<QuicError.InternalError>(error)
+        assertIs<QuicError.TransportApplicationError>(error)
+        assertEquals(0xCL, error.code)
     }
 
     // --- Direct construction ---
@@ -187,5 +199,17 @@ class QuicErrorTests {
     fun cryptoError_codeIncludesOffset() {
         val error = QuicError.CryptoError(48) // unknown_ca
         assertEquals(0x100L + 48, error.code)
+    }
+
+    // --- Thrown channel carries the structured reason ---
+
+    @Test
+    fun quicCloseException_isSocketClosedException_andCarriesError() {
+        val ex = QuicCloseException(QuicError.ProtocolViolation, "boom")
+        // Caught uniformly with TCP/TLS connection-lost errors...
+        assertIs<SocketClosedException>(ex)
+        // ...while the structured protocol reason survives the throw.
+        assertIs<QuicError.ProtocolViolation>(ex.quicError)
+        assertEquals("boom", ex.message)
     }
 }
