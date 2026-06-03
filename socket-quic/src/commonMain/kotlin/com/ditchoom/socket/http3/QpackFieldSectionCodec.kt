@@ -25,10 +25,9 @@ import com.ditchoom.buffer.stream.StreamProcessor
  * ```
  * Integers use [QpackPrefixedInteger]; the static table is [QpackStaticTable].
  *
- * String literals are written without Huffman (H=0). Decoding a Huffman-coded
- * string (H=1) throws until the Huffman decoder lands (step ④); post-base and
- * dynamic-table representations are likewise rejected. Names/values are treated
- * as UTF-8.
+ * String literals are written without Huffman (H=0); both raw (H=0) and
+ * Huffman-coded (H=1) strings are decoded ([QpackHuffman]). Post-base and
+ * dynamic-table representations are rejected. Names/values are treated as UTF-8.
  *
  * A field section is delimited by its enclosing HEADERS frame, not self-framing,
  * so [decode] consumes representations until the buffer is exhausted and
@@ -149,16 +148,9 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         huffman: Boolean,
         what: String,
     ): String {
-        if (huffman) {
-            throw DecodeException(
-                fieldPath = "QpackFieldSection.$what",
-                bufferPosition = buffer.position(),
-                expected = "a non-Huffman (raw) string literal",
-                actual = "Huffman-coded string — not yet supported (pending step ④, RFC 9204 §4.5)",
-            )
-        }
         // A hostile/truncated representation can declare a length past the buffer;
-        // reject it cleanly rather than over-reading.
+        // reject it cleanly rather than over-reading (applies to both encodings —
+        // [length] counts the encoded bytes, Huffman or raw).
         if (length > buffer.remaining()) {
             throw DecodeException(
                 fieldPath = "QpackFieldSection.$what",
@@ -167,7 +159,11 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
                 actual = "${buffer.remaining()} byte(s) remaining",
             )
         }
-        return buffer.readString(length, Charset.UTF8)
+        return if (huffman) {
+            QpackHuffman.decode(buffer, length, "QpackFieldSection.$what")
+        } else {
+            buffer.readString(length, Charset.UTF8)
+        }
     }
 
     /** Static-table lookup that surfaces an out-of-range index as a [DecodeException]. */

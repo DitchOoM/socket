@@ -175,10 +175,54 @@ class QpackFieldSectionCodecTests {
         assertFailsWith<DecodeException> { decode(0x00, 0x00, 0x40, 0x01, 0x41) }
     }
 
+    // --- Huffman-coded strings (H=1, step ④) --------------------------------
+
+    private fun decodeList(bytes: List<Int>): List<QpackHeaderField> =
+        QpackFieldSectionCodec.decode(bufferOf(*bytes.toIntArray()), DecodeContext.Empty)
+
     @Test
-    fun decode_huffmanString_throwsPendingStep4() {
-        // Name-ref @0, value literal with the Huffman bit set (0x82) → not yet supported.
-        assertFailsWith<DecodeException> { decode(0x00, 0x00, 0x50, 0x82, 0x00, 0x00) }
+    fun decode_huffmanValue_endToEnd() {
+        // Name-ref @0 (:authority), value H=1 "www.example.com" (RFC 7541 C.4.1):
+        // value length-prefix 0x80|12 = 0x8c, then the 12 Huffman bytes.
+        val huffman = listOf(0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff)
+        val bytes = listOf(0x00, 0x00, 0x50, 0x8c) + huffman
+        assertEquals(listOf(QpackHeaderField(":authority", "www.example.com")), decodeList(bytes))
+    }
+
+    @Test
+    fun decode_huffmanLiteralName_endToEnd() {
+        // Literal-literal-name with H=1 name "custom-key" (8 Huffman bytes) and a raw
+        // value "x". 3-bit name-length prefix saturates (8 ≥ 7): 0x20|0x08|0x07 = 0x2f,
+        // continuation 0x01; value is H=0 len 1 then 'x'.
+        val nameHuffman = listOf(0x25, 0xa8, 0x49, 0xe9, 0x5b, 0xa9, 0x7d, 0x7f)
+        val bytes = listOf(0x00, 0x00, 0x2f, 0x01) + nameHuffman + listOf(0x01, 'x'.code)
+        assertEquals(listOf(QpackHeaderField("custom-key", "x")), decodeList(bytes))
+    }
+
+    @Test
+    fun decode_huffmanValueFollowedByMoreLines() {
+        // A Huffman value mid-section must consume exactly its declared bytes so the
+        // next representation decodes: name-ref @0 H=1 "www.example.com", then an
+        // indexed field line 0xD1 = (:method, GET).
+        val huffman = listOf(0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff)
+        val bytes = listOf(0x00, 0x00, 0x50, 0x8c) + huffman + listOf(0xD1)
+        assertEquals(
+            listOf(QpackHeaderField(":authority", "www.example.com"), QpackHeaderField(":method", "GET")),
+            decodeList(bytes),
+        )
+    }
+
+    @Test
+    fun decode_huffmanInvalidPadding_throws() {
+        // Name-ref @0, value H=1 len 1 with byte 0x1e — a corrupted "a" whose padding
+        // ("110") is not the MSBs of EOS → decode error surfaced by the field codec.
+        assertFailsWith<DecodeException> { decode(0x00, 0x00, 0x50, 0x81, 0x1e) }
+    }
+
+    @Test
+    fun decode_huffmanTruncated_throws() {
+        // Value H=1 declares 12 bytes but only 2 follow → bounds check rejects it.
+        assertFailsWith<DecodeException> { decode(0x00, 0x00, 0x50, 0x8c, 0xf1, 0xe3) }
     }
 
     @Test
