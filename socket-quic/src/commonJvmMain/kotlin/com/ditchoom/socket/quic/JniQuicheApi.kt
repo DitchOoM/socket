@@ -204,6 +204,42 @@ object JniQuicheApi : QuicheApi {
         fin: Boolean,
     ): Int = nConnStreamSend(conn.handle, streamId.id, buf, bufLen, fin)
 
+    // --- Unreliable datagrams (RFC 9221) ---
+
+    override fun configEnableDgram(
+        config: QuicheConfig,
+        enabled: Boolean,
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    ) = nConfigEnableDgram(config.handle, enabled, recvQueueLen, sendQueueLen)
+
+    override fun connDgramSend(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnDgramSend(conn.handle, buf, bufLen)
+
+    override fun connDgramRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvResult {
+        // ssize_t: >= 0 length (datagrams have no FIN), QUICHE_ERR_DONE when none queued, else error.
+        val raw = nConnDgramRecv(conn.handle, buf, bufLen)
+        return when {
+            raw >= 0 -> StreamRecvResult.Data(raw.toInt(), false)
+            raw == QUICHE_ERR_DONE -> StreamRecvResult.Done
+            else -> StreamRecvResult.Error(raw.toInt())
+        }
+    }
+
+    override fun hasReadableDgram(conn: QuicheConn): Boolean = nConnDgramRecvFrontLen(conn.handle) >= 0
+
+    override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
+        val raw = nConnDgramMaxWritableLen(conn.handle)
+        return if (raw < 0) MaxDatagramSize.Unavailable else MaxDatagramSize.Bytes(raw.toInt())
+    }
+
     override fun connIsEstablished(conn: QuicheConn): Boolean = nConnIsEstablished(conn.handle)
 
     override fun connIsClosed(conn: QuicheConn): Boolean = nConnIsClosed(conn.handle)
@@ -564,6 +600,38 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
         fin: Boolean,
     ): Int
+
+    @JvmStatic
+    private external fun nConfigEnableDgram(
+        config: Long,
+        enabled: Boolean,
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    )
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnDgramSend(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnDgramRecv(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Long
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnDgramRecvFrontLen(conn: Long): Long
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnDgramMaxWritableLen(conn: Long): Long
 
     @FastNative
     @JvmStatic

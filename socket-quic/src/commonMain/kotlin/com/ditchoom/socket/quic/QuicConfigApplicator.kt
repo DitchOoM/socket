@@ -51,6 +51,12 @@ internal interface QuicConfigCalls {
     fun enableEarlyData()
 
     fun grease(v: Boolean)
+
+    /** Enable unreliable DATAGRAM frames (RFC 9221) with the given receive/send queue lengths. */
+    fun enableDgram(
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    )
 }
 
 /**
@@ -104,4 +110,7 @@ internal fun applyQuicOptions(
     calls.discoverPmtu(options.enablePmtuDiscovery)
     if (options.enableEarlyData) calls.enableEarlyData()
     calls.grease(options.enableGrease)
+
+    // Unreliable datagrams (RFC 9221) — only when explicitly enabled.
+    options.datagrams?.let { calls.enableDgram(it.recvQueueLen.toLong(), it.sendQueueLen.toLong()) }
 }

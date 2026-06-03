@@ -220,4 +220,9 @@ internal class CommonJvmQuicConfigCalls(
     override fun enableEarlyData() = api.configEnableEarlyData(cfg)
 
     override fun grease(v: Boolean) = api.configGrease(cfg, v)
+
+    override fun enableDgram(
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    ) = api.configEnableDgram(cfg, true, recvQueueLen, sendQueueLen)
 }

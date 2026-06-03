@@ -1,9 +1,11 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * A QUIC connection scope — the receiver inside [withQuicConnection] and [QuicServer.connections].
@@ -48,4 +50,44 @@ interface QuicScope : CoroutineScope {
     /** Current migration/path state. Defaults to a never-migrating [PathInfo]. */
     val pathState: StateFlow<PathInfo>
         get() = MutableStateFlow(PathInfo())
+
+    // --- Unreliable datagrams (RFC 9221) ---
+    // Available only when [QuicOptions.datagrams] was set. The default implementations make a
+    // non-datagram connection behave correctly: send throws, receive throws, the flow is empty,
+    // and the max size is null. Platforms that support datagrams override all four.
+
+    /**
+     * Send one unreliable datagram (RFC 9221). The whole [buffer] is one datagram; it is delivered
+     * at most once, unordered, with no retransmission. Suspends only while the send queue is full
+     * (backpressure); the bytes are read zero-copy and the caller retains ownership of [buffer].
+     *
+     * @throws IllegalArgumentException if `buffer.remaining()` exceeds the current [maxDatagramSize].
+     * @throws IllegalStateException if datagrams are [MaxDatagramSize.Unavailable] (not enabled).
+     * @throws QuicCloseException if the connection is closed.
+     */
+    suspend fun sendDatagram(buffer: ReadBuffer): Unit =
+        throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
+
+    /**
+     * Receive the next unreliable datagram. Suspends until one arrives or the connection closes.
+     * Returns [DatagramReceiveResult.Received] (ownership of the buffer transfers to the caller) or
+     * [DatagramReceiveResult.ConnectionClosed] — never null.
+     */
+    suspend fun receiveDatagram(): DatagramReceiveResult =
+        throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
+
+    /**
+     * Flow of incoming unreliable datagrams — a thin loop over [receiveDatagram] for parity with
+     * [streams]. Completes when the connection closes. Each emitted buffer is owned by the collector,
+     * which must release it (same contract as [com.ditchoom.data.Reader.readFlow]).
+     */
+    fun datagrams(): Flow<ReadBuffer> = emptyFlow()
+
+    /**
+     * Maximum payload a single [sendDatagram] may carry right now — [MaxDatagramSize.Bytes] when
+     * datagrams can be sent, or [MaxDatagramSize.Unavailable] when they cannot (not enabled locally,
+     * or the peer never advertised `max_datagram_frame_size`). Tracks the current path MTU, so the
+     * byte count can change over the connection's life.
+     */
+    fun maxDatagramSize(): MaxDatagramSize = MaxDatagramSize.Unavailable
 }

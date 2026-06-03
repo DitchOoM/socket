@@ -23,6 +23,7 @@ import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -88,6 +89,30 @@ class QuicheDriver(
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val streams = mutableMapOf<Long, StreamSlot>()
     private var nextStreamId = if (isServer) 1L else 0L
+
+    // --- Unreliable datagrams (RFC 9221) ---
+
+    /**
+     * Conflated readiness signal tickled in [afterCommand] when quiche has a datagram queued.
+     * A parked [DriverDatagramAdapter.receiveDatagram] waits on it. Conflation makes it
+     * lost-wakeup-free: a tickle fired before the receiver parks is buffered until it receives.
+     */
+    val dgramSignal = Channel<Unit>(Channel.CONFLATED)
+
+    /**
+     * Conflated signal tickled in [afterCommand] after [flushOutgoing] drains the datagram send
+     * queue, releasing send backpressure. A [DriverDatagramAdapter.sendDatagram] that got
+     * `QUICHE_ERR_DONE` (queue full) parks on it and retries.
+     */
+    val dgramWritableSignal = Channel<Unit>(Channel.CONFLATED)
+
+    /**
+     * Latest max writable datagram size, refreshed each [afterCommand] (path MTU / negotiation can
+     * change it). Read cross-coroutine by `QuicScope.maxDatagramSize()`, hence [Volatile].
+     */
+    @Volatile
+    var lastMaxDatagramSize: MaxDatagramSize = MaxDatagramSize.Unavailable
+        private set
 
     private val udpSendBuf: PlatformBuffer = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
     private val sendAddr = udpSendBuf.nativeMemoryAccess!!.nativeAddress.toLong()
@@ -272,6 +297,16 @@ class QuicheDriver(
                 cmd.result.complete(written)
             }
 
+            is QuicheCmd.DgramSend -> {
+                val written = api.connDgramSend(conn, cmd.addr, cmd.bufLen)
+                cmd.result.complete(written)
+            }
+
+            is QuicheCmd.DgramRecv -> {
+                val result = api.connDgramRecv(conn, cmd.addr, cmd.bufLen)
+                cmd.result.complete(result)
+            }
+
             is QuicheCmd.Close -> {
                 api.connClose(conn, cmd.error)
                 // Sync state from quiche BEFORE signalling the close completed, so a caller
@@ -302,7 +337,20 @@ class QuicheDriver(
         if (migrationEnabled) drainPathEvents()
         discoverNewStreams()
         signalWritableStreams()
+        signalDatagrams()
         updateState()
+    }
+
+    /**
+     * Datagram-path mirror of [discoverNewStreams] / [signalWritableStreams]. Refreshes the cached
+     * max writable size (read by `maxDatagramSize()`), wakes a parked receiver when quiche has a
+     * datagram queued, and — since [flushOutgoing] just drained the datagram send queue — releases
+     * any send backpressure. All signals are CONFLATED, so tickling with no parked waiter is a no-op.
+     */
+    private fun signalDatagrams() {
+        lastMaxDatagramSize = api.connDgramMaxWritableLen(conn)
+        if (api.hasReadableDgram(conn)) dgramSignal.trySend(Unit)
+        dgramWritableSignal.trySend(Unit)
     }
 
     /**
@@ -615,6 +663,10 @@ class QuicheDriver(
             slot.writableSignal.close()
         }
         streams.clear()
+        // Unblock any datagram receiver/sender parked on these signals — the closed-channel unwinds
+        // them to ConnectionClosed / QuicCloseException (see DriverDatagramAdapter).
+        dgramSignal.close()
+        dgramWritableSignal.close()
         api.connFree(conn)
         // Tear down any non-primary migration paths: cancel reader, close socket, free
         // recv_info before its sockaddr. Iterate a copy — teardown logic mutates `paths`.
@@ -665,6 +717,10 @@ class QuicheDriver(
                 )
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
             is QuicheCmd.StreamSend -> cmd.result.complete(-1)
+            // Datagrams: receive → Error maps to ConnectionClosed; send → -1 parks on the (now-closed)
+            // dgramWritableSignal, which throws QuicCloseException. Mirrors the stream cases above.
+            is QuicheCmd.DgramRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
+            is QuicheCmd.DgramSend -> cmd.result.complete(-1)
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Failed("connection closed"))
         }

@@ -56,6 +56,29 @@ sealed interface QuicheCmd {
         val result: CompletableDeferred<Int>,
     ) : QuicheCmd
 
+    /**
+     * Send one unreliable datagram (RFC 9221) from [addr]..[addr]+[bufLen]. [result] is the quiche
+     * return: bytes written (== [bufLen]) on success, or a negative code ([QuicheDriver.QUICHE_ERR_DONE]
+     * when the send queue is full — backpressure). The caller owns the buffer; the driver only reads it.
+     */
+    class DgramSend(
+        val addr: Long,
+        val bufLen: Int,
+        val result: CompletableDeferred<Int>,
+    ) : QuicheCmd
+
+    /**
+     * Receive one unreliable datagram into [addr]..[addr]+[bufLen]. Decoded into [StreamRecvResult]
+     * (always `fin = false`): [StreamRecvResult.Data] with the datagram length, [StreamRecvResult.Done]
+     * when none is queued, or [StreamRecvResult.Error]. The driver writes into [addr]; the caller must
+     * keep that buffer alive until [result] completes (see the lifetime guard in receiveDatagram).
+     */
+    class DgramRecv(
+        val addr: Long,
+        val bufLen: Int,
+        val result: CompletableDeferred<StreamRecvResult>,
+    ) : QuicheCmd
+
     /** Gracefully close the connection. */
     class Close(
         val error: QuicError,

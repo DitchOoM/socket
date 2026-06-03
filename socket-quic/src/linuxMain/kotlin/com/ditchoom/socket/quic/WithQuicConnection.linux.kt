@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.ConnectionOptions
@@ -231,6 +232,8 @@ private class LinuxQuicConnection(
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
+    private val datagramAdapter = DriverDatagramAdapter(driver, bufferFactory)
+
     fun start() {
         driver.start(scope)
     }
@@ -256,6 +259,14 @@ private class LinuxQuicConnection(
     override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
+
+    override suspend fun sendDatagram(buffer: ReadBuffer) = datagramAdapter.sendDatagram(buffer)
+
+    override suspend fun receiveDatagram(): DatagramReceiveResult = datagramAdapter.receiveDatagram()
+
+    override fun datagrams(): Flow<ReadBuffer> = datagramAdapter.datagrams()
+
+    override fun maxDatagramSize(): MaxDatagramSize = datagramAdapter.maxDatagramSize()
 
     override val pathState: StateFlow<PathInfo> = driver.pathState
 
@@ -374,4 +385,10 @@ internal class LinuxQuicConfigCalls(
     override fun grease(v: Boolean) =
         com.ditchoom.socket.quic.quiche
             .quiche_config_grease(cfg, v)
+
+    override fun enableDgram(
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    ) = com.ditchoom.socket.quic.quiche
+        .quiche_config_enable_dgram(cfg, true, recvQueueLen.convert(), sendQueueLen.convert())
 }

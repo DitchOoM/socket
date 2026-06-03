@@ -108,6 +108,21 @@ class FfmQuicheApi private constructor(
     private val hGrease by lazy {
         downcall("quiche_config_grease", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN))
     }
+    private val hConfigEnableDgram by lazy {
+        downcall("quiche_config_enable_dgram", FunctionDescriptor.ofVoid(ADDRESS, JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG))
+    }
+    private val hConnDgramSend by lazy {
+        downcall("quiche_conn_dgram_send", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG))
+    }
+    private val hConnDgramRecv by lazy {
+        downcall("quiche_conn_dgram_recv", FunctionDescriptor.of(JAVA_LONG, ADDRESS, ADDRESS, JAVA_LONG))
+    }
+    private val hConnDgramRecvFrontLen by lazy {
+        downcall("quiche_conn_dgram_recv_front_len", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
+    private val hConnDgramMaxWritableLen by lazy {
+        downcall("quiche_conn_dgram_max_writable_len", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
     private val hConnect by lazy {
         downcall(
             "quiche_connect",
@@ -449,6 +464,44 @@ class FfmQuicheApi private constructor(
             val errOut = arena.allocate(JAVA_LONG)
             (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
         }
+
+    // --- Unreliable datagrams (RFC 9221) ---
+
+    override fun configEnableDgram(
+        config: QuicheConfig,
+        enabled: Boolean,
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    ) {
+        hConfigEnableDgram.invokeExact(seg(config.handle), enabled, recvQueueLen, sendQueueLen)
+    }
+
+    override fun connDgramSend(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = (hConnDgramSend.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong()) as Long).toInt()
+
+    override fun connDgramRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvResult {
+        // ssize_t: >= 0 length (datagrams have no FIN), QUICHE_ERR_DONE when none queued, else error.
+        val raw = hConnDgramRecv.invokeExact(seg(conn.handle), seg(buf), bufLen.toLong()) as Long
+        return when {
+            raw >= 0 -> StreamRecvResult.Data(raw.toInt(), false)
+            raw == QUICHE_ERR_DONE -> StreamRecvResult.Done
+            else -> StreamRecvResult.Error(raw.toInt())
+        }
+    }
+
+    override fun hasReadableDgram(conn: QuicheConn): Boolean = (hConnDgramRecvFrontLen.invokeExact(seg(conn.handle)) as Long) >= 0
+
+    override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
+        val raw = hConnDgramMaxWritableLen.invokeExact(seg(conn.handle)) as Long
+        return if (raw < 0) MaxDatagramSize.Unavailable else MaxDatagramSize.Bytes(raw.toInt())
+    }
 
     override fun connIsEstablished(conn: QuicheConn): Boolean = hIsEstablished.invokeExact(seg(conn.handle)) as Boolean
 

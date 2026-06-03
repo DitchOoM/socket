@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_accept
 import com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu
+import com.ditchoom.socket.quic.quiche.quiche_config_enable_dgram
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_early_data
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_hystart
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_pacing
@@ -33,6 +34,10 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_closed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
@@ -214,6 +219,13 @@ internal object CinteropQuicheApi : QuicheApi {
         v: Boolean,
     ) = quiche_config_grease(config.handle.toCPointer()!!, v)
 
+    override fun configEnableDgram(
+        config: QuicheConfig,
+        enabled: Boolean,
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    ) = quiche_config_enable_dgram(config.handle.toCPointer()!!, enabled, recvQueueLen.convert(), sendQueueLen.convert())
+
     // --- Connection ---
 
     override fun connect(
@@ -314,6 +326,45 @@ internal object CinteropQuicheApi : QuicheApi {
                 errorCode.ptr,
             ).toInt()
         }
+    }
+
+    // --- Unreliable datagrams (RFC 9221) ---
+
+    override fun connDgramSend(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        quiche_conn_dgram_send(
+            conn.handle.toCPointer()!!,
+            if (bufLen > 0) buf.toCPointer<UByteVar>() else null,
+            bufLen.convert(),
+        ).toInt()
+
+    override fun connDgramRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvResult {
+        // ssize_t: >= 0 length (datagrams have no FIN), QUICHE_ERR_DONE when none queued, else error.
+        val result =
+            quiche_conn_dgram_recv(
+                conn.handle.toCPointer()!!,
+                buf.toCPointer<UByteVar>()!!,
+                bufLen.convert(),
+            )
+        return when {
+            result >= 0 -> StreamRecvResult.Data(result.toInt(), false)
+            result.toInt() == QUICHE_ERR_DONE -> StreamRecvResult.Done
+            else -> StreamRecvResult.Error(result.toInt())
+        }
+    }
+
+    override fun hasReadableDgram(conn: QuicheConn): Boolean = quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0
+
+    override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
+        val raw = quiche_conn_dgram_max_writable_len(conn.handle.toCPointer()!!)
+        return if (raw < 0) MaxDatagramSize.Unavailable else MaxDatagramSize.Bytes(raw.toInt())
     }
 
     override fun connIsEstablished(conn: QuicheConn): Boolean = quiche_conn_is_established(conn.handle.toCPointer()!!)

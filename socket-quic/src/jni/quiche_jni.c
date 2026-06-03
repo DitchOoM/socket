@@ -214,6 +214,40 @@ JNIEXPORT jint JNICALL JNI_FN(nConnStreamSend)(
         (bool)fin, &error_code);
 }
 
+/* --- Unreliable datagrams (RFC 9221) --- */
+
+JNIEXPORT void JNICALL JNI_FN(nConfigEnableDgram)(
+    JNIEnv *env, jclass cls,
+    jlong config, jboolean enabled, jlong recv_queue_len, jlong send_queue_len) {
+    quiche_config_enable_dgram(
+        (quiche_config *)(uintptr_t)config, (bool)enabled,
+        (size_t)recv_queue_len, (size_t)send_queue_len);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnDgramSend)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_dgram_send(
+        (quiche_conn *)(uintptr_t)conn,
+        (const uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecv)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jlong)quiche_conn_dgram_recv(
+        (quiche_conn *)(uintptr_t)conn,
+        (uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecvFrontLen)(JNIEnv *env, jclass cls, jlong conn) {
+    /* quiche FFI returns ssize_t -1 when the recv queue is empty, else the front datagram length. */
+    return (jlong)quiche_conn_dgram_recv_front_len((quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramMaxWritableLen)(JNIEnv *env, jclass cls, jlong conn) {
+    /* quiche FFI returns ssize_t -1 when datagrams are not negotiated, else the max writable length. */
+    return (jlong)quiche_conn_dgram_max_writable_len((quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsEstablished)(JNIEnv *env, jclass cls, jlong conn) {
     return (jboolean)quiche_conn_is_established((const quiche_conn *)(uintptr_t)conn);
 }
