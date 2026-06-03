@@ -40,6 +40,9 @@ import kotlin.time.Duration.Companion.seconds
  * Tests gracefully skip when the harness isn't reachable (local dev
  * without Docker, CI fallback paths) — same withConnect-or-skip pattern
  * as the public-host tests this file replaces.
+ *
+ * Apple K/N skips this entire suite via [isAppleKNative] (see PR #54);
+ * the harness only runs on Linux/JVM/JS CI.
  */
 class QuicHarnessIntegrationTests {
     private val bufferFactory = BufferFactory.deterministic()
@@ -83,15 +86,9 @@ class QuicHarnessIntegrationTests {
 
     /**
      * Run [block] inside a QUIC connection to the harness echo, or skip if
-     * unreachable.
-     *
-     * Logs an explicit `harness OK` or `harness SKIP: <reason>` line so the
-     * CI runner can tell whether the test actually exercised the QUIC
-     * client (vs silently no-op'd because the harness wasn't brought up).
-     * The Apple CI job greps for `harness OK` to assert the macOS-host
-     * `quic-echo` actually accepted at least one connection — without this
-     * signal a forgotten `docker compose up` or a broken jar launch would
-     * pass CI by accident.
+     * unreachable. Logs `harness OK` / `harness SKIP: <reason>` on
+     * Linux/JVM/JS so CI can audit whether the QUIC client actually ran;
+     * Apple K/N short-circuits and skips (see PR #54).
      */
     private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
         if (shouldSkipQuicHarnessOnSimulator()) {
