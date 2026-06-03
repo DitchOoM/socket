@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -221,6 +222,67 @@ class QuicHarnessIntegrationTests {
                         result.buffer.freeIfNeeded()
                     }
                     stream.close()
+                }
+            }
+        }
+
+    // --- Unreliable datagrams (RFC 9221, issue #109) ---
+
+    /**
+     * Same connect-or-skip contract as [withHarness], but with datagrams enabled
+     * (`DatagramOptions`), which routes Apple onto the multiplex-group + datagram-flow
+     * path. The harness peer ([QuicEchoTestServer]) echoes datagrams, so this is the
+     * real round-trip that validates the Apple datagram surface end-to-end on the
+     * macOS host (and, in CI's booted mode, the iOS simulator).
+     */
+    private suspend fun withHarnessDatagrams(block: suspend QuicScope.() -> Unit) {
+        if (shouldSkipQuicHarnessOnSimulator()) {
+            println("[QuicHarnessIntegrationTests] harness SKIP: Apple simulator under --standalone (issue #81)")
+            return
+        }
+        try {
+            withQuicConnection(
+                harnessHost,
+                QuicHarnessConfig.quicEchoPort,
+                quicOptions.copy(datagrams = DatagramOptions()),
+                connOptions,
+                connectTimeout,
+                block,
+            )
+            println("[QuicHarnessIntegrationTests] harness OK")
+        } catch (t: Throwable) {
+            println("[QuicHarnessIntegrationTests] harness SKIP: ${t::class.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
+     * Round-trips one unreliable datagram through the echo peer. Loopback with no
+     * impairment doesn't drop a single datagram, so the echo assertion is
+     * deterministic (same rationale as [QuicDatagramTestSuite]).
+     */
+    @Test
+    fun harness_datagram_roundTrip() =
+        runTest(timeout = 60.seconds) {
+            withContext(Dispatchers.Default) {
+                withHarnessDatagrams {
+                    assertIs<MaxDatagramSize.Bytes>(maxDatagramSize(), "datagrams should be sendable")
+
+                    val payload = "hello dgram"
+                    bufferFactory.allocate(payload.length).use { buf ->
+                        buf.writeString(payload, Charset.UTF8)
+                        buf.resetForRead()
+                        sendDatagram(buf)
+                    }
+
+                    when (val r = withTimeoutOrNull(opTimeout) { receiveDatagram() }) {
+                        is DatagramReceiveResult.Received -> {
+                            assertEquals(payload, r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                            r.buffer.freeIfNeeded()
+                        }
+                        is DatagramReceiveResult.ConnectionClosed ->
+                            throw AssertionError("connection closed before datagram echo")
+                        null -> throw AssertionError("datagram echo timed out")
+                    }
                 }
             }
         }

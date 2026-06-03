@@ -538,6 +538,14 @@ tasks.register<Copy>("stageQuicheNativeResources") {
         }
     }
 
+    // Single-arch (default) path: this Copy reads each JNI shim's output dir
+    // (libs/quiche/<platform>/lib), so it must declare a dependency on the
+    // host-arch shim build — `prepareQuicheNativeLib` builds exactly that.
+    // Without it, Gradle flags an undeclared task-output dependency and fails
+    // validation on local non-allArches runs (CI always sets quicEchoAllArches,
+    // whose branch below already declares the deps, so CI never hit this).
+    dependsOn("prepareQuicheNativeLib")
+
     // Multi-arch path: depend on both x64 + arm64 JNI shim builds so the
     // staged dir has natives for both arches by the time `Copy` runs. We
     // attach to `stageQuicheNativeResources` rather than `quicEchoJar`
