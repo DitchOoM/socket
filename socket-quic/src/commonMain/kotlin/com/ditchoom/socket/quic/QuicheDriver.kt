@@ -99,6 +99,10 @@ class QuicheDriver(
     private val streams = mutableMapOf<Long, StreamSlot>()
     private var nextStreamId = if (isServer) 1L else 0L
 
+    // Locally-initiated unidirectional stream IDs (RFC 9000 §2.1): low 2 bits 0b10 (client → 2)
+    // or 0b11 (server → 3), stepping by 4. Separate from the bidi counter above.
+    private var nextUniStreamId = if (isServer) 3L else 2L
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     /**
@@ -289,8 +293,12 @@ class QuicheDriver(
             }
 
             is QuicheCmd.OpenStream -> {
-                val id = QuicStreamId(nextStreamId)
-                nextStreamId += 4
+                val id =
+                    if (cmd.unidirectional) {
+                        QuicStreamId(nextUniStreamId).also { nextUniStreamId += 4 }
+                    } else {
+                        QuicStreamId(nextStreamId).also { nextStreamId += 4 }
+                    }
                 val slot = StreamSlot(id)
                 streams[id.id] = slot
                 cmd.result.complete(slot)
