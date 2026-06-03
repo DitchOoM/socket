@@ -70,23 +70,40 @@ class QpackFieldSectionCodecTests {
     // --- Literal w/ Name Reference (static, §4.5.4) -------------------------
 
     @Test
-    fun literalNameRef_staticName_literalValue() {
-        // (:authority, "example.com"): name @0, value literal (H=0, len 11).
-        val expected = listOf(0x00, 0x00, 0x50, 0x0B) + ascii("example.com")
+    fun literalNameRef_staticName_huffmanValue() {
+        // (:authority, "example.com"): name @0, value Huffman-coded (8 B < 11 raw),
+        // so the 7-bit length prefix sets H=1 → 0x80 | 8 = 0x88.
+        val valueHuffman = listOf(0x2f, 0x91, 0xd3, 0x5d, 0x05, 0x5c, 0x87, 0xa7)
+        val expected = listOf(0x00, 0x00, 0x50, 0x88) + valueHuffman
         assertEquals(expected, encode(listOf(QpackHeaderField(":authority", "example.com"))))
         assertEquals(listOf(QpackHeaderField(":authority", "example.com")), decode(*expected.toIntArray()))
+    }
+
+    @Test
+    fun decode_literalNameRef_rawValue() {
+        // A peer may still send the value raw (H=0, len 11); the decoder accepts it.
+        val raw = listOf(0x00, 0x00, 0x50, 0x0B) + ascii("example.com")
+        assertEquals(listOf(QpackHeaderField(":authority", "example.com")), decode(*raw.toIntArray()))
     }
 
     // --- Literal w/ Literal Name (§4.5.6) -----------------------------------
 
     @Test
-    fun literalLiteralName() {
-        // ("x-custom-header", "val"): name not in table.
-        // name len 15 → 3-bit prefix saturates: 0x27 then 0x08; then name bytes; value len 3.
-        val expected =
-            listOf(0x00, 0x00, 0x27, 0x08) + ascii("x-custom-header") + listOf(0x03) + ascii("val")
+    fun literalLiteralName_huffmanNameRawValueOnTie() {
+        // ("x-custom-header", "val"): name not in table. Name Huffman-codes to 11 B
+        // (< 15 raw) → H=1; 3-bit length 11 saturates: 0x20|0x08|0x07 = 0x2f then 0x04.
+        // Value "val" Huffman is 3 B == 3 raw → tie keeps raw (H=0, len 3).
+        val nameHuffman = listOf(0xf2, 0xb1, 0x2d, 0x42, 0x4f, 0x4a, 0xd3, 0x94, 0x72, 0x16, 0xcf)
+        val expected = listOf(0x00, 0x00, 0x2f, 0x04) + nameHuffman + listOf(0x03) + ascii("val")
         assertEquals(expected, encode(listOf(QpackHeaderField("x-custom-header", "val"))))
         assertEquals(listOf(QpackHeaderField("x-custom-header", "val")), decode(*expected.toIntArray()))
+    }
+
+    @Test
+    fun decode_literalLiteralName_rawName() {
+        // A peer may send the name raw (H=0, len 15 → 0x27 then 0x08); decoder accepts it.
+        val raw = listOf(0x00, 0x00, 0x27, 0x08) + ascii("x-custom-header") + listOf(0x03) + ascii("val")
+        assertEquals(listOf(QpackHeaderField("x-custom-header", "val")), decode(*raw.toIntArray()))
     }
 
     // --- round trips --------------------------------------------------------

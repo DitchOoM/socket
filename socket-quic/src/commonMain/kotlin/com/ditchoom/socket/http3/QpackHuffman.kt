@@ -679,22 +679,16 @@ object QpackHuffman {
 
     /**
      * Huffman-encodes the UTF-8 octets of [value] into [buffer], padding the final
-     * byte with the most significant bits of EOS (RFC 7541 §5.2). Provided for
-     * symmetry and round-trip testing; the field-section codec emits raw (H=0)
-     * strings and does not call this.
+     * byte with the most significant bits of EOS (RFC 7541 §5.2). The field-section
+     * codec calls this when [huffmanByteLength] is shorter than the raw UTF-8 length.
      */
     fun encode(
         buffer: WriteBuffer,
         value: CharSequence,
     ) {
-        if (value.isEmpty()) return
-        val source = BufferFactory.Default.allocate(value.length * 4 + 1)
-        source.writeString(value, Charset.UTF8)
-        source.resetForRead()
         var acc = 0L
         var bits = 0
-        while (source.hasRemaining()) {
-            val octet = source.readByte().toInt() and 0xFF
+        forEachUtf8Octet(value) { octet ->
             acc = (acc shl CODE_LENGTHS[octet]) or CODES[octet].toLong()
             bits += CODE_LENGTHS[octet]
             while (bits >= 8) {
@@ -706,6 +700,55 @@ object QpackHuffman {
             val pad = 8 - bits
             acc = (acc shl pad) or ((1L shl pad) - 1) // EOS prefix == all ones
             buffer.writeByte((acc and 0xFF).toByte())
+        }
+    }
+
+    /**
+     * Number of bytes [encode] would emit for [value] — the Huffman-coded length,
+     * rounded up to a byte. Lets the field-section codec choose Huffman only when it
+     * is strictly shorter than the raw UTF-8 length. Derived from the same octet walk
+     * as [encode], so the two never disagree.
+     */
+    fun huffmanByteLength(value: CharSequence): Int {
+        var bits = 0L
+        forEachUtf8Octet(value) { bits += CODE_LENGTHS[it] }
+        return ((bits + 7) / 8).toInt()
+    }
+
+    /**
+     * Invokes [action] for each UTF-8 octet of [value] without allocating a buffer or
+     * ByteArray. Surrogate pairs become a 4-byte sequence (matching the field codec's
+     * `utf8ByteLength`); an unpaired surrogate falls through to the 3-byte branch, the
+     * same byte count platform `writeString` accounts for.
+     */
+    private inline fun forEachUtf8Octet(
+        value: CharSequence,
+        action: (Int) -> Unit,
+    ) {
+        var i = 0
+        while (i < value.length) {
+            val c = value[i].code
+            when {
+                c < 0x80 -> action(c)
+                c < 0x800 -> {
+                    action(0xC0 or (c shr 6))
+                    action(0x80 or (c and 0x3F))
+                }
+                c in 0xD800..0xDBFF && i + 1 < value.length && value[i + 1].code in 0xDC00..0xDFFF -> {
+                    val codePoint = 0x10000 + ((c - 0xD800) shl 10) + (value[i + 1].code - 0xDC00)
+                    action(0xF0 or (codePoint shr 18))
+                    action(0x80 or ((codePoint shr 12) and 0x3F))
+                    action(0x80 or ((codePoint shr 6) and 0x3F))
+                    action(0x80 or (codePoint and 0x3F))
+                    i++ // consume the low surrogate
+                }
+                else -> {
+                    action(0xE0 or (c shr 12))
+                    action(0x80 or ((c shr 6) and 0x3F))
+                    action(0x80 or (c and 0x3F))
+                }
+            }
+            i++
         }
     }
 }

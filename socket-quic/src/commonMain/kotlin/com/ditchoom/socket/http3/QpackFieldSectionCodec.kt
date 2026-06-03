@@ -36,9 +36,10 @@ object QpackScratchPoolKey : DecodeKey<BufferPool>
  * ```
  * Integers use [QpackPrefixedInteger]; the static table is [QpackStaticTable].
  *
- * String literals are written without Huffman (H=0); both raw (H=0) and
- * Huffman-coded (H=1) strings are decoded ([QpackHuffman]). Post-base and
- * dynamic-table representations are rejected. Names/values are treated as UTF-8.
+ * String literals (names and values) are Huffman-coded (H=1) when that is strictly
+ * shorter than the raw UTF-8 form, else written raw (H=0); both encodings are decoded
+ * ([QpackHuffman]). Post-base and dynamic-table representations are rejected.
+ * Names/values are treated as UTF-8.
  *
  * A field section is delimited by its enclosing HEADERS frame, not self-framing,
  * so [decode] consumes representations until the buffer is exhausted and
@@ -50,6 +51,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
     private const val LITERAL_NAME_REF_STATIC = 0x50 // 0 1 0 1 ....  (name-ref, N=0, T=static)
     private const val LITERAL_LITERAL_NAME = 0x20 // 0 0 1 0 0 ...  (literal name, N=0, H=0)
     private const val HUFFMAN_BIT = 0x80 // string literal H bit (7-bit length prefix)
+    private const val NAME_HUFFMAN_BIT = 0x08 // literal-name H bit (3-bit length prefix)
 
     override fun encode(
         buffer: WriteBuffer,
@@ -69,25 +71,54 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
             if (nameIndex != null) {
                 QpackPrefixedInteger.encode(buffer, nameIndex.toLong(), prefixBits = 4, firstByteFlags = LITERAL_NAME_REF_STATIC)
             } else {
-                QpackPrefixedInteger.encode(
-                    buffer,
-                    utf8ByteLength(field.name).toLong(),
-                    prefixBits = 3,
-                    firstByteFlags = LITERAL_LITERAL_NAME,
-                )
-                buffer.writeString(field.name, Charset.UTF8)
+                writeLiteralName(buffer, field.name)
             }
             writeStringLiteral(buffer, field.value)
         }
     }
 
+    /**
+     * Writes a literal field name with a 3-bit length prefix, Huffman-coding it (H=1,
+     * flag [NAME_HUFFMAN_BIT]) when that is strictly shorter than the raw UTF-8 form.
+     */
+    private fun writeLiteralName(
+        buffer: WriteBuffer,
+        name: String,
+    ) {
+        val raw = utf8ByteLength(name)
+        val huffman = QpackHuffman.huffmanByteLength(name)
+        if (huffman < raw) {
+            QpackPrefixedInteger.encode(
+                buffer,
+                huffman.toLong(),
+                prefixBits = 3,
+                firstByteFlags = LITERAL_LITERAL_NAME or NAME_HUFFMAN_BIT,
+            )
+            QpackHuffman.encode(buffer, name)
+        } else {
+            QpackPrefixedInteger.encode(buffer, raw.toLong(), prefixBits = 3, firstByteFlags = LITERAL_LITERAL_NAME)
+            buffer.writeString(name, Charset.UTF8)
+        }
+    }
+
+    /**
+     * Writes a string literal with a 7-bit length prefix, Huffman-coding it (H=1,
+     * flag [HUFFMAN_BIT]) when that is strictly shorter than the raw UTF-8 form.
+     */
     private fun writeStringLiteral(
         buffer: WriteBuffer,
         string: String,
     ) {
-        // H=0: the 7-bit length prefix occupies the first byte, high bit clear.
-        QpackPrefixedInteger.encode(buffer, utf8ByteLength(string).toLong(), prefixBits = 7)
-        buffer.writeString(string, Charset.UTF8)
+        val raw = utf8ByteLength(string)
+        val huffman = QpackHuffman.huffmanByteLength(string)
+        if (huffman < raw) {
+            QpackPrefixedInteger.encode(buffer, huffman.toLong(), prefixBits = 7, firstByteFlags = HUFFMAN_BIT)
+            QpackHuffman.encode(buffer, string)
+        } else {
+            // H=0: the 7-bit length prefix occupies the first byte, high bit clear.
+            QpackPrefixedInteger.encode(buffer, raw.toLong(), prefixBits = 7)
+            buffer.writeString(string, Charset.UTF8)
+        }
     }
 
     override fun decode(
@@ -229,14 +260,24 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         return if (nameIndex != null) {
             QpackPrefixedInteger.encodedLength(nameIndex.toLong(), prefixBits = 4) + stringLiteralSize(field.value)
         } else {
-            val nameBytes = utf8ByteLength(field.name)
+            val nameBytes = encodedStringBytes(field.name)
             QpackPrefixedInteger.encodedLength(nameBytes.toLong(), prefixBits = 3) + nameBytes + stringLiteralSize(field.value)
         }
     }
 
     private fun stringLiteralSize(string: String): Int {
-        val bytes = utf8ByteLength(string)
+        val bytes = encodedStringBytes(string)
         return QpackPrefixedInteger.encodedLength(bytes.toLong(), prefixBits = 7) + bytes
+    }
+
+    /**
+     * Bytes the chosen string encoding occupies — Huffman when strictly shorter, else
+     * raw UTF-8. Mirrors the choice in [writeStringLiteral]/[writeLiteralName] so
+     * [wireSize] stays exactly equal to the encoded length.
+     */
+    private fun encodedStringBytes(string: String): Int {
+        val raw = utf8ByteLength(string)
+        return minOf(raw, QpackHuffman.huffmanByteLength(string))
     }
 
     /** A field section is delimited by its enclosing HEADERS frame, not self-framing. */
