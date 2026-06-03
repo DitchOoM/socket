@@ -42,6 +42,13 @@ object VarIntCodec : Codec<Long> {
     /** Largest value representable in a QUIC varint: 2^62 − 1. */
     const val MAX_VALUE: Long = (1L shl 62) - 1
 
+    /**
+     * Total byte length (1, 2, 4, or 8) of the varint whose first byte is
+     * [firstByte] — only the low 8 bits are inspected. Lets a multi-field
+     * decoder size a varint from its leading byte without consuming it.
+     */
+    internal fun lengthFromPrefix(firstByte: Int): Int = 1 shl ((firstByte and 0xFF) ushr 6)
+
     /** Number of bytes [encode] emits for [value]: 1, 2, 4, or 8. */
     fun encodedLength(value: Long): Int {
         require(value in 0..MAX_VALUE) { "varint out of range [0, $MAX_VALUE]: $value" }
@@ -109,7 +116,7 @@ object VarIntCodec : Codec<Long> {
         context: DecodeContext,
     ): Long {
         val first = buffer.readByte().toInt() and 0xFF
-        val length = 1 shl (first ushr 6) // prefix 0..3 → 1, 2, 4, 8 bytes
+        val length = lengthFromPrefix(first) // prefix 0..3 → 1, 2, 4, 8 bytes
         var value = (first and 0x3F).toLong()
         repeat(length - 1) {
             value = (value shl 8) or (buffer.readByte().toLong() and 0xFF)
@@ -128,6 +135,6 @@ object VarIntCodec : Codec<Long> {
     ): PeekResult {
         if (stream.available() < baseOffset + 1) return PeekResult.NeedsMoreData
         val first = stream.peekByte(baseOffset).toInt() and 0xFF
-        return PeekResult.Complete(1 shl (first ushr 6))
+        return PeekResult.Complete(lengthFromPrefix(first))
     }
 }
