@@ -433,6 +433,31 @@ static inline nw_connection_t _Nullable nw_helper_quic_group_extract_stream(
 }
 
 /**
+ * Extract a new locally-initiated UNIDIRECTIONAL stream flow from the group — the
+ * client-to-server uni streams HTTP/3 needs (control + QPACK encoder/decoder, RFC
+ * 9114 §6.2). Like the datagram flow — and unlike a bidi stream extracted with NULL
+ * options — a uni stream MUST be extracted with the connection's OWN QUIC options
+ * copied from the group's established parameters: a fresh nw_quic_create_options()
+ * tears the flow down immediately with ENETDOWN (issue #109). We copy the group's
+ * QUIC options and only flip is_unidirectional (macOS 11 / iOS 14 — no later floor
+ * than the QUIC group itself, so ungated). The returned connection must have its
+ * queue set and be started (nw_helper_quic_start) before use; returns NULL if the
+ * QUIC options can't be derived.
+ */
+static inline nw_connection_t _Nullable nw_helper_quic_group_extract_uni_stream(
+    nw_connection_group_t _Nonnull group)
+{
+    nw_parameters_t params = nw_connection_group_copy_parameters(group);
+    if (!params) return NULL;
+    nw_protocol_stack_t stack = nw_parameters_copy_default_protocol_stack(params);
+    if (!stack) return NULL;
+    nw_protocol_options_t quic_options = nw_protocol_stack_copy_transport_protocol(stack);
+    if (!quic_options || !nw_protocol_options_is_quic(quic_options)) return NULL;
+    nw_quic_set_stream_is_unidirectional(quic_options, true);
+    return nw_connection_group_extract_connection(group, NULL, quic_options);
+}
+
+/**
  * Extract THE datagram flow from the group. Network.framework permits exactly one
  * QUIC datagram flow per connection. macOS 13 / iOS 16 (nw_quic_set_stream_is_datagram);
  * returns NULL below that floor. The returned connection must be started

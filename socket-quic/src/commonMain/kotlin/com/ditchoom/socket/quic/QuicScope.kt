@@ -27,6 +27,18 @@ interface QuicScope : CoroutineScope {
     /** Open a new locally-initiated bidirectional stream. Caller should close() when done (sends FIN). */
     suspend fun openStream(): QuicByteStream
 
+    /**
+     * Open a new locally-initiated unidirectional stream (RFC 9000 §2.1) — the client-to-server
+     * uni streams HTTP/3 needs (control + QPACK encoder/decoder, RFC 9114 §6.2). The caller writes
+     * the stream-type prefix as the first bytes, and `close()` sends FIN. The returned stream's
+     * [QuicByteStream.streamId] is unidirectional ([QuicStreamId.isUnidirectional]).
+     *
+     * Defaults to [UnsupportedOperationException]; platforms that support it (quiche-backed, Apple)
+     * override this.
+     */
+    suspend fun openUniStream(): QuicByteStream =
+        throw UnsupportedOperationException("Unidirectional QUIC streams are not supported on this platform")
+
     /** Accept the next peer-initiated stream. Suspends until one arrives or scope is cancelled. */
     suspend fun acceptStream(): QuicByteStream
 

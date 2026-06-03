@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_datagram_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_cancel
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_datagram_flow
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_stream
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_uni_stream
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_new_connection_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_start
@@ -254,6 +255,11 @@ private class AppleQuicGroupConnection(
 
     private val nextClientStreamId = kotlin.concurrent.AtomicLong(0L)
 
+    // Client-initiated unidirectional ids: low 2 bits = 0b10, so id % 4 == 2 (RFC 9000 §2.1).
+    // Synthetic, like the bidi ids — NW hides the real id — but flavored so
+    // QuicStreamId.isUnidirectional is correct.
+    private val nextClientUniStreamId = kotlin.concurrent.AtomicLong(2L)
+
     @Volatile
     private var closed = false
 
@@ -267,6 +273,21 @@ private class AppleQuicGroupConnection(
                 ?: throw QuicCloseException(closeReason(), "Failed to open QUIC stream")
         nw_helper_quic_start(streamConn)
         val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
+        return QuicByteStream(streamId, NWQuicByteStream(streamConn))
+    }
+
+    override suspend fun openUniStream(): QuicByteStream {
+        check(!closed) { "AppleQuicGroupConnection is closed" }
+        check(_state.value is QuicConnectionState.Established) {
+            "Cannot open stream in state ${_state.value}"
+        }
+        // Extracted with the group's own QUIC options + is_unidirectional (see the shim);
+        // a fresh-options extract would be torn down with ENETDOWN like the datagram flow.
+        val streamConn =
+            nw_helper_quic_group_extract_uni_stream(group)
+                ?: throw QuicCloseException(closeReason(), "Failed to open unidirectional QUIC stream")
+        nw_helper_quic_start(streamConn)
+        val streamId = QuicStreamId(nextClientUniStreamId.getAndAdd(4))
         return QuicByteStream(streamId, NWQuicByteStream(streamConn))
     }
 
