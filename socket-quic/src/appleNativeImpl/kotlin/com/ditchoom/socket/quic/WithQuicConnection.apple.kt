@@ -13,8 +13,15 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketConnectionException
-import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_connection
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_group
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_cancel
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_datagram_send
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_cancel
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_datagram_flow
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_stream
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_state_handler
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_start
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_max_datagram_size
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_receive
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
@@ -27,6 +34,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -34,6 +43,7 @@ import platform.Foundation.NSData
 import platform.Foundation.NSDataBase64DecodingIgnoreUnknownCharacters
 import platform.Foundation.NSNumber
 import platform.Foundation.create
+import platform.Network.nw_connection_group_t
 import platform.Network.nw_connection_t
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
@@ -58,80 +68,156 @@ actual suspend fun <R> withQuicConnection(
     block: suspend QuicScope.() -> R,
 ): R =
     withTimeout(timeout) {
-        // Build ALPN array — pass as List which K/N bridges to NSArray
-        val alpnList: List<Any?> = quicOptions.alpnProtocols
-
-        // Pinned-CA trust anchors (issue #81): PEM → DER NSData, bridged to
-        // NSArray<NSData *>. Empty → null so the native helper keeps NW's default
-        // system trust. See nw_quic_helpers.h for the verify_block.
-        val caDerList: List<NSData>? =
-            quicOptions.trustedCaCertificatesPem
-                .flatMap { pemToDerCertificates(it) }
-                .ifEmpty { null }
-
-        val nwConn =
-            nw_helper_create_quic_connection(
-                hostname,
-                port.toUShort(),
-                alpnList,
-                NSNumber(bool = quicOptions.verifyPeer),
-                caDerList,
-                quicOptions.idleTimeout.inWholeSeconds.toInt(),
-                timeout.inWholeSeconds.toInt(),
-            ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection")
-
-        // Wait for handshake completion
-        suspendCancellableCoroutine { cont ->
-            nw_helper_quic_set_state_handler(nwConn) { state, _, errorCode, errorDesc ->
-                when (state) {
-                    3 -> { // ready
-                        if (cont.isActive) cont.resume(Unit)
-                    }
-                    4 -> { // failed
-                        if (cont.isActive) {
-                            cont.resumeWithException(
-                                SocketConnectionException.Refused(
-                                    hostname,
-                                    port,
-                                    platformError = "QUIC handshake failed: code=$errorCode ${errorDesc ?: ""}",
-                                ),
-                            )
-                        }
-                    }
-                    5 -> { // cancelled
-                        if (cont.isActive) {
-                            cont.resumeWithException(
-                                SocketClosedException.General("QUIC connection cancelled"),
-                            )
-                        }
-                    }
-                    else -> {} // waiting=1, preparing=2 — in progress
-                }
-            }
-
-            nw_helper_quic_start(nwConn)
-
-            cont.invokeOnCancellation {
-                nw_helper_quic_cancel(nwConn)
-            }
-        }
-
-        val quicConn = AppleQuicConnection(nwConn, connectionOptions.bufferFactory)
-        try {
-            quicConn.block()
-        } finally {
-            quicConn.close()
-        }
+        connectQuicGroup(hostname, port, quicOptions, connectionOptions, timeout, block)
     }
 
 /**
- * Apple QUIC connection wrapping an NWConnection.
+ * The single Apple QUIC connect path, over a multiplex [nw_connection_group_t].
  *
- * Network.framework handles QUIC multiplexing internally — the same
- * NWConnection API used for TCP works identically for QUIC.
+ * Issue #109 migrated the former single-[nw_connection_t] path onto the group so one
+ * QUIC connection can carry real per-stream flows AND — when [QuicOptions.datagrams] is
+ * set — a dedicated datagram flow (RFC 9221), which Network.framework models as a
+ * separate flow rather than on the byte-stream path.
+ *
+ *  1. Create the group (advertising `max_datagram_frame_size` only when datagrams are
+ *     enabled) and await group `ready` — the QUIC handshake, including the #81
+ *     CA-pinning verify_block.
+ *  2. When datagrams are enabled, extract the one datagram flow (macOS 13 / iOS 16) and
+ *     await its `ready` so [nw_helper_quic_max_datagram_size] reflects the negotiated
+ *     path MTU before the user's block runs. Otherwise no datagram flow is extracted and
+ *     the connection reports datagrams as [MaxDatagramSize.Unavailable].
+ *  3. Hand a [AppleQuicGroupConnection] to [block]; streams are extracted lazily.
  */
-private class AppleQuicConnection(
-    private val nwConn: nw_connection_t,
+private suspend fun <R> connectQuicGroup(
+    hostname: String,
+    port: Int,
+    quicOptions: QuicOptions,
+    connectionOptions: ConnectionOptions,
+    timeout: Duration,
+    block: suspend QuicScope.() -> R,
+): R {
+    // Build ALPN array — pass as List which K/N bridges to NSArray.
+    val alpnList: List<Any?> = quicOptions.alpnProtocols
+
+    // Pinned-CA trust anchors (issue #81): PEM → DER NSData, bridged to NSArray<NSData *>.
+    // Empty → null so the native helper keeps NW's default system trust. See
+    // nw_quic_helpers.h for the verify_block.
+    val caDerList: List<NSData>? =
+        quicOptions.trustedCaCertificatesPem
+            .flatMap { pemToDerCertificates(it) }
+            .ifEmpty { null }
+
+    val datagramsEnabled = quicOptions.datagrams != null
+    val maxFrameSize: UShort = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX else 0u
+
+    val group =
+        nw_helper_create_quic_group(
+            hostname,
+            port.toUShort(),
+            alpnList,
+            NSNumber(bool = quicOptions.verifyPeer),
+            caDerList,
+            quicOptions.idleTimeout.inWholeSeconds.toInt(),
+            timeout.inWholeSeconds.toInt(),
+            maxFrameSize,
+        ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection group")
+
+    // Wait for the group (QUIC handshake) to become ready. Group states: 2=ready, 3=failed, 4=cancelled.
+    suspendCancellableCoroutine { cont ->
+        nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
+            when (state) {
+                2 -> if (cont.isActive) cont.resume(Unit)
+                3 ->
+                    if (cont.isActive) {
+                        cont.resumeWithException(
+                            SocketConnectionException.Refused(
+                                hostname,
+                                port,
+                                platformError = "QUIC group handshake failed: code=$errorCode ${errorDesc ?: ""}",
+                            ),
+                        )
+                    }
+                4 -> if (cont.isActive) cont.resumeWithException(SocketClosedException.General("QUIC group cancelled"))
+                else -> {} // invalid=0, waiting=1 — in progress
+            }
+        }
+        nw_helper_quic_group_start(group)
+        cont.invokeOnCancellation { nw_helper_quic_group_cancel(group) }
+    }
+
+    // Extract THE datagram flow (one per connection) only when datagrams are enabled.
+    val datagramFlow: nw_connection_t? =
+        if (!datagramsEnabled) {
+            null
+        } else {
+            // NULL below macOS 13 / iOS 16 — the only place the datagram feature is gated.
+            val flow =
+                nw_helper_quic_group_extract_datagram_flow(group, DATAGRAM_FRAME_SIZE_MAX)
+                    ?: run {
+                        nw_helper_quic_group_cancel(group)
+                        throw SocketConnectionException.Refused(
+                            hostname,
+                            port,
+                            platformError = "QUIC datagrams require macOS 13 / iOS 16",
+                        )
+                    }
+
+            // Await the flow's readiness so its maximum datagram size is known before the
+            // block runs. Connection states: 3=ready, 4=failed, 5=cancelled.
+            suspendCancellableCoroutine { cont ->
+                nw_helper_quic_set_state_handler(flow) { state, _, errorCode, errorDesc ->
+                    when (state) {
+                        3 -> if (cont.isActive) cont.resume(Unit)
+                        4 ->
+                            if (cont.isActive) {
+                                cont.resumeWithException(
+                                    SocketConnectionException.Refused(
+                                        hostname,
+                                        port,
+                                        platformError = "QUIC datagram flow failed: code=$errorCode ${errorDesc ?: ""}",
+                                    ),
+                                )
+                            }
+                        5 -> if (cont.isActive) cont.resumeWithException(SocketClosedException.General("QUIC datagram flow cancelled"))
+                        else -> {}
+                    }
+                }
+                nw_helper_quic_start(flow)
+                cont.invokeOnCancellation { nw_helper_quic_cancel(flow) }
+            }
+            flow
+        }
+
+    val quicConn = AppleQuicGroupConnection(group, datagramFlow, connectionOptions.bufferFactory)
+    return try {
+        quicConn.block()
+    } finally {
+        quicConn.close()
+    }
+}
+
+/**
+ * Advertised `max_datagram_frame_size` (RFC 9221) — the largest a single DATAGRAM
+ * frame may be. We advertise the 16-bit maximum; the *usable* per-datagram size is
+ * the smaller path-MTU value reported live by [QuicScope.maxDatagramSize].
+ */
+private const val DATAGRAM_FRAME_SIZE_MAX: UShort = 65535u
+
+/**
+ * The Apple QUIC connection — a multiplex [nw_connection_group_t] (issue #109).
+ *
+ * Each [openStream] extracts a REAL distinct QUIC stream from the group. [datagramFlow]
+ * is the dedicated RFC 9221 datagram flow extracted at establish, or null when
+ * [QuicOptions.datagrams] was not set — in which case the datagram surface reports
+ * [MaxDatagramSize.Unavailable] and the send/receive methods throw, matching the
+ * [QuicScope] defaults a non-datagram connection should present.
+ *
+ * Remaining seam (follow-up): wire `acceptStream`/peer-initiated streams via the group's
+ * new-connection handler — today [acceptStream] just suspends until the connection closes.
+ */
+private class AppleQuicGroupConnection(
+    private val group: nw_connection_group_t,
+    private val datagramFlow: nw_connection_t?,
     private val bufferFactory: BufferFactory,
     private val scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
 ) : QuicConnection,
@@ -146,29 +232,123 @@ private class AppleQuicConnection(
     private var closed = false
 
     override suspend fun openStream(): QuicByteStream {
-        check(!closed) { "AppleQuicConnection is closed" }
+        check(!closed) { "AppleQuicGroupConnection is closed" }
         check(_state.value is QuicConnectionState.Established) {
             "Cannot open stream in state ${_state.value}"
         }
+        val streamConn =
+            nw_helper_quic_group_extract_stream(group)
+                ?: throw SocketClosedException.General("Failed to open QUIC stream")
+        nw_helper_quic_start(streamConn)
         val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
-        return QuicByteStream(streamId, NWQuicByteStream(nwConn))
+        return QuicByteStream(streamId, NWQuicByteStream(streamConn))
     }
 
     override suspend fun acceptStream(): QuicByteStream {
-        check(!closed) { "AppleQuicConnection is closed" }
+        check(!closed) { "AppleQuicGroupConnection is closed" }
+        // Peer-initiated streams (group new-connection handler) are not wired yet; see
+        // the class docstring. Suspends until the connection closes.
         return incomingStreams.receive()
     }
 
     override fun streams(): Flow<QuicByteStream> = incomingStreams.consumeAsFlow()
 
+    // --- Unreliable datagrams (RFC 9221) ---
+    // Mirrors the quiche-backed DriverDatagramAdapter contract: size-check against the
+    // live max, caller retains ownership on send, ownership transfers to caller on receive.
+
+    override suspend fun sendDatagram(buffer: ReadBuffer) {
+        if (closed) throw QuicCloseException(closeReason(), "connection closed")
+        val flow =
+            datagramFlow
+                ?: throw IllegalStateException("QUIC datagrams are not enabled, or the peer did not advertise support")
+        val remaining = buffer.remaining()
+        when (val max = maxDatagramSize()) {
+            is MaxDatagramSize.Unavailable ->
+                throw IllegalStateException("QUIC datagrams are not enabled, or the peer did not advertise support")
+            is MaxDatagramSize.Bytes ->
+                require(remaining <= max.bytes) { "datagram too large: $remaining > ${max.bytes} bytes" }
+        }
+
+        // dispatch_data_create (in the helper) copies the bytes synchronously, so the
+        // caller may free `buffer` the instant we return; we still suspend until the
+        // send-complete callback to surface errors and provide backpressure.
+        val nsData = buffer.toNSData()
+        suspendCancellableCoroutine { cont ->
+            nw_helper_quic_datagram_send(flow, nsData) { _, errorCode, errorDesc ->
+                if (errorCode != 0) {
+                    if (cont.isActive) {
+                        cont.resumeWithException(
+                            QuicCloseException(
+                                closeReason(QuicError.InternalError("datagram send error: $errorCode")),
+                                "QUIC datagram send error: $errorCode ${errorDesc ?: ""}",
+                            ),
+                        )
+                    }
+                } else {
+                    if (cont.isActive) cont.resume(Unit)
+                }
+            }
+        }
+    }
+
+    override suspend fun receiveDatagram(): DatagramReceiveResult {
+        val flow =
+            datagramFlow
+                ?: throw UnsupportedOperationException("QUIC datagrams are not enabled on this connection")
+        if (closed) return DatagramReceiveResult.ConnectionClosed(closeReason())
+        return suspendCancellableCoroutine { cont ->
+            // One datagram per receive — the datagram flow delivers each as a complete
+            // message (is_complete=true). Zero-copy: wrap the NSData, flip to read mode.
+            nw_helper_quic_receive(flow, 1u, DATAGRAM_FRAME_SIZE_MAX.convert()) { data, _, _, errorCode, _ ->
+                when {
+                    data != null && data.length.toInt() > 0 -> {
+                        val buf = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
+                        buf.position(data.length.toInt())
+                        buf.resetForRead()
+                        if (cont.isActive) cont.resume(DatagramReceiveResult.Received(buf))
+                    }
+                    // No data (flow ended / min_length unmet) or an error → the flow is gone.
+                    // NB: a zero-length datagram (valid per RFC 9221) lands here too — an
+                    // accepted limitation of the NW datagram-flow receive boundary.
+                    else -> if (cont.isActive) cont.resume(DatagramReceiveResult.ConnectionClosed(closeReason()))
+                }
+            }
+        }
+    }
+
+    override fun datagrams(): Flow<ReadBuffer> {
+        if (datagramFlow == null) return emptyFlow()
+        return flow {
+            while (true) {
+                when (val result = receiveDatagram()) {
+                    is DatagramReceiveResult.Received -> emit(result.buffer)
+                    is DatagramReceiveResult.ConnectionClosed -> return@flow
+                }
+            }
+        }
+    }
+
+    override fun maxDatagramSize(): MaxDatagramSize {
+        if (closed) return MaxDatagramSize.Unavailable
+        val flow = datagramFlow ?: return MaxDatagramSize.Unavailable
+        val bytes = nw_helper_quic_max_datagram_size(flow).toInt()
+        return if (bytes > 0) MaxDatagramSize.Bytes(bytes) else MaxDatagramSize.Unavailable
+    }
+
     override suspend fun close(error: QuicError) {
         if (closed) return
         closed = true
         _state.value = QuicConnectionState.Draining
-        nw_helper_quic_cancel(nwConn)
+        datagramFlow?.let { nw_helper_quic_cancel(it) }
+        nw_helper_quic_group_cancel(group)
         incomingStreams.close()
         _state.value = QuicConnectionState.Closed(error)
     }
+
+    /** The structured close reason if known, else [fallback]. */
+    private fun closeReason(fallback: QuicError = QuicError.NoError): QuicError =
+        (_state.value as? QuicConnectionState.Closed)?.error ?: fallback
 }
 
 /**
