@@ -9,7 +9,6 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
-import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -612,7 +611,7 @@ class QuicheDriver(
         for (slot in streams.values) {
             slot.dataSignal.close()
             // Unblock any writer parked on a reopened-window signal — without this it would hang until
-            // its withTimeout fired. streamWrite maps the resulting closed-channel to SocketClosedException.
+            // its withTimeout fired. streamWrite maps the resulting closed-channel to QuicCloseException.
             slot.writableSignal.close()
         }
         streams.clear()
@@ -659,7 +658,10 @@ class QuicheDriver(
             }
             is QuicheCmd.OpenStream ->
                 cmd.result.completeExceptionally(
-                    SocketClosedException.General("connection closed"),
+                    QuicCloseException(
+                        (state.value as? QuicConnectionState.Closed)?.error ?: QuicError.NoError,
+                        "connection closed",
+                    ),
                 )
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
             is QuicheCmd.StreamSend -> cmd.result.complete(-1)
@@ -703,6 +705,13 @@ class DriverStreamAdapter(
     private val driver: QuicheDriver,
     private val slot: StreamSlot,
 ) : QuicheStreamAdapter {
+    /**
+     * The structured QUIC reason to attach to a [QuicCloseException] thrown from this stream:
+     * the connection's recorded close error if it has reached [QuicConnectionState.Closed],
+     * otherwise [fallback]. Driver state is the single source of truth for the close reason.
+     */
+    private fun closedReason(fallback: QuicError): QuicError = (driver.state.value as? QuicConnectionState.Closed)?.error ?: fallback
+
     override suspend fun streamRead(
         streamId: QuicStreamId,
         bufferFactory: BufferFactory,
@@ -824,7 +833,10 @@ class DriverStreamAdapter(
                             if (written > 0) {
                                 return@withTimeout written
                             } else {
-                                throw SocketClosedException.General("quiche stream write error: $written")
+                                throw QuicCloseException(
+                                    closedReason(QuicError.InternalError("quiche stream write error: $written")),
+                                    "quiche stream write error: $written",
+                                )
                             }
                     }
                 }
@@ -832,10 +844,10 @@ class DriverStreamAdapter(
                 0
             }
         } catch (_: ClosedSendChannelException) {
-            throw SocketClosedException.General("connection closed")
+            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed")
         } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
             // writableSignal was closed by cleanup() — the connection went away while we were parked.
-            throw SocketClosedException.General("connection closed")
+            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed")
         } finally {
             // Wait — non-cancellably — for any in-flight StreamSend to finish reading `addr` before we
             // return to the caller who will free `buffer`. The driver always completes the deferred

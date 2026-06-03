@@ -37,9 +37,14 @@ sealed class SocketException(
  * The connection is gone — closed locally, by the peer, or due to a broken pipe / reset.
  *
  * Catch this type to handle any "connection lost" scenario uniformly.
- * Use the sealed subtypes for finer discrimination.
+ * Use the subtypes for finer discrimination.
+ *
+ * `abstract` rather than `sealed` so protocol layers built on top of this library (e.g. the QUIC
+ * module's `QuicCloseException`, which carries a structured `QuicError`) can extend it from another
+ * module and still be caught uniformly via `catch (e: SocketClosedException)`. No code relies on
+ * exhaustive `when` over the subtypes — classification uses `is` checks plus an `else`.
  */
-sealed class SocketClosedException(
+abstract class SocketClosedException(
     override val message: String,
     override val cause: Throwable? = null,
 ) : SocketException(message, cause) {
