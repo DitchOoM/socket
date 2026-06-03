@@ -1,5 +1,8 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +76,24 @@ fun main(args: Array<String>) {
                         } catch (_: Exception) {
                         }
                     }
+                // Server-initiated stream (issue #112): open one stream TOWARD the client
+                // and write a fixed greeting, so clients can exercise acceptStream() against a
+                // real peer-initiated stream (e.g. an HTTP/3 server's control/QPACK streams).
+                // Independent of the echo path; clients that don't accept it simply ignore it.
+                val pushJob =
+                    launch {
+                        try {
+                            val s = openStream()
+                            val greeting = "HELLO\n"
+                            val buf = BufferFactory.deterministic().allocate(greeting.length)
+                            buf.writeString(greeting, Charset.UTF8)
+                            buf.resetForRead()
+                            s.write(buf, 10.seconds)
+                            buf.freeNativeMemory()
+                            s.close() // FIN, so the client sees the greeting then End
+                        } catch (_: Exception) {
+                        }
+                    }
                 val streamJob =
                     launch {
                         try {
@@ -98,6 +119,7 @@ fun main(args: Array<String>) {
                     }
                 datagramJob.join()
                 streamJob.cancel()
+                pushJob.cancel()
             }
         }
     }
