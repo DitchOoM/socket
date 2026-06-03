@@ -4,6 +4,7 @@ import com.ditchoom.socket.SocketClosedException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class QuicErrorTests {
     // --- Transport error code mapping (RFC 9000 §20.1) ---
@@ -211,5 +212,36 @@ class QuicErrorTests {
         // ...while the structured protocol reason survives the throw.
         assertIs<QuicError.ProtocolViolation>(ex.quicError)
         assertEquals("boom", ex.message)
+    }
+
+    // --- Decoder/type consistency (guards against the 0x0c-style drift bug) ---
+
+    @Test
+    fun fromTransportCode_everyAssignedTransportCode_roundTrips() {
+        // RFC 9000 §20.1 assigns every transport code in the contiguous range 0x00..0x10.
+        // Each must decode to a value that reports that same code, and none may fall through
+        // to UnknownTransport. This catches drift between a variant's declared `code` and the
+        // `fromTransportCode` branch that should produce it — exactly the gap that left 0x0c
+        // (APPLICATION_ERROR) silently decoding to the wrong type before it was added.
+        for (code in 0x0L..0x10L) {
+            val hex = "0x${code.toString(16)}"
+            val error = QuicError.fromTransportCode(code)
+            assertTrue(
+                error !is QuicError.UnknownTransport,
+                "$hex is RFC-assigned but decoded to UnknownTransport — missing fromTransportCode branch",
+            )
+            assertEquals(code, error.code, "$hex must round-trip to a value reporting the same code")
+        }
+    }
+
+    @Test
+    fun fromTransportCode_cryptoErrorRange_roundTripsAcrossWholeRange() {
+        // The CRYPTO_ERROR range 0x0100..0x01ff (0x100 + TLS alert) must map to CryptoError
+        // and preserve the code across the entire range, not just the sampled endpoints above.
+        for (code in 0x100L..0x1FFL) {
+            val error = QuicError.fromTransportCode(code)
+            assertIs<QuicError.CryptoError>(error)
+            assertEquals(code, error.code)
+        }
     }
 }
