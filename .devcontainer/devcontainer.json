@@ -1,0 +1,25 @@
+{
+  "name": "ditchoom-socket",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "containerEnv": {
+    "JAVA_HOME": "/opt/java-21"
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "mounts": [
+    "source=ditchoom-gradle,target=/root/.gradle,type=volume",
+    "source=ditchoom-konan,target=/root/.konan,type=volume",
+    "source=ditchoom-cargo-registry,target=/usr/local/cargo/registry,type=volume"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "fwcd.kotlin",
+        "rust-lang.rust-analyzer"
+      ]
+    }
+  }
+}

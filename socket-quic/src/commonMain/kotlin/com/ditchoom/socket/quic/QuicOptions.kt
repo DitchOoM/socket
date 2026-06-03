@@ -77,6 +77,26 @@ data class FlowControl(
 }
 
 /**
+ * Unreliable DATAGRAM frame support (RFC 9221). Present (non-null on [QuicOptions.datagrams])
+ * means the endpoint advertises `max_datagram_frame_size` and maintains datagram queues.
+ *
+ * Both queues are bounded; when full, quiche drops the **oldest** datagram — the unreliable,
+ * lossy semantics RFC 9221 and WebTransport expect. This is also the backpressure mechanism:
+ * a slow receiver simply loses old datagrams rather than growing memory without bound.
+ */
+data class DatagramOptions(
+    /** Max datagrams buffered for receive before quiche drops the oldest. */
+    val recvQueueLen: Int = 1024,
+    /** Max datagrams buffered for send before quiche drops the oldest. */
+    val sendQueueLen: Int = 1024,
+) {
+    init {
+        require(recvQueueLen > 0) { "recvQueueLen must be positive" }
+        require(sendQueueLen > 0) { "sendQueueLen must be positive" }
+    }
+}
+
+/**
  * QUIC-specific transport configuration.
  *
  * Uses sealed interfaces for [congestionControl] and [pacing] so `when` expressions
@@ -132,6 +152,12 @@ data class QuicOptions(
     val enableEarlyData: Boolean = false,
     /** Enable GREASE (Generate Random Extensions And Sustain Extensibility). */
     val enableGrease: Boolean = true,
+    /**
+     * Unreliable DATAGRAM frame support (RFC 9221). Null (the default) leaves datagrams disabled,
+     * so [QuicScope.sendDatagram] throws and [QuicScope.maxDatagramSize] returns null. Set a
+     * [DatagramOptions] to advertise `max_datagram_frame_size` and enable the datagram queues.
+     */
+    val datagrams: DatagramOptions? = null,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

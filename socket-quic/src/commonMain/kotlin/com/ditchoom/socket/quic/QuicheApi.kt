@@ -192,6 +192,47 @@ interface QuicheApi {
         fin: Boolean,
     ): Int
 
+    // --- Unreliable datagrams (RFC 9221) ---
+
+    /** Enable DATAGRAM frames on the config with the given receive/send queue lengths. */
+    fun configEnableDgram(
+        config: QuicheConfig,
+        enabled: Boolean,
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    )
+
+    /**
+     * Send one datagram from [buf]. Returns the number of bytes written (== [bufLen] on success),
+     * or a negative quiche error code ([QuicheDriver.QUICHE_ERR_DONE] when the send queue is full).
+     */
+    fun connDgramSend(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /**
+     * Receive one datagram into [buf]. Decoded like [connStreamRecv]: [StreamRecvResult.Data] (always
+     * `fin = false` — datagrams have no stream end), [StreamRecvResult.Done] when none is queued, or
+     * [StreamRecvResult.Error] on a negative quiche code.
+     */
+    fun connDgramRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvResult
+
+    /** True when at least one datagram is queued for receive. (Wraps `dgram_recv_front_len`.) */
+    fun hasReadableDgram(conn: QuicheConn): Boolean
+
+    /**
+     * Maximum payload one [connDgramSend] can carry on the current path, as a [MaxDatagramSize]:
+     * [MaxDatagramSize.Bytes] when sendable, or [MaxDatagramSize.Unavailable] when the peer never
+     * advertised `max_datagram_frame_size`. Backends normalize quiche's negative/none into the sealed type.
+     */
+    fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize
+
     fun connIsEstablished(conn: QuicheConn): Boolean
 
     fun connIsClosed(conn: QuicheConn): Boolean

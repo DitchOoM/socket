@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.bufferHashCode
@@ -640,6 +641,8 @@ private class LinuxServerQuicConnection(
     CoroutineScope by connectionScope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
+    private val datagramAdapter = DriverDatagramAdapter(driver, bufferFactory)
+
     override suspend fun openStream(): QuicByteStream {
         try {
             val deferred = CompletableDeferred<StreamSlot>()
@@ -655,6 +658,14 @@ private class LinuxServerQuicConnection(
     override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
+
+    override suspend fun sendDatagram(buffer: ReadBuffer) = datagramAdapter.sendDatagram(buffer)
+
+    override suspend fun receiveDatagram(): DatagramReceiveResult = datagramAdapter.receiveDatagram()
+
+    override fun datagrams(): Flow<ReadBuffer> = datagramAdapter.datagrams()
+
+    override fun maxDatagramSize(): MaxDatagramSize = datagramAdapter.maxDatagramSize()
 
     override suspend fun close(error: QuicError) {
         try {

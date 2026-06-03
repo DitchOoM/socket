@@ -670,6 +670,8 @@ internal class DriverQuicConnection(
 
     private val bufferFactory = BufferFactory.Default
 
+    private val datagramAdapter = DriverDatagramAdapter(driver, bufferFactory)
+
     override suspend fun openStream(): QuicByteStream {
         try {
             val deferred = CompletableDeferred<StreamSlot>()
@@ -686,6 +688,14 @@ internal class DriverQuicConnection(
     override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
+
+    override suspend fun sendDatagram(buffer: com.ditchoom.buffer.ReadBuffer) = datagramAdapter.sendDatagram(buffer)
+
+    override suspend fun receiveDatagram(): DatagramReceiveResult = datagramAdapter.receiveDatagram()
+
+    override fun datagrams(): Flow<com.ditchoom.buffer.ReadBuffer> = datagramAdapter.datagrams()
+
+    override fun maxDatagramSize(): MaxDatagramSize = datagramAdapter.maxDatagramSize()
 
     override suspend fun close(error: QuicError) {
         try {

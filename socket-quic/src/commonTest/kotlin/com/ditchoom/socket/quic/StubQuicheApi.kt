@@ -218,6 +218,48 @@ internal class StubQuicheApi : QuicheApi {
         fin: Boolean,
     ) = connStreamSendResult ?: bufLen
 
+    // --- Unreliable datagrams (RFC 9221) ---
+
+    /** Records the last [configEnableDgram] call so tests can assert it was wired. */
+    @Volatile var dgramEnabled: Boolean = false
+
+    override fun configEnableDgram(
+        config: QuicheConfig,
+        enabled: Boolean,
+        recvQueueLen: Long,
+        sendQueueLen: Long,
+    ) {
+        dgramEnabled = enabled
+    }
+
+    /** When set, [connDgramSend] returns this instead of [bufLen] — e.g. -1 (QUICHE_ERR_DONE) or a real error. */
+    @Volatile var connDgramSendResult: Int? = null
+
+    override fun connDgramSend(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = connDgramSendResult ?: bufLen
+
+    /** Drained first by [connDgramRecv]; falls back to [dgramRecvResult] when empty. */
+    val dgramRecvSequence: ArrayDeque<StreamRecvResult> = ArrayDeque()
+
+    @Volatile var dgramRecvResult: StreamRecvResult = StreamRecvResult.Done
+
+    override fun connDgramRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = dgramRecvSequence.removeFirstOrNull() ?: dgramRecvResult
+
+    @Volatile var hasReadableDgram: Boolean = false
+
+    override fun hasReadableDgram(conn: QuicheConn) = hasReadableDgram
+
+    @Volatile var dgramMaxWritableLen: MaxDatagramSize = MaxDatagramSize.Unavailable
+
+    override fun connDgramMaxWritableLen(conn: QuicheConn) = dgramMaxWritableLen
+
     override fun connIsEstablished(conn: QuicheConn) = established
 
     override fun connIsClosed(conn: QuicheConn) = closed
