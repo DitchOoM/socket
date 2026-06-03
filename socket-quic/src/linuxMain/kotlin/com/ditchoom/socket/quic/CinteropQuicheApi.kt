@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_accept
 import com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu
+import com.ditchoom.socket.quic.quiche.quiche_config_enable_dgram
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_early_data
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_hystart
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_pacing
@@ -33,6 +34,10 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_closed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
@@ -47,11 +52,6 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
-import com.ditchoom.socket.quic.quiche.quiche_config_enable_dgram
-import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
-import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
-import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
-import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
@@ -360,8 +360,7 @@ internal object CinteropQuicheApi : QuicheApi {
         }
     }
 
-    override fun hasReadableDgram(conn: QuicheConn): Boolean =
-        quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0
+    override fun hasReadableDgram(conn: QuicheConn): Boolean = quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
         val raw = quiche_conn_dgram_max_writable_len(conn.handle.toCPointer()!!)

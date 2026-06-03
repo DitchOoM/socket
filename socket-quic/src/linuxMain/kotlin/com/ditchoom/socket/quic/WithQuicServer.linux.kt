@@ -3,9 +3,9 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managed
