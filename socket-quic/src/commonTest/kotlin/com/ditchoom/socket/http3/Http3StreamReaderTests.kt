@@ -165,4 +165,33 @@ class Http3StreamReaderTests {
         runTest {
             assertNull(reader(ScriptedByteStream(listOf(ReadResult.End))).nextFrame())
         }
+
+    // --- nextVarInt (uni stream-type prefix) --------------------------------
+
+    @Test
+    fun nextVarInt_thenFrames_onOneReader() =
+        runTest {
+            // A control stream: type prefix 0x00, then a SETTINGS frame — both off one reader.
+            val bytes = listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(settings())
+            val r = reader(ScriptedByteStream(listOf(dataChunk(bytes), ReadResult.End)))
+            assertEquals(Http3StreamType.CONTROL, r.nextVarInt())
+            assertEquals(settings(), r.nextFrame())
+            assertNull(r.nextFrame())
+        }
+
+    @Test
+    fun nextVarInt_reassemblesMultiByteVarintAcrossReads() =
+        runTest {
+            // 0x4040 = two-byte varint for 64; delivered one byte at a time.
+            val r = reader(ScriptedByteStream(listOf(dataChunk(listOf(0x40)), dataChunk(listOf(0x40)), ReadResult.End)))
+            assertEquals(64L, r.nextVarInt())
+        }
+
+    @Test
+    fun nextVarInt_streamEndsBeforeComplete_throws() =
+        runTest {
+            // First byte of a two-byte varint then FIN.
+            val r = reader(ScriptedByteStream(listOf(dataChunk(listOf(0x40)), ReadResult.End)))
+            assertFailsWith<Http3StreamException> { r.nextVarInt() }
+        }
 }

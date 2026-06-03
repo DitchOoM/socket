@@ -81,3 +81,15 @@ object Http3SettingId {
     /** RFC 9220 — required by the Extended CONNECT used for WebTransport. */
     const val ENABLE_CONNECT_PROTOCOL: Long = 0x08
 }
+
+/**
+ * Unidirectional stream-type prefixes (RFC 9114 §6.2 / §11.2.1): the first varint on a
+ * uni stream identifies its role. A client opens [CONTROL] + the two QPACK streams; the
+ * server opens its own set. Unknown types are reserved/GREASE and ignored.
+ */
+object Http3StreamType {
+    const val CONTROL: Long = 0x00
+    const val PUSH: Long = 0x01
+    const val QPACK_ENCODER: Long = 0x02
+    const val QPACK_DECODER: Long = 0x03
+}

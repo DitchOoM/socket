@@ -61,6 +61,29 @@ class Http3StreamReader(
         }
     }
 
+    /**
+     * Reads a single QUIC varint (RFC 9000 §16) from the stream — used for the unidirectional
+     * stream-type prefix that precedes the frames on a control / QPACK stream (RFC 9114 §6.2).
+     * Throws [Http3StreamException] if the stream ends before a complete varint or is reset.
+     */
+    suspend fun nextVarInt(timeout: Duration = Duration.INFINITE): Long {
+        while (true) {
+            val peek = VarIntCodec.peekFrameSize(processor, 0)
+            if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
+                return VarIntCodec.decode(processor.readBuffer(peek.bytes), DecodeContext.Empty)
+            }
+            if (ended) throw Http3StreamException("stream ended before a complete varint")
+            when (val result = stream.read(timeout)) {
+                is ReadResult.Data -> processor.append(result.buffer)
+                ReadResult.End -> ended = true
+                ReadResult.Reset -> {
+                    ended = true
+                    throw Http3StreamException("stream was reset by the peer")
+                }
+            }
+        }
+    }
+
     /** Return the processor's buffers to the pool. Call once the stream is fully consumed. */
     fun release() = processor.release()
 
