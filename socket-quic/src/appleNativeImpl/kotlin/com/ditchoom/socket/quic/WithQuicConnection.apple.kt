@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_datagram_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_cancel
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_datagram_flow
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_stream
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_new_connection_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_start
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_max_datagram_size
@@ -122,6 +123,12 @@ private suspend fun <R> connectQuicGroup(
             maxFrameSize,
         ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection group")
 
+    // Peer-initiated streams land here via the group's new-connection handler (wired below,
+    // before start) and are drained by acceptStream()/streams(). Declared here so the handler
+    // — which the API requires to be set before nw_helper_quic_group_start — can target it.
+    val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
+    val acceptedStreamId = kotlin.concurrent.AtomicLong(1L) // server-initiated bidi ids (synthetic; NW hides the real id)
+
     // Wait for the group (QUIC handshake) to become ready. Group states: 2=ready, 3=failed, 4=cancelled.
     suspendCancellableCoroutine { cont ->
         nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
@@ -140,6 +147,18 @@ private suspend fun <R> connectQuicGroup(
                 4 -> if (cont.isActive) cont.resumeWithException(SocketClosedException.General("QUIC group cancelled"))
                 else -> {} // invalid=0, waiting=1 — in progress
             }
+        }
+        // Wire peer-initiated streams into acceptStream() — MUST be set before start.
+        // The block runs on the group's serial callback queue; trySend into an UNLIMITED
+        // channel is non-blocking and thread-safe.
+        nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
+            // Take ownership (action 1 of NW's three): start the flow on the shared serial
+            // queue, then enqueue it. Runs synchronously inside the block, so the connection
+            // is owned before the block returns.
+            nw_helper_quic_start(streamConn)
+            incomingStreams.trySend(
+                QuicByteStream(QuicStreamId(acceptedStreamId.getAndAdd(4)), NWQuicByteStream(streamConn)),
+            )
         }
         nw_helper_quic_group_start(group)
         cont.invokeOnCancellation { nw_helper_quic_group_cancel(group) }
@@ -188,7 +207,7 @@ private suspend fun <R> connectQuicGroup(
             flow
         }
 
-    val quicConn = AppleQuicGroupConnection(group, datagramFlow, connectionOptions.bufferFactory)
+    val quicConn = AppleQuicGroupConnection(group, datagramFlow, incomingStreams, connectionOptions.bufferFactory)
     return try {
         quicConn.block()
     } finally {
@@ -212,12 +231,16 @@ private const val DATAGRAM_FRAME_SIZE_MAX: UShort = 65535u
  * [MaxDatagramSize.Unavailable] and the send/receive methods throw, matching the
  * [QuicScope] defaults a non-datagram connection should present.
  *
- * Remaining seam (follow-up): wire `acceptStream`/peer-initiated streams via the group's
- * new-connection handler — today [acceptStream] just suspends until the connection closes.
+ * [acceptStream]/[streams] are fed by the group's new-connection handler (wired in
+ * connectQuicGroup), so peer-initiated streams — e.g. an HTTP/3 server's control and
+ * QPACK unidirectional streams — are delivered to the application. NB: Network.framework
+ * does not expose the real QUIC stream id/type, so accepted streams carry a synthetic id.
  */
 private class AppleQuicGroupConnection(
     private val group: nw_connection_group_t,
     private val datagramFlow: nw_connection_t?,
+    // Peer-initiated streams, fed by the group's new-connection handler wired in connectQuicGroup.
+    private val incomingStreams: Channel<QuicByteStream>,
     private val bufferFactory: BufferFactory,
     private val scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
 ) : QuicConnection,
@@ -225,7 +248,6 @@ private class AppleQuicGroupConnection(
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Established("h3"))
     override val state: StateFlow<QuicConnectionState> = _state
 
-    private val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val nextClientStreamId = kotlin.concurrent.AtomicLong(0L)
 
     @Volatile
@@ -246,8 +268,8 @@ private class AppleQuicGroupConnection(
 
     override suspend fun acceptStream(): QuicByteStream {
         check(!closed) { "AppleQuicGroupConnection is closed" }
-        // Peer-initiated streams (group new-connection handler) are not wired yet; see
-        // the class docstring. Suspends until the connection closes.
+        // Suspends until the group's new-connection handler delivers a peer-initiated
+        // stream, or throws when the channel closes (connection gone).
         return incomingStreams.receive()
     }
 

@@ -286,4 +286,29 @@ class QuicHarnessIntegrationTests {
                 }
             }
         }
+
+    /**
+     * Accepts a SERVER-initiated stream (issue #112). The echo peer opens one stream toward
+     * the client and writes a fixed greeting, exercising the path where peer-initiated
+     * streams reach [QuicScope.acceptStream] — what an HTTP/3 client needs for the server's
+     * control + QPACK unidirectional streams. On Apple this is the group new-connection
+     * handler; on quiche it's the driver's incoming-stream surface.
+     */
+    @Test
+    fun harness_acceptStream_receivesServerInitiatedStream() =
+        runTest(timeout = 60.seconds) {
+            withContext(Dispatchers.Default) {
+                withHarness {
+                    val stream =
+                        withTimeoutOrNull(opTimeout) { acceptStream() }
+                            ?: throw AssertionError("no server-initiated stream arrived")
+                    val result = withTimeoutOrNull(opTimeout) { stream.read(opTimeout) }
+                    if (result !is ReadResult.Data) throw AssertionError("expected data on the server-initiated stream, got $result")
+                    val text = result.buffer.readString(result.buffer.remaining(), Charset.UTF8)
+                    result.buffer.freeIfNeeded()
+                    assertEquals("HELLO\n", text)
+                    stream.close()
+                }
+            }
+        }
 }

@@ -369,6 +369,30 @@ static inline void nw_helper_quic_group_set_state_handler(
 }
 
 /**
+ * Block delivering a peer-initiated stream flow (one [nw_connection_t] per stream the
+ * remote opened). The Kotlin handler takes ownership: it starts the connection
+ * (nw_helper_quic_start) and enqueues it for acceptStream()/streams().
+ */
+typedef void (^quic_new_stream_handler_t)(nw_connection_t _Nonnull connection);
+
+/**
+ * Wire the group's new-connection handler so peer-initiated streams reach acceptStream().
+ * MUST be called BEFORE nw_helper_quic_group_start (the API forbids setting it after
+ * start). Taking ownership of the delivered connection (action 1 of the three the API
+ * permits) is the Kotlin handler's job — it runs synchronously inside this block, so the
+ * connection is owned (queue set + started) before the block returns.
+ */
+static inline void nw_helper_quic_group_set_new_connection_handler(
+    nw_connection_group_t _Nonnull group,
+    quic_new_stream_handler_t _Nonnull handler)
+{
+    nw_connection_group_set_new_connection_handler(group,
+        ^(nw_connection_t _Nonnull connection) {
+            handler(connection);
+        });
+}
+
+/**
  * Start the group. Uses a dedicated SERIAL callback queue for the same K/N
  * foreign-thread-safety reason as nw_helper_quic_start (one callback at a time).
  *
