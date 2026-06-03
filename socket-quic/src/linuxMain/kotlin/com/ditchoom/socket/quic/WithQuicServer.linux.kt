@@ -10,7 +10,6 @@ import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.linux.socket_getsockname
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.UIntVar
@@ -651,7 +650,7 @@ private class LinuxServerQuicConnection(
             val adapter = DriverStreamAdapter(driver, slot)
             return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, bufferFactory))
         } catch (_: ClosedSendChannelException) {
-            throw SocketClosedException.General("connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
         }
     }
 

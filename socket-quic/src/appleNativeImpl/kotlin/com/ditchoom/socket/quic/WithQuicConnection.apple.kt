@@ -11,7 +11,6 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.ConnectionOptions
-import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_group
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_cancel
@@ -144,7 +143,7 @@ private suspend fun <R> connectQuicGroup(
                             ),
                         )
                     }
-                4 -> if (cont.isActive) cont.resumeWithException(SocketClosedException.General("QUIC group cancelled"))
+                4 -> if (cont.isActive) cont.resumeWithException(QuicCloseException(QuicError.NoError, "QUIC group cancelled"))
                 else -> {} // invalid=0, waiting=1 — in progress
             }
         }
@@ -197,7 +196,12 @@ private suspend fun <R> connectQuicGroup(
                                     ),
                                 )
                             }
-                        5 -> if (cont.isActive) cont.resumeWithException(SocketClosedException.General("QUIC datagram flow cancelled"))
+                        5 ->
+                            if (cont.isActive) {
+                                cont.resumeWithException(
+                                    QuicCloseException(QuicError.NoError, "QUIC datagram flow cancelled"),
+                                )
+                            }
                         else -> {}
                     }
                 }
@@ -260,7 +264,7 @@ private class AppleQuicGroupConnection(
         }
         val streamConn =
             nw_helper_quic_group_extract_stream(group)
-                ?: throw SocketClosedException.General("Failed to open QUIC stream")
+                ?: throw QuicCloseException(closeReason(), "Failed to open QUIC stream")
         nw_helper_quic_start(streamConn)
         val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
         return QuicByteStream(streamId, NWQuicByteStream(streamConn))
@@ -431,7 +435,10 @@ private class NWQuicByteStream(
                     if (errorCode != 0) {
                         if (cont.isActive) {
                             cont.resumeWithException(
-                                SocketClosedException.General("QUIC write error: $errorCode"),
+                                QuicCloseException(
+                                    QuicError.InternalError("QUIC write error: $errorCode"),
+                                    "QUIC write error: $errorCode",
+                                ),
                             )
                         }
                     } else {

@@ -680,8 +680,7 @@ internal class DriverQuicConnection(
             val adapter = DriverStreamAdapter(driver, slot)
             return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, bufferFactory))
         } catch (_: ClosedSendChannelException) {
-            throw com.ditchoom.socket.SocketClosedException
-                .General("connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
         }
     }
 
