@@ -7,7 +7,6 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.ConnectionOptions
-import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.linux.socket_getsockname
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
@@ -252,7 +251,7 @@ private class LinuxQuicConnection(
             val adapter = DriverStreamAdapter(driver, slot)
             return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, bufferFactory))
         } catch (_: ClosedSendChannelException) {
-            throw SocketClosedException.General("connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
         }
     }
 
