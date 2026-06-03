@@ -6,6 +6,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.DecodeException
+import com.ditchoom.buffer.pool.BufferPool
 
 /**
  * QPACK/HPACK Huffman codec (RFC 7541 §5.2 and Appendix B — the 257-symbol code,
@@ -603,67 +604,77 @@ object QpackHuffman {
      *
      * @param fieldPath path reported on a [DecodeException]; the caller supplies its
      * own context (e.g. `"QpackFieldSection.value"`).
+     * @param scratchPool optional pool the transient decode buffer is acquired from
+     * and released back to; when null a one-shot buffer is allocated instead. The
+     * scratch buffer never escapes (its octets are copied into the returned String),
+     * so it is always released before returning — including on a decode error.
      */
     fun decode(
         buffer: ReadBuffer,
         byteLength: Int,
         fieldPath: String,
+        scratchPool: BufferPool? = null,
     ): String {
         if (byteLength == 0) return ""
         // Shortest code is 5 bits, so at most floor(bits / 5) octets are produced.
-        val out = BufferFactory.Default.allocate(byteLength * 8 / MIN_CODE_BITS + 1)
-        var outLength = 0
-        var node = 0
-        var depth = 0 // bits walked since the last completed symbol (== root)
-        var acc = 0 // those same bits as an integer, for the all-ones padding check
-        var remaining = byteLength
-        while (remaining-- > 0) {
-            val octet = buffer.readByte().toInt() and 0xFF
-            var bitIndex = 7
-            while (bitIndex >= 0) {
-                val bit = (octet ushr bitIndex) and 1
-                bitIndex--
-                node = if (bit == 1) child1[node] else child0[node]
-                depth++
-                acc = (acc shl 1) or bit
-                if (node < 0) {
-                    val symbol = -node - 1
-                    if (symbol == EOS) {
-                        throw DecodeException(
-                            fieldPath = fieldPath,
-                            bufferPosition = buffer.position(),
-                            expected = "a Huffman string without the EOS symbol",
-                            actual = "EOS symbol encountered in the string body",
-                        )
+        val capacity = byteLength * 8 / MIN_CODE_BITS + 1
+        val out = scratchPool?.acquire(capacity) ?: BufferFactory.Default.allocate(capacity)
+        try {
+            var outLength = 0
+            var node = 0
+            var depth = 0 // bits walked since the last completed symbol (== root)
+            var acc = 0 // those same bits as an integer, for the all-ones padding check
+            var remaining = byteLength
+            while (remaining-- > 0) {
+                val octet = buffer.readByte().toInt() and 0xFF
+                var bitIndex = 7
+                while (bitIndex >= 0) {
+                    val bit = (octet ushr bitIndex) and 1
+                    bitIndex--
+                    node = if (bit == 1) child1[node] else child0[node]
+                    depth++
+                    acc = (acc shl 1) or bit
+                    if (node < 0) {
+                        val symbol = -node - 1
+                        if (symbol == EOS) {
+                            throw DecodeException(
+                                fieldPath = fieldPath,
+                                bufferPosition = buffer.position(),
+                                expected = "a Huffman string without the EOS symbol",
+                                actual = "EOS symbol encountered in the string body",
+                            )
+                        }
+                        out.writeByte(symbol.toByte())
+                        outLength++
+                        node = 0
+                        depth = 0
+                        acc = 0
                     }
-                    out.writeByte(symbol.toByte())
-                    outLength++
-                    node = 0
-                    depth = 0
-                    acc = 0
                 }
             }
-        }
-        if (depth > 0) {
-            if (depth > MAX_PADDING_BITS) {
-                throw DecodeException(
-                    fieldPath = fieldPath,
-                    bufferPosition = buffer.position(),
-                    expected = "at most $MAX_PADDING_BITS bits of EOS padding",
-                    actual = "$depth trailing bits that do not complete a symbol",
-                )
+            if (depth > 0) {
+                if (depth > MAX_PADDING_BITS) {
+                    throw DecodeException(
+                        fieldPath = fieldPath,
+                        bufferPosition = buffer.position(),
+                        expected = "at most $MAX_PADDING_BITS bits of EOS padding",
+                        actual = "$depth trailing bits that do not complete a symbol",
+                    )
+                }
+                if (acc != (1 shl depth) - 1) {
+                    throw DecodeException(
+                        fieldPath = fieldPath,
+                        bufferPosition = buffer.position(),
+                        expected = "padding equal to the most significant bits of EOS (all ones)",
+                        actual = "$depth trailing padding bits that are not all ones",
+                    )
+                }
             }
-            if (acc != (1 shl depth) - 1) {
-                throw DecodeException(
-                    fieldPath = fieldPath,
-                    bufferPosition = buffer.position(),
-                    expected = "padding equal to the most significant bits of EOS (all ones)",
-                    actual = "$depth trailing padding bits that are not all ones",
-                )
-            }
+            out.resetForRead()
+            return out.readString(outLength, Charset.UTF8)
+        } finally {
+            scratchPool?.release(out)
         }
-        out.resetForRead()
-        return out.readString(outLength, Charset.UTF8)
     }
 
     /**

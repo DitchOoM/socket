@@ -5,9 +5,12 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.codec.DecodeException
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.ThreadingMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * RFC 7541 §5.2 / Appendix B Huffman codec tests. The byte vectors are the
@@ -190,6 +193,31 @@ class QpackHuffmanTests {
             QpackHuffman.encode(buf, s)
             assertEquals(s, QpackHuffman.decode(buf.also { it.resetForRead() }, buf.remaining(), "t"))
         }
+    }
+
+    // --- scratch-buffer pooling --------------------------------------------
+
+    @Test
+    fun decode_reusesScratchPool() {
+        val pool = BufferPool(ThreadingMode.SingleThreaded, maxPoolSize = 4, defaultBufferSize = 64, BufferFactory.Default)
+        val bytes = listOf(0xa8, 0xeb, 0x10, 0x64, 0x9c, 0xbf) // "no-cache"
+        repeat(5) {
+            assertEquals("no-cache", QpackHuffman.decode(readBuf(bytes), bytes.size, "t", pool))
+        }
+        // Each decode releases its scratch buffer, so later acquisitions are served
+        // from the pool — proving reuse (and that acquire() hands back a clean buffer,
+        // since every iteration decodes correctly).
+        assertTrue(pool.stats().poolHits > 0, "expected scratch-buffer reuse, got ${pool.stats()}")
+    }
+
+    @Test
+    fun decode_releasesScratchOnError() {
+        val pool = BufferPool(ThreadingMode.SingleThreaded, maxPoolSize = 4, defaultBufferSize = 64, BufferFactory.Default)
+        // Invalid padding throws; the scratch buffer must still be returned so a
+        // subsequent decode can reuse it rather than leaking.
+        repeat(3) { assertFailsWith<DecodeException> { QpackHuffman.decode(readBuf(listOf(0x1e)), 1, "t", pool) } }
+        assertEquals("a", QpackHuffman.decode(readBuf(listOf(0x1f)), 1, "t", pool))
+        assertTrue(pool.stats().poolHits > 0, "expected reuse after error path, got ${pool.stats()}")
     }
 
     @Test

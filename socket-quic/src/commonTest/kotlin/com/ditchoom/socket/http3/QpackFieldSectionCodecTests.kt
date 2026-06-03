@@ -7,10 +7,13 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.ThreadingMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class QpackFieldSectionCodecTests {
     private fun bufferOf(vararg bytes: Int): PlatformBuffer {
@@ -210,6 +213,21 @@ class QpackFieldSectionCodecTests {
             listOf(QpackHeaderField(":authority", "www.example.com"), QpackHeaderField(":method", "GET")),
             decodeList(bytes),
         )
+    }
+
+    @Test
+    fun decode_huffmanValue_withScratchPoolFromContext() {
+        // A pool supplied via DecodeContext is used for the transient Huffman buffer;
+        // the decoded result is identical and the buffer is reused across two sections.
+        val pool = BufferPool(ThreadingMode.SingleThreaded, maxPoolSize = 4, defaultBufferSize = 64, BufferFactory.Default)
+        val context = DecodeContext.Empty.with(QpackScratchPoolKey, pool)
+        val huffman = listOf(0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff)
+        val bytes = listOf(0x00, 0x00, 0x50, 0x8c) + huffman
+        repeat(3) {
+            val result = QpackFieldSectionCodec.decode(bufferOf(*bytes.toIntArray()), context)
+            assertEquals(listOf(QpackHeaderField(":authority", "www.example.com")), result)
+        }
+        assertTrue(pool.stats().poolHits > 0, "expected scratch-buffer reuse, got ${pool.stats()}")
     }
 
     @Test

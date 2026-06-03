@@ -6,10 +6,21 @@ import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.DecodeException
+import com.ditchoom.buffer.codec.DecodeKey
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
+import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+
+/**
+ * [DecodeContext] key supplying the [BufferPool] that Huffman (H=1) string decoding
+ * borrows its transient scratch buffer from. When absent, decoding falls back to a
+ * one-shot allocation. The stream layer sets this (e.g. its per-connection pool) so
+ * header decoding does not allocate per field; the scratch buffer is released back
+ * before [QpackFieldSectionCodec.decode] returns and never escapes.
+ */
+object QpackScratchPoolKey : DecodeKey<BufferPool>
 
 /**
  * QPACK codec for an encoded field section (RFC 9204 §4.5), restricted to the
@@ -97,13 +108,17 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         QpackPrefixedInteger.decodeFromFirstByte(buffer, deltaBaseFirst, prefixBits = 7)
 
         val fields = mutableListOf<QpackHeaderField>()
+        val scratchPool: BufferPool? = context.get(QpackScratchPoolKey)
         while (buffer.hasRemaining()) {
-            fields.add(decodeFieldLine(buffer))
+            fields.add(decodeFieldLine(buffer, scratchPool))
         }
         return fields
     }
 
-    private fun decodeFieldLine(buffer: ReadBuffer): QpackHeaderField {
+    private fun decodeFieldLine(
+        buffer: ReadBuffer,
+        scratchPool: BufferPool?,
+    ): QpackHeaderField {
         val first = buffer.readByte().toInt() and 0xFF
         return when {
             first and 0x80 != 0 -> {
@@ -116,14 +131,14 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
                 // Literal w/ Name Reference: 0 1 N T <nameIndex:4>; T (bit 4) = 1 → static.
                 requireStatic(buffer, first and 0x10 != 0, "literal field line with name reference")
                 val nameIndex = QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 4).toInt()
-                QpackHeaderField(staticEntry(buffer, nameIndex).name, readStringLiteral(buffer))
+                QpackHeaderField(staticEntry(buffer, nameIndex).name, readStringLiteral(buffer, scratchPool))
             }
             first and 0x20 != 0 -> {
                 // Literal w/ Literal Name: 0 0 1 N H <nameLen:3> <name> <value>.
                 val huffman = first and 0x08 != 0
                 val nameLength = QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 3).toInt()
-                val name = readString(buffer, nameLength, huffman, "name")
-                QpackHeaderField(name, readStringLiteral(buffer))
+                val name = readString(buffer, nameLength, huffman, "name", scratchPool)
+                QpackHeaderField(name, readStringLiteral(buffer, scratchPool))
             }
             else ->
                 throw DecodeException(
@@ -135,11 +150,14 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         }
     }
 
-    private fun readStringLiteral(buffer: ReadBuffer): String {
+    private fun readStringLiteral(
+        buffer: ReadBuffer,
+        scratchPool: BufferPool?,
+    ): String {
         val first = buffer.readByte().toInt() and 0xFF
         val huffman = first and HUFFMAN_BIT != 0
         val length = QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 7).toInt()
-        return readString(buffer, length, huffman, "value")
+        return readString(buffer, length, huffman, "value", scratchPool)
     }
 
     private fun readString(
@@ -147,6 +165,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         length: Int,
         huffman: Boolean,
         what: String,
+        scratchPool: BufferPool?,
     ): String {
         // A hostile/truncated representation can declare a length past the buffer;
         // reject it cleanly rather than over-reading (applies to both encodings —
@@ -160,7 +179,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
             )
         }
         return if (huffman) {
-            QpackHuffman.decode(buffer, length, "QpackFieldSection.$what")
+            QpackHuffman.decode(buffer, length, "QpackFieldSection.$what", scratchPool)
         } else {
             buffer.readString(length, Charset.UTF8)
         }
