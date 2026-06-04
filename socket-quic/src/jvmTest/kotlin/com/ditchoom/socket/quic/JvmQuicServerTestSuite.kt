@@ -26,6 +26,16 @@ class JvmQuicServerTestSuite : QuicServerTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
+    override fun localhostTlsConfig() =
+        QuicTlsConfig(
+            certChainPath = certPath("localhost.crt"),
+            privKeyPath = certPath("localhost.key"),
+        )
+
+    override fun localhostCertPem() = java.io.File(certPath("localhost.crt")).readText()
+
+    override fun unrelatedCaPem() = java.io.File(certPath("cert.crt")).readText()
+
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
         try {
             block()

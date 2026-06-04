@@ -320,6 +320,11 @@ object JniQuicheApi : QuicheApi {
         pathAddr: Long,
     ): Int = nConfigLoadPrivKeyFromPemFile(config.handle, pathAddr)
 
+    override fun configLoadVerifyLocationsFromFile(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = nConfigLoadVerifyLocationsFromFile(config.handle, pathAddr)
+
     override fun headerInfo(
         buf: Long,
         bufLen: Int,
@@ -738,6 +743,11 @@ object JniQuicheApi : QuicheApi {
     ): Int
 
     @JvmStatic private external fun nConfigLoadPrivKeyFromPemFile(
+        config: Long,
+        pathAddr: Long,
+    ): Int
+
+    @JvmStatic private external fun nConfigLoadVerifyLocationsFromFile(
         config: Long,
         pathAddr: Long,
     ): Int

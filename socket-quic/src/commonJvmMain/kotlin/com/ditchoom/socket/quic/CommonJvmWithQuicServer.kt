@@ -90,7 +90,7 @@ internal suspend fun <R> commonJvmWithQuicServer(
     }
 }
 
-private fun writeNullTerminatedString(
+internal fun writeNullTerminatedString(
     str: String,
     factory: BufferFactory,
 ): com.ditchoom.buffer.PlatformBuffer {

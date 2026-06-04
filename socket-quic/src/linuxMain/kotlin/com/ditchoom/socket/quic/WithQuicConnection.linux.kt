@@ -11,6 +11,7 @@ import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.linux.socket_getsockname
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_config_free
+import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_file
 import com.ditchoom.socket.quic.quiche.quiche_config_new
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
 import com.ditchoom.socket.quic.quiche.quiche_connect
@@ -18,13 +19,17 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.set
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
+import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -43,11 +48,16 @@ import platform.posix.SOCK_DGRAM
 import platform.posix.addrinfo
 import platform.posix.close
 import platform.posix.connect
+import platform.posix.fclose
+import platform.posix.fdopen
+import platform.posix.fputs
 import platform.posix.freeaddrinfo
 import platform.posix.getaddrinfo
+import platform.posix.mkstemp
 import platform.posix.sockaddr
 import platform.posix.sockaddr_in
 import platform.posix.socket
+import platform.posix.unlink
 import kotlin.random.Random
 import kotlin.time.Duration
 
@@ -81,6 +91,21 @@ actual suspend fun <R> withQuicConnection(
             alpnBuf.freeNativeMemory()
 
             applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config))
+
+            // Pinned CA trust anchors (#99): load the PEM bundle as the verification
+            // anchors so Linux enforces the same private-CA trust as Apple. quiche only
+            // loads anchors from a file, so the bundle goes to a temp file the call reads
+            // eagerly; we unlink it immediately after. verifyPeer is forced on in
+            // applyQuicOptions whenever anchors are present.
+            if (quicOptions.trustedCaCertificatesPem.isNotEmpty()) {
+                val caBundlePath = writeCaBundleToTempFile(quicOptions.trustedCaCertificatesPem)
+                try {
+                    val rc = quiche_config_load_verify_locations_from_file(config, caBundlePath)
+                    check(rc == 0) { "Failed to load trusted CA certificates: $rc" }
+                } finally {
+                    unlink(caBundlePath)
+                }
+            }
 
             memScoped {
                 val fd = socket(AF_INET, SOCK_DGRAM, 0)
@@ -391,3 +416,29 @@ internal class LinuxQuicConfigCalls(
     ) = com.ditchoom.socket.quic.quiche
         .quiche_config_enable_dgram(cfg, true, recvQueueLen.convert(), sendQueueLen.convert())
 }
+
+/**
+ * Write the supplied CA PEM blocks to a single `mkstemp` bundle file and return its path (#99).
+ *
+ * quiche/BoringSSL only loads verification anchors from a file path, so the in-memory PEM
+ * must land on disk; the caller `unlink`s it once `load_verify_locations` has read it. The
+ * bundle is written via `fputs` of the PEM text (no embedded NULs) — no `ByteArray` in our code.
+ */
+private fun writeCaBundleToTempFile(pems: List<String>): String =
+    memScoped {
+        val bundle = pems.joinToString("\n")
+        val template = "/tmp/ditchoom-quic-ca-XXXXXX"
+        val path = allocArray<ByteVar>(template.length + 1)
+        for (i in template.indices) path[i] = template[i].code.toByte()
+        path[template.length] = 0
+        val fd = mkstemp(path)
+        check(fd >= 0) { "mkstemp failed creating CA bundle temp file" }
+        val fp =
+            fdopen(fd, "w") ?: run {
+                close(fd)
+                error("fdopen failed for CA bundle temp file")
+            }
+        fputs(bundle, fp)
+        fclose(fp)
+        path.toKString()
+    }

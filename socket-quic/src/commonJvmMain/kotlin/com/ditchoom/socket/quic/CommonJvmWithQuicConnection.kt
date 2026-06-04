@@ -49,6 +49,23 @@ internal suspend fun <R> commonJvmWithQuicConnection(
 
                 applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
 
+                // Pinned CA trust anchors (#99): load the PEM bundle as the verification
+                // anchors so non-Apple targets enforce the same private-CA trust as Apple.
+                // quiche only loads anchors from a file, so the bundle goes to a temp file
+                // whose path is handed to the native call (verifyPeer is forced on in
+                // applyQuicOptions whenever anchors are present).
+                if (quicOptions.trustedCaCertificatesPem.isNotEmpty()) {
+                    val caBundlePath = writeCaBundleToTempFile(quicOptions.trustedCaCertificatesPem)
+                    try {
+                        writeNullTerminatedString(caBundlePath, bufferFactory).use { caBuf ->
+                            val rc = api.configLoadVerifyLocationsFromFile(config, caBuf.nativeMemoryAccess!!.nativeAddress.toLong())
+                            check(rc == 0) { "Failed to load trusted CA certificates: $rc" }
+                        }
+                    } finally {
+                        runCatching { java.io.File(caBundlePath).delete() }
+                    }
+                }
+
                 // 2. Open UDP channel
                 val channel = DatagramChannel.open()
                 channel.configureBlocking(false)
@@ -225,4 +242,18 @@ internal class CommonJvmQuicConfigCalls(
         recvQueueLen: Long,
         sendQueueLen: Long,
     ) = api.configEnableDgram(cfg, true, recvQueueLen, sendQueueLen)
+}
+
+/**
+ * Write the supplied CA PEM blocks to a single temp bundle file and return its path (#99).
+ *
+ * quiche/BoringSSL only loads verification anchors from a file path, so the in-memory PEM
+ * must land on disk; the caller deletes it once `load_verify_locations` has read it. The
+ * byte encoding happens inside `java.io` at this file boundary — no `ByteArray` in our code.
+ */
+private fun writeCaBundleToTempFile(pems: List<String>): String {
+    val file = java.io.File.createTempFile("ditchoom-quic-ca", ".pem")
+    file.deleteOnExit()
+    file.writeText(pems.joinToString("\n"))
+    return file.absolutePath
 }
