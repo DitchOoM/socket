@@ -642,10 +642,14 @@ private class LinuxServerQuicConnection(
 
     private val datagramAdapter = DriverDatagramAdapter(driver, bufferFactory)
 
-    override suspend fun openStream(): QuicByteStream {
+    override suspend fun openStream(): QuicByteStream = open(unidirectional = false)
+
+    override suspend fun openUniStream(): QuicByteStream = open(unidirectional = true)
+
+    private suspend fun open(unidirectional: Boolean): QuicByteStream {
         try {
             val deferred = CompletableDeferred<StreamSlot>()
-            driver.commands.send(QuicheCmd.OpenStream(deferred))
+            driver.commands.send(QuicheCmd.OpenStream(deferred, unidirectional))
             val slot = deferred.await()
             val adapter = DriverStreamAdapter(driver, slot)
             return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, bufferFactory))

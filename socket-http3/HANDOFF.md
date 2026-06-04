@@ -100,6 +100,35 @@ A possible upstream follow-up: add varint-discriminator support to `buffer-codec
   (`open(unidirectional)` via the shared driver's `QuicheCmd.OpenStream` flag). **Result: the live
   interop GET now returns `status=200` on linuxX64 too — H3 works live on JVM + linuxX64.**
 
+## ✅ DONE — in-process H3 loopback (step 1) + server uni-streams
+
+- **In-process HTTP/3 loopback test** (`:socket-http3`): a real `withHttp3Connection` client talks
+  to a hand-rolled `Http3LoopbackServer` over a real `withQuicServer`/`withQuicConnection` QUIC
+  connection on `localhost` — the deterministic end-to-end harness the handoff asked for. Proves
+  GET (status + headers + body), POST request-body echo, and `peerSettings()` resolution from the
+  server's control stream. **Green on JVM + linuxX64** (`Http3LoopbackTestSuite` abstract base in
+  commonTest + `JvmHttp3LoopbackTest`/`LinuxHttp3LoopbackTest` subclasses, exactly mirroring
+  `:socket-quic`'s `QuicServerTestSuite` platform-parameterization; JS gets no subclass and runs
+  nothing). Cert/key fixtures copied to `socket-http3/src/jvmTest/resources/certs/` (classpath) and
+  `socket-http3/testcerts/` (native file path).
+- **`Http3LoopbackServer`** (commonTest): the **first HTTP/3 server-role** implementation — opens
+  the server control uni stream + writes `0x00` prefix + SETTINGS (mirrors the client's
+  `writeControlStreamHeader`), drains the client's uni streams, reads each client bidi request
+  stream's HEADERS (+ DATA) via `Http3StreamReader`/`QpackFieldSectionCodec`, and writes a canned
+  HEADERS(+DATA) response then `shutdownSend()`. Seeds the future real server role.
+- **Server-side `openUniStream()` (`:socket-quic`, PRODUCTION fix).** The server-accepted
+  `QuicScope` (`DriverQuicConnection` on commonJvm, the server scope in `WithQuicServer.linux.kt`)
+  overrode only `openStream()` and inherited the throwing default for `openUniStream()` — so the H3
+  server couldn't open its control stream. Added `openUniStream()` (refactored to a shared
+  `open(unidirectional)` helper, mirroring `JvmQuicConnection`); the driver already allocated
+  server-initiated uni stream-ids (`nextUniStreamId = if (isServer) 3L`), so this was a one-line
+  wiring gap. Covered now by the loopback test on JVM + linuxX64.
+- **Gotcha learned:** QUIC stream I/O is zero-copy (`buffer.nativeMemoryAccess!!.nativeAddress`), so
+  on Kotlin/Native both client and server frame/body buffers MUST come from a native-memory-backed
+  factory — pass `ConnectionOptions(bufferFactory = BufferFactory.deterministic())`. `Default` is
+  heap on K/N and NPEs in `DriverStreamAdapter.streamWrite`. (The live interop test already did this;
+  now documented.)
+
 ## Testing strategy (decided)
 
 Deterministic multiplatform = the **scripted commonTest suite** (jvm+js+linuxX64) for logic +
@@ -115,13 +144,8 @@ no-push are spec-permitted), interop-proven — the gaps are additive, not insta
 
 ## NEXT (start here)
 
-1. **In-process H3 loopback test** — deterministic end-to-end, now runnable on **JVM + linuxX64**
-   (native uni-streams work). Build a minimal server responder over `withQuicServer { connections {
-   /* this: QuicScope */ } }`: drain the client's uni streams, read the request bidi stream's
-   HEADERS via `Http3StreamReader` + `QpackFieldSectionCodec`, write a canned HEADERS+DATA response,
-   FIN. Client uses `withHttp3Connection` + `request()` with `verifyPeer=false`. **Setup cost:** a
-   server cert/key fixture reachable from `:socket-http3` tests on jvm + linuxX64 + small per-platform
-   `certPath` helpers (mirror `:socket-quic`'s `QuicServerTestSuite`). Seeds the H3 *server* role.
+1. ✅ **In-process H3 loopback test — DONE** (see "DONE — in-process H3 loopback" above). Green on
+   JVM + linuxX64; `Http3LoopbackServer` seeds the server role; server `openUniStream()` landed.
 2. **Conformance gaps, test-first on the loopback:** H3 error-code taxonomy (RFC 9114 §8.1) +
    frame/stream-validation enforcement (correctness) → then dynamic QPACK (RFC 9204), server push,
    full server role.

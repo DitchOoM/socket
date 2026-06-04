@@ -250,9 +250,9 @@ class Http3Connection private constructor(
             Http3FrameCodec.encode(buffer, settings, EncodeContext.Empty)
             buffer.resetForRead()
             controlStream.write(buffer, options.writeTimeout)
-        } catch (t: Throwable) {
+        } finally {
+            // Free on both paths: write() is zero-copy and does not take ownership (mirrors writeFrame).
             buffer.freeIfNeeded()
-            throw t
         }
     }
 
@@ -266,9 +266,9 @@ class Http3Connection private constructor(
             VarIntCodec.encode(buffer, type, EncodeContext.Empty)
             buffer.resetForRead()
             stream.write(buffer, options.writeTimeout)
-        } catch (t: Throwable) {
+        } finally {
+            // Free on both paths: write() is zero-copy and does not take ownership (mirrors writeFrame).
             buffer.freeIfNeeded()
-            throw t
         }
     }
 
