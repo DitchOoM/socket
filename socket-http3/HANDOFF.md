@@ -129,6 +129,43 @@ A possible upstream follow-up: add varint-discriminator support to `buffer-codec
   heap on K/N and NPEs in `DriverStreamAdapter.streamWrite`. (The live interop test already did this;
   now documented.)
 
+## ✅ DONE — step 2: RFC 9114 §8 error handling (taxonomy + enforcement + wire codes)
+
+Full-depth error handling, test-first on the loopback, across `:socket-http3` + `:socket-quic`:
+
+- **Error-code taxonomy** (`Http3ErrorCode`): RFC 9114 §8.1 (`0x0100`–`0x0110`) + RFC 9204 §8.3
+  QPACK (`0x0200`–`0x0202`). `Http3StreamException` carries an `errorCode: Long` (default
+  `GENERAL_PROTOCOL_ERROR`, so old `assertFailsWith`/`catch` sites are unaffected).
+- **Client-side validation enforcement**: `readResponse` (first frame must be HEADERS; DATA/SETTINGS
+  before it → FRAME_UNEXPECTED; stream end → REQUEST_INCOMPLETE; unknown ignored),
+  `Http3Response.nextBodyChunk` (only DATA + trailing HEADERS; else FRAME_UNEXPECTED), control stream
+  (`handleControl`/`readControlFrames`: first frame SETTINGS else MISSING_SETTINGS /
+  CLOSED_CRITICAL_STREAM; duplicate SETTINGS or DATA/HEADERS → FRAME_UNEXPECTED). Connection-level
+  violations route through `abortConnection`, surfaced via `connectionError` / `awaitConnectionError()`.
+- **CONNECTION_CLOSE with the H3 code** (`:socket-quic` PRODUCTION): `QuicScope.closeWithError(code)`
+  (default throws, like `openUniStream`); one default override on internal `QuicConnection` delegates
+  to `close(QuicError.ApplicationError(code))` → `quiche_conn_close(app=true)`. Covers every platform.
+  `abortConnection` calls it so connection-level violations reach the peer with the RFC code.
+- **RESET_STREAM / STOP_SENDING with the H3 code** (`:socket-quic` PRODUCTION): plumbed
+  `quiche_conn_stream_shutdown` end-to-end — C JNI shim (`nConnStreamShutdown`) + `QuicheApi`
+  .connStreamShutdown across FFM (jvm21, the **active JDK 21 path**), JNI (commonJvm), cinterop (linux);
+  `QuicheCmd.StreamShutdown` + driver handlers; `QuicheStreamAdapter.streamShutdown`; new
+  `ResettableByteStream` (`reset()` = RESET_STREAM + STOP_SENDING) on `QuicByteStream` /
+  `QuicheStreamByteStream`. **No prebuilt-binary change** — the symbol is already exported by
+  `libquiche{,_jni}` (whole-archived `libquiche.a`); CI/local rebuild the shim from source.
+  H3 wiring: `Http3Response.cancel()` → REQUEST_CANCELLED; a malformed response *message*
+  (missing/non-numeric `:status`) → MESSAGE_ERROR resets just the stream (§4.1.2), while an invalid
+  frame *sequence* stays a connection error (§4.1).
+- **End-to-end malformed-peer loopback tests** (jvm + linuxX64): a server sending DATA-before-HEADERS
+  makes the client abort the connection with FRAME_UNEXPECTED; a server omitting `:status` on one
+  request makes the client reset just that stream (MESSAGE_ERROR) while a follow-up request on the same
+  connection still returns 200 — proving the stream-vs-connection scope distinction on the wire.
+
+**Apple note:** `NWQuicByteStream` doesn't implement `ResettableByteStream` yet, so `reset()` on Apple
+falls back to a graceful `close()` (no RESET_STREAM code on the wire); JVM + linuxX64 send the real
+code. Follow-up: an NW reset + exposing the *peer's* application close code on the server `QuicScope`
+(so a loopback test can assert the server observed the code, not just the client).
+
 ## Testing strategy (decided)
 
 Deterministic multiplatform = the **scripted commonTest suite** (jvm+js+linuxX64) for logic +
@@ -146,9 +183,11 @@ no-push are spec-permitted), interop-proven — the gaps are additive, not insta
 
 1. ✅ **In-process H3 loopback test — DONE** (see "DONE — in-process H3 loopback" above). Green on
    JVM + linuxX64; `Http3LoopbackServer` seeds the server role; server `openUniStream()` landed.
-2. **Conformance gaps, test-first on the loopback:** H3 error-code taxonomy (RFC 9114 §8.1) +
-   frame/stream-validation enforcement (correctness) → then dynamic QPACK (RFC 9204), server push,
-   full server role.
+2. ✅ **RFC 9114 §8 error handling — DONE** (see "DONE — step 2" above): taxonomy + client validation
+   enforcement + CONNECTION_CLOSE with the H3 code + RESET_STREAM/STOP_SENDING with the H3 code, all
+   verified end-to-end on the jvm + linuxX64 loopback. Remaining conformance: **dynamic QPACK**
+   (RFC 9204), **server push**, the **full server role**; plus the Apple `reset()` + server-observed
+   close-code follow-ups noted above.
 3. **Expand to Apple / Android / wasmJs + maven-publish** (need their hosts/CI).
 4. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
    + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
