@@ -415,15 +415,24 @@ class Http3Connection private constructor(
     }
 
     /**
-     * Record a fatal connection-level protocol violation (RFC 9114 §8): completes [connectionError]
-     * / [awaitConnectionError] and unblocks any [peerSettings] awaiter with the cause. Idempotent —
-     * only the first error is kept. (A later increment also closes the QUIC connection here, sending
-     * CONNECTION_CLOSE with [Http3StreamException.errorCode] as the application error code.)
+     * Record a fatal connection-level protocol violation (RFC 9114 §8) and close the connection.
+     * Completes [connectionError] / [awaitConnectionError], unblocks any [peerSettings] awaiter with
+     * the cause, and sends a CONNECTION_CLOSE carrying [Http3StreamException.errorCode] as the
+     * application error code ([QuicScope.closeWithError]). Idempotent — only the first error is kept;
+     * a close that fails because the connection is already gone is ignored (the error is recorded
+     * regardless).
      */
-    private fun abortConnection(error: Http3StreamException) {
-        if (connectionErrorDeferred.complete(error)) {
-            connectionErrorOrNull = error
-            if (!peerSettingsDeferred.isCompleted) peerSettingsDeferred.completeExceptionally(error)
+    private suspend fun abortConnection(error: Http3StreamException) {
+        if (!connectionErrorDeferred.complete(error)) return
+        connectionErrorOrNull = error
+        if (!peerSettingsDeferred.isCompleted) peerSettingsDeferred.completeExceptionally(error)
+        try {
+            scope.closeWithError(error.errorCode)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Connection already torn down (or the platform can't send an app-coded close) — the
+            // protocol error is still recorded and surfaced to callers.
         }
     }
 

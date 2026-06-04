@@ -46,6 +46,18 @@ interface QuicScope : CoroutineScope {
     fun streams(): Flow<QuicByteStream>
 
     /**
+     * Abort the connection with an application-defined error code — a CONNECTION_CLOSE frame of
+     * type `0x1d` (RFC 9000 §19.19) carrying [errorCode]. Unlike the normal block-boundary close
+     * (which sends a NO_ERROR close), this lets a layered protocol surface a violation to the peer
+     * with its own error code — e.g. an HTTP/3 error code (RFC 9114 §8.1). After it returns the
+     * connection is closed and the scope block unwinds.
+     *
+     * Defaults to [UnsupportedOperationException]; quiche-backed and Apple connections override it.
+     */
+    suspend fun closeWithError(errorCode: Long): Unit =
+        throw UnsupportedOperationException("Application-coded connection close is not supported on this platform")
+
+    /**
      * Actively migrate the connection to a new local path (RFC 9000 §9). The driver opens a UDP
      * socket bound to [localHost]:[localPort] (null host = default interface, 0 port = ephemeral),
      * probes the path, and switches the connection's active path once the peer validates it. Streams
