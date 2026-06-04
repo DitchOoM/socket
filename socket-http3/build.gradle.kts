@@ -44,3 +44,18 @@ kotlin {
         }
     }
 }
+
+// The live HTTP/3 interop test (Http3PublicEndpointInteropTests) needs :socket-quic's quiche
+// native lib on the JVM test classpath — on JDK 21+ FFM loads `libquiche.so` as a classloader
+// resource under META-INF/native/<platform>/. :socket-quic stages those natives onto its own
+// jvmTest classpath but doesn't export them to dependents, so reuse the same staged dir here and
+// depend on its staging task. (Scripted unit tests don't need this — only the gated interop GET,
+// which otherwise skips with "no native lib could be loaded".)
+afterEvaluate {
+    val quicProject = project(":socket-quic")
+    val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
+    tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
+        dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
+        classpath += files(stagedNatives)
+    }
+}
