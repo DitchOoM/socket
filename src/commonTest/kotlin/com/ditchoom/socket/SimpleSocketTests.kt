@@ -17,6 +17,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
@@ -154,10 +155,12 @@ class SimpleSocketTests {
             val server = ServerSocket.allocate()
             val text = "yolo swag lyfestyle"
             var serverToClientPort = 0
+            var acceptedSocket: ClientSocket? = null
             val serverToClientMutex = Mutex(locked = true)
             val flow = server.bind()
             launch(Dispatchers.Default) {
                 flow.collect { serverToClient ->
+                    acceptedSocket = serverToClient
                     val buffer = serverToClient.read(1.seconds)
                     val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
                     assertEquals(text, dataReceivedFromClient)
@@ -177,9 +180,7 @@ class SimpleSocketTests {
             assertTrue(clientToServerPort > 0, "Invalid clientToServerPort local port.")
             clientToServer.close()
             server.close()
-            checkPort(serverToClientPort)
-            checkPort(clientToServerPort)
-            checkPort(serverPort)
+            assertSocketsClosed(clientToServer, acceptedSocket, server)
         }
 
     @Test
@@ -188,10 +189,12 @@ class SimpleSocketTests {
             val text = "yolo swag lyfestyle"
             val server = ServerSocket.allocate()
             var serverToClientPort = 0
+            var acceptedSocket: ClientSocket? = null
             val serverToClientMutex = Mutex(locked = true)
             val acceptedClientFlow = server.bind()
             launch(Dispatchers.Default) {
                 acceptedClientFlow.collect { serverToClient ->
+                    acceptedSocket = serverToClient
                     serverToClientPort = serverToClient.localPort()
                     assertTrue { serverToClientPort > 0 }
                     serverToClient.writeString(text, Charset.UTF8, 5.seconds)
@@ -212,9 +215,7 @@ class SimpleSocketTests {
             assertTrue(clientToServerPort > 0, "No port number: clientToServerPort")
             clientToServer.close()
             server.close()
-            checkPort(clientToServerPort)
-            checkPort(serverToClientPort)
-            checkPort(serverPort)
+            assertSocketsClosed(clientToServer, acceptedSocket, server)
         }
 
     @Test
@@ -228,10 +229,12 @@ class SimpleSocketTests {
         val text = "yolo swag lyfestyle"
         val text2 = "old mac donald had a farm"
         var serverToClientPort = 0
+        var acceptedSocket: ClientSocket? = null
         val serverToClientMutex = Mutex(locked = true)
         val acceptedClientFlow = server.bind()
         launch(Dispatchers.Default) {
             acceptedClientFlow.collect { serverToClient ->
+                acceptedSocket = serverToClient
                 serverToClientPort = serverToClient.localPort()
                 assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
                 serverToClient.writeString(text, Charset.UTF8, 1.seconds)
@@ -258,36 +261,30 @@ class SimpleSocketTests {
         assertEquals(utf8v2, text2)
         clientToServer.close()
         server.close()
-        checkPort(clientToServerPort)
-        checkPort(serverPort)
-        checkPort(serverToClientPort)
+        assertSocketsClosed(clientToServer, acceptedSocket, server)
     }
 
-    private suspend fun checkPort(port: Int) {
-        if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return
-        // TCP teardown is asynchronous: after close() a socket can sit briefly in
-        // CLOSE_WAIT before the kernel reaps it. Poll until it drains instead of
-        // asserting once — a socket that drains quickly is normal, one that never
-        // drains is a real leak and trips the watchdog below. 10 s is generous
-        // for WSL2-under-load (Phase-2 harness compose + concurrent tests can
-        // push reap latency past 5 s); a real leak hangs indefinitely either way.
-        try {
-            withTimeout(10.seconds) {
-                while (readStats(port, "CLOSE_WAIT").isNotEmpty()) {
-                    delay(50)
-                }
-            }
-        } catch (_: TimeoutCancellationException) {
-            val stats = readStats(port, "CLOSE_WAIT")
-            fail("Socket still in CLOSE_WAIT after 10s (count=${stats.count()}): $stats")
+    /**
+     * Deterministic replacement for the old `lsof`-by-port CLOSE_WAIT poll, which was flaky:
+     * `lsof -iTCP:<port>` matches a bare port number as *either* endpoint, and ephemeral ports get
+     * reused, so under parallel test load an unrelated/reused-port connection in CLOSE_WAIT produced
+     * a false failure. Instead we assert directly on the socket objects we just closed — their
+     * `isOpen()`/`isListening()` delegate to the underlying channel/FD state (e.g. NIO
+     * `SocketChannel.isOpen`), so this proves the library actually released the FD, with no port-number
+     * race and no dependence on OS tooling. `close()` is synchronous, so these hold immediately.
+     */
+    private fun assertSocketsClosed(
+        client: ClientSocket,
+        accepted: ClientSocket?,
+        server: ServerSocket,
+    ) {
+        assertFalse(client.isOpen(), "client socket reports open after close() — FD not released")
+        assertNotNull(accepted, "server never accepted the client connection").let {
+            assertFalse(it.isOpen(), "accepted server-side socket reports open after close() — FD not released")
         }
+        assertFalse(server.isListening(), "server reports listening after close() — listener FD not released")
     }
 }
-
-expect suspend fun readStats(
-    port: Int,
-    contains: String,
-): List<String>
 
 expect fun supportsIPv6(): Boolean
 

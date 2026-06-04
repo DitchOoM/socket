@@ -5,11 +5,9 @@ import com.ditchoom.socket.NetworkCapabilities.WEBSOCKETS_ONLY
 import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.asDeferred
 import kotlinx.coroutines.promise
 import kotlinx.coroutines.withTimeout
 import kotlin.js.Date
-import kotlin.js.Promise
 import kotlin.time.Duration
 
 actual typealias TestRunResult = Any
@@ -32,27 +30,6 @@ internal actual fun runTestNoTimeSkipping(
             }
         }
     }
-
-actual suspend fun readStats(
-    port: Int,
-    contains: String,
-): List<String> {
-    if (TcpPortUsed.check(port.toInt(), "127.0.0.1").asDeferred().await()) {
-        return listOf("TCP CHECK FAIL PORT: $port")
-    }
-    return emptyList()
-}
-
-@JsModule("tcp-port-used")
-@JsNonModule
-external class TcpPortUsed {
-    companion object {
-        fun check(
-            port: Int,
-            address: String,
-        ): Promise<Boolean>
-    }
-}
 
 actual fun supportsIPv6(): Boolean = false // JS/browser doesn't have direct socket access
 

@@ -23,11 +23,6 @@ internal actual fun runTestNoTimeSkipping(
     return TestRunResult()
 }
 
-actual suspend fun readStats(
-    port: Int,
-    contains: String,
-): List<String> = emptyList()
-
 actual fun supportsIPv6(): Boolean = false
 
 @JsFun("() => Date.now()")
