@@ -18,6 +18,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -165,6 +167,98 @@ abstract class Http3LoopbackTestSuite {
                             }
                         assertEquals(201, status)
                         assertEquals("echo:ping-body", text)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun malformedFrameSequenceFromServer_abortsConnection() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // Server sends a DATA frame before the response HEADERS — an invalid frame sequence
+                // (RFC 9114 §4.1). Over a real QUIC connection the client must detect it and abort
+                // the connection with H3_FRAME_UNEXPECTED.
+                val server =
+                    Http3LoopbackServer(connectionOptions) {
+                        Http3LoopbackServer.Response(status = 200, body = "unreachable", dataBeforeHeaders = true)
+                    }
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
+                    val serverJob = launch { connections { server.serve(this) } }
+                    delay(100)
+                    try {
+                        val code =
+                            withHttp3Connection(
+                                "localhost",
+                                port,
+                                quicOptions = clientQuicOptions,
+                                connectionOptions = connectionOptions,
+                                timeout = 15.seconds,
+                            ) {
+                                val e =
+                                    assertFailsWith<Http3StreamException> {
+                                        request(Http3Request(method = "GET", authority = "localhost", path = "/"))
+                                    }
+                                e.errorCode
+                            }
+                        assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, code)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun malformedMessageFromServer_resetsStreamButConnectionSurvives() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // "/bad" → a HEADERS frame with no :status (a malformed message, RFC 9114 §4.1.2):
+                // the client resets that one stream with H3_MESSAGE_ERROR but keeps the connection,
+                // so a follow-up request to "/good" on the SAME connection still succeeds.
+                val server =
+                    Http3LoopbackServer(connectionOptions) { request ->
+                        if (request.path == "/bad") {
+                            Http3LoopbackServer.Response(status = 200, body = "x", omitStatus = true)
+                        } else {
+                            Http3LoopbackServer.Response(status = 200, body = "good-body")
+                        }
+                    }
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
+                    val serverJob = launch { connections { server.serve(this) } }
+                    delay(100)
+                    try {
+                        val (badCode, secondStatus, secondBody) =
+                            withHttp3Connection(
+                                "localhost",
+                                port,
+                                quicOptions = clientQuicOptions,
+                                connectionOptions = connectionOptions,
+                                timeout = 15.seconds,
+                            ) {
+                                val bad =
+                                    assertFailsWith<Http3StreamException> {
+                                        request(Http3Request(method = "GET", authority = "localhost", path = "/bad"))
+                                    }
+                                // A stream-scoped reset must NOT have aborted the whole connection.
+                                assertNull(connectionError, "malformed message must reset the stream, not close the connection")
+                                val response = request(Http3Request(method = "GET", authority = "localhost", path = "/good"))
+                                try {
+                                    val body = response.readFullBody()
+                                    val text = body.readString(body.remaining(), Charset.UTF8)
+                                    body.freeIfNeeded()
+                                    Triple(bad.errorCode, response.status, text)
+                                } finally {
+                                    response.close()
+                                }
+                            }
+                        assertEquals(Http3ErrorCode.MESSAGE_ERROR, badCode)
+                        assertEquals(200, secondStatus)
+                        assertEquals("good-body", secondBody)
                     } finally {
                         serverJob.cancel()
                     }

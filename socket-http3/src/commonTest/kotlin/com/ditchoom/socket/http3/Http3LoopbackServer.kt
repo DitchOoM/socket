@@ -47,11 +47,19 @@ internal class Http3LoopbackServer(
         val body: String,
     )
 
-    /** A canned response the server writes back as HEADERS (+ DATA) then a send-side FIN. */
+    /**
+     * A canned response the server writes back as HEADERS (+ DATA) then a send-side FIN. The two
+     * `malformed*` flags let a test drive the client's RFC 9114 §8 enforcement:
+     * [omitStatus] sends a HEADERS frame with no `:status` (a malformed *message* → the client resets
+     * the stream with H3_MESSAGE_ERROR), and [dataBeforeHeaders] sends a DATA frame first (an invalid
+     * frame *sequence* → the client aborts the connection with H3_FRAME_UNEXPECTED).
+     */
     data class Response(
         val status: Int,
         val headers: List<QpackHeaderField> = emptyList(),
         val body: String = "",
+        val omitStatus: Boolean = false,
+        val dataBeforeHeaders: Boolean = false,
     )
 
     // MultiThreaded: per-stream handler coroutines allocate from this pool concurrently.
@@ -140,9 +148,21 @@ internal class Http3LoopbackServer(
         stream: QuicByteStream,
         response: Response,
     ) {
+        // Malformed-sequence injection: a DATA frame before any HEADERS is an invalid request-stream
+        // sequence (RFC 9114 §4.1) the client must treat as a connection error.
+        if (response.dataBeforeHeaders) {
+            val stray = options.bufferFactory.allocate(4)
+            stray.writeString("oops", Charset.UTF8)
+            stray.resetForRead()
+            try {
+                writeFrame(stream, Http3Frame.Data(stray))
+            } finally {
+                stray.freeIfNeeded()
+            }
+        }
         val fields =
             buildList {
-                add(QpackHeaderField(":status", response.status.toString()))
+                if (!response.omitStatus) add(QpackHeaderField(":status", response.status.toString()))
                 addAll(response.headers)
             }
         val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
