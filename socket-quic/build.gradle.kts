@@ -1437,8 +1437,12 @@ tasks.matching { it.name.startsWith("compileTestKotlin") || it.name.contains("Te
 
 android {
     compileSdk = 36
-    sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
-    sourceSets["main"].jniLibs.srcDirs("src/androidMain/jniLibs")
+    // AGP 9 + legacy-DSL opt-out: the `sourceSets[...]` Kotlin accessor casts to the
+    // removed old API. Reach the source set via the new DSL interface instead.
+    (this as com.android.build.api.dsl.LibraryExtension).sourceSets.getByName("main").apply {
+        manifest.srcFile("src/androidMain/AndroidManifest.xml")
+        jniLibs.srcDirs("src/androidMain/jniLibs")
+    }
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

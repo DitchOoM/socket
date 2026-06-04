@@ -569,7 +569,7 @@ class LinuxClientSocket : ClientToServerSocket {
             }
         }
 
-        // Fallback: neither native nor managed access (e.g. FragmentedReadBuffer).
+        // Fallback: neither native nor managed access (e.g. a sliced/composite ReadBuffer).
         // Stage into a deterministic native scratch buffer so sslWrite/io_uring
         // get a pointer without going through a Kotlin-heap ByteArray. Scratch
         // is freed unconditionally; source position is advanced by the actual

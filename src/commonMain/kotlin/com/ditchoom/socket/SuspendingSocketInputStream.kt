@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.FragmentedReadBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
 import com.ditchoom.data.Reader
@@ -10,7 +11,6 @@ import kotlin.time.measureTimedValue
 /**
  * Non blocking, suspending socket input stream.
  */
-@Suppress("DEPRECATION")
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
     private val reader: Reader,
@@ -57,10 +57,20 @@ class SuspendingSocketInputStream(
             return fragmentedLocalBuffer
         }
 
-        // ensure remaining in local buffer at least the size we requested
+        // ensure remaining in local buffer at least the size we requested.
+        // buffer 5.3 removed the O(n²) FragmentedReadBuffer; accumulate into one
+        // contiguous buffer via the zero-ByteArray write(ReadBuffer) primitive.
         while (fragmentedLocalBuffer.remaining() < size) {
             val moreData = readFromReader()
-            fragmentedLocalBuffer = FragmentedReadBuffer(fragmentedLocalBuffer, moreData).slice()
+            val combined =
+                BufferFactory.Default.allocate(
+                    fragmentedLocalBuffer.remaining() + moreData.remaining(),
+                    fragmentedLocalBuffer.byteOrder,
+                )
+            combined.write(fragmentedLocalBuffer)
+            combined.write(moreData)
+            combined.resetForRead()
+            fragmentedLocalBuffer = combined.slice()
         }
         this.currentBuffer = fragmentedLocalBuffer
         return fragmentedLocalBuffer
