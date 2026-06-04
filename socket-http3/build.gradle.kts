@@ -27,6 +27,33 @@ kotlin {
         browser()
         nodejs()
     }
+    // linuxX64: codecs are pure common Kotlin, so the full common suite runs here. The live
+    // interop GET also opens a real QUIC connection, which calls into quiche — so this test
+    // binary must link libquiche.a (whole-archive), exactly like :socket-quic's own native
+    // binaries do (BoringSSL is contributed transitively by the base :socket: cinterop's
+    // staticLibraries). Without it the binary hits `undefined symbol: quiche_config_new` at
+    // runtime. Apple/Android/wasmJs + publishing remain a tracked follow-up (need their hosts).
+    linuxX64 {
+        val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-x64/lib")
+        if (quicheLibDir.resolve("libquiche.a").exists()) {
+            binaries.all {
+                linkerOpts(
+                    "-L${quicheLibDir.absolutePath}",
+                    "-Wl,-Bstatic",
+                    "-Wl,--whole-archive",
+                    "-lquiche",
+                    "-Wl,--no-whole-archive",
+                    "-Wl,-Bdynamic",
+                    "-lpthread",
+                    "-ldl",
+                    "-lm",
+                    "-lstdc++",
+                    "--unresolved-symbols=ignore-in-object-files",
+                    "--allow-multiple-definition",
+                )
+            }
+        }
+    }
 
     applyDefaultHierarchyTemplate()
     sourceSets {
