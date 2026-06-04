@@ -1,7 +1,7 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteStream
@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
@@ -21,6 +22,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.concurrent.Volatile
 
 /**
@@ -55,9 +58,12 @@ data class Http3Settings(
  * coroutine, the control/QPACK streams stay open (sending FIN on the control stream is a
  * protocol error), and the scope force-closes everything when its block returns.
  *
- * QPACK runs static-table-only: the client advertises `QPACK_MAX_TABLE_CAPACITY = 0` and
- * `QPACK_BLOCKED_STREAMS = 0`, so the encoder/decoder streams carry no instructions and
- * incoming QPACK/push/reserved streams are simply drained.
+ * QPACK is fully dynamic (RFC 9204): the client advertises a non-zero `QPACK_MAX_TABLE_CAPACITY` /
+ * `QPACK_BLOCKED_STREAMS`, decodes the peer's dynamically-compressed responses via a [QpackDecoder]
+ * fed by the peer's encoder stream (blocking on the Required Insert Count when needed), and — once
+ * the peer's SETTINGS reveal a usable table — compresses its own requests via a [QpackEncoder] that
+ * inserts on the client encoder stream. Acks flow on the client decoder stream. Against a capacity-0
+ * peer (or before SETTINGS arrive) the encoder degrades to static/literal, which is always legal.
  *
  * This is the bootstrap half of HTTP/3; request/response (bidi HEADERS+DATA) is layered on
  * top separately.
@@ -87,6 +93,19 @@ class Http3Connection private constructor(
 
     /** Suspends until a fatal connection-level protocol error is detected, then returns it. */
     suspend fun awaitConnectionError(): Http3StreamException = connectionErrorDeferred.await()
+
+    // --- QPACK (RFC 9204) ---
+    // Our decoder is live from bootstrap (the peer's encoder stream populates it; it decodes responses
+    // — static RIC=0 sections too). Our encoder is created only once the peer's SETTINGS reveal a
+    // non-zero QPACK_MAX_TABLE_CAPACITY; until then (and against a capacity-0 peer) requests encode
+    // statically. The write mutexes serialize bytes on each single-writer QPACK uni stream, since
+    // multiple coroutines (the router + per-request encodes/decodes) emit on them concurrently.
+    private val decoder = QpackDecoder(QPACK_MAX_TABLE_CAPACITY) { writeDecoderInstruction(it) }
+
+    @Volatile
+    private var encoder: QpackEncoder? = null
+    private val encoderStreamWriteMutex = Mutex()
+    private val decoderStreamWriteMutex = Mutex()
 
     /**
      * The last client-initiated stream id the peer will process, from a server GOAWAY frame
@@ -163,11 +182,21 @@ class Http3Connection private constructor(
                 add(QpackHeaderField(":path", path))
                 addAll(headers)
             }
-        val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
-        val sectionBuffer = pool.allocate(sectionSize)
+        val activeEncoder = encoder
+        val sectionBuffer =
+            if (activeEncoder != null) {
+                // Dynamic QPACK: the encoder may emit inserts on the encoder stream and reference
+                // acknowledged dynamic entries; it returns the section payload as an owned buffer.
+                activeEncoder.encodeSection(fields, stream.streamId.id, pool)
+            } else {
+                // Static-only (no peer dynamic table, or SETTINGS not yet seen): the original path.
+                val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
+                pool.allocate(sectionSize).also {
+                    QpackFieldSectionCodec.encode(it, fields, EncodeContext.Empty)
+                    it.resetForRead()
+                }
+            }
         try {
-            QpackFieldSectionCodec.encode(sectionBuffer, fields, EncodeContext.Empty)
-            sectionBuffer.resetForRead()
             writeFrame(stream, Http3Frame.Headers(sectionBuffer))
         } finally {
             sectionBuffer.freeIfNeeded()
@@ -188,14 +217,14 @@ class Http3Connection private constructor(
                             Http3ErrorCode.REQUEST_INCOMPLETE,
                         )
                     is Http3Frame.Headers -> {
-                        val decoded =
-                            QpackFieldSectionCodec.decode(
-                                frame.encodedFieldSection,
-                                DecodeContext.Empty.with(QpackScratchPoolKey, pool),
-                            )
+                        val streamId = stream.streamId.id
+                        val decoded = decoder.decodeSection(frame.encodedFieldSection, streamId, pool)
                         val status = parseStatus(decoded)
                         val headers = decoded.filterNot { it.name.startsWith(":") }
-                        return Http3Response(status, headers, stream, reader, pool, options.readTimeout)
+                        // Trailers (a later field section on this stream) decode through the same decoder.
+                        return Http3Response(status, headers, stream, reader, pool, options.readTimeout) { trailerSection ->
+                            decoder.decodeSection(trailerSection, streamId, pool)
+                        }
                     }
                     // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
                     is Http3Frame.Unknown -> {}
@@ -276,6 +305,37 @@ class Http3Connection private constructor(
         }
     }
 
+    /** Encode and write one QPACK encoder-stream instruction (RFC 9204 §4.3) on our encoder uni stream. */
+    private suspend fun writeEncoderInstruction(instruction: QpackEncoderInstruction) {
+        val capacity =
+            when (instruction) {
+                is QpackEncoderInstruction.InsertWithNameRef -> 32 + qpackUtf8ByteLength(instruction.value)
+                is QpackEncoderInstruction.InsertWithLiteralName ->
+                    32 + qpackUtf8ByteLength(instruction.name) + qpackUtf8ByteLength(instruction.value)
+                else -> 32 // SetCapacity / Duplicate: a single prefixed integer
+            }
+        val buffer = pool.allocate(capacity)
+        try {
+            QpackEncoderInstructionCodec.encode(buffer, instruction)
+            buffer.resetForRead()
+            encoderStreamWriteMutex.withLock { qpackEncoderStream.write(buffer, options.writeTimeout) }
+        } finally {
+            buffer.freeIfNeeded()
+        }
+    }
+
+    /** Encode and write one QPACK decoder-stream instruction (RFC 9204 §4.4) on our decoder uni stream. */
+    private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction) {
+        val buffer = pool.allocate(16) // a single prefixed integer (≤ ~9 bytes)
+        try {
+            QpackDecoderInstructionCodec.encode(buffer, instruction)
+            buffer.resetForRead()
+            decoderStreamWriteMutex.withLock { qpackDecoderStream.write(buffer, options.writeTimeout) }
+        } finally {
+            buffer.freeIfNeeded()
+        }
+    }
+
     private fun parseStatus(fields: List<QpackHeaderField>): Int {
         val raw =
             fields.firstOrNull { it.name == ":status" }?.value
@@ -296,6 +356,30 @@ class Http3Connection private constructor(
         writeStreamType(qpackEncoderStream, Http3StreamType.QPACK_ENCODER)
         writeStreamType(qpackDecoderStream, Http3StreamType.QPACK_DECODER)
         startRouter()
+        startEncoderSetup()
+    }
+
+    /**
+     * Once the peer's SETTINGS arrive, create our QPACK encoder sized to the peer's advertised
+     * `QPACK_MAX_TABLE_CAPACITY` (capped by ours) and raise its capacity (a Set Dynamic Table Capacity
+     * on our encoder stream). A capacity-0 peer leaves [encoder] null — requests then encode statically.
+     */
+    private fun startEncoderSetup() {
+        scope.launch {
+            val peerMax =
+                try {
+                    peerSettings().qpackMaxTableCapacity
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    return@launch // SETTINGS never arrived / connection failed — stay static-only
+                }
+            if (peerMax <= 0) return@launch
+            val capacity = minOf(QPACK_MAX_TABLE_CAPACITY, peerMax)
+            val newEncoder = QpackEncoder(peerMax) { writeEncoderInstruction(it) }
+            newEncoder.setCapacity(capacity)
+            encoder = newEncoder
+        }
     }
 
     /** Control stream: the type prefix `0x00` immediately followed by the SETTINGS frame. */
@@ -303,8 +387,8 @@ class Http3Connection private constructor(
         val settings =
             Http3Frame.Settings(
                 listOf(
-                    Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 0L),
-                    Http3Setting(Http3SettingId.QPACK_BLOCKED_STREAMS, 0L),
+                    Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, QPACK_MAX_TABLE_CAPACITY),
+                    Http3Setting(Http3SettingId.QPACK_BLOCKED_STREAMS, QPACK_BLOCKED_STREAMS),
                 ),
             )
         val frameSize = (Http3FrameCodec.wireSize(settings, EncodeContext.Empty) as WireSize.Exact).bytes
@@ -367,20 +451,50 @@ class Http3Connection private constructor(
             stream.close()
             return
         }
-        val reader = Http3StreamReader.create(stream, pool)
+        // One processor, shared so bytes buffered while reading the type prefix carry into the
+        // control/QPACK handler that continues on the same stream.
+        val processor = StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN)
         try {
-            when (reader.nextVarInt()) {
-                Http3StreamType.CONTROL -> handleControl(reader)
-                // QPACK encoder/decoder, push, and reserved/GREASE streams aren't HTTP/3-framed
-                // (or carry data we ignore); drain raw bytes to keep flow control flowing.
+            when (Http3StreamReader(stream, processor).nextVarInt()) {
+                Http3StreamType.CONTROL -> handleControl(Http3StreamReader(stream, processor))
+                // The peer's QPACK encoder stream drives our decoder's dynamic table (RFC 9204 §4.3).
+                Http3StreamType.QPACK_ENCODER -> readPeerEncoderInstructions(stream, processor)
+                // The peer's QPACK decoder stream acks our encoder's inserts/sections (§4.4).
+                Http3StreamType.QPACK_DECODER -> readPeerDecoderInstructions(stream, processor)
+                // Push and reserved/GREASE streams carry data we ignore; drain to keep flow control flowing.
                 else -> drain(stream)
             }
         } catch (e: Http3StreamException) {
             // One stream erroring must not take down the connection. The control handler has
             // already recorded any SETTINGS failure into peerSettingsDeferred.
         } finally {
-            reader.release()
+            processor.release()
             stream.close()
+        }
+    }
+
+    /** Feed the peer's QPACK encoder-stream instructions into our decoder until the stream ends. */
+    private suspend fun readPeerEncoderInstructions(
+        stream: QuicByteStream,
+        processor: StreamProcessor,
+    ) {
+        val reader = QpackInstructionReader.encoder(stream, processor, pool)
+        while (true) {
+            val instruction = reader.next(options.readTimeout) ?: break
+            decoder.applyEncoderInstruction(instruction)
+        }
+    }
+
+    /** Feed the peer's QPACK decoder-stream instructions into our encoder until the stream ends. */
+    private suspend fun readPeerDecoderInstructions(
+        stream: QuicByteStream,
+        processor: StreamProcessor,
+    ) {
+        val reader = QpackInstructionReader.decoder(stream, processor)
+        while (true) {
+            val instruction = reader.next(options.readTimeout) ?: break
+            // The peer only acks entries our encoder inserted, so the encoder exists by now; guard anyway.
+            encoder?.processDecoderInstruction(instruction)
         }
     }
 
@@ -482,6 +596,12 @@ class Http3Connection private constructor(
     }
 
     companion object {
+        /** The QPACK dynamic-table capacity we advertise (and cap our encoder at), in octets. */
+        private const val QPACK_MAX_TABLE_CAPACITY: Long = 4096
+
+        /** The number of blocked streams we permit the peer's encoder to create (RFC 9204 §5). */
+        private const val QPACK_BLOCKED_STREAMS: Long = 100
+
         /**
          * Bootstraps HTTP/3 over an established [scope]: opens the client control + QPACK
          * encoder/decoder unidirectional streams, sends the type prefixes and SETTINGS, and

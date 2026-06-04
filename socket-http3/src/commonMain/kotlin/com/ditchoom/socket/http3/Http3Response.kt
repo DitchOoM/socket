@@ -1,7 +1,6 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.quic.QuicByteStream
@@ -26,6 +25,9 @@ class Http3Response internal constructor(
     private val reader: Http3StreamReader,
     private val pool: BufferPool,
     private val readTimeout: Duration,
+    // Decodes a trailing field section through the connection's QPACK decoder (so dynamic-table
+    // references in trailers resolve, and the decoder emits a Section Ack for the trailer section).
+    private val decodeFields: suspend (ReadBuffer) -> List<QpackHeaderField>,
 ) {
     /** Trailing header fields, populated once a trailing HEADERS frame is reached (else null). */
     var trailers: List<QpackHeaderField>? = null
@@ -49,11 +51,7 @@ class Http3Response internal constructor(
                 }
                 is Http3Frame.Data -> return frame.payload
                 is Http3Frame.Headers -> {
-                    trailers =
-                        QpackFieldSectionCodec.decode(
-                            frame.encodedFieldSection,
-                            DecodeContext.Empty.with(QpackScratchPoolKey, pool),
-                        )
+                    trailers = decodeFields(frame.encodedFieldSection)
                     bodyDone = true
                     return null
                 }

@@ -51,30 +51,47 @@ class QpackInstructionReader<T> private constructor(
     fun release() = processor.release()
 
     companion object {
-        /** Reader for the peer's QPACK **encoder** stream (its instructions drive our decoder). */
+        /**
+         * Reader for the peer's QPACK **encoder** stream (its instructions drive our decoder), over a
+         * caller-supplied [processor] — used by the connection so the bytes already buffered while
+         * reading the stream-type prefix carry over. [scratchPool] backs Huffman string decoding.
+         */
         fun encoder(
             stream: ByteStream,
-            pool: BufferPool,
+            processor: StreamProcessor,
+            scratchPool: BufferPool,
         ): QpackInstructionReader<QpackEncoderInstruction> =
             QpackInstructionReader(
                 stream,
-                StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN),
+                processor,
                 Http3ErrorCode.QPACK_ENCODER_STREAM_ERROR,
                 { QpackEncoderInstructionCodec.peekLength(it, 0) },
-                { QpackEncoderInstructionCodec.decode(it, pool) },
+                { QpackEncoderInstructionCodec.decode(it, scratchPool) },
             )
 
         /** Reader for the peer's QPACK **decoder** stream (its instructions drive our encoder). */
         fun decoder(
             stream: ByteStream,
-            pool: BufferPool,
+            processor: StreamProcessor,
         ): QpackInstructionReader<QpackDecoderInstruction> =
             QpackInstructionReader(
                 stream,
-                StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN),
+                processor,
                 Http3ErrorCode.QPACK_DECODER_STREAM_ERROR,
                 { QpackDecoderInstructionCodec.peekLength(it, 0) },
                 { QpackDecoderInstructionCodec.decode(it) },
             )
+
+        /** Convenience for tests: own a fresh [StreamProcessor] from [pool]. */
+        fun encoder(
+            stream: ByteStream,
+            pool: BufferPool,
+        ): QpackInstructionReader<QpackEncoderInstruction> = encoder(stream, StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN), pool)
+
+        /** Convenience for tests: own a fresh [StreamProcessor] from [pool]. */
+        fun decoder(
+            stream: ByteStream,
+            pool: BufferPool,
+        ): QpackInstructionReader<QpackDecoderInstruction> = decoder(stream, StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN))
     }
 }

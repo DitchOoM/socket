@@ -160,8 +160,16 @@ class Http3ConnectionTests {
                 Http3Connection.bootstrap(scope, ConnectionOptions())
 
                 assertEquals(0, scope.remainingUniStreams, "bootstrap should open exactly three uni streams")
+                // The client now advertises a usable QPACK dynamic table (capacity 4096, 100 blocked streams).
+                val advertised =
+                    Http3Frame.Settings(
+                        listOf(
+                            Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 4096L),
+                            Http3Setting(Http3SettingId.QPACK_BLOCKED_STREAMS, 100L),
+                        ),
+                    )
                 assertEquals(
-                    listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(clientSettings()),
+                    listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(advertised),
                     client.control.written,
                     "control stream = type prefix 0x00 then the client SETTINGS frame",
                 )
