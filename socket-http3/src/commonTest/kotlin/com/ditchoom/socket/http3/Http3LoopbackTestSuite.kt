@@ -267,6 +267,73 @@ abstract class Http3LoopbackTestSuite {
         }
 
     @Test
+    fun dynamicQpackRoundTripsBothDirectionsAcrossRepeatedRequests() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // Both ends advertise a usable QPACK dynamic table, so requests AND responses are
+                // dynamically compressed. Repeating a request with the same custom header (and getting
+                // the same custom response header back) drives entries into both dynamic tables and then
+                // references them on later requests — exercising encoder + decoder, both directions, over
+                // real QUIC. Decoding correctly across the repeats is the proof the dynamic path works.
+                val server =
+                    Http3LoopbackServer(connectionOptions, qpackCapacity = 4096) { request ->
+                        val echoed = request.headers.firstOrNull { it.name == "x-client" }?.value
+                        Http3LoopbackServer.Response(
+                            status = 200,
+                            headers = listOf(QpackHeaderField("x-server", "server-token")),
+                            body = "echo:$echoed",
+                        )
+                    }
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
+                    val serverJob = launch { connections { server.serve(this) } }
+                    delay(100)
+                    try {
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            quicOptions = clientQuicOptions,
+                            connectionOptions = connectionOptions,
+                            timeout = 15.seconds,
+                        ) {
+                            // Let the peer SETTINGS arrive so the client's encoder activates before requests.
+                            withTimeout(5.seconds) { peerSettings() }
+                            delay(50)
+                            repeat(3) { i ->
+                                val response =
+                                    request(
+                                        Http3Request(
+                                            method = "GET",
+                                            authority = "localhost",
+                                            path = "/item-$i",
+                                            headers = listOf(QpackHeaderField("x-client", "client-token")),
+                                        ),
+                                    )
+                                try {
+                                    val body = response.readFullBody()
+                                    val text = body.readString(body.remaining(), Charset.UTF8)
+                                    body.freeIfNeeded()
+                                    assertEquals(200, response.status, "request $i status")
+                                    assertEquals(
+                                        "server-token",
+                                        response.headers.firstOrNull { it.name == "x-server" }?.value,
+                                        "request $i x-server",
+                                    )
+                                    assertEquals("echo:client-token", text, "request $i body (server decoded our x-client)")
+                                } finally {
+                                    response.close()
+                                }
+                            }
+                            assertNull(connectionError, "dynamic QPACK exchange must not raise a connection error")
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun clientReceivesServerSettings() =
         runHttp3LoopbackTest {
             wrapTestBody {
