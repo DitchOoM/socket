@@ -93,6 +93,19 @@ class QpackDynamicTable(
         }
     }
 
+    /**
+     * True if (name, value) can be inserted *without evicting any live entry* — i.e. it fits in the
+     * remaining capacity. A conservative encoder uses this to keep eviction-safety trivial: it never
+     * evicts an entry an outstanding field section might still reference (RFC 9204 §2.1.3).
+     */
+    fun canInsertWithoutEviction(
+        name: String,
+        value: String,
+    ): Boolean {
+        val entrySize = qpackEntrySize(name, value)
+        return entrySize <= _capacity && _size + entrySize <= _capacity
+    }
+
     /** The live entry at [absoluteIndex], or null if it was evicted or never inserted. */
     fun getByAbsolute(absoluteIndex: Long): Entry? {
         val oldest = entries.firstOrNull() ?: return null
