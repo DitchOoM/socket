@@ -5,6 +5,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.stream.StreamProcessor
 
 /**
  * A QPACK string literal (RFC 9204 §4.5.1's "String Literal", reused for names and values across the
@@ -42,6 +43,20 @@ internal object QpackStringLiteral {
     ): Int {
         val bytes = minOf(qpackUtf8ByteLength(string), QpackHuffman.huffmanByteLength(string))
         return QpackPrefixedInteger.encodedLength(bytes.toLong(), prefixBits) + bytes
+    }
+
+    /**
+     * Total bytes the string literal at [offset] occupies (its length prefix + content), or null if
+     * not enough is buffered yet. For peeking instruction lengths off an unframed stream.
+     */
+    fun peekLength(
+        stream: StreamProcessor,
+        offset: Int,
+        prefixBits: Int,
+    ): Int? {
+        val lengthPrefix = QpackPrefixedInteger.peek(stream, offset, prefixBits) ?: return null
+        val total = lengthPrefix.byteLength + lengthPrefix.value.toInt()
+        return if (stream.available() >= offset + total) total else null
     }
 
     /** Read a string literal whose first byte hasn't been consumed yet. */

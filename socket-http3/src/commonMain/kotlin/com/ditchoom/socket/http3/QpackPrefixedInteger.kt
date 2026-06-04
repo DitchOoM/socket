@@ -2,6 +2,7 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.stream.StreamProcessor
 
 /**
  * HPACK/QPACK prefixed-integer codec (RFC 7541 §5.1, used by QPACK field-line
@@ -93,6 +94,40 @@ object QpackPrefixedInteger {
         buffer: ReadBuffer,
         prefixBits: Int,
     ): Long = decodeFromFirstByte(buffer, buffer.readByte().toInt() and 0xFF, prefixBits)
+
+    /** A prefixed integer peeked off a [StreamProcessor]: its on-wire [byteLength] and decoded [value]. */
+    data class Peeked(
+        val byteLength: Int,
+        val value: Long,
+    )
+
+    /**
+     * Peek the prefixed integer starting at [offset] in [stream] without consuming, or null if not
+     * enough bytes are buffered yet (the caller reads more and retries — RFC 9204 instructions are
+     * not length-framed, so the reader must discover each one's length this way). Used by the
+     * instruction-stream `peekLength` helpers; value bounds are re-validated on the consuming [decode].
+     */
+    fun peek(
+        stream: StreamProcessor,
+        offset: Int,
+        prefixBits: Int,
+    ): Peeked? {
+        if (stream.available() < offset + 1) return null
+        val max = (1 shl prefixBits) - 1
+        var value = (stream.peekByte(offset).toInt() and 0xFF and max).toLong()
+        if (value < max) return Peeked(1, value)
+        var length = 1
+        var shift = 0
+        while (true) {
+            if (stream.available() < offset + length + 1) return null
+            val byte = stream.peekByte(offset + length).toInt() and 0xFF
+            if (shift <= 56) value += (byte.toLong() and 0x7F) shl shift
+            length++
+            if (byte and 0x80 == 0) break
+            shift += 7
+        }
+        return Peeked(length, value)
+    }
 
     /** Number of bytes [encode] emits for [value] with an [prefixBits]-bit prefix. */
     fun encodedLength(

@@ -2,7 +2,9 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.stream.StreamProcessor
 
 /**
  * An instruction an encoder sends to the peer's decoder on the QPACK **encoder stream** (RFC 9204
@@ -83,6 +85,34 @@ object QpackEncoderInstructionCodec {
         }
     }
 
+    /** Total byte length of the instruction at [baseOffset], or [PeekResult.NeedsMoreData] (§4.3 framing). */
+    fun peekLength(
+        stream: StreamProcessor,
+        baseOffset: Int,
+    ): PeekResult {
+        if (stream.available() < baseOffset + 1) return PeekResult.NeedsMoreData
+        val first = stream.peekByte(baseOffset).toInt() and 0xFF
+        return when {
+            first and INSERT_NAME_REF != 0 -> {
+                val name = QpackPrefixedInteger.peek(stream, baseOffset, prefixBits = 6) ?: return PeekResult.NeedsMoreData
+                val value =
+                    QpackStringLiteral.peekLength(stream, baseOffset + name.byteLength, prefixBits = 7)
+                        ?: return PeekResult.NeedsMoreData
+                PeekResult.Complete(name.byteLength + value)
+            }
+            first and INSERT_LITERAL_NAME != 0 -> {
+                val name = QpackStringLiteral.peekLength(stream, baseOffset, prefixBits = 5) ?: return PeekResult.NeedsMoreData
+                val value = QpackStringLiteral.peekLength(stream, baseOffset + name, prefixBits = 7) ?: return PeekResult.NeedsMoreData
+                PeekResult.Complete(name + value)
+            }
+            else -> {
+                // Set Capacity (001) and Duplicate (000) are both a single 5-bit-prefix integer.
+                val p = QpackPrefixedInteger.peek(stream, baseOffset, prefixBits = 5) ?: return PeekResult.NeedsMoreData
+                PeekResult.Complete(p.byteLength)
+            }
+        }
+    }
+
     fun decode(
         buffer: ReadBuffer,
         scratchPool: BufferPool?,
@@ -129,6 +159,18 @@ object QpackDecoderInstructionCodec {
             is QpackDecoderInstruction.InsertCountIncrement ->
                 QpackPrefixedInteger.encode(buffer, instruction.increment, prefixBits = 6)
         }
+    }
+
+    /** Total byte length of the instruction at [baseOffset], or [PeekResult.NeedsMoreData] (§4.4 framing). */
+    fun peekLength(
+        stream: StreamProcessor,
+        baseOffset: Int,
+    ): PeekResult {
+        if (stream.available() < baseOffset + 1) return PeekResult.NeedsMoreData
+        val first = stream.peekByte(baseOffset).toInt() and 0xFF
+        val prefixBits = if (first and SECTION_ACK != 0) 7 else 6 // 1xxxxxxx vs 01xxxxxx / 00xxxxxx
+        val p = QpackPrefixedInteger.peek(stream, baseOffset, prefixBits) ?: return PeekResult.NeedsMoreData
+        return PeekResult.Complete(p.byteLength)
     }
 
     fun decode(buffer: ReadBuffer): QpackDecoderInstruction {
