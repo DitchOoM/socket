@@ -1656,3 +1656,48 @@ providers.gradleProperty("iosSimulatorDevice").orNull?.takeIf { it.isNotBlank() 
             environment("SIMCTL_CHILD_QUIC_SIM_BOOTED", "1")
         }
 }
+
+// --- PKCS#12 test identity for the Apple QUIC server tests (issue #112) ---
+// Network.framework's QUIC listener needs a sec_identity_t, which SecPKCS12Import builds
+// from a PKCS#12 bundle. Generate cert.p12 from the committed PEM cert+key using the
+// system openssl (LibreSSL — its default p12 encoding is one SecPKCS12Import reads
+// reliably). The artifact is git-ignored; the Apple K/N test tasks depend on this so it
+// exists (cwd-relative testcerts/cert.p12) before AppleQuicServerTests runs.
+val generateTestP12 =
+    tasks.register("generateTestP12") {
+        group = "verification"
+        description = "Generate testcerts/cert.p12 from the PEM cert+key for the Apple QUIC server tests."
+        val certDir = projectDir.resolve("testcerts")
+        val crt = certDir.resolve("cert.crt")
+        val key = certDir.resolve("cert.key")
+        val p12 = certDir.resolve("cert.p12")
+        inputs.files(crt, key)
+        outputs.file(p12)
+        doLast {
+            val process =
+                ProcessBuilder(
+                    "openssl",
+                    "pkcs12",
+                    "-export",
+                    "-out",
+                    p12.absolutePath,
+                    "-inkey",
+                    key.absolutePath,
+                    "-in",
+                    crt.absolutePath,
+                    "-passout",
+                    "pass:testpass",
+                ).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText()
+            if (process.waitFor() != 0) {
+                throw GradleException("openssl pkcs12 export failed (rc != 0):\n$output")
+            }
+        }
+    }
+
+// Apple K/N test tasks read testcerts/cert.p12 at runtime — make them depend on its
+// generation. Apple targets only build on macOS, so on Linux/Windows no such task exists
+// and this matches nothing.
+tasks
+    .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
+    .configureEach { dependsOn(generateTestP12) }
