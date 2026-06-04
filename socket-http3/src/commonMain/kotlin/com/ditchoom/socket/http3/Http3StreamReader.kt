@@ -9,9 +9,19 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import kotlin.time.Duration
 
-/** Raised when a frame can't be reassembled — a truncated frame at FIN, or a peer reset. */
+/**
+ * Raised when an HTTP/3 stream can't be processed — a frame that can't be reassembled (truncated at
+ * FIN, peer reset) or a protocol violation detected while routing/reading frames.
+ *
+ * [errorCode] is the RFC 9114 §8.1 / RFC 9204 §8.3 code the endpoint would use to abort the
+ * connection or stream (see [Http3ErrorCode]); it defaults to
+ * [Http3ErrorCode.GENERAL_PROTOCOL_ERROR] so existing throw sites and `catch`/`assertFailsWith`
+ * callers keep working unchanged. Specific violations set a more precise code (e.g.
+ * [Http3ErrorCode.FRAME_UNEXPECTED], [Http3ErrorCode.MISSING_SETTINGS]).
+ */
 class Http3StreamException(
     message: String,
+    val errorCode: Long = Http3ErrorCode.GENERAL_PROTOCOL_ERROR,
 ) : Exception(message)
 
 /**
@@ -48,7 +58,10 @@ class Http3StreamReader(
             if (ended) {
                 if (processor.available() == 0) return null // clean end
                 // Leftover bytes that don't form a whole frame (short header or short payload).
-                throw Http3StreamException("stream ended mid-frame: ${processor.available()} trailing byte(s)")
+                throw Http3StreamException(
+                    "stream ended mid-frame: ${processor.available()} trailing byte(s)",
+                    Http3ErrorCode.FRAME_ERROR,
+                )
             }
             when (val result = stream.read(timeout)) {
                 is ReadResult.Data -> processor.append(result.buffer)
@@ -72,7 +85,9 @@ class Http3StreamReader(
             if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
                 return VarIntCodec.decode(processor.readBuffer(peek.bytes), DecodeContext.Empty)
             }
-            if (ended) throw Http3StreamException("stream ended before a complete varint")
+            if (ended) {
+                throw Http3StreamException("stream ended before a complete varint", Http3ErrorCode.FRAME_ERROR)
+            }
             when (val result = stream.read(timeout)) {
                 is ReadResult.Data -> processor.append(result.buffer)
                 ReadResult.End -> ended = true
