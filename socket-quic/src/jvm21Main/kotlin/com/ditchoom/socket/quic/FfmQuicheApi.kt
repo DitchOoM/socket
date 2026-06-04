@@ -148,6 +148,13 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, JAVA_BOOLEAN, ADDRESS),
         )
     }
+    private val hStreamShutdown by lazy {
+        // int quiche_conn_stream_shutdown(conn, uint64 stream_id, enum quiche_shutdown direction, uint64 err)
+        downcall(
+            "quiche_conn_stream_shutdown",
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_LONG),
+        )
+    }
     private val hIsEstablished by lazy {
         downcall("quiche_conn_is_established", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS))
     }
@@ -464,6 +471,13 @@ class FfmQuicheApi private constructor(
             val errOut = arena.allocate(JAVA_LONG)
             (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
         }
+
+    override fun connStreamShutdown(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        direction: Int,
+        err: Long,
+    ): Int = hStreamShutdown.invokeExact(seg(conn.handle), streamId.id, direction, err) as Int
 
     // --- Unreliable datagrams (RFC 9221) ---
 

@@ -195,7 +195,7 @@ class Http3Connection private constructor(
                             )
                         val status = parseStatus(decoded)
                         val headers = decoded.filterNot { it.name.startsWith(":") }
-                        return Http3Response(status, headers, reader, pool, options.readTimeout)
+                        return Http3Response(status, headers, stream, reader, pool, options.readTimeout)
                     }
                     // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
                     is Http3Frame.Unknown -> {}
@@ -210,7 +210,39 @@ class Http3Connection private constructor(
             }
         } catch (t: Throwable) {
             reader.release()
+            if (t is Http3StreamException) reactToResponseError(stream, t)
             throw t
+        }
+    }
+
+    /**
+     * React to a violation detected while reading a response, per its scope (RFC 9114 §8): an
+     * invalid frame *sequence* ([Http3ErrorCode.FRAME_UNEXPECTED]) is a connection error, so the
+     * whole connection is [aborted][abortConnection]; a malformed *message*
+     * ([Http3ErrorCode.MESSAGE_ERROR]) is stream-scoped (§4.1.2), so only this request stream is
+     * reset. Other errors (a clean [Http3ErrorCode.REQUEST_INCOMPLETE], a peer reset) need no action.
+     */
+    private suspend fun reactToResponseError(
+        stream: QuicByteStream,
+        error: Http3StreamException,
+    ) {
+        when (error.errorCode) {
+            Http3ErrorCode.FRAME_UNEXPECTED -> abortConnection(error)
+            Http3ErrorCode.MESSAGE_ERROR -> resetStreamQuietly(stream, Http3ErrorCode.MESSAGE_ERROR)
+        }
+    }
+
+    /** Reset [stream] with [errorCode], ignoring a failure if the connection/stream is already gone. */
+    private suspend fun resetStreamQuietly(
+        stream: QuicByteStream,
+        errorCode: Long,
+    ) {
+        try {
+            stream.reset(errorCode)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Already torn down — nothing to reset.
         }
     }
 
@@ -247,9 +279,12 @@ class Http3Connection private constructor(
     private fun parseStatus(fields: List<QpackHeaderField>): Int {
         val raw =
             fields.firstOrNull { it.name == ":status" }?.value
-                ?: throw Http3StreamException("response HEADERS missing the :status pseudo-header")
+                ?: throw Http3StreamException(
+                    "response HEADERS missing the :status pseudo-header",
+                    Http3ErrorCode.MESSAGE_ERROR,
+                )
         return raw.toIntOrNull()
-            ?: throw Http3StreamException("response :status was not a number: \"$raw\"")
+            ?: throw Http3StreamException("response :status was not a number: \"$raw\"", Http3ErrorCode.MESSAGE_ERROR)
     }
 
     /**

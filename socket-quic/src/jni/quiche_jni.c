@@ -214,6 +214,16 @@ JNIEXPORT jint JNICALL JNI_FN(nConnStreamSend)(
         (bool)fin, &error_code);
 }
 
+/* Shut down one direction of a stream with an application error code:
+   direction 0 = QUICHE_SHUTDOWN_READ (STOP_SENDING), 1 = QUICHE_SHUTDOWN_WRITE (RESET_STREAM). */
+JNIEXPORT jint JNICALL JNI_FN(nConnStreamShutdown)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong stream_id, jint direction, jlong err) {
+    return (jint)quiche_conn_stream_shutdown(
+        (quiche_conn *)(uintptr_t)conn, (uint64_t)stream_id,
+        (enum quiche_shutdown)direction, (uint64_t)err);
+}
+
 /* --- Unreliable datagrams (RFC 9221) --- */
 
 JNIEXPORT void JNICALL JNI_FN(nConfigEnableDgram)(

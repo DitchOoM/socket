@@ -62,6 +62,17 @@ sealed interface QuicheCmd {
     ) : QuicheCmd
 
     /**
+     * Shut down one direction of a stream with an application error code: [direction] 0 = read
+     * (sends STOP_SENDING), 1 = write (sends RESET_STREAM). [result] is the quiche return (0 on success).
+     */
+    class StreamShutdown(
+        val streamId: Long,
+        val direction: Int,
+        val errorCode: Long,
+        val result: CompletableDeferred<Int>,
+    ) : QuicheCmd
+
+    /**
      * Send one unreliable datagram (RFC 9221) from [addr]..[addr]+[bufLen]. [result] is the quiche
      * return: bytes written (== [bufLen]) on success, or a negative code ([QuicheDriver.QUICHE_ERR_DONE]
      * when the send queue is full — backpressure). The caller owns the buffer; the driver only reads it.

@@ -74,10 +74,15 @@ class Http3ConnectionTests {
     /** A [ByteStream] that records everything written and replays a scripted read sequence. */
     private class RecordingByteStream(
         readScript: List<ReadResult> = emptyList(),
-    ) : ByteStream {
+    ) : ByteStream,
+        com.ditchoom.socket.quic.ResettableByteStream {
         val written = mutableListOf<Int>()
         private val reads = ArrayDeque(readScript)
         var closed = false
+            private set
+
+        /** The application error code from a [reset], or null if the stream was never reset. */
+        var resetCode: Long? = null
             private set
 
         override val isOpen: Boolean get() = !closed
@@ -94,6 +99,11 @@ class Http3ConnectionTests {
         }
 
         override suspend fun close() {
+            closed = true
+        }
+
+        override suspend fun reset(errorCode: Long) {
+            resetCode = errorCode
             closed = true
         }
     }
@@ -383,9 +393,15 @@ class Http3ConnectionTests {
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
                 val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
 
-                assertFailsWith<Http3StreamException> {
-                    connection.request(Http3Request(method = "GET", authority = "example.com", path = "/"))
-                }
+                // A missing :status is a malformed *message* (RFC 9114 §4.1.2): stream-scoped, so the
+                // request stream is reset with H3_MESSAGE_ERROR — not a connection error.
+                val e =
+                    assertFailsWith<Http3StreamException> {
+                        connection.request(Http3Request(method = "GET", authority = "example.com", path = "/"))
+                    }
+                assertEquals(Http3ErrorCode.MESSAGE_ERROR, e.errorCode)
+                assertEquals(Http3ErrorCode.MESSAGE_ERROR, recording.resetCode, "malformed message ⇒ stream reset, not connection close")
+                assertEquals(null, connection.connectionError, "a stream-scoped error must not abort the connection")
             }
         }
 
@@ -556,6 +572,26 @@ class Http3ConnectionTests {
                 val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
                 val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
                 assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
+            }
+        }
+
+    @Test
+    fun response_cancel_resetsStreamWithRequestCancelled() =
+        runTest {
+            coroutineScope {
+                // Caller aborts the response instead of draining it — the request stream is reset
+                // with H3_REQUEST_CANCELLED (RFC 9114 §4.1) rather than gracefully closed.
+                val responseBytes =
+                    frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField(":status", "200"))))) +
+                        frameBytes(Http3Frame.Data(asciiBuffer("partial")))
+                val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+
+                val response = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+                assertEquals(200, response.status)
+                response.cancel()
+                assertEquals(Http3ErrorCode.REQUEST_CANCELLED, recording.resetCode)
             }
         }
 

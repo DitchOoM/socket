@@ -314,6 +314,11 @@ class QuicheDriver(
                 cmd.result.complete(written)
             }
 
+            is QuicheCmd.StreamShutdown -> {
+                val result = api.connStreamShutdown(conn, QuicStreamId(cmd.streamId), cmd.direction, cmd.errorCode)
+                cmd.result.complete(result)
+            }
+
             is QuicheCmd.DgramSend -> {
                 val written = api.connDgramSend(conn, cmd.addr, cmd.bufLen)
                 cmd.result.complete(written)
@@ -731,6 +736,9 @@ class QuicheDriver(
                 )
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
             is QuicheCmd.StreamSend -> cmd.result.complete(-1)
+            // The stream/connection is gone; the shutdown frame won't go out, which is fine — the
+            // peer already sees the connection closing. Complete with a benign 0 (no-op).
+            is QuicheCmd.StreamShutdown -> cmd.result.complete(0)
             // Datagrams: receive → Error maps to ConnectionClosed; send → -1 parks on the (now-closed)
             // dgramWritableSignal, which throws QuicCloseException. Mirrors the stream cases above.
             is QuicheCmd.DgramRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
@@ -926,6 +934,20 @@ class DriverStreamAdapter(
             deferred.await()
         } catch (_: ClosedSendChannelException) {
             // Connection already closed
+        }
+    }
+
+    override suspend fun streamShutdown(
+        streamId: QuicStreamId,
+        direction: Int,
+        errorCode: Long,
+    ) {
+        try {
+            val deferred = CompletableDeferred<Int>()
+            driver.commands.send(QuicheCmd.StreamShutdown(streamId.id, direction, errorCode, deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            // Connection already closed — nothing to shut down.
         }
     }
 }

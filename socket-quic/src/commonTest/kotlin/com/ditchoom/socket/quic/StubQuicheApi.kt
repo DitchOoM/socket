@@ -218,6 +218,19 @@ internal class StubQuicheApi : QuicheApi {
         fin: Boolean,
     ) = connStreamSendResult ?: bufLen
 
+    /** Records each [connStreamShutdown] call as (streamId, direction, errorCode) so tests can assert resets. */
+    val streamShutdowns = mutableListOf<Triple<Long, Int, Long>>()
+
+    override fun connStreamShutdown(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        direction: Int,
+        err: Long,
+    ): Int {
+        streamShutdowns += Triple(streamId.id, direction, err)
+        return 0
+    }
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     /** Records the last [configEnableDgram] call so tests can assert it was wired. */

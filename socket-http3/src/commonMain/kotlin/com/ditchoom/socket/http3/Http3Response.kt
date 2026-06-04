@@ -4,6 +4,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.quic.QuicByteStream
 import kotlin.time.Duration
 
 /**
@@ -21,6 +22,7 @@ import kotlin.time.Duration
 class Http3Response internal constructor(
     val status: Int,
     val headers: List<QpackHeaderField>,
+    private val stream: QuicByteStream,
     private val reader: Http3StreamReader,
     private val pool: BufferPool,
     private val readTimeout: Duration,
@@ -98,4 +100,18 @@ class Http3Response internal constructor(
 
     /** Release the underlying reader's buffers. Idempotent at the [Http3StreamReader] level. */
     fun close() = reader.release()
+
+    /**
+     * Cancel the request/response: reset the request stream with [Http3ErrorCode.REQUEST_CANCELLED]
+     * (RFC 9114 §4.1 — RESET_STREAM + STOP_SENDING tell the server to stop producing the response)
+     * and release the reader's buffers. Use this instead of [close] to abort an in-progress
+     * response (e.g. the body is no longer wanted) rather than draining it to completion.
+     */
+    suspend fun cancel() {
+        try {
+            stream.reset(Http3ErrorCode.REQUEST_CANCELLED)
+        } finally {
+            reader.release()
+        }
+    }
 }
