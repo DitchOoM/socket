@@ -15,8 +15,14 @@ import kotlin.time.Duration
  *
  * State guards prevent use-after-close — calling [read] or [write] after [close]
  * throws [IllegalStateException] immediately rather than returning garbage.
+ *
+ * The constructor is public so layers built on top of this module (e.g. the HTTP/3
+ * client in `:socket-http3`) can wrap a [ByteStream] with a known [streamId] — most
+ * usefully to fabricate scripted streams in their tests. Production code obtains
+ * instances from [QuicScope.openStream]/[openUniStream]/[acceptStream], not by
+ * constructing them directly.
  */
-class QuicByteStream internal constructor(
+class QuicByteStream(
     val streamId: QuicStreamId,
     private val delegate: ByteStream,
 ) : ByteStream {

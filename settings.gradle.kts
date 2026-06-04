@@ -8,6 +8,7 @@ pluginManagement {
 
 rootProject.name = "socket"
 include(":socket-quic")
+include(":socket-http3")
 
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "0.9.0"
