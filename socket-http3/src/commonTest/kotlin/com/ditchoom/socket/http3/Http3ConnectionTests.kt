@@ -430,4 +430,37 @@ class Http3ConnectionTests {
                 assertEquals(8L, connection.goAway.filterNotNull().first())
             }
         }
+
+    @Test
+    fun request_streamingBody_writesHeadersThenEachDataFrame() =
+        runTest {
+            coroutineScope {
+                val recording =
+                    RecordingByteStream(
+                        listOf(
+                            dataChunk(frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField(":status", "200")))))),
+                            ReadResult.End,
+                        ),
+                    )
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+
+                val response =
+                    connection.request(method = "POST", authority = "h.test", path = "/upload") {
+                        write(asciiBuffer("chunk-1"))
+                        write(asciiBuffer("chunk-2"))
+                    }
+                assertEquals(200, response.status)
+                response.close()
+
+                // Request stream = HEADERS, then one DATA frame per write() call, in order.
+                val written = bufferOf(recording.written)
+                assertTrue(Http3FrameCodec.decode(written, DecodeContext.Empty) is Http3Frame.Headers)
+                val first = Http3FrameCodec.decode(written, DecodeContext.Empty)
+                val second = Http3FrameCodec.decode(written, DecodeContext.Empty)
+                assertTrue(first is Http3Frame.Data && second is Http3Frame.Data)
+                assertEquals("chunk-1", (first as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })
+                assertEquals("chunk-2", (second as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })
+            }
+        }
 }

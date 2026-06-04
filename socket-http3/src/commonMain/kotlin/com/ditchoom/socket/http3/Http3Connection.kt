@@ -1,5 +1,6 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
@@ -102,16 +103,50 @@ class Http3Connection private constructor(
      * [Http3Response.readFullBody] then close) to release stream-reader buffers.
      */
     suspend fun request(request: Http3Request): Http3Response {
+        val stream = openRequestStream(request.method, request.scheme, request.authority, request.path, request.headers)
+        request.body?.let { writeFrame(stream, Http3Frame.Data(it)) }
+        stream.shutdownSend()
+        return readResponse(stream)
+    }
+
+    /**
+     * Streaming-body variant of [request]: writes the request HEADERS, then hands an
+     * [Http3RequestBody] to [body] so the caller can write the request body as one or more DATA
+     * frames (e.g. a large upload, or a body produced incrementally), and finally FINs the send
+     * side and reads the response. Pseudo-headers are sent first (RFC 9114 §4.3.1), exactly as in
+     * the buffered overload.
+     */
+    suspend fun request(
+        method: String,
+        authority: String,
+        path: String,
+        scheme: String = "https",
+        headers: List<QpackHeaderField> = emptyList(),
+        body: suspend Http3RequestBody.() -> Unit,
+    ): Http3Response {
+        val stream = openRequestStream(method, scheme, authority, path, headers)
+        Http3RequestBody(stream).body()
+        stream.shutdownSend()
+        return readResponse(stream)
+    }
+
+    /** Open a client bidi stream and write the request HEADERS frame (pseudo-headers first). */
+    private suspend fun openRequestStream(
+        method: String,
+        scheme: String,
+        authority: String,
+        path: String,
+        headers: List<QpackHeaderField>,
+    ): QuicByteStream {
         val stream = scope.openStream()
         val fields =
             buildList {
-                add(QpackHeaderField(":method", request.method))
-                add(QpackHeaderField(":scheme", request.scheme))
-                add(QpackHeaderField(":authority", request.authority))
-                add(QpackHeaderField(":path", request.path))
-                addAll(request.headers)
+                add(QpackHeaderField(":method", method))
+                add(QpackHeaderField(":scheme", scheme))
+                add(QpackHeaderField(":authority", authority))
+                add(QpackHeaderField(":path", path))
+                addAll(headers)
             }
-
         val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
         val sectionBuffer = pool.allocate(sectionSize)
         try {
@@ -121,11 +156,11 @@ class Http3Connection private constructor(
         } finally {
             sectionBuffer.freeIfNeeded()
         }
-        request.body?.let { writeFrame(stream, Http3Frame.Data(it)) }
+        return stream
+    }
 
-        // Half-close: finish the request's send side, keep reading the response (RFC 9114 §4).
-        stream.shutdownSend()
-
+    /** Read a response off [stream]: the first HEADERS frame gives status + headers; body streams. */
+    private suspend fun readResponse(stream: QuicByteStream): Http3Response {
         val reader = Http3StreamReader.create(stream, pool)
         try {
             while (true) {
@@ -147,6 +182,20 @@ class Http3Connection private constructor(
         } catch (t: Throwable) {
             reader.release()
             throw t
+        }
+    }
+
+    /**
+     * Sink for streaming a request body as DATA frames (RFC 9114 §4.1), handed to the
+     * streaming [request] overload. Each [write] emits one DATA frame; the framework FINs the
+     * stream after the body lambda returns.
+     */
+    inner class Http3RequestBody internal constructor(
+        private val stream: QuicByteStream,
+    ) {
+        /** Send [chunk]'s remaining bytes as a single DATA frame. */
+        suspend fun write(chunk: ReadBuffer) {
+            if (chunk.remaining() > 0) writeFrame(stream, Http3Frame.Data(chunk))
         }
     }
 
