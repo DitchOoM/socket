@@ -55,7 +55,21 @@ declarative `Http3FrameCodec` is not feasible yet. The varint *length* would be 
 (`Http3Frame.Unknown` preserves unknown types; unknown SETTINGS ids / stream types are ignored).
 A possible upstream follow-up: add varint-discriminator support to `buffer-codec`'s dispatcher.
 
-## NEXT — step 4: request/response (RFC 9114 §4)
+## ✅ DONE since this handoff was written (on the Linux machine)
+
+- **Half-close primitive** (`:socket-quic`, commit `04edc8c`): `HalfCloseableByteStream`
+  interface + `QuicByteStream.shutdownSend()` / `QuicheStreamByteStream.shutdownSend()` —
+  sends the send-side FIN (`adapter.streamClose` → quiche `stream_send(fin=true)`) without
+  flipping `closed`, so `read()` keeps working; `write()` is rejected after; `close()` skips a
+  duplicate FIN. Apple `NWQuicByteStream` parity (shared `sendFin()`). Regression test in
+  `QuicServerTestSuite.halfCloseAllowsReadAfterSendFin` (in-process server, JVM + linuxX64).
+- **Step 4 request/response** (`:socket-http3`, commit `2530f60`): `Http3Request`,
+  `Http3Response` (status/headers + streaming body via `nextBodyChunk` / `readFullBody` +
+  `trailers`), and `Http3Connection.request()` (open bidi → HEADERS [+ DATA] → `shutdownSend()`
+  → read response; does NOT gate on `peerSettings()`). Scripted tests via the extended
+  `FakeQuicScope` (now serves a bidi stream from `openStream`). 114 jvm + js tests green.
+
+## NEXT — step 4b/5: live interop GET + public wrapper
 
 Settled design forks (from the user):
 
@@ -79,7 +93,7 @@ suspend fun Http3Connection.request(req): Http3Response
 // Decode HEADERS with DecodeContext.Empty.with(QpackScratchPoolKey, pool).
 ```
 
-### ⚠️ Blocker to solve first: half-close (send FIN, keep reading)
+### ✅ Blocker RESOLVED: half-close (send FIN, keep reading) — see "DONE" above (commit 04edc8c)
 
 HTTP/3 finishes the **send** side of the request stream (FIN) while keeping the **read** side
 open for the response. Today there is **no half-close primitive**: `QuicByteStream.close()` sends
