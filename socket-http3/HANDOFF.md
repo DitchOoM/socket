@@ -166,6 +166,54 @@ falls back to a graceful `close()` (no RESET_STREAM code on the wire); JVM + lin
 code. Follow-up: an NW reset + exposing the *peer's* application close code on the server `QuicScope`
 (so a loopback test can assert the server observed the code, not just the client).
 
+## 🚧 IN PROGRESS — step 3: dynamic QPACK (RFC 9204), full bidirectional
+
+Scope chosen with the user: **full bidirectional** (client decodes the server's dynamically-compressed
+responses AND dynamically compresses its own requests). Built as 6 increments; **A–E are DONE**
+(committed, unit-tested + integration-tested), **F (connection wiring + loopback E2E) is the only one
+left.**
+
+DONE (all in `:socket-http3` commonMain + commonTest, green on jvm; pure Kotlin so js/linuxX64 compile):
+- **A — `QpackDynamicTable`**: insertion-ordered table, name+value+32 size accounting, capacity
+  eviction, absolute indexing (`insertCount`), `maxEntries = maxCapacity/32`, `canInsertWithoutEviction`.
+- **B — `QpackFieldSectionPrefix`**: Required Insert Count wrap/reconstruct (§4.5.1.1) + signed Base
+  (§4.5.1.2). The tricky math, isolated + heavily tested.
+- **C — instruction codecs**: `QpackEncoderInstruction` (SetCapacity/InsertWithNameRef/
+  InsertWithLiteralName/Duplicate) + `QpackDecoderInstruction` (SectionAck/StreamCancellation/
+  InsertCountIncrement) byte formats; shared `QpackStringLiteral` helper (Huffman-or-raw at any prefix).
+- **D — `QpackDecoder`** (stateful): decoder table, `applyEncoderInstruction`, `decodeSection` with
+  reactive blocked-stream waiting (StateFlow until insertCount ≥ RIC) + all field-line representations
+  (static/dynamic/post-base) + Section Ack / Insert Count Increment emission.
+- **E — `QpackEncoder`** (stateful): conservative **always-non-blocking** strategy — reference only
+  static or *acknowledged* dynamic entries; insert-for-future-but-literal-this-time; never evict (insert
+  stops when full). Tracks Known Received Count from decoder-stream acks. Returns the encoded section as
+  a pooled `ReadBuffer` (over-allocated then `resetForRead()` → exact `remaining()`), emitting inserts as
+  a side effect. Round-trips through a wired `QpackDecoder` in tests.
+
+**F — NOT STARTED (start here).** Wire the engine into `Http3Connection` + an E2E loopback test:
+1. **Incremental QPACK instruction reader** (the hard part): the peer's QPACK encoder/decoder uni streams
+   carry instructions with no length prefix that can split across `stream.read()` boundaries. Need either
+   a `peekInstructionLength`-style helper (mirror `Http3FrameCodec.peekFrameSize`; `QpackPrefixedInteger`
+   has no peek today — add one) or a suspend byte-source that refills from the stream on demand. Do NOT
+   ship an "assume one instruction per read" shortcut — that's a silent correctness gap.
+2. **Bootstrap/SETTINGS**: advertise `QPACK_MAX_TABLE_CAPACITY` + `QPACK_BLOCKED_STREAMS` > 0 (currently
+   hard-coded 0 in `writeControlStreamHeader`). Instantiate per-connection `QpackEncoder`(peer max, emit→
+   client encoder stream) + `QpackDecoder`(our max, emit→client decoder stream).
+3. **Router**: replace the `drain` of the peer's QPACK_ENCODER stream with feed→`decoder.applyEncoderInstruction`,
+   and QPACK_DECODER stream with feed→`encoder.processDecoderInstruction` (uses the reader from #1).
+4. **Requests**: `openRequestStream` uses `encoder.encodeSection(fields, stream.streamId.id, pool)` instead
+   of the static `QpackFieldSectionCodec.encode`. **Responses**: `readResponse` + `Http3Response.nextBodyChunk`
+   use `decoder.decodeSection(buffer, streamId, pool)` (suspend; may block) instead of the static decode.
+5. **peerSettings→capacity**: launch a task that awaits `peerSettings()` then `encoder.setCapacity(min(desired,
+   peer.qpackMaxTableCapacity))`. Requests before that are static (capacity 0) — fine.
+6. **Loopback E2E**: make `Http3LoopbackServer` symmetric by giving it its own `QpackEncoder`/`QpackDecoder`
+   (reuse the same classes) so it dynamically compresses responses + decodes requests. Add a jvm+linuxX64
+   test: repeat a request with a custom header twice and assert the 2nd is dynamically compressed (and the
+   response likewise), decoding correctly both ways.
+
+Note: the static `QpackFieldSectionCodec` (capacity-0 path) stays as-is; the dynamic encoder/decoder are
+used once capacity > 0. RIC=0 sections decode identically through either.
+
 ## Testing strategy (decided)
 
 Deterministic multiplatform = the **scripted commonTest suite** (jvm+js+linuxX64) for logic +
@@ -185,9 +233,13 @@ no-push are spec-permitted), interop-proven — the gaps are additive, not insta
    JVM + linuxX64; `Http3LoopbackServer` seeds the server role; server `openUniStream()` landed.
 2. ✅ **RFC 9114 §8 error handling — DONE** (see "DONE — step 2" above): taxonomy + client validation
    enforcement + CONNECTION_CLOSE with the H3 code + RESET_STREAM/STOP_SENDING with the H3 code, all
-   verified end-to-end on the jvm + linuxX64 loopback. Remaining conformance: **dynamic QPACK**
-   (RFC 9204), **server push**, the **full server role**; plus the Apple `reset()` + server-observed
-   close-code follow-ups noted above.
+   verified end-to-end on the jvm + linuxX64 loopback.
+3. 🚧 **Dynamic QPACK (RFC 9204), full bidirectional — A–E DONE, F remaining** (see "IN PROGRESS —
+   step 3" above): the whole dynamic engine (table, prefix, instructions, stateful encoder + decoder)
+   is built + tested; **only the connection wiring + loopback E2E (Increment F) is left** — start with
+   the incremental QPACK instruction reader.
+4. Remaining conformance after QPACK: **server push**, the **full server role**; plus the Apple
+   `reset()` + server-observed close-code follow-ups noted above.
 3. **Expand to Apple / Android / wasmJs + maven-publish** (need their hosts/CI).
 4. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
    + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
