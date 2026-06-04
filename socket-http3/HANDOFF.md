@@ -95,8 +95,10 @@ A possible upstream follow-up: add varint-discriminator support to `buffer-codec
   now runs on **jvm + js + linuxX64** — deterministic cross-platform validation of the H3 logic.
   The live interop test stays in commonTest; its linuxX64 binary whole-archives `libquiche.a`
   (mirrors `:socket-quic`'s `binaries.all { linkerOpts }`).
-- **Finding (keep-interop-in-commonTest paid off):** linuxX64 QUIC has **no `openUniStream`**, so
-  H3 bootstrap can't run there — the interop test now SKIPs with that reason instead of hiding it.
+- **`openUniStream` on Linux K/N — DONE (commit `a5f2a36`).** `LinuxQuicConnection` had only
+  `openStream` (bidi), inheriting the throwing default for uni; mirrored `JvmQuicConnection`
+  (`open(unidirectional)` via the shared driver's `QuicheCmd.OpenStream` flag). **Result: the live
+  interop GET now returns `status=200` on linuxX64 too — H3 works live on JVM + linuxX64.**
 
 ## Testing strategy (decided)
 
@@ -105,15 +107,27 @@ a planned **in-process H3 loopback** (`withQuicServer` ↔ `withHttp3Connection`
 ends) for deterministic end-to-end — **NOT docker / Apple-containers** (docker = JVM/Linux-only +
 infra; Apple containers are a dead end per TODO.md). The live interop GET stays for real-world drift.
 
-## NEXT
+Sequencing decided with the user: **loopback first** (it's the deterministic harness + seeds the
+server role), **then** conformance gaps as test-first increments — *correctness* (H3 error-code
+taxonomy + frame/stream validation enforcement) before *features* (dynamic QPACK, server push,
+full server). The current client is a *conformant minimal* GET/POST client (QPACK capacity-0 +
+no-push are spec-permitted), interop-proven — the gaps are additive, not instability.
 
-- **Implement `openUniStream` on Linux K/N** in `:socket-quic` (the gap above). Unblocks the
-  live interop GET on linuxX64 **and** the in-process loopback on native.
-- **In-process H3 loopback test** (deterministic end-to-end). JVM-runnable now; multiplatform once
-  the openUniStream gap is closed. Seeds the H3 *server* side.
-- **Expand to Apple / Android / wasmJs + maven-publish** (need their hosts/CI).
-- **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
-  + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
+## NEXT (start here)
+
+1. **In-process H3 loopback test** — deterministic end-to-end, now runnable on **JVM + linuxX64**
+   (native uni-streams work). Build a minimal server responder over `withQuicServer { connections {
+   /* this: QuicScope */ } }`: drain the client's uni streams, read the request bidi stream's
+   HEADERS via `Http3StreamReader` + `QpackFieldSectionCodec`, write a canned HEADERS+DATA response,
+   FIN. Client uses `withHttp3Connection` + `request()` with `verifyPeer=false`. **Setup cost:** a
+   server cert/key fixture reachable from `:socket-http3` tests on jvm + linuxX64 + small per-platform
+   `certPath` helpers (mirror `:socket-quic`'s `QuicServerTestSuite`). Seeds the H3 *server* role.
+2. **Conformance gaps, test-first on the loopback:** H3 error-code taxonomy (RFC 9114 §8.1) +
+   frame/stream-validation enforcement (correctness) → then dynamic QPACK (RFC 9204), server push,
+   full server role.
+3. **Expand to Apple / Android / wasmJs + maven-publish** (need their hosts/CI).
+4. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
+   + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
 
 ## (historical) step 4b/5 plan — now DONE, see above
 
