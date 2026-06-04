@@ -248,7 +248,13 @@ abstract class QuicServerTestSuite {
                         )
 
                     try {
-                        assertFailsWith<Exception> {
+                        // Verification against the wrong anchor closes the connection during
+                        // the handshake; the connection never reaches Established, so the
+                        // first stream op on the closed connection surfaces QuicCloseException.
+                        // Asserting the QUIC-specific type (not a bare Exception) rules out a
+                        // pass-on-timeout or unrelated failure — with the correct anchor the
+                        // identical flow succeeds (see the positive test above).
+                        assertFailsWith<QuicCloseException> {
                             withQuicConnection("localhost", port, clientOptions, timeout = 8.seconds) {
                                 openStream().close()
                             }
