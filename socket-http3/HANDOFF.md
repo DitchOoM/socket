@@ -80,16 +80,40 @@ A possible upstream follow-up: add varint-discriminator support to `buffer-codec
 
   **The minimal HTTP/3 GET client (issue #86) is now functionally complete and interop-proven.**
 
-## NEXT — hardening + reach, then WebTransport
+## ✅ DONE — hardening + reach (this session, commits 8639e15 / 5590885 / 75dcc76)
 
-Remaining (none blocks a working GET client):
-- **Expand `:socket-http3` to the full `:socket-quic` target matrix** (linuxX64, Apple, Android,
-  wasmJs) + maven-publish. The interop test's native-classpath wiring is jvm-only; native targets
-  load quiche via cinterop already, so mainly a target-list + publishing task.
-- **POST/streaming-body ergonomics** and trailers surfacing (the pieces exist; no first-class API).
-- **GOAWAY / MAX_PUSH_ID handling** on the control stream (currently read + ignored).
+- **Typed GOAWAY / MAX_PUSH_ID / CANCEL_PUSH frames** (were `Unknown`) + codec round-trips;
+  **GOAWAY handled** on the control stream and surfaced via `Http3Connection.goAway:
+  StateFlow<Long?>` (lowest last-stream-id; MAX_PUSH_ID is a no-op — client never pushes).
+- **Frame variants are `@JvmInline value class`** now (single-field ones), matching the
+  codebase convention (`DatagramReceiveResult`/`QuicStreamId`); `Unknown` stays a data class.
+- **Trailers** surfaced via `Http3Response.trailers` (scripted test).
+- **Streaming request body**: `request(method, …) { write(chunk) }` overload (Http3RequestBody
+  sink → one DATA frame per write); shares `openRequestStream`/`readResponse` with the buffered
+  overload.
+- **linuxX64 target added.** Full common suite (119 tests: frame/QPACK/reader/connection/request)
+  now runs on **jvm + js + linuxX64** — deterministic cross-platform validation of the H3 logic.
+  The live interop test stays in commonTest; its linuxX64 binary whole-archives `libquiche.a`
+  (mirrors `:socket-quic`'s `binaries.all { linkerOpts }`).
+- **Finding (keep-interop-in-commonTest paid off):** linuxX64 QUIC has **no `openUniStream`**, so
+  H3 bootstrap can't run there — the interop test now SKIPs with that reason instead of hiding it.
+
+## Testing strategy (decided)
+
+Deterministic multiplatform = the **scripted commonTest suite** (jvm+js+linuxX64) for logic +
+a planned **in-process H3 loopback** (`withQuicServer` ↔ `withHttp3Connection`, our codecs both
+ends) for deterministic end-to-end — **NOT docker / Apple-containers** (docker = JVM/Linux-only +
+infra; Apple containers are a dead end per TODO.md). The live interop GET stays for real-world drift.
+
+## NEXT
+
+- **Implement `openUniStream` on Linux K/N** in `:socket-quic` (the gap above). Unblocks the
+  live interop GET on linuxX64 **and** the in-process loopback on native.
+- **In-process H3 loopback test** (deterministic end-to-end). JVM-runnable now; multiplatform once
+  the openUniStream gap is closed. Seeds the H3 *server* side.
+- **Expand to Apple / Android / wasmJs + maven-publish** (need their hosts/CI).
 - **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
-  + RFC 9297 HTTP Datagrams + Capsule protocol, over the existing QUIC datagram + stream plumbing.
+  + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
 
 ## (historical) step 4b/5 plan — now DONE, see above
 
