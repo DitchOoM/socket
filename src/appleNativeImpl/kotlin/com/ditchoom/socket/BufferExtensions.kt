@@ -43,7 +43,7 @@ internal fun ReadBuffer.toNSData(): NSData =
             }
         }
         else -> {
-            // Fallback for exotic ReadBuffer types (e.g. deprecated FragmentedReadBuffer).
+            // Fallback for exotic ReadBuffer types (e.g. a sliced/composite ReadBuffer).
             // Stage into an NSMutableData-backed scratch buffer — one copy into native
             // memory — then hand the backing NSMutableData out directly (NSMutableData
             // IS-an NSData). No Kotlin-heap ByteArray intermediary. Source position is

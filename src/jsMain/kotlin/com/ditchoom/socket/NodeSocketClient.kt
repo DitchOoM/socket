@@ -148,7 +148,7 @@ open class NodeSocket : ClientSocket {
                 val array = unwrapped.buffer
                 Uint8Array(array.buffer, array.byteOffset + unwrapped.position(), bytesToWrite)
             } else {
-                // Non-JsBuffer ReadBuffer (e.g. FragmentedReadBuffer) — at the
+                // Non-JsBuffer ReadBuffer (e.g. a sliced/composite ReadBuffer) — at the
                 // Node.js socket.write boundary a materialise-into-Uint8Array
                 // is unavoidable. ByteArray IS Int8Array at runtime on Kotlin/JS,
                 // so the unsafeCast below is zero-copy; the only allocation is
