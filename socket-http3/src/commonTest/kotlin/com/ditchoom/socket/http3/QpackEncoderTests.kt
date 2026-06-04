@@ -18,18 +18,28 @@ import kotlin.test.assertFailsWith
 class QpackEncoderTests {
     private val pool = BufferPool(threadingMode = ThreadingMode.SingleThreaded, factory = BufferFactory.Default)
 
-    private class Pair(
-        val encoder: QpackEncoder,
-        val decoder: QpackDecoder,
-    )
+    /**
+     * A wired encoder+decoder. Instructions are *queued* rather than delivered synchronously — in a
+     * real connection they cross separate QPACK uni streams, so the encoder never re-enters itself
+     * while encoding. [pump] flushes both queues (and the increments they cascade) between operations.
+     */
+    private inner class Pair(
+        maxCapacity: Long,
+    ) {
+        private val encoderToDecoder = ArrayDeque<QpackEncoderInstruction>() // our encoder stream → peer decoder
+        private val decoderToEncoder = ArrayDeque<QpackDecoderInstruction>() // peer decoder stream → our encoder
+        val encoder = QpackEncoder(maxCapacity) { encoderToDecoder.addLast(it) }
+        val decoder = QpackDecoder(maxCapacity) { decoderToEncoder.addLast(it) }
 
-    /** Wire an encoder and decoder so each one's stream output drives the other, synchronously. */
-    private fun wired(maxCapacity: Long = 4096): Pair {
-        lateinit var decoder: QpackDecoder
-        val encoder = QpackEncoder(maxCapacity) { decoder.applyEncoderInstruction(it) }
-        decoder = QpackDecoder(maxCapacity) { encoder.processDecoderInstruction(it) }
-        return Pair(encoder, decoder)
+        suspend fun pump() {
+            while (encoderToDecoder.isNotEmpty() || decoderToEncoder.isNotEmpty()) {
+                while (encoderToDecoder.isNotEmpty()) decoder.applyEncoderInstruction(encoderToDecoder.removeFirst())
+                while (decoderToEncoder.isNotEmpty()) encoder.processDecoderInstruction(decoderToEncoder.removeFirst())
+            }
+        }
     }
+
+    private fun wired(maxCapacity: Long = 4096) = Pair(maxCapacity)
 
     private suspend fun roundTrip(
         p: Pair,
@@ -37,7 +47,10 @@ class QpackEncoderTests {
         streamId: Long,
     ): List<QpackHeaderField> {
         val section = p.encoder.encodeSection(fields, streamId, pool)
-        return p.decoder.decodeSection(section, streamId, scratchPool = null)
+        p.pump() // deliver the encoder's inserts to the decoder (and the increments back) before decoding
+        val decoded = p.decoder.decodeSection(section, streamId, scratchPool = null)
+        p.pump() // deliver the decoder's Section Ack back to the encoder
+        return decoded
     }
 
     @Test
@@ -86,22 +99,24 @@ class QpackEncoderTests {
         }
 
     @Test
-    fun insertCountIncrementPastInsertsIsDecoderStreamError() {
-        val encoder = QpackEncoder(4096) { }
-        val e =
-            assertFailsWith<Http3StreamException> {
-                encoder.processDecoderInstruction(QpackDecoderInstruction.InsertCountIncrement(5))
-            }
-        assertEquals(Http3ErrorCode.QPACK_DECODER_STREAM_ERROR, e.errorCode)
-    }
+    fun insertCountIncrementPastInsertsIsDecoderStreamError() =
+        runTest {
+            val encoder = QpackEncoder(4096) { }
+            val e =
+                assertFailsWith<Http3StreamException> {
+                    encoder.processDecoderInstruction(QpackDecoderInstruction.InsertCountIncrement(5))
+                }
+            assertEquals(Http3ErrorCode.QPACK_DECODER_STREAM_ERROR, e.errorCode)
+        }
 
     @Test
-    fun sectionAckWithNoOutstandingSectionIsDecoderStreamError() {
-        val encoder = QpackEncoder(4096) { }
-        val e =
-            assertFailsWith<Http3StreamException> {
-                encoder.processDecoderInstruction(QpackDecoderInstruction.SectionAck(0))
-            }
-        assertEquals(Http3ErrorCode.QPACK_DECODER_STREAM_ERROR, e.errorCode)
-    }
+    fun sectionAckWithNoOutstandingSectionIsDecoderStreamError() =
+        runTest {
+            val encoder = QpackEncoder(4096) { }
+            val e =
+                assertFailsWith<Http3StreamException> {
+                    encoder.processDecoderInstruction(QpackDecoderInstruction.SectionAck(0))
+                }
+            assertEquals(Http3ErrorCode.QPACK_DECODER_STREAM_ERROR, e.errorCode)
+        }
 }

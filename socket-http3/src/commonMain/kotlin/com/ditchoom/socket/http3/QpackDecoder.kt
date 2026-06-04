@@ -5,6 +5,8 @@ import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * The stateful QPACK **decoder** for one connection (RFC 9204): owns the decoder dynamic table, applies
@@ -26,6 +28,11 @@ class QpackDecoder(
     // Mirrors table.insertCount; lets a blocked decodeSection await new inserts reactively.
     private val insertCount = MutableStateFlow(0L)
 
+    // Guards table state: applyEncoderInstruction (the encoder-stream router coroutine) mutates it
+    // while concurrent decodeSection calls (per-request coroutines on Dispatchers.Default) read it.
+    // Never held across the blocking await in decodeSection — only around the brief mutate/decode.
+    private val mutex = Mutex()
+
     /** Current number of insertions into the decoder table (RFC 9204 §3.2.4) — for tests/diagnostics. */
     val insertCountValue: Long get() = table.insertCount
 
@@ -36,30 +43,41 @@ class QpackDecoder(
      * on an instruction that violates the table invariants (over-capacity, dangling reference).
      */
     suspend fun applyEncoderInstruction(instruction: QpackEncoderInstruction) {
-        when (instruction) {
-            is QpackEncoderInstruction.SetCapacity -> {
-                if (!table.setCapacity(instruction.capacity)) {
-                    throw encoderStreamError("Set Dynamic Table Capacity ${instruction.capacity} exceeds the advertised maximum")
-                }
-                return // no insert
-            }
-            is QpackEncoderInstruction.InsertWithNameRef -> {
-                val name =
-                    if (instruction.isStatic) {
-                        staticName(instruction.nameIndex)
-                    } else {
-                        relativeEntry(instruction.nameIndex).name
+        val inserted =
+            mutex.withLock {
+                when (instruction) {
+                    is QpackEncoderInstruction.SetCapacity -> {
+                        if (!table.setCapacity(instruction.capacity)) {
+                            throw encoderStreamError("Set Dynamic Table Capacity ${instruction.capacity} exceeds the advertised maximum")
+                        }
+                        false // no insert
                     }
-                insertOrThrow(name, instruction.value)
+                    is QpackEncoderInstruction.InsertWithNameRef -> {
+                        val name =
+                            if (instruction.isStatic) {
+                                staticName(
+                                    instruction.nameIndex,
+                                )
+                            } else {
+                                relativeEntry(instruction.nameIndex).name
+                            }
+                        insertOrThrow(name, instruction.value)
+                        true
+                    }
+                    is QpackEncoderInstruction.InsertWithLiteralName -> {
+                        insertOrThrow(instruction.name, instruction.value)
+                        true
+                    }
+                    is QpackEncoderInstruction.Duplicate -> {
+                        val entry = relativeEntry(instruction.index)
+                        insertOrThrow(entry.name, entry.value)
+                        true
+                    }
+                }.also { if (it) insertCount.value = table.insertCount }
             }
-            is QpackEncoderInstruction.InsertWithLiteralName -> insertOrThrow(instruction.name, instruction.value)
-            is QpackEncoderInstruction.Duplicate -> {
-                val entry = relativeEntry(instruction.index)
-                insertOrThrow(entry.name, entry.value)
-            }
-        }
-        insertCount.value = table.insertCount
-        emit(QpackDecoderInstruction.InsertCountIncrement(1))
+        // Emit outside the lock (it does stream I/O); a per-insert increment lets the peer's encoder
+        // advance its Known Received Count (§4.4.3).
+        if (inserted) emit(QpackDecoderInstruction.InsertCountIncrement(1))
     }
 
     /**
@@ -72,17 +90,19 @@ class QpackDecoder(
         streamId: Long,
         scratchPool: BufferPool?,
     ): List<QpackHeaderField> {
-        val prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, table.insertCount)
-        // Block until enough entries have been inserted to resolve this section (§2.2.1). The
-        // QPACK_BLOCKED_STREAMS limit (how many sections may be blocked at once) is the peer encoder's
+        // Snapshot the insert count from the StateFlow (atomic) for the prefix reconstruction.
+        val prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, insertCount.value)
+        // Block until enough entries have been inserted to resolve this section (§2.2.1) — OUTSIDE the
+        // mutex, so the encoder-stream router can keep inserting (and unblock us). The
+        // QPACK_BLOCKED_STREAMS limit (how many sections may block at once) is the peer encoder's
         // responsibility; here we simply wait for the inserts it promised via the Required Insert Count.
-        if (prefix.requiredInsertCount > table.insertCount) {
+        if (prefix.requiredInsertCount > insertCount.value) {
             insertCount.first { it >= prefix.requiredInsertCount }
         }
-        val fields = mutableListOf<QpackHeaderField>()
-        while (buffer.hasRemaining()) {
-            fields.add(decodeFieldLine(buffer, prefix.base, scratchPool))
-        }
+        val fields =
+            mutex.withLock {
+                buildList { while (buffer.hasRemaining()) add(decodeFieldLine(buffer, prefix.base, scratchPool)) }
+            }
         if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
         return fields
     }
