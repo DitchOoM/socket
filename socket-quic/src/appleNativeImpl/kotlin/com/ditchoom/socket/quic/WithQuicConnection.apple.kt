@@ -406,9 +406,12 @@ private class AppleQuicGroupConnection(
  */
 private class NWQuicByteStream(
     private val nwConn: nw_connection_t,
-) : ByteStream {
+) : HalfCloseableByteStream {
     @Volatile
     private var streamClosed = false
+
+    @Volatile
+    private var sendFinished = false
 
     override val isOpen: Boolean get() = !streamClosed
 
@@ -448,6 +451,7 @@ private class NWQuicByteStream(
         timeout: Duration,
     ): BytesWritten =
         withTimeout(timeout) {
+            check(!sendFinished) { "NWQuicByteStream send side is finished" }
             val remaining = buffer.remaining()
             val nsData = buffer.toNSData()
 
@@ -469,15 +473,31 @@ private class NWQuicByteStream(
             }
         }
 
+    override suspend fun shutdownSend() {
+        if (streamClosed || sendFinished) return
+        sendFinished = true
+        // Send-side FIN only; the read side stays open for the response (HTTP/3 §4
+        // half-close). Network.framework has no separate shutdown — the FIN is an
+        // empty FINAL_MESSAGE, same wire effect as quiche's stream_send(fin=true).
+        sendFin()
+    }
+
     override suspend fun close() {
         if (streamClosed) return
         streamClosed = true
-        // Send FIN: empty data with is_complete=true (FINAL_MESSAGE context).
-        // Bounded by a timeout: stream teardown must never block forever on the
-        // send-complete callback. The root-cause hang (a prior write leaving the
-        // DEFAULT message open and queuing this FIN behind it) is fixed in
-        // nw_quic_helpers.h, but a best-effort, bounded close is the correct
-        // contract regardless. (Issue #81.)
+        // Avoid a duplicate FIN if the send side was already shut down.
+        if (!sendFinished) sendFin()
+    }
+
+    /**
+     * Send the stream FIN: empty data with is_complete=true (FINAL_MESSAGE context).
+     * Bounded by a timeout: stream teardown must never block forever on the
+     * send-complete callback. The root-cause hang (a prior write leaving the
+     * DEFAULT message open and queuing this FIN behind it) is fixed in
+     * nw_quic_helpers.h, but a best-effort, bounded send is the correct contract
+     * regardless. (Issue #81.)
+     */
+    private suspend fun sendFin() {
         withTimeoutOrNull(FIN_TIMEOUT) {
             suspendCancellableCoroutine { cont ->
                 val emptyData = NSData()

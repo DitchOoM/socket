@@ -143,6 +143,72 @@ abstract class QuicServerTestSuite {
         }
 
     @Test
+    fun halfCloseAllowsReadAfterSendFin() =
+        runQuicTest {
+            wrapTestBody {
+                // HTTP/3 request/response shape: the client finishes its send side (FIN) and
+                // then reads the response. Before shutdownSend() existed, close() set closed=true
+                // and the post-FIN read() threw — this test is the regression guard for the
+                // half-close primitive (QuicByteStream/QuicheStreamByteStream.shutdownSend).
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                    val echoResult = CompletableDeferred<String>()
+
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                // Drain the request until the peer's FIN (ReadResult.End).
+                                val received = StringBuilder()
+                                while (true) {
+                                    val r = stream.read(5.seconds)
+                                    if (r is ReadResult.Data) {
+                                        received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                    } else {
+                                        break
+                                    }
+                                }
+                                val reply = BufferFactory.deterministic().allocate(received.length)
+                                reply.writeString(received.toString(), Charset.UTF8)
+                                reply.resetForRead()
+                                stream.write(reply, 5.seconds)
+                                stream.close()
+                            }
+                        }
+                    delay(100)
+
+                    val clientJob =
+                        launch {
+                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                val sendBuf = BufferFactory.deterministic().allocate(4)
+                                sendBuf.writeString("ping", Charset.UTF8)
+                                sendBuf.resetForRead()
+                                stream.write(sendBuf, 5.seconds)
+
+                                // Half-close: FIN the send side, then keep reading the response.
+                                stream.shutdownSend()
+
+                                val response = stream.read(5.seconds)
+                                if (response is ReadResult.Data) {
+                                    echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                } else {
+                                    echoResult.complete("no_data:${response::class.simpleName}")
+                                }
+                                stream.close()
+                            }
+                        }
+
+                    try {
+                        assertEquals("ping", kotlinx.coroutines.withTimeout(10.seconds) { echoResult.await() })
+                    } finally {
+                        clientJob.cancel()
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun multipleConnections() =
         runQuicTest {
             wrapTestBody {
