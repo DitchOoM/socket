@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlin.concurrent.Volatile
 
 /**
  * Parsed view of an HTTP/3 peer SETTINGS frame (RFC 9114 §7.2.4 / RFC 9204 §5).
@@ -71,6 +72,21 @@ class Http3Connection private constructor(
 ) {
     private val peerSettingsDeferred = CompletableDeferred<Http3Settings>()
     private val _goAway = MutableStateFlow<Long?>(null)
+    private val connectionErrorDeferred = CompletableDeferred<Http3StreamException>()
+
+    @Volatile
+    private var connectionErrorOrNull: Http3StreamException? = null
+
+    /**
+     * The first fatal connection-level protocol error detected on a critical stream (the peer's
+     * control stream — RFC 9114 §8), or null if none. Carries the [Http3ErrorCode] the endpoint
+     * would put on a CONNECTION_CLOSE. Once non-null the connection is unusable; callers should stop
+     * issuing [request]s. See [awaitConnectionError] to suspend until one occurs.
+     */
+    val connectionError: Http3StreamException? get() = connectionErrorOrNull
+
+    /** Suspends until a fatal connection-level protocol error is detected, then returns it. */
+    suspend fun awaitConnectionError(): Http3StreamException = connectionErrorDeferred.await()
 
     /**
      * The last client-initiated stream id the peer will process, from a server GOAWAY frame
@@ -164,20 +180,33 @@ class Http3Connection private constructor(
         val reader = Http3StreamReader.create(stream, pool)
         try {
             while (true) {
-                val frame =
-                    reader.nextFrame(options.readTimeout)
-                        ?: throw Http3StreamException("response stream ended before a HEADERS frame")
-                if (frame is Http3Frame.Headers) {
-                    val decoded =
-                        QpackFieldSectionCodec.decode(
-                            frame.encodedFieldSection,
-                            DecodeContext.Empty.with(QpackScratchPoolKey, pool),
+                when (val frame = reader.nextFrame(options.readTimeout)) {
+                    // Stream ended before the response message began (RFC 9114 §4.1).
+                    null ->
+                        throw Http3StreamException(
+                            "response stream ended before a HEADERS frame",
+                            Http3ErrorCode.REQUEST_INCOMPLETE,
                         )
-                    val status = parseStatus(decoded)
-                    val headers = decoded.filterNot { it.name.startsWith(":") }
-                    return Http3Response(status, headers, reader, pool, options.readTimeout)
+                    is Http3Frame.Headers -> {
+                        val decoded =
+                            QpackFieldSectionCodec.decode(
+                                frame.encodedFieldSection,
+                                DecodeContext.Empty.with(QpackScratchPoolKey, pool),
+                            )
+                        val status = parseStatus(decoded)
+                        val headers = decoded.filterNot { it.name.startsWith(":") }
+                        return Http3Response(status, headers, reader, pool, options.readTimeout)
+                    }
+                    // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
+                    is Http3Frame.Unknown -> {}
+                    // Any other frame before the response's first HEADERS — DATA, SETTINGS, GOAWAY,
+                    // … — is an invalid sequence on a request stream: H3_FRAME_UNEXPECTED (§4.1).
+                    else ->
+                        throw Http3StreamException(
+                            "unexpected ${frame::class.simpleName} before the response HEADERS frame",
+                            Http3ErrorCode.FRAME_UNEXPECTED,
+                        )
                 }
-                // A DATA/unknown frame before HEADERS is malformed; skip it defensively.
             }
         } catch (t: Throwable) {
             reader.release()
@@ -321,45 +350,80 @@ class Http3Connection private constructor(
     }
 
     /**
-     * Reads the peer's control stream: its first frame must be SETTINGS (RFC 9114 §7.2.4),
-     * which resolves [peerSettings]; subsequent control frames (GOAWAY, MAX_PUSH_ID, …) are
-     * read and ignored until the stream ends. Any failure here resolves [peerSettings]
-     * exceptionally so awaiters never hang.
+     * Reads the peer's control stream and enforces its framing rules (RFC 9114 §6.2.1 / §7.2.4):
+     * the first frame MUST be SETTINGS (else [Http3ErrorCode.MISSING_SETTINGS], or
+     * [Http3ErrorCode.CLOSED_CRITICAL_STREAM] if the stream ends first); SETTINGS resolves
+     * [peerSettings]. Subsequent control frames (GOAWAY, MAX_PUSH_ID, …) are read and acted on or
+     * ignored; a duplicate SETTINGS or a request-stream frame (DATA/HEADERS) on the control stream
+     * is [Http3ErrorCode.FRAME_UNEXPECTED]. Any violation [aborts the connection][abortConnection].
      */
     private suspend fun handleControl(reader: Http3StreamReader) {
         try {
-            val first = reader.nextFrame()
-            if (first !is Http3Frame.Settings) {
-                peerSettingsDeferred.completeExceptionally(
-                    Http3StreamException(
-                        "control stream's first frame was " +
-                            "${first?.let { it::class.simpleName } ?: "end-of-stream"}, expected SETTINGS",
-                    ),
-                )
-                return
-            }
-            peerSettingsDeferred.complete(Http3Settings(first.entries))
-            while (true) {
-                when (val frame = reader.nextFrame()) {
-                    null -> break // control stream ended
-                    // GOAWAY (RFC 9114 §7.2.6): the server is going away; surface the last
-                    // processable stream id. Ids are non-increasing across repeated GOAWAYs —
-                    // keep the lowest so callers see the tightest bound.
-                    is Http3Frame.GoAway ->
-                        _goAway.update { current -> if (current == null) frame.id else minOf(current, frame.id) }
-                    // MAX_PUSH_ID (RFC 9114 §7.2.7): raises the push-id ceiling. This client
-                    // never enables server push (it sends none), so there's nothing to act on.
-                    is Http3Frame.MaxPushId -> {}
-                    // Other control frames (CANCEL_PUSH, reserved/GREASE, …) carry nothing this
-                    // client acts on yet — read and ignore (RFC 9114 §9).
-                    else -> {}
+            when (val first = reader.nextFrame()) {
+                // The control stream is critical; the peer ending it before SETTINGS is fatal.
+                null ->
+                    abortConnection(
+                        Http3StreamException(
+                            "peer control stream ended before SETTINGS",
+                            Http3ErrorCode.CLOSED_CRITICAL_STREAM,
+                        ),
+                    )
+                !is Http3Frame.Settings ->
+                    abortConnection(
+                        Http3StreamException(
+                            "control stream's first frame was ${first::class.simpleName}, expected SETTINGS",
+                            Http3ErrorCode.MISSING_SETTINGS,
+                        ),
+                    )
+                else -> {
+                    peerSettingsDeferred.complete(Http3Settings(first.entries))
+                    readControlFrames(reader)
                 }
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: Http3StreamException) {
+            abortConnection(e)
         } catch (e: Throwable) {
-            // No-op if SETTINGS already arrived; otherwise unblock awaiters with the cause.
-            peerSettingsDeferred.completeExceptionally(e)
+            abortConnection(Http3StreamException(e.message ?: "control stream error"))
+        }
+    }
+
+    /** Reads control frames after SETTINGS until end-of-stream, enforcing §7.2.4 frame rules. */
+    private suspend fun readControlFrames(reader: Http3StreamReader) {
+        while (true) {
+            when (val frame = reader.nextFrame()) {
+                null -> break // control stream ended
+                // GOAWAY (RFC 9114 §7.2.6): the server is going away; surface the last processable
+                // stream id. Ids are non-increasing across repeated GOAWAYs — keep the lowest.
+                is Http3Frame.GoAway ->
+                    _goAway.update { current -> if (current == null) frame.id else minOf(current, frame.id) }
+                // MAX_PUSH_ID (RFC 9114 §7.2.7) / CANCEL_PUSH: this client never enables push, so
+                // there is nothing to act on. Reserved/GREASE frames are ignored (RFC 9114 §9).
+                is Http3Frame.MaxPushId, is Http3Frame.CancelPush, is Http3Frame.Unknown -> {}
+                // SETTINGS may appear only once, as the first frame; a second is a violation (§7.2.4).
+                is Http3Frame.Settings ->
+                    throw Http3StreamException("a second SETTINGS frame on the control stream", Http3ErrorCode.FRAME_UNEXPECTED)
+                // DATA/HEADERS are request-stream frames and are never valid on the control stream (§4.1).
+                is Http3Frame.Data, is Http3Frame.Headers ->
+                    throw Http3StreamException(
+                        "unexpected ${frame::class.simpleName} on the control stream",
+                        Http3ErrorCode.FRAME_UNEXPECTED,
+                    )
+            }
+        }
+    }
+
+    /**
+     * Record a fatal connection-level protocol violation (RFC 9114 §8): completes [connectionError]
+     * / [awaitConnectionError] and unblocks any [peerSettings] awaiter with the cause. Idempotent —
+     * only the first error is kept. (A later increment also closes the QUIC connection here, sending
+     * CONNECTION_CLOSE with [Http3StreamException.errorCode] as the application error code.)
+     */
+    private fun abortConnection(error: Http3StreamException) {
+        if (connectionErrorDeferred.complete(error)) {
+            connectionErrorOrNull = error
+            if (!peerSettingsDeferred.isCompleted) peerSettingsDeferred.completeExceptionally(error)
         }
     }
 

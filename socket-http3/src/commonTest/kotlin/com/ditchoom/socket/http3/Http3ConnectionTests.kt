@@ -21,11 +21,13 @@ import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Scripted-stream unit tests for [Http3Connection.bootstrap] (RFC 9114 §3.2/§6.2/§7.2.4): the
@@ -229,7 +231,8 @@ class Http3ConnectionTests {
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
 
                 val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
-                assertFailsWith<Http3StreamException> { connection.peerSettings() }
+                val e = assertFailsWith<Http3StreamException> { connection.peerSettings() }
+                assertEquals(Http3ErrorCode.MISSING_SETTINGS, e.errorCode, "first non-SETTINGS control frame ⇒ H3_MISSING_SETTINGS")
             }
         }
 
@@ -461,6 +464,116 @@ class Http3ConnectionTests {
                 assertTrue(first is Http3Frame.Data && second is Http3Frame.Data)
                 assertEquals("chunk-1", (first as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })
                 assertEquals("chunk-2", (second as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })
+            }
+        }
+
+    // --- RFC 9114 §8.1 frame/stream-validation enforcement ------------------
+
+    @Test
+    fun request_dataFrameBeforeHeaders_throwsFrameUnexpected() =
+        runTest {
+            coroutineScope {
+                // Response stream's first frame is DATA — invalid frame sequence (RFC 9114 §4.1).
+                val recording = RecordingByteStream(listOf(dataChunk(frameBytes(Http3Frame.Data(asciiBuffer("oops")))), ReadResult.End))
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+
+                val e =
+                    assertFailsWith<Http3StreamException> {
+                        connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+                    }
+                assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
+            }
+        }
+
+    @Test
+    fun request_settingsOnRequestStream_throwsFrameUnexpected() =
+        runTest {
+            coroutineScope {
+                // SETTINGS is a control-stream frame; on a request stream it's H3_FRAME_UNEXPECTED.
+                val recording = RecordingByteStream(listOf(dataChunk(frameBytes(clientSettings())), ReadResult.End))
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+
+                val e =
+                    assertFailsWith<Http3StreamException> {
+                        connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+                    }
+                assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
+            }
+        }
+
+    @Test
+    fun response_unexpectedFrameInBody_throwsFrameUnexpected() =
+        runTest {
+            coroutineScope {
+                // Valid HEADERS, then a stray SETTINGS in the body — H3_FRAME_UNEXPECTED on read.
+                val responseBytes =
+                    frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField(":status", "200"))))) +
+                        frameBytes(clientSettings())
+                val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+
+                val response = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+                assertEquals(200, response.status)
+                val e = assertFailsWith<Http3StreamException> { response.readFullBody() }
+                assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
+                response.close()
+            }
+        }
+
+    @Test
+    fun control_duplicateSettings_abortsConnectionWithFrameUnexpected() =
+        runTest {
+            coroutineScope {
+                // Control stream: SETTINGS then a second SETTINGS — H3_FRAME_UNEXPECTED (RFC 9114 §7.2.4).
+                val controlBytes =
+                    listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(clientSettings()) + frameBytes(clientSettings())
+                val peerControl =
+                    QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
+                assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
+            }
+        }
+
+    @Test
+    fun control_dataFrameOnControlStream_abortsConnectionWithFrameUnexpected() =
+        runTest {
+            coroutineScope {
+                // Control stream: SETTINGS then a DATA frame — DATA is never valid on the control stream.
+                val controlBytes =
+                    listOf(Http3StreamType.CONTROL.toInt()) +
+                        frameBytes(clientSettings()) +
+                        frameBytes(Http3Frame.Data(asciiBuffer("x")))
+                val peerControl =
+                    QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
+                assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
+            }
+        }
+
+    @Test
+    fun control_endsBeforeSettings_abortsWithClosedCriticalStream() =
+        runTest {
+            coroutineScope {
+                // Control stream carries only its type prefix, then ends — the critical stream closed.
+                val peerControl =
+                    QuicByteStream(
+                        QuicStreamId(3),
+                        RecordingByteStream(listOf(dataChunk(listOf(Http3StreamType.CONTROL.toInt())), ReadResult.End)),
+                    )
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
+                assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, e.errorCode)
             }
         }
 }

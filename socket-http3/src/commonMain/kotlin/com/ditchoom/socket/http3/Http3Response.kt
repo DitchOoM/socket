@@ -55,7 +55,17 @@ class Http3Response internal constructor(
                     bodyDone = true
                     return null
                 }
-                else -> {} // skip unknown/other frames and continue
+                // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
+                is Http3Frame.Unknown -> {}
+                // Only DATA and a trailing HEADERS section are valid in a response body; anything
+                // else (SETTINGS, GOAWAY, …) on a request stream is H3_FRAME_UNEXPECTED (§4.1).
+                else -> {
+                    bodyDone = true
+                    throw Http3StreamException(
+                        "unexpected ${frame::class.simpleName} in the response body",
+                        Http3ErrorCode.FRAME_UNEXPECTED,
+                    )
+                }
             }
         }
     }
