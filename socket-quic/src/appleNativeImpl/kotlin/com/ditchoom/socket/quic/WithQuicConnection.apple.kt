@@ -9,7 +9,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.toNativeData
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_group
@@ -28,7 +28,6 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.toCPointer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -38,6 +37,8 @@ import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSData
@@ -56,7 +57,7 @@ import kotlin.time.Duration.Companion.seconds
  * Apple [withQuicConnection] using Network.framework.
  *
  * Zero-copy read path: Network.framework → dispatch_data_t → NSData → NSDataBuffer (no copy)
- * Zero-copy write path: NSDataBuffer → toNSData() → dispatch_data_t (no copy for NSData-backed buffers)
+ * Zero-copy write path: NSDataBuffer → toNativeData() → dispatch_data_t (no copy for NSData-backed buffers)
  *
  * Requires iOS 15+ / macOS 12+.
  */
@@ -71,6 +72,16 @@ actual suspend fun <R> withQuicConnection(
     withTimeout(timeout) {
         connectQuicGroup(hostname, port, quicOptions, connectionOptions, timeout, block)
     }
+
+/**
+ * Process-wide lock serializing QUIC connection-group *establishment* (issue #112).
+ *
+ * Network.framework returns POSIX ENOMEM for a QUIC group handshake while another group is
+ * already establishing (reproduced with two concurrent connections to both an in-process
+ * listener and a public endpoint). Established groups coexist fine, so the lock is held only
+ * for the handshake and released before the caller's block runs.
+ */
+private val appleQuicEstablishMutex = Mutex()
 
 /**
  * The single Apple QUIC connect path, over a multiplex [nw_connection_group_t].
@@ -130,38 +141,48 @@ private suspend fun <R> connectQuicGroup(
     val acceptedStreamId = kotlin.concurrent.AtomicLong(1L) // server-initiated bidi ids (synthetic; NW hides the real id)
 
     // Wait for the group (QUIC handshake) to become ready. Group states: 2=ready, 3=failed, 4=cancelled.
-    suspendCancellableCoroutine { cont ->
-        nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
-            when (state) {
-                2 -> if (cont.isActive) cont.resume(Unit)
-                3 ->
-                    if (cont.isActive) {
-                        cont.resumeWithException(
-                            SocketConnectionException.Refused(
-                                hostname,
-                                port,
-                                platformError = "QUIC group handshake failed: code=$errorCode ${errorDesc ?: ""}",
-                            ),
-                        )
-                    }
-                4 -> if (cont.isActive) cont.resumeWithException(QuicCloseException(QuicError.NoError, "QUIC group cancelled"))
-                else -> {} // invalid=0, waiting=1 — in progress
+    //
+    // Serialized process-wide via [appleQuicEstablishMutex]: Network.framework fails a QUIC
+    // group handshake with POSIX ENOMEM ("Cannot allocate memory") whenever another group is
+    // already establishing — reproduced with as few as two concurrent connections against both
+    // an in-process listener AND a public endpoint (cloudflare-quic.com). Already-established
+    // groups coexist fine; only the establishment step must be one-at-a-time. The lock is held
+    // just for the handshake (released before the user's block runs), so long-lived connections
+    // don't block new ones.
+    appleQuicEstablishMutex.withLock {
+        suspendCancellableCoroutine { cont ->
+            nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
+                when (state) {
+                    2 -> if (cont.isActive) cont.resume(Unit)
+                    3 ->
+                        if (cont.isActive) {
+                            cont.resumeWithException(
+                                SocketConnectionException.Refused(
+                                    hostname,
+                                    port,
+                                    platformError = "QUIC group handshake failed: code=$errorCode ${errorDesc ?: ""}",
+                                ),
+                            )
+                        }
+                    4 -> if (cont.isActive) cont.resumeWithException(QuicCloseException(QuicError.NoError, "QUIC group cancelled"))
+                    else -> {} // invalid=0, waiting=1 — in progress
+                }
             }
+            // Wire peer-initiated streams into acceptStream() — MUST be set before start.
+            // The block runs on the group's serial callback queue; trySend into an UNLIMITED
+            // channel is non-blocking and thread-safe.
+            nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
+                // Take ownership (action 1 of NW's three): start the flow on the shared serial
+                // queue, then enqueue it. Runs synchronously inside the block, so the connection
+                // is owned before the block returns.
+                nw_helper_quic_start(streamConn)
+                incomingStreams.trySend(
+                    QuicByteStream(QuicStreamId(acceptedStreamId.getAndAdd(4)), NWQuicByteStream(streamConn)),
+                )
+            }
+            nw_helper_quic_group_start(group)
+            cont.invokeOnCancellation { nw_helper_quic_group_cancel(group) }
         }
-        // Wire peer-initiated streams into acceptStream() — MUST be set before start.
-        // The block runs on the group's serial callback queue; trySend into an UNLIMITED
-        // channel is non-blocking and thread-safe.
-        nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
-            // Take ownership (action 1 of NW's three): start the flow on the shared serial
-            // queue, then enqueue it. Runs synchronously inside the block, so the connection
-            // is owned before the block returns.
-            nw_helper_quic_start(streamConn)
-            incomingStreams.trySend(
-                QuicByteStream(QuicStreamId(acceptedStreamId.getAndAdd(4)), NWQuicByteStream(streamConn)),
-            )
-        }
-        nw_helper_quic_group_start(group)
-        cont.invokeOnCancellation { nw_helper_quic_group_cancel(group) }
     }
 
     // Extract THE datagram flow (one per connection) only when datagrams are enabled.
@@ -225,7 +246,7 @@ private suspend fun <R> connectQuicGroup(
  * frame may be. We advertise the 16-bit maximum; the *usable* per-datagram size is
  * the smaller path-MTU value reported live by [QuicScope.maxDatagramSize].
  */
-private const val DATAGRAM_FRAME_SIZE_MAX: UShort = 65535u
+internal const val DATAGRAM_FRAME_SIZE_MAX: UShort = 65535u
 
 /**
  * The Apple QUIC connection — a multiplex [nw_connection_group_t] (issue #109).
@@ -241,7 +262,7 @@ private const val DATAGRAM_FRAME_SIZE_MAX: UShort = 65535u
  * QPACK unidirectional streams — are delivered to the application. NB: Network.framework
  * does not expose the real QUIC stream id/type, so accepted streams carry a synthetic id.
  */
-private class AppleQuicGroupConnection(
+internal class AppleQuicGroupConnection(
     private val group: nw_connection_group_t,
     private val datagramFlow: nw_connection_t?,
     // Peer-initiated streams, fed by the group's new-connection handler wired in connectQuicGroup.
@@ -320,7 +341,7 @@ private class AppleQuicGroupConnection(
         // dispatch_data_create (in the helper) copies the bytes synchronously, so the
         // caller may free `buffer` the instant we return; we still suspend until the
         // send-complete callback to surface errors and provide backpressure.
-        val nsData = buffer.toNSData()
+        val nsData = buffer.toNativeData().nsData
         suspendCancellableCoroutine { cont ->
             nw_helper_quic_datagram_send(flow, nsData) { _, errorCode, errorDesc ->
                 if (errorCode != 0) {
@@ -404,7 +425,7 @@ private class AppleQuicGroupConnection(
  * Zero-copy read: NSData from receive callback → NSDataBuffer (wraps, no copy)
  * Zero-copy write: NSDataBuffer.data → dispatch_data_t (wraps, no copy)
  */
-private class NWQuicByteStream(
+internal class NWQuicByteStream(
     private val nwConn: nw_connection_t,
 ) : HalfCloseableByteStream {
     @Volatile
@@ -453,7 +474,7 @@ private class NWQuicByteStream(
         withTimeout(timeout) {
             check(!sendFinished) { "NWQuicByteStream send side is finished" }
             val remaining = buffer.remaining()
-            val nsData = buffer.toNSData()
+            val nsData = buffer.toNativeData().nsData
 
             suspendCancellableCoroutine { cont ->
                 nw_helper_quic_send(nwConn, nsData, NSNumber(bool = false)) { _, errorCode, _ ->
@@ -514,34 +535,6 @@ private class NWQuicByteStream(
         // guards against a wedged Network.framework send callback.
         private val FIN_TIMEOUT: Duration = 5.seconds
     }
-}
-
-/**
- * Convert ReadBuffer to NSData for sending via Network.framework.
- *
- * Zero-copy paths:
- * - NSDataBuffer: returns underlying NSData directly
- * - NativeMemoryAccess (deterministic buffers): NSData wraps native address (no copy)
- *
- * The caller's buffer must outlive the NSData (Network.framework copies internally on send).
- */
-private fun ReadBuffer.toNSData(): NSData {
-    // Fast path: already backed by NSData
-    if (this is NSDataBuffer) return data
-
-    // Zero-copy path: use nativeMemoryAccess address directly
-    val nma = this.nativeMemoryAccess
-    if (nma != null) {
-        val addr = (nma.nativeAddress + position().toLong()).toCPointer<kotlinx.cinterop.ByteVar>()
-        if (addr != null) {
-            // bytesNoCopy: NSData wraps our buffer's memory without copying.
-            // freeWhenDone=false: we manage the buffer lifecycle, not NSData.
-            return NSData.create(bytesNoCopy = addr, length = remaining().convert(), freeWhenDone = false)
-        }
-    }
-
-    // Last resort: empty data
-    return NSData()
 }
 
 /**

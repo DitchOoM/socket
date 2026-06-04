@@ -89,11 +89,25 @@ abstract class QuicConcurrencySoakTestSuite {
             }
         }
 
+    /**
+     * Whether the platform supports multiple INDEPENDENT connections to the SAME endpoint at once.
+     *
+     * True for the quiche-backed platforms (JVM/Linux). Apple's Network.framework allows only ONE
+     * multiplex QUIC group per (host, port) endpoint per process — a second concurrent group to the
+     * same endpoint fails its handshake with POSIX ENOMEM (proven deterministically against both an
+     * in-process listener and a public endpoint; different endpoints work fine). The NW model is to
+     * multiplex STREAMS over one connection instead — exactly what
+     * [manyConcurrentStreamsOnOneConnectionRoundTrip] exercises — so the Apple member overrides this
+     * to false and that test self-skips. (Issue #112.)
+     */
+    protected open fun supportsConcurrentConnectionsToSameEndpoint(): Boolean = true
+
     /** Open [CONCURRENT_CONNECTIONS] connections at once, one echo each; assert every one round-trips. */
     @Test
     fun manyConnectionsConcurrentlyRoundTrip() =
         runQuicTest {
             wrapTestBody {
+                if (!supportsConcurrentConnectionsToSameEndpoint()) return@wrapTestBody
                 coroutineScope {
                     withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
                         val serverJob = launch { connections { echoEveryStream() } }

@@ -646,6 +646,9 @@ class FfmQuicheApi private constructor(
     private val hLoadKey by lazy {
         downcall("quiche_config_load_priv_key_from_pem_file", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
     }
+    private val hLoadVerify by lazy {
+        downcall("quiche_config_load_verify_locations_from_file", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS))
+    }
     private val hHeaderInfo by lazy {
         downcall(
             "quiche_header_info",
@@ -699,6 +702,11 @@ class FfmQuicheApi private constructor(
         config: QuicheConfig,
         pathAddr: Long,
     ): Int = hLoadKey.invokeExact(seg(config.handle), seg(pathAddr)) as Int
+
+    override fun configLoadVerifyLocationsFromFile(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = hLoadVerify.invokeExact(seg(config.handle), seg(pathAddr)) as Int
 
     override fun headerInfo(
         buf: Long,

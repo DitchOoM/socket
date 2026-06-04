@@ -363,6 +363,16 @@ interface QuicheApi {
         pathAddr: Long,
     ): Int
 
+    /**
+     * Load trusted CA certificates from a PEM bundle file as the verification anchors
+     * (`quiche_config_load_verify_locations_from_file`). [pathAddr] is the native address
+     * of a NUL-terminated path string. Returns 0 on success, negative on error. (#99)
+     */
+    fun configLoadVerifyLocationsFromFile(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int
+
     fun headerInfo(
         buf: Long,
         bufLen: Int,

@@ -14,6 +14,17 @@
 #import <Security/Security.h>
 #import <dispatch/dispatch.h>
 
+// Stream-count flow-control limit advertised to the peer on every QUIC connection (issue #112).
+// NW's default initial_max_streams_bidirectional is ~7, which wedges a connection after a handful
+// of streams; we advertise a generous bound so streams can be multiplexed freely.
+#define NW_QUIC_MAX_STREAMS 1024
+
+// max_udp_payload_size (RFC 9000) advertised on every connection (issue #112). NW otherwise uses
+// the path MTU, which on loopback is huge (tens of KB), so a single packet can carry many KB —
+// non-standard and inconsistent with the quiche-backed targets (which cap at 1350). Pinning the
+// same 1350 keeps packetization comparable across platforms; >= the 1200 QUIC minimum.
+#define NW_QUIC_MAX_UDP_PAYLOAD 1350
+
 #pragma mark - QUIC State Handler
 
 typedef void (^quic_state_handler_t)(
@@ -171,7 +182,9 @@ static inline void nw_helper_quic_start(nw_connection_t _Nonnull connection) {
     // Use a dedicated SERIAL queue so callbacks are delivered one at a time,
     // as nw_connection expects. One shared serial queue is safe here: every
     // handler only resumes a continuation (non-blocking), so no cross-connection
-    // deadlock is possible.
+    // deadlock is possible. (A per-connection queue was tried and reverted — it did
+    // not lift the per-endpoint connection limit and leaks one queue per stream in
+    // this non-ARC cinterop. See issue #112.)
     static dispatch_queue_t quic_cb_queue;
     static dispatch_once_t quic_cb_queue_once;
     dispatch_once(&quic_cb_queue_once, ^{
@@ -207,8 +220,10 @@ static inline void nw_helper_quic_force_cancel(nw_connection_t _Nonnull connecti
  *    nw_quic_copy_sec_protocol_options — NOT the generic nw_tls_copy_* on a QUIC options
  *    object, which is the wrong-accessor defect behind the PR #60 ALPN SIGTRAP and the
  *    PR #54 verify_block SIGABRT.
- *  - verify_certs is reserved (NW always evaluates the peer cert); the meaningful switch
- *    is trusted_ca_ders. When non-empty, a verify_block pins those DER CAs as the SOLE
+ *  - verify_certs=false disables peer cert + hostname validation
+ *    (sec_protocol_options_set_peer_authentication_required false), matching quiche/JVM;
+ *    it is overridden by trusted_ca_ders when those are present. When trusted_ca_ders is
+ *    non-empty, a verify_block pins those DER CAs as the SOLE
  *    anchors (SecTrustSetAnchorCertificatesOnly) — a pinned anchor is CT-exempt, which
  *    clears the errSSLBadCert (-9808) the default QUIC trust path returns for a private-CA
  *    leaf. When nil, NW's default system trust runs (production path).
@@ -242,7 +257,7 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     // during connection establishment, so these must outlive this function (block-capture
     // retains them on the heap, independent of the K/N-bridged originals — the H3 guard).
     NSArray<NSString *> *alpn_copy = [alpn_protocols copy];
-    (void)verify_certs; // meaningful switch is trusted_ca_ders (see docstring)
+    const BOOL should_verify_peer = verify_certs.boolValue;
     NSArray<NSData *> * _Nullable pinned_ca_ders =
         (trusted_ca_ders.count > 0) ? [trusted_ca_ders copy] : nil;
 
@@ -253,6 +268,22 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
             for (NSString *proto in alpn_copy) {
                 sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
             }
+
+            // Apply QuicOptions.idleTimeout (seconds → ms). NW negotiates the min of the two
+            // endpoints' values, so an idle connection closes near this bound. Without this NW
+            // used its own (much longer) default and the flag was a no-op (issue #112).
+            if (idle_timeout_seconds > 0) {
+                nw_quic_set_idle_timeout(quic_options, (uint32_t)idle_timeout_seconds * 1000u);
+            }
+
+            // Raise the stream-count flow-control limits we advertise to the peer. NW's default
+            // initial_max_streams_bidirectional is tiny (~7), so a connection wedged after a
+            // handful of streams (proven: the 8th stream — concurrent OR sequential — on one
+            // connection hung). This is the count of streams the PEER may open toward us; both
+            // ends set it so either side can multiplex many streams. (Issue #112.)
+            nw_quic_set_initial_max_streams_bidirectional(quic_options, NW_QUIC_MAX_STREAMS);
+            nw_quic_set_initial_max_streams_unidirectional(quic_options, NW_QUIC_MAX_STREAMS);
+            nw_quic_set_max_udp_payload_size(quic_options, NW_QUIC_MAX_UDP_PAYLOAD);
 
             // Enable RFC 9221 DATAGRAM frames (connection-level transport param).
             // Gated: the setter is macOS 13 / iOS 16. Callers only pass >0 when
@@ -308,12 +339,19 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                         complete(valid);
                     },
                     verify_queue);
+            } else if (!should_verify_peer) {
+                // verifyPeer=false: skip peer certificate AND hostname validation, matching the
+                // quiche/JVM semantics and the base TCP helper (nw_helpers.h). Previously
+                // verify_certs was ignored and the QUIC TLS stack always ran default system
+                // trust, so the flag silently did nothing — and an in-process server presenting
+                // a private-CA / non-matching-hostname cert (issue #112) could never be reached.
+                // With no pins and verifyPeer=true, NW's default system trust still runs.
+                sec_protocol_options_set_peer_authentication_required(sec_options, false);
             }
         });
 
     if (!params) return NULL;
 
-    (void)idle_timeout_seconds;       // QUIC idle timeout is managed by NW internally
     (void)connection_timeout_seconds; // reserved for parity with the single-conn helper
 
     nw_group_descriptor_t descriptor = nw_group_descriptor_create_multiplex(endpoint);
@@ -534,4 +572,241 @@ static inline void nw_helper_quic_datagram_send(
  */
 static inline uint32_t nw_helper_quic_max_datagram_size(nw_connection_t _Nonnull connection) {
     return nw_connection_get_maximum_datagram_size(connection);
+}
+
+#pragma mark - QUIC Server: PKCS#12 identity + NWListener (issue #112)
+
+/**
+ * Build a sec_identity_t (the server's TLS identity) from a PKCS#12 blob.
+ *
+ * QuicTlsConfig carries PEM cert+key paths, but Network.framework's QUIC listener
+ * needs a sec_identity_t (a SecIdentityRef) and there is no public Apple API to
+ * assemble one from loose PEM material without either the keychain or a PKCS#12
+ * container (issue #112). The Kotlin side reads the .p12 file into NSData and the
+ * matching passphrase; we import it with SecPKCS12Import and wrap the resulting
+ * SecIdentityRef with sec_identity_create.
+ *
+ * kSecImportToMemoryOnly (macOS 15 / iOS 18) keeps the imported key in process
+ * memory rather than the default keychain — no keychain pollution, and the key is
+ * still usable for the TLS handshake. SecPKCS12Import otherwise imports into the
+ * default keychain on macOS; we set the flag only when available (on iOS,
+ * memory-only is already the default).
+ *
+ * @return a retained sec_identity_t, or NULL on failure (wrong password, malformed
+ *         blob, or no identity in the container).
+ */
+static inline sec_identity_t _Nullable nw_helper_quic_identity_from_p12(
+    NSData * _Nonnull p12_data,
+    NSString * _Nonnull password)
+{
+    CFMutableDictionaryRef options = CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(options, kSecImportExportPassphrase, (__bridge CFStringRef)password);
+    if (__builtin_available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)) {
+        CFDictionarySetValue(options, kSecImportToMemoryOnly, kCFBooleanTrue);
+    }
+
+    CFArrayRef items = NULL;
+    OSStatus status = SecPKCS12Import((__bridge CFDataRef)p12_data, options, &items);
+    CFRelease(options);
+    if (status != errSecSuccess || items == NULL) {
+        if (items) CFRelease(items);
+        return NULL;
+    }
+    if (CFArrayGetCount(items) == 0) {
+        CFRelease(items);
+        return NULL;
+    }
+
+    CFDictionaryRef item = (CFDictionaryRef)CFArrayGetValueAtIndex(items, 0);
+    SecIdentityRef sec_identity_ref =
+        (SecIdentityRef)CFDictionaryGetValue(item, kSecImportItemIdentity);
+    if (!sec_identity_ref) {
+        CFRelease(items);
+        return NULL;
+    }
+
+    // sec_identity_create retains the SecIdentityRef, so releasing `items` (its sole
+    // strong reference until now) after is safe.
+    sec_identity_t identity = sec_identity_create(sec_identity_ref);
+    CFRelease(items);
+    return identity;
+}
+
+/**
+ * Create a QUIC *listener* — the server analog of nw_helper_create_quic_group.
+ *
+ * Same QUIC parameter setup as the client group: ALPN via the QUIC-specific
+ * accessor nw_quic_copy_sec_protocol_options (NOT the generic nw_tls_* accessor —
+ * see nw_helper_create_quic_group's #81 note). Instead of the client's CA-pinning
+ * verify_block it installs the server's local identity via
+ * sec_protocol_options_set_local_identity. When [max_datagram_frame_size] > 0 the
+ * listener advertises RFC 9221 DATAGRAM support (macOS 13 / iOS 16).
+ *
+ * Binds [port] across all interfaces (dual-stack), like the proven TCP server helper
+ * (nw_helpers.h). [host] is accepted for API parity but not wired to a specific bind
+ * address yet, matching the Linux server. Pass port 0 for an OS-assigned port and read
+ * it back via nw_helper_quic_listener_get_port once ready.
+ *
+ * An incoming QUIC tunnel is delivered to the new-connection-GROUP handler (set via
+ * nw_helper_quic_listener_set_new_connection_group_handler) as an
+ * nw_connection_group_t — the SAME multiplex group type the client uses — because
+ * QUIC is a multiplexing protocol (listener.h: that handler is mutually exclusive
+ * with the plain new-connection handler).
+ *
+ * @return nw_listener_t or NULL on parameter error.
+ */
+static inline nw_listener_t _Nullable nw_helper_create_quic_listener(
+    const char * _Nullable host,
+    uint16_t port,
+    NSArray<NSString *> * _Nonnull alpn_protocols,
+    sec_identity_t _Nonnull identity,
+    int32_t idle_timeout_seconds,
+    uint16_t max_datagram_frame_size)
+{
+    if (alpn_protocols.count == 0) return NULL;
+
+    // Retained copies for the async configure block (runs during listener setup).
+    NSArray<NSString *> *alpn_copy = [alpn_protocols copy];
+    sec_identity_t identity_copy = identity; // block-capture retains under ARC
+
+    nw_parameters_t params = nw_parameters_create_quic(
+        ^(nw_protocol_options_t _Nonnull quic_options) {
+            sec_protocol_options_t sec_options = nw_quic_copy_sec_protocol_options(quic_options);
+
+            for (NSString *proto in alpn_copy) {
+                sec_protocol_options_add_tls_application_protocol(sec_options, proto.UTF8String);
+            }
+
+            // The server presents this identity during the handshake (the mirror of
+            // the client's verify_block — see this header's #81 notes).
+            sec_protocol_options_set_local_identity(sec_options, identity_copy);
+
+            // Apply QuicOptions.idleTimeout (seconds → ms), same as the client path.
+            if (idle_timeout_seconds > 0) {
+                nw_quic_set_idle_timeout(quic_options, (uint32_t)idle_timeout_seconds * 1000u);
+            }
+
+            // Grant the client credit to open many streams (NW's default is ~7). See the client
+            // helper's note. (Issue #112.)
+            nw_quic_set_initial_max_streams_bidirectional(quic_options, NW_QUIC_MAX_STREAMS);
+            nw_quic_set_initial_max_streams_unidirectional(quic_options, NW_QUIC_MAX_STREAMS);
+            nw_quic_set_max_udp_payload_size(quic_options, NW_QUIC_MAX_UDP_PAYLOAD);
+
+            if (max_datagram_frame_size > 0) {
+                if (__builtin_available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)) {
+                    nw_quic_set_max_datagram_frame_size(quic_options, max_datagram_frame_size);
+                }
+            }
+        });
+
+    if (!params) return NULL;
+
+    // Bind on [port] across all interfaces via nw_listener_create_with_port, exactly like
+    // the proven TCP server helper. A local endpoint pinned to a host (e.g. "::") left the
+    // client's loopback packets with no matching path and the handshake hung in `preparing`.
+    // port 0 → OS-assigned (nw_listener_create). [host] is reserved (see docstring).
+    (void)host;
+    nw_listener_t listener;
+    if (port == 0) {
+        listener = nw_listener_create(params);
+    } else {
+        char port_str[6];
+        snprintf(port_str, sizeof(port_str), "%u", port);
+        listener = nw_listener_create_with_port(port_str, params);
+    }
+    if (listener == NULL) return NULL;
+    // Don't cap concurrent incoming connections (parity with the TCP server helper).
+    nw_listener_set_new_connection_limit(listener, NW_LISTENER_INFINITE_CONNECTION_LIMIT);
+    return listener;
+}
+
+/**
+ * Listener state-changed handler. Mapping mirrors the group handler:
+ *   0=invalid, 1=waiting, 2=ready, 3=failed, 4=cancelled.
+ */
+typedef void (^quic_listener_state_handler_t)(
+    int32_t state,
+    int32_t error_domain,
+    int32_t error_code,
+    NSString * _Nullable error_description
+);
+
+static inline void nw_helper_quic_listener_set_state_handler(
+    nw_listener_t _Nonnull listener,
+    quic_listener_state_handler_t _Nonnull handler)
+{
+    nw_listener_set_state_changed_handler(listener,
+        ^(nw_listener_state_t state, nw_error_t _Nullable error) {
+            int32_t mapped_state;
+            switch (state) {
+                case nw_listener_state_invalid:   mapped_state = 0; break;
+                case nw_listener_state_waiting:   mapped_state = 1; break;
+                case nw_listener_state_ready:     mapped_state = 2; break;
+                case nw_listener_state_failed:    mapped_state = 3; break;
+                case nw_listener_state_cancelled: mapped_state = 4; break;
+                default: mapped_state = 0; break;
+            }
+
+            int32_t err_domain = 0;
+            int32_t err_code = 0;
+            NSString *err_desc = nil;
+            if (error) {
+                err_domain = nw_error_get_error_domain(error);
+                err_code = nw_error_get_error_code(error);
+                CFErrorRef cf_error = nw_error_copy_cf_error(error);
+                if (cf_error) {
+                    err_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
+                    CFRelease(cf_error);
+                }
+            }
+
+            handler(mapped_state, err_domain, err_code, err_desc);
+        });
+}
+
+/** The local port the listener bound. 0 until the listener reaches ready (see listener.h). */
+static inline uint16_t nw_helper_quic_listener_get_port(nw_listener_t _Nonnull listener) {
+    return nw_listener_get_port(listener);
+}
+
+/**
+ * Block delivering an incoming QUIC tunnel as a multiplex [nw_connection_group_t].
+ * The group is NOT yet started — the Kotlin handler must set its state +
+ * new-connection handlers (nw_helper_quic_group_set_*) and start it
+ * (nw_helper_quic_group_start) before use, exactly as the client path does.
+ */
+typedef void (^quic_new_group_handler_t)(nw_connection_group_t _Nonnull connection_group);
+
+/**
+ * Wire the listener's new-connection-GROUP handler. MUST be called before
+ * nw_helper_quic_listener_start (listener.h forbids setting it after start), and is
+ * mutually exclusive with the plain new-connection handler (we never set that one).
+ */
+static inline void nw_helper_quic_listener_set_new_connection_group_handler(
+    nw_listener_t _Nonnull listener,
+    quic_new_group_handler_t _Nonnull handler)
+{
+    nw_listener_set_new_connection_group_handler(listener,
+        ^(nw_connection_group_t _Nonnull group) {
+            handler(group);
+        });
+}
+
+/**
+ * Start the listener on a dedicated SERIAL callback queue — same K/N
+ * foreign-thread-safety rationale as nw_helper_quic_start (one callback at a time).
+ */
+static inline void nw_helper_quic_listener_start(nw_listener_t _Nonnull listener) {
+    static dispatch_queue_t listener_cb_queue;
+    static dispatch_once_t listener_cb_queue_once;
+    dispatch_once(&listener_cb_queue_once, ^{
+        listener_cb_queue = dispatch_queue_create("com.ditchoom.socket.quic.nw.listener", DISPATCH_QUEUE_SERIAL);
+    });
+    nw_listener_set_queue(listener, listener_cb_queue);
+    nw_listener_start(listener);
+}
+
+static inline void nw_helper_quic_listener_cancel(nw_listener_t _Nonnull listener) {
+    nw_listener_cancel(listener);
 }

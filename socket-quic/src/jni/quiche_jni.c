@@ -398,6 +398,13 @@ JNIEXPORT jint JNICALL JNI_FN(nConfigLoadPrivKeyFromPemFile)(
         (const char *)(uintptr_t)path_addr);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nConfigLoadVerifyLocationsFromFile)(
+    JNIEnv *env, jclass cls, jlong config, jlong path_addr) {
+    return (jint)quiche_config_load_verify_locations_from_file(
+        (quiche_config *)(uintptr_t)config,
+        (const char *)(uintptr_t)path_addr);
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nHeaderInfo)(
     JNIEnv *env, jclass cls,
     jlong buf, jint buf_len, jint dcil,

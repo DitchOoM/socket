@@ -43,6 +43,20 @@ abstract class QuicPassiveMigrationTestSuite {
      */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
+    /**
+     * Whether the platform's QUIC *server* handles a peer whose source 4-tuple changes (passive
+     * NAT rebind) — recognising the connection by DCID on the new path and routing egress to the new
+     * source.
+     *
+     * True for the quiche-backed platforms (JVM/Linux), which do it via per-source recv_info +
+     * `sendInfo.to`. Apple's Network.framework exposes no path-migration control — `migrate()` is
+     * already [MigrationResult.Unsupported] there — and its server does not migrate egress to a
+     * rebound source (observed deterministically: the post-rebind echo always times out, while the
+     * 6 impairment-suite tests prove the same proxy forwards correctly, so the failure is the
+     * source-rebind handling, not the proxy). The Apple member overrides this to false. (Issue #112.)
+     */
+    protected open fun supportsPassiveSourceRebind(): Boolean = true
+
     private val testQuicOptions =
         QuicOptions(
             alpnProtocols = listOf("test"),
@@ -72,6 +86,7 @@ abstract class QuicPassiveMigrationTestSuite {
         // that, so a slow-but-correct run timed out opaquely. Flaky on #103 CI.)
         runQuicTest(timeout = 40.seconds) {
             wrapTestBody {
+                if (!supportsPassiveSourceRebind()) return@wrapTestBody
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
                     // Echo loop: mirror every message back until the stream ends.
                     val serverJob =

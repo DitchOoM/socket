@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -35,6 +36,20 @@ import kotlin.time.Duration.Companion.seconds
  */
 abstract class QuicServerTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
+
+    /**
+     * TLS config whose server cert is a self-signed `localhost` certificate (SAN
+     * `DNS:localhost,IP:127.0.0.1`), used by the CA-trust tests below. Distinct from
+     * [testTlsConfig] (the quic.tech example cert) because pinned-trust verification
+     * needs a cert that both chains to a known anchor AND matches the connect hostname.
+     */
+    abstract fun localhostTlsConfig(): QuicTlsConfig
+
+    /** PEM of the self-signed `localhost` cert above — pinned by the client as its trust anchor. */
+    abstract fun localhostCertPem(): String
+
+    /** PEM of an unrelated cert that does NOT sign [localhostTlsConfig]'s server cert. */
+    abstract fun unrelatedCaPem(): String
 
     /**
      * Platform hook for skip-on-missing-native-lib semantics. Default
@@ -136,6 +151,115 @@ abstract class QuicServerTestSuite {
                         assertEquals("hello quic!", result)
                     } finally {
                         clientJob.cancel()
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    // --- Pinned CA trust (#99) ---
+    // QuicOptions.trustedCaCertificatesPem must drive real chain validation on the
+    // quiche-backed targets (JVM/Android/Linux), matching the Apple path. Before #99 the
+    // quiche path ignored the option, so the positive test below is the regression guard:
+    // pinning the server's own anchor (with verifyPeer left at its default of true) only
+    // succeeds if the anchor is actually loaded — otherwise verification against an empty
+    // trust store rejects the self-signed peer and the handshake fails.
+
+    @Test
+    fun pinnedCorrectCaAnchorHandshakeAndEchoSucceed() =
+        runQuicTest {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = localhostTlsConfig(), quicOptions = testQuicOptions) {
+                    val echoResult = CompletableDeferred<String>()
+
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                val data = stream.read(5.seconds)
+                                if (data is ReadResult.Data) {
+                                    stream.write(data.buffer, 5.seconds)
+                                }
+                                stream.close()
+                            }
+                        }
+                    delay(100)
+
+                    // verifyPeer omitted → default true; the pinned anchor must be loaded
+                    // and the self-signed localhost chain validated against it.
+                    val clientOptions =
+                        QuicOptions(
+                            alpnProtocols = listOf("test"),
+                            idleTimeout = 10.seconds,
+                            trustedCaCertificatesPem = listOf(localhostCertPem()),
+                        )
+
+                    val clientJob =
+                        launch {
+                            withQuicConnection("localhost", port, clientOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                val sendBuf = BufferFactory.deterministic().allocate(11)
+                                sendBuf.writeString("hello quic!", Charset.UTF8)
+                                sendBuf.resetForRead()
+                                stream.write(sendBuf, 5.seconds)
+
+                                val response = stream.read(5.seconds)
+                                if (response is ReadResult.Data) {
+                                    echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                } else {
+                                    echoResult.complete("no_data")
+                                }
+                                stream.close()
+                            }
+                        }
+
+                    try {
+                        val result = kotlinx.coroutines.withTimeout(10.seconds) { echoResult.await() }
+                        assertEquals("hello quic!", result)
+                    } finally {
+                        clientJob.cancel()
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun pinnedWrongCaAnchorRejectsPeer() =
+        runQuicTest {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = localhostTlsConfig(), quicOptions = testQuicOptions) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                // Handshake should never complete; nothing to echo.
+                            }
+                        }
+                    delay(100)
+
+                    // Pin an unrelated CA that did NOT sign the server cert. Supplying anchors
+                    // forces verifyPeer on, so chain validation must reject the peer — the
+                    // connect must throw rather than silently succeed (the pre-#99 behavior).
+                    val clientOptions =
+                        QuicOptions(
+                            alpnProtocols = listOf("test"),
+                            idleTimeout = 10.seconds,
+                            trustedCaCertificatesPem = listOf(unrelatedCaPem()),
+                        )
+
+                    try {
+                        // Verification against the wrong anchor closes the connection during
+                        // the handshake; the connection never reaches Established, so the
+                        // first stream op on the closed connection surfaces QuicCloseException.
+                        // Asserting the QUIC-specific type (not a bare Exception) rules out a
+                        // pass-on-timeout or unrelated failure — with the correct anchor the
+                        // identical flow succeeds (see the positive test above).
+                        assertFailsWith<QuicCloseException> {
+                            withQuicConnection("localhost", port, clientOptions, timeout = 8.seconds) {
+                                openStream().close()
+                            }
+                        }
+                    } finally {
                         serverJob.cancel()
                     }
                 }
