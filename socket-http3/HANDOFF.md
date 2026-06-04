@@ -166,12 +166,14 @@ falls back to a graceful `close()` (no RESET_STREAM code on the wire); JVM + lin
 code. Follow-up: an NW reset + exposing the *peer's* application close code on the server `QuicScope`
 (so a loopback test can assert the server observed the code, not just the client).
 
-## 🚧 IN PROGRESS — step 3: dynamic QPACK (RFC 9204), full bidirectional
+## ✅ DONE — step 3: dynamic QPACK (RFC 9204), full bidirectional
 
 Scope chosen with the user: **full bidirectional** (client decodes the server's dynamically-compressed
-responses AND dynamically compresses its own requests). Built as 6 increments; **A–E are DONE**
-(committed, unit-tested + integration-tested), **F (connection wiring + loopback E2E) is the only one
-left.**
+responses AND dynamically compresses its own requests). Built as 6 increments, **all DONE** (A–F),
+committed + tested. Wired into `Http3Connection` and validated three ways: exhaustive unit tests,
+a deterministic bidirectional **loopback** (symmetric `Http3LoopbackServer` with its own
+encoder/decoder, green jvm + linuxX64), and the **live interop GET** which now returns 200 from
+Cloudflare AND Google while decoding their *dynamically-compressed* response headers.
 
 DONE (all in `:socket-http3` commonMain + commonTest, green on jvm; pure Kotlin so js/linuxX64 compile):
 - **A — `QpackDynamicTable`**: insertion-ordered table, name+value+32 size accounting, capacity
@@ -190,7 +192,15 @@ DONE (all in `:socket-http3` commonMain + commonTest, green on jvm; pure Kotlin 
   a pooled `ReadBuffer` (over-allocated then `resetForRead()` → exact `remaining()`), emitting inserts as
   a side effect. Round-trips through a wired `QpackDecoder` in tests.
 
-**F — NOT STARTED (start here).** Wire the engine into `Http3Connection` + an E2E loopback test:
+**F — DONE.** `Http3Connection` advertises capacity 4096 / 100 blocked streams; a per-connection
+`QpackDecoder` (live from bootstrap) decodes responses and the peer's encoder stream; a `QpackEncoder`
+(created once peer SETTINGS reveal a usable table, capped at the peer's max) compresses requests and
+processes the peer's decoder stream. The router shares one `StreamProcessor` across the type-prefix
+read and the instruction reader so no buffered bytes are lost; per-stream write mutexes serialize the
+two QPACK uni streams; the QPACK halves use internal mutexes for `Dispatchers.Default` safety. The
+symmetric `Http3LoopbackServer` (opt-in `qpackCapacity`) gives the deterministic bidirectional E2E.
+
+Original F plan (for reference):
 1. **Incremental QPACK instruction reader** (the hard part): the peer's QPACK encoder/decoder uni streams
    carry instructions with no length prefix that can split across `stream.read()` boundaries. Need either
    a `peekInstructionLength`-style helper (mirror `Http3FrameCodec.peekFrameSize`; `QpackPrefixedInteger`
@@ -234,12 +244,14 @@ no-push are spec-permitted), interop-proven — the gaps are additive, not insta
 2. ✅ **RFC 9114 §8 error handling — DONE** (see "DONE — step 2" above): taxonomy + client validation
    enforcement + CONNECTION_CLOSE with the H3 code + RESET_STREAM/STOP_SENDING with the H3 code, all
    verified end-to-end on the jvm + linuxX64 loopback.
-3. 🚧 **Dynamic QPACK (RFC 9204), full bidirectional — A–E DONE, F remaining** (see "IN PROGRESS —
-   step 3" above): the whole dynamic engine (table, prefix, instructions, stateful encoder + decoder)
-   is built + tested; **only the connection wiring + loopback E2E (Increment F) is left** — start with
-   the incremental QPACK instruction reader.
+3. ✅ **Dynamic QPACK (RFC 9204), full bidirectional — DONE** (see "DONE — step 3" above): full
+   dynamic table, encoder + decoder, instruction streams, blocked-stream waiting, wired into
+   `Http3Connection`; verified by unit tests + a deterministic bidirectional loopback + the live
+   interop GET decoding real servers' dynamic compression.
 4. Remaining conformance after QPACK: **server push**, the **full server role**; plus the Apple
-   `reset()` + server-observed close-code follow-ups noted above.
+   `reset()` + server-observed close-code follow-ups noted above. (Encoder strategy note: the client
+   encoder is deliberately conservative — never evicts, references only acknowledged entries — so it's
+   correct but not maximally compressing; a smarter eviction/blocking-aware strategy is a future tune.)
 3. **Expand to Apple / Android / wasmJs + maven-publish** (need their hosts/CI).
 4. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
    + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
