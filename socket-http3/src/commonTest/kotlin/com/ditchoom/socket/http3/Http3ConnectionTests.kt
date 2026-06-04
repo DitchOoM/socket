@@ -1,9 +1,12 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
@@ -100,13 +103,15 @@ class Http3ConnectionTests {
         delegate: CoroutineScope,
         private val outgoing: ArrayDeque<QuicByteStream>,
         private val incoming: List<QuicByteStream>,
+        private val bidi: ArrayDeque<QuicByteStream> = ArrayDeque(),
     ) : QuicScope,
         CoroutineScope by delegate {
         val remainingUniStreams get() = outgoing.size
 
         override suspend fun openUniStream(): QuicByteStream = outgoing.removeFirst()
 
-        override suspend fun openStream(): QuicByteStream = throw UnsupportedOperationException()
+        override suspend fun openStream(): QuicByteStream =
+            if (bidi.isEmpty()) throw UnsupportedOperationException() else bidi.removeFirst()
 
         override suspend fun acceptStream(): QuicByteStream = throw UnsupportedOperationException()
 
@@ -253,6 +258,129 @@ class Http3ConnectionTests {
                 Http3Connection.bootstrap(scope, ConnectionOptions()).peerSettings() // resolves despite the bidi stream
 
                 assertTrue(peerBidi.closed, "a peer bidirectional stream should be closed, not parsed")
+            }
+        }
+
+    // --- request/response (RFC 9114 §4) -------------------------------------
+
+    private fun encodedFieldSection(fields: List<QpackHeaderField>): ReadBuffer {
+        val size = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
+        val buf = BufferFactory.Default.allocate(size.coerceAtLeast(1))
+        QpackFieldSectionCodec.encode(buf, fields, EncodeContext.Empty)
+        buf.resetForRead()
+        return buf
+    }
+
+    private fun asciiBuffer(text: String): ReadBuffer {
+        val buf = BufferFactory.Default.allocate(text.length.coerceAtLeast(1))
+        buf.writeString(text, Charset.UTF8)
+        buf.resetForRead()
+        return buf
+    }
+
+    private fun bufferOf(bytes: List<Int>): ReadBuffer {
+        val buf = BufferFactory.Default.allocate(bytes.size.coerceAtLeast(1))
+        for (b in bytes) buf.writeByte(b.toByte())
+        buf.resetForRead()
+        return buf
+    }
+
+    private fun fakeScopeWithBidi(
+        delegate: CoroutineScope,
+        bidi: QuicByteStream,
+    ): FakeQuicScope = FakeQuicScope(delegate, ClientStreams().outgoing(), incoming = emptyList(), bidi = ArrayDeque(listOf(bidi)))
+
+    @Test
+    fun request_writesRequestHeaders_andDecodesResponse() =
+        runTest {
+            coroutineScope {
+                val responseHeaders =
+                    listOf(
+                        QpackHeaderField(":status", "200"),
+                        QpackHeaderField("content-type", "text/plain"),
+                    )
+                val responseBytes =
+                    frameBytes(Http3Frame.Headers(encodedFieldSection(responseHeaders))) +
+                        frameBytes(Http3Frame.Data(asciiBuffer("hello")))
+                val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val response = connection.request(Http3Request(method = "GET", authority = "example.com", path = "/"))
+
+                assertEquals(200, response.status)
+                assertEquals(listOf(QpackHeaderField("content-type", "text/plain")), response.headers)
+                val body = response.readFullBody()
+                assertEquals("hello", body.readString(body.remaining(), Charset.UTF8))
+                response.close()
+
+                // The request stream carried exactly a HEADERS frame whose field section is the
+                // pseudo-headers in RFC 9114 §4.3.1 order.
+                val requestFrame = Http3FrameCodec.decode(bufferOf(recording.written), DecodeContext.Empty)
+                assertTrue(requestFrame is Http3Frame.Headers)
+                assertEquals(
+                    listOf(
+                        QpackHeaderField(":method", "GET"),
+                        QpackHeaderField(":scheme", "https"),
+                        QpackHeaderField(":authority", "example.com"),
+                        QpackHeaderField(":path", "/"),
+                    ),
+                    QpackFieldSectionCodec.decode((requestFrame as Http3Frame.Headers).encodedFieldSection, DecodeContext.Empty),
+                )
+            }
+        }
+
+    @Test
+    fun request_withBody_sendsHeadersThenDataFrame() =
+        runTest {
+            coroutineScope {
+                val recording =
+                    RecordingByteStream(
+                        listOf(
+                            dataChunk(frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField(":status", "204")))))),
+                            ReadResult.End,
+                        ),
+                    )
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val response =
+                    connection.request(
+                        Http3Request(method = "POST", authority = "h.test", path = "/upload", body = asciiBuffer("body!")),
+                    )
+
+                assertEquals(204, response.status)
+                assertEquals(emptyList<QpackHeaderField>(), response.headers)
+                response.close()
+
+                // Request stream = HEADERS frame, then a DATA frame carrying the body.
+                val written = bufferOf(recording.written)
+                assertTrue(Http3FrameCodec.decode(written, DecodeContext.Empty) is Http3Frame.Headers)
+                val dataFrame = Http3FrameCodec.decode(written, DecodeContext.Empty)
+                assertTrue(dataFrame is Http3Frame.Data)
+                assertEquals("body!", (dataFrame as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })
+            }
+        }
+
+    @Test
+    fun request_responseMissingStatus_throws() =
+        runTest {
+            coroutineScope {
+                val recording =
+                    RecordingByteStream(
+                        listOf(
+                            dataChunk(
+                                frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField("content-type", "text/plain"))))),
+                            ),
+                            ReadResult.End,
+                        ),
+                    )
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+
+                assertFailsWith<Http3StreamException> {
+                    connection.request(Http3Request(method = "GET", authority = "example.com", path = "/"))
+                }
             }
         }
 }

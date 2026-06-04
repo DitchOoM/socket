@@ -1,5 +1,6 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteStream
@@ -72,6 +73,93 @@ class Http3Connection private constructor(
      * the first frame was, if it wasn't SETTINGS (a protocol violation).
      */
     suspend fun peerSettings(): Http3Settings = peerSettingsDeferred.await()
+
+    /**
+     * Issues an HTTP/3 request on a fresh client-initiated bidirectional stream (RFC 9114 §4.1)
+     * and returns once the response's HEADERS frame has been read and decoded; the body streams
+     * lazily via the returned [Http3Response].
+     *
+     * Sends the request HEADERS frame (pseudo-headers first, QPACK static-table-only), an
+     * optional single DATA frame for [Http3Request.body], then a send-side FIN (half-close) so
+     * the read side stays open for the response. Deliberately does **not** wait on
+     * [peerSettings] — a plain request depends on no peer setting (WebTransport's Extended
+     * CONNECT, which does, runs its own check).
+     *
+     * The caller must [Http3Response.close] the response (or consume it via
+     * [Http3Response.readFullBody] then close) to release stream-reader buffers.
+     */
+    suspend fun request(request: Http3Request): Http3Response {
+        val stream = scope.openStream()
+        val fields =
+            buildList {
+                add(QpackHeaderField(":method", request.method))
+                add(QpackHeaderField(":scheme", request.scheme))
+                add(QpackHeaderField(":authority", request.authority))
+                add(QpackHeaderField(":path", request.path))
+                addAll(request.headers)
+            }
+
+        val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
+        val sectionBuffer = pool.allocate(sectionSize)
+        try {
+            QpackFieldSectionCodec.encode(sectionBuffer, fields, EncodeContext.Empty)
+            sectionBuffer.resetForRead()
+            writeFrame(stream, Http3Frame.Headers(sectionBuffer))
+        } finally {
+            sectionBuffer.freeIfNeeded()
+        }
+        request.body?.let { writeFrame(stream, Http3Frame.Data(it)) }
+
+        // Half-close: finish the request's send side, keep reading the response (RFC 9114 §4).
+        stream.shutdownSend()
+
+        val reader = Http3StreamReader.create(stream, pool)
+        try {
+            while (true) {
+                val frame =
+                    reader.nextFrame(options.readTimeout)
+                        ?: throw Http3StreamException("response stream ended before a HEADERS frame")
+                if (frame is Http3Frame.Headers) {
+                    val decoded =
+                        QpackFieldSectionCodec.decode(
+                            frame.encodedFieldSection,
+                            DecodeContext.Empty.with(QpackScratchPoolKey, pool),
+                        )
+                    val status = parseStatus(decoded)
+                    val headers = decoded.filterNot { it.name.startsWith(":") }
+                    return Http3Response(status, headers, reader, pool, options.readTimeout)
+                }
+                // A DATA/unknown frame before HEADERS is malformed; skip it defensively.
+            }
+        } catch (t: Throwable) {
+            reader.release()
+            throw t
+        }
+    }
+
+    /** Encode [frame] into a pooled buffer and write the whole frame to [stream]. */
+    private suspend fun writeFrame(
+        stream: QuicByteStream,
+        frame: Http3Frame,
+    ) {
+        val size = (Http3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
+        val buffer = pool.allocate(size)
+        try {
+            Http3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
+            buffer.resetForRead()
+            stream.write(buffer, options.writeTimeout)
+        } finally {
+            buffer.freeIfNeeded()
+        }
+    }
+
+    private fun parseStatus(fields: List<QpackHeaderField>): Int {
+        val raw =
+            fields.firstOrNull { it.name == ":status" }?.value
+                ?: throw Http3StreamException("response HEADERS missing the :status pseudo-header")
+        return raw.toIntOrNull()
+            ?: throw Http3StreamException("response :status was not a number: \"$raw\"")
+    }
 
     /**
      * Writes the client's stream-type prefixes and control-stream SETTINGS, then launches the
