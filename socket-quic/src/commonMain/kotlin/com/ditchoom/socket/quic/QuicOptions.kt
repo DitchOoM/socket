@@ -139,11 +139,12 @@ data class QuicOptions(
      * Use this to talk to a server whose chain roots in a private CA (e.g. a local
      * test harness) without installing that CA into the OS keychain.
      *
-     * **Platform support:** wired on Apple (Network.framework) today, where a pinned
-     * anchor is also Certificate-Transparency-exempt. On the quiche-backed targets
-     * (JVM/Android/Linux) this is not yet applied — those paths use [verifyPeer] and
-     * quiche's own `quiche_config_load_verify_locations_from_file`; symmetric wiring
-     * is a follow-up. Validation is real chain evaluation, not a bypass.
+     * **Platform support:** wired on all targets. On Apple (Network.framework) a pinned
+     * anchor drives the CA-pinning `verify_block` and is also Certificate-Transparency-exempt.
+     * On the quiche-backed targets (JVM/Android/Linux) the anchors are loaded via
+     * `quiche_config_load_verify_locations_from_file`. Supplying anchors forces peer
+     * verification on (overriding [verifyPeer] = false), so validation is real chain
+     * evaluation against the pinned anchors — not a bypass. (#99)
      */
     val trustedCaCertificatesPem: List<String> = emptyList(),
     /** Enable Path MTU Discovery. */

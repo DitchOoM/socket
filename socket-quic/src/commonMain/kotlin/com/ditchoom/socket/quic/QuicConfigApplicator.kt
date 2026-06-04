@@ -87,7 +87,11 @@ internal fun applyQuicOptions(
 
     calls.setDisableActiveMigration(options.disableActiveMigration)
     calls.setActiveConnectionIdLimit(options.activeConnectionIdLimit)
-    calls.verifyPeer(options.verifyPeer)
+    // Pinning CA anchors (trustedCaCertificatesPem) implies peer verification against
+    // those anchors regardless of verifyPeer's value — mirrors the Apple path, where a
+    // pinned anchor always drives a real verify_block. The anchors themselves are loaded
+    // by the platform connect path (it owns the PEM→temp-file→native handoff). (#99)
+    calls.verifyPeer(options.verifyPeer || options.trustedCaCertificatesPem.isNotEmpty())
 
     // Congestion control
     calls.setCcAlgorithm(options.congestionControl.quicheValue)
