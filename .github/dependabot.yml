@@ -1,0 +1,51 @@
+# Dependabot keeps GitHub Actions and the independently-versioned Gradle
+# libraries current. The pieces it CANNOT handle are deliberately left to the
+# weekly Claude agent (.github/workflows/weekly-dependency-update.yaml):
+#   - the tightly-coupled toolchain (Kotlin, KSP, kotlin-wrappers, AGP) that
+#     must move in lockstep and needs a real build to validate;
+#   - the Gradle wrapper, which Dependabot cannot update;
+#   - the native deps built from source (quiche/BoringSSL, liburing), which are
+#     plain version strings in gradle/libs.versions.toml, not Maven modules, so
+#     Dependabot never sees them at all.
+version: 2
+updates:
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "07:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    # Coordinated, build-validated toolchain bumps are owned by the weekly
+    # Claude agent. Kotlin / KSP / kotlin-wrappers must move in lock step (a
+    # lone Kotlin bump breaks KSP), and AGP majors need a build to verify.
+    ignore:
+      - dependency-name: "org.jetbrains.kotlin:*"
+      - dependency-name: "org.jetbrains.kotlin.*"
+      - dependency-name: "com.google.devtools.ksp*"
+      - dependency-name: "org.jetbrains.kotlin-wrappers:*"
+      - dependency-name: "com.android.*"
+    groups:
+      gradle-minor-patch:
+        # One PR for all non-major bumps to keep noise down; majors stay separate.
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "07:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
