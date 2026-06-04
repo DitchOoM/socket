@@ -67,9 +67,31 @@ A possible upstream follow-up: add varint-discriminator support to `buffer-codec
   `Http3Response` (status/headers + streaming body via `nextBodyChunk` / `readFullBody` +
   `trailers`), and `Http3Connection.request()` (open bidi → HEADERS [+ DATA] → `shutdownSend()`
   → read response; does NOT gate on `peerSettings()`). Scripted tests via the extended
-  `FakeQuicScope` (now serves a bidi stream from `openStream`). 114 jvm + js tests green.
+  `FakeQuicScope` (now serves a bidi stream from `openStream`).
+- **Step 5 public wrapper + live interop** (`:socket-http3`, commit `0c6e52d`):
+  `withHttp3Connection(host, port=443, …)` = `withQuicConnection` + `bootstrap` (mirrors
+  `withQuicMux`). `Http3PublicEndpointInteropTests` does a real `GET /` to cloudflare-quic.com +
+  www.google.com (skip-on-unreachable; `:status` asserted *outside* the catch). **Both returned
+  `status=200` locally** — the whole client works end-to-end against production `h3` (QUIC + real
+  cert + SETTINGS + QPACK static-table HEADERS + Huffman-decoded response headers + half-close).
+  Build wiring: `:socket-quic`'s staged quiche natives are put on `:socket-http3`'s jvmTest
+  classpath (FFM loads `libquiche.so`); depends on `stageQuicheNativeResources`. **115 jvm + js
+  green.**
 
-## NEXT — step 4b/5: live interop GET + public wrapper
+  **The minimal HTTP/3 GET client (issue #86) is now functionally complete and interop-proven.**
+
+## NEXT — hardening + reach, then WebTransport
+
+Remaining (none blocks a working GET client):
+- **Expand `:socket-http3` to the full `:socket-quic` target matrix** (linuxX64, Apple, Android,
+  wasmJs) + maven-publish. The interop test's native-classpath wiring is jvm-only; native targets
+  load quiche via cinterop already, so mainly a target-list + publishing task.
+- **POST/streaming-body ergonomics** and trailers surfacing (the pieces exist; no first-class API).
+- **GOAWAY / MAX_PUSH_ID handling** on the control stream (currently read + ignored).
+- **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
+  + RFC 9297 HTTP Datagrams + Capsule protocol, over the existing QUIC datagram + stream plumbing.
+
+## (historical) step 4b/5 plan — now DONE, see above
 
 Settled design forks (from the user):
 
