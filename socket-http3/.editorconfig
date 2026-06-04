@@ -1,0 +1,7 @@
+# KSP-generated buffer-codec sources live under build/generated/ksp/... and are added
+# to commonMain as a srcDir so they compile. They are machine-generated, so ktlint must
+# not lint them. The Gradle `filter { exclude }` can't match them (their path is relative
+# to the generated srcDir root, which has no "generated" segment), so disable ktlint here —
+# the canonical, plugin-version-independent mechanism.
+[**/generated/**]
+ktlint = disabled
