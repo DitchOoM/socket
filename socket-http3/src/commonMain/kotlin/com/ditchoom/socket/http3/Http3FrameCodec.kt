@@ -40,8 +40,31 @@ object Http3FrameCodec : Codec<Http3Frame> {
             Http3FrameType.DATA -> Http3Frame.Data(buffer.readBytes(len))
             Http3FrameType.HEADERS -> Http3Frame.Headers(buffer.readBytes(len))
             Http3FrameType.SETTINGS -> Http3Frame.Settings(decodeSettings(buffer, len, context))
+            Http3FrameType.GOAWAY -> Http3Frame.GoAway(decodeSingleVarIntFrame(buffer, len, context, "Http3Frame.GoAway.id"))
+            Http3FrameType.MAX_PUSH_ID ->
+                Http3Frame.MaxPushId(decodeSingleVarIntFrame(buffer, len, context, "Http3Frame.MaxPushId.pushId"))
+            Http3FrameType.CANCEL_PUSH ->
+                Http3Frame.CancelPush(decodeSingleVarIntFrame(buffer, len, context, "Http3Frame.CancelPush.pushId"))
             else -> Http3Frame.Unknown(type, buffer.readBytes(len))
         }
+    }
+
+    /**
+     * Decodes a frame whose entire payload is a single varint (GOAWAY / MAX_PUSH_ID /
+     * CANCEL_PUSH, RFC 9114 §7.2.6/§7.2.7/§7.2.3). The varint is bounds-checked against the
+     * declared frame [length]; the buffer is then advanced to the frame end so a malformed
+     * over-long frame can't leave a reader misaligned.
+     */
+    private fun decodeSingleVarIntFrame(
+        buffer: ReadBuffer,
+        length: Int,
+        context: DecodeContext,
+        fieldPath: String,
+    ): Long {
+        val end = buffer.position() + length
+        val value = decodeBoundedVarInt(buffer, end, context, fieldPath)
+        buffer.position(end)
+        return value
     }
 
     private fun decodeSettings(
@@ -94,6 +117,9 @@ object Http3FrameCodec : Codec<Http3Frame> {
             is Http3Frame.Data -> writeOpaque(buffer, Http3FrameType.DATA, value.payload, context)
             is Http3Frame.Headers -> writeOpaque(buffer, Http3FrameType.HEADERS, value.encodedFieldSection, context)
             is Http3Frame.Unknown -> writeOpaque(buffer, value.type, value.payload, context)
+            is Http3Frame.GoAway -> writeSingleVarInt(buffer, Http3FrameType.GOAWAY, value.id, context)
+            is Http3Frame.MaxPushId -> writeSingleVarInt(buffer, Http3FrameType.MAX_PUSH_ID, value.pushId, context)
+            is Http3Frame.CancelPush -> writeSingleVarInt(buffer, Http3FrameType.CANCEL_PUSH, value.pushId, context)
             is Http3Frame.Settings -> {
                 VarIntCodec.encode(buffer, Http3FrameType.SETTINGS, context)
                 VarIntCodec.encode(buffer, settingsBodyLength(value.entries).toLong(), context)
@@ -120,8 +146,28 @@ object Http3FrameCodec : Codec<Http3Frame> {
         payload.position(savedPosition)
     }
 
+    /** Writes a frame whose whole payload is a single varint (GOAWAY / MAX_PUSH_ID / CANCEL_PUSH). */
+    private fun writeSingleVarInt(
+        buffer: WriteBuffer,
+        type: Long,
+        value: Long,
+        context: EncodeContext,
+    ) {
+        VarIntCodec.encode(buffer, type, context)
+        VarIntCodec.encode(buffer, VarIntCodec.encodedLength(value).toLong(), context)
+        VarIntCodec.encode(buffer, value, context)
+    }
+
     private fun settingsBodyLength(entries: List<Http3Setting>): Int =
         entries.sumOf { VarIntCodec.encodedLength(it.identifier) + VarIntCodec.encodedLength(it.value) }
+
+    private fun singleVarIntFrameSize(
+        type: Long,
+        value: Long,
+    ): Int {
+        val body = VarIntCodec.encodedLength(value)
+        return VarIntCodec.encodedLength(type) + VarIntCodec.encodedLength(body.toLong()) + body
+    }
 
     override fun wireSize(
         value: Http3Frame,
@@ -132,6 +178,9 @@ object Http3FrameCodec : Codec<Http3Frame> {
                 is Http3Frame.Data -> frameSize(Http3FrameType.DATA, value.payload.remaining())
                 is Http3Frame.Headers -> frameSize(Http3FrameType.HEADERS, value.encodedFieldSection.remaining())
                 is Http3Frame.Unknown -> frameSize(value.type, value.payload.remaining())
+                is Http3Frame.GoAway -> singleVarIntFrameSize(Http3FrameType.GOAWAY, value.id)
+                is Http3Frame.MaxPushId -> singleVarIntFrameSize(Http3FrameType.MAX_PUSH_ID, value.pushId)
+                is Http3Frame.CancelPush -> singleVarIntFrameSize(Http3FrameType.CANCEL_PUSH, value.pushId)
                 is Http3Frame.Settings -> {
                     val body = settingsBodyLength(value.entries)
                     VarIntCodec.encodedLength(Http3FrameType.SETTINGS) + VarIntCodec.encodedLength(body.toLong()) + body

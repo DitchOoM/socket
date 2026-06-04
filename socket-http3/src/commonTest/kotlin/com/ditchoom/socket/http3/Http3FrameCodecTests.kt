@@ -233,4 +233,39 @@ class Http3FrameCodecTests {
         // Type present but length varint announces 4 bytes, only 1 of them present.
         assertEquals(PeekResult.NeedsMoreData, Http3FrameCodec.peekFrameSize(streamOf(0x00, 0x80), 0))
     }
+
+    // --- single-varint control frames: GOAWAY (0x07) / MAX_PUSH_ID (0x0d) / CANCEL_PUSH (0x03) ---
+
+    @Test
+    fun goAway_roundTripsAndEncodesTypeLengthVarint() {
+        // GOAWAY id=0 → type 0x07, length 0x01, value 0x00.
+        assertEquals(listOf(0x07, 0x01, 0x00), encodeFrame(Http3Frame.GoAway(0)))
+        assertEquals(Http3Frame.GoAway(0), decodeFrame(0x07, 0x01, 0x00))
+
+        // A 2-byte varint id (15293 = 0x7bbd) → length 0x02.
+        assertEquals(listOf(0x07, 0x02, 0x7b, 0xbd), encodeFrame(Http3Frame.GoAway(15293)))
+        assertEquals(Http3Frame.GoAway(15293), decodeFrame(0x07, 0x02, 0x7b, 0xbd))
+        assertEquals(4, wireSizeOf(Http3Frame.GoAway(15293)))
+    }
+
+    @Test
+    fun maxPushId_andCancelPush_roundTrip() {
+        assertEquals(Http3Frame.MaxPushId(63), decodeFrame(*encodeFrame(Http3Frame.MaxPushId(63)).toIntArray()))
+        assertEquals(Http3Frame.CancelPush(7), decodeFrame(*encodeFrame(Http3Frame.CancelPush(7)).toIntArray()))
+        // CANCEL_PUSH(7) = type 0x03, length 0x01, value 0x07.
+        assertEquals(listOf(0x03, 0x01, 0x07), encodeFrame(Http3Frame.CancelPush(7)))
+    }
+
+    @Test
+    fun controlFrames_decodeSequentiallyFromOneBuffer() {
+        // Control-stream tail: GOAWAY then MAX_PUSH_ID, back to back — the decoder must leave
+        // the buffer aligned after each single-varint frame.
+        val buf = BufferFactory.Default.allocate(32)
+        Http3FrameCodec.encode(buf, Http3Frame.GoAway(4), EncodeContext.Empty)
+        Http3FrameCodec.encode(buf, Http3Frame.MaxPushId(100), EncodeContext.Empty)
+        buf.resetForRead()
+        assertEquals(Http3Frame.GoAway(4), Http3FrameCodec.decode(buf, DecodeContext.Empty))
+        assertEquals(Http3Frame.MaxPushId(100), Http3FrameCodec.decode(buf, DecodeContext.Empty))
+        assertEquals(0, buf.remaining(), "both frames fully consumed")
+    }
 }

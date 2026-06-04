@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -381,6 +383,51 @@ class Http3ConnectionTests {
                 assertFailsWith<Http3StreamException> {
                     connection.request(Http3Request(method = "GET", authority = "example.com", path = "/"))
                 }
+            }
+        }
+
+    @Test
+    fun request_surfacesTrailers() =
+        runTest {
+            coroutineScope {
+                // Response: HEADERS(:status 200), DATA("hi"), then a trailing HEADERS section.
+                val responseBytes =
+                    frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField(":status", "200"))))) +
+                        frameBytes(Http3Frame.Data(asciiBuffer("hi"))) +
+                        frameBytes(Http3Frame.Headers(encodedFieldSection(listOf(QpackHeaderField("x-trailer", "done")))))
+                val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
+                val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val response = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
+                assertEquals(200, response.status)
+                val body = response.readFullBody()
+                assertEquals("hi", body.readString(body.remaining(), com.ditchoom.buffer.Charset.UTF8))
+                assertEquals(listOf(QpackHeaderField("x-trailer", "done")), response.trailers)
+                response.close()
+            }
+        }
+
+    // --- GOAWAY surfacing (RFC 9114 §7.2.6) ---------------------------------
+
+    @Test
+    fun goAway_isSurfacedFromControlStream() =
+        runTest {
+            coroutineScope {
+                // Peer control stream: SETTINGS then GOAWAY(last-stream-id = 8).
+                val controlBytes =
+                    listOf(Http3StreamType.CONTROL.toInt()) +
+                        frameBytes(clientSettings()) +
+                        frameBytes(Http3Frame.GoAway(8))
+                val peerControl =
+                    QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+
+                // Deterministic: the router reads the control stream's GOAWAY after SETTINGS and
+                // updates the StateFlow; await the non-null value.
+                assertEquals(8L, connection.goAway.filterNotNull().first())
             }
         }
 }

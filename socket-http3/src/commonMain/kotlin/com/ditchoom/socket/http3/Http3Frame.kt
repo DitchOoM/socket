@@ -1,6 +1,7 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
+import kotlin.jvm.JvmInline
 
 /**
  * An HTTP/3 frame (RFC 9114 §7.1): `Type (i)`, `Length (i)`, `Frame Payload`.
@@ -8,39 +9,68 @@ import com.ditchoom.buffer.ReadBuffer
  * This layer models the frame *envelope* only. The payloads of [Data] and
  * [Headers] are kept as opaque [ReadBuffer]s — DATA is request/response body
  * bytes, and a HEADERS payload is a QPACK-encoded field section decoded in a
- * later layer (RFC 9204). [Settings] is the one frame whose payload is fully
- * structured here.
+ * later layer (RFC 9204). [Settings], [GoAway], [MaxPushId] and [CancelPush] are
+ * the frames whose payloads are fully structured here.
  *
- * Frame types not modeled explicitly (CANCEL_PUSH, PUSH_PROMISE, GOAWAY,
- * MAX_PUSH_ID, and reserved/GREASE types) decode to [Unknown], which carries
- * the raw type and payload so a receiver can apply RFC 9114 §9's rule of
- * ignoring unknown frame types.
+ * Frame types not modeled explicitly (PUSH_PROMISE and reserved/GREASE types)
+ * decode to [Unknown], which carries the raw type and payload so a receiver can
+ * apply RFC 9114 §9's rule of ignoring unknown frame types.
  *
  * Note: the [Data]/[Headers]/[Unknown] payload is a position-bearing
  * [ReadBuffer] view over the source bytes — reading it advances its position,
  * so read it once (or `slice()` it for an independent view). Encoding a frame
  * via [Http3FrameCodec] does *not* consume the payload.
+ *
+ * Single-field variants are `@JvmInline value class` for consistency with the rest of the
+ * codebase (e.g. [com.ditchoom.socket.quic.DatagramReceiveResult], `QuicStreamId`); note they
+ * box when handled through the [Http3Frame] supertype, so this is for descriptiveness, not a
+ * zero-allocation guarantee. [Unknown] carries two fields and stays a `data class`.
  */
 sealed interface Http3Frame {
     /** DATA (type 0x00): opaque message-body bytes. */
-    data class Data(
+    @JvmInline
+    value class Data(
         val payload: ReadBuffer,
     ) : Http3Frame
 
     /** HEADERS (type 0x01): a QPACK-encoded field section, opaque at this layer. */
-    data class Headers(
+    @JvmInline
+    value class Headers(
         val encodedFieldSection: ReadBuffer,
     ) : Http3Frame
 
     /** SETTINGS (type 0x04): a sequence of identifier/value pairs (RFC 9114 §7.2.4). */
-    data class Settings(
+    @JvmInline
+    value class Settings(
         val entries: List<Http3Setting>,
     ) : Http3Frame
 
     /**
-     * Any frame whose type is not modeled above — known control frames not yet
-     * handled, reserved types, or GREASE ([Http3FrameType.isReserved]). The
-     * [payload] is retained for round-tripping; receivers normally ignore it.
+     * GOAWAY (type 0x07): the sender is shutting down gracefully (RFC 9114 §7.2.6). On a
+     * server→client GOAWAY, [id] is the last client-initiated bidirectional stream id the
+     * server may process; the client must not open requests with a higher id.
+     */
+    @JvmInline
+    value class GoAway(
+        val id: Long,
+    ) : Http3Frame
+
+    /** MAX_PUSH_ID (type 0x0d): the maximum push id the client will accept (RFC 9114 §7.2.7). */
+    @JvmInline
+    value class MaxPushId(
+        val pushId: Long,
+    ) : Http3Frame
+
+    /** CANCEL_PUSH (type 0x03): request cancellation of a server push (RFC 9114 §7.2.3). */
+    @JvmInline
+    value class CancelPush(
+        val pushId: Long,
+    ) : Http3Frame
+
+    /**
+     * Any frame whose type is not modeled above — PUSH_PROMISE, reserved types, or GREASE
+     * ([Http3FrameType.isReserved]). The [payload] is retained for round-tripping; receivers
+     * normally ignore it. Two fields, so it stays a `data class`.
      */
     data class Unknown(
         val type: Long,

@@ -14,6 +14,10 @@ import com.ditchoom.socket.quic.QuicScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 
@@ -65,6 +69,15 @@ class Http3Connection private constructor(
     private val qpackDecoderStream: QuicByteStream,
 ) {
     private val peerSettingsDeferred = CompletableDeferred<Http3Settings>()
+    private val _goAway = MutableStateFlow<Long?>(null)
+
+    /**
+     * The last client-initiated stream id the peer will process, from a server GOAWAY frame
+     * (RFC 9114 §7.2.6), or null until one is received. Once non-null, callers should stop
+     * issuing [request]s — the server is shutting the connection down gracefully. Holds the
+     * lowest id seen across repeated GOAWAYs (ids are non-increasing).
+     */
+    val goAway: StateFlow<Long?> get() = _goAway.asStateFlow()
 
     /**
      * Suspends until the peer's control stream has delivered its SETTINGS frame (RFC 9114
@@ -277,8 +290,21 @@ class Http3Connection private constructor(
                 return
             }
             peerSettingsDeferred.complete(Http3Settings(first.entries))
-            while (reader.nextFrame() != null) {
-                // Ignore later control frames for now (GOAWAY/MAX_PUSH_ID handling comes later).
+            while (true) {
+                when (val frame = reader.nextFrame()) {
+                    null -> break // control stream ended
+                    // GOAWAY (RFC 9114 §7.2.6): the server is going away; surface the last
+                    // processable stream id. Ids are non-increasing across repeated GOAWAYs —
+                    // keep the lowest so callers see the tightest bound.
+                    is Http3Frame.GoAway ->
+                        _goAway.update { current -> if (current == null) frame.id else minOf(current, frame.id) }
+                    // MAX_PUSH_ID (RFC 9114 §7.2.7): raises the push-id ceiling. This client
+                    // never enables server push (it sends none), so there's nothing to act on.
+                    is Http3Frame.MaxPushId -> {}
+                    // Other control frames (CANCEL_PUSH, reserved/GREASE, …) carry nothing this
+                    // client acts on yet — read and ignore (RFC 9114 §9).
+                    else -> {}
+                }
             }
         } catch (e: CancellationException) {
             throw e
