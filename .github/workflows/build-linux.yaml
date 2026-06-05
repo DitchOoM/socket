@@ -21,14 +21,14 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Install both 17 and 21. The build/toolchain runs on 21 (the last entry
       # becomes the default JAVA_HOME) — required to compile the FFM bindings —
       # while JDK 17 (exposed as JAVA_HOME_17_X64) lets the "JDK 17 / JNI" test
       # step below run :socket-quic:jvmTest on a JDK < 21 launcher.
       - name: Set up JDKs (17 + 21)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: |
@@ -37,50 +37,50 @@ jobs:
           cache: gradle
 
       - name: Setup Chrome
-        uses: browser-actions/setup-chrome@v1
+        uses: browser-actions/setup-chrome@v2
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
+        uses: android-actions/setup-android@v4
 
       - name: Cache Konan
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.konan
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
 
       - name: Cache BoringSSL x64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: libs/boringssl/linux-x64
           key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache BoringSSL ARM64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: libs/boringssl/linux-arm64
           key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache OpenSSL x64 (legacy fallback)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: libs/openssl/linux-x64
           key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache OpenSSL ARM64 (legacy fallback)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: libs/openssl/linux-arm64
           key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache liburing x64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: libs/liburing/linux-x64
           key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache liburing ARM64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
@@ -116,13 +116,13 @@ jobs:
       # buildJvmJniShim*), so a single platform dir covers both outputs.
       # Hash quiche_jni.c too so shim edits invalidate the cache.
       - name: Cache quiche Linux x64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: socket-quic/libs/quiche/linux-x64
           key: quiche-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: socket-quic/libs/quiche/linux-arm64
           key: quiche-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
@@ -142,14 +142,14 @@ jobs:
       # restore-keys gives a partial-hit on version bumps so cargo incremental
       # recompile picks up from the previous build instead of from zero.
       - name: Cache quiche cargo target/ (all triples)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: socket-quic/build/quiche
           key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
           restore-keys: quiche-cargo-target-v1-
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -454,7 +454,7 @@ jobs:
 
       - name: Upload Linux x64 JVM QUIC audit artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quic-audit-linux-jvm
           path: /tmp/quic-audit/linux-jvm.txt
@@ -482,7 +482,7 @@ jobs:
       # diagnose the intermittent :socket-quic:jvmTest SIGABRT instead of guessing.
       - name: Upload test reports (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports-linux
           path: |
@@ -497,7 +497,7 @@ jobs:
 
       - name: Upload Android native libs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-native-libs
           path: |
@@ -511,7 +511,7 @@ jobs:
       # validate-artifacts.yaml injects them post-merge from this artifact.
       - name: Upload quiche Linux native libs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quiche-linux-natives
           path: socket-quic/libs/quiche/linux-*/lib/
@@ -525,7 +525,7 @@ jobs:
       # the Linux job green if the cross-compile didn't produce the DLL.
       - name: Upload quiche Windows native lib
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quiche-windows-natives
           path: socket-quic/libs/quiche/windows-x64/lib/quiche_jni.dll
@@ -533,7 +533,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload ARM64 test binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-arm64-test-binary
           path: |
@@ -548,7 +548,7 @@ jobs:
       # same artifact runs under the arm64 manifest of the base image
       # without further fiddling. Phase 3 of the QUIC CI coverage plan.
       - name: Upload quic-echo Docker context
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quic-echo-docker-context
           path: |
@@ -562,7 +562,7 @@ jobs:
         run: ./gradlew publishToMavenLocal --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Upload Maven local artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: maven-local-linux
           path: ~/.m2/repository/com/ditchoom
@@ -578,10 +578,10 @@ jobs:
       # This job runs raw K/Native .kexe binaries and bypasses Gradle, so the
       # harnessUp/harnessDown Gradle tasks never fire. We bring the harness
       # up/down at the YAML level instead.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download ARM64 test binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-arm64-test-binary
 
@@ -603,7 +603,7 @@ jobs:
       # image is multi-arch on Docker Hub so the same artifact runs
       # under the arm64 manifest here without further fiddling.
       - name: Download quic-echo Docker context
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: quic-echo-docker-context
           path: test-harness/quic-echo/
@@ -689,7 +689,7 @@ jobs:
 
       - name: Upload Linux ARM64 QUIC audit artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: quic-audit-linux-arm64
           path: /tmp/quic-audit/linux-arm64.txt

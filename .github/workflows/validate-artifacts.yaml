@@ -15,26 +15,26 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Download Linux artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: maven-local-linux
           path: /tmp/linux-repo/com/ditchoom
 
       - name: Download Apple artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: maven-local-apple
           path: /tmp/apple-repo/com/ditchoom
 
       - name: Download macOS quiche native libs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: quiche-macos-natives
           path: /tmp/quiche-macos-natives
         continue-on-error: true  # may not exist if quiche build failed
 
       - name: Download Linux quiche native libs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: quiche-linux-natives
           path: /tmp/quiche-linux-natives
@@ -207,14 +207,14 @@ jobs:
           rm -rf "$INJECT_DIR"
 
       - name: Upload merged artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: maven-local-merged
           path: /tmp/maven-local
           retention-days: 1
 
       - name: Checkout validation project
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           sparse-checkout: |
             .ci/validate-resolution
@@ -222,13 +222,13 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Validate with Gradle resolution
         run: |
