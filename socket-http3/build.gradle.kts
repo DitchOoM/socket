@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
     signing
@@ -242,5 +243,24 @@ ktlint {
     filter {
         exclude("**/generated/**")
         exclude("**/build/**")
+    }
+}
+
+// KSP-for-main: run the buffer-codec processor once on the common metadata compilation so the
+// generated declarative codecs land in commonMain and every target compilation sees the same
+// symbols (the KSP2 common-multiplatform shape; per-target runs would scatter sources). Mirrors
+// buffer's own buffer-codec-test wiring.
+dependencies {
+    add("kspCommonMainMetadata", libs.buffer.codec.processor)
+    add("kspCommonMainMetadata", libs.buffer.codec)
+}
+
+kotlin.sourceSets.named("commonMain") {
+    kotlin.srcDir("build/generated/ksp/metadata/commonMain/kotlin")
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
+    if (name != "kspCommonMainKotlinMetadata") {
+        dependsOn("kspCommonMainKotlinMetadata")
     }
 }

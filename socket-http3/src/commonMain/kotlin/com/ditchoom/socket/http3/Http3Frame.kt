@@ -1,6 +1,8 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.codec.annotations.ProtocolMessage
+import com.ditchoom.buffer.codec.annotations.UseCodec
 import kotlin.jvm.JvmInline
 
 /**
@@ -90,10 +92,17 @@ sealed interface Http3Frame {
     ) : Http3Frame
 }
 
-/** One SETTINGS entry: a varint [identifier] and its varint [value]. */
+/**
+ * One SETTINGS entry: a varint [identifier] and its varint [value].
+ *
+ * `@ProtocolMessage` generates `Http3SettingCodec` (two QUIC varints via [VarIntCodec]) — the first
+ * declarative codec in this module, the building block for migrating the SETTINGS body and the rest of
+ * the frame layer off the hand-written [Http3FrameCodec].
+ */
+@ProtocolMessage
 data class Http3Setting(
-    val identifier: Long,
-    val value: Long,
+    @UseCodec(VarIntCodec::class) val identifier: Long,
+    @UseCodec(VarIntCodec::class) val value: Long,
 )
 
 /** HTTP/3 frame type codes (RFC 9114 §11.2.1). */
