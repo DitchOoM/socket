@@ -85,6 +85,44 @@ class QpackDynamicTableTests {
     }
 
     @Test
+    fun insertIfEvictableEvictsOnlyWhenEveryVictimIsEvictable() {
+        // capacity 70 holds two 34-octet entries; inserting a third must evict the oldest (absolute 0).
+        val t = table(70)
+        t.insert("a", "1") // abs 0
+        t.insert("b", "2") // abs 1
+
+        // Victim (abs 0) refused by the predicate ⇒ no insert, table untouched.
+        val refused = t.insertIfEvictable("c", "3") { it.absoluteIndex != 0L }
+        assertNull(refused)
+        assertEquals(2L, t.insertCount, "refused insert does not advance insertCount")
+        assertEquals(68L, t.size)
+        assertTrue(t.isLive(0), "refused insert evicts nothing")
+
+        // Victim allowed ⇒ evicts abs 0 and inserts at abs 2.
+        val accepted = t.insertIfEvictable("c", "3") { true }
+        assertEquals(2L, accepted)
+        assertNull(t.getByAbsolute(0), "oldest evicted once allowed")
+        assertEquals("c", t.getByAbsolute(2)?.name)
+    }
+
+    @Test
+    fun insertIfEvictableFitsWithoutEvictionNeverConsultsPredicate() {
+        val t = table(1000)
+        t.insert("a", "1")
+        // Plenty of room ⇒ predicate must not even be asked (no eviction needed).
+        val abs = t.insertIfEvictable("b", "2") { error("predicate consulted though no eviction was needed") }
+        assertEquals(1L, abs)
+        assertTrue(t.isLive(0) && t.isLive(1))
+    }
+
+    @Test
+    fun insertIfEvictableRejectsEntryLargerThanCapacity() {
+        val t = table(40)
+        assertNull(t.insertIfEvictable("name", "a-very-long-value-that-exceeds-capacity") { true })
+        assertEquals(0L, t.insertCount)
+    }
+
+    @Test
     fun maxEntriesIsMaxCapacityOver32() {
         assertEquals(31L, QpackDynamicTable(1000).maxEntries) // floor(1000/32)
         assertEquals(0L, QpackDynamicTable(0).maxEntries)

@@ -309,9 +309,28 @@ Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) 
 - **Apple/Android CI tests.** `:socket-http3:testDebugUnitTest` added to build-linux.yaml (Android unit
   — codec/scripted + skip-guarded interop, validated locally) and `:socket-http3:macosArm64Test` to
   build-apple.yaml.
-- **Deliberately deferred — smarter QPACK encoder eviction/blocking.** NOT minor: correctness-critical
-  vs. the current correct-and-interop-proven never-evict strategy. Do it as its own adversarially-tested
-  effort, not a tail-end bundle.
+- **QPACK encoder eviction tune — DONE (eviction, still non-blocking).** The encoder is no longer
+  never-evict: a full table now evicts its oldest entries to admit new ones, so it keeps churning as
+  headers evolve instead of freezing once full. Correctness via **reference counting** — `entryRefCount`
+  (absolute index → #outstanding sections referencing it, plus the section being built) and
+  `QpackDynamicTable.insertIfEvictable(predicate)`, which evicts oldest-first **only** when every victim
+  is unreferenced (RFC 9204 §2.1.3); the decoder evicts in lockstep, so a referenced entry is never
+  evicted out from under an in-flight section. Section Acknowledgment / Stream Cancellation release a
+  section's pins. The **non-blocking invariant is preserved** — still references only acknowledged
+  (`< knownReceivedCount`) live entries, so QPACK_BLOCKED_STREAMS stays 0 and there is no
+  eviction-vs-blocked-stream interaction. Adversarial tests: `QpackDynamicTableTests` (predicate-gated
+  eviction) + `QpackEncoderTests` (`tableChurnsViaEvictionAndReReferencesPostEvictionEntry`,
+  `inFlightSectionPreventsEvictionOfItsReferencedEntry`, `streamCancellationReleasesPinnedEntryForEviction`).
+  Green jvm + linuxX64; existing dynamic-QPACK loopback unchanged.
+  **Third-party interop validated.** `Http3DockerInteropTests` drives 64 evicting requests against a real
+  **aioquic/lsqpack** server (`socket-http3/docker-interop/`, `run-server.sh`) on `127.0.0.1` loopback —
+  a *foreign* QPACK decoder accepts our evicting encoder stream end-to-end (passed jvm + linuxX64, at both
+  the default 4096 and a thrash-the-table 256-octet capacity). Skip-on-unreachable like the public interop
+  test (never flaky-fails; fails only on a post-handshake QPACK regression). Not in CI by default — needs a
+  Docker sidecar; see `docker-interop/README.md`. (toxiproxy can't help — it's TCP-only, QUIC is UDP;
+  netem can layer reorder/loss on the container veth.)
+  *Still deferred:* reference-the-newest + **blocking** encoding (Duplicate of draining entries,
+  RIC > Known Received Count) — a further compression tune that would engage QPACK_BLOCKED_STREAMS.
 
 ## NEXT (start here)
 
@@ -329,19 +348,19 @@ Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) 
    Remaining: the deferred **QPACK-eviction tune** (NEXT — see below), the Apple `reset()` +
    server-observed close-code follow-ups, and WebTransport Phase 2.
 
-## NEXT — smarter QPACK encoder eviction (start a FRESH session here)
+## ✅ DONE — QPACK encoder eviction tune (see the bullet above)
 
-The client + server `QpackEncoder` is deliberately conservative: it **never evicts** and references only
-**acknowledged** dynamic entries, so it is always non-blocking and correct — interop-proven against
-Cloudflare/Google. The tune is to evict old entries when the table is full and reference newer ones
-(optionally allowing blocking), for better compression. This is **correctness-critical**, not minor:
-a subtle bug = decode failures / `QPACK_DECOMPRESSION_FAILED` against real peers. Do it as its own
-adversarially-tested effort — RIC/Known-Received-Count accounting, draining references before eviction,
-eviction-vs-blocked-stream interaction. Encoder is `QpackEncoder.kt` (internally `mutex`-guarded;
-`encodeSection`/`processDecoderInstruction`). Validate against the existing dynamic-QPACK loopback +
-the live interop GET, and add eviction-specific tests (table churn forcing eviction, then re-reference).
-   (Encoder strategy note: the client encoder is deliberately conservative — never evicts, references
-   only acknowledged entries — correct but not maximally compressing; a smarter strategy is a future tune.)
+The `QpackEncoder` now **evicts** (reference-counted, eviction-safe) while keeping the non-blocking
+invariant — `entryRefCount` + `QpackDynamicTable.insertIfEvictable`. Validated by the dynamic-QPACK
+loopback + new adversarial eviction tests (jvm + linuxX64). See the "QPACK encoder eviction tune — DONE"
+bullet under "full server role" above for the full description.
+
+**Still open — reference-the-newest + blocking encoder (a FRESH session).** The remaining compression
+tune: reference *unacknowledged* entries (RIC > Known Received Count) and Duplicate entries close to
+eviction (RFC 9204 §2.1.3 draining), which engages **QPACK_BLOCKED_STREAMS** (currently advertised 0).
+That is the part with eviction-vs-blocked-stream interaction; do it adversarially-tested, validating
+against the live interop GET. Encoder is `QpackEncoder.kt` (`mutex`-guarded;
+`encodeSection`/`processDecoderInstruction`).
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under
    `if (isMacOS)`); verify on a macOS runner / CI. Optionally run Apple/Android *tests* in their CI workflows.
 6. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
