@@ -256,6 +256,44 @@ class Http3FrameCodecTests {
         assertEquals(listOf(0x03, 0x01, 0x07), encodeFrame(Http3Frame.CancelPush(7)))
     }
 
+    // --- PUSH_PROMISE (0x05) ------------------------------------------------
+
+    @Test
+    fun pushPromise_decodeAndEncode_roundTrip() {
+        // 05 03 05 aa bb : PUSH_PROMISE, length 3 = push id 0x05 (1B) + opaque field section aa bb.
+        val frame = decodeFrame(0x05, 0x03, 0x05, 0xaa, 0xbb)
+        assertIs<Http3Frame.PushPromise>(frame)
+        assertEquals(5L, frame.pushId)
+        assertEquals(listOf(0xaa, 0xbb), frame.encodedFieldSection.toIntList())
+
+        assertEquals(
+            listOf(0x05, 0x03, 0x05, 0xaa, 0xbb),
+            encodeFrame(Http3Frame.PushPromise(5, bufferOf(0xaa, 0xbb))),
+        )
+        assertEquals(5, wireSizeOf(Http3Frame.PushPromise(5, bufferOf(0xaa, 0xbb))))
+    }
+
+    @Test
+    fun pushPromise_multiBytePushId_roundTrip() {
+        // push id 15293 = 2-byte varint 7b bd, then a single section byte 01.
+        // type 05, length 03 (2B id + 1B section), 7b bd, 01.
+        val frame = decodeFrame(0x05, 0x03, 0x7b, 0xbd, 0x01)
+        assertIs<Http3Frame.PushPromise>(frame)
+        assertEquals(15293L, frame.pushId)
+        assertEquals(listOf(0x01), frame.encodedFieldSection.toIntList())
+        assertEquals(listOf(0x05, 0x03, 0x7b, 0xbd, 0x01), encodeFrame(Http3Frame.PushPromise(15293, bufferOf(0x01))))
+    }
+
+    @Test
+    fun pushPromise_emptyFieldSection() {
+        // length 1 = just the push id, no field section bytes.
+        val frame = decodeFrame(0x05, 0x01, 0x09)
+        assertIs<Http3Frame.PushPromise>(frame)
+        assertEquals(9L, frame.pushId)
+        assertEquals(0, frame.encodedFieldSection.remaining())
+        assertEquals(listOf(0x05, 0x01, 0x09), encodeFrame(Http3Frame.PushPromise(9, bufferOf())))
+    }
+
     @Test
     fun controlFrames_decodeSequentiallyFromOneBuffer() {
         // Control-stream tail: GOAWAY then MAX_PUSH_ID, back to back — the decoder must leave

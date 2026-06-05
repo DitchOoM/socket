@@ -16,9 +16,12 @@ import com.ditchoom.socket.quic.QuicScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -75,10 +78,44 @@ class Http3Connection private constructor(
     private val controlStream: QuicByteStream,
     private val qpackEncoderStream: QuicByteStream,
     private val qpackDecoderStream: QuicByteStream,
+    // The maximum Push ID the client allows the server to use (RFC 9114 §7.2.7), or -1 when server
+    // push is disabled. When >= 0 a MAX_PUSH_ID frame is sent at bootstrap and the server may push
+    // ids 0..maxPushId; when -1 no MAX_PUSH_ID is sent and any PUSH_PROMISE / push stream is an
+    // H3_ID_ERROR connection violation (RFC 9114 §7.2.5 / §4.6).
+    private val maxPushId: Long,
 ) {
     private val peerSettingsDeferred = CompletableDeferred<Http3Settings>()
     private val _goAway = MutableStateFlow<Long?>(null)
     private val connectionErrorDeferred = CompletableDeferred<Http3StreamException>()
+
+    // --- Server push (RFC 9114 §4.6) ---
+    // pushEntries correlates a PUSH_PROMISE (promise half, on a request stream) with its push stream
+    // (response half), which may arrive in either order. Each entry's responseDeferred is completed
+    // by whichever push stream carries the matching Push ID. A push is emitted to `pushes` as soon as
+    // its promise is seen. Both halves and cancellation are serialized by pushMutex.
+    private val pushMutex = Mutex()
+    private val pushEntries = mutableMapOf<Long, PushEntry>()
+    private val pushChannel = Channel<Http3ServerPush>(Channel.UNLIMITED)
+    private val controlStreamWriteMutex = Mutex()
+
+    private class PushEntry {
+        val responseDeferred = CompletableDeferred<Http3Response>()
+        var promised = false
+
+        @Volatile
+        var pushStream: QuicByteStream? = null
+
+        @Volatile
+        var cancelled = false
+    }
+
+    /**
+     * Server pushes (RFC 9114 §4.6), each emitted when its PUSH_PROMISE is received. Empty unless
+     * push was enabled at [bootstrap] (a non-negative `maxPushId`). Consume an [Http3ServerPush] by
+     * awaiting [Http3ServerPush.response] (then reading/closing it) or declining via
+     * [Http3ServerPush.cancel]. The flow completes when the connection closes.
+     */
+    val pushes: Flow<Http3ServerPush> get() = pushChannel.receiveAsFlow()
 
     @Volatile
     private var connectionErrorOrNull: Http3StreamException? = null
@@ -204,43 +241,69 @@ class Http3Connection private constructor(
         return stream
     }
 
-    /** Read a response off [stream]: the first HEADERS frame gives status + headers; body streams. */
+    /** Read a response off a request [stream]: the first HEADERS frame gives status + headers; body streams. */
     private suspend fun readResponse(stream: QuicByteStream): Http3Response {
         val reader = Http3StreamReader.create(stream, pool)
+        // PUSH_PROMISE on a request stream is decoded against this stream's id (RFC 9204 stream context).
+        val onPushPromise: suspend (Http3Frame.PushPromise) -> Unit = { onPushPromiseFrame(it, stream.streamId.id) }
         try {
-            while (true) {
-                when (val frame = reader.nextFrame(options.readTimeout)) {
-                    // Stream ended before the response message began (RFC 9114 §4.1).
-                    null ->
-                        throw Http3StreamException(
-                            "response stream ended before a HEADERS frame",
-                            Http3ErrorCode.REQUEST_INCOMPLETE,
-                        )
-                    is Http3Frame.Headers -> {
-                        val streamId = stream.streamId.id
-                        val decoded = decoder.decodeSection(frame.encodedFieldSection, streamId, pool)
-                        val status = parseStatus(decoded)
-                        val headers = decoded.filterNot { it.name.startsWith(":") }
-                        // Trailers (a later field section on this stream) decode through the same decoder.
-                        return Http3Response(status, headers, stream, reader, pool, options.readTimeout) { trailerSection ->
-                            decoder.decodeSection(trailerSection, streamId, pool)
-                        }
-                    }
-                    // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
-                    is Http3Frame.Unknown -> {}
-                    // Any other frame before the response's first HEADERS — DATA, SETTINGS, GOAWAY,
-                    // … — is an invalid sequence on a request stream: H3_FRAME_UNEXPECTED (§4.1).
-                    else ->
-                        throw Http3StreamException(
-                            "unexpected ${frame::class.simpleName} before the response HEADERS frame",
-                            Http3ErrorCode.FRAME_UNEXPECTED,
-                        )
-                }
-            }
+            return readResponseHead(stream, reader, onPushPromise)
         } catch (t: Throwable) {
             reader.release()
             if (t is Http3StreamException) reactToResponseError(stream, t)
             throw t
+        }
+    }
+
+    /**
+     * Reads frames off [reader] until the response's first HEADERS frame, then builds the
+     * [Http3Response] (carrying [onPushPromise] for body-interleaved promises). PUSH_PROMISE frames
+     * before the HEADERS are routed to [onPushPromise]; null (a push stream) rejects them as
+     * H3_FRAME_UNEXPECTED. Does no cleanup — the caller's try/finally owns reader/stream lifetime.
+     */
+    private suspend fun readResponseHead(
+        stream: QuicByteStream,
+        reader: Http3StreamReader,
+        onPushPromise: (suspend (Http3Frame.PushPromise) -> Unit)?,
+    ): Http3Response {
+        while (true) {
+            when (val frame = reader.nextFrame(options.readTimeout)) {
+                // Stream ended before the response message began (RFC 9114 §4.1).
+                null ->
+                    throw Http3StreamException(
+                        "response stream ended before a HEADERS frame",
+                        Http3ErrorCode.REQUEST_INCOMPLETE,
+                    )
+                is Http3Frame.Headers -> {
+                    val streamId = stream.streamId.id
+                    val decoded = decoder.decodeSection(frame.encodedFieldSection, streamId, pool)
+                    val status = parseStatus(decoded)
+                    val headers = decoded.filterNot { it.name.startsWith(":") }
+                    // Trailers (a later field section on this stream) decode through the same decoder.
+                    return Http3Response(status, headers, stream, reader, pool, options.readTimeout, onPushPromise) { trailerSection ->
+                        decoder.decodeSection(trailerSection, streamId, pool)
+                    }
+                }
+                // PUSH_PROMISE may appear on a request stream before/among the response frames
+                // (RFC 9114 §7.2.5): register the promise + emit the push, then keep reading. On a
+                // push stream (onPushPromise == null) it is an invalid sequence (§7.2.5).
+                is Http3Frame.PushPromise ->
+                    (
+                        onPushPromise ?: throw Http3StreamException(
+                            "PUSH_PROMISE on a push stream",
+                            Http3ErrorCode.FRAME_UNEXPECTED,
+                        )
+                    )(frame)
+                // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
+                is Http3Frame.Unknown -> {}
+                // Any other frame before the response's first HEADERS — DATA, SETTINGS, GOAWAY,
+                // … — is an invalid sequence on a request stream: H3_FRAME_UNEXPECTED (§4.1).
+                else ->
+                    throw Http3StreamException(
+                        "unexpected ${frame::class.simpleName} before the response HEADERS frame",
+                        Http3ErrorCode.FRAME_UNEXPECTED,
+                    )
+            }
         }
     }
 
@@ -355,8 +418,15 @@ class Http3Connection private constructor(
         writeControlStreamHeader()
         writeStreamType(qpackEncoderStream, Http3StreamType.QPACK_ENCODER)
         writeStreamType(qpackDecoderStream, Http3StreamType.QPACK_DECODER)
+        // Enable server push (RFC 9114 §7.2.7): tell the server the highest push id it may use.
+        if (maxPushId >= 0) writeControlFrame(Http3Frame.MaxPushId(maxPushId))
         startRouter()
         startEncoderSetup()
+    }
+
+    /** Write a frame on the client control stream after its header (MAX_PUSH_ID / CANCEL_PUSH). */
+    private suspend fun writeControlFrame(frame: Http3Frame) {
+        controlStreamWriteMutex.withLock { writeFrame(controlStream, frame) }
     }
 
     /**
@@ -430,6 +500,8 @@ class Http3Connection private constructor(
                 // route() finish first (one may be resolving SETTINGS), then — if the peer's
                 // control stream never delivered SETTINGS — unblock any awaiter.
                 routes.joinAll()
+                // No more pushes can arrive; complete the pushes flow for any collector.
+                pushChannel.close()
                 if (!peerSettingsDeferred.isCompleted) {
                     peerSettingsDeferred.completeExceptionally(
                         Http3StreamException("connection closed before the peer's SETTINGS were received"),
@@ -454,6 +526,9 @@ class Http3Connection private constructor(
         // One processor, shared so bytes buffered while reading the type prefix carry into the
         // control/QPACK handler that continues on the same stream.
         val processor = StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN)
+        // A push stream outlives this router call — its handler owns the processor + stream lifetime
+        // (the pushed response streams its body lazily), so the generic finally must not touch them.
+        var handlerOwnsStream = false
         try {
             when (Http3StreamReader(stream, processor).nextVarInt()) {
                 Http3StreamType.CONTROL -> handleControl(Http3StreamReader(stream, processor))
@@ -461,15 +536,23 @@ class Http3Connection private constructor(
                 Http3StreamType.QPACK_ENCODER -> readPeerEncoderInstructions(stream, processor)
                 // The peer's QPACK decoder stream acks our encoder's inserts/sections (§4.4).
                 Http3StreamType.QPACK_DECODER -> readPeerDecoderInstructions(stream, processor)
-                // Push and reserved/GREASE streams carry data we ignore; drain to keep flow control flowing.
+                // A server-initiated push stream (RFC 9114 §4.6): the handler reads it and parks until
+                // the pushed response is consumed, releasing the processor + closing the stream itself.
+                Http3StreamType.PUSH -> {
+                    handlerOwnsStream = true
+                    handlePushStream(stream, processor)
+                }
+                // Reserved/GREASE streams carry data we ignore; drain to keep flow control flowing.
                 else -> drain(stream)
             }
         } catch (e: Http3StreamException) {
             // One stream erroring must not take down the connection. The control handler has
             // already recorded any SETTINGS failure into peerSettingsDeferred.
         } finally {
-            processor.release()
-            stream.close()
+            if (!handlerOwnsStream) {
+                processor.release()
+                stream.close()
+            }
         }
     }
 
@@ -547,9 +630,23 @@ class Http3Connection private constructor(
                 // stream id. Ids are non-increasing across repeated GOAWAYs — keep the lowest.
                 is Http3Frame.GoAway ->
                     _goAway.update { current -> if (current == null) frame.id else minOf(current, frame.id) }
-                // MAX_PUSH_ID (RFC 9114 §7.2.7) / CANCEL_PUSH: this client never enables push, so
-                // there is nothing to act on. Reserved/GREASE frames are ignored (RFC 9114 §9).
-                is Http3Frame.MaxPushId, is Http3Frame.CancelPush, is Http3Frame.Unknown -> {}
+                // CANCEL_PUSH from the server withdraws a push it promised (RFC 9114 §7.2.3): fail the
+                // matching push so an awaiting Http3ServerPush.response() unblocks.
+                is Http3Frame.CancelPush -> onServerCancelPush(frame.pushId)
+                // MAX_PUSH_ID is client→server only; a server sending one is a violation (RFC 9114 §7.2.7).
+                is Http3Frame.MaxPushId ->
+                    throw Http3StreamException(
+                        "MAX_PUSH_ID received from the server",
+                        Http3ErrorCode.FRAME_UNEXPECTED,
+                    )
+                // Reserved/GREASE frames are ignored (RFC 9114 §9).
+                is Http3Frame.Unknown -> {}
+                // PUSH_PROMISE is a request-stream frame and never valid on the control stream (§7.2.5).
+                is Http3Frame.PushPromise ->
+                    throw Http3StreamException(
+                        "PUSH_PROMISE on the control stream",
+                        Http3ErrorCode.FRAME_UNEXPECTED,
+                    )
                 // SETTINGS may appear only once, as the first frame; a second is a violation (§7.2.4).
                 is Http3Frame.Settings ->
                     throw Http3StreamException("a second SETTINGS frame on the control stream", Http3ErrorCode.FRAME_UNEXPECTED)
@@ -595,6 +692,146 @@ class Http3Connection private constructor(
         }
     }
 
+    // --- Server push handlers (RFC 9114 §4.6) ---
+
+    /**
+     * Validate a Push ID against the limit this client advertised (RFC 9114 §7.2.5 / §4.6). When push
+     * was never enabled (no MAX_PUSH_ID sent), or the id exceeds the maximum, this is a connection
+     * error of type H3_ID_ERROR: abort the connection (sending CONNECTION_CLOSE with the code) and
+     * throw so the local read unwinds. Aborting here means the violation is signalled regardless of
+     * which path — request stream or push stream — detected it.
+     */
+    private suspend fun validatePushId(pushId: Long) {
+        if (maxPushId in 0..Long.MAX_VALUE && pushId in 0..maxPushId) return
+        val error =
+            Http3StreamException(
+                if (maxPushId < 0) {
+                    "received a push but MAX_PUSH_ID was never sent (push disabled)"
+                } else {
+                    "push id $pushId exceeds the maximum advertised ($maxPushId)"
+                },
+                Http3ErrorCode.ID_ERROR,
+            )
+        abortConnection(error)
+        throw error
+    }
+
+    /**
+     * Handle a PUSH_PROMISE (RFC 9114 §7.2.5) received on a request stream [requestStreamId]: validate
+     * the push id, decode the promised request (QPACK, against the request stream's context), and — the
+     * first time this id is promised — emit an [Http3ServerPush] on [pushes]. Duplicate promises for the
+     * same id (permitted by §4.6) are ignored after the first.
+     */
+    private suspend fun onPushPromiseFrame(
+        frame: Http3Frame.PushPromise,
+        requestStreamId: Long,
+    ) {
+        validatePushId(frame.pushId)
+        val promised = decodePromisedRequest(frame.encodedFieldSection, requestStreamId)
+        pushMutex.withLock {
+            val entry = pushEntries.getOrPut(frame.pushId) { PushEntry() }
+            if (entry.promised) return // already emitted for this id
+            entry.promised = true
+            val push = Http3ServerPush(frame.pushId, promised, entry.responseDeferred, ::cancelPush)
+            pushChannel.trySend(push) // UNLIMITED — only fails once the channel is closed at teardown
+        }
+    }
+
+    /** Decode a PUSH_PROMISE field section into the promised request's pseudo-headers + headers. */
+    private suspend fun decodePromisedRequest(
+        section: ReadBuffer,
+        streamId: Long,
+    ): Http3PromisedRequest {
+        val fields = decoder.decodeSection(section, streamId, pool)
+
+        fun pseudo(name: String): String =
+            fields.firstOrNull { it.name == name }?.value
+                ?: throw Http3StreamException("PUSH_PROMISE missing the $name pseudo-header", Http3ErrorCode.MESSAGE_ERROR)
+        return Http3PromisedRequest(
+            method = pseudo(":method"),
+            scheme = pseudo(":scheme"),
+            authority = pseudo(":authority"),
+            path = pseudo(":path"),
+            headers = fields.filterNot { it.name.startsWith(":") },
+        )
+    }
+
+    /**
+     * Read a server-initiated push stream (RFC 9114 §4.6). The 0x01 type prefix was consumed by the
+     * router; the stream header's remaining field is the Push ID. After validating it and reading the
+     * pushed response's HEADERS, complete the matching push's response, then park until that response
+     * is closed — keeping the stream open so its body streams lazily. This coroutine (not the router)
+     * owns releasing the [processor] and closing the [stream]; ownership passes to the [Http3Response]
+     * once it is built (it releases the shared processor on close), so we only release it ourselves on
+     * an early failure.
+     */
+    private suspend fun handlePushStream(
+        stream: QuicByteStream,
+        processor: StreamProcessor,
+    ) {
+        var entry: PushEntry? = null
+        var responseOwnsProcessor = false
+        try {
+            val pushId = Http3StreamReader(stream, processor).nextVarInt(options.readTimeout)
+            validatePushId(pushId)
+            entry = pushMutex.withLock { pushEntries.getOrPut(pushId) { PushEntry() }.also { it.pushStream = stream } }
+            if (entry.cancelled) {
+                resetStreamQuietly(stream, Http3ErrorCode.REQUEST_CANCELLED)
+                return
+            }
+            // A push stream carries a response message but never a PUSH_PROMISE (onPushPromise = null).
+            val response = readResponseHead(stream, Http3StreamReader(stream, processor), onPushPromise = null)
+            responseOwnsProcessor = true
+            entry.responseDeferred.complete(response)
+            response.awaitClosed()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            val ex = e as? Http3StreamException ?: Http3StreamException(e.message ?: "push stream error")
+            entry?.let { if (!it.responseDeferred.isCompleted) it.responseDeferred.completeExceptionally(ex) }
+        } finally {
+            if (!responseOwnsProcessor) processor.release()
+            stream.close()
+        }
+    }
+
+    /**
+     * Decline a server push (RFC 9114 §7.2.3), driven by [Http3ServerPush.cancel]: mark it cancelled,
+     * send CANCEL_PUSH on the control stream, reset the push stream if it has arrived, and fail an
+     * awaiting [Http3ServerPush.response]. Works whether the push stream has arrived yet or not.
+     */
+    private suspend fun cancelPush(pushId: Long) {
+        val entry =
+            pushMutex.withLock {
+                pushEntries.getOrPut(pushId) { PushEntry() }.also { it.cancelled = true }
+            }
+        try {
+            writeControlFrame(Http3Frame.CancelPush(pushId))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Connection already gone — the local cancellation below still applies.
+        }
+        entry.pushStream?.let { resetStreamQuietly(it, Http3ErrorCode.REQUEST_CANCELLED) }
+        if (!entry.responseDeferred.isCompleted) {
+            entry.responseDeferred.completeExceptionally(
+                Http3StreamException("server push $pushId cancelled by the client", Http3ErrorCode.REQUEST_CANCELLED),
+            )
+        }
+    }
+
+    /** A server CANCEL_PUSH (RFC 9114 §7.2.3): the server withdrew a promise. Fail any waiter. */
+    private suspend fun onServerCancelPush(pushId: Long) {
+        val entry = pushMutex.withLock { pushEntries[pushId] } ?: return
+        entry.cancelled = true
+        if (!entry.responseDeferred.isCompleted) {
+            entry.responseDeferred.completeExceptionally(
+                Http3StreamException("server cancelled push $pushId", Http3ErrorCode.REQUEST_CANCELLED),
+            )
+        }
+        entry.pushStream?.let { resetStreamQuietly(it, Http3ErrorCode.REQUEST_CANCELLED) }
+    }
+
     companion object {
         /** The QPACK dynamic-table capacity we advertise (and cap our encoder at), in octets. */
         private const val QPACK_MAX_TABLE_CAPACITY: Long = 4096
@@ -611,18 +848,24 @@ class Http3Connection private constructor(
          * Buffer allocation (frame writes, stream readers) is routed through
          * [ConnectionOptions.bufferFactory], mirroring [com.ditchoom.socket.quic.QuicStreamMux].
          *
+         * Server push (RFC 9114 §4.6) is opt-in via [maxPushId]: the default -1 disables it (no
+         * MAX_PUSH_ID is sent, so the server may not push and any push is an H3_ID_ERROR). A value
+         * >= 0 sends MAX_PUSH_ID and lets the server push ids `0..maxPushId`; consume the pushes via
+         * [pushes]. Re-issuing MAX_PUSH_ID to extend the window as pushes complete is a future tune.
+         *
          * @throws UnsupportedOperationException if the platform lacks unidirectional QUIC streams.
          */
         suspend fun bootstrap(
             scope: QuicScope,
             options: ConnectionOptions = ConnectionOptions(),
+            maxPushId: Long = -1,
         ): Http3Connection {
             // MultiThreaded: the router's per-stream coroutines allocate from this pool concurrently.
             val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = options.bufferFactory)
             val control = scope.openUniStream()
             val qpackEncoder = scope.openUniStream()
             val qpackDecoder = scope.openUniStream()
-            return Http3Connection(scope, options, pool, control, qpackEncoder, qpackDecoder).also { it.start() }
+            return Http3Connection(scope, options, pool, control, qpackEncoder, qpackDecoder, maxPushId).also { it.start() }
         }
     }
 }

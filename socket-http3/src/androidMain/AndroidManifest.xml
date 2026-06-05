@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Library module; namespace is set in the android {} DSL block. No app components. -->
+<manifest />

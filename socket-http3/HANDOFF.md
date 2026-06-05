@@ -237,6 +237,45 @@ taxonomy + frame/stream validation enforcement) before *features* (dynamic QPACK
 full server). The current client is a *conformant minimal* GET/POST client (QPACK capacity-0 +
 no-push are spec-permitted), interop-proven — the gaps are additive, not instability.
 
+## ✅ DONE — publishing + full target matrix + server push (branch `feat/http3-gaps`)
+
+Three gaps closed this session (all green locally; not yet a PR):
+
+- **Publishing + target matrix.** `:socket-http3` now applies `com.android.library` + the vanniktech
+  `maven-publish` + `signing` plugins and a per-module `socket-http3/gradle.properties`
+  (`artifactName=socket-http3`), mirroring `:socket-quic`. Targets expanded from `jvm+js+linuxX64` to
+  the full host-gated matrix: **+androidTarget, +wasmJs, +linuxArm64**, and Apple (macos/ios/tvos/
+  watchos) under `if (isMacOS)` — gated exactly like `:socket-quic` so the `api(project(":socket-quic"))`
+  dependency exposes the SAME per-host target set (else resolution fails). `publishToMavenLocal`
+  validated end-to-end: 7 publications (root KMP + android/jvm/js/wasm-js/linuxx64/linuxarm64), POM =
+  "Socket HTTP/3", jvm variant depends on `socket-quic-jvm`. **CI:** the release pipeline auto-includes
+  it (build-linux's root `publishToMavenLocal` stages it; publish-to-central zips the whole repo). Added
+  `:socket-http3:{jvmTest,jsNodeTest,linuxX64Test,ktlintCheck}` to build-linux.yaml's curated test step
+  so the published module is gatekept (NOT `gradle check` — that pulls in jsBrowser/wasmJsBrowser tests
+  the runners can't host + the socket-quic flaky-suite handling). Android SDK present on the dev box, so
+  androidTarget compile-verified locally; Apple is config-only (CI-verify on macOS).
+- **Server push (RFC 9114 §4.6) — full client support.** `Http3Frame.PushPromise` (type 0x05) + codec
+  (encode/decode/wireSize, 3 round-trip tests). New public API: `Http3ServerPush` + `Http3PromisedRequest`
+  + `Http3Connection.pushes: Flow<Http3ServerPush>`, opt-in via `bootstrap(…, maxPushId)` /
+  `withHttp3Connection(…, maxPushId)` (default -1 = disabled). Wiring: send MAX_PUSH_ID at bootstrap;
+  PUSH_PROMISE handled on the request stream (in `readResponseHead`) AND interleaved in the response body
+  (via a callback on `Http3Response`); a push-stream router branch (`handlePushStream`) reads the Push ID,
+  validates it, reads the pushed response, and **parks until the response is closed** (`Http3Response.awaitClosed()`)
+  so the body streams lazily — it owns the shared processor + stream lifetime, transferring processor-release
+  ownership to the `Http3Response` once built (avoids the double-release `release()`=`processor.release()`
+  would cause). Reorder-tolerant promise↔stream correlation via a `pushEntries` map keyed by Push ID.
+  CANCEL_PUSH both directions (`Http3ServerPush.cancel()` sends + resets; server CANCEL_PUSH fails an
+  awaiter). Push id over the advertised max, or any push when disabled, is H3_ID_ERROR (aborts at the
+  source so it fires regardless of detection path). `Http3LoopbackServer` gained push-sending; E2E test
+  `serverPushDeliversPromisedResponse` (jvm + linuxX64) + a scripted disabled-rejection test. **Behavior
+  change:** a push stream when push is disabled now aborts with H3_ID_ERROR (was silently drained) — the
+  existing scripted `peerSettings_resolvesWithQpackAndPushStreamsPresent` test was updated to enable push.
+  *Not done (future tune):* re-issuing MAX_PUSH_ID to extend the credit window as pushes complete.
+- **Closed issue #86** (the client; delivered by #123) with a completion summary.
+
+Green: jvm + linuxX64 + jsNode test suites; wasmJs + android test sources compile. 180 linuxX64 / 179 jvm
+tests, 0 fail.
+
 ## NEXT (start here)
 
 1. ✅ **In-process H3 loopback test — DONE** (see "DONE — in-process H3 loopback" above). Green on
@@ -248,12 +287,14 @@ no-push are spec-permitted), interop-proven — the gaps are additive, not insta
    dynamic table, encoder + decoder, instruction streams, blocked-stream waiting, wired into
    `Http3Connection`; verified by unit tests + a deterministic bidirectional loopback + the live
    interop GET decoding real servers' dynamic compression.
-4. Remaining conformance after QPACK: **server push**, the **full server role**; plus the Apple
-   `reset()` + server-observed close-code follow-ups noted above. (Encoder strategy note: the client
-   encoder is deliberately conservative — never evicts, references only acknowledged entries — so it's
-   correct but not maximally compressing; a smarter eviction/blocking-aware strategy is a future tune.)
-3. **Expand to Apple / Android / wasmJs + maven-publish** (need their hosts/CI).
-4. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
+4. ✅ **Server push (RFC 9114 §4.6) — DONE** (see "DONE — publishing + … + server push" above).
+   Remaining conformance: the **full server role** (promote `Http3LoopbackServer` to a production
+   `withHttp3Server`); plus the Apple `reset()` + server-observed close-code follow-ups noted above.
+   (Encoder strategy note: the client encoder is deliberately conservative — never evicts, references
+   only acknowledged entries — correct but not maximally compressing; a smarter strategy is a future tune.)
+5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under
+   `if (isMacOS)`); verify on a macOS runner / CI. Optionally run Apple/Android *tests* in their CI workflows.
+6. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
    + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
 
 ## (historical) step 4b/5 plan — now DONE, see above

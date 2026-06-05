@@ -10,7 +10,9 @@ import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
@@ -334,6 +336,84 @@ abstract class Http3LoopbackTestSuite {
         }
 
     @Test
+    fun serverPushDeliversPromisedResponse() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // For GET /index.html the server promises + pushes /style.css. The client enables push
+                // (maxPushId = 8) and consumes the pushed response off the `pushes` flow alongside the
+                // main response — exercising MAX_PUSH_ID, PUSH_PROMISE on the request stream, the push
+                // stream, and promise↔stream correlation, end-to-end over real QUIC.
+                val server =
+                    Http3LoopbackServer(
+                        connectionOptions,
+                        serverPushes = { request ->
+                            if (request.path == "/index.html") {
+                                listOf(
+                                    Http3LoopbackServer.Push(
+                                        authority = "localhost",
+                                        path = "/style.css",
+                                        response =
+                                            Http3LoopbackServer.Response(
+                                                status = 200,
+                                                headers = listOf(QpackHeaderField("content-type", "text/css")),
+                                                body = "body{color:red}",
+                                            ),
+                                    ),
+                                )
+                            } else {
+                                emptyList()
+                            }
+                        },
+                    ) { Http3LoopbackServer.Response(status = 200, body = "<html>") }
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
+                    val serverJob = launch { connections { server.serve(this) } }
+                    delay(100)
+                    try {
+                        val result =
+                            withHttp3Connection(
+                                "localhost",
+                                port,
+                                quicOptions = clientQuicOptions,
+                                connectionOptions = connectionOptions,
+                                timeout = 15.seconds,
+                                maxPushId = 8,
+                            ) {
+                                // Let our MAX_PUSH_ID reach the server before it handles the request, so it
+                                // knows push is allowed (it decides per-request whether to push).
+                                withTimeout(5.seconds) { peerSettings() }
+                                delay(100)
+                                // Collect the first push concurrently — the promise arrives during request().
+                                val pushDeferred = async { withTimeout(10.seconds) { pushes.first() } }
+                                val response = request(Http3Request(method = "GET", authority = "localhost", path = "/index.html"))
+                                val mainBody = response.readFullBody()
+                                val mainText = mainBody.readString(mainBody.remaining(), Charset.UTF8)
+                                mainBody.freeIfNeeded()
+                                response.close()
+
+                                val push = pushDeferred.await()
+                                val pushResponse = withTimeout(10.seconds) { push.response() }
+                                val pushBody = pushResponse.readFullBody()
+                                val pushText = pushBody.readString(pushBody.remaining(), Charset.UTF8)
+                                pushBody.freeIfNeeded()
+                                val contentType = pushResponse.headers.firstOrNull { it.name == "content-type" }?.value
+                                pushResponse.close()
+                                assertNull(connectionError, "server push must not raise a connection error")
+                                PushResult(mainText, push.promisedRequest.path, pushResponse.status, pushText, contentType)
+                            }
+                        assertEquals("<html>", result.mainBody)
+                        assertEquals("/style.css", result.promisedPath)
+                        assertEquals(200, result.pushStatus)
+                        assertEquals("body{color:red}", result.pushBody)
+                        assertEquals("text/css", result.pushContentType)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun clientReceivesServerSettings() =
         runHttp3LoopbackTest {
             wrapTestBody {
@@ -365,6 +445,15 @@ abstract class Http3LoopbackTestSuite {
             }
         }
 }
+
+/** Result holder for the server-push test (its withHttp3Connection block returns several values). */
+private data class PushResult(
+    val mainBody: String,
+    val promisedPath: String,
+    val pushStatus: Int,
+    val pushBody: String,
+    val pushContentType: String?,
+)
 
 /**
  * HTTP/3 loopback test runner with a wall-clock timeout, mirroring `:socket-quic`'s `runQuicTest`:
