@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -601,13 +602,23 @@ abstract class Http3LoopbackTestSuite {
                                             it.cancel()
                                         }
                                     }
-                                repeat(3) { i ->
+                                // Drive requests until the window demonstrably rolls (>= 2 distinct pushes),
+                                // waiting REACTIVELY for each push rather than on a fixed sleep budget: a slow
+                                // CI runner can take well over 100ms to round-trip the re-issued MAX_PUSH_ID,
+                                // which made the old `delay(120)` version flaky. A working re-issue yields one
+                                // push per request and reaches 2 in a couple of iterations; a broken re-issue
+                                // never gets a second push, so the iteration cap is hit and the assert below
+                                // fails deterministically (instead of passing or hanging on timing).
+                                var i = 0
+                                while (received.size < 2 && i < 6) {
+                                    val before = received.size
                                     val r = request(Http3Request(method = "GET", authority = "localhost", path = "/p$i"))
                                     r.readFullBody().freeIfNeeded()
                                     r.close()
-                                    delay(120) // let the re-issued MAX_PUSH_ID reach the server before the next request
+                                    i++
+                                    // Wait up to 3s for this request's push to be observed before the next one.
+                                    withTimeoutOrNull(3.seconds) { while (received.size == before) delay(20) }
                                 }
-                                delay(200)
                                 collector.cancel()
                                 received.size
                             }
