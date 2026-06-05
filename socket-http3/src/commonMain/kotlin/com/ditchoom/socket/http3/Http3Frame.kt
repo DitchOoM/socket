@@ -10,11 +10,12 @@ import kotlin.jvm.JvmInline
  * [Headers] are kept as opaque [ReadBuffer]s — DATA is request/response body
  * bytes, and a HEADERS payload is a QPACK-encoded field section decoded in a
  * later layer (RFC 9204). [Settings], [GoAway], [MaxPushId] and [CancelPush] are
- * the frames whose payloads are fully structured here.
+ * the frames whose payloads are fully structured here. [PushPromise] keeps its
+ * promised-request field section opaque (QPACK-encoded), like [Headers].
  *
- * Frame types not modeled explicitly (PUSH_PROMISE and reserved/GREASE types)
- * decode to [Unknown], which carries the raw type and payload so a receiver can
- * apply RFC 9114 §9's rule of ignoring unknown frame types.
+ * Frame types not modeled explicitly (reserved/GREASE types) decode to [Unknown],
+ * which carries the raw type and payload so a receiver can apply RFC 9114 §9's rule
+ * of ignoring unknown frame types.
  *
  * Note: the [Data]/[Headers]/[Unknown] payload is a position-bearing
  * [ReadBuffer] view over the source bytes — reading it advances its position,
@@ -68,7 +69,18 @@ sealed interface Http3Frame {
     ) : Http3Frame
 
     /**
-     * Any frame whose type is not modeled above — PUSH_PROMISE, reserved types, or GREASE
+     * PUSH_PROMISE (type 0x05, RFC 9114 §7.2.5): the server promises a future server push, naming
+     * it by [pushId] and carrying the *promised request*'s QPACK-encoded field section (kept opaque
+     * here, like [Headers] — decoded a layer up). Appears interleaved on a client request stream
+     * before/among the response frames. Two fields, so a `data class`.
+     */
+    data class PushPromise(
+        val pushId: Long,
+        val encodedFieldSection: ReadBuffer,
+    ) : Http3Frame
+
+    /**
+     * Any frame whose type is not modeled above — reserved types or GREASE
      * ([Http3FrameType.isReserved]). The [payload] is retained for round-tripping; receivers
      * normally ignore it. Two fields, so it stays a `data class`.
      */

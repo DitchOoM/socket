@@ -4,6 +4,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.quic.QuicByteStream
+import kotlinx.coroutines.CompletableDeferred
 import kotlin.time.Duration
 
 /**
@@ -25,6 +26,10 @@ class Http3Response internal constructor(
     private val reader: Http3StreamReader,
     private val pool: BufferPool,
     private val readTimeout: Duration,
+    // Handles a PUSH_PROMISE frame interleaved in the response (RFC 9114 §7.2.5): registers the
+    // promise on the connection and emits the push. Null for a *pushed* response's own body — a
+    // push stream MUST NOT carry PUSH_PROMISE, so one there is H3_FRAME_UNEXPECTED.
+    private val onPushPromise: (suspend (Http3Frame.PushPromise) -> Unit)?,
     // Decodes a trailing field section through the connection's QPACK decoder (so dynamic-table
     // references in trailers resolve, and the decoder emits a Section Ack for the trailer section).
     private val decodeFields: suspend (ReadBuffer) -> List<QpackHeaderField>,
@@ -34,6 +39,11 @@ class Http3Response internal constructor(
         private set
 
     private var bodyDone = false
+
+    // Completed by close()/cancel(). For a *pushed* response the push-stream coroutine awaits this
+    // ([awaitClosed]) before releasing the shared stream processor, so the body can stream lazily
+    // while the stream stays open. For a normal response nothing awaits it — completing is harmless.
+    private val closedSignal = CompletableDeferred<Unit>()
 
     /**
      * The next DATA-frame payload, or null at end of body. The returned buffer is **borrowed**
@@ -54,6 +64,20 @@ class Http3Response internal constructor(
                     trailers = decodeFields(frame.encodedFieldSection)
                     bodyDone = true
                     return null
+                }
+                // PUSH_PROMISE may be interleaved among a request-stream response's body frames
+                // (RFC 9114 §7.2.5). Route it to the connection's handler and keep reading the body;
+                // on a pushed response (onPushPromise == null) it is H3_FRAME_UNEXPECTED instead.
+                is Http3Frame.PushPromise -> {
+                    val handler =
+                        onPushPromise ?: run {
+                            bodyDone = true
+                            throw Http3StreamException(
+                                "PUSH_PROMISE in a push stream's response body",
+                                Http3ErrorCode.FRAME_UNEXPECTED,
+                            )
+                        }
+                    handler(frame)
                 }
                 // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
                 is Http3Frame.Unknown -> {}
@@ -97,7 +121,17 @@ class Http3Response internal constructor(
     }
 
     /** Release the underlying reader's buffers. Idempotent at the [Http3StreamReader] level. */
-    fun close() = reader.release()
+    fun close() {
+        closedSignal.complete(Unit)
+        reader.release()
+    }
+
+    /**
+     * Suspends until [close] or [cancel] is called. Used by the push-stream handler to keep a pushed
+     * response's stream alive until the application is done reading its body. Internal — not part of
+     * the response-consumer API.
+     */
+    internal suspend fun awaitClosed() = closedSignal.await()
 
     /**
      * Cancel the request/response: reset the request stream with [Http3ErrorCode.REQUEST_CANCELLED]
@@ -109,6 +143,7 @@ class Http3Response internal constructor(
         try {
             stream.reset(Http3ErrorCode.REQUEST_CANCELLED)
         } finally {
+            closedSignal.complete(Unit)
             reader.release()
         }
     }

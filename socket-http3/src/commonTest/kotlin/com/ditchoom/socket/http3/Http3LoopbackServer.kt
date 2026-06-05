@@ -2,6 +2,7 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ReadResult
@@ -48,6 +49,11 @@ internal class Http3LoopbackServer(
     // QpackDecoder, and dynamically compresses responses through a QpackEncoder — making the loopback
     // exercise dynamic QPACK in BOTH directions. 0 (default) keeps the original static-only behaviour.
     private val qpackCapacity: Long = 0,
+    // Server push (RFC 9114 §4.6): the pushes to send for a given request. Each emits a PUSH_PROMISE on
+    // the request stream plus a push stream carrying the pushed response. Only sent if the client
+    // enabled push (sent MAX_PUSH_ID) and the allocated push id is within its advertised limit. The
+    // promise field section is QPACK static-only (RIC=0), which the client's decoder reads either way.
+    private val serverPushes: suspend (Request) -> List<Push> = { emptyList() },
     private val respond: suspend (Request) -> Response,
 ) {
     /** A decoded request as seen by the server: the request-line pseudo-headers, fields, and body. */
@@ -75,6 +81,16 @@ internal class Http3LoopbackServer(
         val dataBeforeHeaders: Boolean = false,
     )
 
+    /** A server push (RFC 9114 §4.6): the promised request line + the response carried on the push stream. */
+    data class Push(
+        val method: String = "GET",
+        val scheme: String = "https",
+        val authority: String,
+        val path: String,
+        val promisedHeaders: List<QpackHeaderField> = emptyList(),
+        val response: Response,
+    )
+
     // MultiThreaded: per-stream handler coroutines allocate from this pool concurrently.
     private val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = options.bufferFactory)
 
@@ -91,6 +107,13 @@ internal class Http3LoopbackServer(
     private val encoderStreamWriteMutex = Mutex()
     private val decoderStreamWriteMutex = Mutex()
 
+    // Push state: the client's advertised MAX_PUSH_ID (-1 until/unless it enables push), and the next
+    // server-allocated push id. The server may use ids 0..clientMaxPushId.
+    @Volatile
+    private var clientMaxPushId: Long = -1
+    private val pushIdMutex = Mutex()
+    private var nextPushId = 0L
+
     /**
      * Run the HTTP/3 server role over [scope] — a server-accepted QUIC connection (the receiver of
      * `QuicServer.connections`). Returns when the connection closes (the [QuicScope.streams] flow
@@ -105,7 +128,7 @@ internal class Http3LoopbackServer(
         scope.streams().collect { stream ->
             scope.launch {
                 try {
-                    if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(stream)
+                    if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(scope, stream)
                 } catch (_: Http3StreamException) {
                     // A single stream failing must not take the connection down.
                 }
@@ -153,11 +176,18 @@ internal class Http3LoopbackServer(
                     QpackEncoder(clientMax) { writeQpackEncoderInstruction(it) }.also { it.setCapacity(minOf(qpackCapacity, clientMax)) }
             }
         }
-        while (reader.nextFrame() != null) { /* accept + ignore subsequent control frames */ }
+        // Capture MAX_PUSH_ID so we know whether (and how much) the client lets us push; ignore the rest.
+        while (true) {
+            val frame = reader.nextFrame() ?: break
+            if (frame is Http3Frame.MaxPushId) clientMaxPushId = frame.pushId
+        }
     }
 
-    /** Read one request off a client bidi [stream], call [respond], and write the response back. */
-    private suspend fun handleRequest(stream: QuicByteStream) {
+    /** Read one request off a client bidi [stream], call [respond], and write the response (+ pushes) back. */
+    private suspend fun handleRequest(
+        scope: QuicScope,
+        stream: QuicByteStream,
+    ) {
         val reader = Http3StreamReader.create(stream, pool)
         try {
             val first =
@@ -194,9 +224,76 @@ internal class Http3LoopbackServer(
                     headers = fields.filterNot { it.name.startsWith(":") },
                     body = body.toString(),
                 )
-            writeResponse(stream, respond(request))
+            val response = respond(request)
+            // Allocate push ids within the client's limit, emit a PUSH_PROMISE for each on the request
+            // stream BEFORE the response (RFC 9114 §7.2.5), write the response, then open the push streams.
+            val allocated = allocatePushes(if (clientMaxPushId >= 0) serverPushes(request) else emptyList())
+            for ((pushId, push) in allocated) writePushPromise(stream, pushId, push)
+            writeResponse(stream, response)
+            for ((pushId, push) in allocated) writePushStream(scope, pushId, push)
         } finally {
             reader.release()
+        }
+    }
+
+    /** Assign sequential push ids (0,1,…) to [pushes], stopping at the client's advertised maximum. */
+    private suspend fun allocatePushes(pushes: List<Push>): List<Pair<Long, Push>> {
+        val allocated = mutableListOf<Pair<Long, Push>>()
+        for (push in pushes) {
+            val id = pushIdMutex.withLock { if (nextPushId > clientMaxPushId) -1L else nextPushId++ }
+            if (id < 0) break
+            allocated += id to push
+        }
+        return allocated
+    }
+
+    /** Write a PUSH_PROMISE frame (RFC 9114 §7.2.5) on the request [stream] — promised request, static QPACK. */
+    private suspend fun writePushPromise(
+        stream: QuicByteStream,
+        pushId: Long,
+        push: Push,
+    ) {
+        val section = encodePromisedFields(push)
+        try {
+            writeFrame(stream, Http3Frame.PushPromise(pushId, section))
+        } finally {
+            section.freeIfNeeded()
+        }
+    }
+
+    /** Open a push stream (type 0x01 + Push ID, RFC 9114 §4.6) and write the pushed response on it. */
+    private suspend fun writePushStream(
+        scope: QuicScope,
+        pushId: Long,
+        push: Push,
+    ) {
+        val pushStream = scope.openUniStream()
+        val header = pool.allocate(VarIntCodec.encodedLength(Http3StreamType.PUSH) + VarIntCodec.encodedLength(pushId))
+        try {
+            VarIntCodec.encode(header, Http3StreamType.PUSH, EncodeContext.Empty)
+            VarIntCodec.encode(header, pushId, EncodeContext.Empty)
+            header.resetForRead()
+            pushStream.write(header, options.writeTimeout)
+        } finally {
+            header.freeIfNeeded()
+        }
+        writeResponse(pushStream, push.response)
+    }
+
+    /** Encode a promised request's pseudo-headers + headers as a QPACK static field section. */
+    private fun encodePromisedFields(push: Push): ReadBuffer {
+        val fields =
+            buildList {
+                add(QpackHeaderField(":method", push.method))
+                add(QpackHeaderField(":scheme", push.scheme))
+                add(QpackHeaderField(":authority", push.authority))
+                add(QpackHeaderField(":path", push.path))
+                addAll(push.promisedHeaders)
+            }
+        val size = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
+        return pool.allocate(size).also {
+            QpackFieldSectionCodec.encode(it, fields, EncodeContext.Empty)
+            it.resetForRead()
         }
     }
 

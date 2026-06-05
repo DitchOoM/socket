@@ -22,6 +22,9 @@ const val HTTP3_ALPN: String = "h3"
  * [quicOptions] defaults to the `h3` ALPN; override it to tune transport parameters, but keep
  * `"h3"` in [QuicOptions.alpnProtocols] or the server won't negotiate HTTP/3.
  *
+ * Server push (RFC 9114 §4.6) is opt-in via [maxPushId] (default -1 = disabled): set it >= 0 to send
+ * MAX_PUSH_ID and consume server pushes through [Http3Connection.pushes].
+ *
  * @throws com.ditchoom.socket.SocketConnectionException if the QUIC/TLS handshake fails.
  * @throws UnsupportedOperationException on platforms without QUIC (e.g. JS today).
  */
@@ -31,8 +34,9 @@ suspend fun <R> withHttp3Connection(
     quicOptions: QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN)),
     connectionOptions: ConnectionOptions = ConnectionOptions(),
     timeout: Duration = 15.seconds,
+    maxPushId: Long = -1,
     block: suspend Http3Connection.() -> R,
 ): R =
     withQuicConnection(hostname, port, quicOptions, connectionOptions, timeout) {
-        Http3Connection.bootstrap(this, connectionOptions).block()
+        Http3Connection.bootstrap(this, connectionOptions, maxPushId).block()
     }

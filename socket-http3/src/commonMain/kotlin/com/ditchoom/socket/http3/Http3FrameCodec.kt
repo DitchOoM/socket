@@ -45,6 +45,7 @@ object Http3FrameCodec : Codec<Http3Frame> {
                 Http3Frame.MaxPushId(decodeSingleVarIntFrame(buffer, len, context, "Http3Frame.MaxPushId.pushId"))
             Http3FrameType.CANCEL_PUSH ->
                 Http3Frame.CancelPush(decodeSingleVarIntFrame(buffer, len, context, "Http3Frame.CancelPush.pushId"))
+            Http3FrameType.PUSH_PROMISE -> decodePushPromise(buffer, len, context)
             else -> Http3Frame.Unknown(type, buffer.readBytes(len))
         }
     }
@@ -65,6 +66,30 @@ object Http3FrameCodec : Codec<Http3Frame> {
         val value = decodeBoundedVarInt(buffer, end, context, fieldPath)
         buffer.position(end)
         return value
+    }
+
+    /**
+     * Decodes a PUSH_PROMISE payload (RFC 9114 §7.2.5): a `Push ID` varint followed by the
+     * promised request's encoded field section, which is the remainder of the frame. The push id
+     * is bounds-checked against the declared frame [length] before the section is sliced.
+     */
+    private fun decodePushPromise(
+        buffer: ReadBuffer,
+        length: Int,
+        context: DecodeContext,
+    ): Http3Frame.PushPromise {
+        val end = buffer.position() + length
+        val pushId = decodeBoundedVarInt(buffer, end, context, "Http3Frame.PushPromise.pushId")
+        val sectionLength = end - buffer.position()
+        if (sectionLength < 0) {
+            throw DecodeException(
+                fieldPath = "Http3Frame.PushPromise.encodedFieldSection",
+                bufferPosition = buffer.position(),
+                expected = "a non-negative field-section length within the frame",
+                actual = sectionLength.toString(),
+            )
+        }
+        return Http3Frame.PushPromise(pushId, buffer.readBytes(sectionLength))
     }
 
     private fun decodeSettings(
@@ -120,6 +145,16 @@ object Http3FrameCodec : Codec<Http3Frame> {
             is Http3Frame.GoAway -> writeSingleVarInt(buffer, Http3FrameType.GOAWAY, value.id, context)
             is Http3Frame.MaxPushId -> writeSingleVarInt(buffer, Http3FrameType.MAX_PUSH_ID, value.pushId, context)
             is Http3Frame.CancelPush -> writeSingleVarInt(buffer, Http3FrameType.CANCEL_PUSH, value.pushId, context)
+            is Http3Frame.PushPromise -> {
+                VarIntCodec.encode(buffer, Http3FrameType.PUSH_PROMISE, context)
+                val bodyLength = VarIntCodec.encodedLength(value.pushId) + value.encodedFieldSection.remaining()
+                VarIntCodec.encode(buffer, bodyLength.toLong(), context)
+                VarIntCodec.encode(buffer, value.pushId, context)
+                // Non-destructive, like writeOpaque: restore the section's position after copying.
+                val savedPosition = value.encodedFieldSection.position()
+                buffer.write(value.encodedFieldSection)
+                value.encodedFieldSection.position(savedPosition)
+            }
             is Http3Frame.Settings -> {
                 VarIntCodec.encode(buffer, Http3FrameType.SETTINGS, context)
                 VarIntCodec.encode(buffer, settingsBodyLength(value.entries).toLong(), context)
@@ -181,6 +216,10 @@ object Http3FrameCodec : Codec<Http3Frame> {
                 is Http3Frame.GoAway -> singleVarIntFrameSize(Http3FrameType.GOAWAY, value.id)
                 is Http3Frame.MaxPushId -> singleVarIntFrameSize(Http3FrameType.MAX_PUSH_ID, value.pushId)
                 is Http3Frame.CancelPush -> singleVarIntFrameSize(Http3FrameType.CANCEL_PUSH, value.pushId)
+                is Http3Frame.PushPromise -> {
+                    val body = VarIntCodec.encodedLength(value.pushId) + value.encodedFieldSection.remaining()
+                    VarIntCodec.encodedLength(Http3FrameType.PUSH_PROMISE) + VarIntCodec.encodedLength(body.toLong()) + body
+                }
                 is Http3Frame.Settings -> {
                     val body = settingsBodyLength(value.entries)
                     VarIntCodec.encodedLength(Http3FrameType.SETTINGS) + VarIntCodec.encodedLength(body.toLong()) + body

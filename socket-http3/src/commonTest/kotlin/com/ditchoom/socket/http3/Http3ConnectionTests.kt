@@ -25,6 +25,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -204,7 +205,10 @@ class Http3ConnectionTests {
     fun peerSettings_resolvesWithQpackAndPushStreamsPresent() =
         runTest {
             coroutineScope {
-                // Peer QPACK encoder (id 7) and a push stream (id 11) — drained, not parsed as frames.
+                // Peer QPACK encoder (id 7), drained, and a push stream (id 11) with push ENABLED
+                // (maxPushId = 8). The push id (1) is within the limit, so the push stream is accepted
+                // and processed concurrently; its truncated body just fails that one push. Neither stream
+                // blocks the peer control stream from resolving SETTINGS.
                 val peerQpackEnc =
                     QuicByteStream(
                         QuicStreamId(7),
@@ -224,10 +228,36 @@ class Http3ConnectionTests {
                         incoming = listOf(peerQpackEnc, peerPush, peerControlStream(clientSettings())),
                     )
 
-                val settings = Http3Connection.bootstrap(scope, ConnectionOptions()).peerSettings()
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions(), maxPushId = 8)
+                val settings = connection.peerSettings()
 
                 assertEquals(0L, settings.qpackBlockedStreams)
                 assertTrue(peerQpackEnc.isOpen.not(), "peer QPACK stream should be drained then closed")
+                assertNull(connection.connectionError, "a within-limit push stream must not abort the connection")
+            }
+        }
+
+    @Test
+    fun pushStreamWhenPushDisabled_abortsConnectionWithIdError() =
+        runTest {
+            coroutineScope {
+                // A server push when the client never sent MAX_PUSH_ID (push disabled, the default) is a
+                // connection error of type H3_ID_ERROR (RFC 9114 §4.6).
+                val peerPush =
+                    QuicByteStream(
+                        QuicStreamId(11),
+                        RecordingByteStream(listOf(dataChunk(listOf(Http3StreamType.PUSH.toInt(), 0x00)), ReadResult.End)),
+                    )
+                val scope =
+                    FakeQuicScope(
+                        this,
+                        ClientStreams().outgoing(),
+                        incoming = listOf(peerControlStream(clientSettings()), peerPush),
+                    )
+
+                val connection = Http3Connection.bootstrap(scope, ConnectionOptions()) // push disabled
+                val error = connection.awaitConnectionError()
+                assertEquals(Http3ErrorCode.ID_ERROR, error.errorCode, "push when disabled ⇒ H3_ID_ERROR")
             }
         }
 
