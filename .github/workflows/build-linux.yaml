@@ -337,7 +337,7 @@ jobs:
           :socket-quic:jsNodeTest
           :socket-quic:jvmProcessResources :socket-quic:ktlintCheck
           :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:linuxX64Test
-          :socket-http3:ktlintCheck
+          :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
