@@ -45,3 +45,14 @@ socket-quic/hs_err_pid*.log
 # committed PEM cert+key, for the Apple QUIC server tests (issue #112).
 socket-quic/testcerts/cert.p12
 socket-quic/testcerts/localhost.p12
+
+# The self-signed `localhost` identity is generated fresh each build by the
+# :socket-quic `generateLocalhostCert` task (Apple's 398-day SecTrust cap makes a
+# committed cert a guaranteed expiry flake — issue #99). Written to every dir a
+# test source set reads from; none are committed.
+socket-quic/testcerts/localhost.crt
+socket-quic/testcerts/localhost.key
+socket-quic/src/jvmTest/resources/certs/localhost.crt
+socket-quic/src/jvmTest/resources/certs/localhost.key
+socket-quic/src/androidInstrumentedTest/resources/certs/localhost.crt
+socket-quic/src/androidInstrumentedTest/resources/certs/localhost.key
