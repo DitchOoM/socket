@@ -1310,7 +1310,7 @@ kotlin {
             // coroutines/buffer JVM artifacts are atomicfu-transformed.) Provide the runtime atomicfu
             // so Android consumers — and the instrumented tests, which silently skipped on this for
             // ages via their connect-failure catch — actually work. Version matches coroutines 1.10.2.
-            implementation("org.jetbrains.kotlinx:atomicfu:0.27.0")
+            implementation("org.jetbrains.kotlinx:atomicfu:0.33.0")
         }
         val commonJvmTest by creating {
             dependsOn(commonTest.get())
@@ -1327,8 +1327,8 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)
-                implementation("androidx.test:runner:1.6.2")
-                implementation("androidx.test.ext:junit:1.2.1")
+                implementation("androidx.test:runner:1.7.0")
+                implementation("androidx.test.ext:junit:1.3.0")
             }
         }
         androidUnitTest.dependsOn(commonJvmTest)
