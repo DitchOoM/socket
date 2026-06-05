@@ -1,12 +1,21 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.android.library)
     alias(libs.plugins.ktlint)
+    alias(libs.plugins.maven.publish)
+    signing
 }
 
-group = "com.ditchoom"
+val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
+val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 repositories {
     mavenLocal()
+    google()
     mavenCentral()
 }
 
@@ -14,43 +23,95 @@ repositories {
 // and the Http3Connection client. Pure Kotlin (no platform actuals of its own); it
 // rides on :socket-quic's multiplatform QuicScope/QuicByteStream.
 //
-// Targets are jvm + js while the layer is validated — this preserves the jvmTest +
-// jsNodeTest coverage the codecs already had inside :socket-quic. Expanding to the
-// full :socket-quic target matrix (linuxX64, Apple, Android, wasmJs) + publishing is
-// a tracked follow-up (see HANDOFF.md). KSP-for-main (for future declarative codecs)
-// is likewise deferred until a @ProtocolMessage codec actually exists; the wiring to
-// copy is on origin/feature/socket-http3.
+// Targets mirror :socket-quic's host-gated matrix exactly: because commonMain
+// `api`-depends on :socket-quic, both modules must expose the SAME target set per host
+// or dependency resolution fails. So Apple targets are declared only on macOS and the
+// Linux-native targets only on Linux — the same `if (isMacOS)` / `if (isLinux)` guards
+// :socket-quic uses. KSP-for-main (for future declarative codecs) stays deferred until a
+// @ProtocolMessage codec actually exists; the wiring to copy is on origin/feature/socket-http3.
 kotlin {
     jvmToolchain(21)
+
+    androidTarget {
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
+        publishLibraryVariants("release")
+    }
     jvm()
     js {
         browser()
         nodejs()
     }
-    // linuxX64: codecs are pure common Kotlin, so the full common suite runs here. The live
-    // interop GET also opens a real QUIC connection, which calls into quiche — so this test
-    // binary must link libquiche.a (whole-archive), exactly like :socket-quic's own native
-    // binaries do (BoringSSL is contributed transitively by the base :socket: cinterop's
-    // staticLibraries). Without it the binary hits `undefined symbol: quiche_config_new` at
-    // runtime. Apple/Android/wasmJs + publishing remain a tracked follow-up (need their hosts).
-    linuxX64 {
-        val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-x64/lib")
-        if (quicheLibDir.resolve("libquiche.a").exists()) {
-            binaries.all {
-                linkerOpts(
-                    "-L${quicheLibDir.absolutePath}",
-                    "-Wl,-Bstatic",
-                    "-Wl,--whole-archive",
-                    "-lquiche",
-                    "-Wl,--no-whole-archive",
-                    "-Wl,-Bdynamic",
-                    "-lpthread",
-                    "-ldl",
-                    "-lm",
-                    "-lstdc++",
-                    "--unresolved-symbols=ignore-in-object-files",
-                    "--allow-multiple-definition",
-                )
+    wasmJs {
+        // Pure-Kotlin codecs compile here; QUIC itself is unimplemented on wasmJs in
+        // :socket-quic (gap-tested), so the live interop/loopback suites have no wasmJs
+        // concrete subclass and don't run — only the deterministic codec tests do.
+        browser()
+        nodejs()
+    }
+
+    if (isMacOS) {
+        // No cinterop of its own — Apple QUIC (Network.framework) is provided transitively
+        // by :socket-quic. These targets just compile the pure-Kotlin H3 layer.
+        macosArm64()
+        macosX64()
+        iosArm64()
+        iosSimulatorArm64()
+        iosX64()
+        tvosArm64()
+        tvosSimulatorArm64()
+        tvosX64()
+        watchosArm64()
+        watchosSimulatorArm64()
+        watchosX64()
+    }
+
+    if (isLinux) {
+        // linuxX64/linuxArm64: codecs are pure common Kotlin, so the full common suite runs
+        // here. The live interop GET also opens a real QUIC connection, which calls into
+        // quiche — so the test binary must link libquiche.a (whole-archive), exactly like
+        // :socket-quic's own native binaries do (BoringSSL is contributed transitively by the
+        // base :socket: cinterop's staticLibraries). Without it the binary hits
+        // `undefined symbol: quiche_config_new` at runtime.
+        linuxX64 {
+            val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-x64/lib")
+            if (quicheLibDir.resolve("libquiche.a").exists()) {
+                binaries.all {
+                    linkerOpts(
+                        "-L${quicheLibDir.absolutePath}",
+                        "-Wl,-Bstatic",
+                        "-Wl,--whole-archive",
+                        "-lquiche",
+                        "-Wl,--no-whole-archive",
+                        "-Wl,-Bdynamic",
+                        "-lpthread",
+                        "-ldl",
+                        "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
+                    )
+                }
+            }
+        }
+        linuxArm64 {
+            val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-arm64/lib")
+            if (quicheLibDir.resolve("libquiche.a").exists()) {
+                binaries.all {
+                    linkerOpts(
+                        "-L${quicheLibDir.absolutePath}",
+                        "-Wl,-Bstatic",
+                        "-Wl,--whole-archive",
+                        "-lquiche",
+                        "-Wl,--no-whole-archive",
+                        "-Wl,-Bdynamic",
+                        "-lpthread",
+                        "-ldl",
+                        "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
+                    )
+                }
             }
         }
     }
@@ -72,6 +133,25 @@ kotlin {
     }
 }
 
+android {
+    compileSdk = 36
+    // AGP 9 + legacy-DSL opt-out: reach the source set via the new DSL interface (the
+    // `sourceSets[...]` Kotlin accessor casts to the removed old API). Mirrors :socket-quic.
+    (this as com.android.build.api.dsl.LibraryExtension).sourceSets.getByName("main").apply {
+        manifest.srcFile("src/androidMain/AndroidManifest.xml")
+    }
+    defaultConfig {
+        minSdk = 24
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    namespace = "com.ditchoom.socket.http3"
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
 // The live HTTP/3 interop test (Http3PublicEndpointInteropTests) needs :socket-quic's quiche
 // native lib on the JVM test classpath — on JDK 21+ FFM loads `libquiche.so` as a classloader
 // resource under META-INF/native/<platform>/. :socket-quic stages those natives onto its own
@@ -84,5 +164,83 @@ afterEvaluate {
     tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
         dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
         classpath += files(stagedNatives)
+    }
+}
+
+// --- Publishing ---
+// Coordinates come from socket-http3/gradle.properties (artifactName=socket-http3); the rest of
+// the POM mirrors :socket-quic. Signing + Maven Central upload only engage on a main-branch CI
+// build that supplies the in-memory PGP key; `publishToMavenLocal` works locally without keys.
+
+val publishedGroupId: String by project
+val libraryName: String by project
+val artifactName: String by project
+val libraryDescription: String by project
+val siteUrl: String by project
+val gitUrl: String by project
+val licenseName: String by project
+val licenseUrl: String by project
+val developerOrg: String by project
+val developerName: String by project
+val developerEmail: String by project
+val developerId: String by project
+
+project.group = publishedGroupId
+project.version = rootProject.version
+
+val signingInMemoryKey = project.findProperty("signingInMemoryKey")
+val signingInMemoryKeyPassword = project.findProperty("signingInMemoryKeyPassword")
+val shouldSignAndPublish = isMainBranchGithub && signingInMemoryKey is String && signingInMemoryKeyPassword is String
+
+if (shouldSignAndPublish) {
+    signing {
+        useInMemoryPgpKeys(signingInMemoryKey as String, signingInMemoryKeyPassword as String)
+        sign(publishing.publications)
+    }
+}
+
+mavenPublishing {
+    if (shouldSignAndPublish) {
+        publishToMavenCentral()
+        signAllPublications()
+    }
+
+    coordinates(publishedGroupId, artifactName, project.version.toString())
+
+    pom {
+        name.set(libraryName)
+        description.set(libraryDescription)
+        url.set(siteUrl)
+        licenses {
+            license {
+                name.set(licenseName)
+                url.set(licenseUrl)
+            }
+        }
+        developers {
+            developer {
+                id.set(developerId)
+                name.set(developerName)
+                email.set(developerEmail)
+            }
+        }
+        organization {
+            name.set(developerOrg)
+        }
+        scm {
+            connection.set(gitUrl)
+            developerConnection.set(gitUrl)
+            url.set(siteUrl)
+        }
+    }
+}
+
+ktlint {
+    verbose.set(true)
+    outputToConsole.set(true)
+    android.set(true)
+    filter {
+        exclude("**/generated/**")
+        exclude("**/build/**")
     }
 }

@@ -325,11 +325,19 @@ jobs:
       # JS impls are documented placeholders that throw), so it just rides the
       # Node already on this runner. Browser/wasmJs stay out (no raw UDP / lower
       # priority per #74).
+      # :socket-http3 is a pure-Kotlin HTTP/3 layer on :socket-quic. Its deterministic
+      # codec/connection suite + the in-process loopback run on jvm, jsNode, and linuxX64
+      # (the live interop GET self-skips when the endpoint is unreachable). Wiring these
+      # here keeps the published socket-http3 artifact gatekept by CI — otherwise the module
+      # would publish (root publishToMavenLocal includes it) but go entirely unvalidated,
+      # the same gap #74/#76 fixed for socket-quic's JS suite.
       - name: Run checks and tests
         run: >-
           ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
           :socket-quic:jsNodeTest
           :socket-quic:jvmProcessResources :socket-quic:ktlintCheck
+          :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:linuxX64Test
+          :socket-http3:ktlintCheck
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
