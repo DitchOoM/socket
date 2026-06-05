@@ -162,6 +162,7 @@ jobs:
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
           :socket-quic:jvmProcessResources
+          :socket-http3:macosArm64Test :socket-http3:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # :socket-quic:jvmTest on macOS — re-enabled (issue #70). It was excluded

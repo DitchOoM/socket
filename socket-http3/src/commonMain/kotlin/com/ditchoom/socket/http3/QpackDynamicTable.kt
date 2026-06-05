@@ -87,6 +87,39 @@ class QpackDynamicTable(
         return absolute
     }
 
+    /**
+     * Insert (name, value) as the newest entry, evicting oldest entries to make room — but **only if
+     * every entry that would have to be evicted satisfies [isEvictable]** (RFC 9204 §2.1.3: an entry
+     * may not be evicted while an outstanding field section still references it). Checks the full
+     * eviction set against the predicate *before* mutating, so a refusal leaves the table untouched.
+     * Returns the new entry's absolute index, or null if it can never fit (entry > [capacity]) or the
+     * eviction it requires is unsafe. The eviction order (oldest-first, to fit exactly this entry) is
+     * identical to [insert], so a safe insert here matches what the peer's decoder will evict.
+     */
+    fun insertIfEvictable(
+        name: String,
+        value: String,
+        isEvictable: (Entry) -> Boolean,
+    ): Long? {
+        val entrySize = qpackEntrySize(name, value)
+        if (entrySize > _capacity) return null
+        // Walk the oldest entries that must go to fit `entrySize`; bail if any is still referenced.
+        var remaining = _size
+        var evictCount = 0
+        while (remaining + entrySize > _capacity) {
+            val candidate = entries[evictCount] // exists: entrySize ≤ capacity guarantees room after full drain
+            if (!isEvictable(candidate)) return null
+            remaining -= candidate.size
+            evictCount++
+        }
+        repeat(evictCount) { _size -= entries.removeFirst().size }
+        val absolute = _insertCount
+        entries.addLast(Entry(absolute, name, value))
+        _size += entrySize
+        _insertCount++
+        return absolute
+    }
+
     private fun evictToFit(incoming: Long) {
         while (_size + incoming > _capacity && entries.isNotEmpty()) {
             _size -= entries.removeFirst().size
@@ -95,8 +128,9 @@ class QpackDynamicTable(
 
     /**
      * True if (name, value) can be inserted *without evicting any live entry* — i.e. it fits in the
-     * remaining capacity. A conservative encoder uses this to keep eviction-safety trivial: it never
-     * evicts an entry an outstanding field section might still reference (RFC 9204 §2.1.3).
+     * remaining capacity. A query for callers that want to avoid eviction entirely; the eviction-aware
+     * path is [insertIfEvictable], which evicts only entries no outstanding section references
+     * (RFC 9204 §2.1.3).
      */
     fun canInsertWithoutEviction(
         name: String,

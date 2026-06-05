@@ -276,6 +276,62 @@ Three gaps closed this session (all green locally; not yet a PR):
 Green: jvm + linuxX64 + jsNode test suites; wasmJs + android test sources compile. 180 linuxX64 / 179 jvm
 tests, 0 fail.
 
+## ✅ DONE — full server role + push-window tune + Apple/Android CI tests (branch `feat/http3-server-role`)
+
+Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) + android unit (173).
+
+- **Full HTTP/3 server role (production).** New `withHttp3Server(port, tlsConfig, …, onRequest, block)` +
+  `Http3ServerConnection` (per accepted QUIC connection: server control stream + SETTINGS, QPACK
+  streams, routes client uni/bidi streams) + `Http3ServerRequest` (streaming body via
+  `nextBodyChunk`/`readFullBody` + trailers) + `Http3ServerResponse` (`send()` one-shot, or streaming
+  `sendHeaders`/`writeBody`/`sendTrailers`; auto-FIN + minimal 500 if the handler sends nothing) +
+  `Http3ServerExchange`. Dynamic QPACK both directions when `qpackCapacity > 0`. Modeled on the proven
+  `Http3LoopbackServer` mechanics (hand-rolled codecs, per the user — no buffer-codec/declarative). E2E
+  tests `productionServerRole_getAndPostRoundTrip` + `…_dynamicQpackRoundTrip` (jvm + linuxX64) drive
+  the real `withHttp3Connection` client against the production server.
+- **Server-initiated push (RFC 9114 §4.6) — DONE.** `Http3ServerExchange.push(path, …) { respond }`
+  allocates a Push ID within the client's MAX_PUSH_ID credit, sends a PUSH_PROMISE on the request
+  stream, opens a push stream (`0x01` + Push ID), and writes the pushed response via the `respond`
+  lambda (synchronously — call it before finishing the main response). Returns false when the client
+  granted no/insufficient credit. The server captures the client's MAX_PUSH_ID on the control stream.
+  E2E `productionServerInitiatedPush` (jvm + linuxX64): production server pushes, real client receives
+  it on `pushes` — push proven in BOTH roles.
+- **Concurrent server push — DONE.** `push()` sends the PUSH_PROMISE synchronously (it rides the
+  request stream, before the FIN) but writes the push-stream **body concurrently** in a child of the
+  connection scope, so a handler can push several resources without blocking its main response.
+  Safe because `QpackEncoder.encodeSection` is internally mutex-guarded (concurrent push bodies + the
+  main response share the dynamic encoder). E2E `productionServerPushesMultipleConcurrently` (3 pushes
+  for one request, all arrive; jvm + linuxX64).
+- **Push-window tune (RFC 9114 §7.2.7).** The client now re-issues MAX_PUSH_ID upward as it observes
+  push ids (`currentMaxPushId`, `maybeExtendMaxPushId`, window = initial maxPushId+1), so `maxPushId`
+  is a rolling-credit window rather than a hard lifetime cap. `validatePushId` checks the live max.
+  E2E `serverPushWindowRollsViaReIssuedMaxPushId` (maxPushId=0, server pushes >1 across requests).
+- **Apple/Android CI tests.** `:socket-http3:testDebugUnitTest` added to build-linux.yaml (Android unit
+  — codec/scripted + skip-guarded interop, validated locally) and `:socket-http3:macosArm64Test` to
+  build-apple.yaml.
+- **QPACK encoder eviction tune — DONE (eviction, still non-blocking).** The encoder is no longer
+  never-evict: a full table now evicts its oldest entries to admit new ones, so it keeps churning as
+  headers evolve instead of freezing once full. Correctness via **reference counting** — `entryRefCount`
+  (absolute index → #outstanding sections referencing it, plus the section being built) and
+  `QpackDynamicTable.insertIfEvictable(predicate)`, which evicts oldest-first **only** when every victim
+  is unreferenced (RFC 9204 §2.1.3); the decoder evicts in lockstep, so a referenced entry is never
+  evicted out from under an in-flight section. Section Acknowledgment / Stream Cancellation release a
+  section's pins. The **non-blocking invariant is preserved** — still references only acknowledged
+  (`< knownReceivedCount`) live entries, so QPACK_BLOCKED_STREAMS stays 0 and there is no
+  eviction-vs-blocked-stream interaction. Adversarial tests: `QpackDynamicTableTests` (predicate-gated
+  eviction) + `QpackEncoderTests` (`tableChurnsViaEvictionAndReReferencesPostEvictionEntry`,
+  `inFlightSectionPreventsEvictionOfItsReferencedEntry`, `streamCancellationReleasesPinnedEntryForEviction`).
+  Green jvm + linuxX64; existing dynamic-QPACK loopback unchanged.
+  **Third-party interop validated.** `Http3DockerInteropTests` drives 64 evicting requests against a real
+  **aioquic/lsqpack** server (`socket-http3/docker-interop/`, `run-server.sh`) on `127.0.0.1` loopback —
+  a *foreign* QPACK decoder accepts our evicting encoder stream end-to-end (passed jvm + linuxX64, at both
+  the default 4096 and a thrash-the-table 256-octet capacity). Skip-on-unreachable like the public interop
+  test (never flaky-fails; fails only on a post-handshake QPACK regression). Not in CI by default — needs a
+  Docker sidecar; see `docker-interop/README.md`. (toxiproxy can't help — it's TCP-only, QUIC is UDP;
+  netem can layer reorder/loss on the container veth.)
+  *Still deferred:* reference-the-newest + **blocking** encoding (Duplicate of draining entries,
+  RIC > Known Received Count) — a further compression tune that would engage QPACK_BLOCKED_STREAMS.
+
 ## NEXT (start here)
 
 1. ✅ **In-process H3 loopback test — DONE** (see "DONE — in-process H3 loopback" above). Green on
@@ -287,11 +343,24 @@ tests, 0 fail.
    dynamic table, encoder + decoder, instruction streams, blocked-stream waiting, wired into
    `Http3Connection`; verified by unit tests + a deterministic bidirectional loopback + the live
    interop GET decoding real servers' dynamic compression.
-4. ✅ **Server push (RFC 9114 §4.6) — DONE** (see "DONE — publishing + … + server push" above).
-   Remaining conformance: the **full server role** (promote `Http3LoopbackServer` to a production
-   `withHttp3Server`); plus the Apple `reset()` + server-observed close-code follow-ups noted above.
-   (Encoder strategy note: the client encoder is deliberately conservative — never evicts, references
-   only acknowledged entries — correct but not maximally compressing; a smarter strategy is a future tune.)
+4. ✅ **Server push (RFC 9114 §4.6) — DONE**, and ✅ **full server role — DONE** (`withHttp3Server`;
+   see "DONE — full server role" above), including ✅ **server-initiated push** (§4.6, both roles now).
+   Remaining: the deferred **QPACK-eviction tune** (NEXT — see below), the Apple `reset()` +
+   server-observed close-code follow-ups, and WebTransport Phase 2.
+
+## ✅ DONE — QPACK encoder eviction tune (see the bullet above)
+
+The `QpackEncoder` now **evicts** (reference-counted, eviction-safe) while keeping the non-blocking
+invariant — `entryRefCount` + `QpackDynamicTable.insertIfEvictable`. Validated by the dynamic-QPACK
+loopback + new adversarial eviction tests (jvm + linuxX64). See the "QPACK encoder eviction tune — DONE"
+bullet under "full server role" above for the full description.
+
+**Still open — reference-the-newest + blocking encoder (a FRESH session).** The remaining compression
+tune: reference *unacknowledged* entries (RIC > Known Received Count) and Duplicate entries close to
+eviction (RFC 9204 §2.1.3 draining), which engages **QPACK_BLOCKED_STREAMS** (currently advertised 0).
+That is the part with eviction-vs-blocked-stream interaction; do it adversarially-tested, validating
+against the live interop GET. Encoder is `QpackEncoder.kt` (`mutex`-guarded;
+`encodeSection`/`processDecoderInstruction`).
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under
    `if (isMacOS)`); verify on a macOS runner / CI. Optionally run Apple/Android *tests* in their CI workflows.
 6. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
