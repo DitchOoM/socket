@@ -261,6 +261,15 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     NSArray<NSData *> * _Nullable pinned_ca_ders =
         (trusted_ca_ders.count > 0) ? [trusted_ca_ders copy] : nil;
 
+    // Set to the created group below, captured by the verify_block so a pinned-anchor
+    // REJECTION can cancel the group. Network.framework does NOT report a client-side
+    // verify_block rejection as a group state change — the handshake just stalls in
+    // limbo (the group's state handler never sees `failed`), so without this the connect
+    // would hang until idleTimeout instead of failing. Cancelling forces `cancelled`
+    // (state 4), which the Kotlin handler maps to QuicCloseException — matching the
+    // quiche path's handshake-time cert-rejection behavior. (Issues #81 / #99.)
+    __block nw_connection_group_t established_group = nil;
+
     nw_parameters_t params = nw_parameters_create_quic(
         ^(nw_protocol_options_t _Nonnull quic_options) {
             sec_protocol_options_t sec_options = nw_quic_copy_sec_protocol_options(quic_options);
@@ -337,6 +346,11 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                         CFRelease(trust_ref);
 
                         complete(valid);
+                        // On rejection, cancel the group so the stall surfaces as `cancelled`
+                        // (state 4 → QuicCloseException). NW won't report the rejection itself.
+                        if (!valid && established_group) {
+                            nw_connection_group_cancel(established_group);
+                        }
                     },
                     verify_queue);
             } else if (!should_verify_peer) {
@@ -358,6 +372,10 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     if (!descriptor) return NULL;
 
     nw_connection_group_t group = nw_connection_group_create(descriptor, params);
+    // Publish to the verify_block so a pinned-anchor rejection can cancel the group. The
+    // handshake (hence the verify_block) only runs after the Kotlin caller starts the group,
+    // which is strictly after this assignment, so there is no use-before-set race.
+    established_group = group;
     return group;
 }
 
@@ -468,6 +486,31 @@ static inline nw_connection_t _Nullable nw_helper_quic_group_extract_stream(
 {
     // nil protocol options → default bidirectional stream.
     return nw_connection_group_extract_connection(group, NULL, NULL);
+}
+
+/**
+ * Extract a new locally-initiated UNIDIRECTIONAL stream flow from the group — the
+ * client-to-server uni streams HTTP/3 needs (control + QPACK encoder/decoder, RFC
+ * 9114 §6.2). Like the datagram flow — and unlike a bidi stream extracted with NULL
+ * options — a uni stream MUST be extracted with the connection's OWN QUIC options
+ * copied from the group's established parameters: a fresh nw_quic_create_options()
+ * tears the flow down immediately with ENETDOWN (issue #109). We copy the group's
+ * QUIC options and only flip is_unidirectional (macOS 11 / iOS 14 — no later floor
+ * than the QUIC group itself, so ungated). The returned connection must have its
+ * queue set and be started (nw_helper_quic_start) before use; returns NULL if the
+ * QUIC options can't be derived.
+ */
+static inline nw_connection_t _Nullable nw_helper_quic_group_extract_uni_stream(
+    nw_connection_group_t _Nonnull group)
+{
+    nw_parameters_t params = nw_connection_group_copy_parameters(group);
+    if (!params) return NULL;
+    nw_protocol_stack_t stack = nw_parameters_copy_default_protocol_stack(params);
+    if (!stack) return NULL;
+    nw_protocol_options_t quic_options = nw_protocol_stack_copy_transport_protocol(stack);
+    if (!quic_options || !nw_protocol_options_is_quic(quic_options)) return NULL;
+    nw_quic_set_stream_is_unidirectional(quic_options, true);
+    return nw_connection_group_extract_connection(group, NULL, quic_options);
 }
 
 /**

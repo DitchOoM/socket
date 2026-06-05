@@ -1,4 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.security.KeyStore
+import java.security.PrivateKey
+import java.util.Base64
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -1657,47 +1660,154 @@ providers.gradleProperty("iosSimulatorDevice").orNull?.takeIf { it.isNotBlank() 
         }
 }
 
-// --- PKCS#12 test identity for the Apple QUIC server tests (issue #112) ---
-// Network.framework's QUIC listener needs a sec_identity_t, which SecPKCS12Import builds
-// from a PKCS#12 bundle. Generate cert.p12 from the committed PEM cert+key using the
-// system openssl (LibreSSL — its default p12 encoding is one SecPKCS12Import reads
-// reliably). The artifact is git-ignored; the Apple K/N test tasks depend on this so it
-// exists (cwd-relative testcerts/cert.p12) before AppleQuicServerTests runs.
-val generateTestP12 =
-    tasks.register("generateTestP12") {
+// --- Self-signed `localhost` test identity, GENERATED at build time (issues #112 / #99) ---
+// The QUIC CA-pinning tests (QuicServerTestSuite.pinnedCorrectCaAnchor.../pinnedWrongCaAnchor...)
+// do a REAL TLS chain validation, so the localhost identity must satisfy BOTH stacks at once:
+//   * Apple's SecTrust rejects any TLS cert whose validity exceeds 398 days
+//     (errSecCertificateNotStandardsCompliant) — so it MUST be short-lived, which means it can't
+//     be committed "forever" (a 100-year cert passed on quiche but hung every Apple handshake).
+//   * quiche/BoringSSL only accepts a self-signed cert as a pinned trust ANCHOR when it is CA:TRUE.
+// Generating it fresh (397-day, CA:TRUE, serverAuth EKU, SAN localhost+127.0.0.1) keeps it
+// perpetually valid on every platform with ZERO committed expiry. We use `keytool` — it ships with
+// the JDK the build already requires, so it's portable to the Windows jvmTest runner (unlike
+// openssl, which isn't guaranteed there) — plus a pure-JVM PKCS#8 key export. The PEM pair then
+// feeds the openssl p12 step below, which only runs on macOS for the Apple server.
+//
+// Written to every dir a consumer reads (each test source set has its own copy; all git-ignored):
+//   testcerts/                        → Apple K/N + Linux (cwd-relative) + the p12 source below
+//   src/jvmTest/resources/certs/      → JVM (classpath, incl. the Windows runner)
+//   src/androidInstrumentedTest/...   → Android instrumented tests (classpath)
+val localhostCertDirs =
+    listOf(
+        projectDir.resolve("testcerts"),
+        projectDir.resolve("src/jvmTest/resources/certs"),
+        projectDir.resolve("src/androidInstrumentedTest/resources/certs"),
+    )
+val generateLocalhostCert =
+    tasks.register("generateLocalhostCert") {
         group = "verification"
-        description = "Generate testcerts/cert.p12 from the PEM cert+key for the Apple QUIC server tests."
-        val certDir = projectDir.resolve("testcerts")
-        val crt = certDir.resolve("cert.crt")
-        val key = certDir.resolve("cert.key")
-        val p12 = certDir.resolve("cert.p12")
-        inputs.files(crt, key)
-        outputs.file(p12)
+        description = "Generate the short-lived self-signed localhost cert+key the QUIC CA-pinning tests pin."
+        outputs.files(localhostCertDirs.flatMap { listOf(it.resolve("localhost.crt"), it.resolve("localhost.key")) })
+        // No declared inputs: regenerate only when an output is missing (fresh/clean checkout),
+        // otherwise stay up-to-date — so one dev session reuses a single cert and incremental
+        // builds don't churn. CI starts clean, so CI always mints a fresh (never-expiring) cert.
         doLast {
-            val process =
-                ProcessBuilder(
-                    "openssl",
-                    "pkcs12",
-                    "-export",
-                    "-out",
-                    p12.absolutePath,
-                    "-inkey",
-                    key.absolutePath,
-                    "-in",
-                    crt.absolutePath,
-                    "-passout",
-                    "pass:testpass",
-                ).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText()
-            if (process.waitFor() != 0) {
-                throw GradleException("openssl pkcs12 export failed (rc != 0):\n$output")
+            val javaHome = File(System.getProperty("java.home"))
+            val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+            val keytool = javaHome.resolve(if (isWindows) "bin/keytool.exe" else "bin/keytool").absolutePath
+            val tmpP12 = temporaryDir.resolve("localhost.p12")
+            tmpP12.delete()
+
+            fun keytool(vararg args: String): Process = ProcessBuilder(listOf(keytool) + args).redirectErrorStream(false).start()
+
+            val gen =
+                keytool(
+                    "-genkeypair",
+                    "-alias",
+                    "localhost",
+                    "-keyalg",
+                    "RSA",
+                    "-keysize",
+                    "2048",
+                    "-sigalg",
+                    "SHA256withRSA",
+                    "-validity",
+                    "397",
+                    "-dname",
+                    "CN=localhost",
+                    "-ext",
+                    "san=dns:localhost,ip:127.0.0.1",
+                    "-ext",
+                    "eku=serverAuth",
+                    "-ext",
+                    "bc:critical=ca:true",
+                    "-keystore",
+                    tmpP12.absolutePath,
+                    "-storetype",
+                    "PKCS12",
+                    "-storepass",
+                    "testpass",
+                    "-keypass",
+                    "testpass",
+                )
+            val genErr = gen.errorStream.bufferedReader().readText()
+            if (gen.waitFor() != 0) throw GradleException("keytool -genkeypair failed:\n$genErr")
+
+            // Cert → PEM via keytool; private key → PKCS#8 PEM via the JDK KeyStore (no openssl).
+            val exp = keytool("-exportcert", "-rfc", "-alias", "localhost", "-keystore", tmpP12.absolutePath, "-storepass", "testpass")
+            val certPem = exp.inputStream.bufferedReader().readText()
+            val expErr = exp.errorStream.bufferedReader().readText()
+            if (exp.waitFor() != 0) throw GradleException("keytool -exportcert failed:\n$expErr")
+
+            val ks = KeyStore.getInstance("PKCS12")
+            tmpP12.inputStream().use { ks.load(it, "testpass".toCharArray()) }
+            val key = ks.getKey("localhost", "testpass".toCharArray()) as PrivateKey
+            val b64 = Base64.getMimeEncoder(64, "\n".toByteArray()).encodeToString(key.encoded)
+            val keyPem = "-----BEGIN PRIVATE KEY-----\n$b64\n-----END PRIVATE KEY-----\n"
+
+            localhostCertDirs.forEach { dir ->
+                dir.mkdirs()
+                dir.resolve("localhost.crt").writeText(certPem)
+                dir.resolve("localhost.key").writeText(keyPem)
             }
         }
     }
 
-// Apple K/N test tasks read testcerts/cert.p12 at runtime — make them depend on its
-// generation. Apple targets only build on macOS, so on Linux/Windows no such task exists
-// and this matches nothing.
+// --- PKCS#12 test identities for the Apple QUIC server tests (issues #112 + #99) ---
+// Network.framework's QUIC listener needs a sec_identity_t, which SecPKCS12Import builds from a
+// PKCS#12 bundle. Generate a `.p12` for each PEM cert+key using the system openssl (LibreSSL — its
+// default p12 encoding is one SecPKCS12Import reads reliably; this is why we do NOT reuse keytool's
+// PKCS12, whose newer PBE algorithms SecPKCS12Import may reject). Apple builds only on macOS, where
+// openssl is always present, so this never runs on the Windows jvmTest runner. Git-ignored; the
+// Apple K/N test tasks depend on it so the p12s exist (cwd-relative testcerts/*.p12) at runtime.
+//   - cert.p12      → the committed quic.tech example identity used by most Apple server tests.
+//   - localhost.p12 → the generated localhost identity the CA-pinning tests need.
+val generateTestP12 =
+    tasks.register("generateTestP12") {
+        group = "verification"
+        description = "Generate testcerts/*.p12 from the PEM cert+key pairs for the Apple QUIC server tests."
+        dependsOn(generateLocalhostCert) // localhost.{crt,key} are generated, not committed
+        val certDir = projectDir.resolve("testcerts")
+        val identities = listOf("cert", "localhost")
+        inputs.files(identities.flatMap { listOf(certDir.resolve("$it.crt"), certDir.resolve("$it.key")) })
+        outputs.files(identities.map { certDir.resolve("$it.p12") })
+        doLast {
+            for (name in identities) {
+                val process =
+                    ProcessBuilder(
+                        "openssl",
+                        "pkcs12",
+                        "-export",
+                        "-out",
+                        certDir.resolve("$name.p12").absolutePath,
+                        "-inkey",
+                        certDir.resolve("$name.key").absolutePath,
+                        "-in",
+                        certDir.resolve("$name.crt").absolutePath,
+                        "-passout",
+                        "pass:testpass",
+                    ).redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().readText()
+                if (process.waitFor() != 0) {
+                    throw GradleException("openssl pkcs12 export failed for $name (rc != 0):\n$output")
+                }
+            }
+        }
+    }
+
+// Wire generateLocalhostCert ahead of everything that reads localhost.* — the test tasks
+// themselves (cwd-relative reads on JVM/Linux/Apple K/N) and the resource-processing tasks that
+// copy it onto the JVM/Android test classpath. Each match only adds a dependsOn, harmless for any
+// task that doesn't actually read the cert. generateTestP12 already chains via dependsOn above.
+tasks
+    .matching {
+        it.name.matches(Regex("(jvm|linuxX64|macos|ios|tvos|watchos)\\w*Test")) ||
+            (it.name.contains("ProcessResources", ignoreCase = true) && it.name.contains("Test", ignoreCase = true)) ||
+            it.name.matches(Regex("process\\w*(AndroidTest|UnitTest)\\w*Resources"))
+    }.configureEach { dependsOn(generateLocalhostCert) }
+
+// Apple K/N test tasks read testcerts/*.p12 at runtime — make them depend on its generation.
+// Apple targets only build on macOS, so on Linux/Windows no such task exists and this matches none.
 tasks
     .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
     .configureEach { dependsOn(generateTestP12) }

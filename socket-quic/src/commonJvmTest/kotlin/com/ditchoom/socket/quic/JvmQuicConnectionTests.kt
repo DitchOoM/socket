@@ -45,6 +45,36 @@ class JvmQuicConnectionTests {
         }
 
     @Test
+    fun jvmConnection_openUniStream_usesUniIdSpace_independentOfBidi() =
+        runBlocking(Dispatchers.IO) {
+            val api = StubQuicheApi()
+            api.established = true
+            val driver = createTestDriver(api)
+            val connScope = CoroutineScope(coroutineContext + SupervisorJob())
+            val conn = JvmQuicConnection(driver, bufferFactory, connScope)
+            conn.start()
+
+            try {
+                // Client-initiated uni IDs are 2, 6, 10, ... (low 2 bits 0b10).
+                val uni = conn.openUniStream()
+                assertTrue(uni.isOpen)
+                assertEquals(QuicStreamId(2), uni.streamId)
+                assertTrue(uni.streamId.isUnidirectional)
+                assertEquals(QuicStreamId(6), conn.openUniStream().streamId)
+
+                // The bidi counter is independent — first bidi is still 0.
+                val bidi = conn.openStream()
+                assertEquals(QuicStreamId(0), bidi.streamId)
+                assertTrue(bidi.streamId.isBidirectional)
+
+                // ...and uni continues from where it left off.
+                assertEquals(QuicStreamId(10), conn.openUniStream().streamId)
+            } finally {
+                conn.close()
+            }
+        }
+
+    @Test
     fun jvmConnection_openStream_throwsAfterClose(): Unit =
         runBlocking(Dispatchers.IO) {
             val api = StubQuicheApi()

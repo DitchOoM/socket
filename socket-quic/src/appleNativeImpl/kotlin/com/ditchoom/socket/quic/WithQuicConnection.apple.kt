@@ -6,7 +6,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.toNativeData
@@ -18,6 +17,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_datagram_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_cancel
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_datagram_flow
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_stream
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_extract_uni_stream
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_new_connection_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_start
@@ -164,7 +164,24 @@ private suspend fun <R> connectQuicGroup(
                             )
                         }
                     4 -> if (cont.isActive) cont.resumeWithException(QuicCloseException(QuicError.NoError, "QUIC group cancelled"))
-                    else -> {} // invalid=0, waiting=1 — in progress
+                    1 ->
+                        // "waiting" = NW couldn't establish and is holding to retry. During the
+                        // bounded-timeout CLIENT handshake there's no recovery path, so an
+                        // error-carrying "waiting" (no route, refused, etc.) should fail fast
+                        // rather than burn the whole connect timeout retrying. A benign pre-ready
+                        // "waiting" carries no error (errorCode == 0) and is left in-progress.
+                        // (Note: a pinned-anchor TLS rejection does NOT arrive here — NW reports
+                        // no group state for it at all; nw_quic_helpers.h cancels the group from
+                        // the verify_block instead, which surfaces as `cancelled` below.)
+                        if (errorCode != 0 && cont.isActive) {
+                            cont.resumeWithException(
+                                QuicCloseException(
+                                    QuicError.CryptoError(0),
+                                    "QUIC handshake failed connecting to $hostname:$port: code=$errorCode ${errorDesc ?: ""}",
+                                ),
+                            )
+                        }
+                    else -> {} // invalid=0 — in progress
                 }
             }
             // Wire peer-initiated streams into acceptStream() — MUST be set before start.
@@ -275,6 +292,11 @@ internal class AppleQuicGroupConnection(
 
     private val nextClientStreamId = kotlin.concurrent.AtomicLong(0L)
 
+    // Client-initiated unidirectional ids: low 2 bits = 0b10, so id % 4 == 2 (RFC 9000 §2.1).
+    // Synthetic, like the bidi ids — NW hides the real id — but flavored so
+    // QuicStreamId.isUnidirectional is correct.
+    private val nextClientUniStreamId = kotlin.concurrent.AtomicLong(2L)
+
     @Volatile
     private var closed = false
 
@@ -288,6 +310,21 @@ internal class AppleQuicGroupConnection(
                 ?: throw QuicCloseException(closeReason(), "Failed to open QUIC stream")
         nw_helper_quic_start(streamConn)
         val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
+        return QuicByteStream(streamId, NWQuicByteStream(streamConn))
+    }
+
+    override suspend fun openUniStream(): QuicByteStream {
+        check(!closed) { "AppleQuicGroupConnection is closed" }
+        check(_state.value is QuicConnectionState.Established) {
+            "Cannot open stream in state ${_state.value}"
+        }
+        // Extracted with the group's own QUIC options + is_unidirectional (see the shim);
+        // a fresh-options extract would be torn down with ENETDOWN like the datagram flow.
+        val streamConn =
+            nw_helper_quic_group_extract_uni_stream(group)
+                ?: throw QuicCloseException(closeReason(), "Failed to open unidirectional QUIC stream")
+        nw_helper_quic_start(streamConn)
+        val streamId = QuicStreamId(nextClientUniStreamId.getAndAdd(4))
         return QuicByteStream(streamId, NWQuicByteStream(streamConn))
     }
 
@@ -406,9 +443,12 @@ internal class AppleQuicGroupConnection(
  */
 internal class NWQuicByteStream(
     private val nwConn: nw_connection_t,
-) : ByteStream {
+) : HalfCloseableByteStream {
     @Volatile
     private var streamClosed = false
+
+    @Volatile
+    private var sendFinished = false
 
     override val isOpen: Boolean get() = !streamClosed
 
@@ -448,6 +488,7 @@ internal class NWQuicByteStream(
         timeout: Duration,
     ): BytesWritten =
         withTimeout(timeout) {
+            check(!sendFinished) { "NWQuicByteStream send side is finished" }
             val remaining = buffer.remaining()
             val nsData = buffer.toNativeData().nsData
 
@@ -469,15 +510,31 @@ internal class NWQuicByteStream(
             }
         }
 
+    override suspend fun shutdownSend() {
+        if (streamClosed || sendFinished) return
+        sendFinished = true
+        // Send-side FIN only; the read side stays open for the response (HTTP/3 §4
+        // half-close). Network.framework has no separate shutdown — the FIN is an
+        // empty FINAL_MESSAGE, same wire effect as quiche's stream_send(fin=true).
+        sendFin()
+    }
+
     override suspend fun close() {
         if (streamClosed) return
         streamClosed = true
-        // Send FIN: empty data with is_complete=true (FINAL_MESSAGE context).
-        // Bounded by a timeout: stream teardown must never block forever on the
-        // send-complete callback. The root-cause hang (a prior write leaving the
-        // DEFAULT message open and queuing this FIN behind it) is fixed in
-        // nw_quic_helpers.h, but a best-effort, bounded close is the correct
-        // contract regardless. (Issue #81.)
+        // Avoid a duplicate FIN if the send side was already shut down.
+        if (!sendFinished) sendFin()
+    }
+
+    /**
+     * Send the stream FIN: empty data with is_complete=true (FINAL_MESSAGE context).
+     * Bounded by a timeout: stream teardown must never block forever on the
+     * send-complete callback. The root-cause hang (a prior write leaving the
+     * DEFAULT message open and queuing this FIN behind it) is fixed in
+     * nw_quic_helpers.h, but a best-effort, bounded send is the correct contract
+     * regardless. (Issue #81.)
+     */
+    private suspend fun sendFin() {
         withTimeoutOrNull(FIN_TIMEOUT) {
             suspendCancellableCoroutine { cont ->
                 val emptyData = NSData()

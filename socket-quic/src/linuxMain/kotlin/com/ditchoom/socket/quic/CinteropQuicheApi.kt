@@ -55,6 +55,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
+import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
 import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
 import com.ditchoom.socket.quic.quiche.quiche_conn_writable
 import com.ditchoom.socket.quic.quiche.quiche_connect
@@ -328,6 +329,21 @@ internal object CinteropQuicheApi : QuicheApi {
             ).toInt()
         }
     }
+
+    override fun connStreamShutdown(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        direction: Int,
+        err: Long,
+    ): Int =
+        // The `enum quiche_shutdown` param accepts its integer value via convert(), exactly like
+        // configSetCcAlgorithm's enum arg (0 = QUICHE_SHUTDOWN_READ, 1 = QUICHE_SHUTDOWN_WRITE).
+        quiche_conn_stream_shutdown(
+            conn.handle.toCPointer()!!,
+            streamId.id.convert(),
+            direction.convert(),
+            err.convert(),
+        )
 
     // --- Unreliable datagrams (RFC 9221) ---
 

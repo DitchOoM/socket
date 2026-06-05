@@ -192,6 +192,18 @@ interface QuicheApi {
         fin: Boolean,
     ): Int
 
+    /**
+     * Shut down one [direction] of [streamId] with application error code [err]
+     * (`quiche_conn_stream_shutdown`): [direction] 0 = read (sends STOP_SENDING), 1 = write (sends
+     * RESET_STREAM). Returns 0 on success or a negative quiche error code.
+     */
+    fun connStreamShutdown(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        direction: Int,
+        err: Long,
+    ): Int
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     /** Enable DATAGRAM frames on the config with the given receive/send queue lengths. */

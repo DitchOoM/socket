@@ -204,6 +204,13 @@ object JniQuicheApi : QuicheApi {
         fin: Boolean,
     ): Int = nConnStreamSend(conn.handle, streamId.id, buf, bufLen, fin)
 
+    override fun connStreamShutdown(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        direction: Int,
+        err: Long,
+    ): Int = nConnStreamShutdown(conn.handle, streamId.id, direction, err)
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     override fun configEnableDgram(
@@ -604,6 +611,15 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
         fin: Boolean,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnStreamShutdown(
+        conn: Long,
+        streamId: Long,
+        direction: Int,
+        err: Long,
     ): Int
 
     @JvmStatic

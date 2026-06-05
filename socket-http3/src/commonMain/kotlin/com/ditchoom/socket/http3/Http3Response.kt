@@ -1,0 +1,115 @@
+package com.ditchoom.socket.http3
+
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.quic.QuicByteStream
+import kotlin.time.Duration
+
+/**
+ * An HTTP/3 response (RFC 9114 §4.1).
+ *
+ * [status] and [headers] are decoded from the response's first HEADERS frame (the `:status`
+ * pseudo-header and the regular fields, respectively). The body is then consumed frame by
+ * frame via [nextBodyChunk], or collected whole with [readFullBody]. A trailing field section
+ * (RFC 9114 §4.1) is decoded into [trailers] and ends the body.
+ *
+ * Backed by the request stream's [Http3StreamReader]: a buffer returned by [nextBodyChunk] is
+ * borrowed from the reader and only valid until the next call. [close] releases the reader's
+ * buffers — always call it (directly or via [readFullBody] + [close]) once done.
+ */
+class Http3Response internal constructor(
+    val status: Int,
+    val headers: List<QpackHeaderField>,
+    private val stream: QuicByteStream,
+    private val reader: Http3StreamReader,
+    private val pool: BufferPool,
+    private val readTimeout: Duration,
+    // Decodes a trailing field section through the connection's QPACK decoder (so dynamic-table
+    // references in trailers resolve, and the decoder emits a Section Ack for the trailer section).
+    private val decodeFields: suspend (ReadBuffer) -> List<QpackHeaderField>,
+) {
+    /** Trailing header fields, populated once a trailing HEADERS frame is reached (else null). */
+    var trailers: List<QpackHeaderField>? = null
+        private set
+
+    private var bodyDone = false
+
+    /**
+     * The next DATA-frame payload, or null at end of body. The returned buffer is **borrowed**
+     * from the reader — read or copy it before the next call. A trailing HEADERS frame is
+     * decoded into [trailers] and ends the body (returns null); unknown frames are skipped
+     * (RFC 9114 §9).
+     */
+    suspend fun nextBodyChunk(): ReadBuffer? {
+        if (bodyDone) return null
+        while (true) {
+            when (val frame = reader.nextFrame(readTimeout)) {
+                null -> {
+                    bodyDone = true
+                    return null
+                }
+                is Http3Frame.Data -> return frame.payload
+                is Http3Frame.Headers -> {
+                    trailers = decodeFields(frame.encodedFieldSection)
+                    bodyDone = true
+                    return null
+                }
+                // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
+                is Http3Frame.Unknown -> {}
+                // Only DATA and a trailing HEADERS section are valid in a response body; anything
+                // else (SETTINGS, GOAWAY, …) on a request stream is H3_FRAME_UNEXPECTED (§4.1).
+                else -> {
+                    bodyDone = true
+                    throw Http3StreamException(
+                        "unexpected ${frame::class.simpleName} in the response body",
+                        Http3ErrorCode.FRAME_UNEXPECTED,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Collect the entire response body into a single buffer. Each chunk is copied out of the
+     * borrowed reader buffer, so the result is independent of the reader's lifetime. The caller
+     * owns the returned buffer (release via `freeIfNeeded()`).
+     */
+    suspend fun readFullBody(): ReadBuffer {
+        val chunks = mutableListOf<ReadBuffer>()
+        var total = 0
+        while (true) {
+            val chunk = nextBodyChunk() ?: break
+            val n = chunk.remaining()
+            val copy = pool.allocate(n.coerceAtLeast(1))
+            if (n > 0) copy.write(chunk)
+            copy.resetForRead()
+            chunks += copy
+            total += n
+        }
+        val out = pool.allocate(total.coerceAtLeast(1))
+        for (chunk in chunks) {
+            if (chunk.remaining() > 0) out.write(chunk)
+            chunk.freeIfNeeded()
+        }
+        out.resetForRead()
+        return out
+    }
+
+    /** Release the underlying reader's buffers. Idempotent at the [Http3StreamReader] level. */
+    fun close() = reader.release()
+
+    /**
+     * Cancel the request/response: reset the request stream with [Http3ErrorCode.REQUEST_CANCELLED]
+     * (RFC 9114 §4.1 — RESET_STREAM + STOP_SENDING tell the server to stop producing the response)
+     * and release the reader's buffers. Use this instead of [close] to abort an in-progress
+     * response (e.g. the body is no longer wanted) rather than draining it to completion.
+     */
+    suspend fun cancel() {
+        try {
+            stream.reset(Http3ErrorCode.REQUEST_CANCELLED)
+        } finally {
+            reader.release()
+        }
+    }
+}

@@ -298,6 +298,27 @@ jobs:
           tail -50 "$LOG" 2>/dev/null || echo "(no log)"
           echo "ready=false" >> "$GITHUB_OUTPUT"
 
+      # HARD compile gate — fail the job on a test-source compile break instead
+      # of letting the soft `continue-on-error` run step below swallow it. The
+      # run step is soft on purpose (a harness/peer-connection failure must skip,
+      # not fail — see its comment), but `continue-on-error` ALSO masks
+      # compilation errors: a missing override / type error compiles fine on
+      # JVM+Linux yet breaks Apple's test source set, the job stays green, and
+      # the only signal is the downstream "QUIC Interop Summary" reporting
+      # "no markers despite launch" — a confusing, misattributed failure (it
+      # reads as a harness-wireup problem, not a compile break). Compiling the
+      # Apple test binaries here, WITHOUT continue-on-error, turns that class of
+      # regression back into a direct, correctly-attributed build failure. This
+      # also primes the test step below (link tasks are then UP-TO-DATE).
+      - name: Compile socket-quic Apple native tests (hard gate)
+        run: >-
+          ./gradlew
+          :socket-quic:compileTestKotlinMacosArm64
+          :socket-quic:compileTestKotlinIosSimulatorArm64
+          :socket-quic:compileTestKotlinTvosSimulatorArm64
+          :socket-quic:compileTestKotlinWatchosSimulatorArm64
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       - name: Run socket-quic Apple native tests (Network.framework)
         continue-on-error: true
         # Tee Gradle's stdout to /tmp/socket-quic-apple.log so the audit

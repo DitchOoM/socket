@@ -34,9 +34,14 @@ sealed interface QuicheCmd {
         val onRecvInfoConsumed: (() -> Unit)? = null,
     ) : QuicheCmd
 
-    /** Allocate the next stream ID and create a [StreamSlot]. */
+    /**
+     * Allocate the next stream ID and create a [StreamSlot]. [unidirectional] selects the
+     * uni-stream ID space (RFC 9000 §2.1) for the locally-initiated control / QPACK streams
+     * HTTP/3 needs; the default is a bidirectional stream.
+     */
     class OpenStream(
         val result: CompletableDeferred<StreamSlot>,
+        val unidirectional: Boolean = false,
     ) : QuicheCmd
 
     /** Read data from a QUIC stream. */
@@ -53,6 +58,17 @@ sealed interface QuicheCmd {
         val addr: Long,
         val bufLen: Int,
         val fin: Boolean,
+        val result: CompletableDeferred<Int>,
+    ) : QuicheCmd
+
+    /**
+     * Shut down one direction of a stream with an application error code: [direction] 0 = read
+     * (sends STOP_SENDING), 1 = write (sends RESET_STREAM). [result] is the quiche return (0 on success).
+     */
+    class StreamShutdown(
+        val streamId: Long,
+        val direction: Int,
+        val errorCode: Long,
         val result: CompletableDeferred<Int>,
     ) : QuicheCmd
 

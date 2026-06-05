@@ -64,6 +64,16 @@ interface QuicheStreamAdapter {
 
     /** Close the stream (send FIN). */
     suspend fun streamClose(streamId: QuicStreamId)
+
+    /**
+     * Shut down [direction] of the stream with application error code [errorCode]:
+     * 0 = read (sends STOP_SENDING), 1 = write (sends RESET_STREAM). Used to abruptly abort a stream.
+     */
+    suspend fun streamShutdown(
+        streamId: QuicStreamId,
+        direction: Int,
+        errorCode: Long,
+    )
 }
 
 /**
@@ -75,9 +85,13 @@ class QuicheStreamByteStream(
     private val adapter: QuicheStreamAdapter,
     private val bufferFactory: BufferFactory,
     private val bufferSize: Int = 65536,
-) : ByteStream {
+) : HalfCloseableByteStream,
+    ResettableByteStream {
     @Volatile
     private var closed = false
+
+    @Volatile
+    private var sendFinished = false
 
     override val isOpen: Boolean get() = !closed
 
@@ -101,13 +115,31 @@ class QuicheStreamByteStream(
         timeout: Duration,
     ): BytesWritten {
         check(!closed) { "QuicheStreamByteStream($streamId) is closed" }
+        check(!sendFinished) { "QuicheStreamByteStream($streamId) send side is finished" }
         val written = adapter.streamWrite(streamId, buffer, timeout)
         return BytesWritten(written)
+    }
+
+    override suspend fun shutdownSend() {
+        if (closed || sendFinished) return
+        sendFinished = true
+        // streamClose maps to quiche stream_send(fin=true) — a send-side FIN only; the read
+        // side stays open until the peer's FIN arrives (slot.finReceived in the driver).
+        adapter.streamClose(streamId)
     }
 
     override suspend fun close() {
         if (closed) return
         closed = true
-        adapter.streamClose(streamId)
+        // Avoid a duplicate FIN if the send side was already shut down.
+        if (!sendFinished) adapter.streamClose(streamId)
+    }
+
+    override suspend fun reset(errorCode: Long) {
+        if (closed) return
+        closed = true
+        // Abort both directions: RESET_STREAM (write) then STOP_SENDING (read), RFC 9000 §19.4/§19.5.
+        adapter.streamShutdown(streamId, direction = 1, errorCode)
+        adapter.streamShutdown(streamId, direction = 0, errorCode)
     }
 }

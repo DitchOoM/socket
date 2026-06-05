@@ -27,11 +27,35 @@ interface QuicScope : CoroutineScope {
     /** Open a new locally-initiated bidirectional stream. Caller should close() when done (sends FIN). */
     suspend fun openStream(): QuicByteStream
 
+    /**
+     * Open a new locally-initiated unidirectional stream (RFC 9000 §2.1) — the client-to-server
+     * uni streams HTTP/3 needs (control + QPACK encoder/decoder, RFC 9114 §6.2). The caller writes
+     * the stream-type prefix as the first bytes, and `close()` sends FIN. The returned stream's
+     * [QuicByteStream.streamId] is unidirectional ([QuicStreamId.isUnidirectional]).
+     *
+     * Defaults to [UnsupportedOperationException]; platforms that support it (quiche-backed, Apple)
+     * override this.
+     */
+    suspend fun openUniStream(): QuicByteStream =
+        throw UnsupportedOperationException("Unidirectional QUIC streams are not supported on this platform")
+
     /** Accept the next peer-initiated stream. Suspends until one arrives or scope is cancelled. */
     suspend fun acceptStream(): QuicByteStream
 
     /** Flow of all peer-initiated streams. Completes when the connection closes. */
     fun streams(): Flow<QuicByteStream>
+
+    /**
+     * Abort the connection with an application-defined error code — a CONNECTION_CLOSE frame of
+     * type `0x1d` (RFC 9000 §19.19) carrying [errorCode]. Unlike the normal block-boundary close
+     * (which sends a NO_ERROR close), this lets a layered protocol surface a violation to the peer
+     * with its own error code — e.g. an HTTP/3 error code (RFC 9114 §8.1). After it returns the
+     * connection is closed and the scope block unwinds.
+     *
+     * Defaults to [UnsupportedOperationException]; quiche-backed and Apple connections override it.
+     */
+    suspend fun closeWithError(errorCode: Long): Unit =
+        throw UnsupportedOperationException("Application-coded connection close is not supported on this platform")
 
     /**
      * Actively migrate the connection to a new local path (RFC 9000 §9). The driver opens a UDP
