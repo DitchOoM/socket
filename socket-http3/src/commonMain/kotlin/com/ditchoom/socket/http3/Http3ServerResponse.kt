@@ -117,8 +117,11 @@ class Http3ServerExchange internal constructor(
     /**
      * Initiate a server push (RFC 9114 §4.6) for [path]: send a PUSH_PROMISE on this request stream
      * and write the pushed response via [respond] on a fresh push stream. Returns `true` if the push
-     * was sent, or `false` if the client granted no (or insufficient) push credit — call it before
-     * finishing [response], since the PUSH_PROMISE rides this request stream before its FIN.
+     * was promised, or `false` if the client granted no (or insufficient) push credit.
+     *
+     * Call this before finishing [response] — the PUSH_PROMISE rides this request stream before its
+     * FIN. It returns as soon as the promise is on the wire; the pushed [respond] body is written
+     * **concurrently** on the push stream, so pushing several resources doesn't block the main response.
      *
      * [authority] and [scheme] default to the originating request's. The pushed [respond] writes a
      * normal response (`send` or streaming); the framework FINs the push stream when it returns.

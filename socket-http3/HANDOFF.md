@@ -295,7 +295,13 @@ Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) 
   lambda (synchronously — call it before finishing the main response). Returns false when the client
   granted no/insufficient credit. The server captures the client's MAX_PUSH_ID on the control stream.
   E2E `productionServerInitiatedPush` (jvm + linuxX64): production server pushes, real client receives
-  it on `pushes` — push proven in BOTH roles. (Sent synchronously per push; concurrent push is a tune.)
+  it on `pushes` — push proven in BOTH roles.
+- **Concurrent server push — DONE.** `push()` sends the PUSH_PROMISE synchronously (it rides the
+  request stream, before the FIN) but writes the push-stream **body concurrently** in a child of the
+  connection scope, so a handler can push several resources without blocking its main response.
+  Safe because `QpackEncoder.encodeSection` is internally mutex-guarded (concurrent push bodies + the
+  main response share the dynamic encoder). E2E `productionServerPushesMultipleConcurrently` (3 pushes
+  for one request, all arrive; jvm + linuxX64).
 - **Push-window tune (RFC 9114 §7.2.7).** The client now re-issues MAX_PUSH_ID upward as it observes
   push ids (`currentMaxPushId`, `maybeExtendMaxPushId`, window = initial maxPushId+1), so `maxPushId`
   is a rolling-credit window rather than a hard lifetime cap. `validatePushId` checks the live max.
@@ -320,8 +326,20 @@ Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) 
    interop GET decoding real servers' dynamic compression.
 4. ✅ **Server push (RFC 9114 §4.6) — DONE**, and ✅ **full server role — DONE** (`withHttp3Server`;
    see "DONE — full server role" above), including ✅ **server-initiated push** (§4.6, both roles now).
-   Remaining: the Apple `reset()` + server-observed close-code follow-ups, the deferred QPACK-eviction
-   tune, concurrent (non-blocking) server push, and WebTransport Phase 2.
+   Remaining: the deferred **QPACK-eviction tune** (NEXT — see below), the Apple `reset()` +
+   server-observed close-code follow-ups, and WebTransport Phase 2.
+
+## NEXT — smarter QPACK encoder eviction (start a FRESH session here)
+
+The client + server `QpackEncoder` is deliberately conservative: it **never evicts** and references only
+**acknowledged** dynamic entries, so it is always non-blocking and correct — interop-proven against
+Cloudflare/Google. The tune is to evict old entries when the table is full and reference newer ones
+(optionally allowing blocking), for better compression. This is **correctness-critical**, not minor:
+a subtle bug = decode failures / `QPACK_DECOMPRESSION_FAILED` against real peers. Do it as its own
+adversarially-tested effort — RIC/Known-Received-Count accounting, draining references before eviction,
+eviction-vs-blocked-stream interaction. Encoder is `QpackEncoder.kt` (internally `mutex`-guarded;
+`encodeSection`/`processDecoderInstruction`). Validate against the existing dynamic-QPACK loopback +
+the live interop GET, and add eviction-specific tests (table churn forcing eviction, then re-reference).
    (Encoder strategy note: the client encoder is deliberately conservative — never evicts, references
    only acknowledged entries — correct but not maximally compressing; a smarter strategy is a future tune.)
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under

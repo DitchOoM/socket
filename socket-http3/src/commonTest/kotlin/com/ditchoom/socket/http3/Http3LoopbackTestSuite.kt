@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
@@ -488,6 +490,68 @@ abstract class Http3LoopbackTestSuite {
                     assertEquals(200, result.pushStatus)
                     assertEquals("body{color:green}", result.pushBody)
                     assertEquals("text/css", result.pushContentType)
+                }
+            }
+        }
+
+    @Test
+    fun productionServerPushesMultipleConcurrently() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // The handler pushes THREE resources for one request; since push bodies stream
+                // concurrently (the handler isn't blocked on each), all three promises + responses must
+                // still arrive. Proves the concurrent push-write path.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    onRequest = {
+                        if (request.path == "/index.html") {
+                            repeat(3) { i ->
+                                push(path = "/asset-$i.css") {
+                                    val b = textBuffer("asset-$i")
+                                    try {
+                                        send(200, body = b)
+                                    } finally {
+                                        b.freeIfNeeded()
+                                    }
+                                }
+                            }
+                        }
+                        val html = textBuffer("<html>")
+                        try {
+                            response.send(200, body = html)
+                        } finally {
+                            html.freeIfNeeded()
+                        }
+                    },
+                ) {
+                    delay(100)
+                    val paths =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            quicOptions = clientQuicOptions,
+                            connectionOptions = connectionOptions,
+                            timeout = 15.seconds,
+                            maxPushId = 8,
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            delay(100)
+                            val collected = async { withTimeout(10.seconds) { pushes.take(3).toList() } }
+                            val r = request(Http3Request(method = "GET", authority = "localhost", path = "/index.html"))
+                            r.readFullBody().freeIfNeeded()
+                            r.close()
+                            val received = collected.await()
+                            received.forEach { p ->
+                                val pr = withTimeout(10.seconds) { p.response() }
+                                pr.readFullBody().freeIfNeeded()
+                                pr.close()
+                            }
+                            received.map { it.promisedRequest.path }.sorted()
+                        }
+                    assertEquals(listOf("/asset-0.css", "/asset-1.css", "/asset-2.css"), paths)
                 }
             }
         }

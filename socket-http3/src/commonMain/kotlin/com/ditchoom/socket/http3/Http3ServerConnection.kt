@@ -229,9 +229,16 @@ class Http3ServerConnection internal constructor(
     /**
      * Push a resource for the request on [requestStream]: allocate a Push ID within the client's
      * MAX_PUSH_ID limit, send a PUSH_PROMISE (the promised request fields) on the request stream, then
-     * open a push stream (`0x01` + Push ID) and run [respond] to write the pushed response on it. Returns
-     * false — without sending anything — when push is disabled or out of credit. Sent synchronously: the
-     * pushed response is fully written before this returns, so call it before finishing the main response.
+     * write the pushed response on a fresh push stream (`0x01` + Push ID). Returns false — without
+     * sending anything — when push is disabled or out of credit.
+     *
+     * The PUSH_PROMISE is sent synchronously (it rides the request stream, so it must precede that
+     * stream's FIN and keep promise order), but the **push stream's body is written concurrently** in a
+     * child coroutine: this returns as soon as the promise is on the wire, so a handler can push several
+     * resources and write its main response without blocking on the pushed bodies. The push-write
+     * inherits the connection scope, so it is cancelled if the connection closes first; a failure on it
+     * never takes the connection down. [QpackEncoder.encodeSection] is internally serialized, so the
+     * concurrent push bodies and the main response share the dynamic encoder safely.
      */
     private suspend fun pushResource(
         requestStream: QuicByteStream,
@@ -263,12 +270,20 @@ class Http3ServerConnection internal constructor(
         }
         section.freeIfNeeded()
 
-        val pushStream = scope.openUniStream()
-        writePushStreamHeader(pushStream, pushId)
-        val pushResponse =
-            Http3ServerResponse(pushStream, pool, options, pushStream.streamId.id) { fields, sid -> encodeSection(fields, sid) }
-        pushResponse.respond()
-        pushResponse.finish()
+        scope.launch {
+            try {
+                val pushStream = scope.openUniStream()
+                writePushStreamHeader(pushStream, pushId)
+                val pushResponse =
+                    Http3ServerResponse(pushStream, pool, options, pushStream.streamId.id) { fields, sid -> encodeSection(fields, sid) }
+                pushResponse.respond()
+                pushResponse.finish()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // The pushed response failed (peer STOP_SENDING, connection gone) — the connection survives.
+            }
+        }
         return true
     }
 
