@@ -2,6 +2,7 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.ConnectionOptions
@@ -22,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -74,6 +76,13 @@ abstract class Http3LoopbackTestSuite {
     // live interop test make. Both the client (withHttp3Connection's bootstrap + request frames) and
     // the server (Http3LoopbackServer) allocate through this.
     private val connectionOptions = ConnectionOptions(bufferFactory = BufferFactory.deterministic())
+
+    /** A native-memory (zero-copy-safe) buffer holding [s] as UTF-8, positioned for reading. */
+    private fun textBuffer(s: String): PlatformBuffer =
+        BufferFactory.deterministic().allocate(s.length.coerceAtLeast(1)).apply {
+            writeString(s, Charset.UTF8)
+            resetForRead()
+        }
 
     @Test
     fun getRoundTripsThroughInProcessServer() =
@@ -414,6 +423,198 @@ abstract class Http3LoopbackTestSuite {
         }
 
     @Test
+    fun serverPushWindowRollsViaReIssuedMaxPushId() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // maxPushId = 0 advertises room for exactly ONE push (id 0). The server pushes one
+                // resource per request; the client must re-issue MAX_PUSH_ID as it observes push ids,
+                // or the server runs out of credit after id 0. Receiving more than one push proves the
+                // rolling-window re-issue (RFC 9114 §7.2.7) works end-to-end.
+                val server =
+                    Http3LoopbackServer(
+                        connectionOptions,
+                        serverPushes = { request ->
+                            listOf(
+                                Http3LoopbackServer.Push(
+                                    authority = "localhost",
+                                    path = "${request.path}.css",
+                                    response = Http3LoopbackServer.Response(status = 200, body = "css"),
+                                ),
+                            )
+                        },
+                    ) { Http3LoopbackServer.Response(status = 200, body = "ok") }
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
+                    val serverJob = launch { connections { server.serve(this) } }
+                    delay(100)
+                    try {
+                        val pushCount =
+                            withHttp3Connection(
+                                "localhost",
+                                port,
+                                quicOptions = clientQuicOptions,
+                                connectionOptions = connectionOptions,
+                                timeout = 15.seconds,
+                                maxPushId = 0,
+                            ) {
+                                withTimeout(5.seconds) { peerSettings() }
+                                delay(50)
+                                val received = mutableListOf<Long>()
+                                val collector =
+                                    launch {
+                                        pushes.collect {
+                                            received += it.pushId
+                                            it.cancel()
+                                        }
+                                    }
+                                repeat(3) { i ->
+                                    val r = request(Http3Request(method = "GET", authority = "localhost", path = "/p$i"))
+                                    r.readFullBody().freeIfNeeded()
+                                    r.close()
+                                    delay(120) // let the re-issued MAX_PUSH_ID reach the server before the next request
+                                }
+                                delay(200)
+                                collector.cancel()
+                                received.size
+                            }
+                        // Without re-issue the server could push only id 0 (one push); > 1 proves the window rolled.
+                        assertTrue(pushCount >= 2, "expected the push window to roll past the initial credit; got $pushCount pushes")
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun productionServerRole_getAndPostRoundTrip() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // The PRODUCTION server role (`withHttp3Server` + Http3ServerConnection) answering a real
+                // `withHttp3Connection` client: GET returns headers+body, POST echoes the request body via
+                // the streaming Http3ServerRequest.readFullBody / Http3ServerResponse.send path.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    onRequest = {
+                        when (request.method) {
+                            "GET" -> {
+                                val body = textBuffer("hi from the h3 server")
+                                try {
+                                    response.send(200, listOf(QpackHeaderField("content-type", "text/plain")), body)
+                                } finally {
+                                    body.freeIfNeeded()
+                                }
+                            }
+                            "POST" -> {
+                                val reqBody = request.readFullBody()
+                                val echo = "echo:" + reqBody.readString(reqBody.remaining(), Charset.UTF8)
+                                reqBody.freeIfNeeded()
+                                val out = textBuffer(echo)
+                                try {
+                                    response.send(201, body = out)
+                                } finally {
+                                    out.freeIfNeeded()
+                                }
+                            }
+                            else -> response.send(404)
+                        }
+                    },
+                ) {
+                    delay(100) // let the accept loop start before the client connects
+                    val result =
+                        withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
+                            val g = request(Http3Request(method = "GET", authority = "localhost", path = "/hi"))
+                            val gBody = g.readFullBody()
+                            val gText = gBody.readString(gBody.remaining(), Charset.UTF8)
+                            gBody.freeIfNeeded()
+                            val gOut = Triple(g.status, gText, g.headers.firstOrNull { it.name == "content-type" }?.value)
+                            g.close()
+
+                            val reqBuf = textBuffer("server-echo-me")
+                            val p =
+                                try {
+                                    request(Http3Request(method = "POST", authority = "localhost", path = "/echo", body = reqBuf))
+                                } finally {
+                                    reqBuf.freeIfNeeded()
+                                }
+                            val pBody = p.readFullBody()
+                            val pText = pBody.readString(pBody.remaining(), Charset.UTF8)
+                            pBody.freeIfNeeded()
+                            val pStatus = p.status
+                            p.close()
+                            ServerRoleResult(gOut.first, gOut.second, gOut.third, pStatus, pText)
+                        }
+                    assertEquals(200, result.getStatus)
+                    assertEquals("hi from the h3 server", result.getBody)
+                    assertEquals("text/plain", result.getContentType)
+                    assertEquals(201, result.postStatus)
+                    assertEquals("echo:server-echo-me", result.postBody)
+                }
+            }
+        }
+
+    @Test
+    fun productionServerRole_dynamicQpackRoundTrip() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // The production server with dynamic QPACK (capacity 4096): it decodes the client's
+                // dynamically-compressed request header and compresses its own response header back,
+                // across repeated requests that drive entries into both dynamic tables.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    qpackCapacity = 4096,
+                    onRequest = {
+                        val echoed = request.headers.firstOrNull { it.name == "x-client" }?.value
+                        val out = textBuffer("echo:$echoed")
+                        try {
+                            response.send(200, listOf(QpackHeaderField("x-server", "server-token")), out)
+                        } finally {
+                            out.freeIfNeeded()
+                        }
+                    },
+                ) {
+                    delay(100)
+                    withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        delay(50)
+                        repeat(3) { i ->
+                            val response =
+                                request(
+                                    Http3Request(
+                                        method = "GET",
+                                        authority = "localhost",
+                                        path = "/item-$i",
+                                        headers = listOf(QpackHeaderField("x-client", "client-token")),
+                                    ),
+                                )
+                            try {
+                                val body = response.readFullBody()
+                                val text = body.readString(body.remaining(), Charset.UTF8)
+                                body.freeIfNeeded()
+                                assertEquals(200, response.status, "request $i status")
+                                assertEquals(
+                                    "server-token",
+                                    response.headers.firstOrNull { it.name == "x-server" }?.value,
+                                    "request $i x-server",
+                                )
+                                assertEquals("echo:client-token", text, "request $i body")
+                            } finally {
+                                response.close()
+                            }
+                        }
+                        assertNull(connectionError, "production server dynamic-QPACK exchange must not raise a connection error")
+                    }
+                }
+            }
+        }
+
+    @Test
     fun clientReceivesServerSettings() =
         runHttp3LoopbackTest {
             wrapTestBody {
@@ -445,6 +646,15 @@ abstract class Http3LoopbackTestSuite {
             }
         }
 }
+
+/** Result holder for the production server-role test (the block returns GET + POST results). */
+private data class ServerRoleResult(
+    val getStatus: Int,
+    val getBody: String,
+    val getContentType: String?,
+    val postStatus: Int,
+    val postBody: String,
+)
 
 /** Result holder for the server-push test (its withHttp3Connection block returns several values). */
 private data class PushResult(

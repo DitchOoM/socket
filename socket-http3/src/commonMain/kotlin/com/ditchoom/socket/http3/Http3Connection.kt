@@ -98,6 +98,12 @@ class Http3Connection private constructor(
     private val pushChannel = Channel<Http3ServerPush>(Channel.UNLIMITED)
     private val controlStreamWriteMutex = Mutex()
 
+    // The live push-id limit (RFC 9114 §7.2.7). Starts at the advertised maxPushId and is re-issued
+    // upward (never down) as pushes are observed, so the server keeps a rolling window of credit
+    // rather than a hard lifetime cap of maxPushId+1 pushes. -1 when push is disabled. Guarded by pushMutex.
+    @Volatile
+    private var currentMaxPushId: Long = maxPushId
+
     private class PushEntry {
         val responseDeferred = CompletableDeferred<Http3Response>()
         var promised = false
@@ -702,18 +708,38 @@ class Http3Connection private constructor(
      * which path — request stream or push stream — detected it.
      */
     private suspend fun validatePushId(pushId: Long) {
-        if (maxPushId in 0..Long.MAX_VALUE && pushId in 0..maxPushId) return
+        if (maxPushId >= 0 && pushId in 0..currentMaxPushId) return
         val error =
             Http3StreamException(
                 if (maxPushId < 0) {
                     "received a push but MAX_PUSH_ID was never sent (push disabled)"
                 } else {
-                    "push id $pushId exceeds the maximum advertised ($maxPushId)"
+                    "push id $pushId exceeds the current maximum ($currentMaxPushId)"
                 },
                 Http3ErrorCode.ID_ERROR,
             )
         abortConnection(error)
         throw error
+    }
+
+    /**
+     * Keep a rolling push window open (RFC 9114 §7.2.7): once an observed push id consumes more than
+     * half the credit above the current maximum, re-issue MAX_PUSH_ID to `observed + window` (window =
+     * the initially advertised maxPushId + 1). MAX_PUSH_ID only ever increases, as the RFC requires.
+     * No-op when push is disabled. Call after [validatePushId], outside any pushMutex section.
+     */
+    private suspend fun maybeExtendMaxPushId(observedPushId: Long) {
+        if (maxPushId < 0) return
+        val window = maxPushId + 1
+        val newMax =
+            pushMutex.withLock {
+                if (currentMaxPushId - observedPushId > window / 2) return // ample headroom remains
+                val target = observedPushId + window
+                if (target <= currentMaxPushId) return
+                currentMaxPushId = target
+                target
+            }
+        writeControlFrame(Http3Frame.MaxPushId(newMax))
     }
 
     /**
@@ -727,6 +753,7 @@ class Http3Connection private constructor(
         requestStreamId: Long,
     ) {
         validatePushId(frame.pushId)
+        maybeExtendMaxPushId(frame.pushId)
         val promised = decodePromisedRequest(frame.encodedFieldSection, requestStreamId)
         pushMutex.withLock {
             val entry = pushEntries.getOrPut(frame.pushId) { PushEntry() }
@@ -774,6 +801,7 @@ class Http3Connection private constructor(
         try {
             val pushId = Http3StreamReader(stream, processor).nextVarInt(options.readTimeout)
             validatePushId(pushId)
+            maybeExtendMaxPushId(pushId)
             entry = pushMutex.withLock { pushEntries.getOrPut(pushId) { PushEntry() }.also { it.pushStream = stream } }
             if (entry.cancelled) {
                 resetStreamQuietly(stream, Http3ErrorCode.REQUEST_CANCELLED)
