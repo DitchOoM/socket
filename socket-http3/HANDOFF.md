@@ -276,6 +276,31 @@ Three gaps closed this session (all green locally; not yet a PR):
 Green: jvm + linuxX64 + jsNode test suites; wasmJs + android test sources compile. 180 linuxX64 / 179 jvm
 tests, 0 fail.
 
+## ✅ DONE — full server role + push-window tune + Apple/Android CI tests (branch `feat/http3-server-role`)
+
+Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) + android unit (173).
+
+- **Full HTTP/3 server role (production).** New `withHttp3Server(port, tlsConfig, …, onRequest, block)` +
+  `Http3ServerConnection` (per accepted QUIC connection: server control stream + SETTINGS, QPACK
+  streams, routes client uni/bidi streams) + `Http3ServerRequest` (streaming body via
+  `nextBodyChunk`/`readFullBody` + trailers) + `Http3ServerResponse` (`send()` one-shot, or streaming
+  `sendHeaders`/`writeBody`/`sendTrailers`; auto-FIN + minimal 500 if the handler sends nothing) +
+  `Http3ServerExchange`. Dynamic QPACK both directions when `qpackCapacity > 0`. Modeled on the proven
+  `Http3LoopbackServer` mechanics (hand-rolled codecs, per the user — no buffer-codec/declarative). E2E
+  tests `productionServerRole_getAndPostRoundTrip` + `…_dynamicQpackRoundTrip` (jvm + linuxX64) drive
+  the real `withHttp3Connection` client against the production server. **Server-initiated push is NOT
+  implemented** — a follow-up (inverse of the client push API).
+- **Push-window tune (RFC 9114 §7.2.7).** The client now re-issues MAX_PUSH_ID upward as it observes
+  push ids (`currentMaxPushId`, `maybeExtendMaxPushId`, window = initial maxPushId+1), so `maxPushId`
+  is a rolling-credit window rather than a hard lifetime cap. `validatePushId` checks the live max.
+  E2E `serverPushWindowRollsViaReIssuedMaxPushId` (maxPushId=0, server pushes >1 across requests).
+- **Apple/Android CI tests.** `:socket-http3:testDebugUnitTest` added to build-linux.yaml (Android unit
+  — codec/scripted + skip-guarded interop, validated locally) and `:socket-http3:macosArm64Test` to
+  build-apple.yaml.
+- **Deliberately deferred — smarter QPACK encoder eviction/blocking.** NOT minor: correctness-critical
+  vs. the current correct-and-interop-proven never-evict strategy. Do it as its own adversarially-tested
+  effort, not a tail-end bundle.
+
 ## NEXT (start here)
 
 1. ✅ **In-process H3 loopback test — DONE** (see "DONE — in-process H3 loopback" above). Green on
@@ -287,9 +312,9 @@ tests, 0 fail.
    dynamic table, encoder + decoder, instruction streams, blocked-stream waiting, wired into
    `Http3Connection`; verified by unit tests + a deterministic bidirectional loopback + the live
    interop GET decoding real servers' dynamic compression.
-4. ✅ **Server push (RFC 9114 §4.6) — DONE** (see "DONE — publishing + … + server push" above).
-   Remaining conformance: the **full server role** (promote `Http3LoopbackServer` to a production
-   `withHttp3Server`); plus the Apple `reset()` + server-observed close-code follow-ups noted above.
+4. ✅ **Server push (RFC 9114 §4.6) — DONE**, and ✅ **full server role — DONE** (`withHttp3Server`;
+   see "DONE — full server role" above). Remaining: **server-initiated push** (server side of §4.6),
+   the Apple `reset()` + server-observed close-code follow-ups, and the deferred QPACK-eviction tune.
    (Encoder strategy note: the client encoder is deliberately conservative — never evicts, references
    only acknowledged entries — correct but not maximally compressing; a smarter strategy is a future tune.)
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under
