@@ -466,6 +466,10 @@ jobs:
       # trace that gradle's brief CI log otherwise truncates to
       # `AssertionError at Assert.java:89`. Indispensable for diagnosing the
       # next harness flake without having to push a re-run with debug prints.
+      # Also collect JVM fatal-error logs from a native crash (SIGABRT/SIGSEGV in quiche/JNI/FFM):
+      # the test process writes hs_err_pid*/replay_pid* to its cwd, which the JUnit XML never
+      # captures — without these a native abort is an invisible "exit 134". This is what lets us
+      # diagnose the intermittent :socket-quic:jvmTest SIGABRT instead of guessing.
       - name: Upload test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -476,6 +480,8 @@ jobs:
             build/test-results/
             socket-quic/build/reports/tests/
             socket-quic/build/test-results/
+            **/hs_err_pid*.log
+            **/replay_pid*.log
           retention-days: 7
           if-no-files-found: ignore
 
