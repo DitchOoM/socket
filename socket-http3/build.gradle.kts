@@ -264,3 +264,14 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().con
         dependsOn("kspCommonMainKotlinMetadata")
     }
 }
+
+// The ktlint commonMain tasks read the KSP-generated srcDir (even though they filter it out of the
+// lint pass), so Gradle reports an implicit-dependency validation error without this. Declare it
+// explicitly (mirrors buffer's buffer-codec-test).
+tasks
+    .matching {
+        it.name == "runKtlintCheckOverCommonMainSourceSet" ||
+            it.name == "runKtlintFormatOverCommonMainSourceSet"
+    }.configureEach {
+        dependsOn("kspCommonMainKotlinMetadata")
+    }
