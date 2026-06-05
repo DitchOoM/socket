@@ -56,6 +56,14 @@ class Http3ServerConnection internal constructor(
     private val encoderStreamWriteMutex = Mutex()
     private val decoderStreamWriteMutex = Mutex()
 
+    // Server-push state (RFC 9114 §4.6). clientMaxPushId is the largest Push ID the client will accept,
+    // learned from its MAX_PUSH_ID frame(s) on the control stream (-1 = push not enabled). The server
+    // allocates push ids 0,1,… up to that limit. Guarded by pushIdMutex.
+    @Volatile
+    private var clientMaxPushId: Long = -1
+    private val pushIdMutex = Mutex()
+    private var nextPushId: Long = 0
+
     /** Run the HTTP/3 server role over [scope] (one accepted QUIC connection). Returns when it closes. */
     suspend fun serve() {
         writeControlStreamHeader(scope.openUniStream())
@@ -109,7 +117,12 @@ class Http3ServerConnection internal constructor(
                         .also { it.setCapacity(minOf(qpackCapacity, clientMax)) }
             }
         }
-        while (reader.nextFrame() != null) { /* accept + ignore */ }
+        // Capture MAX_PUSH_ID so the server knows whether (and how much) it may push (RFC 9114 §7.2.7);
+        // it is non-decreasing, so just take the latest. Other control frames are accepted + ignored.
+        while (true) {
+            val frame = reader.nextFrame() ?: break
+            if (frame is Http3Frame.MaxPushId) clientMaxPushId = frame.pushId
+        }
     }
 
     /** Read one request off a client bidi [stream], run [onRequest], then drain the body + FIN. */
@@ -141,8 +154,10 @@ class Http3ServerConnection internal constructor(
                 )
             val response =
                 Http3ServerResponse(stream, pool, options, streamId) { sectionFields, sid -> encodeSection(sectionFields, sid) }
+            val exchange =
+                Http3ServerExchange(request, response) { spec, respond -> pushResource(stream, spec, respond) }
             try {
-                Http3ServerExchange(request, response).onRequest()
+                exchange.onRequest()
             } finally {
                 runCatching { request.drain() }
                 runCatching { response.finish() }
@@ -206,6 +221,86 @@ class Http3ServerConnection internal constructor(
             decoder.decodeSection(section, streamId, pool)
         } else {
             QpackFieldSectionCodec.decode(section, DecodeContext.Empty.with(QpackScratchPoolKey, pool))
+        }
+    }
+
+    // --- Server push (RFC 9114 §4.6), driven by Http3ServerExchange.push ---
+
+    /**
+     * Push a resource for the request on [requestStream]: allocate a Push ID within the client's
+     * MAX_PUSH_ID limit, send a PUSH_PROMISE (the promised request fields) on the request stream, then
+     * open a push stream (`0x01` + Push ID) and run [respond] to write the pushed response on it. Returns
+     * false — without sending anything — when push is disabled or out of credit. Sent synchronously: the
+     * pushed response is fully written before this returns, so call it before finishing the main response.
+     */
+    private suspend fun pushResource(
+        requestStream: QuicByteStream,
+        spec: PushPromiseSpec,
+        respond: suspend Http3ServerResponse.() -> Unit,
+    ): Boolean {
+        val pushId =
+            pushIdMutex.withLock {
+                if (clientMaxPushId < 0 || nextPushId > clientMaxPushId) return false
+                nextPushId++
+            }
+        val promiseFields =
+            buildList {
+                add(QpackHeaderField(":method", spec.method))
+                add(QpackHeaderField(":scheme", spec.scheme))
+                add(QpackHeaderField(":authority", spec.authority))
+                add(QpackHeaderField(":path", spec.path))
+                addAll(spec.promisedHeaders)
+            }
+        // PUSH_PROMISE rides the request stream; its field section uses that stream's QPACK context.
+        val section = encodeSection(promiseFields, requestStream.streamId.id)
+        try {
+            writeFrame(requestStream, Http3Frame.PushPromise(pushId, section))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            section.freeIfNeeded()
+            return false // request stream already finished/reset — nothing was promised
+        }
+        section.freeIfNeeded()
+
+        val pushStream = scope.openUniStream()
+        writePushStreamHeader(pushStream, pushId)
+        val pushResponse =
+            Http3ServerResponse(pushStream, pool, options, pushStream.streamId.id) { fields, sid -> encodeSection(fields, sid) }
+        pushResponse.respond()
+        pushResponse.finish()
+        return true
+    }
+
+    /** Push stream header (RFC 9114 §4.6): the `0x01` stream-type prefix followed by the Push ID. */
+    private suspend fun writePushStreamHeader(
+        stream: QuicByteStream,
+        pushId: Long,
+    ) {
+        val buffer = pool.allocate(VarIntCodec.encodedLength(Http3StreamType.PUSH) + VarIntCodec.encodedLength(pushId))
+        try {
+            VarIntCodec.encode(buffer, Http3StreamType.PUSH, EncodeContext.Empty)
+            VarIntCodec.encode(buffer, pushId, EncodeContext.Empty)
+            buffer.resetForRead()
+            stream.write(buffer, options.writeTimeout)
+        } finally {
+            buffer.freeIfNeeded()
+        }
+    }
+
+    /** Encode [frame] into a pooled buffer and write the whole frame to [stream]. */
+    private suspend fun writeFrame(
+        stream: QuicByteStream,
+        frame: Http3Frame,
+    ) {
+        val size = (Http3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
+        val buffer = pool.allocate(size)
+        try {
+            Http3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
+            buffer.resetForRead()
+            stream.write(buffer, options.writeTimeout)
+        } finally {
+            buffer.freeIfNeeded()
         }
     }
 

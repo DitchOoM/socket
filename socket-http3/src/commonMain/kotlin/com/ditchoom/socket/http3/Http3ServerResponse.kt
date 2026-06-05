@@ -97,8 +97,38 @@ class Http3ServerResponse internal constructor(
     }
 }
 
+/** The promised request line of a server push, encoded into the PUSH_PROMISE field section. */
+internal data class PushPromiseSpec(
+    val method: String,
+    val scheme: String,
+    val authority: String,
+    val path: String,
+    val promisedHeaders: List<QpackHeaderField>,
+)
+
 /** A server-side request/response pair handed to the `withHttp3Server` request handler. */
 class Http3ServerExchange internal constructor(
     val request: Http3ServerRequest,
     val response: Http3ServerResponse,
-)
+    // Sends a PUSH_PROMISE on this request stream + a push stream carrying the pushed response;
+    // returns false when the client has not granted (enough) push credit. Provided by the connection.
+    private val pushFn: suspend (PushPromiseSpec, suspend Http3ServerResponse.() -> Unit) -> Boolean,
+) {
+    /**
+     * Initiate a server push (RFC 9114 §4.6) for [path]: send a PUSH_PROMISE on this request stream
+     * and write the pushed response via [respond] on a fresh push stream. Returns `true` if the push
+     * was sent, or `false` if the client granted no (or insufficient) push credit — call it before
+     * finishing [response], since the PUSH_PROMISE rides this request stream before its FIN.
+     *
+     * [authority] and [scheme] default to the originating request's. The pushed [respond] writes a
+     * normal response (`send` or streaming); the framework FINs the push stream when it returns.
+     */
+    suspend fun push(
+        path: String,
+        authority: String = request.authority,
+        method: String = "GET",
+        scheme: String = request.scheme,
+        promisedHeaders: List<QpackHeaderField> = emptyList(),
+        respond: suspend Http3ServerResponse.() -> Unit,
+    ): Boolean = pushFn(PushPromiseSpec(method, scheme, authority, path, promisedHeaders), respond)
+}

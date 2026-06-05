@@ -288,8 +288,14 @@ Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) 
   `Http3ServerExchange`. Dynamic QPACK both directions when `qpackCapacity > 0`. Modeled on the proven
   `Http3LoopbackServer` mechanics (hand-rolled codecs, per the user — no buffer-codec/declarative). E2E
   tests `productionServerRole_getAndPostRoundTrip` + `…_dynamicQpackRoundTrip` (jvm + linuxX64) drive
-  the real `withHttp3Connection` client against the production server. **Server-initiated push is NOT
-  implemented** — a follow-up (inverse of the client push API).
+  the real `withHttp3Connection` client against the production server.
+- **Server-initiated push (RFC 9114 §4.6) — DONE.** `Http3ServerExchange.push(path, …) { respond }`
+  allocates a Push ID within the client's MAX_PUSH_ID credit, sends a PUSH_PROMISE on the request
+  stream, opens a push stream (`0x01` + Push ID), and writes the pushed response via the `respond`
+  lambda (synchronously — call it before finishing the main response). Returns false when the client
+  granted no/insufficient credit. The server captures the client's MAX_PUSH_ID on the control stream.
+  E2E `productionServerInitiatedPush` (jvm + linuxX64): production server pushes, real client receives
+  it on `pushes` — push proven in BOTH roles. (Sent synchronously per push; concurrent push is a tune.)
 - **Push-window tune (RFC 9114 §7.2.7).** The client now re-issues MAX_PUSH_ID upward as it observes
   push ids (`currentMaxPushId`, `maybeExtendMaxPushId`, window = initial maxPushId+1), so `maxPushId`
   is a rolling-credit window rather than a hard lifetime cap. `validatePushId` checks the live max.
@@ -313,8 +319,9 @@ Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) 
    `Http3Connection`; verified by unit tests + a deterministic bidirectional loopback + the live
    interop GET decoding real servers' dynamic compression.
 4. ✅ **Server push (RFC 9114 §4.6) — DONE**, and ✅ **full server role — DONE** (`withHttp3Server`;
-   see "DONE — full server role" above). Remaining: **server-initiated push** (server side of §4.6),
-   the Apple `reset()` + server-observed close-code follow-ups, and the deferred QPACK-eviction tune.
+   see "DONE — full server role" above), including ✅ **server-initiated push** (§4.6, both roles now).
+   Remaining: the Apple `reset()` + server-observed close-code follow-ups, the deferred QPACK-eviction
+   tune, concurrent (non-blocking) server push, and WebTransport Phase 2.
    (Encoder strategy note: the client encoder is deliberately conservative — never evicts, references
    only acknowledged entries — correct but not maximally compressing; a smarter strategy is a future tune.)
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under

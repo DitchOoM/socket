@@ -423,6 +423,76 @@ abstract class Http3LoopbackTestSuite {
         }
 
     @Test
+    fun productionServerInitiatedPush() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // The PRODUCTION server (withHttp3Server) initiates a push: for GET /index.html its
+                // handler calls exchange.push("/style.css") { … }, sending a PUSH_PROMISE on the request
+                // stream + a push stream. The real client (push enabled) receives it on `pushes`.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    onRequest = {
+                        if (request.path == "/index.html") {
+                            push(path = "/style.css") {
+                                val css = textBuffer("body{color:green}")
+                                try {
+                                    send(200, listOf(QpackHeaderField("content-type", "text/css")), css)
+                                } finally {
+                                    css.freeIfNeeded()
+                                }
+                            }
+                        }
+                        val html = textBuffer("<html>")
+                        try {
+                            response.send(200, body = html)
+                        } finally {
+                            html.freeIfNeeded()
+                        }
+                    },
+                ) {
+                    delay(100)
+                    val result =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            quicOptions = clientQuicOptions,
+                            connectionOptions = connectionOptions,
+                            timeout = 15.seconds,
+                            maxPushId = 8,
+                        ) {
+                            // Let our MAX_PUSH_ID reach the server before it handles the request.
+                            withTimeout(5.seconds) { peerSettings() }
+                            delay(100)
+                            val pushDeferred = async { withTimeout(10.seconds) { pushes.first() } }
+                            val r = request(Http3Request(method = "GET", authority = "localhost", path = "/index.html"))
+                            val htmlBody = r.readFullBody()
+                            val htmlText = htmlBody.readString(htmlBody.remaining(), Charset.UTF8)
+                            htmlBody.freeIfNeeded()
+                            r.close()
+
+                            val push = pushDeferred.await()
+                            val pushResponse = withTimeout(10.seconds) { push.response() }
+                            val pb = pushResponse.readFullBody()
+                            val pText = pb.readString(pb.remaining(), Charset.UTF8)
+                            pb.freeIfNeeded()
+                            val ct = pushResponse.headers.firstOrNull { it.name == "content-type" }?.value
+                            pushResponse.close()
+                            assertNull(connectionError, "server-initiated push must not raise a connection error")
+                            PushResult(htmlText, push.promisedRequest.path, pushResponse.status, pText, ct)
+                        }
+                    assertEquals("<html>", result.mainBody)
+                    assertEquals("/style.css", result.promisedPath)
+                    assertEquals(200, result.pushStatus)
+                    assertEquals("body{color:green}", result.pushBody)
+                    assertEquals("text/css", result.pushContentType)
+                }
+            }
+        }
+
+    @Test
     fun serverPushWindowRollsViaReIssuedMaxPushId() =
         runHttp3LoopbackTest {
             wrapTestBody {
