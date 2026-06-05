@@ -379,7 +379,13 @@ jobs:
       # self-contained shim via Panama. This is the only CI run that exercises
       # FfmQuicheApi — including the FFM migration path (the in-repo FFM server +
       # client), which had a SIGSEGV that the old silent JNI fallback hid.
+      #
+      # `if: !cancelled()` so this runs even when the default (JNI) step above
+      # crashed: the two backends are independent and a native abort in one must
+      # not blind us to the other. Without it, an intermittent JNI SIGABRT skips
+      # the entire FFM run, so we never learn whether the crash is JNI-only.
       - name: Run socket-quic JVM tests (FFM backend)
+        if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
@@ -393,7 +399,11 @@ jobs:
       # The java21/FFM classes aren't on the JNI classpath, so there is no
       # UnsupportedClassVersionError. Proves connNewScid + sockaddr decode +
       # server routing on the JNI shim at runtime on JDK < 21.
+      #
+      # `if: !cancelled()` for the same reason as the FFM step: independent of an
+      # earlier backend's crash, so all three backend runs always report.
       - name: Run socket-quic JVM tests (JDK 17 / JNI)
+        if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
