@@ -194,7 +194,12 @@ jobs:
       # (FFM) output so its loader shadows the base JNI one, then loads the
       # self-contained shim via Panama. Exercises FfmQuicheApi's IS_BSD decode and
       # the FFM migration flush path on BSD layout.
+      #
+      # `if: !cancelled()` so FFM runs even when the JNI step above crashed — the
+      # two backends are independent and a native abort in one must not blind us to
+      # the other (matches build-linux.yaml).
       - name: Run socket-quic JVM tests (FFM backend)
+        if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
@@ -454,7 +459,10 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
 
-      # Test reports on failure — see build-linux.yaml for the why.
+      # Test reports on failure — see build-linux.yaml for the why. Includes the JVM
+      # hs_err/replay crash logs: a native abort (quiche/JNI/FFM SIGABRT/SIGSEGV) shows
+      # only as "exit value 134" with no failing JUnit case, so without the dump the
+      # crash is undiagnosable — same instrumentation as build-linux.yaml.
       - name: Upload test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -466,6 +474,8 @@ jobs:
             build/reports/ktlint/
             socket-quic/build/reports/tests/
             socket-quic/build/test-results/
+            **/hs_err_pid*.log
+            **/replay_pid*.log
           retention-days: 7
           if-no-files-found: ignore
 
