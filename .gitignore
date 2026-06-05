@@ -44,3 +44,4 @@ socket-quic/hs_err_pid*.log
 # Generated at build time by the :socket-quic `generateTestP12` task from the
 # committed PEM cert+key, for the Apple QUIC server tests (issue #112).
 socket-quic/testcerts/cert.p12
+socket-quic/testcerts/localhost.p12

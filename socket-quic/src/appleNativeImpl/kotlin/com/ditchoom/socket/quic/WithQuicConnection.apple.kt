@@ -6,7 +6,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.toNativeData
@@ -165,7 +164,24 @@ private suspend fun <R> connectQuicGroup(
                             )
                         }
                     4 -> if (cont.isActive) cont.resumeWithException(QuicCloseException(QuicError.NoError, "QUIC group cancelled"))
-                    else -> {} // invalid=0, waiting=1 — in progress
+                    1 ->
+                        // "waiting" = NW couldn't establish and is holding to retry. During the
+                        // bounded-timeout CLIENT handshake there's no recovery path, so an
+                        // error-carrying "waiting" (no route, refused, etc.) should fail fast
+                        // rather than burn the whole connect timeout retrying. A benign pre-ready
+                        // "waiting" carries no error (errorCode == 0) and is left in-progress.
+                        // (Note: a pinned-anchor TLS rejection does NOT arrive here — NW reports
+                        // no group state for it at all; nw_quic_helpers.h cancels the group from
+                        // the verify_block instead, which surfaces as `cancelled` below.)
+                        if (errorCode != 0 && cont.isActive) {
+                            cont.resumeWithException(
+                                QuicCloseException(
+                                    QuicError.CryptoError(0),
+                                    "QUIC handshake failed connecting to $hostname:$port: code=$errorCode ${errorDesc ?: ""}",
+                                ),
+                            )
+                        }
+                    else -> {} // invalid=0 — in progress
                 }
             }
             // Wire peer-initiated streams into acceptStream() — MUST be set before start.

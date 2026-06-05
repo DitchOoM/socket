@@ -8,6 +8,12 @@ package com.ditchoom.socket.quic
 class AppleQuicServerTests : QuicServerTestSuite() {
     override fun testTlsConfig() = appleQuicTestTlsConfig()
 
+    override fun localhostTlsConfig() = appleQuicLocalhostTlsConfig()
+
+    override fun localhostCertPem() = appleReadFileText(appleTestCertPath("localhost.crt"))
+
+    override fun unrelatedCaPem() = appleReadFileText(appleTestCertPath("cert.crt"))
+
     /**
      * Skip on Apple simulators launched in `--standalone` mode, where Network.framework's QUIC
      * datapath is unreachable (see [shouldSkipQuicHarnessOnSimulator]). macOS K/N runs the full

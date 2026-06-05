@@ -261,6 +261,15 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     NSArray<NSData *> * _Nullable pinned_ca_ders =
         (trusted_ca_ders.count > 0) ? [trusted_ca_ders copy] : nil;
 
+    // Set to the created group below, captured by the verify_block so a pinned-anchor
+    // REJECTION can cancel the group. Network.framework does NOT report a client-side
+    // verify_block rejection as a group state change — the handshake just stalls in
+    // limbo (the group's state handler never sees `failed`), so without this the connect
+    // would hang until idleTimeout instead of failing. Cancelling forces `cancelled`
+    // (state 4), which the Kotlin handler maps to QuicCloseException — matching the
+    // quiche path's handshake-time cert-rejection behavior. (Issues #81 / #99.)
+    __block nw_connection_group_t established_group = nil;
+
     nw_parameters_t params = nw_parameters_create_quic(
         ^(nw_protocol_options_t _Nonnull quic_options) {
             sec_protocol_options_t sec_options = nw_quic_copy_sec_protocol_options(quic_options);
@@ -337,6 +346,11 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                         CFRelease(trust_ref);
 
                         complete(valid);
+                        // On rejection, cancel the group so the stall surfaces as `cancelled`
+                        // (state 4 → QuicCloseException). NW won't report the rejection itself.
+                        if (!valid && established_group) {
+                            nw_connection_group_cancel(established_group);
+                        }
                     },
                     verify_queue);
             } else if (!should_verify_peer) {
@@ -358,6 +372,10 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     if (!descriptor) return NULL;
 
     nw_connection_group_t group = nw_connection_group_create(descriptor, params);
+    // Publish to the verify_block so a pinned-anchor rejection can cancel the group. The
+    // handshake (hence the verify_block) only runs after the Kotlin caller starts the group,
+    // which is strictly after this assignment, so there is no use-before-set race.
+    established_group = group;
     return group;
 }
 

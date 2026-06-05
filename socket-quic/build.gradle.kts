@@ -1657,40 +1657,50 @@ providers.gradleProperty("iosSimulatorDevice").orNull?.takeIf { it.isNotBlank() 
         }
 }
 
-// --- PKCS#12 test identity for the Apple QUIC server tests (issue #112) ---
+// --- PKCS#12 test identities for the Apple QUIC server tests (issues #112 + #99) ---
 // Network.framework's QUIC listener needs a sec_identity_t, which SecPKCS12Import builds
-// from a PKCS#12 bundle. Generate cert.p12 from the committed PEM cert+key using the
+// from a PKCS#12 bundle. Generate a `.p12` for each committed PEM cert+key using the
 // system openssl (LibreSSL — its default p12 encoding is one SecPKCS12Import reads
-// reliably). The artifact is git-ignored; the Apple K/N test tasks depend on this so it
-// exists (cwd-relative testcerts/cert.p12) before AppleQuicServerTests runs.
+// reliably). The artifacts are git-ignored; the Apple K/N test tasks depend on this so they
+// exist (cwd-relative testcerts/*.p12) before AppleQuicServerTests runs.
+//   - cert.p12      → the quic.tech example identity used by most Apple server tests.
+//   - localhost.p12 → the self-signed `localhost` identity (SAN DNS:localhost,IP:127.0.0.1)
+//                     the CA-pinning tests need: a cert that both chains to a pinned anchor
+//                     AND matches the "localhost" connect hostname (QuicServerTestSuite's
+//                     pinnedCorrectCaAnchor.../pinnedWrongCaAnchor...). JVM/Linux read the
+//                     PEM directly; Apple's server can only load an identity from a p12.
 val generateTestP12 =
     tasks.register("generateTestP12") {
         group = "verification"
-        description = "Generate testcerts/cert.p12 from the PEM cert+key for the Apple QUIC server tests."
+        description = "Generate testcerts/*.p12 from the PEM cert+key pairs for the Apple QUIC server tests."
         val certDir = projectDir.resolve("testcerts")
-        val crt = certDir.resolve("cert.crt")
-        val key = certDir.resolve("cert.key")
-        val p12 = certDir.resolve("cert.p12")
-        inputs.files(crt, key)
-        outputs.file(p12)
+        // (base name) → the openssl export reads <name>.crt + <name>.key, writes <name>.p12.
+        val identities = listOf("cert", "localhost")
+        val crts = identities.map { certDir.resolve("$it.crt") }
+        val keys = identities.map { certDir.resolve("$it.key") }
+        val p12s = identities.map { certDir.resolve("$it.p12") }
+        inputs.files(crts + keys)
+        outputs.files(p12s)
         doLast {
-            val process =
-                ProcessBuilder(
-                    "openssl",
-                    "pkcs12",
-                    "-export",
-                    "-out",
-                    p12.absolutePath,
-                    "-inkey",
-                    key.absolutePath,
-                    "-in",
-                    crt.absolutePath,
-                    "-passout",
-                    "pass:testpass",
-                ).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText()
-            if (process.waitFor() != 0) {
-                throw GradleException("openssl pkcs12 export failed (rc != 0):\n$output")
+            for (name in identities) {
+                val process =
+                    ProcessBuilder(
+                        "openssl",
+                        "pkcs12",
+                        "-export",
+                        "-out",
+                        certDir.resolve("$name.p12").absolutePath,
+                        "-inkey",
+                        certDir.resolve("$name.key").absolutePath,
+                        "-in",
+                        certDir.resolve("$name.crt").absolutePath,
+                        "-passout",
+                        "pass:testpass",
+                    ).redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().readText()
+                if (process.waitFor() != 0) {
+                    throw GradleException("openssl pkcs12 export failed for $name (rc != 0):\n$output")
+                }
             }
         }
     }
