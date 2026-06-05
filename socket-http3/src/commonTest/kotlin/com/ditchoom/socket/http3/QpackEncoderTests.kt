@@ -4,10 +4,14 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 
 /**
  * [QpackEncoder] round-trips against a wired [QpackDecoder] — the encoder's instructions feed the
@@ -15,6 +19,7 @@ import kotlin.test.assertFailsWith
  * miniature. This is the integration test for the whole dynamic stack (prefix + table + instructions
  * + both stateful halves).
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class QpackEncoderTests {
     private val pool = BufferPool(threadingMode = ThreadingMode.SingleThreaded, factory = BufferFactory.Default)
 
@@ -25,10 +30,11 @@ class QpackEncoderTests {
      */
     private inner class Pair(
         maxCapacity: Long,
+        maxBlockedStreams: Long = 0,
     ) {
         private val encoderToDecoder = ArrayDeque<QpackEncoderInstruction>() // our encoder stream → peer decoder
         private val decoderToEncoder = ArrayDeque<QpackDecoderInstruction>() // peer decoder stream → our encoder
-        val encoder = QpackEncoder(maxCapacity) { encoderToDecoder.addLast(it) }
+        val encoder = QpackEncoder(maxCapacity, maxBlockedStreams) { encoderToDecoder.addLast(it) }
         val decoder = QpackDecoder(maxCapacity) { decoderToEncoder.addLast(it) }
 
         suspend fun pump() {
@@ -49,7 +55,10 @@ class QpackEncoderTests {
         }
     }
 
-    private fun wired(maxCapacity: Long = 4096) = Pair(maxCapacity)
+    private fun wired(
+        maxCapacity: Long = 4096,
+        maxBlockedStreams: Long = 0,
+    ) = Pair(maxCapacity, maxBlockedStreams)
 
     private suspend fun roundTrip(
         p: Pair,
@@ -198,6 +207,76 @@ class QpackEncoderTests {
 
             assertEquals(listOf(c), roundTrip(p, listOf(c), streamId = 16)) // now free to evict A, insert C
             assertEquals(3L, p.encoder.insertCountValue, "cancellation unpinned the entry")
+        }
+
+    @Test
+    fun blockingEncoderReferencesUnacknowledgedEntryOnFirstUse() =
+        runTest {
+            // With blocked-stream budget, a brand-new header is inserted AND referenced in the same
+            // section — the section's Required Insert Count then exceeds what the decoder has, so the
+            // decoder must block until the encoder-stream insert arrives. (Non-blocking would be literal.)
+            val p = wired(maxBlockedStreams = 100)
+            p.encoder.setCapacity(4096)
+            val fields = listOf(QpackHeaderField(":method", "GET"), QpackHeaderField("x-custom", "v1"))
+
+            val section = p.encoder.encodeSection(fields, streamId = 0, pool)
+            assertEquals(1L, p.encoder.insertCountValue, "the new field was inserted")
+
+            val decoding = async { p.decoder.decodeSection(section, streamId = 0, scratchPool = null) }
+            runCurrent()
+            assertFalse(decoding.isCompleted, "decode blocks until the insert arrives — proves a blocking reference")
+
+            p.flushEncoderStream() // deliver the insert → unblocks the decoder
+            assertEquals(fields, decoding.await())
+        }
+
+    @Test
+    fun blockingEncoderReferencesExistingUnacknowledgedEntryWithoutDuplicating() =
+        runTest {
+            // An entry that is present but still unacknowledged is referenced directly (blocking) rather
+            // than inserting a wasteful duplicate, as the non-blocking path would.
+            val p = wired(maxBlockedStreams = 100)
+            p.encoder.setCapacity(4096)
+            val field = QpackHeaderField("x-c", "v")
+
+            // Stream 0: insert + reference x-c (abs 0); deliver the insert and decode, but hold the ack
+            // so x-c stays unacknowledged (Known Received Count = 0).
+            val s0 = p.encoder.encodeSection(listOf(field), streamId = 0, pool)
+            p.flushEncoderStream()
+            assertEquals(listOf(field), p.decoder.decodeSection(s0, streamId = 0, scratchPool = null))
+
+            // Stream 4 reuses x-c while it is unacknowledged → referenced, no second insert.
+            val s4 = p.encoder.encodeSection(listOf(field), streamId = 4, pool)
+            assertEquals(1L, p.encoder.insertCountValue, "referenced the existing entry — no duplicate insert")
+            assertEquals(listOf(field), p.decoder.decodeSection(s4, streamId = 4, scratchPool = null))
+        }
+
+    @Test
+    fun blockedStreamBudgetFallsBackToLiteralWhenExhausted() =
+        runTest {
+            // Budget of 1: the first new-header stream becomes blocking; a second one, while the first is
+            // still unacknowledged, exceeds the budget and must fall back to a non-blocking literal.
+            val p = wired(maxBlockedStreams = 1)
+            p.encoder.setCapacity(4096)
+
+            val s0 = p.encoder.encodeSection(listOf(QpackHeaderField("x-a", "1")), streamId = 0, pool)
+            val s4 = p.encoder.encodeSection(listOf(QpackHeaderField("x-b", "2")), streamId = 4, pool)
+            assertEquals(2L, p.encoder.insertCountValue, "both headers inserted for future reuse")
+
+            // s4 was forced literal (budget spent on stream 0): it decodes immediately with NO inserts
+            // delivered — a blocking section would have to wait.
+            assertEquals(
+                listOf(QpackHeaderField("x-b", "2")),
+                p.decoder.decodeSection(s4, streamId = 4, scratchPool = null),
+                "the over-budget section is non-blocking (literal)",
+            )
+
+            // s0 is the one blocking section: it must wait for its insert before it can decode.
+            val decoding = async { p.decoder.decodeSection(s0, streamId = 0, scratchPool = null) }
+            runCurrent()
+            assertFalse(decoding.isCompleted, "the in-budget section blocks until its insert arrives")
+            p.flushEncoderStream()
+            assertEquals(listOf(QpackHeaderField("x-a", "1")), decoding.await())
         }
 
     @Test

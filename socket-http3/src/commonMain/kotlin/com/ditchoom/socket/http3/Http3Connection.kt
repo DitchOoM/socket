@@ -442,17 +442,18 @@ class Http3Connection private constructor(
      */
     private fun startEncoderSetup() {
         scope.launch {
-            val peerMax =
+            val settings =
                 try {
-                    peerSettings().qpackMaxTableCapacity
+                    peerSettings()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Throwable) {
                     return@launch // SETTINGS never arrived / connection failed — stay static-only
                 }
+            val peerMax = settings.qpackMaxTableCapacity
             if (peerMax <= 0) return@launch
             val capacity = minOf(QPACK_MAX_TABLE_CAPACITY, peerMax)
-            val newEncoder = QpackEncoder(peerMax) { writeEncoderInstruction(it) }
+            val newEncoder = QpackEncoder(peerMax, settings.qpackBlockedStreams) { writeEncoderInstruction(it) }
             newEncoder.setCapacity(capacity)
             encoder = newEncoder
         }
