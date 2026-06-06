@@ -110,10 +110,11 @@ class Http3ServerConnection internal constructor(
     private suspend fun handleControl(reader: Http3StreamReader) {
         val first = reader.nextFrame()
         if (qpackCapacity > 0 && first is Http3Frame.Settings) {
-            val clientMax = Http3Settings(first.entries).qpackMaxTableCapacity
+            val clientSettings = Http3Settings(first.entries)
+            val clientMax = clientSettings.qpackMaxTableCapacity
             if (clientMax > 0) {
                 serverEncoder =
-                    QpackEncoder(clientMax) { writeQpackEncoderInstruction(it) }
+                    QpackEncoder(clientMax, clientSettings.qpackBlockedStreams) { writeQpackEncoderInstruction(it) }
                         .also { it.setCapacity(minOf(qpackCapacity, clientMax)) }
             }
         }

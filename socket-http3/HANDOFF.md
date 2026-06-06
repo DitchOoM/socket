@@ -329,8 +329,8 @@ Stacked on `feat/http3-gaps`; green jvm + linuxX64 (183 linuxX64 tests, 0 fail) 
   test (never flaky-fails; fails only on a post-handshake QPACK regression). Not in CI by default — needs a
   Docker sidecar; see `docker-interop/README.md`. (toxiproxy can't help — it's TCP-only, QUIC is UDP;
   netem can layer reorder/loss on the container veth.)
-  *Still deferred:* reference-the-newest + **blocking** encoding (Duplicate of draining entries,
-  RIC > Known Received Count) — a further compression tune that would engage QPACK_BLOCKED_STREAMS.
+  *Still deferred:* the **Duplicate-of-draining-entries** sub-tune (see below — the blocking encoder
+  itself landed on `feat/qpack-blocking-encoder`).
 
 ## NEXT (start here)
 
@@ -355,12 +355,42 @@ invariant — `entryRefCount` + `QpackDynamicTable.insertIfEvictable`. Validated
 loopback + new adversarial eviction tests (jvm + linuxX64). See the "QPACK encoder eviction tune — DONE"
 bullet under "full server role" above for the full description.
 
-**Still open — reference-the-newest + blocking encoder (a FRESH session).** The remaining compression
-tune: reference *unacknowledged* entries (RIC > Known Received Count) and Duplicate entries close to
-eviction (RFC 9204 §2.1.3 draining), which engages **QPACK_BLOCKED_STREAMS** (currently advertised 0).
-That is the part with eviction-vs-blocked-stream interaction; do it adversarially-tested, validating
-against the live interop GET. Encoder is `QpackEncoder.kt` (`mutex`-guarded;
-`encodeSection`/`processDecoderInstruction`).
+## ✅ DONE — blocking QPACK encoder (RFC 9204 §2.1.2, branch `feat/qpack-blocking-encoder`)
+
+Commit `bf09fc9`. The encoder now **references unacknowledged entries** within a budget instead of
+always falling back to a literal on first use, so it actually engages **QPACK_BLOCKED_STREAMS** (both
+peers already advertise 100). `QpackEncoder` gained a `peerMaxBlockedStreams` ctor param (plumbed from
+peer SETTINGS at both the `Http3Connection` client and `Http3ServerConnection` server construction
+sites; default 0 ⇒ strictly non-blocking, fully backwards-compatible). `canBlockStream(streamId)`
+caps concurrently-blocked streams at the peer's advertised value — a stream counts as blocked while it
+has an outstanding section with RIC > Known Received Count; once the budget is spent the encoder falls
+back to the literal path. Within budget, `planField` references a just-inserted or
+present-but-unacknowledged entry directly. Also stopped inserting a wasteful **duplicate** when a
+present-but-unacked entry can't be referenced. The eviction-safety pins (`entryRefCount` +
+`insertIfEvictable`) and the reactively-blocking decoder already existed, so this was an encoder-policy
+flip + a budget counter — no decoder change. **Validated:** 3 new `QpackEncoderTests` (blocking
+first-use reference, reference-existing-unacked-without-duplicating, budget-exhaustion fallback) green
+jvm + linuxX64; the existing dynamic-QPACK loopback now runs *through* the blocking path; and the
+**aioquic/lsqpack docker interop** (`blocked_streams=16`, 64 evicting requests) passes against a
+foreign decoder — i.e. our blocking encoder stream is accepted by lsqpack end-to-end.
+
+## ✅ DONE — Duplicate-of-draining-entries (RFC 9204 §2.1.3, branch `feat/qpack-blocking-encoder`)
+
+Commit `bae8086`. When a re-used header matches an entry in the table's **draining region** (new
+`QpackDynamicTable.isDraining` — the oldest `capacity/8` octets) **and** the table is under pressure (a
+same-size insert would need eviction), the encoder refreshes it with a `Duplicate` (a cheap
+encoder-stream relative index — no value resend) and references the fresh copy, so the old copy stays
+evictable instead of being pinned by the reference. Only taken with blocked-stream budget (the fresh
+copy is unacknowledged). `tryDuplicate` captures the relative index *before* the insert (which advances
+`insertCount`) and evicts only unreferenced entries via `insertIfEvictable`; the decoder reads the
+source before its own duplicate-insert evicts it, so the tables stay in lockstep — encoder-only change
+(decoder already handled `Duplicate`). **Validated:** `isDraining` unit tests + 2 E2E `QpackEncoderTests`
+(refresh-via-Duplicate under pressure; no Duplicate when the table has room), green jvm + linuxX64 +
+jsNode; the aioquic/lsqpack docker interop (64 evicting requests with a recurring header) passes at both
+4096 and thrash-256 capacity with **zero QPACK errors** — lsqpack accepts our Duplicate instructions.
+
+**The QPACK encoder is now complete** — static + dynamic with eviction (ref-counted), blocking
+references (budget-bounded), and draining-duplicate. No known QPACK compression gaps remain.
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under
    `if (isMacOS)`); verify on a macOS runner / CI. Optionally run Apple/Android *tests* in their CI workflows.
 6. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)

@@ -158,4 +158,28 @@ class QpackDynamicTable(
 
     /** Absolute index of an entry whose name matches (any value), or null (newest-first preference). */
     fun findName(name: String): Long? = entries.lastOrNull { it.name == name }?.absoluteIndex
+
+    /**
+     * True if the live entry [absoluteIndex] sits in the **draining region** (RFC 9204 §2.1.1.1): the
+     * oldest entries occupying the bottom 1/[DRAINING_RESERVE_DIVISOR] of [capacity]. An encoder avoids
+     * pinning draining entries (so they stay evictable) and instead refreshes a still-useful one via a
+     * Duplicate (§2.1.3). Position-based on [capacity], so it measures closeness to the eviction edge —
+     * the caller decides whether the table is also under enough pressure to act on it.
+     */
+    fun isDraining(absoluteIndex: Long): Boolean {
+        val threshold = _capacity / DRAINING_RESERVE_DIVISOR
+        if (threshold <= 0) return false
+        var cumulative = 0L
+        for (entry in entries) { // oldest (lowest absolute index) first
+            cumulative += entry.size
+            if (entry.absoluteIndex == absoluteIndex) return cumulative <= threshold
+            if (cumulative > threshold) return false // past the draining region; the target is newer
+        }
+        return false // not a live entry
+    }
+
+    companion object {
+        /** The draining region is the oldest `capacity / DRAINING_RESERVE_DIVISOR` octets (RFC 9204 §2.1.1.1). */
+        private const val DRAINING_RESERVE_DIVISOR = 8L
+    }
 }

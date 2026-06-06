@@ -10,13 +10,24 @@ import kotlinx.coroutines.sync.withLock
  * The stateful QPACK **encoder** for one connection (RFC 9204): compresses outbound field sections
  * using the static table plus a dynamic table it grows by sending instructions on our QPACK encoder
  * stream ([emit]). Tracks the decoder's acknowledgments ([processDecoderInstruction]) as a Known
- * Received Count so it only *references* entries the peer has confirmed — keeping every emitted
- * section non-blocking.
+ * Received Count so it knows which entries the peer has confirmed.
  *
- * **Strategy (always non-blocking, always spec-legal):** a field that hits the static or an
- * *acknowledged* dynamic entry is encoded as an indexed line; an unseen field is inserted into the
- * dynamic table for *future* reuse but encoded as a literal in the current section, so the section
- * never references an unacknowledged entry and never blocks.
+ * **Strategy:** a field that hits the static or an *acknowledged* dynamic entry is encoded as an
+ * indexed line and never blocks. An unseen field is inserted into the dynamic table; whether *this*
+ * occurrence is then encoded as an index or a literal depends on the blocked-stream budget:
+ *  - **Non-blocking (default / no budget):** the current occurrence is encoded as a literal and a
+ *    *later* section references the entry once the peer acknowledges the insert. Never blocks.
+ *  - **Blocking (within [peerMaxBlockedStreams]):** the current occurrence references the just-inserted
+ *    (or an existing unacknowledged) entry directly — the section's Required Insert Count then exceeds
+ *    the Known Received Count, so the peer's decoder may briefly block until our encoder-stream insert
+ *    arrives (RFC 9204 §2.1.2). This compresses even first occurrences. The encoder caps the number of
+ *    streams it lets become blocked at the peer's advertised `SETTINGS_QPACK_BLOCKED_STREAMS`
+ *    ([peerMaxBlockedStreams]); once that many streams are blocked it falls back to the literal path.
+ *
+ * **Draining (RFC 9204 §2.1.3).** When a matched entry is in the table's draining region (the oldest,
+ * about-to-be-evicted entries) and the table is under pressure, the encoder — if it may block — refreshes
+ * it with a `Duplicate` (a cheap encoder-stream index, no value resend) and references the fresh copy, so
+ * the old copy stays evictable instead of being pinned by the reference.
  *
  * **Eviction (RFC 9204 §2.1.3).** Inserting into a full table evicts its oldest entries. To stay
  * correct the encoder must never evict an entry an outstanding (un-acknowledged) field section still
@@ -28,11 +39,13 @@ import kotlinx.coroutines.sync.withLock
  * keeps the table churning as headers evolve (unlike a never-evict table that freezes once full) while
  * preserving the non-blocking invariant.
  *
- * [peerMaxCapacity] is the peer's `SETTINGS_QPACK_MAX_TABLE_CAPACITY`; [emit] writes an encoder-stream
- * instruction on our QPACK encoder uni stream.
+ * [peerMaxCapacity] is the peer's `SETTINGS_QPACK_MAX_TABLE_CAPACITY`; [peerMaxBlockedStreams] is its
+ * `SETTINGS_QPACK_BLOCKED_STREAMS` (0 ⇒ the encoder stays strictly non-blocking); [emit] writes an
+ * encoder-stream instruction on our QPACK encoder uni stream.
  */
 class QpackEncoder(
     peerMaxCapacity: Long,
+    private val peerMaxBlockedStreams: Long = 0,
     private val emit: suspend (QpackEncoderInstruction) -> Unit,
 ) {
     private val table = QpackDynamicTable(peerMaxCapacity)
@@ -89,8 +102,12 @@ class QpackEncoder(
             val sectionRefs = ArrayList<Long>()
             val ops = ArrayList<Op>(fields.size)
             var maxReferencedAbsolute = -1L
+            // One blocking decision per section: referencing unacknowledged entries makes the whole
+            // section block on the peer's decoder, but every such reference still costs only this one
+            // stream against the peer's blocked-stream budget.
+            val canBlock = canBlockStream(streamId)
             for (field in fields) {
-                val op = planField(field, sectionRefs)
+                val op = planField(field, sectionRefs, canBlock)
                 if (op is Op.DynamicIndexed) maxReferencedAbsolute = maxOf(maxReferencedAbsolute, op.absoluteIndex)
                 ops += op
             }
@@ -115,25 +132,80 @@ class QpackEncoder(
 
     /**
      * Plan one field, performing the dynamic-table insertion (and the encoder-stream emit) as a side
-     * effect when the field is new and there is room. Returns the representation to write for *this*
-     * occurrence — never a reference to a just-inserted (unacknowledged) entry.
+     * effect when the field is new and there is room. When [canBlock] is true this may reference a
+     * just-inserted or otherwise-unacknowledged entry (a blocking reference); otherwise it returns a
+     * literal for unacknowledged entries so the section never blocks.
      */
     private suspend fun planField(
         field: QpackHeaderField,
         sectionRefs: MutableList<Long>,
+        canBlock: Boolean,
     ): Op {
         QpackStaticTable.findExact(field.name, field.value)?.let { return Op.StaticIndexed(it.toLong()) }
 
         val dynamicExact = table.findExact(field.name, field.value)
-        if (dynamicExact != null && dynamicExact < knownReceivedCount) {
-            sectionRefs += dynamicExact // pin: a later insert in this section must not evict it
-            return Op.DynamicIndexed(dynamicExact)
+        if (dynamicExact != null) {
+            // The match is in the draining region (about to be evicted) and the table is under pressure:
+            // refresh it via a cheap Duplicate (encoder-stream index, no value resend) and reference the
+            // fresh copy, so the old one stays evictable instead of being pinned (RFC 9204 §2.1.3). Only
+            // worthwhile with blocked-stream budget, since the fresh copy is unacknowledged.
+            if (canBlock && table.isDraining(dynamicExact) && !table.canInsertWithoutEviction(field.name, field.value)) {
+                val refreshed = tryDuplicate(dynamicExact, sectionRefs)
+                if (refreshed != null) {
+                    sectionRefs += refreshed
+                    return Op.DynamicIndexed(refreshed)
+                }
+            }
+            // Reference it when it's acknowledged (never blocks) or when blocked-stream budget lets us
+            // risk a reference the peer may not have processed yet (RFC 9204 §2.1.2). A pin keeps a later
+            // insert in this same section from evicting it.
+            if (dynamicExact < knownReceivedCount || canBlock) {
+                sectionRefs += dynamicExact
+                return Op.DynamicIndexed(dynamicExact)
+            }
+            // Present but unacknowledged and out of budget: literal this time (a later section references
+            // it once acked). It already exists, so don't insert a duplicate.
+            return literalFor(field)
         }
 
-        tryInsertForFutureReuse(field, sectionRefs)
-        // Encode this occurrence as a literal regardless of whether we just inserted (non-blocking).
+        // Not in either table: insert for future reuse. With budget, reference the fresh insert now (the
+        // section blocks until our encoder-stream insert reaches the peer); otherwise literal this time.
+        val inserted = tryInsertForFutureReuse(field, sectionRefs)
+        if (inserted != null && canBlock) {
+            sectionRefs += inserted
+            return Op.DynamicIndexed(inserted)
+        }
+        return literalFor(field)
+    }
+
+    /** The literal representation of [field] — name-reference when the static table has the name, else fully literal. */
+    private fun literalFor(field: QpackHeaderField): Op {
         val staticName = QpackStaticTable.findName(field.name)
-        return if (staticName != null) Op.LiteralNameRef(staticName.toLong(), field.value) else Op.LiteralName(field.name, field.value)
+        return if (staticName != null) {
+            Op.LiteralNameRef(staticName.toLong(), field.value)
+        } else {
+            Op.LiteralName(field.name, field.value)
+        }
+    }
+
+    /**
+     * Whether a section on [streamId] may include blocking references. True only when the peer permits
+     * blocked streams ([peerMaxBlockedStreams] > 0) and either this stream is already counted as blocked
+     * (so another blocking reference adds no new blocked stream) or we are still under the peer's budget.
+     * A stream counts as blocked while it has an outstanding section whose Required Insert Count exceeds
+     * the Known Received Count — i.e. one the peer's decoder might not yet be able to resolve.
+     */
+    private fun canBlockStream(streamId: Long): Boolean {
+        if (peerMaxBlockedStreams <= 0) return false
+        var blocked = 0
+        var thisStreamAlreadyBlocking = false
+        for ((id, sections) in outstandingSections) {
+            if (sections.any { it.requiredInsertCount > knownReceivedCount }) {
+                blocked++
+                if (id == streamId) thisStreamAlreadyBlocking = true
+            }
+        }
+        return thisStreamAlreadyBlocking || blocked < peerMaxBlockedStreams
     }
 
     /**
@@ -141,23 +213,50 @@ class QpackEncoder(
      * never one that an outstanding section — or the section currently being built ([sectionRefs]) —
      * still references. Emits the encoder-stream insert only when the table actually accepted it. Insert
      * happens BEFORE the emit so our insert count already reflects the entry when the decoder's Insert
-     * Count Increment feeds back (it must never exceed our inserts).
+     * Count Increment feeds back (it must never exceed our inserts). Returns the new entry's absolute
+     * index, or null if it didn't fit / fitting would evict a still-referenced entry.
      */
     private suspend fun tryInsertForFutureReuse(
         field: QpackHeaderField,
         sectionRefs: List<Long>,
-    ) {
+    ): Long? {
         val inserted =
             table.insertIfEvictable(field.name, field.value) { entry ->
                 !entryRefCount.containsKey(entry.absoluteIndex) && entry.absoluteIndex !in sectionRefs
-            }
-        if (inserted == null) return // doesn't fit, or fitting would evict a still-referenced entry
+            } ?: return null
         val staticName = QpackStaticTable.findName(field.name)
         if (staticName != null) {
             emit(QpackEncoderInstruction.InsertWithNameRef(staticName.toLong(), isStatic = true, value = field.value))
         } else {
             emit(QpackEncoderInstruction.InsertWithLiteralName(field.name, field.value))
         }
+        return inserted
+    }
+
+    /**
+     * Refresh a still-useful but **draining** entry (RFC 9204 §2.1.3): insert a fresh copy of the entry
+     * at [absoluteIndex] via a Duplicate instruction — which references the source by its encoder-stream
+     * relative index, so the value is not resent — then the old copy can drain out. Evicts oldest entries
+     * as needed but never one that an outstanding section ([entryRefCount]) or the section being built
+     * ([sectionRefs]) still references. Returns the fresh copy's absolute index, or null if the duplicate
+     * can't be inserted safely.
+     *
+     * The relative index is captured BEFORE the insert (which advances `insertCount`); on the decoder side
+     * the Duplicate is read against the same pre-insert state and the source entry is read before its own
+     * duplicate-insert evicts it, so encoder and decoder stay in lockstep.
+     */
+    private suspend fun tryDuplicate(
+        absoluteIndex: Long,
+        sectionRefs: List<Long>,
+    ): Long? {
+        val entry = table.getByAbsolute(absoluteIndex) ?: return null
+        val relativeIndex = table.insertCount - 1 - absoluteIndex
+        val inserted =
+            table.insertIfEvictable(entry.name, entry.value) { e ->
+                !entryRefCount.containsKey(e.absoluteIndex) && e.absoluteIndex !in sectionRefs
+            } ?: return null
+        emit(QpackEncoderInstruction.Duplicate(relativeIndex))
+        return inserted
     }
 
     /**
