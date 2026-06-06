@@ -374,13 +374,23 @@ jvm + linuxX64; the existing dynamic-QPACK loopback now runs *through* the block
 **aioquic/lsqpack docker interop** (`blocked_streams=16`, 64 evicting requests) passes against a
 foreign decoder — i.e. our blocking encoder stream is accepted by lsqpack end-to-end.
 
-**Still open — Duplicate-of-draining-entries sub-tune (a FRESH session).** The one remaining QPACK
-compression tune: emit a `Duplicate` instruction for a still-useful entry that is close to the
-eviction end ("draining", RFC 9204 §2.1.3) so a new section can reference the fresh copy instead of
-re-inserting or falling to a literal. This is the part with the trickiest eviction-vs-reference
-interaction; do it adversarially-tested. Encoder is `QpackEncoder.kt` (`mutex`-guarded;
-`encodeSection`/`planField`/`processDecoderInstruction`). `QpackEncoderInstruction.Duplicate` and the
-decoder's handling of it already exist.
+## ✅ DONE — Duplicate-of-draining-entries (RFC 9204 §2.1.3, branch `feat/qpack-blocking-encoder`)
+
+Commit `bae8086`. When a re-used header matches an entry in the table's **draining region** (new
+`QpackDynamicTable.isDraining` — the oldest `capacity/8` octets) **and** the table is under pressure (a
+same-size insert would need eviction), the encoder refreshes it with a `Duplicate` (a cheap
+encoder-stream relative index — no value resend) and references the fresh copy, so the old copy stays
+evictable instead of being pinned by the reference. Only taken with blocked-stream budget (the fresh
+copy is unacknowledged). `tryDuplicate` captures the relative index *before* the insert (which advances
+`insertCount`) and evicts only unreferenced entries via `insertIfEvictable`; the decoder reads the
+source before its own duplicate-insert evicts it, so the tables stay in lockstep — encoder-only change
+(decoder already handled `Duplicate`). **Validated:** `isDraining` unit tests + 2 E2E `QpackEncoderTests`
+(refresh-via-Duplicate under pressure; no Duplicate when the table has room), green jvm + linuxX64 +
+jsNode; the aioquic/lsqpack docker interop (64 evicting requests with a recurring header) passes at both
+4096 and thrash-256 capacity with **zero QPACK errors** — lsqpack accepts our Duplicate instructions.
+
+**The QPACK encoder is now complete** — static + dynamic with eviction (ref-counted), blocking
+references (budget-bounded), and draining-duplicate. No known QPACK compression gaps remain.
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under
    `if (isMacOS)`); verify on a macOS runner / CI. Optionally run Apple/Android *tests* in their CI workflows.
 6. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
