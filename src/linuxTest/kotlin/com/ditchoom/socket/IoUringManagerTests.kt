@@ -294,6 +294,56 @@ class IoUringManagerTests {
         }
 
     /**
+     * Regression for the linuxX64 idle-timeout crash (project_ci_backend_coverage): a recv that hits
+     * its deadline must be cancelled in the kernel — not completed while still in flight. Completing
+     * a timed-out recv let the caller free the buffer the kernel still owned, so a later datagram
+     * wrote into freed memory (UAF / heap corruption). This asserts deterministically that the
+     * expiry path submits a cancel SQE (via the [IoUringManager.timeoutCancelSubmitCount] counter)
+     * AND that the timeout still surfaces as [SocketTimeoutException] (semantics preserved), rather
+     * than racing a real crash on wall-clock timing.
+     */
+    @Test
+    fun timedOutReadCancelsKernelOpAndStillReportsTimeout() =
+        runTestNoTimeSkipping {
+            val server = ServerSocket.allocate()
+            val serverJob =
+                launch {
+                    try {
+                        // Accept and hold the connection open without ever sending — the client's
+                        // read must time out (and be kernel-cancelled), not receive data.
+                        server.bind(0, "127.0.0.1").collect { delay(30.seconds) }
+                    } catch (e: Exception) {
+                        // Server closed
+                    }
+                }
+
+            delay(100.milliseconds)
+            val port = server.port()
+
+            val client = ClientSocket.allocate()
+            client.open(port, 5.seconds, "127.0.0.1")
+
+            val before = IoUringManager.timeoutCancelSubmitCount.value
+            var timedOut = false
+            try {
+                client.read(200.milliseconds)
+            } catch (e: SocketTimeoutException) {
+                timedOut = true
+            }
+
+            assertTrue(timedOut, "read with no incoming data should surface SocketTimeoutException")
+            assertTrue(
+                IoUringManager.timeoutCancelSubmitCount.value > before,
+                "an expired recv must submit an io_uring cancel so the kernel releases the buffer " +
+                    "(counter ${IoUringManager.timeoutCancelSubmitCount.value} did not advance past $before)",
+            )
+
+            client.close()
+            server.close()
+            serverJob.cancel()
+        }
+
+    /**
      * Stress test: many rapid cleanup/reinitialize cycles.
      */
     @Test

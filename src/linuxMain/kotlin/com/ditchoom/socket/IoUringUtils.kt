@@ -13,10 +13,19 @@ import kotlin.time.TimeSource
 
 /**
  * Pending operation state - tracks deferred and optional deadline.
+ *
+ * [cancelRequested] is set once the deadline has passed and an `io_uring_prep_cancel64` has
+ * been submitted for this op. The op is NOT completed/removed on expiry — it stays in
+ * `pendingOps` until the kernel produces its CQE (with `-ECANCELED`, or the real result if it
+ * raced in). This preserves the invariant that a buffer handed to io_uring is only freed by the
+ * caller after the kernel is done with it; completing on bare timeout let the caller free a
+ * buffer the kernel still owned, so a later datagram wrote into freed memory (UAF / heap
+ * corruption — the linuxX64 idle-timeout crash).
  */
-private data class PendingOperation(
+private class PendingOperation(
     val deferred: CompletableDeferred<Int>,
     val deadline: TimeSource.Monotonic.ValueTimeMark?,
+    var cancelRequested: Boolean = false,
 )
 
 /**
@@ -255,6 +264,9 @@ object IoUringManager {
 
         for ((_, op) in pendingOps) {
             val deadline = op.deadline ?: continue
+            // Already cancel-requested: its deadline is moot, we're just awaiting the kernel CQE.
+            // Counting it would peg the wait at ZERO and busy-spin until that CQE lands.
+            if (op.cancelRequested) continue
             val remaining = -deadline.elapsedNow()
             if (earliest == null || remaining < earliest) {
                 earliest = remaining
@@ -269,19 +281,36 @@ object IoUringManager {
     }
 
     /**
-     * Check for expired operations and complete them with -ETIMEDOUT.
+     * Handle expired operations. On deadline, submit an `io_uring_prep_cancel64` for the op's
+     * userData rather than completing its deferred — the op stays in [pendingOps] until the kernel
+     * delivers its CQE (which the normal CQE path completes with `-ECANCELED`, or the real result
+     * if a completion raced the deadline). The kernel may still be holding the op's buffer pointer;
+     * fabricating a `-ETIMEDOUT` completion here let the caller free that buffer while the recv was
+     * still in flight, so a later datagram wrote into freed memory — the UAF behind the linuxX64
+     * idle-timeout crash. Mirrors the coroutine-cancellation path in [submitAndWait].
+     *
      * Only called from the event loop thread (no synchronization needed).
+     * Returns true if any cancel SQEs were prepared (caller must `io_uring_submit`).
      */
-    private fun processExpiredOperations(pendingOps: HashMap<Long, PendingOperation>) {
-        val iterator = pendingOps.iterator()
-        while (iterator.hasNext()) {
-            val (_, op) = iterator.next()
+    private fun processExpiredOperations(
+        ring: CPointer<io_uring>,
+        pendingOps: HashMap<Long, PendingOperation>,
+    ): Boolean {
+        var submittedCancel = false
+        for ((userData, op) in pendingOps) {
             val deadline = op.deadline ?: continue
-            if (deadline.hasPassedNow() && !op.deferred.isCompleted) {
-                op.deferred.complete(-ETIMEDOUT)
-                iterator.remove()
-            }
+            if (op.cancelRequested || op.deferred.isCompleted) continue
+            if (!deadline.hasPassedNow()) continue
+            val sqe = io_uring_get_sqe(ring) ?: break // ring full — retry next iteration
+            io_uring_prep_cancel64(sqe, userData.toULong(), 0)
+            // The cancel's own CQE carries a fresh userData → ignored by the CQE dispatcher
+            // (pendingOps.remove returns null). The original op's CQE completes the deferred.
+            io_uring_sqe_set_data64(sqe, nextUserData().toULong())
+            op.cancelRequested = true
+            timeoutCancelSubmitCount.incrementAndGet()
+            submittedCancel = true
         }
+        return submittedCancel
     }
 
     /**
@@ -363,8 +392,10 @@ object IoUringManager {
                 val waitRet = io_uring_wait_cqe_timeout(ring, cqePtr.ptr, ts.ptr)
                 pollerSleeping.value = 0
 
-                // 5. Process expired operations
-                processExpiredOperations(pendingOps)
+                // 5. Process expired operations — submit cancels for any that timed out
+                if (processExpiredOperations(ring, pendingOps)) {
+                    io_uring_submit(ring)
+                }
 
                 if (waitRet == -ETIME || waitRet == -ETIMEDOUT) {
                     continue
@@ -404,7 +435,13 @@ object IoUringManager {
                     // Dispatch to waiting coroutine
                     val op = pendingOps.remove(userData)
                     if (op != null && !op.deferred.isCompleted) {
-                        op.deferred.complete(result)
+                        // A timeout-cancelled op reports -ETIMEDOUT to the caller (preserving
+                        // SocketTimeoutException semantics), unless a datagram actually arrived
+                        // before the cancel landed (result >= 0) — then deliver the real result.
+                        // Crucially the deferred completes only now, on the CQE, so the caller
+                        // frees its buffer only after the kernel is done with it (no UAF).
+                        val toComplete = if (op.cancelRequested && result < 0) -ETIMEDOUT else result
+                        op.deferred.complete(toComplete)
                     }
                 } while (io_uring_peek_cqe(ring, cqePtr.ptr) >= 0)
             }
@@ -583,6 +620,14 @@ object IoUringManager {
      * read, instead of racing close() vs read() on wall-clock timing (issue #83).
      */
     internal val cancelSubmitCount = AtomicInt(0)
+
+    /**
+     * Test-observable count of cancel SQEs submitted by [processExpiredOperations] when an op's
+     * deadline passes. A deterministic test asserts this increments so a timed-out op is cancelled
+     * in the kernel (and its buffer freed only after the resulting CQE) rather than completed while
+     * the recv is still in flight — the UAF behind the linuxX64 idle-timeout crash.
+     */
+    internal val timeoutCancelSubmitCount = AtomicInt(0)
 
     /**
      * Submit a fire-and-forget io_uring cancel for an in-flight operation identified
