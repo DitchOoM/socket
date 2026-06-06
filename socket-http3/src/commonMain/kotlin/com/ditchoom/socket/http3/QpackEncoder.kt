@@ -24,6 +24,11 @@ import kotlinx.coroutines.sync.withLock
  *    streams it lets become blocked at the peer's advertised `SETTINGS_QPACK_BLOCKED_STREAMS`
  *    ([peerMaxBlockedStreams]); once that many streams are blocked it falls back to the literal path.
  *
+ * **Draining (RFC 9204 §2.1.3).** When a matched entry is in the table's draining region (the oldest,
+ * about-to-be-evicted entries) and the table is under pressure, the encoder — if it may block — refreshes
+ * it with a `Duplicate` (a cheap encoder-stream index, no value resend) and references the fresh copy, so
+ * the old copy stays evictable instead of being pinned by the reference.
+ *
  * **Eviction (RFC 9204 §2.1.3).** Inserting into a full table evicts its oldest entries. To stay
  * correct the encoder must never evict an entry an outstanding (un-acknowledged) field section still
  * references — otherwise the peer's decoder, which evicts in lockstep, would fail to resolve that
@@ -140,6 +145,17 @@ class QpackEncoder(
 
         val dynamicExact = table.findExact(field.name, field.value)
         if (dynamicExact != null) {
+            // The match is in the draining region (about to be evicted) and the table is under pressure:
+            // refresh it via a cheap Duplicate (encoder-stream index, no value resend) and reference the
+            // fresh copy, so the old one stays evictable instead of being pinned (RFC 9204 §2.1.3). Only
+            // worthwhile with blocked-stream budget, since the fresh copy is unacknowledged.
+            if (canBlock && table.isDraining(dynamicExact) && !table.canInsertWithoutEviction(field.name, field.value)) {
+                val refreshed = tryDuplicate(dynamicExact, sectionRefs)
+                if (refreshed != null) {
+                    sectionRefs += refreshed
+                    return Op.DynamicIndexed(refreshed)
+                }
+            }
             // Reference it when it's acknowledged (never blocks) or when blocked-stream budget lets us
             // risk a reference the peer may not have processed yet (RFC 9204 §2.1.2). A pin keeps a later
             // insert in this same section from evicting it.
@@ -214,6 +230,32 @@ class QpackEncoder(
         } else {
             emit(QpackEncoderInstruction.InsertWithLiteralName(field.name, field.value))
         }
+        return inserted
+    }
+
+    /**
+     * Refresh a still-useful but **draining** entry (RFC 9204 §2.1.3): insert a fresh copy of the entry
+     * at [absoluteIndex] via a Duplicate instruction — which references the source by its encoder-stream
+     * relative index, so the value is not resent — then the old copy can drain out. Evicts oldest entries
+     * as needed but never one that an outstanding section ([entryRefCount]) or the section being built
+     * ([sectionRefs]) still references. Returns the fresh copy's absolute index, or null if the duplicate
+     * can't be inserted safely.
+     *
+     * The relative index is captured BEFORE the insert (which advances `insertCount`); on the decoder side
+     * the Duplicate is read against the same pre-insert state and the source entry is read before its own
+     * duplicate-insert evicts it, so encoder and decoder stay in lockstep.
+     */
+    private suspend fun tryDuplicate(
+        absoluteIndex: Long,
+        sectionRefs: List<Long>,
+    ): Long? {
+        val entry = table.getByAbsolute(absoluteIndex) ?: return null
+        val relativeIndex = table.insertCount - 1 - absoluteIndex
+        val inserted =
+            table.insertIfEvictable(entry.name, entry.value) { e ->
+                !entryRefCount.containsKey(e.absoluteIndex) && e.absoluteIndex !in sectionRefs
+            } ?: return null
+        emit(QpackEncoderInstruction.Duplicate(relativeIndex))
         return inserted
     }
 

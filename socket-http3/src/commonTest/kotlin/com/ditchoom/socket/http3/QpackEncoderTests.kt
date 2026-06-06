@@ -34,7 +34,14 @@ class QpackEncoderTests {
     ) {
         private val encoderToDecoder = ArrayDeque<QpackEncoderInstruction>() // our encoder stream → peer decoder
         private val decoderToEncoder = ArrayDeque<QpackDecoderInstruction>() // peer decoder stream → our encoder
-        val encoder = QpackEncoder(maxCapacity, maxBlockedStreams) { encoderToDecoder.addLast(it) }
+
+        /** Log of every encoder-stream instruction emitted, for asserting the encoding strategy. */
+        val encoderInstructions = mutableListOf<QpackEncoderInstruction>()
+        val encoder =
+            QpackEncoder(maxCapacity, maxBlockedStreams) {
+                encoderInstructions += it
+                encoderToDecoder.addLast(it)
+            }
         val decoder = QpackDecoder(maxCapacity) { decoderToEncoder.addLast(it) }
 
         suspend fun pump() {
@@ -277,6 +284,49 @@ class QpackEncoderTests {
             assertFalse(decoding.isCompleted, "the in-budget section blocks until its insert arrives")
             p.flushEncoderStream()
             assertEquals(listOf(QpackHeaderField("x-a", "1")), decoding.await())
+        }
+
+    @Test
+    fun drainingEntryIsRefreshedViaDuplicateUnderPressure() =
+        runTest {
+            // capacity 512 ⇒ draining reserve = 64 octets → only the single oldest 50-octet entry drains.
+            val p = wired(maxCapacity = 512, maxBlockedStreams = 100)
+            p.encoder.setCapacity(512)
+
+            fun f(i: Int) = QpackHeaderField("name-${i.toString().padStart(4, '0')}", "val-${i.toString().padStart(5, '0')}") // 50 octets
+
+            // Fill: 10 * 50 = 500 ≤ 512; an 11th 50-octet entry would need eviction (pressure). Ack all.
+            for (i in 0 until 10) assertEquals(listOf(f(i)), roundTrip(p, listOf(f(i)), streamId = (i * 4).toLong()))
+            assertEquals(10L, p.encoder.insertCountValue)
+            p.encoderInstructions.clear()
+
+            // Re-reference the oldest entry (abs 0): draining + table full ⇒ refreshed via a Duplicate
+            // (a cheap encoder-stream index, no value resend) rather than pinned or re-inserted literally.
+            assertEquals(listOf(f(0)), roundTrip(p, listOf(f(0)), streamId = 100))
+            assertEquals(11L, p.encoder.insertCountValue, "the draining entry was duplicated (a fresh insert)")
+            assertEquals(11L, p.decoder.insertCountValue, "decoder applied the Duplicate in lockstep")
+            assertEquals(
+                1,
+                p.encoderInstructions.count { it is QpackEncoderInstruction.Duplicate },
+                "refreshed via a Duplicate, not a literal re-insert",
+            )
+        }
+
+    @Test
+    fun drainingDuplicateSkippedWhenTableHasRoom() =
+        runTest {
+            // A near-empty table has no eviction pressure, so even a positionally-draining entry is
+            // referenced directly — no wasteful Duplicate.
+            val p = wired(maxCapacity = 4096, maxBlockedStreams = 100)
+            p.encoder.setCapacity(4096)
+            val f = QpackHeaderField("x", "y")
+
+            assertEquals(listOf(f), roundTrip(p, listOf(f), streamId = 0))
+            p.encoderInstructions.clear()
+
+            assertEquals(listOf(f), roundTrip(p, listOf(f), streamId = 4))
+            assertEquals(1L, p.encoder.insertCountValue, "no duplicate — the table has room")
+            assertEquals(0, p.encoderInstructions.count { it is QpackEncoderInstruction.Duplicate })
         }
 
     @Test

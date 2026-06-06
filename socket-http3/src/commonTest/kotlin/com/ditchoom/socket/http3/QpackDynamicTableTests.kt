@@ -129,6 +129,26 @@ class QpackDynamicTableTests {
     }
 
     @Test
+    fun isDrainingMarksOldestEntriesWithinTheReserve() {
+        // capacity 512 ⇒ draining reserve = 512/8 = 64 octets. Each entry is 34 octets, so only the
+        // single oldest entry (cumulative 34 ≤ 64) is draining; the next (cumulative 68 > 64) is not.
+        val t = table(512)
+        t.insert("a", "1") // abs 0, cumulative 34
+        t.insert("b", "2") // abs 1, cumulative 68
+        t.insert("c", "3") // abs 2, cumulative 102
+        assertTrue(t.isDraining(0), "oldest entry is within the draining reserve")
+        assertFalse(t.isDraining(1), "second entry is past the reserve")
+        assertFalse(t.isDraining(2))
+        assertFalse(t.isDraining(5), "a non-live index is never draining")
+    }
+
+    @Test
+    fun isDrainingIsFalseWhenTableUnusable() {
+        // capacity 0 (never raised) ⇒ no draining region at all.
+        assertFalse(QpackDynamicTable(512).isDraining(0))
+    }
+
+    @Test
     fun freshTableHasZeroCapacityUntilRaised() {
         val t = QpackDynamicTable(1000) // not yet setCapacity
         assertEquals(0L, t.capacity)
