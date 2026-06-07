@@ -13,6 +13,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicStreamException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -77,6 +78,9 @@ class Http3ServerConnection internal constructor(
                     if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(stream)
                 } catch (_: Http3StreamException) {
                     // A single stream failing must not take the connection down.
+                } catch (_: QuicStreamException) {
+                    // Peer STOP_SENDING / RESET_STREAM on this one stream (e.g. a client cancelling a
+                    // request mid-response) — stream-scoped; the connection keeps serving other streams.
                 }
             }
         }

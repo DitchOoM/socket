@@ -13,6 +13,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicStreamException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -555,6 +556,10 @@ class Http3Connection private constructor(
         } catch (e: Http3StreamException) {
             // One stream erroring must not take down the connection. The control handler has
             // already recorded any SETTINGS failure into peerSettingsDeferred.
+        } catch (e: QuicStreamException) {
+            // Peer STOP_SENDING / RESET_STREAM on this one stream (e.g. cancelling a server PUSH this
+            // router was reading) — stream-scoped, not connection loss. A genuine connection-close still
+            // surfaces as QuicCloseException and propagates to tear the connection down.
         } finally {
             if (!handlerOwnsStream) {
                 processor.release()
