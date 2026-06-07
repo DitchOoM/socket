@@ -18,6 +18,11 @@ jobs:
     name: "Linux / JVM / JS / Android"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # Every jvmTest worker in this job mirrors its JVM fatal-error log (hs_err) to
+    # stderr so a native crash (the intermittent JNI SIGABRT) is fully visible in
+    # the live job log, not just an opaque exit 134. See socket-quic/build.gradle.kts.
+    env:
+      ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -119,13 +124,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic/libs/quiche/linux-x64
-          key: quiche-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v5
         with:
           path: socket-quic/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
@@ -434,12 +439,20 @@ jobs:
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest -PquicMallocCheck --continue
-          --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests"
-          --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests"
-          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          # Capture a full core dump if a native UAF aborts the test worker, so the
+          # next JNI SIGABRT can be post-mortem'd in gdb instead of guessed. The
+          # forked worker inherits THIS shell's core ulimit, so raise it here and run
+          # --no-daemon (a daemon reused from an earlier step would carry core size 0).
+          # core_pattern is machine-wide; the post-mortem step below reads /tmp/cores.
+          ulimit -c unlimited
+          sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
+          echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
+          ./gradlew :socket-quic:jvmTest -PquicMallocCheck --continue --no-daemon \
+            --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests" \
+            --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests" \
+            --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
+            --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Coverage-guided fuzzing of quiche_header_info (the parse on every
       # received datagram, before any connection state). Time-boxed so it's a
@@ -526,6 +539,32 @@ jobs:
           :socket-quic:linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Native-crash post-mortem: if the test worker dumped a core (the malloc-check
+      # lane raises ulimit + core_pattern), load it in gdb and print every thread's
+      # backtrace into the live log AND a file. With the JNI shim now built
+      # frame-pointer-preserving and only `--strip-debug`'d (function symbols kept,
+      # see socket-quic/build.gradle.kts), these stacks NAME the quiche_jni frames —
+      # turning the intermittent SIGABRT from "exit 134" into a real native stack.
+      - name: Native crash post-mortem (gdb backtrace from core)
+        if: failure()
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/cores/core.*)
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "No core dumps captured — the run failed without a native abort (or core_pattern was overridden)."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+          mkdir -p /tmp/cores/bt
+          for core in "${cores[@]}"; do
+            echo "==================== $core ===================="
+            gdb --batch -q \
+              -ex 'thread apply all bt full' \
+              -ex 'info registers' \
+              -ex quit \
+              "$(command -v java)" "$core" 2>&1 | tee "/tmp/cores/bt/$(basename "$core").bt.txt"
+          done
+
       # Test reports on failure — surfaces the full assertion message + stack
       # trace that gradle's brief CI log otherwise truncates to
       # `AssertionError at Assert.java:89`. Indispensable for diagnosing the
@@ -533,7 +572,8 @@ jobs:
       # Also collect JVM fatal-error logs from a native crash (SIGABRT/SIGSEGV in quiche/JNI/FFM):
       # the test process writes hs_err_pid*/replay_pid* to its cwd, which the JUnit XML never
       # captures — without these a native abort is an invisible "exit 134". This is what lets us
-      # diagnose the intermittent :socket-quic:jvmTest SIGABRT instead of guessing.
+      # diagnose the intermittent :socket-quic:jvmTest SIGABRT instead of guessing. The core dumps +
+      # gdb backtraces + the symbol-bearing JNI shim let us reconstruct the crash fully offline.
       - name: Upload test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -546,6 +586,9 @@ jobs:
             socket-quic/build/test-results/
             **/hs_err_pid*.log
             **/replay_pid*.log
+            /tmp/cores/core.*
+            /tmp/cores/bt/*.txt
+            socket-quic/libs/quiche/linux-x64/lib/libquiche_jni.so
           retention-days: 7
           if-no-files-found: ignore
 
