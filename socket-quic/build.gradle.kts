@@ -693,7 +693,8 @@ tasks.register<JavaExec>("quicHeaderFuzz") {
 
     doFirst {
         corpusDir.mkdirs()
-        workDir.get().asFile.resolve("corpus").mkdirs()
+        val work = workDir.get().asFile
+        work.resolve("corpus").mkdirs()
     }
 
     // libFuzzer writes crash-*/oom-*/timeout-* repro files to artifact_prefix, and
