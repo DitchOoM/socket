@@ -447,6 +447,83 @@ class ReactiveDriverTests {
             }
         }
 
+    /**
+     * Peer STOP_SENDING / RESET_STREAM on ONE stream (quiche `STREAM_STOPPED` -15 / `STREAM_RESET` -16,
+     * RFC 9000 §19.4-19.5) is a STREAM-level event — the connection is healthy. The write must raise a
+     * stream-scoped [QuicStreamException], **not** a connection-close [QuicCloseException] /
+     * [SocketClosedException]: conflating the two tears down a good connection when a peer merely cancels
+     * one stream (e.g. an HTTP/3 client cancelling a server PUSH). Regression for
+     * project_quic_stream_stopped_bug. Negative-check = revert the -15/-16 branch in
+     * [DriverStreamAdapter.streamWrite] and this fails with a SocketClosedException.
+     */
+    @Test
+    fun streamWrite_peerStopSendingOrReset_throwsStreamErrorNotConnectionClose() =
+        runQuicTest {
+            for (code in listOf(QuicheDriver.QUICHE_ERR_STREAM_STOPPED, QuicheDriver.QUICHE_ERR_STREAM_RESET)) {
+                val api = StubQuicheApi()
+                val driver = createTestDriver(api)
+                driver.start(this)
+                try {
+                    val slot = sendOpenStream(driver)
+                    val adapter = DriverStreamAdapter(driver, slot)
+                    val buf = bufferFactory.allocate(64)
+
+                    api.connStreamSendResult = code
+                    val ex =
+                        assertFailsWith<QuicStreamException>("stream-level quiche error $code must throw a stream error") {
+                            withTimeout(2.seconds) { adapter.streamWrite(slot.id, buf, 2.seconds) }
+                        }
+                    assertEquals(slot.id.id, ex.streamId, "exception must carry the affected stream id")
+                    assertEquals(code, ex.quicheErrorCode, "exception must carry the raw quiche code")
+                    assertTrue(
+                        ex !is SocketClosedException,
+                        "a stopped/reset stream is not a closed connection — must not be a SocketClosedException",
+                    )
+
+                    buf.freeNativeMemory()
+                } finally {
+                    driver.destroy()
+                }
+            }
+        }
+
+    /**
+     * The connection survives a peer stopping one stream: after a write hits `STREAM_STOPPED` and throws
+     * a stream error, a write on a DIFFERENT stream of the same driver still goes through. This is the
+     * behavioural contract the [QuicStreamException]/[QuicCloseException] split exists to protect.
+     */
+    @Test
+    fun streamStopped_connectionStaysUsable_anotherStreamRoundTrips() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val stopped = sendOpenStream(driver)
+                val stoppedAdapter = DriverStreamAdapter(driver, stopped)
+                val buf1 = bufferFactory.allocate(64)
+                api.connStreamSendResult = QuicheDriver.QUICHE_ERR_STREAM_STOPPED
+                assertFailsWith<QuicStreamException> {
+                    withTimeout(2.seconds) { stoppedAdapter.streamWrite(stopped.id, buf1, 2.seconds) }
+                }
+                buf1.freeNativeMemory()
+
+                // The connection is unaffected — a fresh stream writes normally.
+                val healthy = sendOpenStream(driver)
+                val healthyAdapter = DriverStreamAdapter(driver, healthy)
+                val buf2 = bufferFactory.allocate(64)
+                api.connStreamSendResult = 64
+                assertEquals(
+                    64,
+                    withTimeout(2.seconds) { healthyAdapter.streamWrite(healthy.id, buf2, 2.seconds) },
+                    "the connection must stay usable after one stream was stopped",
+                )
+                buf2.freeNativeMemory()
+            } finally {
+                driver.destroy()
+            }
+        }
+
     /** An empty write is a 0-byte no-op — it must never park, even when the window is full. */
     @Test
     fun streamWrite_emptyBuffer_returnsZeroWithoutParking() =
