@@ -48,6 +48,10 @@ jobs:
           pattern: quic-audit-*
           path: /tmp/quic-audit
           merge-multiple: true
+          # download-artifact@v8 defaults digest-mismatch to `error`, which aborts the WHOLE download
+          # (delivering zero files) when GHA's per-artifact digest check trips on these tiny audit
+          # files — reding the summary on every PR. `warn` keeps the files so the summary still runs.
+          digest-mismatch: warn
         continue-on-error: true
 
       - name: Build interop matrix

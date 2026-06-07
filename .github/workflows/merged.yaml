@@ -143,6 +143,9 @@ jobs:
           pattern: quic-audit-*
           path: /tmp/quic-audit
           merge-multiple: true
+          # See review.yaml: `warn` (not the v8 default `error`) so a digest check on the tiny audit
+          # files doesn't abort the download and red the summary on every merge.
+          digest-mismatch: warn
         continue-on-error: true
 
       - name: Build interop matrix
