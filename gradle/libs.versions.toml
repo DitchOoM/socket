@@ -17,6 +17,8 @@ buffer = "5.5.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
+# Jazzer — coverage-guided fuzzing driver; runtime-only on the quicHeaderFuzz task, never a test dep
+jazzer = "0.24.0"
 
 [libraries]
 buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
@@ -29,6 +31,7 @@ kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-
 kotlin-web = { module = "org.jetbrains.kotlin-wrappers:kotlin-web", version.ref = "kotlinWrappers" }
 kotlin-js = { module = "org.jetbrains.kotlin-wrappers:kotlin-js", version.ref = "kotlinWrappers" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
+jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
 
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }

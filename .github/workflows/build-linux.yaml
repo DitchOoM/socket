@@ -412,6 +412,52 @@ jobs:
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Heap-corruption / UAF guard. The worst QUIC bug class (the 3.2.12 JNI
+      # stream-command use-after-free that corrupted the glibc free-list) only
+      # reproduces under glibc's malloc consistency checks — NOT ASAN, because
+      # libquiche.a is non-instrumented. `-PquicMallocCheck` sets MALLOC_CHECK_=3
+      # + MALLOC_PERTURB_ + glibc.malloc.check=3 on the forked test worker (see
+      # socket-quic/build.gradle.kts). We re-run only the recv-path robustness +
+      # concurrency-soak suites (the allocation-heavy native paths) so a
+      # regression aborts the JVM with a diagnostic instead of silently
+      # corrupting state. `if: !cancelled()` so a crash in an earlier backend
+      # step doesn't skip this independent check.
+      - name: Run socket-quic recv-path + soak suites under glibc malloc check
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        env:
+          QUIC_MIGRATION_REQUIRE_RUN: "1"
+        run: >-
+          ./gradlew :socket-quic:jvmTest -PquicMallocCheck --continue
+          --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests"
+          --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests"
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Coverage-guided fuzzing of quiche_header_info (the parse on every
+      # received datagram, before any connection state). Time-boxed so it's a
+      # gating signal, not an open-ended job: libFuzzer's signal handlers turn a
+      # native SIGSEGV/SIGABRT into a `crash-*` repro under build/fuzz, which the
+      # upload step below captures. A find fails the job. The committed seed
+      # corpus (socket-quic/fuzz/corpus) starts it warm. `if: !cancelled()` for
+      # the same independence reason as the malloc-check step.
+      - name: Fuzz quiche_header_info (Jazzer, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: >-
+          ./gradlew :socket-quic:quicHeaderFuzz -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Upload fuzzing crash repros
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-header-fuzz-crashes
+          path: |
+            socket-quic/build/fuzz/header-info/crash-*
+            socket-quic/build/fuzz/header-info/oom-*
+            socket-quic/build/fuzz/header-info/timeout-*
+          if-no-files-found: ignore
+
       # Audit step: mirror the macOS + Linux ARM64 audits — count
       # `harness OK` / `harness SKIP` markers in the JUnit XML's
       # <system-out> blocks and surface in step summary + artifact.
