@@ -283,6 +283,15 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connOnTimeout(conn: QuicheConn) {}
 
+    /** Counts reactive-keepalive PINGs the driver scheduled, so tests can assert on them. */
+    var ackElicitingCount = 0
+        private set
+
+    override fun connSendAckEliciting(conn: QuicheConn): Int {
+        ackElicitingCount++
+        return 0
+    }
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,

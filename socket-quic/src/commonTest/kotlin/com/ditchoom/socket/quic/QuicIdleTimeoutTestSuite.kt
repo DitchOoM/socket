@@ -79,28 +79,35 @@ abstract class QuicIdleTimeoutTestSuite {
         }
 
     /**
-     * Activity resets the idle timer: echo every [KEEPALIVE_GAP] for a total well past [KEEPALIVE_IDLE].
-     * Each gap is far below the idle timeout, so the connection must stay alive for every round; if the
-     * idle timer were not reset by traffic, a mid-loop echo would fail because the connection had closed.
+     * Reactive keepalive (RFC 9000 §10.1.2): with [QuicOptions.keepAliveInterval] set below the idle
+     * timeout, an **otherwise-idle** connection — no application traffic at all — stays alive past the
+     * idle timeout because the driver schedules ack-eliciting PINGs on its own timer.
+     *
+     * Deterministic by construction: we prime the stream, then go fully idle and wait *once* for well
+     * over the idle timeout before a single liveness round-trip. A longer wait (a slow/loaded runner)
+     * only strengthens the test — there is no upper-bounded gap that scheduling jitter can blow past, the
+     * way the old "echo every N ms for K rounds" version had. Without keepalive the idle timer closes the
+     * connection during the wait and the final echo fails; with it, the echo round-trips.
      */
     @Test
     fun activityKeepsConnectionAlivePastIdleTimeout() =
         runQuicTest {
             wrapTestBody {
-                val opts = options(KEEPALIVE_IDLE)
+                val opts = options(KEEPALIVE_IDLE).copy(keepAliveInterval = KEEPALIVE_INTERVAL)
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
                     val serverJob = launch { echoEveryStream() }
                     try {
                         withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds) {
                             val stream = openStream()
-                            for (round in 0 until KEEPALIVE_ROUNDS) {
-                                assertEquals(
-                                    "ka-$round",
-                                    stream.echoOnce("ka-$round"),
-                                    "echo $round failed — connection idle-closed despite activity (idle timer not reset)",
-                                )
-                                delay(KEEPALIVE_GAP)
-                            }
+                            // Establish the stream on the server, then go completely idle for longer than
+                            // the idle timeout. Reactive keepalive must hold the connection open.
+                            assertEquals("warmup", stream.echoOnce("warmup"), "warmup echo failed before idle wait")
+                            delay(KEEPALIVE_IDLE_WAIT)
+                            assertEquals(
+                                "still-alive",
+                                stream.echoOnce("still-alive"),
+                                "connection idle-closed despite keepalive — the reactive PING did not reset the idle timer",
+                            )
                             stream.close()
                         }
                     } finally {
@@ -155,7 +162,7 @@ abstract class QuicIdleTimeoutTestSuite {
         private val READ_TIMEOUT = 10.seconds // > IDLE_TIMEOUT so a working idle-close returns End first
 
         private val KEEPALIVE_IDLE = 4.seconds
-        private val KEEPALIVE_GAP = 1.seconds // far below KEEPALIVE_IDLE — generous margin against jitter
-        private const val KEEPALIVE_ROUNDS = 6 // 6 × 1 s = ~6 s of activity, well past the 4 s idle timeout
+        private val KEEPALIVE_INTERVAL = 1.seconds // PING every 1 s — 3 s slack under the 4 s idle timeout
+        private val KEEPALIVE_IDLE_WAIT = 6.seconds // idle well past KEEPALIVE_IDLE so a broken keepalive closes
     }
 }

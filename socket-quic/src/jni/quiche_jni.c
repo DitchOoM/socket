@@ -278,6 +278,12 @@ JNIEXPORT void JNICALL JNI_FN(nConnOnTimeout)(JNIEnv *env, jclass cls, jlong con
     quiche_conn_on_timeout((quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jlong JNICALL JNI_FN(nConnSendAckEliciting)(JNIEnv *env, jclass cls, jlong conn) {
+    /* Schedules a PING on the active path; emitted by the next send(). Returns 0 on success or a
+       negative quiche error code. */
+    return (jlong)quiche_conn_send_ack_eliciting((quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnClose)(
     JNIEnv *env, jclass cls,
     jlong conn, jboolean app, jlong err, jlong reason_addr, jint reason_len) {

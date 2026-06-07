@@ -150,6 +150,7 @@ actual suspend fun <R> withQuicServer(
                 localAddrBuf = localAddrBuf,
                 bufferFactory = bufferFactory,
                 scope = parentScope,
+                keepAliveInterval = quicOptions.keepAliveInterval,
             )
         try {
             return server.block()
@@ -176,6 +177,7 @@ private class LinuxQuicServer(
     private val localAddrBuf: PlatformBuffer,
     private val bufferFactory: BufferFactory,
     private val scope: CoroutineScope,
+    private val keepAliveInterval: Duration? = null,
 ) : QuicServer {
     override val port: Int get() = boundPort
 
@@ -545,6 +547,7 @@ private class LinuxQuicServer(
                 udpChannel = udpChannel,
                 clientMode = false,
                 isServer = true,
+                keepAliveInterval = keepAliveInterval,
                 onScidIssued = { scid, len ->
                     // Snapshot the CID (scid is freed right after this returns) and hand the
                     // registration to the receive loop, which owns connectionsByDcid.

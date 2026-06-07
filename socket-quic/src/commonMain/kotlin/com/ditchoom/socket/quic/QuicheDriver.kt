@@ -27,6 +27,7 @@ import kotlin.concurrent.Volatile
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 /**
  * Drives a single quiche connection from one coroutine. No mutexes, no polling.
@@ -50,6 +51,13 @@ class QuicheDriver(
     private val udpChannel: UdpChannel,
     private val clientMode: Boolean = true,
     private val isServer: Boolean = false,
+    /**
+     * Reactive keepalive (RFC 9000 §10.1.2): when non-null, after this much inactivity the driver
+     * schedules an ack-eliciting PING (resetting both peers' idle timers) so an otherwise-idle
+     * connection survives past its idle timeout with no application traffic. The PING is timed off
+     * the driver's own [select] loop — no polling. Null disables keepalive. See [QuicOptions.keepAliveInterval].
+     */
+    private val keepAliveInterval: Duration? = null,
     /**
      * Connection-migration wiring (slice 3). All default to "disabled" so server-accepted
      * drivers, unit-test fakes, and the no-migration platforms keep their single-path
@@ -247,23 +255,53 @@ class QuicheDriver(
     private suspend fun run() {
         try {
             afterCommand() // initial flush (e.g., ClientHello or ServerHello response)
+            // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
+            // process. We wake at min(quiche's next timer, keepalive deadline); whichever is sooner
+            // decides whether we PING or hand the timeout to quiche. No polling.
+            var lastActivity = TimeSource.Monotonic.markNow()
             while (true) {
-                val timeout = api.connTimeout(conn)
+                val connTimeout = api.connTimeout(conn)
+                // Keepalive only counts once the handshake is established (the handshake itself is
+                // continuous activity, and a half-open connection has nothing to keep alive).
+                val keepAliveRemaining =
+                    keepAliveInterval
+                        ?.takeIf { api.connIsEstablished(conn) }
+                        ?.let { (it - lastActivity.elapsedNow()).coerceAtLeast(Duration.ZERO) }
+                val wait =
+                    when {
+                        connTimeout != null && keepAliveRemaining != null -> minOf(connTimeout, keepAliveRemaining)
+                        else -> connTimeout ?: keepAliveRemaining
+                    }
                 val cmd =
-                    if (timeout == null) {
-                        // No timeout set — block until next command (or channel close)
+                    if (wait == null) {
+                        // No timer pending — block until next command (or channel close)
                         commands.receiveCatching().getOrNull() ?: break
                     } else {
                         select<QuicheCmd?> {
                             commands.onReceiveCatching { it.getOrNull() }
-                            onTimeout(timeout) { null }
+                            onTimeout(wait) { null }
                         }
                     }
                 // null from onReceiveCatching means channel closed — exit
                 if (cmd == null && commands.isClosedForReceive) break
                 when {
-                    cmd is QuicheCmd.Migrate -> handleMigrate(cmd) // suspends: opens a socket
-                    cmd != null -> execute(cmd)
+                    cmd is QuicheCmd.Migrate -> {
+                        handleMigrate(cmd) // suspends: opens a socket
+                        lastActivity = TimeSource.Monotonic.markNow()
+                    }
+                    cmd != null -> {
+                        execute(cmd)
+                        lastActivity = TimeSource.Monotonic.markNow() // any command is activity → defer keepalive
+                    }
+                    // A timer fired. If the keepalive deadline is strictly the sooner one, PING; quiche's
+                    // idle timer is always later (keepAliveInterval < idleTimeout), so this fires first and
+                    // prevents the idle close. Otherwise hand the (idle/loss-recovery) timeout to quiche.
+                    keepAliveRemaining != null && (connTimeout == null || keepAliveRemaining < connTimeout) -> {
+                        if (!api.connIsClosed(conn)) {
+                            api.connSendAckEliciting(conn) // emitted by the afterCommand() flush below
+                            lastActivity = TimeSource.Monotonic.markNow()
+                        }
+                    }
                     else -> api.connOnTimeout(conn)
                 }
                 afterCommand()

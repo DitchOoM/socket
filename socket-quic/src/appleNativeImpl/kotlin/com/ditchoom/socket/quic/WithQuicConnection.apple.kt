@@ -129,6 +129,7 @@ private suspend fun <R> connectQuicGroup(
             NSNumber(bool = quicOptions.verifyPeer),
             caDerList,
             quicOptions.idleTimeout.inWholeSeconds.toInt(),
+            quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
             timeout.inWholeSeconds.toInt(),
             maxFrameSize,
         ) ?: throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create QUIC connection group")

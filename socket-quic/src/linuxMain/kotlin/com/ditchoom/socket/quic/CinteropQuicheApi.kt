@@ -53,6 +53,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
+import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
@@ -396,6 +397,8 @@ internal object CinteropQuicheApi : QuicheApi {
     }
 
     override fun connOnTimeout(conn: QuicheConn) = quiche_conn_on_timeout(conn.handle.toCPointer()!!)
+
+    override fun connSendAckEliciting(conn: QuicheConn): Int = quiche_conn_send_ack_eliciting(conn.handle.toCPointer()!!).toInt()
 
     override fun connClose(
         conn: QuicheConn,

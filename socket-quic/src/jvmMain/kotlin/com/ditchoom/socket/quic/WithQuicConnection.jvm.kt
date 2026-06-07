@@ -10,4 +10,4 @@ actual suspend fun <R> withQuicConnection(
     connectionOptions: ConnectionOptions,
     timeout: Duration,
     block: suspend QuicScope.() -> R,
-): R = commonJvmWithQuicConnection(hostname, port, quicOptions, connectionOptions, timeout, block)
+): R = commonJvmWithQuicConnection(hostname, port, quicOptions, connectionOptions, timeout, block = block)
