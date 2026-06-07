@@ -752,15 +752,20 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
     val ndk = androidNdkDir ?: return null
     val outputDir = projectDir.resolve("src/androidMain/jniLibs/${abi.abi}")
     val outputLib = outputDir.resolve("libquiche_jni.so")
-    val markerFile = outputDir.resolve(".built-$quicheVersion")
 
     return tasks.register("buildAndroidJni${abi.abi.replace("-", "").replaceFirstChar { it.uppercase() }}") {
         group = "build"
         description = "Build quiche + JNI shim for Android ${abi.abi}"
+        // Track the C source + quiche version as inputs and the .so itself as the
+        // output. Gradle's content-hashed up-to-date check then rebuilds whenever
+        // quiche_jni.c changes — NOT a version-keyed `.built-<ver>` marker, which
+        // (the old bug) survived every C-source edit at the same quiche version and
+        // shipped a stale .so missing newly-added JNI symbols (e.g.
+        // nConnDgramMaxWritableLen) → UnsatisfiedLinkError at runtime. This mirrors
+        // the host JNI-shim task. Do NOT reintroduce a marker + onlyIf gate.
         inputs.property("quicheVersion", quicheVersion)
         inputs.file("src/jni/quiche_jni.c")
-        outputs.file(markerFile)
-        onlyIf { !markerFile.exists() }
+        outputs.file(outputLib)
 
         doLast {
             // 1. Get quiche source (reuses shared clone)
@@ -849,7 +854,6 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
 
             ProcessBuilder(llvmStrip.absolutePath, "--strip-all", outputLib.absolutePath).start().waitFor()
 
-            markerFile.writeText("quiche $quicheVersion JNI shim for ${abi.abi} built on ${System.currentTimeMillis()}")
             logger.lifecycle("Built: ${outputLib.absolutePath} (${outputLib.length() / 1024}KB)")
         }
     }
