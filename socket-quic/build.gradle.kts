@@ -573,6 +573,22 @@ afterEvaluate {
         // can extract them as classloader resources.
         classpath += files(stagedNativeResourcesDir)
 
+        // --- Heap-corruption / UAF guard ---------------------------------------
+        // `-PquicMallocCheck` runs the forked test workers under glibc's malloc
+        // consistency checks. The worst QUIC bug class (the 3.2.12 JNI stream-
+        // command use-after-free) reproduces under these, NOT ASAN — libquiche.a
+        // is non-instrumented. MALLOC_CHECK_=3 aborts on the first detected heap
+        // inconsistency (double-free, overflow); MALLOC_PERTURB_ poisons freed
+        // memory so a UAF reads garbage and is more likely to trip a check. Set
+        // here (on the Test task) rather than via shell env so the *worker* JVM
+        // gets it regardless of Gradle daemon reuse. CI pairs this with a filter
+        // to the recv-path + soak suites (see build-linux.yaml).
+        if (providers.gradleProperty("quicMallocCheck").isPresent) {
+            environment("MALLOC_CHECK_", "3")
+            environment("MALLOC_PERTURB_", "165")
+            environment("GLIBC_TUNABLES", "glibc.malloc.check=3")
+        }
+
         // --- Backend selector ---------------------------------------------------
         // By default this task resolves `loadQuicheApi()` to the base commonJvmMain
         // JNI loader: the java21/FFM compilation output is deliberately NOT on the
@@ -621,6 +637,80 @@ afterEvaluate {
                 jvmArgs = jvmArgs.orEmpty().filterNot { it.contains("enable-native-access") }
             }
         }
+    }
+}
+
+// --- Coverage-guided fuzzing (Jazzer) ----------------------------------------
+// `quicHeaderFuzz` drives HeaderInfoFuzzer (src/jvmTest) — the quiche_header_info
+// parse that runs on every received datagram before any connection exists — under
+// Jazzer/libFuzzer. Jazzer is runtime-only here: the target uses the `byte[]`
+// entry-point form so nothing in jvmTest compiles against Jazzer; the driver is
+// pulled into a dedicated, non-test configuration resolved only by this task.
+//
+// NOTE on coverage signal: the real parser is native quiche, which JVM Jazzer
+// cannot instrument, so libFuzzer's coverage feedback only sees the thin Kotlin
+// forwarder. This is primarily a *crash/robustness* fuzzer — libFuzzer's signal
+// handlers turn a native SIGSEGV/SIGABRT into a saved `crash-*` repro — and pairs
+// with the MALLOC_CHECK_ CI lane that catches the heap-corruption class. Deeper
+// coverage-guided fuzzing of the parser itself would need an ASAN libFuzzer build
+// of quiche (a separate, larger effort).
+val jazzerConfig =
+    configurations.create("jazzer") {
+        isCanBeConsumed = false
+        isCanBeResolved = true
+    }
+dependencies { add("jazzer", libs.jazzer) }
+
+// Seed corpus + crash/interesting-input output live under the module (corpus is
+// committed so CI starts warm; the work dir is build/ and git-ignored).
+val quicFuzzCorpusDir = projectDir.resolve("fuzz/corpus/header-info")
+val quicFuzzWorkDir = layout.buildDirectory.dir("fuzz/header-info")
+
+tasks.register<JavaExec>("quicHeaderFuzz") {
+    group = "verification"
+    description = "Coverage-guided Jazzer fuzzing of quiche_header_info (HeaderInfoFuzzer). " +
+        "Configure runtime with -PquicFuzzSeconds=<n> (default 60)."
+    dependsOn("jvmTestClasses", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+
+    // Build the classpath from the jvm *test compilation* (compiled main+test output +
+    // all runtime deps) plus the staged native libs NativeLibLoader extracts — i.e.
+    // exactly what jvmTest runs with, but WITHOUT referencing the jvmTest *task*, so
+    // launching the fuzzer doesn't first execute the entire jvmTest suite. The Jazzer
+    // driver itself comes from the dedicated `jazzer` configuration.
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath =
+        files(
+            jvmTestCompilation.output.allOutputs,
+            jvmTestCompilation.runtimeDependencyFiles,
+            stagedNativeResourcesDir,
+        ) + jazzerConfig
+
+    mainClass.set("com.code_intelligence.jazzer.Jazzer")
+
+    val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60")
+    val corpusDir = quicFuzzCorpusDir
+    val workDir = quicFuzzWorkDir
+
+    doFirst {
+        corpusDir.mkdirs()
+        workDir.get().asFile.resolve("corpus").mkdirs()
+    }
+
+    // libFuzzer writes crash-*/oom-*/timeout-* repro files to artifact_prefix, and
+    // new interesting inputs only to the FIRST positional corpus dir. We make that a
+    // gitignored build/ dir so the committed seed corpus (passed second, read-only in
+    // practice) stays pristine across local runs.
+    argumentProviders.add {
+        val work = workDir.get().asFile
+        listOf(
+            "--target_class=com.ditchoom.socket.quic.fuzz.HeaderInfoFuzzer",
+            "--instrumentation_includes=com.ditchoom.**",
+            "-print_final_stats=1",
+            "-artifact_prefix=${work.absolutePath}/",
+            "-max_total_time=${maxSeconds.get()}",
+            work.resolve("corpus").absolutePath,
+            corpusDir.absolutePath,
+        )
     }
 }
 

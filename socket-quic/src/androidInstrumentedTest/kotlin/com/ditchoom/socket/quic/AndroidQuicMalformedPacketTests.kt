@@ -135,8 +135,11 @@ class AndroidQuicMalformedPacketTests {
     }
 
     private companion object {
+        // Keep in sync with QuicMalformedPacketTestSuite.MALFORMED_DATAGRAMS (commonTest can't be
+        // seen from androidInstrumentedTest). See that file for the RFC 9000 §17.2 header-form notes.
         private val MALFORMED_DATAGRAMS: List<ByteArray> =
             listOf(
+                // truncation / garbage
                 ByteArray(1),
                 ByteArray(20),
                 ByteArray(64) { 0xFF.toByte() },
@@ -145,6 +148,33 @@ class AndroidQuicMalformedPacketTests {
                 byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0xFF.toByte(), 1, 2, 3),
                 byteArrayOf(0x40, 0x01, 0x02, 0x03),
                 ByteArray(2000) { (it * 31 % 256).toByte() },
+                // long-header packet types: 0-RTT, Handshake, Retry
+                byteArrayOf(0xD0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 1, 2, 3, 4, 0x00),
+                byteArrayOf(0xE0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 1, 2, 3, 4, 0x00),
+                byteArrayOf(0xF0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x00, 0x00) + ByteArray(16) { (0x10 + it).toByte() },
+                // version negotiation / GREASE versions
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x00, 0x04, 1, 2, 3, 4, 0x04, 5, 6, 7, 8),
+                byteArrayOf(0xC0.toByte(), 0x1A, 0x2A, 0x3A, 0x4A, 0x04, 1, 2, 3, 4, 0x00),
+                // invalid connection-id lengths
+                ByteArray(28) { i ->
+                    when (i) {
+                        0 -> 0xC0.toByte()
+                        1, 2, 3 -> 0x00
+                        4 -> 0x01
+                        5 -> 0x15
+                        27 -> 0x00
+                        else -> (i - 6).toByte()
+                    }
+                },
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x00, 0xFF.toByte(), 1, 2, 3),
+                // Initial token-length / length varint edges
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x00, 0x00) + ByteArray(8) { 0xFF.toByte() },
+                // coalesced packets
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 1, 2, 3, 4, 0x00) +
+                    byteArrayOf(0xE0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 5, 6, 7, 8, 0x00),
+                // short header reserved bits / min-Initial-size
+                byteArrayOf(0x58, 9, 8, 7, 6, 5, 4, 3, 2),
+                ByteArray(1200),
             )
     }
 }

@@ -133,14 +133,22 @@ abstract class QuicMalformedPacketTestSuite {
         /**
          * Fixed malformed datagrams targeting the server's `headerInfo` + recv path. QUIC long header =
          * first byte `0x80 | …`, 4-byte version, 1-byte DCID len + DCID, 1-byte SCID len + SCID, …
-         * Each must be dropped (or rejected by quiche) without crashing the process.
+         * (RFC 9000 §17.2). The four long-header packet types live in bits `0x30`: Initial `0xC0`,
+         * 0-RTT `0xD0`, Handshake `0xE0`, Retry `0xF0`. Each datagram below must be dropped (or rejected
+         * by quiche) without crashing the process — `headerInfo` runs on every datagram before any
+         * connection state exists, so an unchecked parse is a whole-process SIGABRT/SIGSEGV.
+         *
+         * This list is the deterministic regression floor; [HeaderInfoFuzzer] (jvmTest) drives the same
+         * `headerInfo` entry point under coverage-guided Jazzer fuzzing to find inputs this list misses,
+         * and these entries double as its seed corpus.
          */
         private val MALFORMED_DATAGRAMS: List<ByteArray> =
             listOf(
+                // --- truncation / garbage ---------------------------------------------------------
                 ByteArray(1), // single zero byte — far too short for any header
                 ByteArray(20), // all-zero short header — DCID routes to nothing
                 ByteArray(64) { 0xFF.toByte() }, // all-ones
-                // long header v1, truncated before DCID len
+                // long header v1 (Initial), truncated before DCID len
                 byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01),
                 // long header, unknown version 0xDEADBEEF, DCID len 4
                 byteArrayOf(0xC0.toByte(), 0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte(), 0x04, 1, 2, 3, 4, 0x00),
@@ -148,6 +156,35 @@ abstract class QuicMalformedPacketTestSuite {
                 byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0xFF.toByte(), 1, 2, 3),
                 byteArrayOf(0x40, 0x01, 0x02, 0x03), // short header (fixed bit) + garbage
                 ByteArray(2000) { (it * 31 % 256).toByte() }, // oversized pseudo-random payload
+                // long-header packet types (RFC 9000 §17.2): 0-RTT, Handshake, Retry
+                byteArrayOf(0xD0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 1, 2, 3, 4, 0x00), // 0-RTT v1, truncated
+                byteArrayOf(0xE0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 1, 2, 3, 4, 0x00), // Handshake v1, truncated
+                // Retry v1 (DCID/SCID len 0) with a 16-byte integrity tag but no token
+                byteArrayOf(0xF0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x00, 0x00) + ByteArray(16) { (0x10 + it).toByte() },
+                // version 0x00000000 = Version Negotiation form; quiche must not treat us as a client
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x00, 0x04, 1, 2, 3, 4, 0x04, 5, 6, 7, 8),
+                // forced-negotiation GREASE version 0x1a2a3a4a (pattern 0x?a?a?a?a)
+                byteArrayOf(0xC0.toByte(), 0x1A, 0x2A, 0x3A, 0x4A, 0x04, 1, 2, 3, 4, 0x00),
+                // DCID len 21 (one over the v1 max of 20) followed by 21 id bytes, then SCID len 0
+                ByteArray(28) { i ->
+                    when (i) {
+                        0 -> 0xC0.toByte() // Initial long header
+                        1, 2, 3 -> 0x00 // version 0x00000001 …
+                        4 -> 0x01
+                        5 -> 0x15 // DCID len = 21 (illegal)
+                        27 -> 0x00 // SCID len = 0
+                        else -> (i - 6).toByte() // 21 DCID bytes
+                    }
+                },
+                // SCID len 255 but truncated immediately after
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x00, 0xFF.toByte(), 1, 2, 3),
+                // Initial, DCID/SCID 0, token-length 8-byte varint (0xC0 prefix) claiming a huge token
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x00, 0x00) + ByteArray(8) { 0xFF.toByte() },
+                // coalesced packets (two long headers in one datagram, RFC 9000 §12.2): Initial + truncated Handshake
+                byteArrayOf(0xC0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 1, 2, 3, 4, 0x00) +
+                    byteArrayOf(0xE0.toByte(), 0x00, 0x00, 0x00, 0x01, 0x04, 5, 6, 7, 8, 0x00),
+                byteArrayOf(0x58, 9, 8, 7, 6, 5, 4, 3, 2), // short header with reserved bits set
+                ByteArray(1200), // all-zero datagram at the UDP min-Initial size
             )
     }
 }

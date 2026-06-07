@@ -525,3 +525,53 @@ Settled with the user (2026-05-22):
 6. **Harness location — in-repo `test-harness/`.** Committed into this repo for the simplest `docker compose` task wiring; CI builds images per run.
 7. **Apple `container` — not adopted; Colima stands.** Apple's native containerization tool is fast on Apple Silicon but immature for multi-service compose + container-to-container networking, and adopting it would fork the harness runtime from Linux CI. macOS CI uses Colima; the Apple-Silicon speed-up comes from arm64-native images, not a second runtime. See §3c.
 8. **arm64 — first-class, no emulation.** `linuxArm64` is an existing target with an existing `ubuntu-24.04-arm` CI job that runs the raw `.kexe` (not Gradle). The harness CI runs as an arch-matched matrix (`ubuntu-24.04` / `ubuntu-24.04-arm` / `macos-latest`); each runner builds the harness for its own arch — no QEMU, no `buildx`. The arm64 job brings the stack up/down at the workflow-step level since it bypasses Gradle. See §3e, §3f.
+
+## 8. QUIC robustness — malformed input, fuzzing, and heap-corruption checks
+
+The deterministic harness above proves *correctness under impairment*; this section covers the
+three layers that hunt for *crashes and memory corruption* on the QUIC recv path — the highest-risk
+surface, because a single unchecked parse of an attacker-controlled datagram takes down the whole
+process (the K/N sockaddr / cinterop SIGABRT history, and the 3.2.12 JNI use-after-free).
+
+### 8a. Deterministic malformed-packet floor
+
+`QuicMalformedPacketTestSuite` (commonTest; per-platform concrete + a self-contained Android copy)
+blasts a fixed, hand-written list of malformed datagrams at the server's UDP port — truncated/garbage
+headers, every long-header packet type (Initial/0-RTT/Handshake/Retry), Version-Negotiation and GREASE
+versions, illegal connection-id lengths, oversized token-length varints, and coalesced packets — then
+asserts a legitimate client still connects and echoes. A crash takes the test binary down; a parse that
+wrongly mutated connection state fails the post-blast echo. This is the regression floor: fixed vectors,
+no randomness (no `Math.random`, unavailable on K/N).
+
+### 8b. Coverage-guided fuzzing (Jazzer)
+
+`HeaderInfoFuzzer` (jvmTest) drives the same `quiche_header_info` entry point under Jazzer/libFuzzer via
+the `quicHeaderFuzz` Gradle task (`-PquicFuzzSeconds=<n>`, default 60). The committed seed corpus lives
+in `socket-quic/fuzz/corpus/header-info/` (the §8a vectors as binary files); libFuzzer writes discovered
+inputs and `crash-*` repros under `build/fuzz/` (gitignored).
+
+- **Why it's worth it despite native parsing.** JVM Jazzer cannot instrument the native quiche parser, so
+  coverage feedback (`cov:`) plateaus immediately — this is primarily a **crash/robustness** fuzzer, not a
+  coverage-maximizer. Its value is libFuzzer's signal handlers: a native SIGSEGV/SIGABRT becomes a saved
+  repro input. A local 25 s run executes ~31 M datagrams through `headerInfo` at ~1.2 M exec/s.
+- **No new test dependency.** The target uses the `byte[]` entry-point form, so nothing in jvmTest compiles
+  against Jazzer; the driver is pulled into a dedicated, runtime-only `jazzer` configuration.
+- **Future depth.** Coverage-guided fuzzing *of the parser itself* would need an ASAN libFuzzer build of
+  quiche (a separate, larger effort) — tracked as the next step beyond this JVM crash-fuzzer.
+
+### 8c. Heap-corruption / UAF guard (glibc malloc check)
+
+The worst QUIC bug class — the 3.2.12 JNI stream-command use-after-free that corrupted the glibc
+free-list — does **not** reproduce under ASAN (libquiche.a is non-instrumented); it reproduces under
+glibc's own malloc consistency checks. `-PquicMallocCheck` sets `MALLOC_CHECK_=3` +
+`MALLOC_PERTURB_` + `glibc.malloc.check=3` on the forked jvmTest worker (set on the Test task, not via
+shell env, so it survives Gradle daemon reuse). CI re-runs the recv-path + concurrency-soak suites under
+it (`build-linux.yaml`), so a regression aborts the JVM with a diagnostic instead of silently corrupting
+state.
+
+### 8d. Third-party interop (existing)
+
+Crash-resistance is necessary but not sufficient; protocol correctness is proven against external stacks:
+real handshakes to Cloudflare/Google production QUIC (`QuicPublicEndpointInteropTests`, skip-on-
+unreachable) and an aioquic/lsqpack Docker interop for the HTTP/3 QPACK encoder
+(`socket-http3/docker-interop`). The wire protocol underneath is Cloudflare's quiche.
