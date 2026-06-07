@@ -422,7 +422,14 @@ jobs:
       # regression aborts the JVM with a diagnostic instead of silently
       # corrupting state. `if: !cancelled()` so a crash in an earlier backend
       # step doesn't skip this independent check.
-      - name: Run socket-quic recv-path + soak suites under glibc malloc check
+      #
+      # StaleConnectionDiagnosticTests is included because the still-open
+      # intermittent JNI SIGABRT (exit 134, no failing JUnit case) was last seen
+      # *near* it — a connection-teardown-heavy suite (server driver destroy +
+      # connectionsByDcid cleanup + health-check connections timing out). Running
+      # it here means the next recurrence aborts under malloc-check with a
+      # corrupted-block diagnostic, instead of an opaque low-rate exit 134.
+      - name: Run socket-quic recv-path + soak + teardown suites under glibc malloc check
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
@@ -431,6 +438,7 @@ jobs:
           ./gradlew :socket-quic:jvmTest -PquicMallocCheck --continue
           --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests"
           --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests"
+          --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests"
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Coverage-guided fuzzing of quiche_header_info (the parse on every
