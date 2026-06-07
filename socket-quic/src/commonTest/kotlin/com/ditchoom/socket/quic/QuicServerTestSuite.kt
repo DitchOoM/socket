@@ -157,6 +157,85 @@ abstract class QuicServerTestSuite {
             }
         }
 
+    /**
+     * The [ReadResult] a peer observes when the remote abruptly resets a stream.
+     * Apple's Network.framework surfaces it as [ReadResult.Reset]; the quiche driver
+     * (JVM/Linux) collapses a stream reset to EOF ([ReadResult.End]). Both are terminal
+     * (never [ReadResult.Data]) — the default accepts either; Apple tightens it to Reset.
+     */
+    protected open fun assertResetObservedByPeer(resultClassName: String?) {
+        assertTrue(
+            resultClassName == "End" || resultClassName == "Reset",
+            "expected a terminal read after peer reset, got $resultClassName",
+        )
+    }
+
+    /**
+     * A client that opens a stream, sends a chunk, then [reset]s it with an application
+     * error code must (a) still deliver the pre-reset data to the server and (b) make the
+     * server's next read terminate rather than hang. Regression guard for the Apple bug
+     * where [QuicByteStream.reset] silently degraded to a graceful FIN because the
+     * Network.framework stream didn't implement [ResettableByteStream] — so no RESET_STREAM
+     * was ever sent. (Issue #81.) [assertResetObservedByPeer] pins the platform-exact result.
+     */
+    @Test
+    fun clientResetStreamIsObservedByServer() =
+        runQuicTest {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                    val serverGotData = CompletableDeferred<String>()
+                    val clientMayReset = CompletableDeferred<Unit>()
+                    val serverSecondRead = CompletableDeferred<String?>()
+
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                val first = stream.read(5.seconds)
+                                serverGotData.complete(
+                                    if (first is ReadResult.Data) {
+                                        first.buffer.readString(first.buffer.remaining(), Charset.UTF8)
+                                    } else {
+                                        "no_data:${first::class.simpleName}"
+                                    },
+                                )
+                                clientMayReset.complete(Unit)
+                                // After the peer's RESET_STREAM the next read must terminate, not deliver Data.
+                                val second = stream.read(5.seconds)
+                                serverSecondRead.complete(second::class.simpleName)
+                                stream.close()
+                            }
+                        }
+                    delay(100)
+
+                    val clientJob =
+                        launch {
+                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                val sendBuf = BufferFactory.deterministic().allocate(5)
+                                sendBuf.writeString("hello", Charset.UTF8)
+                                sendBuf.resetForRead()
+                                stream.write(sendBuf, 5.seconds)
+                                clientMayReset.await()
+                                stream.reset(0x10cL) // HTTP/3 REQUEST_CANCELLED
+                                // Keep the connection alive until the reset is observed so the
+                                // RESET_STREAM frame is flushed before the connection tears down.
+                                serverSecondRead.await()
+                            }
+                        }
+
+                    try {
+                        assertEquals("hello", kotlinx.coroutines.withTimeout(10.seconds) { serverGotData.await() })
+                        val second = kotlinx.coroutines.withTimeout(10.seconds) { serverSecondRead.await() }
+                        assertResetObservedByPeer(second)
+                    } finally {
+                        clientJob.cancel()
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
     // --- Pinned CA trust (#99) ---
     // QuicOptions.trustedCaCertificatesPem must drive real chain validation on the
     // quiche-backed targets (JVM/Android/Linux), matching the Apple path. Before #99 the

@@ -250,7 +250,8 @@ private val PHANTOM_PEEK_TIMEOUT: Duration = 30.seconds
 private class PrefixedByteStream(
     first: ReadResult.Data,
     private val delegate: ByteStream,
-) : ByteStream {
+) : HalfCloseableByteStream,
+    ResettableByteStream {
     private var pending: ReadResult.Data? = first
 
     override val isOpen: Boolean get() = delegate.isOpen
@@ -267,6 +268,18 @@ private class PrefixedByteStream(
         buffer: ReadBuffer,
         timeout: Duration,
     ): BytesWritten = delegate.write(buffer, timeout)
+
+    override suspend fun shutdownSend() {
+        (delegate as? HalfCloseableByteStream)?.shutdownSend()
+    }
+
+    override suspend fun reset(errorCode: Long) {
+        // Drop the replay buffer and forward the abrupt reset (RESET_STREAM +
+        // STOP_SENDING) so server-accepted streams reset like client streams; a
+        // non-resettable delegate just gets a graceful close. (Issue #81.)
+        pending = null
+        (delegate as? ResettableByteStream)?.reset(errorCode) ?: delegate.close()
+    }
 
     override suspend fun close() = delegate.close()
 }

@@ -23,9 +23,11 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_group_start
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_max_datagram_size
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_receive
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_reset_stream
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_send
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_stream_application_error
 import kotlinx.cinterop.convert
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -444,7 +446,8 @@ internal class AppleQuicGroupConnection(
  */
 internal class NWQuicByteStream(
     private val nwConn: nw_connection_t,
-) : HalfCloseableByteStream {
+) : HalfCloseableByteStream,
+    ResettableByteStream {
     @Volatile
     private var streamClosed = false
 
@@ -470,11 +473,20 @@ internal class NWQuicByteStream(
                             buffer.resetForRead()
                             if (cont.isActive) cont.resume(ReadResult.Data(buffer))
                         }
+                        errorCode != 0 -> {
+                            // A peer RESET_STREAM/STOP_SENDING surfaces as an nw_error AND
+                            // is_complete=true (the stream is done), so the error must be
+                            // examined before the is_complete check below — otherwise an
+                            // abrupt reset is misreported as a graceful end-of-stream. But a
+                            // transport-level close (idle timeout, connection close) is ALSO an
+                            // nw_error; only a real stream reset carries a QUIC application
+                            // error code. Use it to tell them apart. (Issue #81.)
+                            val appErr = nw_helper_quic_stream_application_error(nwConn)
+                            val result = if (appErr != ULong.MAX_VALUE) ReadResult.Reset else ReadResult.End
+                            if (cont.isActive) cont.resume(result)
+                        }
                         isComplete?.boolValue == true -> {
                             if (cont.isActive) cont.resume(ReadResult.End)
-                        }
-                        errorCode != 0 -> {
-                            if (cont.isActive) cont.resume(ReadResult.Reset)
                         }
                         else -> {
                             if (cont.isActive) cont.resume(ReadResult.End)
@@ -535,6 +547,16 @@ internal class NWQuicByteStream(
         streamClosed = true
         // Avoid a duplicate FIN if the send side was already shut down.
         if (!sendFinished) sendFin()
+    }
+
+    override suspend fun reset(errorCode: Long) {
+        if (streamClosed) return
+        streamClosed = true
+        // Abort both directions with the application error code — RESET_STREAM (send)
+        // + STOP_SENDING (read), RFC 9000 §19.4/§19.5 — matching QuicheStreamByteStream.
+        // NW stamps the error onto the stream metadata and cancels (no FIN); fire-and-
+        // forget, so no send-complete callback to await (unlike sendFin). (Issue #81.)
+        nw_helper_quic_reset_stream(nwConn, errorCode.toULong())
     }
 
     /**
