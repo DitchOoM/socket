@@ -261,6 +261,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun connOnTimeout(conn: QuicheConn) = nConnOnTimeout(conn.handle)
 
+    override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
@@ -665,6 +667,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnTimeoutAsNanos(conn: Long): Long
 
     @JvmStatic private external fun nConnOnTimeout(conn: Long)
+
+    @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
 
     @JvmStatic private external fun nConnClose(
         conn: Long,

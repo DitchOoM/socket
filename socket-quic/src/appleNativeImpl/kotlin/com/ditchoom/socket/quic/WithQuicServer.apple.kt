@@ -97,6 +97,7 @@ actual suspend fun <R> withQuicServer(
             alpnList,
             identity,
             quicOptions.idleTimeout.inWholeSeconds.toInt(),
+            quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
             maxFrameSize,
         )
             ?: throw SocketConnectionException.Refused(

@@ -79,7 +79,7 @@ internal suspend fun <R> commonJvmWithQuicServer(
         channel.bind(InetSocketAddress(host ?: "0.0.0.0", port))
         val localAddr = channel.localAddress as InetSocketAddress
 
-        val server = JvmQuicServer(api, config, channel, localAddr, bufferFactory, parentScope)
+        val server = JvmQuicServer(api, config, channel, localAddr, bufferFactory, parentScope, quicOptions.keepAliveInterval)
         try {
             return server.block()
         } finally {
@@ -127,6 +127,7 @@ internal class JvmQuicServer(
     private val localAddr: InetSocketAddress,
     private val bufferFactory: BufferFactory,
     parentScope: CoroutineScope,
+    private val keepAliveInterval: Duration? = null,
 ) : QuicServer {
     override val port: Int get() = localAddr.port
 
@@ -597,6 +598,7 @@ internal class JvmQuicServer(
                 udpChannel = udpChannel,
                 clientMode = false,
                 isServer = true,
+                keepAliveInterval = keepAliveInterval,
                 onCleanup = {
                     peerSockAddr.free()
                     localSockAddr.free()

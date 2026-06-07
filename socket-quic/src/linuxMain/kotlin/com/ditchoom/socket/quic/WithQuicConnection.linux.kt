@@ -206,6 +206,7 @@ actual suspend fun <R> withQuicConnection(
                         udpChannel = udpChannel,
                         clientMode = true,
                         isServer = false,
+                        keepAliveInterval = quicOptions.keepAliveInterval,
                         // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs
                         // (kept pinned via onCleanup for the driver's life) and a factory that opens
                         // additional io_uring path sockets to the same peer. Mirrors the JVM client.

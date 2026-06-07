@@ -242,6 +242,7 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     NSNumber * _Nonnull verify_certs,
     NSArray<NSData *> * _Nullable trusted_ca_ders,
     int32_t idle_timeout_seconds,
+    int32_t keepalive_interval_seconds,
     int32_t connection_timeout_seconds,
     uint16_t max_datagram_frame_size)
 {
@@ -283,6 +284,15 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
             // used its own (much longer) default and the flag was a no-op (issue #112).
             if (idle_timeout_seconds > 0) {
                 nw_quic_set_idle_timeout(quic_options, (uint32_t)idle_timeout_seconds * 1000u);
+            }
+
+            // Apply QuicOptions.keepAliveInterval. NW sends an ack-eliciting PING this often on an
+            // otherwise-idle connection, resetting both idle timers so it survives past the idle
+            // timeout with no application traffic — the Network.framework analog of the quiche-backed
+            // driver's reactive keepalive. NOTE the unit: nw_quic_set_keepalive_interval takes SECONDS,
+            // unlike nw_quic_set_idle_timeout (milliseconds) above. 0 = disabled. macOS 11 / iOS 14+.
+            if (keepalive_interval_seconds > 0) {
+                nw_quic_set_keepalive_interval(quic_options, (uint32_t)keepalive_interval_seconds);
             }
 
             // Raise the stream-count flow-control limits we advertise to the peer. NW's default
@@ -680,6 +690,7 @@ static inline nw_listener_t _Nullable nw_helper_create_quic_listener(
     NSArray<NSString *> * _Nonnull alpn_protocols,
     sec_identity_t _Nonnull identity,
     int32_t idle_timeout_seconds,
+    int32_t keepalive_interval_seconds,
     uint16_t max_datagram_frame_size)
 {
     if (alpn_protocols.count == 0) return NULL;
@@ -703,6 +714,12 @@ static inline nw_listener_t _Nullable nw_helper_create_quic_listener(
             // Apply QuicOptions.idleTimeout (seconds → ms), same as the client path.
             if (idle_timeout_seconds > 0) {
                 nw_quic_set_idle_timeout(quic_options, (uint32_t)idle_timeout_seconds * 1000u);
+            }
+
+            // Apply QuicOptions.keepAliveInterval (SECONDS — see the client helper's unit note),
+            // same as the client path. 0 = disabled.
+            if (keepalive_interval_seconds > 0) {
+                nw_quic_set_keepalive_interval(quic_options, (uint32_t)keepalive_interval_seconds);
             }
 
             // Grant the client credit to open many streams (NW's default is ~7). See the client

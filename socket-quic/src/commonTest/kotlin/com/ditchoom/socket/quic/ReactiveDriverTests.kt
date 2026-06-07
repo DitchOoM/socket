@@ -627,6 +627,44 @@ class ReactiveDriverTests {
             }
         }
 
+    // ---- Reactive keepalive ----
+
+    @Test
+    fun keepAlive_schedulesAckElicitingPings_onIdleConnection() =
+        runQuicTest {
+            // Stub defaults: established=true, connTimeout=null, closed=false. With no commands and no
+            // quiche timeout, the ONLY thing that can wake the driver loop is the keepalive deadline — so
+            // any ack-eliciting PING proves the reactive keepalive timer fired. No network, no flaky
+            // wall-clock assertion: we wait for a COUNT within a generous window (50ms interval → dozens
+            // of PINGs possible in 3s; reaching >= 2 needs only ~100ms of driver scheduling).
+            val api = StubQuicheApi()
+            val driver = createTestDriver(api, keepAliveInterval = 50.milliseconds)
+            driver.start(this)
+            try {
+                awaitUntil(3.seconds, "driver never scheduled a keepalive PING (ackElicitingCount stayed 0)") {
+                    api.ackElicitingCount >= 2
+                }
+            } finally {
+                driver.commands.close()
+            }
+        }
+
+    @Test
+    fun keepAlive_disabled_sendsNoPings() =
+        runQuicTest {
+            // No keepAliveInterval → the driver must never call connSendAckEliciting, however long it idles.
+            // Disabled means "never", independent of the settle window — so this can't flake on timing.
+            val api = StubQuicheApi()
+            val driver = createTestDriver(api, keepAliveInterval = null)
+            driver.start(this)
+            try {
+                kotlinx.coroutines.delay(300.milliseconds) // real time for a stray PING to surface, if any
+                assertEquals(0, api.ackElicitingCount, "keepalive disabled but the driver still sent ack-eliciting PINGs")
+            } finally {
+                driver.commands.close()
+            }
+        }
+
     // ---- Helpers ----
 
     private suspend fun sendOpenStream(driver: QuicheDriver): StreamSlot {
@@ -639,6 +677,7 @@ class ReactiveDriverTests {
         api: StubQuicheApi = StubQuicheApi(),
         isServer: Boolean = false,
         udpChannel: UdpChannel = StubUdpChannel(),
+        keepAliveInterval: kotlin.time.Duration? = null,
     ): QuicheDriver =
         QuicheDriver(
             api = api,
@@ -649,5 +688,6 @@ class ReactiveDriverTests {
             udpChannel = udpChannel,
             clientMode = false,
             isServer = isServer,
+            keepAliveInterval = keepAliveInterval,
         )
 }

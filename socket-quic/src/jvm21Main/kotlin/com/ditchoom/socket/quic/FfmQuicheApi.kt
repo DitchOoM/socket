@@ -168,6 +168,9 @@ class FfmQuicheApi private constructor(
         downcall("quiche_conn_timeout_as_nanos", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
     }
     private val hOnTimeout by lazy { downcall("quiche_conn_on_timeout", FunctionDescriptor.ofVoid(ADDRESS)) }
+    private val hSendAckEliciting by lazy {
+        downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
+    }
     private val hConnClose by lazy {
         downcall(
             "quiche_conn_close",
@@ -531,6 +534,8 @@ class FfmQuicheApi private constructor(
     override fun connOnTimeout(conn: QuicheConn) {
         hOnTimeout.invokeExact(seg(conn.handle))
     }
+
+    override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(seg(conn.handle)) as Long).toInt()
 
     override fun connClose(
         conn: QuicheConn,

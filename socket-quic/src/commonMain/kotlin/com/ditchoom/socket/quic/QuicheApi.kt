@@ -261,6 +261,14 @@ interface QuicheApi {
     fun connOnTimeout(conn: QuicheConn)
 
     /**
+     * Schedule an ack-eliciting packet (a PING) on the active path — `quiche_conn_send_ack_eliciting`.
+     * The packet is emitted by the next [connSend] flush; on receipt the peer ACKs it, resetting both
+     * endpoints' idle timers. Used to implement reactive keepalive. Returns 0 on success or a negative
+     * quiche error code (e.g. `QUICHE_ERR_DONE` when nothing needs sending).
+     */
+    fun connSendAckEliciting(conn: QuicheConn): Int
+
+    /**
      * Close the connection with the given [error].
      * Implementations decompose [QuicError] into the C API's `app` flag and error code.
      */

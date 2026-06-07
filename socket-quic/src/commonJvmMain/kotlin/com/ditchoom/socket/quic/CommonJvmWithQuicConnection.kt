@@ -29,9 +29,11 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     quicOptions: QuicOptions,
     connectionOptions: ConnectionOptions,
     timeout: Duration,
+    // Defaults to the production loader; a test passes a spy (e.g. CountingQuicheApi) to observe the
+    // real native calls the driver makes — used to assert reactive keepalive actually PINGs.
+    api: QuicheApi = loadQuicheApi(),
     block: suspend QuicScope.() -> R,
 ): R {
-    val api: QuicheApi = loadQuicheApi()
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     try {
@@ -138,6 +140,7 @@ internal suspend fun <R> commonJvmWithQuicConnection(
                         udpChannel = udpChannel,
                         clientMode = true,
                         isServer = false,
+                        keepAliveInterval = quicOptions.keepAliveInterval,
                         // Connection-migration wiring (slice 3): the peer + primary local sockaddrs
                         // (kept pinned by onCleanup for the driver's life) and a factory for opening
                         // additional path sockets to the same peer.

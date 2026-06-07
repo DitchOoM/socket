@@ -63,25 +63,27 @@ class AndroidQuicIdleTimeoutTests {
             }
         }
 
+    // Reactive keepalive (mirrors the common QuicIdleTimeoutTestSuite): with keepAliveInterval set below
+    // the idle timeout, an OTHERWISE-IDLE connection stays alive past the idle timeout via driver-scheduled
+    // PINGs. Deterministic — one idle wait that must exceed the timeout, then a single liveness round-trip.
     @Test
     fun activityKeepsConnectionAlivePastIdleTimeout() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib {
                 withTimeout(25.seconds) {
-                    val opts = options(KEEPALIVE_IDLE)
+                    val opts = options(KEEPALIVE_IDLE).copy(keepAliveInterval = KEEPALIVE_INTERVAL)
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = opts) {
                         val serverJob = launch(Dispatchers.IO) { echoEveryStream() }
                         try {
                             withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds) {
                                 val stream = openStream()
-                                for (round in 0 until KEEPALIVE_ROUNDS) {
-                                    assertEquals(
-                                        "ka-$round",
-                                        stream.echoOnce("ka-$round"),
-                                        "echo $round failed — connection idle-closed despite activity (idle timer not reset)",
-                                    )
-                                    delay(KEEPALIVE_GAP)
-                                }
+                                assertEquals("warmup", stream.echoOnce("warmup"), "warmup echo failed before idle wait")
+                                delay(KEEPALIVE_IDLE_WAIT)
+                                assertEquals(
+                                    "still-alive",
+                                    stream.echoOnce("still-alive"),
+                                    "connection idle-closed despite keepalive — the reactive PING did not reset the idle timer",
+                                )
                                 stream.close()
                             }
                         } finally {
@@ -140,7 +142,7 @@ class AndroidQuicIdleTimeoutTests {
         private val IDLE_TIMEOUT = 2.seconds
         private val READ_TIMEOUT = 10.seconds
         private val KEEPALIVE_IDLE = 4.seconds
-        private val KEEPALIVE_GAP = 1.seconds
-        private const val KEEPALIVE_ROUNDS = 6
+        private val KEEPALIVE_INTERVAL = 1.seconds
+        private val KEEPALIVE_IDLE_WAIT = 6.seconds
     }
 }

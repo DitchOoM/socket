@@ -116,6 +116,15 @@ data class QuicOptions(
     val pacing: Pacing = Pacing.Unlimited,
     /** Connection idle timeout. Zero means no timeout. */
     val idleTimeout: Duration = 30.seconds,
+    /**
+     * Keepalive interval. When set, the endpoint sends an ack-eliciting packet (a PING) after this much
+     * inactivity, resetting both peers' idle timers (RFC 9000 §10.1.2) — so an otherwise-idle connection
+     * stays alive past [idleTimeout] with no application traffic. Reactive: the PING is scheduled on the
+     * connection's own timer inside the driver's event loop, not by polling. Null (the default) disables
+     * keepalive. Must be positive and, when [idleTimeout] is non-zero, strictly less than it (a PING after
+     * the connection already idled out is useless).
+     */
+    val keepAliveInterval: Duration? = null,
     /** Maximum UDP payload size (bytes). Must be >= 1200 per RFC 9000. */
     val maxUdpPayloadSize: Int = 1350,
     /** Initial congestion window in packets. Null uses quiche default. */
@@ -163,6 +172,12 @@ data class QuicOptions(
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }
         require(!idleTimeout.isNegative()) { "idleTimeout must be non-negative" }
+        keepAliveInterval?.let { ka ->
+            require(ka.isPositive()) { "keepAliveInterval must be positive" }
+            require(idleTimeout == Duration.ZERO || ka < idleTimeout) {
+                "keepAliveInterval ($ka) must be less than idleTimeout ($idleTimeout)"
+            }
+        }
         require(maxUdpPayloadSize >= 1200) { "maxUdpPayloadSize must be >= 1200 per RFC 9000" }
         require(initialCongestionWindowPackets == null || initialCongestionWindowPackets > 0) {
             "initialCongestionWindowPackets must be positive"
