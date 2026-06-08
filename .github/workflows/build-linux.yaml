@@ -499,6 +499,75 @@ jobs:
           ./gradlew :socket-quic:quicHeaderFuzz -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Native ASAN + coverage-guided lane: cargo-fuzz builds quiche with
+      # SanitizerCoverage + AddressSanitizer, so libFuzzer gets REAL edge
+      # coverage of the parser (the JVM lane above plateaus — it can't
+      # instrument native quiche) and ASAN catches the heap-overflow / UAF
+      # class. nightly + cargo-fuzz are installed here only (opt-in locally).
+      # Time-boxed and gating like the Jazzer lane; an ASAN fault / crash fails
+      # the job and its repro is uploaded below. `if: !cancelled()` for the
+      # same independence reason.
+      - name: Install nightly Rust + cargo-fuzz
+        if: ${{ !cancelled() }}
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz quiche::Header::from_slice (cargo-fuzz ASAN, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic:quicHeaderFuzzNative -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Deeper target: the full server packet-recv state machine (accept + Connection::recv),
+      # not just the public-header parse — ~5x the edge coverage locally (cov 835 vs 162). Same
+      # ASAN/gating model. This lane runs Rust-ASAN only; the BoringSSL-C ASAN path is proven in
+      # the separate, non-gating step below before it's promoted onto this gating lane.
+      - name: Fuzz quiche server recv path (cargo-fuzz ASAN, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Prove the BoringSSL-C ASAN path (-PquicFuzzBoringSslAsan) actually instruments BoringSSL, not
+      # just quiche's Rust. clang is required: its LLVM ASAN runtime must match cargo-fuzz's; gcc's
+      # libasan can't coexist with it in one binary. The author added the wiring without a clang host
+      # to verify it, so this step IS the verification.
+      #
+      # continue-on-error during bring-up (same convention as the build-windows job): the clang/Rust
+      # ASAN-runtime match is unproven, so a red here must not block PRs. Drop continue-on-error once
+      # green >=2 runs, then move -PquicFuzzBoringSslAsan onto the conn_recv lane above.
+      - name: Install clang (for BoringSSL ASAN)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served from a
+          # prior uninstrumented cache) — otherwise the proof below could read a stale archive.
+          rm -rf socket-quic/fuzz/native/target
+          # Build + run conn_recv with BoringSSL ASAN on. A clang/Rust ASAN-runtime mismatch would fail
+          # at link or first execution here, so a clean run already proves the instrumented binary works.
+          ./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
+            --no-configuration-cache ${{ inputs.gradle-args }}
+          # Now prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
+          # interceptors. An uninstrumented BoringSSL has zero __asan_ symbols, so no match => the CFLAGS
+          # never reached the C build (ASAN would cover only quiche's Rust) and we fail loudly.
+          bssl=$(find socket-quic/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
+          if [ -z "$bssl" ]; then echo "::error::no BoringSSL archive found under the fuzz target dir"; exit 1; fi
+          echo "Inspecting $bssl"
+          if nm "$bssl" 2>/dev/null | grep -q '__asan_'; then
+            echo "PROVEN: BoringSSL is ASAN-instrumented (__asan_ symbols present in $bssl)"
+          else
+            echo "::error::BoringSSL archive has NO __asan_ symbols — CFLAGS did not propagate to the C build; ASAN covers quiche's Rust only"
+            exit 1
+          fi
+
       - name: Upload fuzzing crash repros
         if: failure()
         uses: actions/upload-artifact@v4
@@ -508,6 +577,7 @@ jobs:
             socket-quic/build/fuzz/header-info/crash-*
             socket-quic/build/fuzz/header-info/oom-*
             socket-quic/build/fuzz/header-info/timeout-*
+            socket-quic/fuzz/native/artifacts/**
           if-no-files-found: ignore
 
       # Audit step: mirror the macOS + Linux ARM64 audits — count

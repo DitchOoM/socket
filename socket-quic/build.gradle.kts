@@ -741,6 +741,74 @@ tasks.register<JavaExec>("quicHeaderFuzz") {
     }
 }
 
+// --- Native ASAN + coverage-guided fuzzing (cargo-fuzz) ----------------------
+// The counterpart the Jazzer task above (and fuzz/README.md) call for: cargo-fuzz builds quiche itself
+// with SanitizerCoverage + AddressSanitizer, so libFuzzer gets REAL edge coverage of the Rust parser and
+// ASAN catches the heap-overflow / use-after-free class. Locally: cov climbed to ~162 and the corpus grew
+// from 12 seeds to 47 in 30s — the coverage feedback the JVM lane can't produce.
+//
+// Prereqs (NOT auto-installed — this is opt-in, like the Android NDK tasks): a nightly Rust toolchain and
+// `cargo install cargo-fuzz`. Reuses the SAME committed seed corpus as the Jazzer target; new inputs and
+// crash repros go under build/ (gitignored). quiche is pinned to the shipped version via fuzz/native/Cargo.toml.
+//
+// Targets (fuzz/native/fuzz_targets/):
+//   - header_info — quiche::Header::from_slice (public-header parse on every datagram)
+//   - conn_recv   — quiche::accept + Connection::recv (the full server recv state machine; pre-auth surface)
+//
+// By default both ASAN+SanCov-instrument quiche's RUST. `-PquicFuzzBoringSslAsan` additionally ASAN-builds
+// the vendored BoringSSL C so a memory bug in the crypto path is caught too — it needs a clang toolchain
+// whose LLVM matches the Rust toolchain's ASAN runtime (gcc's libasan won't coexist with cargo-fuzz's
+// LLVM ASAN). That path is opt-in and deliberately kept OUT of the gating CI lane until verified on a
+// clang host. Local verification of THIS change covered the Rust-ASAN path only (no clang available).
+fun registerNativeFuzz(
+    taskName: String,
+    target: String,
+    workSubdir: String,
+) = tasks.register<Exec>(taskName) {
+    group = "verification"
+    description = "ASAN + coverage-guided cargo-fuzz of quiche ($target). Requires nightly Rust + cargo-fuzz. " +
+        "-PquicFuzzSeconds=<n> (default 60); -PquicFuzzBoringSslAsan to also ASAN-build BoringSSL (needs clang)."
+    workingDir = projectDir
+    environment("ASAN_OPTIONS", "detect_leaks=0") // recv/parse keep no long-lived state; LSAN noise only
+    if (providers.gradleProperty("quicFuzzBoringSslAsan").isPresent) {
+        // clang (not gcc) so BoringSSL's ASAN runtime is the same LLVM one cargo-fuzz links for the Rust
+        // side; fuzzer-no-link adds the SanitizerCoverage libFuzzer consumes without its own main.
+        environment("CC", "clang")
+        environment("CXX", "clang++")
+        environment("CFLAGS", "-fsanitize=address,fuzzer-no-link -g1")
+        environment("CXXFLAGS", "-fsanitize=address,fuzzer-no-link -g1")
+    }
+    doFirst {
+        val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60").get()
+        val seedCorpus = projectDir.resolve("fuzz/corpus/header-info")
+        val workCorpus =
+            layout.buildDirectory
+                .dir("fuzz-native/$workSubdir")
+                .get()
+                .asFile
+        workCorpus.mkdirs()
+        // First positional corpus dir receives new inputs (gitignored build/); the committed seed is
+        // passed second so coverage starts warm without mutating the checked-in vectors.
+        commandLine(
+            "cargo",
+            "+nightly",
+            "fuzz",
+            "run",
+            "--fuzz-dir",
+            "fuzz/native",
+            target,
+            workCorpus.absolutePath,
+            seedCorpus.absolutePath,
+            "--",
+            "-print_final_stats=1",
+            "-max_total_time=$maxSeconds",
+        )
+    }
+}
+
+registerNativeFuzz("quicHeaderFuzzNative", "header_info", "header-info-corpus")
+registerNativeFuzz("quicConnRecvFuzzNative", "conn_recv", "conn-recv-corpus")
+
 // --- Android JNI native library build ---
 // Builds quiche via cargo-ndk and compiles the JNI shim with NDK clang.
 // Requires: cargo, cargo-ndk, Android NDK, Rust Android targets

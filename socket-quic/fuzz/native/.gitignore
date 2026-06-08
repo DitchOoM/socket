@@ -1,0 +1,6 @@
+# cargo-fuzz build + run artifacts. Cargo.toml, Cargo.lock (pinned for reproducible fuzz builds) and
+# fuzz_targets/ are committed; everything cargo-fuzz generates is not.
+/target
+/artifacts
+/corpus
+/coverage
