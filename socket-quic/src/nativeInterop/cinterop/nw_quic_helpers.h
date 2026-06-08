@@ -247,6 +247,30 @@ static inline uint64_t nw_helper_quic_stream_application_error(
     return nw_quic_get_stream_application_error(metadata);
 }
 
+/**
+ * Set the QUIC keepalive interval (RFC 9000 §10.1.2) so an otherwise-idle connection
+ * sends ack-eliciting PINGs and survives past the idle timeout.
+ *
+ * nw_quic_set_keepalive_interval takes the connection's nw_protocol_metadata_t — NOT the
+ * nw_protocol_options_t available in the create-params block (setting it there is a silent
+ * no-op: the type mismatch only warns, and was the original #130 defect). The metadata is
+ * obtainable only from a STARTED, live flow (nw_connection_copy_protocol_metadata returns
+ * nil before the flow is ready, so setting it right after extract is also a no-op). Callers
+ * apply it on the first successful I/O on a flow. All flows share one QUIC connection, so
+ * configuring any one configures the connection. seconds; 0 = disabled.
+ */
+static inline void nw_helper_quic_set_keepalive(
+    nw_connection_t _Nonnull connection,
+    uint16_t keepalive_interval_seconds)
+{
+    nw_protocol_definition_t quic_def = nw_protocol_copy_quic_definition();
+    nw_protocol_metadata_t metadata =
+        nw_connection_copy_protocol_metadata(connection, quic_def);
+    if (metadata) {
+        nw_quic_set_keepalive_interval(metadata, keepalive_interval_seconds);
+    }
+}
+
 #pragma mark - QUIC Multiplex Group (streams + datagram flow) — RFC 9221 (issue #109)
 
 /**
@@ -331,14 +355,13 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                 nw_quic_set_idle_timeout(quic_options, (uint32_t)idle_timeout_seconds * 1000u);
             }
 
-            // Apply QuicOptions.keepAliveInterval. NW sends an ack-eliciting PING this often on an
-            // otherwise-idle connection, resetting both idle timers so it survives past the idle
-            // timeout with no application traffic — the Network.framework analog of the quiche-backed
-            // driver's reactive keepalive. NOTE the unit: nw_quic_set_keepalive_interval takes SECONDS,
-            // unlike nw_quic_set_idle_timeout (milliseconds) above. 0 = disabled. macOS 11 / iOS 14+.
-            if (keepalive_interval_seconds > 0) {
-                nw_quic_set_keepalive_interval(quic_options, (uint32_t)keepalive_interval_seconds);
-            }
+            // QuicOptions.keepAliveInterval is NOT applied here: nw_quic_set_keepalive_interval
+            // takes nw_protocol_metadata_t, not the nw_protocol_options_t in this create-params
+            // block (the type mismatch only warns and is a silent no-op — the original #130
+            // defect). It is applied post-establishment on a live flow's metadata via
+            // nw_helper_quic_set_keepalive. [keepalive_interval_seconds] kept for signature
+            // symmetry with the idle-timeout path; unused here.
+            (void)keepalive_interval_seconds;
 
             // Raise the stream-count flow-control limits we advertise to the peer. NW's default
             // initial_max_streams_bidirectional is tiny (~7), so a connection wedged after a
@@ -761,11 +784,13 @@ static inline nw_listener_t _Nullable nw_helper_create_quic_listener(
                 nw_quic_set_idle_timeout(quic_options, (uint32_t)idle_timeout_seconds * 1000u);
             }
 
-            // Apply QuicOptions.keepAliveInterval (SECONDS — see the client helper's unit note),
-            // same as the client path. 0 = disabled.
-            if (keepalive_interval_seconds > 0) {
-                nw_quic_set_keepalive_interval(quic_options, (uint32_t)keepalive_interval_seconds);
-            }
+            // QuicOptions.keepAliveInterval is NOT applied here: nw_quic_set_keepalive_interval
+            // takes nw_protocol_metadata_t, not the nw_protocol_options_t in this create-params
+            // block (the type mismatch only warns and is a silent no-op — the original #130
+            // defect). It is applied post-establishment on a live flow's metadata via
+            // nw_helper_quic_set_keepalive. [keepalive_interval_seconds] kept for signature
+            // symmetry with the idle-timeout path; unused here.
+            (void)keepalive_interval_seconds;
 
             // Grant the client credit to open many streams (NW's default is ~7). See the client
             // helper's note. (Issue #112.)

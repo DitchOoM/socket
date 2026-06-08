@@ -25,6 +25,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_max_datagram_size
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_receive
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_reset_stream
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_send
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_keepalive
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_stream_application_error
@@ -253,7 +254,14 @@ private suspend fun <R> connectQuicGroup(
             flow
         }
 
-    val quicConn = AppleQuicGroupConnection(group, datagramFlow, incomingStreams, connectionOptions.bufferFactory)
+    val quicConn =
+        AppleQuicGroupConnection(
+            group,
+            datagramFlow,
+            incomingStreams,
+            connectionOptions.bufferFactory,
+            keepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
+        )
     return try {
         quicConn.block()
     } finally {
@@ -288,6 +296,7 @@ internal class AppleQuicGroupConnection(
     // Peer-initiated streams, fed by the group's new-connection handler wired in connectQuicGroup.
     private val incomingStreams: Channel<QuicByteStream>,
     private val bufferFactory: BufferFactory,
+    private val keepAliveSeconds: Int = 0,
     private val scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
 ) : QuicConnection,
     CoroutineScope by scope {
@@ -314,7 +323,7 @@ internal class AppleQuicGroupConnection(
                 ?: throw QuicCloseException(closeReason(), "Failed to open QUIC stream")
         nw_helper_quic_start(streamConn)
         val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
-        return QuicByteStream(streamId, NWQuicByteStream(streamConn, streamId.id))
+        return QuicByteStream(streamId, NWQuicByteStream(streamConn, streamId.id, keepAliveSeconds))
     }
 
     override suspend fun openUniStream(): QuicByteStream {
@@ -448,6 +457,7 @@ internal class AppleQuicGroupConnection(
 internal class NWQuicByteStream(
     private val nwConn: nw_connection_t,
     private val streamId: Long = -1L,
+    private val keepAliveSeconds: Int = 0,
 ) : HalfCloseableByteStream,
     ResettableByteStream {
     @Volatile
@@ -455,6 +465,9 @@ internal class NWQuicByteStream(
 
     @Volatile
     private var sendFinished = false
+
+    @Volatile
+    private var keepAliveApplied = false
 
     override val isOpen: Boolean get() = !streamClosed
 
@@ -473,6 +486,7 @@ internal class NWQuicByteStream(
                             val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
                             buffer.position(data.length.toInt())
                             buffer.resetForRead()
+                            applyKeepAliveOnce()
                             if (cont.isActive) cont.resume(ReadResult.Data(buffer))
                         }
                         errorCode != 0 -> {
@@ -520,6 +534,7 @@ internal class NWQuicByteStream(
                     if (errorCode != 0) {
                         if (cont.isActive) cont.resumeWithException(writeError(errorCode))
                     } else {
+                        applyKeepAliveOnce()
                         if (cont.isActive) cont.resume(BytesWritten(remaining))
                     }
                 }
@@ -592,6 +607,21 @@ internal class NWQuicByteStream(
                 }
             }
         }
+    }
+
+    /**
+     * Arm QUIC keepalive on the first live I/O. [QuicOptions.keepAliveInterval] must be
+     * applied via nw_quic_set_keepalive_interval, which takes the connection's
+     * nw_protocol_metadata_t — only obtainable from a STARTED flow (it is nil before the
+     * flow is ready, which is why setting it on the create-params options object, or right
+     * after extract, is a no-op). The first successful read/write proves the flow is live,
+     * so we set it here, once. All flows share one QUIC connection, so any flow configures
+     * it. (Fixes the Apple half of the #130 keepalive feature.)
+     */
+    private fun applyKeepAliveOnce() {
+        if (keepAliveSeconds <= 0 || keepAliveApplied) return
+        keepAliveApplied = true
+        nw_helper_quic_set_keepalive(nwConn, keepAliveSeconds.toUShort())
     }
 
     private companion object {

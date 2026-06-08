@@ -89,6 +89,7 @@ actual suspend fun <R> withQuicServer(
     val datagramsEnabled = quicOptions.datagrams != null
     val maxFrameSize: UShort = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX else 0u
     val alpnList: List<Any?> = quicOptions.alpnProtocols
+    val keepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0
 
     val listener =
         nw_helper_create_quic_listener(
@@ -149,7 +150,7 @@ actual suspend fun <R> withQuicServer(
         // suspend, so the filtering (which reads) happens on serverScope.
         nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
             serverScope.launch {
-                filterPhantomAndEnqueue(streamConn, incomingStreams, acceptedStreamId)
+                filterPhantomAndEnqueue(streamConn, incomingStreams, acceptedStreamId, keepAliveSeconds)
             }
         }
         nw_helper_quic_group_start(group)
@@ -191,6 +192,7 @@ actual suspend fun <R> withQuicServer(
             acceptedGroups = acceptedGroups,
             datagramsEnabled = datagramsEnabled,
             bufferFactory = BufferFactory.deterministic(),
+            keepAliveSeconds = keepAliveSeconds,
             scope = serverScope,
         )
     return try {
@@ -221,10 +223,11 @@ private suspend fun filterPhantomAndEnqueue(
     streamConn: nw_connection_t,
     incomingStreams: Channel<QuicByteStream>,
     acceptedStreamId: AtomicLong,
+    keepAliveSeconds: Int,
 ) {
     nw_helper_quic_start(streamConn)
     val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
-    val raw = NWQuicByteStream(streamConn, sid.id)
+    val raw = NWQuicByteStream(streamConn, sid.id, keepAliveSeconds)
     val first =
         try {
             raw.read(PHANTOM_PEEK_TIMEOUT)
@@ -310,6 +313,7 @@ private class AppleQuicServer(
     private val acceptedGroups: Channel<AcceptedGroup>,
     private val datagramsEnabled: Boolean,
     private val bufferFactory: BufferFactory,
+    private val keepAliveSeconds: Int,
     private val scope: CoroutineScope,
 ) : QuicServer {
     override val port: Int get() = boundPort
@@ -354,6 +358,7 @@ private class AppleQuicServer(
                             datagramFlow,
                             accepted.incomingStreams,
                             bufferFactory,
+                            keepAliveSeconds = keepAliveSeconds,
                         )
                     try {
                         conn.handler()
