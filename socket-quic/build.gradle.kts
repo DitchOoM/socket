@@ -781,14 +781,27 @@ fun registerNativeFuzz(
     doFirst {
         val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60").get()
         val seedCorpus = projectDir.resolve("fuzz/corpus/header-info")
-        val workCorpus = layout.buildDirectory.dir("fuzz-native/$workSubdir").get().asFile
+        val workCorpus =
+            layout.buildDirectory
+                .dir("fuzz-native/$workSubdir")
+                .get()
+                .asFile
         workCorpus.mkdirs()
         // First positional corpus dir receives new inputs (gitignored build/); the committed seed is
         // passed second so coverage starts warm without mutating the checked-in vectors.
         commandLine(
-            "cargo", "+nightly", "fuzz", "run", "--fuzz-dir", "fuzz/native", target,
-            workCorpus.absolutePath, seedCorpus.absolutePath,
-            "--", "-print_final_stats=1", "-max_total_time=$maxSeconds",
+            "cargo",
+            "+nightly",
+            "fuzz",
+            "run",
+            "--fuzz-dir",
+            "fuzz/native",
+            target,
+            workCorpus.absolutePath,
+            seedCorpus.absolutePath,
+            "--",
+            "-print_final_stats=1",
+            "-max_total_time=$maxSeconds",
         )
     }
 }
