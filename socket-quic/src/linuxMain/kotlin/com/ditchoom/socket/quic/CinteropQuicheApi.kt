@@ -80,13 +80,16 @@ import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.plus
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.rawValue
 import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
@@ -677,12 +680,25 @@ internal object CinteropQuicheApi : QuicheApi {
         toAddr: Long,
         toAddrLen: Int,
     ): QuicheRecvInfo {
-        val info = kotlinx.cinterop.nativeHeap.alloc<quiche_recv_info>()
-        info.from = fromAddr.toCPointer()!!
+        // Make the struct OWN its sockaddr bytes: one allocation holding the quiche_recv_info
+        // followed by inline copies of `from` and `to`, with the struct's pointers aimed inside it.
+        // quiche_conn_recv then reads memory this allocation owns, not the caller's separately-managed
+        // sockaddr buffers (which cache eviction / teardown can free while a queued packet still holds
+        // the recv_info — the intermittent SIGSEGV in std_addr_from_c). nativeHeap is malloc-backed
+        // (>=8-aligned); from/to are immutable per recv_info so a one-time copy suffices. recvInfoFree
+        // frees the single block (the struct address == the allocation base).
+        val structSize = sizeOf<quiche_recv_info>()
+        val raw = kotlinx.cinterop.nativeHeap.allocArray<ByteVar>(structSize + fromAddrLen + toAddrLen)
+        val fromStorage = (raw + structSize)!!
+        val toStorage = (raw + (structSize + fromAddrLen))!!
+        platform.posix.memcpy(fromStorage, fromAddr.toCPointer<ByteVar>(), fromAddrLen.convert())
+        platform.posix.memcpy(toStorage, toAddr.toCPointer<ByteVar>(), toAddrLen.convert())
+        val info = raw.reinterpret<quiche_recv_info>().pointed
+        info.from = fromStorage.reinterpret()
         info.from_len = fromAddrLen.convert()
-        info.to = toAddr.toCPointer()!!
+        info.to = toStorage.reinterpret()
         info.to_len = toAddrLen.convert()
-        return QuicheRecvInfo(info.ptr.rawValue.toLong())
+        return QuicheRecvInfo(raw.rawValue.toLong())
     }
 
     override fun recvInfoFree(info: QuicheRecvInfo) {

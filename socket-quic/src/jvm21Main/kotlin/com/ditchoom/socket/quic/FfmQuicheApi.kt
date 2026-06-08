@@ -830,10 +830,20 @@ class FfmQuicheApi private constructor(
         toAddr: Long,
         toAddrLen: Int,
     ): QuicheRecvInfo {
-        val info = recvInfoArena.allocate(RECV_INFO_SIZE.toLong(), 8)
-        info.set(ADDRESS, 0, seg(fromAddr)) // from
+        // Make the struct OWN its sockaddr bytes: allocate the 32-byte quiche_recv_info followed by
+        // inline copies of `from` and `to`, and point the struct's pointers inside this segment.
+        // quiche_conn_recv then dereferences memory this allocation owns, NOT the caller's
+        // DirectByteBuffer-backed sockaddrs, which the GC Cleaner or cache eviction can free while a
+        // queued packet still references the recv_info (intermittent SIGSEGV in std_addr_from_c under
+        // connection churn). from/to are immutable per recv_info, so a one-time copy is sufficient.
+        val info = recvInfoArena.allocate(RECV_INFO_SIZE.toLong() + fromAddrLen + toAddrLen, 8)
+        val fromOffset = RECV_INFO_SIZE.toLong() // 32, 8-aligned
+        val toOffset = fromOffset + fromAddrLen // 4-aligned (fromAddrLen is 16 or 28)
+        MemorySegment.copy(seg(fromAddr).reinterpret(fromAddrLen.toLong()), 0L, info, fromOffset, fromAddrLen.toLong())
+        MemorySegment.copy(seg(toAddr).reinterpret(toAddrLen.toLong()), 0L, info, toOffset, toAddrLen.toLong())
+        info.set(ADDRESS, 0, info.asSlice(fromOffset)) // from -> inline copy
         info.set(JAVA_INT, 8, fromAddrLen) // from_len
-        info.set(ADDRESS, 16, seg(toAddr)) // to
+        info.set(ADDRESS, 16, info.asSlice(toOffset)) // to -> inline copy
         info.set(JAVA_INT, 24, toAddrLen) // to_len
         return QuicheRecvInfo(info.address())
     }
