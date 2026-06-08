@@ -476,14 +476,27 @@ JNIEXPORT void JNICALL JNI_FN(nStreamIterFree)(JNIEnv *env, jclass cls, jlong it
 
 /* --- RecvInfo / SendInfo helpers --- */
 
+/* The struct OWNS its sockaddr bytes: we allocate the quiche_recv_info followed by inline
+ * storage for the `from` and `to` sockaddrs and copy the caller's bytes in, so quiche_conn_recv
+ * dereferences memory this allocation owns — NOT the caller's separately-managed buffers. On the
+ * JVM those `from`/`to` buffers are DirectByteBuffers that the GC's Cleaner (or an explicit free
+ * during cache eviction / connection teardown) can release while a queued packet still references
+ * the recv_info, which made quiche read freed/unmapped memory in std_addr_from_c (intermittent
+ * SIGSEGV under connection churn). from/to are immutable for a given recv_info, so copying once at
+ * creation is sufficient. The struct (32 bytes, 8-aligned) is followed by 4-aligned sockaddr copies
+ * (from_len/to_len are 16 or 28). nRecvInfoFree frees the single allocation. */
 JNIEXPORT jlong JNICALL JNI_FN(nRecvInfoNew)(
     JNIEnv *env, jclass cls,
     jlong from_addr, jint from_len, jlong to_addr, jint to_len) {
-    quiche_recv_info *info = (quiche_recv_info *)calloc(1, sizeof(quiche_recv_info));
+    size_t total = sizeof(quiche_recv_info) + (size_t)from_len + (size_t)to_len;
+    quiche_recv_info *info = (quiche_recv_info *)calloc(1, total);
     if (!info) return 0;
-    info->from = (struct sockaddr *)(uintptr_t)from_addr;
+    unsigned char *storage = (unsigned char *)info + sizeof(quiche_recv_info);
+    memcpy(storage, (const void *)(uintptr_t)from_addr, (size_t)from_len);
+    memcpy(storage + from_len, (const void *)(uintptr_t)to_addr, (size_t)to_len);
+    info->from = (struct sockaddr *)storage;
     info->from_len = (socklen_t)from_len;
-    info->to = (struct sockaddr *)(uintptr_t)to_addr;
+    info->to = (struct sockaddr *)(storage + from_len);
     info->to_len = (socklen_t)to_len;
     return (jlong)(uintptr_t)info;
 }
