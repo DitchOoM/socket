@@ -124,13 +124,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic/libs/quiche/linux-x64
-          key: quiche-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v5
         with:
           path: socket-quic/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
@@ -203,7 +203,11 @@ jobs:
               ARCHIVES="$ARCHIVES $BSSL_DIR/lib/libcrypto.a $BSSL_DIR/lib/libssl.a"
             fi
             mkdir -p "$DEST"
-            $CC -shared -fPIC -Wall \
+            # -fno-omit-frame-pointer: keep the frame pointer so a JVM hs_err / core backtrace can
+            # unwind through the JNI shim (the JVM's native stack walker doesn't use DWARF CFI). This
+            # is the CI counterpart of the gradle buildJvmJniShim task — CI builds the shim HERE, not
+            # via that task, so symbolication has to be applied in both places.
+            $CC -shared -fPIC -fno-omit-frame-pointer -Wall \
               -o "$DEST/$NAME" "$JNI_SRC" \
               -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
               -I"$QUICHE_H" \
@@ -220,7 +224,10 @@ jobs:
           QUICHE_BSSL_PATH=$BSSL cargo build --release --package quiche \
             --target x86_64-unknown-linux-gnu --no-default-features --features ffi \
             --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
-          build_jni "x86_64-unknown-linux-gnu" "gcc" "strip --strip-all" "$QUICHE_LIBS/linux-x64/lib" "libquiche_jni.so" "" "$BSSL"
+          # --strip-debug (NOT --strip-all): drop DWARF to keep the lib small but KEEP the .symtab
+          # function names, so a native crash backtrace reads `...(Java_..._nConnRecv+0x..)` instead of
+          # a bare `libquiche_jni.so+0xNNNN`. Matches socket-quic/build.gradle.kts.
+          build_jni "x86_64-unknown-linux-gnu" "gcc" "strip --strip-debug" "$QUICHE_LIBS/linux-x64/lib" "libquiche_jni.so" "" "$BSSL"
 
           # Linux arm64 JNI shim
           echo "=== Linux arm64 JNI ==="
@@ -229,7 +236,7 @@ jobs:
           QUICHE_BSSL_PATH=$BSSL_ARM cargo build --release --package quiche \
             --target aarch64-unknown-linux-gnu --no-default-features --features ffi \
             --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
-          build_jni "aarch64-unknown-linux-gnu" "aarch64-linux-gnu-gcc" "aarch64-linux-gnu-strip --strip-all" "$QUICHE_LIBS/linux-arm64/lib" "libquiche_jni.so" "" "$BSSL_ARM"
+          build_jni "aarch64-unknown-linux-gnu" "aarch64-linux-gnu-gcc" "aarch64-linux-gnu-strip --strip-debug" "$QUICHE_LIBS/linux-arm64/lib" "libquiche_jni.so" "" "$BSSL_ARM"
 
           # Windows x64 JNI shim (cross-compile via MinGW)
           echo "=== Windows x64 JNI ==="
@@ -375,9 +382,16 @@ jobs:
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
-        run: >-
-          ./gradlew :socket-quic:jvmTest --continue
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          # This is the lane where the intermittent JNI SIGSEGV (recv_info UAF) was first caught, so
+          # capture a core here too — not just on the malloc-check lane. The forked worker inherits this
+          # shell's core ulimit, so raise it and run --no-daemon (a daemon reused from an earlier step
+          # would carry core size 0). core_pattern is machine-wide; the post-mortem step reads /tmp/cores.
+          ulimit -c unlimited
+          sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
+          echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
+          ./gradlew :socket-quic:jvmTest --continue --no-daemon \
+            --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Same suite on the FFM backend. -PquicheJvmBackend=ffm prepends the java21
       # (FFM) output so its loader shadows the base JNI one, then loads the
