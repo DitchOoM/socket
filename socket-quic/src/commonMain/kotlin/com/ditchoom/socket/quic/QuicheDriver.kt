@@ -19,7 +19,6 @@ import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -27,7 +26,6 @@ import kotlin.concurrent.Volatile
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
-import kotlin.time.TimeSource
 
 /**
  * Drives a single quiche connection from one coroutine. No mutexes, no polling.
@@ -58,6 +56,12 @@ class QuicheDriver(
      * the driver's own [select] loop — no polling. Null disables keepalive. See [QuicOptions.keepAliveInterval].
      */
     private val keepAliveInterval: Duration? = null,
+    /**
+     * The driver's clock seam (monotonic mark + the `select` timeout clause). Defaults to
+     * [RealDriverClock] so every platform and production path keeps its exact pre-seam timer
+     * behaviour; tests inject a manual clock to make the keepalive/idle timing deterministic.
+     */
+    private val clock: DriverClock = RealDriverClock,
     /**
      * Connection-migration wiring (slice 3). All default to "disabled" so server-accepted
      * drivers, unit-test fakes, and the no-migration platforms keep their single-path
@@ -258,7 +262,7 @@ class QuicheDriver(
             // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
             // process. We wake at min(quiche's next timer, keepalive deadline); whichever is sooner
             // decides whether we PING or hand the timeout to quiche. No polling.
-            var lastActivity = TimeSource.Monotonic.markNow()
+            var lastActivity = clock.markNow()
             while (true) {
                 val connTimeout = api.connTimeout(conn)
                 // Keepalive only counts once the handshake is established (the handshake itself is
@@ -279,7 +283,7 @@ class QuicheDriver(
                     } else {
                         select<QuicheCmd?> {
                             commands.onReceiveCatching { it.getOrNull() }
-                            onTimeout(wait) { null }
+                            clock.armTimeout(this, wait)
                         }
                     }
                 // null from onReceiveCatching means channel closed — exit
@@ -287,11 +291,11 @@ class QuicheDriver(
                 when {
                     cmd is QuicheCmd.Migrate -> {
                         handleMigrate(cmd) // suspends: opens a socket
-                        lastActivity = TimeSource.Monotonic.markNow()
+                        lastActivity = clock.markNow()
                     }
                     cmd != null -> {
                         execute(cmd)
-                        lastActivity = TimeSource.Monotonic.markNow() // any command is activity → defer keepalive
+                        lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
                     // A timer fired. If the keepalive deadline is strictly the sooner one, PING; quiche's
                     // idle timer is always later (keepAliveInterval < idleTimeout), so this fires first and
@@ -299,7 +303,7 @@ class QuicheDriver(
                     keepAliveRemaining != null && (connTimeout == null || keepAliveRemaining < connTimeout) -> {
                         if (!api.connIsClosed(conn)) {
                             api.connSendAckEliciting(conn) // emitted by the afterCommand() flush below
-                            lastActivity = TimeSource.Monotonic.markNow()
+                            lastActivity = clock.markNow()
                         }
                     }
                     else -> api.connOnTimeout(conn)

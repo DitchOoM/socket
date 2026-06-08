@@ -62,7 +62,7 @@ abstract class QuicIdleTimeoutTestSuite {
                             }
                         }
                     try {
-                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds) {
+                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds.scaled) {
                             val stream = openStream()
                             stream.writeString("hi") // establish the stream on the server, then go idle
                             val result = stream.read(READ_TIMEOUT)
@@ -97,7 +97,7 @@ abstract class QuicIdleTimeoutTestSuite {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
                     val serverJob = launch { echoEveryStream() }
                     try {
-                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds) {
+                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds.scaled) {
                             val stream = openStream()
                             // Establish the stream on the server, then go completely idle for longer than
                             // the idle timeout. Reactive keepalive must hold the connection open.
@@ -123,9 +123,11 @@ abstract class QuicIdleTimeoutTestSuite {
         connections {
             val stream = acceptStream()
             while (true) {
-                val data = stream.read(KEEPALIVE_IDLE + 5.seconds)
+                // Read backstop must outlast the client's full idle wait, or the server breaks out of the
+                // echo loop before the keepalive round-trip — tie it to KEEPALIVE_IDLE_WAIT, not the window.
+                val data = stream.read(KEEPALIVE_IDLE_WAIT + 5.seconds.scaled)
                 if (data is ReadResult.Data) {
-                    stream.write(data.buffer, 5.seconds)
+                    stream.write(data.buffer, 5.seconds.scaled)
                 } else {
                     break
                 }
@@ -139,7 +141,7 @@ abstract class QuicIdleTimeoutTestSuite {
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         try {
-            write(out, 5.seconds)
+            write(out, 5.seconds.scaled)
         } finally {
             out.freeNativeMemory()
         }
@@ -147,7 +149,7 @@ abstract class QuicIdleTimeoutTestSuite {
 
     private suspend fun QuicByteStream.echoOnce(payload: String): String {
         writeString(payload)
-        val resp = read(5.seconds)
+        val resp = read(5.seconds.scaled)
         return if (resp is ReadResult.Data) {
             val s = resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8)
             resp.buffer.freeIfNeeded()
@@ -158,11 +160,18 @@ abstract class QuicIdleTimeoutTestSuite {
     }
 
     private companion object {
-        private val IDLE_TIMEOUT = 2.seconds
-        private val READ_TIMEOUT = 10.seconds // > IDLE_TIMEOUT so a working idle-close returns End first
+        // Every value is `.scaled` (>= 1.0, uniform) so a loaded CI runner gets proportionally more
+        // wall-clock without altering any timing relationship — see [Duration.scaled]. Ratios, not
+        // absolutes, carry the assertions here.
+        private val IDLE_TIMEOUT = 2.seconds.scaled
+        private val READ_TIMEOUT = 10.seconds.scaled // 5× IDLE_TIMEOUT so a working idle-close returns End first
 
-        private val KEEPALIVE_IDLE = 4.seconds
-        private val KEEPALIVE_INTERVAL = 1.seconds // PING every 1 s — 3 s slack under the 4 s idle timeout
-        private val KEEPALIVE_IDLE_WAIT = 6.seconds // idle well past KEEPALIVE_IDLE so a broken keepalive closes
+        // Keepalive: the PING interval is kept a full 6× under the idle window. The previous 4s/1s (4×)
+        // was two-sided — a scheduler-starved runner could delay the 1s PING past the 4s window and the
+        // connection would idle-close (a false failure). At 6× even several consecutive starved intervals
+        // still land a PING inside the window before the idle timer fires.
+        private val KEEPALIVE_IDLE = 6.seconds.scaled
+        private val KEEPALIVE_INTERVAL = 1.seconds.scaled // PING every 1 s — 5 s slack under the 6 s idle window
+        private val KEEPALIVE_IDLE_WAIT = 9.seconds.scaled // idle 1.5× the window so a broken keepalive closes
     }
 }

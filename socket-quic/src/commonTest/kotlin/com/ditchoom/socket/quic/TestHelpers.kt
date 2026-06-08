@@ -30,17 +30,52 @@ import kotlin.time.Duration.Companion.seconds
 fun runQuicTest(
     timeout: Duration = 15.seconds,
     block: suspend CoroutineScope.() -> Unit,
-): TestResult =
-    // runTest's own budget must exceed the wall-clock [timeout] (plus margin for
+): TestResult {
+    // Scale the wall-clock deadline by [testTimeScale] so a loaded CI runner gets
+    // proportionally more time without weakening any assertion logic (see scaled).
+    val deadline = timeout.scaled
+    // runTest's own budget must exceed the wall-clock [deadline] (plus margin for
     // setup/teardown) or it, not our withTimeout, fires first with a less useful
     // message. Tests that legitimately need more than the 15s default (e.g. the
     // passive-migration test, which does connect + echo + a NAT rebind + a
-    // recovery round-trip) pass a larger [timeout].
-    runTest(timeout = timeout + 15.seconds) {
+    // recovery round-trip) pass a larger [timeout]. The +15s margin is itself
+    // scaled so teardown on a slow runner can't trip runTest before our backstop.
+    return runTest(timeout = deadline + 15.seconds.scaled) {
         withContext(Dispatchers.Default) {
-            withTimeout(timeout) { block() }
+            withTimeout(deadline) { block() }
         }
     }
+}
+
+/**
+ * Raw value of the `QUIC_TEST_TIME_SCALE` env var (or null if unset/unreadable on
+ * this target). Platform actual: `System.getenv` on JVM, `getenv` on K/N, `process.env`
+ * on Node; WasmJs has no env access and returns null.
+ */
+internal expect fun timeScaleEnv(): String?
+
+/**
+ * Multiplier applied to test **deadlines and backstops** — `runQuicTest`'s wall-clock
+ * cap, per-op `withTimeout` budgets, and idle-timeout values. It lets a loaded CI runner
+ * (set e.g. `QUIC_TEST_TIME_SCALE=3`) get proportionally more wall-clock without changing
+ * any test's *logic*.
+ *
+ * Always `>= 1.0` (clamped to `[1.0, 10.0]`): tests only ever get *more* time, never less,
+ * so up-scaling can never make an assertion vacuous or weaken a timing relationship — every
+ * duration in a suite grows by the same factor, so ratios (e.g. "keepalive PING interval well
+ * under the idle timeout", "idle fires before the read backstop") are preserved exactly. A
+ * malformed/garbage value falls back to 1.0; an absurdly large one is capped so a typo can't
+ * hang CI for hours.
+ */
+internal fun testTimeScale(): Double = timeScaleEnv()?.trim()?.toDoubleOrNull()?.coerceIn(1.0, 10.0) ?: 1.0
+
+/**
+ * Scale a deadline/backstop [Duration] by [testTimeScale]. Apply to `withTimeout` budgets,
+ * `runQuicTest` caps, and idle timeouts — anywhere a slower runner should simply be given more
+ * wall-clock. Because the factor is uniform and `>= 1.0`, applying it to *every* duration in a
+ * suite preserves the suite's timing relationships while granting absolute headroom on CI.
+ */
+internal val Duration.scaled: Duration get() = this * testTimeScale()
 
 /**
  * Reactive replacement for `delay(N)` followed by an assertion: yields the dispatcher

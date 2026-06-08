@@ -57,7 +57,8 @@ abstract class QuicImpairmentTestSuite {
             alpnProtocols = listOf("test"),
             verifyPeer = false,
             // Generous so idle-timeout never races loss/PTO recovery — the impairment is data-phase only.
-            idleTimeout = 30.seconds,
+            // Scaled so it stays above the (also-scaled) runQuicTest cap on a loaded runner.
+            idleTimeout = 30.seconds.scaled,
         )
 
     // ---- tests -------------------------------------------------------------------------------------
@@ -161,9 +162,9 @@ abstract class QuicImpairmentTestSuite {
                     connections {
                         val stream = acceptStream()
                         while (true) {
-                            val data = stream.read(15.seconds)
+                            val data = stream.read(15.seconds.scaled)
                             if (data is ReadResult.Data) {
-                                stream.write(data.buffer, 10.seconds)
+                                stream.write(data.buffer, 10.seconds.scaled)
                             } else {
                                 break
                             }
@@ -178,7 +179,7 @@ abstract class QuicImpairmentTestSuite {
             val clientJob =
                 launch {
                     try {
-                        withQuicConnection("127.0.0.1", proxy.proxyPort, impairOptions, timeout = 15.seconds) {
+                        withQuicConnection("127.0.0.1", proxy.proxyPort, impairOptions, timeout = 15.seconds.scaled) {
                             val stream = openStream()
                             // Pass-through warm-up: proves handshake + stream are up before impairment arms.
                             assertEquals(WARMUP, stream.echoExact(WARMUP), "warm-up echo failed before impairment")
@@ -245,8 +246,11 @@ abstract class QuicImpairmentTestSuite {
         private const val WARMUP = "warmup"
         private const val BURST_START = 3
         private const val BURST_SIZE = 5
-        private val ECHO_TIMEOUT = 8.seconds
-        private val BLACKHOLE_TIMEOUT = 4.seconds
+
+        // Per-op backstops, scaled for loaded runners. BLACKHOLE_TIMEOUT only ever fires on the
+        // anti-vacuous total-blackhole test (where it asserts a stall), so scaling up only strengthens it.
+        private val ECHO_TIMEOUT = 8.seconds.scaled
+        private val BLACKHOLE_TIMEOUT = 4.seconds.scaled
 
         /** Deterministic single-byte-UTF8 payload: `A B C … Z A B …` so chunk boundaries never split a codepoint. */
         private fun deterministicAscii(length: Int): String =

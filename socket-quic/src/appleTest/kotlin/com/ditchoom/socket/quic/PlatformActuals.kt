@@ -19,3 +19,5 @@ internal actual fun shouldSkipQuicHarnessOnSimulator(): Boolean {
     val booted = getenv("QUIC_SIM_BOOTED")?.toKString() == "1"
     return !booted
 }
+
+internal actual fun timeScaleEnv(): String? = getenv("QUIC_TEST_TIME_SCALE")?.toKString()

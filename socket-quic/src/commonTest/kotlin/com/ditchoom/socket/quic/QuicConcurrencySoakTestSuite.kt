@@ -52,7 +52,9 @@ abstract class QuicConcurrencySoakTestSuite {
         QuicOptions(
             alpnProtocols = listOf("test"),
             verifyPeer = false,
-            idleTimeout = 30.seconds,
+            // Scaled so it stays above the (also-scaled) runQuicTest cap on a loaded runner — a soak run
+            // that legitimately takes longer under load must not trip an idle-timeout mid-transfer.
+            idleTimeout = 30.seconds.scaled,
         )
 
     // ---- tests -------------------------------------------------------------------------------------
@@ -66,7 +68,7 @@ abstract class QuicConcurrencySoakTestSuite {
                     withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
                         val serverJob = launch { connections { echoEveryStream() } }
                         try {
-                            withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds) {
+                            withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds.scaled) {
                                 val results =
                                     (0 until CONCURRENT_STREAMS)
                                         .map { i ->
@@ -116,7 +118,7 @@ abstract class QuicConcurrencySoakTestSuite {
                                 (0 until CONCURRENT_CONNECTIONS)
                                     .map { i ->
                                         async {
-                                            withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds) {
+                                            withQuicConnection("127.0.0.1", port, options, timeout = 15.seconds.scaled) {
                                                 val stream = openStream()
                                                 val echoed = stream.echoExact("conn-$i")
                                                 stream.close()
@@ -161,7 +163,7 @@ abstract class QuicConcurrencySoakTestSuite {
                                 port,
                                 options,
                                 ConnectionOptions(bufferFactory = tracking),
-                                timeout = 15.seconds,
+                                timeout = 15.seconds.scaled,
                             ) {
                                 val stream = openStream()
                                 for (round in 0 until SOAK_ROUNDS) {
@@ -192,9 +194,9 @@ abstract class QuicConcurrencySoakTestSuite {
             launch {
                 try {
                     while (true) {
-                        val data = stream.read(15.seconds)
+                        val data = stream.read(15.seconds.scaled)
                         if (data is ReadResult.Data) {
-                            stream.write(data.buffer, 10.seconds)
+                            stream.write(data.buffer, 10.seconds.scaled)
                         } else {
                             break
                         }
@@ -212,11 +214,11 @@ abstract class QuicConcurrencySoakTestSuite {
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         try {
-            write(out, 10.seconds)
+            write(out, 10.seconds.scaled)
         } finally {
             out.freeNativeMemory()
         }
-        return readExactly(payload.length, 10.seconds)
+        return readExactly(payload.length, 10.seconds.scaled)
     }
 
     private suspend fun QuicByteStream.readExactly(

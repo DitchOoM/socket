@@ -279,9 +279,19 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connIsTimedOut(conn: QuicheConn) = false
 
-    override fun connTimeout(conn: QuicheConn): Duration? = null
+    /** Controllable quiche timeout. Null (default) = "no quiche timer pending", so the keepalive deadline
+     *  is the only thing that can wake the driver loop — see the keepalive driver tests. */
+    @Volatile var connTimeout: Duration? = null
 
-    override fun connOnTimeout(conn: QuicheConn) {}
+    override fun connTimeout(conn: QuicheConn): Duration? = connTimeout
+
+    /** Counts timer fires the driver handed to quiche (i.e. NOT turned into a keepalive PING). */
+    var onTimeoutCount = 0
+        private set
+
+    override fun connOnTimeout(conn: QuicheConn) {
+        onTimeoutCount++
+    }
 
     /** Counts reactive-keepalive PINGs the driver scheduled, so tests can assert on them. */
     var ackElicitingCount = 0
