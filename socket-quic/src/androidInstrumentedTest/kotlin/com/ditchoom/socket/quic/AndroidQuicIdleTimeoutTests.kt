@@ -100,7 +100,9 @@ class AndroidQuicIdleTimeoutTests {
         connections {
             val stream = acceptStream()
             while (true) {
-                val data = stream.read(KEEPALIVE_IDLE + 5.seconds)
+                // Read backstop must outlast the client's full idle wait, or the server breaks out of the
+                // echo loop before the keepalive round-trip — tie it to KEEPALIVE_IDLE_WAIT, not the window.
+                val data = stream.read(KEEPALIVE_IDLE_WAIT + 5.seconds)
                 if (data is ReadResult.Data) {
                     stream.write(data.buffer, 5.seconds)
                 } else {
@@ -140,9 +142,13 @@ class AndroidQuicIdleTimeoutTests {
 
     private companion object {
         private val IDLE_TIMEOUT = 2.seconds
-        private val READ_TIMEOUT = 10.seconds
-        private val KEEPALIVE_IDLE = 4.seconds
-        private val KEEPALIVE_INTERVAL = 1.seconds
-        private val KEEPALIVE_IDLE_WAIT = 6.seconds
+        private val READ_TIMEOUT = 10.seconds // 5× IDLE_TIMEOUT so a working idle-close returns End first
+
+        // Keepalive: PING interval kept a full 6× under the idle window so scheduler jitter on a loaded
+        // emulator can't starve a PING past the window (the old 4s/1s = 4× was two-sided — see the
+        // commonTest QuicIdleTimeoutTestSuite for the rationale; this Android copy can't see commonTest).
+        private val KEEPALIVE_IDLE = 6.seconds
+        private val KEEPALIVE_INTERVAL = 1.seconds // PING every 1 s — 5 s slack under the 6 s idle window
+        private val KEEPALIVE_IDLE_WAIT = 9.seconds // idle 1.5× the window so a broken keepalive closes
     }
 }

@@ -716,18 +716,58 @@ class ReactiveDriverTests {
     @Test
     fun keepAlive_schedulesAckElicitingPings_onIdleConnection() =
         runQuicTest {
-            // Stub defaults: established=true, connTimeout=null, closed=false. With no commands and no
-            // quiche timeout, the ONLY thing that can wake the driver loop is the keepalive deadline — so
-            // any ack-eliciting PING proves the reactive keepalive timer fired. No network, no flaky
-            // wall-clock assertion: we wait for a COUNT within a generous window (50ms interval → dozens
-            // of PINGs possible in 3s; reaching >= 2 needs only ~100ms of driver scheduling).
+            // Tier-1 deterministic timing: a [ManualDriverClock] fires the keepalive timer by hand, so there
+            // is no wall-clock dependence at all. Stub defaults: established=true, connTimeout=null — so the
+            // keepalive deadline is the only armed timer, and each clock.advance() is exactly one PING.
             val api = StubQuicheApi()
-            val driver = createTestDriver(api, keepAliveInterval = 50.milliseconds)
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = 1.seconds, clock = clock)
             driver.start(this)
             try {
-                awaitUntil(3.seconds, "driver never scheduled a keepalive PING (ackElicitingCount stayed 0)") {
-                    api.ackElicitingCount >= 2
+                clock.advance(1.seconds)
+                assertEquals(1, api.ackElicitingCount, "first keepalive deadline did not schedule a PING")
+                clock.advance(1.seconds)
+                assertEquals(2, api.ackElicitingCount, "second keepalive deadline did not schedule a PING")
+                assertEquals(0, api.onTimeoutCount, "keepalive deadline must not be handed to quiche as an idle timeout")
+            } finally {
+                driver.commands.close()
+            }
+        }
+
+    @Test
+    fun keepAlive_manualClock_isDeterministicUnderRepeatedFires() =
+        runQuicTest {
+            // Proves ManualDriverClock.advance() is race-free: it must return only AFTER the driver has fully
+            // processed each fire. Asserting the EXACT cumulative count after EVERY one of many fires would
+            // fail on the first slipped iteration if advance() raced the driver's timer branch.
+            val api = StubQuicheApi()
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = 1.seconds, clock = clock)
+            driver.start(this)
+            try {
+                repeat(200) { i ->
+                    clock.advance(1.seconds)
+                    assertEquals(i + 1, api.ackElicitingCount, "fire ${i + 1} not observed on return — advance() raced the timer branch")
                 }
+            } finally {
+                driver.commands.close()
+            }
+        }
+
+    @Test
+    fun keepAlive_handsTimerToQuiche_whenQuicheTimeoutIsSooner() =
+        runQuicTest {
+            // When quiche's own timer (idle/loss recovery) is due before the keepalive deadline, the driver
+            // must hand the fire to quiche (connOnTimeout), NOT send a PING. connTimeout 50ms < keepalive 10s.
+            val api = StubQuicheApi()
+            api.connTimeout = 50.milliseconds
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = 10.seconds, clock = clock)
+            driver.start(this)
+            try {
+                clock.advance(50.milliseconds)
+                assertEquals(0, api.ackElicitingCount, "quiche timer was sooner — the driver must not PING")
+                assertEquals(1, api.onTimeoutCount, "quiche timer fire was not handed to connOnTimeout")
             } finally {
                 driver.commands.close()
             }
@@ -736,17 +776,64 @@ class ReactiveDriverTests {
     @Test
     fun keepAlive_disabled_sendsNoPings() =
         runQuicTest {
-            // No keepAliveInterval → the driver must never call connSendAckEliciting, however long it idles.
-            // Disabled means "never", independent of the settle window — so this can't flake on timing.
+            // No keepAliveInterval → the driver must NEVER PING, only hand timer fires to quiche. A non-null
+            // connTimeout keeps a timer armed so the ManualDriverClock has something to fire and the
+            // assertion is "fired the timer, still no PING" — strictly stronger than "no PING within 300ms".
             val api = StubQuicheApi()
-            val driver = createTestDriver(api, keepAliveInterval = null)
+            api.connTimeout = 50.milliseconds
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = null, clock = clock)
             driver.start(this)
             try {
-                kotlinx.coroutines.delay(300.milliseconds) // real time for a stray PING to surface, if any
+                clock.advance(50.milliseconds)
+                clock.advance(50.milliseconds)
                 assertEquals(0, api.ackElicitingCount, "keepalive disabled but the driver still sent ack-eliciting PINGs")
+                assertEquals(2, api.onTimeoutCount, "both timer fires should have been handed to quiche")
             } finally {
                 driver.commands.close()
             }
+        }
+
+    @Test
+    fun keepAlive_notScheduledBeforeHandshakeEstablished() =
+        runQuicTest {
+            // Keepalive only counts once established (a half-open connection has nothing to keep alive). With
+            // established=false the keepalive deadline is suppressed, so a fired timer goes to quiche, not a PING.
+            val api = StubQuicheApi()
+            api.established = false
+            api.connTimeout = 50.milliseconds
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = 1.seconds, clock = clock)
+            driver.start(this)
+            try {
+                clock.advance(1.seconds)
+                assertEquals(0, api.ackElicitingCount, "keepalive must not PING before the handshake is established")
+                assertEquals(1, api.onTimeoutCount, "pre-established timer fire should be handed to quiche")
+            } finally {
+                driver.commands.close()
+            }
+        }
+
+    // ---- Idle timeout ----
+
+    @Test
+    fun idleTimeout_quicheClose_transitionsDriverToClosedAndClosesCommands() =
+        runQuicTest {
+            // The terminal path the wall-clock integration test (QuicIdleTimeoutTestSuite) covers, made
+            // deterministic: quiche's idle timer fires, quiche idle-closes, and the driver must transition to
+            // Closed AND close its command channel (the coupled signal a parked read keys off to return End).
+            // No keepalive (so the fire is handed to quiche); closeOnTimeout makes that fire idle-close.
+            val api = StubQuicheApi()
+            api.connTimeout = 50.milliseconds
+            api.closeOnTimeout = true
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = null, clock = clock)
+            driver.start(this)
+            // Terminal fire: the driver closes and never re-arms, so synchronise on the Closed state, not a re-arm.
+            clock.fireExpectingNoRearm(50.milliseconds)
+            withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Closed } }
+            assertTrue(driver.commands.isClosedForSend, "command channel must close coupled with the Closed state")
+            assertEquals(1, api.onTimeoutCount, "the idle timer fire should have been handed to quiche")
         }
 
     // ---- Helpers ----
@@ -762,6 +849,7 @@ class ReactiveDriverTests {
         isServer: Boolean = false,
         udpChannel: UdpChannel = StubUdpChannel(),
         keepAliveInterval: kotlin.time.Duration? = null,
+        clock: DriverClock = RealDriverClock,
     ): QuicheDriver =
         QuicheDriver(
             api = api,
@@ -773,5 +861,6 @@ class ReactiveDriverTests {
             clientMode = false,
             isServer = isServer,
             keepAliveInterval = keepAliveInterval,
+            clock = clock,
         )
 }
