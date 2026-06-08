@@ -380,6 +380,10 @@ fun createBuildJvmJniShimTask(
                         "clang",
                         "-dynamiclib",
                         "-O2",
+                        // Keep the frame pointer so a JVM hs_err / core backtrace can unwind through
+                        // the JNI shim reliably (the JVM's native stack walker doesn't use DWARF CFI).
+                        // No codegen-meaningful effect on these tiny forwarders; buys traceable crashes.
+                        "-fno-omit-frame-pointer",
                         "-Wall",
                         "-o",
                         outputLib.absolutePath,
@@ -427,6 +431,9 @@ fun createBuildJvmJniShimTask(
                         "-shared",
                         "-fPIC",
                         "-O2",
+                        // See the macOS branch: keep frame pointers so a native crash (the intermittent
+                        // JNI SIGABRT) unwinds cleanly through the shim in hs_err / a core dump.
+                        "-fno-omit-frame-pointer",
                         "-Wall",
                         "-o",
                         outputLib.absolutePath,
@@ -456,11 +463,17 @@ fun createBuildJvmJniShimTask(
             val result = process.waitFor()
             if (result != 0) throw GradleException("JNI shim compilation failed for $os-$arch (exit $result)")
 
+            // `--strip-debug` (NOT `--strip-all`): drop DWARF debug sections to keep the shipped lib
+            // small, but RETAIN the `.symtab` function-name symbols. Those are what turn a native
+            // crash backtrace from `libquiche_jni.so+0x3f21` into `...(Java_..._nConnStreamSend+0x..)`
+            // — the difference between diagnosing the intermittent JNI SIGABRT and guessing. The shim's
+            // symbol table is a handful of nConn* entries (negligible size). macOS `strip -x` already
+            // keeps global symbols.
             val stripCmd =
                 if (os == "macos") {
                     listOf("strip", "-x", outputLib.absolutePath)
                 } else {
-                    listOf("strip", "--strip-all", outputLib.absolutePath)
+                    listOf("strip", "--strip-debug", outputLib.absolutePath)
                 }
             ProcessBuilder(stripCmd).inheritIO().start().waitFor()
 
@@ -587,6 +600,19 @@ afterEvaluate {
             environment("MALLOC_CHECK_", "3")
             environment("MALLOC_PERTURB_", "165")
             environment("GLIBC_TUNABLES", "glibc.malloc.check=3")
+        }
+
+        // --- Native-crash diagnostics ------------------------------------------
+        // When hunting the intermittent JNI SIGABRT, mirror the JVM fatal-error log
+        // (hs_err: the crashing thread's native + Java/Kotlin stack, the signal, the
+        // glibc abort reason) straight to stderr so it lands in the LIVE CI job log —
+        // the one output that survives even when a killed/timed-out job fails to
+        // upload artifacts. `-XX:+ErrorFileToStderr` and a file path are mutually
+        // exclusive, so we choose the log; the core dump (workflow-enabled) is the
+        // artifact for deep inspection. CI sets ORG_GRADLE_PROJECT_quicCrashDiag=1 so
+        // every jvmTest worker in the job gets this; local runs are unaffected.
+        if (providers.gradleProperty("quicCrashDiag").isPresent) {
+            jvmArgs("-XX:+ErrorFileToStderr")
         }
 
         // --- Backend selector ---------------------------------------------------

@@ -405,9 +405,15 @@ jobs:
           OK=0
           SKIP=0
           INTENTIONAL_SKIP=0
+          SKIP_REASONS=""
           if [ -f "$LOG" ]; then
             OK=$(grep -c 'harness OK' "$LOG" || true)
             SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
+            # Distinct skip reasons (dedup + count). The intentional Apple
+            # simulator gate shows up here too, which is fine — it's the
+            # self-documenting line that explains a known ℹ️ gap.
+            SKIP_REASONS=$(grep -hoE 'harness SKIP: .+' "$LOG" 2>/dev/null \
+              | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
             # macOS K/N runs the harness for real now (CA-pinning verify_block —
             # issue #81), so we expect OK>0 there. The iOS/tvOS/watchOS *simulator*
             # has no usable QUIC/UDP path on the CI host (public-endpoint interop
@@ -433,6 +439,10 @@ jobs:
           skip=$SKIP
           intentional_skip=$INTENTIONAL_SKIP
           EOF
+          if [ -n "$SKIP_REASONS" ]; then
+            while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
+              >> /tmp/quic-audit/apple.txt
+          fi
 
           {
             echo "## QUIC harness — Apple (macOS host)"
@@ -443,6 +453,15 @@ jobs:
             if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
               echo ""
               echo "⚠️ Every QuicHarnessIntegrationTest skipped — Apple QUIC client not actually validated."
+            fi
+            if [ -n "$SKIP_REASONS" ]; then
+              echo ""
+              echo "<details><summary>Skip reasons (macOS)</summary>"
+              echo ""
+              echo '```'
+              echo "$SKIP_REASONS"
+              echo '```'
+              echo "</details>"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

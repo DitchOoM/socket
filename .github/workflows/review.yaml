@@ -78,12 +78,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           FAILED=0
+          # Reason <details> blocks are buffered here and flushed AFTER the
+          # table — emitting them inside the loop would split the markdown
+          # table and break its rendering.
+          REASONS_OUT=$(mktemp)
           for f in "${FILES[@]}"; do
             platform=$(grep '^platform=' "$f" | cut -d= -f2)
             launched=$(grep '^launched=' "$f" | cut -d= -f2)
             ok=$(grep '^ok=' "$f" | cut -d= -f2)
             skip=$(grep '^skip=' "$f" | cut -d= -f2)
             intentional_skip=$(grep '^intentional_skip=' "$f" | cut -d= -f2)
+            # Per-platform skip reasons captured by the audit step (one
+            # `reason=<count> <message>` line each). Surfaced below the table
+            # whenever a lane skipped, so "all skipped" explains itself.
+            reasons=$(grep '^reason=' "$f" | cut -d= -f2-)
             launched=${launched:-unknown}
             ok=${ok:-0}
             skip=${skip:-0}
@@ -111,7 +119,21 @@ jobs:
 
             echo "| $platform | $ok | $skip | $status |" >> "$GITHUB_STEP_SUMMARY"
             echo "platform=$platform launched=$launched ok=$ok skip=$skip intentional=$intentional_skip status=$status"
+
+            if [ "$skip" -gt 0 ] && [ -n "$reasons" ]; then
+              {
+                echo ""
+                echo "<details><summary>$platform — skip reasons ($skip skipped)</summary>"
+                echo ""
+                echo '```'
+                echo "$reasons"
+                echo '```'
+                echo "</details>"
+              } >> "$REASONS_OUT"
+            fi
           done
+
+          cat "$REASONS_OUT" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$FAILED" = "1" ]; then
             {

@@ -175,7 +175,28 @@ jobs:
           fi
           OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
           SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          # Distinct skip reasons (dedup + count). Bound to [^<&] so the match
+          # stops at the next XML entity/tag in the androidTest result reports.
+          SKIP_REASONS=$(grep -rhoE 'harness SKIP: [^<&]+' "$REPORT_ROOT" 2>/dev/null \
+            | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
           echo "QuicHarnessIntegrationTests on Android: OK=$OK, SKIP=$SKIP"
+          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
+          {
+            echo "## QUIC harness — Android (emulator)"
+            echo ""
+            echo "| OK | SKIP |"
+            echo "|---|---|"
+            echo "| $OK | $SKIP |"
+            if [ -n "$SKIP_REASONS" ]; then
+              echo ""
+              echo "<details><summary>Skip reasons (Android)</summary>"
+              echo ""
+              echo '```'
+              echo "$SKIP_REASONS"
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
             echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
           fi
