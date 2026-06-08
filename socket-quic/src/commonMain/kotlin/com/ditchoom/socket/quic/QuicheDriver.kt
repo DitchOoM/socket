@@ -960,9 +960,17 @@ class DriverStreamAdapter(
                                 // Peer sent STOP_SENDING / RESET_STREAM on THIS stream (RFC 9000 §19.4-19.5).
                                 // Stream-scoped, not connection loss — surface a stream error the caller can
                                 // catch to abandon just this stream; the connection keeps every other stream.
+                                // quiche reports the direction via the sentinel but not the peer application
+                                // error code, so applicationErrorCode is left null.
+                                val abort =
+                                    if (written == QuicheDriver.QUICHE_ERR_STREAM_STOPPED) {
+                                        QuicStreamAbort.StopSending()
+                                    } else {
+                                        QuicStreamAbort.ResetStream()
+                                    }
                                 throw QuicStreamException(
                                     streamId.id,
-                                    written,
+                                    abort,
                                     "quiche stream ${streamId.id} aborted by peer (error $written)",
                                 )
                             } else {

@@ -195,8 +195,9 @@ private suspend fun <R> connectQuicGroup(
                 // queue, then enqueue it. Runs synchronously inside the block, so the connection
                 // is owned before the block returns.
                 nw_helper_quic_start(streamConn)
+                val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
                 incomingStreams.trySend(
-                    QuicByteStream(QuicStreamId(acceptedStreamId.getAndAdd(4)), NWQuicByteStream(streamConn)),
+                    QuicByteStream(sid, NWQuicByteStream(streamConn, sid.id)),
                 )
             }
             nw_helper_quic_group_start(group)
@@ -313,7 +314,7 @@ internal class AppleQuicGroupConnection(
                 ?: throw QuicCloseException(closeReason(), "Failed to open QUIC stream")
         nw_helper_quic_start(streamConn)
         val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
-        return QuicByteStream(streamId, NWQuicByteStream(streamConn))
+        return QuicByteStream(streamId, NWQuicByteStream(streamConn, streamId.id))
     }
 
     override suspend fun openUniStream(): QuicByteStream {
@@ -328,7 +329,7 @@ internal class AppleQuicGroupConnection(
                 ?: throw QuicCloseException(closeReason(), "Failed to open unidirectional QUIC stream")
         nw_helper_quic_start(streamConn)
         val streamId = QuicStreamId(nextClientUniStreamId.getAndAdd(4))
-        return QuicByteStream(streamId, NWQuicByteStream(streamConn))
+        return QuicByteStream(streamId, NWQuicByteStream(streamConn, streamId.id))
     }
 
     override suspend fun acceptStream(): QuicByteStream {
@@ -446,6 +447,7 @@ internal class AppleQuicGroupConnection(
  */
 internal class NWQuicByteStream(
     private val nwConn: nw_connection_t,
+    private val streamId: Long = -1L,
 ) : HalfCloseableByteStream,
     ResettableByteStream {
     @Volatile
@@ -506,26 +508,17 @@ internal class NWQuicByteStream(
             val nsData = buffer.toNativeData().nsData
 
             suspendCancellableCoroutine { cont ->
-                // NB (stream-vs-connection conflation): the quiche driver maps a peer STOP_SENDING /
-                // RESET_STREAM on one stream to [QuicStreamException] (the connection survives) instead of
-                // [QuicCloseException]. Network.framework does NOT expose a documented per-stream-reset
-                // signal here distinct from a connection error — the send-complete callback surfaces only an
-                // (err_domain, err_code) pair (the helper already passes the domain; this call site ignores
-                // it). A POSIX ECONNRESET-domain code is the likely stream-reset shape, but mapping it to
-                // [QuicStreamException] requires verification on real Apple hardware: mis-classifying a
-                // genuine connection error as a recoverable stream error would mask a dead connection. Until
-                // that is confirmed on a Mac, this path conservatively reports [QuicCloseException]. See
-                // project_quic_stream_stopped_bug.
+                // Stream-vs-connection split (issue #134, mirroring the quiche driver): a peer
+                // STOP_SENDING/RESET_STREAM on ONE stream must raise a stream-scoped
+                // [QuicStreamException] (the connection survives) rather than tearing it down with
+                // [QuicCloseException]. Network.framework gives the same (err_domain, err_code) —
+                // POSIX/57 (ENOTCONN) — for BOTH a peer stream reset AND a real connection close, so
+                // the error code can't discriminate (verified on macOS hardware). The reliable signal
+                // is the QUIC stream application error: nw_quic_get_stream_application_error returns the
+                // peer's reset code on a stream reset, or UINT64_MAX otherwise. (Issue #134.)
                 nw_helper_quic_send(nwConn, nsData, NSNumber(bool = false)) { _, errorCode, _ ->
                     if (errorCode != 0) {
-                        if (cont.isActive) {
-                            cont.resumeWithException(
-                                QuicCloseException(
-                                    QuicError.InternalError("QUIC write error: $errorCode"),
-                                    "QUIC write error: $errorCode",
-                                ),
-                            )
-                        }
+                        if (cont.isActive) cont.resumeWithException(writeError(errorCode))
                     } else {
                         if (cont.isActive) cont.resume(BytesWritten(remaining))
                     }
@@ -557,6 +550,29 @@ internal class NWQuicByteStream(
         // NW stamps the error onto the stream metadata and cancels (no FIN); fire-and-
         // forget, so no send-complete callback to await (unlike sendFin). (Issue #81.)
         nw_helper_quic_reset_stream(nwConn, errorCode.toULong())
+    }
+
+    /**
+     * Classify a non-zero NW send error: a peer stream reset (the stream carries a QUIC
+     * application error code) is a stream-scoped [QuicStreamException] — the connection stays
+     * usable; anything else is a connection-level [QuicCloseException]. A peer reset surfacing
+     * on our write side means the peer no longer wants our data (STOP_SENDING semantics), so the
+     * abort is reported as [QuicStreamAbort.StopSending] carrying the peer's code. (Issue #134.)
+     */
+    private fun writeError(errorCode: Int): Throwable {
+        val appErr = nw_helper_quic_stream_application_error(nwConn)
+        return if (appErr != ULong.MAX_VALUE) {
+            QuicStreamException(
+                streamId,
+                QuicStreamAbort.StopSending(appErr.toLong()),
+                "QUIC stream $streamId reset by peer (application error $appErr)",
+            )
+        } else {
+            QuicCloseException(
+                QuicError.InternalError("QUIC write error: $errorCode"),
+                "QUIC write error: $errorCode",
+            )
+        }
     }
 
     /**

@@ -223,7 +223,8 @@ private suspend fun filterPhantomAndEnqueue(
     acceptedStreamId: AtomicLong,
 ) {
     nw_helper_quic_start(streamConn)
-    val raw = NWQuicByteStream(streamConn)
+    val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
+    val raw = NWQuicByteStream(streamConn, sid.id)
     val first =
         try {
             raw.read(PHANTOM_PEEK_TIMEOUT)
@@ -233,7 +234,7 @@ private suspend fun filterPhantomAndEnqueue(
     when (first) {
         is ReadResult.Data ->
             incomingStreams.trySend(
-                QuicByteStream(QuicStreamId(acceptedStreamId.getAndAdd(4)), PrefixedByteStream(first, raw)),
+                QuicByteStream(sid, PrefixedByteStream(first, raw)),
             )
         else -> nw_helper_quic_cancel(streamConn) // hidden phantom / empty / reset → drop
     }

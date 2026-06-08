@@ -236,6 +236,77 @@ abstract class QuicServerTestSuite {
             }
         }
 
+    /**
+     * A peer resetting ONE stream must surface to a write on that stream as a stream-scoped
+     * [QuicStreamException] (never a connection-level [QuicCloseException]), and the connection
+     * must stay usable — a fresh stream still round-trips. This is the end-to-end contract behind
+     * the quiche driver's STOP_SENDING/RESET split (#133) and its Apple equivalent (#134): the
+     * Apple write path previously mapped every send error to [QuicCloseException], tearing down a
+     * healthy connection when a peer cancelled a single stream.
+     */
+    @Test
+    fun peerStreamResetSurfacesAsStreamErrorAndConnectionStaysUsable() =
+        runQuicTest {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                    val serverReadFirst = CompletableDeferred<Unit>()
+                    val serverJob =
+                        launch {
+                            connections {
+                                // First stream: read the priming byte, then abruptly reset it.
+                                val s1 = acceptStream()
+                                s1.read(5.seconds)
+                                serverReadFirst.complete(Unit)
+                                s1.reset(0x10cL) // HTTP/3 REQUEST_CANCELLED → STOP_SENDING toward the client's writes
+                                // Second stream: prove the connection survived by echoing it.
+                                val s2 = acceptStream()
+                                val d = s2.read(5.seconds)
+                                if (d is ReadResult.Data) s2.write(d.buffer, 5.seconds)
+                                s2.close()
+                            }
+                        }
+                    delay(100)
+
+                    try {
+                        withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                            val s1 = openStream()
+                            val hello = BufferFactory.deterministic().allocate(5)
+                            hello.writeString("hello", Charset.UTF8)
+                            hello.resetForRead()
+                            s1.write(hello, 5.seconds)
+                            serverReadFirst.await()
+
+                            // The peer reset must surface here as a STREAM error, not a connection close.
+                            assertFailsWith<QuicStreamException>(
+                                "a peer stream reset must be a QuicStreamException, not a connection-level QuicCloseException",
+                            ) {
+                                repeat(50) {
+                                    val ping = BufferFactory.deterministic().allocate(4)
+                                    ping.writeString("ping", Charset.UTF8)
+                                    ping.resetForRead()
+                                    s1.write(ping, 5.seconds)
+                                    delay(100)
+                                }
+                            }
+
+                            // Connection survived: a fresh stream still round-trips.
+                            val s2 = openStream()
+                            val world = BufferFactory.deterministic().allocate(5)
+                            world.writeString("world", Charset.UTF8)
+                            world.resetForRead()
+                            s2.write(world, 5.seconds)
+                            val resp = s2.read(5.seconds)
+                            assertTrue(resp is ReadResult.Data, "fresh stream after a peer stream-reset must round-trip, got $resp")
+                            assertEquals("world", resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8))
+                            s2.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
     // --- Pinned CA trust (#99) ---
     // QuicOptions.trustedCaCertificatesPem must drive real chain validation on the
     // quiche-backed targets (JVM/Android/Linux), matching the Apple path. Before #99 the
