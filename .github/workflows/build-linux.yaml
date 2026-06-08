@@ -507,7 +507,15 @@ jobs:
           REPORT_ROOT=socket-quic/build/test-results
           OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
           SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          # Capture WHY each test skipped, not just the count. The marker is
+          # `harness SKIP: <Exception>: <message>` inside the JUnit XML's
+          # <system-out>; bound the match to [^<&] so it stops at the next XML
+          # entity/tag (works for both CDATA and escaped reports). Dedup +
+          # count so a recurring connection failure shows as one line.
+          SKIP_REASONS=$(grep -rhoE 'harness SKIP: [^<&]+' "$REPORT_ROOT" 2>/dev/null \
+            | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
           echo "QuicHarnessIntegrationTests on Linux x64 JVM: OK=$OK, SKIP=$SKIP"
+          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
 
           mkdir -p /tmp/quic-audit
           cat > /tmp/quic-audit/linux-jvm.txt <<EOF
@@ -516,6 +524,13 @@ jobs:
           ok=$OK
           skip=$SKIP
           EOF
+          # Persist the distinct reasons as `reason=` lines so the cross-platform
+          # summary job can render them without a log dive (the per-key greps
+          # there are anchored, so extra lines are harmless).
+          if [ -n "$SKIP_REASONS" ]; then
+            while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
+              >> /tmp/quic-audit/linux-jvm.txt
+          fi
 
           {
             echo "## QUIC harness — Linux x64 JVM"
@@ -526,6 +541,15 @@ jobs:
             if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
               echo ""
               echo "⚠️ Every QuicHarnessIntegrationTest skipped — Linux x64 JVM QUIC client not actually validated."
+            fi
+            if [ -n "$SKIP_REASONS" ]; then
+              echo ""
+              echo "<details><summary>Skip reasons (Linux x64 JVM)</summary>"
+              echo ""
+              echo '```'
+              echo "$SKIP_REASONS"
+              echo '```'
+              echo "</details>"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -768,11 +792,18 @@ jobs:
           LOG=/tmp/socket-quic-arm64.log
           OK=0
           SKIP=0
+          SKIP_REASONS=""
           if [ -f "$LOG" ]; then
             OK=$(grep -c 'harness OK' "$LOG" || true)
             SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
+            # Distinct skip reasons (dedup + count) so a recurring failure is
+            # one line. Source is the plain captured stdout, so grep the marker
+            # straight through to end-of-line.
+            SKIP_REASONS=$(grep -hoE 'harness SKIP: .+' "$LOG" 2>/dev/null \
+              | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
           fi
           echo "QuicHarnessIntegrationTests on linuxArm64: OK=$OK, SKIP=$SKIP"
+          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
 
           mkdir -p /tmp/quic-audit
           cat > /tmp/quic-audit/linux-arm64.txt <<EOF
@@ -781,6 +812,10 @@ jobs:
           ok=$OK
           skip=$SKIP
           EOF
+          if [ -n "$SKIP_REASONS" ]; then
+            while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
+              >> /tmp/quic-audit/linux-arm64.txt
+          fi
 
           {
             echo "## QUIC harness — Linux ARM64 (native)"
@@ -791,6 +826,15 @@ jobs:
             if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
               echo ""
               echo "⚠️ Every QuicHarnessIntegrationTest skipped — Linux ARM64 client not actually validated."
+            fi
+            if [ -n "$SKIP_REASONS" ]; then
+              echo ""
+              echo "<details><summary>Skip reasons (Linux ARM64)</summary>"
+              echo ""
+              echo '```'
+              echo "$SKIP_REASONS"
+              echo '```'
+              echo "</details>"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
