@@ -431,6 +431,23 @@ jobs:
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Snapshot the JVM QuicHarnessIntegrationTests OK/SKIP markers BEFORE the
+      # malloc-check step below re-runs :socket-quic:jvmTest with only a handful
+      # of classes — that rerun OVERWRITES test-results/jvmTest, erasing the
+      # harness markers the audit needs (this is what made the audit read ok=0
+      # and falsely report "all skipped"). Snapshot the jvmTest dir ONLY, so the
+      # Node/JS "platform unsupported" skips written earlier by :jsNodeTest can't
+      # be miscounted into the JVM lane. Captures the JDK17 backend run (the last
+      # full jvmTest); all three JVM backends hit the same live harness, so its
+      # outcome represents the JVM client. `!cancelled()` mirrors the test steps.
+      - name: Snapshot JVM QUIC harness markers (pre-malloc-check)
+        if: ${{ !cancelled() }}
+        run: |
+          grep -rhoE 'harness (OK|SKIP: [^<&]+)' \
+            socket-quic/build/test-results/jvmTest 2>/dev/null \
+            > /tmp/quic-harness-jvm.log || true
+          echo "snapshotted $(wc -l < /tmp/quic-harness-jvm.log 2>/dev/null || echo 0) JVM harness markers"
+
       # Heap-corruption / UAF guard. The worst QUIC bug class (the 3.2.12 JNI
       # stream-command use-after-free that corrupted the glibc free-list) only
       # reproduces under glibc's malloc consistency checks — NOT ASAN, because
@@ -504,15 +521,18 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          REPORT_ROOT=socket-quic/build/test-results
-          OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
-          # Capture WHY each test skipped, not just the count. The marker is
-          # `harness SKIP: <Exception>: <message>` inside the JUnit XML's
-          # <system-out>; bound the match to [^<&] so it stops at the next XML
-          # entity/tag (works for both CDATA and escaped reports). Dedup +
-          # count so a recurring connection failure shows as one line.
-          SKIP_REASONS=$(grep -rhoE 'harness SKIP: [^<&]+' "$REPORT_ROOT" 2>/dev/null \
+          # Read the pre-malloc-check JVM-only snapshot (see the snapshot step
+          # above), NOT the live test-results tree: scoped to jvmTest so the
+          # Node/JS "platform unsupported" skips never count here, and immune to
+          # the malloc-check rerun overwriting test-results/jvmTest. The snapshot
+          # already holds one marker per line.
+          REPORT_ROOT=/tmp/quic-harness-jvm.log
+          OK=$(grep -c 'harness OK' "$REPORT_ROOT" 2>/dev/null || true); OK=${OK:-0}
+          SKIP=$(grep -c 'harness SKIP' "$REPORT_ROOT" 2>/dev/null || true); SKIP=${SKIP:-0}
+          # Capture WHY each test skipped, not just the count, so a real
+          # connection failure (vs an intentional gap) is legible without a log
+          # dive. Dedup + count so a recurring failure shows as one line.
+          SKIP_REASONS=$(grep -hoE 'harness SKIP: .+' "$REPORT_ROOT" 2>/dev/null \
             | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
           echo "QuicHarnessIntegrationTests on Linux x64 JVM: OK=$OK, SKIP=$SKIP"
           [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
@@ -563,6 +583,69 @@ jobs:
         with:
           name: quic-audit-linux-jvm
           path: /tmp/quic-audit/linux-jvm.txt
+          retention-days: 1
+          if-no-files-found: warn
+
+      # Node/JS runs the SAME common QuicHarnessIntegrationTests (via the earlier
+      # :socket-quic:jsNodeTest step), but QUIC isn't implemented on JS yet, so
+      # every harness test self-skips with a "platform unsupported" marker —
+      # intentional, like the Apple-simulator gate. Audit Node as its OWN matrix
+      # lane and count those as intentional skips, so the interop summary renders
+      # it "ℹ️ platform gap (known)". This is the fix for the false "all skipped":
+      # the JS skips used to be swept into the JVM lane (the old audit grepped the
+      # whole test-results tree) and failed the summary. jsNodeTest's results are
+      # written before the JVM steps and never overwritten, so no snapshot needed.
+      - name: Audit QUIC harness coverage on Node (JS)
+        if: always()
+        continue-on-error: true
+        run: |
+          REPORT_ROOT=socket-quic/build/test-results/jsNodeTest
+          OK=$(grep -rh 'harness OK' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          SKIP=$(grep -rh 'harness SKIP' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          # Skips via the "platform unsupported" marker are the known JS gap, not
+          # a regression — counted as intentional so the summary renders ℹ️.
+          INTENTIONAL=$(grep -rh 'harness SKIP: platform unsupported' "$REPORT_ROOT" 2>/dev/null | wc -l | tr -d ' ')
+          SKIP_REASONS=$(grep -rhoE 'harness SKIP: [^<&]+' "$REPORT_ROOT" 2>/dev/null \
+            | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
+          echo "QuicHarnessIntegrationTests on Node (JS): OK=$OK, SKIP=$SKIP, INTENTIONAL=$INTENTIONAL"
+          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
+
+          mkdir -p /tmp/quic-audit
+          cat > /tmp/quic-audit/js.txt <<EOF
+          platform=js
+          launched=true
+          ok=$OK
+          skip=$SKIP
+          intentional_skip=$INTENTIONAL
+          EOF
+          if [ -n "$SKIP_REASONS" ]; then
+            while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
+              >> /tmp/quic-audit/js.txt
+          fi
+
+          {
+            echo "## QUIC harness — Node (JS)"
+            echo ""
+            echo "| OK | SKIP | INTENTIONAL |"
+            echo "|---|---|---|"
+            echo "| $OK | $SKIP | $INTENTIONAL |"
+            if [ -n "$SKIP_REASONS" ]; then
+              echo ""
+              echo "<details><summary>Skip reasons (Node JS)</summary>"
+              echo ""
+              echo '```'
+              echo "$SKIP_REASONS"
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Node (JS) QUIC audit artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quic-audit-js
+          path: /tmp/quic-audit/js.txt
           retention-days: 1
           if-no-files-found: warn
 

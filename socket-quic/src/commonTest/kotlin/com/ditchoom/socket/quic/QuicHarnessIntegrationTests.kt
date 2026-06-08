@@ -118,6 +118,23 @@ class QuicHarnessIntegrationTests {
             // tests are actually running. On Apple a trust/hostname reject (the
             // pinning verify_block returning false) surfaces here as a clean
             // handshake-failed exception, not a K/N crash.
+            logHarnessSkip(t)
+        }
+    }
+
+    /**
+     * Emit the grep-able skip marker for a [withHarness] failure, classified for
+     * the CI interop audit. An [UnsupportedOperationException] means QUIC isn't
+     * implemented on this platform yet (JS/Wasm) — a known, intentional gap, not
+     * a connection regression — so it gets the "platform unsupported" marker the
+     * audit counts as intentional (rendered ℹ️ "platform gap (known)"), mirroring
+     * the Apple-simulator gate. Any other throwable is a real connect/handshake
+     * failure and gets the plain marker (❌ when every test on a lane hits it).
+     */
+    private fun logHarnessSkip(t: Throwable) {
+        if (t is UnsupportedOperationException) {
+            println("[QuicHarnessIntegrationTests] harness SKIP: platform unsupported: ${t.message}")
+        } else {
             println("[QuicHarnessIntegrationTests] harness SKIP: ${t::class.simpleName}: ${t.message}")
         }
     }
@@ -248,7 +265,7 @@ class QuicHarnessIntegrationTests {
             )
             println("[QuicHarnessIntegrationTests] harness OK")
         } catch (t: Throwable) {
-            println("[QuicHarnessIntegrationTests] harness SKIP: ${t::class.simpleName}: ${t.message}")
+            logHarnessSkip(t)
         }
     }
 
