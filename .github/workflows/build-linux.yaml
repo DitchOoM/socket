@@ -521,15 +521,52 @@ jobs:
 
       # Deeper target: the full server packet-recv state machine (accept + Connection::recv),
       # not just the public-header parse — ~5x the edge coverage locally (cov 835 vs 162). Same
-      # ASAN/gating model. BoringSSL-C ASAN (-PquicFuzzBoringSslAsan) is intentionally NOT enabled
-      # here yet: it needs a clang toolchain matched to the Rust ASAN runtime and hasn't been
-      # verified, so it stays opt-in until proven on a clang host (then promote it here).
+      # ASAN/gating model. This lane runs Rust-ASAN only; the BoringSSL-C ASAN path is proven in
+      # the separate, non-gating step below before it's promoted onto this gating lane.
       - name: Fuzz quiche server recv path (cargo-fuzz ASAN, time-boxed)
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: >-
           ./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Prove the BoringSSL-C ASAN path (-PquicFuzzBoringSslAsan) actually instruments BoringSSL, not
+      # just quiche's Rust. clang is required: its LLVM ASAN runtime must match cargo-fuzz's; gcc's
+      # libasan can't coexist with it in one binary. The author added the wiring without a clang host
+      # to verify it, so this step IS the verification.
+      #
+      # continue-on-error during bring-up (same convention as the build-windows job): the clang/Rust
+      # ASAN-runtime match is unproven, so a red here must not block PRs. Drop continue-on-error once
+      # green >=2 runs, then move -PquicFuzzBoringSslAsan onto the conn_recv lane above.
+      - name: Install clang (for BoringSSL ASAN)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served from a
+          # prior uninstrumented cache) — otherwise the proof below could read a stale archive.
+          rm -rf socket-quic/fuzz/native/target
+          # Build + run conn_recv with BoringSSL ASAN on. A clang/Rust ASAN-runtime mismatch would fail
+          # at link or first execution here, so a clean run already proves the instrumented binary works.
+          ./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
+            --no-configuration-cache ${{ inputs.gradle-args }}
+          # Now prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
+          # interceptors. An uninstrumented BoringSSL has zero __asan_ symbols, so no match => the CFLAGS
+          # never reached the C build (ASAN would cover only quiche's Rust) and we fail loudly.
+          bssl=$(find socket-quic/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
+          if [ -z "$bssl" ]; then echo "::error::no BoringSSL archive found under the fuzz target dir"; exit 1; fi
+          echo "Inspecting $bssl"
+          if nm "$bssl" 2>/dev/null | grep -q '__asan_'; then
+            echo "PROVEN: BoringSSL is ASAN-instrumented (__asan_ symbols present in $bssl)"
+          else
+            echo "::error::BoringSSL archive has NO __asan_ symbols — CFLAGS did not propagate to the C build; ASAN covers quiche's Rust only"
+            exit 1
+          fi
 
       - name: Upload fuzzing crash repros
         if: failure()
