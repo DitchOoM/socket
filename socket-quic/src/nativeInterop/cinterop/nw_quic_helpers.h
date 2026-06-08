@@ -202,6 +202,51 @@ static inline void nw_helper_quic_force_cancel(nw_connection_t _Nonnull connecti
     nw_connection_force_cancel(connection);
 }
 
+/**
+ * Abruptly reset a QUIC stream with an application error code — the wire
+ * equivalent of quiche's RESET_STREAM (send side) + STOP_SENDING (read side)
+ * (RFC 9000 §19.4/§19.5), as opposed to the graceful FIN of nw_helper_quic_send
+ * with is_complete=true.
+ *
+ * Network.framework has no dedicated reset call: you stamp the application error
+ * onto the stream's QUIC metadata (nw_quic_set_stream_application_error) and then
+ * cancel the stream's nw_connection. NW emits RESET_STREAM/STOP_SENDING carrying
+ * that error_code instead of a clean close. If the metadata can't be copied (the
+ * stream is already gone) we still cancel so teardown is unconditional. (Issue #81.)
+ */
+static inline void nw_helper_quic_reset_stream(
+    nw_connection_t _Nonnull connection,
+    uint64_t error_code)
+{
+    nw_protocol_definition_t quic_def = nw_protocol_copy_quic_definition();
+    nw_protocol_metadata_t metadata =
+        nw_connection_copy_protocol_metadata(connection, quic_def);
+    if (metadata) {
+        nw_quic_set_stream_application_error(metadata, error_code);
+    }
+    nw_connection_cancel(connection);
+}
+
+/**
+ * The QUIC application error code the peer sent when it reset this stream
+ * (RESET_STREAM / STOP_SENDING), or UINT64_MAX if the stream wasn't reset.
+ *
+ * Used by the receive path to tell an abrupt stream reset (a non-MAX app error →
+ * ReadResult.Reset) apart from a transport-level close such as an idle timeout or
+ * connection close (no stream app error → ReadResult.End). Both surface to
+ * nw_connection_receive as an nw_error, so the error alone can't distinguish them.
+ * (Issue #81.)
+ */
+static inline uint64_t nw_helper_quic_stream_application_error(
+    nw_connection_t _Nonnull connection)
+{
+    nw_protocol_definition_t quic_def = nw_protocol_copy_quic_definition();
+    nw_protocol_metadata_t metadata =
+        nw_connection_copy_protocol_metadata(connection, quic_def);
+    if (!metadata) return UINT64_MAX;
+    return nw_quic_get_stream_application_error(metadata);
+}
+
 #pragma mark - QUIC Multiplex Group (streams + datagram flow) — RFC 9221 (issue #109)
 
 /**
