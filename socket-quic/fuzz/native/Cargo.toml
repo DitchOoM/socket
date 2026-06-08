@@ -1,0 +1,33 @@
+# Native ASAN + coverage-guided fuzzing of quiche's Rust parse path.
+#
+# This is the "separate effort" the JVM Jazzer fuzzer (quicHeaderFuzz / HeaderInfoFuzzer.kt) and
+# socket-quic/fuzz/README.md call for: JVM Jazzer can't instrument native quiche, so its libFuzzer
+# coverage counter plateaus immediately and it only catches crashes. cargo-fuzz builds quiche itself
+# with SanitizerCoverage + AddressSanitizer, so libFuzzer gets real edge coverage of the Rust parser
+# AND ASAN catches the heap-overflow / use-after-free class the glibc malloc-check lane only partially
+# sees. Same quiche version (0.28.0) as the shipped library (gradle/libs.versions.toml).
+[package]
+name = "quiche-native-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Pinned to the same version the library ships. boringssl-vendored (a quiche default feature) lets the
+# fuzz crate build standalone; the `ffi` C API isn't needed since we fuzz the Rust API directly.
+quiche = "0.28.0"
+
+# Release-with-debug so ASAN/libFuzzer reports carry symbolized stacks while still optimizing the parser.
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "header_info"
+path = "fuzz_targets/header_info.rs"
+test = false
+doc = false
+bench = false

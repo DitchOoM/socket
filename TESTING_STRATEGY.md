@@ -556,8 +556,23 @@ inputs and `crash-*` repros under `build/fuzz/` (gitignored).
   repro input. A local 25 s run executes ~31 M datagrams through `headerInfo` at ~1.2 M exec/s.
 - **No new test dependency.** The target uses the `byte[]` entry-point form, so nothing in jvmTest compiles
   against Jazzer; the driver is pulled into a dedicated, runtime-only `jazzer` configuration.
-- **Future depth.** Coverage-guided fuzzing *of the parser itself* would need an ASAN libFuzzer build of
-  quiche (a separate, larger effort) — tracked as the next step beyond this JVM crash-fuzzer.
+### 8b′. Native ASAN + coverage-guided fuzzing (cargo-fuzz)
+
+The depth the JVM lane can't reach. `socket-quic/fuzz/native/` is a cargo-fuzz crate that builds **quiche
+itself** with SanitizerCoverage + AddressSanitizer; its `header_info` target drives
+`quiche::Header::from_slice` — the Rust parser behind the same `quiche_header_info` FFI — from the **same**
+committed seed corpus. Run via `:socket-quic:quicHeaderFuzzNative` (`-PquicFuzzSeconds=<n>`), or
+`cargo +nightly fuzz run --fuzz-dir socket-quic/fuzz/native header_info`.
+
+- **Real coverage, not a plateau.** Because quiche is instrumented here, libFuzzer's `cov:` counter moves:
+  a 30 s local run grew the corpus from 12 seeds to ~47 inputs (`cov: 162 ft: 288`) at ~477 k exec/s.
+- **ASAN catches the memory-error class** (heap-overflow / UAF) in quiche's Rust path directly — see §8c for
+  why the JVM/JNI lane can only *approximate* this with glibc malloc-check.
+- **Opt-in prereqs:** nightly Rust + `cargo install cargo-fuzz` (not auto-installed, like the Android NDK
+  tasks). quiche is pinned to the shipped version; CI runs it time-boxed and gating on `build-linux`.
+- **Still to come:** the vendored BoringSSL **C** isn't ASAN-built yet (needs `-fsanitize=address` CFLAGS
+  through quiche's `build.rs`); a `quiche_conn_recv` target exercising crypto would want that. The header
+  parse is pure Rust, so the current target is fully sanitized for what it fuzzes.
 
 ### 8c. Heap-corruption / UAF guard (glibc malloc check)
 

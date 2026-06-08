@@ -499,6 +499,26 @@ jobs:
           ./gradlew :socket-quic:quicHeaderFuzz -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Native ASAN + coverage-guided lane: cargo-fuzz builds quiche with
+      # SanitizerCoverage + AddressSanitizer, so libFuzzer gets REAL edge
+      # coverage of the parser (the JVM lane above plateaus — it can't
+      # instrument native quiche) and ASAN catches the heap-overflow / UAF
+      # class. nightly + cargo-fuzz are installed here only (opt-in locally).
+      # Time-boxed and gating like the Jazzer lane; an ASAN fault / crash fails
+      # the job and its repro is uploaded below. `if: !cancelled()` for the
+      # same independence reason.
+      - name: Install nightly Rust + cargo-fuzz
+        if: ${{ !cancelled() }}
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz quiche::Header::from_slice (cargo-fuzz ASAN, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic:quicHeaderFuzzNative -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       - name: Upload fuzzing crash repros
         if: failure()
         uses: actions/upload-artifact@v4
@@ -508,6 +528,7 @@ jobs:
             socket-quic/build/fuzz/header-info/crash-*
             socket-quic/build/fuzz/header-info/oom-*
             socket-quic/build/fuzz/header-info/timeout-*
+            socket-quic/fuzz/native/artifacts/**
           if-no-files-found: ignore
 
       # Audit step: mirror the macOS + Linux ARM64 audits — count
