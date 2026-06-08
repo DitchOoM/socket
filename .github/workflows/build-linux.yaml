@@ -519,6 +519,18 @@ jobs:
           ./gradlew :socket-quic:quicHeaderFuzzNative -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Deeper target: the full server packet-recv state machine (accept + Connection::recv),
+      # not just the public-header parse — ~5x the edge coverage locally (cov 835 vs 162). Same
+      # ASAN/gating model. BoringSSL-C ASAN (-PquicFuzzBoringSslAsan) is intentionally NOT enabled
+      # here yet: it needs a clang toolchain matched to the Rust ASAN runtime and hasn't been
+      # verified, so it stays opt-in until proven on a clang host (then promote it here).
+      - name: Fuzz quiche server recv path (cargo-fuzz ASAN, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       - name: Upload fuzzing crash repros
         if: failure()
         uses: actions/upload-artifact@v4

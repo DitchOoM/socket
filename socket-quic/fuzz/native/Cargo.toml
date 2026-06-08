@@ -31,3 +31,12 @@ path = "fuzz_targets/header_info.rs"
 test = false
 doc = false
 bench = false
+
+# Deeper target: the server packet-recv state machine (accept + Connection::recv), not just the public
+# header parse. Pre-auth attack surface; with a clang toolchain the build also ASAN-instruments BoringSSL.
+[[bin]]
+name = "conn_recv"
+path = "fuzz_targets/conn_recv.rs"
+test = false
+doc = false
+bench = false

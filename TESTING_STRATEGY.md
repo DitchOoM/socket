@@ -559,20 +559,29 @@ inputs and `crash-*` repros under `build/fuzz/` (gitignored).
 ### 8b′. Native ASAN + coverage-guided fuzzing (cargo-fuzz)
 
 The depth the JVM lane can't reach. `socket-quic/fuzz/native/` is a cargo-fuzz crate that builds **quiche
-itself** with SanitizerCoverage + AddressSanitizer; its `header_info` target drives
-`quiche::Header::from_slice` — the Rust parser behind the same `quiche_header_info` FFI — from the **same**
-committed seed corpus. Run via `:socket-quic:quicHeaderFuzzNative` (`-PquicFuzzSeconds=<n>`), or
-`cargo +nightly fuzz run --fuzz-dir socket-quic/fuzz/native header_info`.
+itself** with SanitizerCoverage + AddressSanitizer. Two targets, both from the **same** committed seed
+corpus, both calling only quiche's *public Rust API*:
 
-- **Real coverage, not a plateau.** Because quiche is instrumented here, libFuzzer's `cov:` counter moves:
-  a 30 s local run grew the corpus from 12 seeds to ~47 inputs (`cov: 162 ft: 288`) at ~477 k exec/s.
+- **`header_info`** — `quiche::Header::from_slice`, the public-header parse on every datagram (behind the
+  same `quiche_header_info` FFI). `cov: 162 ft: 288`, ~477 k exec/s.
+- **`conn_recv`** — `quiche::accept` + `Connection::recv`, the full server recv state machine (the pre-auth
+  bytes-from-anyone surface). ~5× deeper (`cov: 835 ft: 1363`); its discovered dictionary surfaces X.509
+  cert-DN strings, i.e. the recv path genuinely reaching TLS/cert parsing.
+
+Run via `:socket-quic:quicHeaderFuzzNative` / `:socket-quic:quicConnRecvFuzzNative` (`-PquicFuzzSeconds=<n>`).
+Both are time-boxed, gating CI lanes on `build-linux`.
+
+- **Real coverage, not a plateau.** Because quiche is instrumented, libFuzzer's `cov:` counter moves — the
+  feedback the JVM lane can't produce (it can't instrument native quiche).
 - **ASAN catches the memory-error class** (heap-overflow / UAF) in quiche's Rust path directly — see §8c for
   why the JVM/JNI lane can only *approximate* this with glibc malloc-check.
 - **Opt-in prereqs:** nightly Rust + `cargo install cargo-fuzz` (not auto-installed, like the Android NDK
-  tasks). quiche is pinned to the shipped version; CI runs it time-boxed and gating on `build-linux`.
-- **Still to come:** the vendored BoringSSL **C** isn't ASAN-built yet (needs `-fsanitize=address` CFLAGS
-  through quiche's `build.rs`); a `quiche_conn_recv` target exercising crypto would want that. The header
-  parse is pure Rust, so the current target is fully sanitized for what it fuzzes.
+  tasks). quiche pinned to the shipped version; `Cargo.lock` committed for reproducibility.
+- **BoringSSL-C ASAN (`-PquicFuzzBoringSslAsan`).** By default these targets ASAN quiche's **Rust** only.
+  The flag also ASAN-builds the vendored BoringSSL **C** (`CC=clang` + `-fsanitize=address,fuzzer-no-link`)
+  so a memory bug in the crypto code `conn_recv` exercises is caught too. It needs **clang** (gcc's libasan
+  won't coexist with cargo-fuzz's LLVM ASAN runtime) and is **not yet verified** — kept opt-in and out of
+  the gating lane until proven on a clang host.
 
 ### 8c. Heap-corruption / UAF guard (glibc malloc check)
 

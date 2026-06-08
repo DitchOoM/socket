@@ -34,27 +34,43 @@ fuzzing of the parser, use the native lane below.
 ## Native lane — ASAN + coverage-guided (`cargo-fuzz`)
 
 `fuzz/native/` is a cargo-fuzz crate that builds **quiche itself** with SanitizerCoverage +
-AddressSanitizer, so libFuzzer gets real edge coverage of the Rust parser and ASAN catches the
-heap-overflow / use-after-free class the glibc malloc-check lane only partially sees. The target
-(`fuzz_targets/header_info.rs`) drives `quiche::Header::from_slice` — the Rust parser behind the same
-`quiche_header_info` FFI the JVM target hits — and starts from the **same** committed seed corpus.
+AddressSanitizer, so libFuzzer gets real edge coverage of quiche's Rust and ASAN catches the
+heap-overflow / use-after-free class the glibc malloc-check lane only partially sees. Both targets start
+from the **same** committed seed corpus.
+
+| Target | Drives | Surface |
+|--------|--------|---------|
+| `header_info` | `quiche::Header::from_slice` | the public-header parse on every datagram (behind the `quiche_header_info` FFI the JVM target hits) |
+| `conn_recv` | `quiche::accept` + `Connection::recv` | the **full server recv state machine** — packet-number decode, decryption attempt, frame parsing; the pre-auth bytes-from-anyone surface |
 
 ```bash
-# default 60s (Gradle wrapper — reuses the seed corpus, writes new inputs/repros under build/)
+# default 60s (Gradle wrappers — reuse the seed corpus, write new inputs/repros under build/)
 ./gradlew :socket-quic:quicHeaderFuzzNative
-./gradlew :socket-quic:quicHeaderFuzzNative -PquicFuzzSeconds=600
+./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzSeconds=600
 
 # or invoke cargo-fuzz directly
-cargo +nightly fuzz run --fuzz-dir socket-quic/fuzz/native header_info socket-quic/fuzz/corpus/header-info
+cargo +nightly fuzz run --fuzz-dir socket-quic/fuzz/native conn_recv socket-quic/fuzz/corpus/header-info
 ```
 
 - **Prereqs (opt-in, not auto-installed):** a nightly Rust toolchain and `cargo install cargo-fuzz`.
-- **Coverage works here:** a 30s local run grew the corpus from the 12 committed seeds to ~47 inputs
-  (`cov: 162 ft: 288`) at ~477k exec/s — the feedback the JVM lane can't produce.
+- **Coverage works here:** `header_info` grew the corpus 12→47 inputs (`cov: 162 ft: 288`); `conn_recv`
+  reaches ~5× deeper (`cov: 835 ft: 1363`) and its discovered dictionary surfaces X.509 cert-DN strings —
+  the recv path genuinely exercising TLS/certificate parsing. Both ran clean (no ASAN fault).
 - **quiche is pinned** to the shipped version (`fuzz/native/Cargo.toml`, kept in sync with
   `gradle/libs.versions.toml`). `Cargo.lock` is committed for reproducible fuzz builds.
+- **API surface:** the targets call only quiche's *public Rust API* — no new FFI or `socket-quic` surface.
 
-> Note: this lane ASAN-instruments quiche's **Rust** path. The vendored BoringSSL C is not yet
-> ASAN-built (it needs `-fsanitize=address` CFLAGS through quiche's `build.rs`); a future
-> `quiche_conn_recv` target that exercises crypto would want that. The header parse is pure Rust, so
-> the current target gets full sanitizer coverage of what it fuzzes.
+### Optional: ASAN-instrument the vendored BoringSSL C (`-PquicFuzzBoringSslAsan`)
+
+By default these targets ASAN-instrument quiche's **Rust** path. To also catch memory bugs in the
+BoringSSL **C** crypto code that `conn_recv` exercises:
+
+```bash
+./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan
+```
+
+This sets `CC=clang CXX=clang++ CFLAGS=-fsanitize=address,fuzzer-no-link` for quiche's BoringSSL build.
+It requires **clang specifically** — gcc's `libasan` won't coexist with the LLVM ASAN runtime cargo-fuzz
+links for the Rust side. This option was **not verified in the session that added it** (no clang
+available there), so it's kept opt-in and out of the gating CI lane; promote it once it's proven on a
+clang host. The header parse is pure Rust, so `header_info` doesn't need it.
