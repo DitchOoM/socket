@@ -735,6 +735,26 @@ class ReactiveDriverTests {
         }
 
     @Test
+    fun keepAlive_manualClock_isDeterministicUnderRepeatedFires() =
+        runQuicTest {
+            // Proves ManualDriverClock.advance() is race-free: it must return only AFTER the driver has fully
+            // processed each fire. Asserting the EXACT cumulative count after EVERY one of many fires would
+            // fail on the first slipped iteration if advance() raced the driver's timer branch.
+            val api = StubQuicheApi()
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = 1.seconds, clock = clock)
+            driver.start(this)
+            try {
+                repeat(200) { i ->
+                    clock.advance(1.seconds)
+                    assertEquals(i + 1, api.ackElicitingCount, "fire ${i + 1} not observed on return — advance() raced the timer branch")
+                }
+            } finally {
+                driver.commands.close()
+            }
+        }
+
+    @Test
     fun keepAlive_handsTimerToQuiche_whenQuicheTimeoutIsSooner() =
         runQuicTest {
             // When quiche's own timer (idle/loss recovery) is due before the keepalive deadline, the driver
