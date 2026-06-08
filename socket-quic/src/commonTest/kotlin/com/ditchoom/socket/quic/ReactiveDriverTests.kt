@@ -814,6 +814,28 @@ class ReactiveDriverTests {
             }
         }
 
+    // ---- Idle timeout ----
+
+    @Test
+    fun idleTimeout_quicheClose_transitionsDriverToClosedAndClosesCommands() =
+        runQuicTest {
+            // The terminal path the wall-clock integration test (QuicIdleTimeoutTestSuite) covers, made
+            // deterministic: quiche's idle timer fires, quiche idle-closes, and the driver must transition to
+            // Closed AND close its command channel (the coupled signal a parked read keys off to return End).
+            // No keepalive (so the fire is handed to quiche); closeOnTimeout makes that fire idle-close.
+            val api = StubQuicheApi()
+            api.connTimeout = 50.milliseconds
+            api.closeOnTimeout = true
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = null, clock = clock)
+            driver.start(this)
+            // Terminal fire: the driver closes and never re-arms, so synchronise on the Closed state, not a re-arm.
+            clock.fireExpectingNoRearm(50.milliseconds)
+            withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Closed } }
+            assertTrue(driver.commands.isClosedForSend, "command channel must close coupled with the Closed state")
+            assertEquals(1, api.onTimeoutCount, "the idle timer fire should have been handed to quiche")
+        }
+
     // ---- Helpers ----
 
     private suspend fun sendOpenStream(driver: QuicheDriver): StreamSlot {

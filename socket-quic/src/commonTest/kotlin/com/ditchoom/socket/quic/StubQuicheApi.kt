@@ -289,8 +289,12 @@ internal class StubQuicheApi : QuicheApi {
     var onTimeoutCount = 0
         private set
 
+    /** When set, a handed-to-quiche timer fire idle-closes the connection (mirrors quiche's idle timeout). */
+    @Volatile var closeOnTimeout = false
+
     override fun connOnTimeout(conn: QuicheConn) {
         onTimeoutCount++
+        if (closeOnTimeout) closed = true
     }
 
     /** Counts reactive-keepalive PINGs the driver scheduled, so tests can assert on them. */

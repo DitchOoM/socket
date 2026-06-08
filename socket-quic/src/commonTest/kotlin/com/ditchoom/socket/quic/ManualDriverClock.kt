@@ -68,4 +68,15 @@ internal class ManualDriverClock : DriverClock {
         ticks.send(Unit) // rendezvous: driver is parked, takes the tick, runs the branch, then re-arms
         rearmed.receive() // the re-arm — branch body has finished, its effect is now observable
     }
+
+    /**
+     * Fire the armed timer **without** waiting for a re-arm — for a fire that *terminates* the loop (e.g. an
+     * idle-close), after which the driver never parks again. Synchronise on the observable terminal effect
+     * instead (e.g. `driver.state.first { it is Closed }`), not on a re-arm that will never come.
+     */
+    suspend fun fireExpectingNoRearm(by: Duration) {
+        while (rearmed.tryReceive().isSuccess) { /* drain */ }
+        elapsed += by
+        ticks.send(Unit)
+    }
 }
