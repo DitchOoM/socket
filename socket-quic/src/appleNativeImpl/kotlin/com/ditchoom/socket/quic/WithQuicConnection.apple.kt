@@ -494,6 +494,16 @@ internal class NWQuicByteStream(
             val nsData = buffer.toNativeData().nsData
 
             suspendCancellableCoroutine { cont ->
+                // NB (stream-vs-connection conflation): the quiche driver maps a peer STOP_SENDING /
+                // RESET_STREAM on one stream to [QuicStreamException] (the connection survives) instead of
+                // [QuicCloseException]. Network.framework does NOT expose a documented per-stream-reset
+                // signal here distinct from a connection error — the send-complete callback surfaces only an
+                // (err_domain, err_code) pair (the helper already passes the domain; this call site ignores
+                // it). A POSIX ECONNRESET-domain code is the likely stream-reset shape, but mapping it to
+                // [QuicStreamException] requires verification on real Apple hardware: mis-classifying a
+                // genuine connection error as a recoverable stream error would mask a dead connection. Until
+                // that is confirmed on a Mac, this path conservatively reports [QuicCloseException]. See
+                // project_quic_stream_stopped_bug.
                 nw_helper_quic_send(nwConn, nsData, NSNumber(bool = false)) { _, errorCode, _ ->
                     if (errorCode != 0) {
                         if (cont.isActive) {

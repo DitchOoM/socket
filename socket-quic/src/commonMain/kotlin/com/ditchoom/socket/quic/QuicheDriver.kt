@@ -810,6 +810,19 @@ class QuicheDriver(
          * already maps it to [StreamRecvResult.Done].)
          */
         const val QUICHE_ERR_DONE = -1
+
+        /**
+         * `QUICHE_ERR_STREAM_STOPPED` (quiche.h). The peer sent STOP_SENDING (RFC 9000 §19.5): it no
+         * longer wants what we are writing to THIS stream. A stream-level event — the connection is
+         * healthy — so a stream *write* hitting it raises [QuicStreamException], not [QuicCloseException].
+         */
+        const val QUICHE_ERR_STREAM_STOPPED = -15
+
+        /**
+         * `QUICHE_ERR_STREAM_RESET` (quiche.h). The peer sent RESET_STREAM (RFC 9000 §19.4) on THIS
+         * stream. Like [QUICHE_ERR_STREAM_STOPPED], stream-scoped — the connection survives.
+         */
+        const val QUICHE_ERR_STREAM_RESET = -16
     }
 }
 
@@ -941,6 +954,17 @@ class DriverStreamAdapter(
                         else ->
                             if (written > 0) {
                                 return@withTimeout written
+                            } else if (written == QuicheDriver.QUICHE_ERR_STREAM_STOPPED ||
+                                written == QuicheDriver.QUICHE_ERR_STREAM_RESET
+                            ) {
+                                // Peer sent STOP_SENDING / RESET_STREAM on THIS stream (RFC 9000 §19.4-19.5).
+                                // Stream-scoped, not connection loss — surface a stream error the caller can
+                                // catch to abandon just this stream; the connection keeps every other stream.
+                                throw QuicStreamException(
+                                    streamId.id,
+                                    written,
+                                    "quiche stream ${streamId.id} aborted by peer (error $written)",
+                                )
                             } else {
                                 throw QuicCloseException(
                                     driver.closeReasonOr(QuicError.InternalError("quiche stream write error: $written")),

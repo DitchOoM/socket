@@ -13,6 +13,8 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicStreamException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -131,6 +133,9 @@ internal class Http3LoopbackServer(
                     if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(scope, stream)
                 } catch (_: Http3StreamException) {
                     // A single stream failing must not take the connection down.
+                } catch (_: QuicStreamException) {
+                    // Peer STOP_SENDING / RESET_STREAM on one stream (e.g. a client cancelling a server
+                    // PUSH, RFC 9114 §7.2.3) — stream-scoped, the connection stays up for other streams.
                 }
             }
         }
@@ -230,7 +235,16 @@ internal class Http3LoopbackServer(
             val allocated = allocatePushes(if (clientMaxPushId >= 0) serverPushes(request) else emptyList())
             for ((pushId, push) in allocated) writePushPromise(stream, pushId, push)
             writeResponse(stream, response)
-            for ((pushId, push) in allocated) writePushStream(scope, pushId, push)
+            for ((pushId, push) in allocated) {
+                try {
+                    writePushStream(scope, pushId, push)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: QuicStreamException) {
+                    // Client cancelled this push (STOP_SENDING) — abandon just this push stream and
+                    // continue emitting the others; the request response was already written above.
+                }
+            }
         } finally {
             reader.release()
         }
