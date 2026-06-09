@@ -43,9 +43,20 @@ class Http3ServerConnection internal constructor(
     private val options: ConnectionOptions,
     private val qpackCapacity: Long,
     private val onRequest: suspend Http3ServerExchange.() -> Unit,
+    // WebTransport participation (RFC 9220 + RFC 9297). Null disables it; non-null advertises the WT
+    // SETTINGS on the server control stream so clients see [Http3Settings.webTransportSupported].
+    private val webTransport: WebTransportOptions? = null,
+    // Handles incoming Extended CONNECT (`:protocol=webtransport`) requests when [webTransport] is
+    // enabled — accept() or reject() the session inside. Null ⇒ every WebTransport CONNECT is refused.
+    private val onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
 ) {
     // MultiThreaded: per-stream handler coroutines allocate from this pool concurrently.
     private val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = options.bufferFactory)
+
+    // The per-connection WebTransport engine (session table, stream/datagram demux, capsule protocol).
+    // Null when WebTransport was not enabled for this server.
+    private val webTransportMux: WebTransportMux? =
+        if (webTransport != null) WebTransportMux(scope, pool, options) else null
 
     private val serverDecoder: QpackDecoder? =
         if (qpackCapacity > 0) QpackDecoder(qpackCapacity) { writeQpackDecoderInstruction(it) } else null
@@ -72,6 +83,8 @@ class Http3ServerConnection internal constructor(
             qpackEncoderStream = scope.openUniStream().also { writeStreamType(it, Http3StreamType.QPACK_ENCODER) }
             qpackDecoderStream = scope.openUniStream().also { writeStreamType(it, Http3StreamType.QPACK_DECODER) }
         }
+        // WebTransport datagram demux (RFC 9297): a no-op when QUIC datagrams aren't enabled.
+        webTransportMux?.startDatagramLoop()
         scope.streams().collect { stream ->
             scope.launch {
                 try {
@@ -88,6 +101,9 @@ class Http3ServerConnection internal constructor(
 
     private suspend fun handleUniStream(stream: QuicByteStream) {
         val processor = StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN)
+        // A peer-initiated unidirectional WebTransport stream outlives this call — the mux owns the
+        // processor + stream lifetime, so the generic finally must not release the processor.
+        var muxOwnsStream = false
         try {
             when (Http3StreamReader(stream, processor).nextVarInt()) {
                 Http3StreamType.CONTROL -> handleControl(Http3StreamReader(stream, processor))
@@ -103,10 +119,16 @@ class Http3ServerConnection internal constructor(
                     } else {
                         drain(stream)
                     }
+                // A peer-initiated unidirectional WebTransport stream (draft-ietf-webtrans-http3 §4.1).
+                WebTransportWire.WT_UNI_STREAM_TYPE ->
+                    webTransportMux?.let {
+                        muxOwnsStream = true
+                        it.acceptIncomingUni(stream, processor)
+                    } ?: drain(stream)
                 else -> drain(stream)
             }
         } finally {
-            processor.release()
+            if (!muxOwnsStream) processor.release()
         }
     }
 
@@ -132,8 +154,24 @@ class Http3ServerConnection internal constructor(
 
     /** Read one request off a client bidi [stream], run [onRequest], then drain the body + FIN. */
     private suspend fun handleRequest(stream: QuicByteStream) {
-        val reader = Http3StreamReader.create(stream, pool)
+        // Explicit processor so a WebTransport bidirectional stream's buffered prefix can be handed to
+        // the mux (Http3StreamReader.create would hide the processor).
+        val processor = StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN)
+        val reader = Http3StreamReader(stream, processor)
+        // An accepted WebTransport session (CONNECT stream) or a demultiplexed WebTransport bidirectional
+        // stream keeps the reader/processor alive past this call, so the generic finally must not release it.
+        var handlerOwnsReader = false
         try {
+            // A peer-initiated WebTransport bidirectional stream (draft-ietf-webtrans-http3 §4.2) starts
+            // with the 0x41 signal, not a HEADERS frame — demultiplex it before request parsing.
+            val mux = webTransportMux
+            if (mux != null &&
+                reader.peekVarInt(options.readTimeout) == WebTransportWire.WT_BIDI_STREAM_SIGNAL
+            ) {
+                handlerOwnsReader = true
+                mux.acceptIncomingBidi(stream, processor)
+                return
+            }
             val first =
                 reader.nextFrame(options.readTimeout)
                     ?: throw Http3StreamException("request stream ended before a HEADERS frame", Http3ErrorCode.REQUEST_INCOMPLETE)
@@ -145,6 +183,12 @@ class Http3ServerConnection internal constructor(
             }
             val streamId = stream.streamId.id
             val fields = decodeSection(first.encodedFieldSection, streamId)
+            // Extended CONNECT (RFC 9220): a CONNECT carrying `:protocol` is routed to WebTransport,
+            // not the normal request handler.
+            if (pseudoOrNull(fields, ":method") == "CONNECT" && pseudoOrNull(fields, ":protocol") != null) {
+                handlerOwnsReader = handleWebTransport(stream, reader, fields)
+                return
+            }
             val request =
                 Http3ServerRequest(
                     method = pseudo(fields, ":method"),
@@ -173,8 +217,84 @@ class Http3ServerConnection internal constructor(
             reactToRequestError(stream, e)
             throw e
         } finally {
-            reader.release()
+            if (!handlerOwnsReader) reader.release()
         }
+    }
+
+    /**
+     * Handle an Extended CONNECT for WebTransport (RFC 9220): refuse unless WebTransport is enabled,
+     * the registered [onWebTransport] handler accepts it, and the session limit isn't exceeded.
+     * Returns true if a session was accepted (the caller must keep the stream reader alive); false
+     * if the CONNECT was rejected (a response was sent and the reader can be released).
+     */
+    private suspend fun handleWebTransport(
+        stream: QuicByteStream,
+        reader: Http3StreamReader,
+        fields: List<QpackHeaderField>,
+    ): Boolean {
+        val handler = onWebTransport
+        val limit = webTransport?.maxSessions ?: 0L
+        if (handler == null || limit <= 0 || pseudoOrNull(fields, ":protocol") != WEBTRANSPORT_PROTOCOL) {
+            sendWebTransportResponse(stream, 501, fin = true)
+            return false
+        }
+        if ((webTransportMux?.activeCount()?.toLong() ?: 0L) >= limit) {
+            // RFC 9220: refuse beyond the advertised WEBTRANSPORT_MAX_SESSIONS.
+            sendWebTransportResponse(stream, 429, fin = true)
+            return false
+        }
+        var acceptedSession: WebTransportSession? = null
+        var decided = false
+        val exchange =
+            WebTransportServerExchange(
+                authority = pseudoOrNull(fields, ":authority") ?: "",
+                path = pseudoOrNull(fields, ":path") ?: "",
+                headers = fields.filterNot { it.name.startsWith(":") },
+                doAccept = {
+                    decided = true
+                    acceptWebTransport(stream, reader).also { acceptedSession = it }
+                },
+                doReject = { status ->
+                    decided = true
+                    sendWebTransportResponse(stream, status, fin = true)
+                },
+            )
+        try {
+            handler.invoke(exchange)
+        } finally {
+            // A handler that returns without deciding implicitly rejects.
+            if (!decided) runCatching { sendWebTransportResponse(stream, 404, fin = true) }
+        }
+        return acceptedSession != null
+    }
+
+    /** Accept a WebTransport session: send 200 (no FIN — the CONNECT stream stays open), register it. */
+    private suspend fun acceptWebTransport(
+        stream: QuicByteStream,
+        reader: Http3StreamReader,
+    ): WebTransportSession {
+        sendWebTransportResponse(stream, 200, fin = false)
+        val mux = webTransportMux ?: error("WebTransport accepted without an enabled mux")
+        val session = mux.preRegister(stream)
+        // The CONNECT stream stays open; its capsule loop owns the reader and ends the session on FIN
+        // or a WT_CLOSE_SESSION capsule.
+        mux.activate(session, reader)
+        return session
+    }
+
+    /** Send a CONNECT response carrying just `:status`; [fin] half-closes the send side (reject path). */
+    private suspend fun sendWebTransportResponse(
+        stream: QuicByteStream,
+        status: Int,
+        fin: Boolean,
+    ) {
+        val section = encodeSection(listOf(QpackHeaderField(":status", status.toString())), stream.streamId.id)
+        try {
+            writeFrame(stream, Http3Frame.Headers(section))
+        } finally {
+            section.freeIfNeeded()
+        }
+        if (fin) stream.shutdownSend()
     }
 
     /**
@@ -326,13 +446,13 @@ class Http3ServerConnection internal constructor(
 
     /** Control stream: the type prefix `0x00` immediately followed by the SETTINGS frame. */
     private suspend fun writeControlStreamHeader(control: QuicByteStream) {
-        val settings =
-            Http3Frame.Settings(
-                listOf(
-                    Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, qpackCapacity),
-                    Http3Setting(Http3SettingId.QPACK_BLOCKED_STREAMS, if (qpackCapacity > 0) BLOCKED_STREAMS else 0L),
-                ),
+        val entries =
+            mutableListOf(
+                Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, qpackCapacity),
+                Http3Setting(Http3SettingId.QPACK_BLOCKED_STREAMS, if (qpackCapacity > 0) BLOCKED_STREAMS else 0L),
             )
+        webTransport?.let { entries += webTransportSettings(it) }
+        val settings = Http3Frame.Settings(entries)
         val frameSize = (Http3FrameCodec.wireSize(settings, EncodeContext.Empty) as WireSize.Exact).bytes
         val buffer = pool.allocate(VarIntCodec.encodedLength(Http3StreamType.CONTROL) + frameSize)
         try {
@@ -405,6 +525,12 @@ class Http3ServerConnection internal constructor(
     ): String =
         fields.firstOrNull { it.name == name }?.value
             ?: throw Http3StreamException("request HEADERS missing the $name pseudo-header", Http3ErrorCode.MESSAGE_ERROR)
+
+    /** Like [pseudo] but returns null instead of throwing when the pseudo-header is absent. */
+    private fun pseudoOrNull(
+        fields: List<QpackHeaderField>,
+        name: String,
+    ): String? = fields.firstOrNull { it.name == name }?.value
 
     companion object {
         /** Blocked-streams we permit the client's encoder to create when dynamic QPACK is on. */

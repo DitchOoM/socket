@@ -99,6 +99,42 @@ class Http3StreamReader(
         }
     }
 
+    /**
+     * Peek the value of the next QUIC varint **without consuming it**, reading from the stream until a
+     * full varint is buffered. Returns null at a clean end-of-stream with no buffered bytes (lets a
+     * caller distinguish an empty stream from one carrying data). Throws [Http3StreamException] if the
+     * stream ends mid-varint or is reset.
+     *
+     * Used to demultiplex a stream's leading varint (e.g. a WebTransport bidirectional-stream signal,
+     * draft-ietf-webtrans-http3 §4.2) before deciding whether to keep reading it as HTTP/3 frames.
+     */
+    suspend fun peekVarInt(timeout: Duration = Duration.INFINITE): Long? {
+        while (true) {
+            val peek = VarIntCodec.peekFrameSize(processor, 0)
+            if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
+                val first = processor.peekByte(0).toInt() and 0xFF
+                val length = VarIntCodec.lengthFromPrefix(first)
+                var value = (first and 0x3F).toLong()
+                for (i in 1 until length) {
+                    value = (value shl 8) or (processor.peekByte(i).toLong() and 0xFF)
+                }
+                return value
+            }
+            if (ended) {
+                if (processor.available() == 0) return null
+                throw Http3StreamException("stream ended before a complete varint", Http3ErrorCode.FRAME_ERROR)
+            }
+            when (val result = stream.read(timeout)) {
+                is ReadResult.Data -> processor.append(result.buffer)
+                ReadResult.End -> ended = true
+                ReadResult.Reset -> {
+                    ended = true
+                    throw Http3StreamException("stream was reset by the peer")
+                }
+            }
+        }
+    }
+
     /** Return the processor's buffers to the pool. Call once the stream is fully consumed. */
     fun release() = processor.release()
 

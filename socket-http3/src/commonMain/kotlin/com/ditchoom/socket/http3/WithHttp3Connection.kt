@@ -35,8 +35,9 @@ suspend fun <R> withHttp3Connection(
     connectionOptions: ConnectionOptions = ConnectionOptions(),
     timeout: Duration = 15.seconds,
     maxPushId: Long = -1,
+    webTransport: WebTransportOptions? = null,
     block: suspend Http3Connection.() -> R,
 ): R =
     withQuicConnection(hostname, port, quicOptions, connectionOptions, timeout) {
-        Http3Connection.bootstrap(this, connectionOptions, maxPushId).block()
+        Http3Connection.bootstrap(this, connectionOptions, maxPushId, webTransport).block()
     }

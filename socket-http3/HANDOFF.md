@@ -393,8 +393,54 @@ jsNode; the aioquic/lsqpack docker interop (64 evicting requests with a recurrin
 references (budget-bounded), and draining-duplicate. No known QPACK compression gaps remain.
 5. ✅ **maven-publish + Android/wasmJs/linuxArm64 — DONE.** Apple targets are config-only (declared under
    `if (isMacOS)`); verify on a macOS runner / CI. Optionally run Apple/Android *tests* in their CI workflows.
-6. **WebTransport** (Phase 2): RFC 9220 Extended CONNECT (gate on `peerSettings().enableConnectProtocol`)
-   + RFC 9297 HTTP Datagrams + Capsule, over the existing QUIC datagram + stream plumbing.
+6. ✅ **WebTransport — DONE** (Phases 0–4, branch `feat/webtransport-h3`; see below).
+
+## ✅ DONE — WebTransport over HTTP/3 (RFC 9220 + RFC 9297 + draft-ietf-webtrans-http3)
+
+Built as five phases on `feat/webtransport-h3`; all green **jvm + linuxX64** (185 linuxX64 / 183 jvm)
+and the pure codec/settings tests also green on **jsNode**. Hand-rolled (no buffer-codec/declarative),
+mirroring the rest of `:socket-http3`. Opt-in: pass `WebTransportOptions` to `withHttp3Connection` /
+`withHttp3Server`; datagrams additionally need `QuicOptions(datagrams = DatagramOptions())`.
+
+- **Phase 0 — SETTINGS + capability view.** `Http3SettingId.{H3_DATAGRAM=0x33, WEBTRANSPORT_MAX_SESSIONS,
+  ENABLE_WEBTRANSPORT}`; `Http3Settings.{h3DatagramEnabled, wtMaxSessions, webTransportSupported}`;
+  `webTransportSettings()` advertises Extended CONNECT + H3_DATAGRAM + (legacy) ENABLE_WEBTRANSPORT +
+  WEBTRANSPORT_MAX_SESSIONS on both control streams. `WebTransportSettingsTests` (pure).
+- **Phase 1 — Extended CONNECT session establishment (RFC 9220).** `Http3Connection.connectWebTransport`
+  (gates on `webTransportSupported`, opens a CONNECT bidi stream with `:protocol=webtransport`, reads the
+  2xx), server `onWebTransport` handler with `WebTransportServerExchange.accept()/reject(status)` (limit =
+  `maxSessions`, else 429/501/404). Session id = CONNECT stream id.
+- **Phase 2 — WebTransport streams (draft §4.1/§4.2).** `WebTransportSession.{openBidiStream, openUniStream,
+  incomingBidiStreams, incomingUniStreams}` → `WebTransportStream` / `WebTransportSendStream` /
+  `WebTransportReceiveStream`. Wire: uni stream type `0x54` + Session ID; bidi signal frame `0x41` + Session
+  ID; then raw bytes. Demux added to **both** routers — `Http3StreamReader.peekVarInt` (new, non-consuming)
+  lets the server distinguish a `0x41` WT bidi stream from a HEADERS request before frame parsing; the client
+  router now accepts peer-opened WT bidi/uni streams it previously discarded. Any bytes packed after the
+  header are copied out as the stream's first `read()`.
+- **Phase 3 — datagrams (draft §4.4, RFC 9297).** `WebTransportSession.{sendDatagram, datagrams}` over QUIC
+  DATAGRAM, framed as `Quarter Stream ID (= sessionId/4)` + payload. One receive pump per connection
+  (`WebTransportMux.startDatagramLoop`) demuxes to the owning session's bounded **DROP_OLDEST** channel
+  (unreliable semantics; frees dropped buffers). `sendDatagram` throws `WebTransportException` if QUIC
+  datagrams aren't enabled.
+- **Phase 4 — graceful close via the Capsule Protocol (draft §6, RFC 9297).** Capsules ride **inside HTTP/3
+  DATA frames** on the CONNECT stream (verified against RFC 9297 §3.1). `WebTransportSession.close(code,
+  reason)` sends a `WT_CLOSE_SESSION` (0x2843) capsule + FIN; the per-session capsule loop (`runCapsuleLoop`,
+  replacing the Phase-1 drain) reassembles DATA payloads, parses capsules, and surfaces the peer's code +
+  reason via `awaitClosed()` / `closeInfo`. `WT_DRAIN_SESSION` (0x78ae) + unknown capsules are skipped.
+
+**Shared engine: `WebTransportMux`** (one per connection, used verbatim by client + server) owns the session
+table, stream-open + demux, the datagram pump, and the capsule protocol — so the two roles share all WT logic.
+Sessions are tabled the instant their CONNECT stream id is known (client tables *before* reading the 2xx) so a
+peer that opens a WT stream/datagram immediately after the handshake never races registration.
+
+Tests: `WebTransportCapsuleTests` (capsule codec, pure), `WebTransportSettingsTests` (pure), and 10 in-process
+loopback E2E tests in `Http3LoopbackTestSuite` (establish/reject/no-support/two-sessions + bidi-echo + client
+uni + server uni + datagram round-trip + client-close-observed-by-server + server-close-observed-by-client),
+all jvm + linuxX64. The loopback `QuicOptions` now enable `DatagramOptions()`.
+
+*Not done (future):* sending `WT_DRAIN_SESSION` (we only receive/skip it); Apple `reset()` parity carries over
+from the existing follow-up (a WT stream `reset()` on Apple still degrades to `close()` — see the step-2 Apple
+note); third-party WT interop (no aioquic/lsqpack WT sidecar yet — the docker interop covers QPACK only).
 
 ## (historical) step 4b/5 plan — now DONE, see above
 
