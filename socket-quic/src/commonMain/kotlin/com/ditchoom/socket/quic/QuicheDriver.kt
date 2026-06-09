@@ -352,8 +352,8 @@ class QuicheDriver(
             }
 
             is QuicheCmd.StreamSend -> {
-                val written = api.connStreamSend(conn, QuicStreamId(cmd.streamId), cmd.addr, cmd.bufLen, cmd.fin)
-                cmd.result.complete(written)
+                val sent = api.connStreamSend(conn, QuicStreamId(cmd.streamId), cmd.addr, cmd.bufLen, cmd.fin)
+                cmd.result.complete(sent)
             }
 
             is QuicheCmd.StreamShutdown -> {
@@ -777,7 +777,7 @@ class QuicheDriver(
                     QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed"),
                 )
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
-            is QuicheCmd.StreamSend -> cmd.result.complete(-1)
+            is QuicheCmd.StreamSend -> cmd.result.complete(StreamSendResult(-1))
             // The stream/connection is gone; the shutdown frame won't go out, which is fine — the
             // peer already sees the connection closing. Complete with a benign 0 (no-op).
             is QuicheCmd.StreamShutdown -> cmd.result.complete(0)
@@ -936,16 +936,17 @@ class DriverStreamAdapter(
         // first; otherwise quiche reads freed/Cleaner-reclaimed memory. (A read-after-free is less likely to
         // corrupt the heap than the read path's write-after-free, but it can still fault on an unmapped page,
         // and the lifetime contract must hold symmetrically.)
-        var inFlight: CompletableDeferred<Int>? = null
+        var inFlight: CompletableDeferred<StreamSendResult>? = null
         return try {
             withTimeout(timeout) {
                 while (true) {
-                    val deferred = CompletableDeferred<Int>()
+                    val deferred = CompletableDeferred<StreamSendResult>()
                     driver.commands.send(QuicheCmd.StreamSend(streamId.id, addr, remaining, false, deferred))
                     // Mark in-flight only AFTER a successful enqueue (see streamRead).
                     inFlight = deferred
-                    val written = deferred.await()
+                    val sent = deferred.await()
                     inFlight = null
+                    val written = sent.result
                     when (written) {
                         // Flow-control blocked (QUICHE_ERR_DONE, or a defensive 0 with bytes still pending):
                         // the stream's window is full. Park on writableSignal until the driver observes the
@@ -964,13 +965,13 @@ class DriverStreamAdapter(
                                 // Peer sent STOP_SENDING / RESET_STREAM on THIS stream (RFC 9000 §19.4-19.5).
                                 // Stream-scoped, not connection loss — surface a stream error the caller can
                                 // catch to abandon just this stream; the connection keeps every other stream.
-                                // quiche reports the direction via the sentinel but not the peer application
-                                // error code, so applicationErrorCode is left null.
+                                // quiche reports the direction via the sentinel and the peer application error
+                                // code via out_error_code (FFM/cinterop surface it; JNI leaves it null).
                                 val abort =
                                     if (written == QuicheDriver.QUICHE_ERR_STREAM_STOPPED) {
-                                        QuicStreamAbort.StopSending()
+                                        QuicStreamAbort.StopSending(sent.errorCode)
                                     } else {
-                                        QuicStreamAbort.ResetStream()
+                                        QuicStreamAbort.ResetStream(sent.errorCode)
                                     }
                                 throw QuicStreamException(
                                     streamId.id,
@@ -1003,7 +1004,7 @@ class DriverStreamAdapter(
 
     override suspend fun streamClose(streamId: QuicStreamId) {
         try {
-            val deferred = CompletableDeferred<Int>()
+            val deferred = CompletableDeferred<StreamSendResult>()
             driver.commands.send(QuicheCmd.StreamSend(streamId.id, 0L, 0, true, deferred))
             deferred.await()
         } catch (_: ClosedSendChannelException) {

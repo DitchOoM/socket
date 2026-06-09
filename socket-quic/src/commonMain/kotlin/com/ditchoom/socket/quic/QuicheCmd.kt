@@ -58,7 +58,7 @@ sealed interface QuicheCmd {
         val addr: Long,
         val bufLen: Int,
         val fin: Boolean,
-        val result: CompletableDeferred<Int>,
+        val result: CompletableDeferred<StreamSendResult>,
     ) : QuicheCmd
 
     /**

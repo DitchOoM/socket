@@ -1185,6 +1185,64 @@ abstract class Http3LoopbackTestSuite {
                 }
             }
         }
+
+    // --- WebTransport stream reset error-code mapping (draft-ietf-webtrans-http3 §4.3) ---
+
+    @Test
+    fun webTransport_streamReset_codeRoundTripsThroughHttp3Space() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // A code that straddles a §4.3 skip boundary, so a naive pass-through would not round-trip.
+                val wtCode = 0x1e7L
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        val stream = session.incomingBidiStreams.first()
+                        // Read the opener's first chunk, then abort the stream with a WebTransport code.
+                        // reset() maps it into the HTTP/3 error-code space on the RESET_STREAM/STOP_SENDING.
+                        withTimeout(5.seconds) { stream.read() }
+                        stream.reset(wtCode)
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val observed =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            val stream = session.openBidiStream()
+                            stream.write(textBuffer("hello"))
+                            // Keep writing until the peer's STOP_SENDING surfaces; the WT layer decodes the
+                            // HTTP/3 code back to the original WebTransport application error code.
+                            withTimeout(5.seconds) {
+                                var code: Long? = null
+                                while (code == null) {
+                                    try {
+                                        stream.write(textBuffer("x"))
+                                        delay(25)
+                                    } catch (e: WebTransportStreamException) {
+                                        code = e.errorCode
+                                    }
+                                }
+                                code
+                            }
+                        }
+                    assertEquals(wtCode, observed)
+                }
+            }
+        }
 }
 
 /** Read a bidirectional WebTransport stream to end-of-stream as a UTF-8 string. */

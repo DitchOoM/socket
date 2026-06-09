@@ -210,13 +210,16 @@ internal class StubQuicheApi : QuicheApi {
     /** When set, [connStreamSend] returns this instead of [bufLen] — e.g. -1 (QUICHE_ERR_DONE) or a real error. */
     @Volatile var connStreamSendResult: Int? = null
 
+    /** Peer application error code [connStreamSend] reports alongside a STREAM_STOPPED/RESET result. */
+    @Volatile var connStreamSendErrorCode: Long? = null
+
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ) = connStreamSendResult ?: bufLen
+    ) = StreamSendResult(connStreamSendResult ?: bufLen, connStreamSendErrorCode)
 
     /** Records each [connStreamShutdown] call as (streamId, direction, errorCode) so tests can assert resets. */
     val streamShutdowns = mutableListOf<Triple<Long, Int, Long>>()
