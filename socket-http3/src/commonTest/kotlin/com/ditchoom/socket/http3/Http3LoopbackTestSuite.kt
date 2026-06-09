@@ -4,14 +4,18 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.withQuicServer
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
@@ -25,6 +29,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -59,11 +65,14 @@ abstract class Http3LoopbackTestSuite {
     /** Skip-on-missing-native-lib hook; JVM overrides to translate `UnsatisfiedLinkError` to a skip. */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
+    // Datagrams enabled so the WebTransport datagram tests (RFC 9297) work; harmless for the others
+    // (it only advertises max_datagram_frame_size in the QUIC handshake).
     private val serverQuicOptions =
         QuicOptions(
             alpnProtocols = listOf(HTTP3_ALPN),
             verifyPeer = false,
             idleTimeout = 10.seconds,
+            datagrams = DatagramOptions(),
         )
 
     private val clientQuicOptions =
@@ -71,6 +80,7 @@ abstract class Http3LoopbackTestSuite {
             alpnProtocols = listOf(HTTP3_ALPN),
             verifyPeer = false,
             idleTimeout = 10.seconds,
+            datagrams = DatagramOptions(),
         )
 
     // QUIC stream I/O is zero-copy: it reads each buffer's native address. On Kotlin/Native,
@@ -790,6 +800,410 @@ abstract class Http3LoopbackTestSuite {
                 }
             }
         }
+
+    // --- WebTransport (RFC 9220 Extended CONNECT) — Phase 1: session establishment ---
+
+    @Test
+    fun webTransport_establishSession_happyPath() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // A real withHttp3Server accepting an Extended CONNECT, and a real withHttp3Connection
+                // opening a WebTransport session: the client's session id must equal the id the server
+                // saw, proving the CONNECT stream id is the shared session id (draft-ietf-webtrans-http3).
+                val serverSawSession = CompletableDeferred<Long>()
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        assertEquals("localhost", authority)
+                        assertEquals("/wt", path)
+                        serverSawSession.complete(accept().sessionId)
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val clientSessionId =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            assertFalse(session.isClosed)
+                            session.sessionId
+                        }
+                    // Awaited OUTSIDE the client block (never block on a server signal from inside it).
+                    val serverId = withTimeout(5.seconds) { serverSawSession.await() }
+                    assertEquals(clientSessionId, serverId)
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_serverRejects_throwsWithStatus() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = { reject(403) },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        webTransport = WebTransportOptions(maxSessions = 4),
+                    ) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        val ex =
+                            assertFailsWith<WebTransportException> {
+                                connectWebTransport(authority = "localhost", path = "/nope")
+                            }
+                        assertTrue(ex.message!!.contains("403"), "message should carry the reject status: ${ex.message}")
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_peerWithoutSupport_throwsBeforeOpening() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // Server does NOT advertise WebTransport (no webTransport option) — the client must
+                // fail the gate on peerSettings().webTransportSupported before opening a CONNECT stream.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        webTransport = WebTransportOptions(maxSessions = 1),
+                    ) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        assertFailsWith<WebTransportException> {
+                            connectWebTransport(authority = "localhost", path = "/x")
+                        }
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_twoConcurrentSessions_getDistinctIds() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                val serverIds = Channel<Long>(Channel.UNLIMITED)
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = { serverIds.trySend(accept().sessionId) },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val (a, b) =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val s1 = connectWebTransport(authority = "localhost", path = "/a")
+                            val s2 = connectWebTransport(authority = "localhost", path = "/b")
+                            s1.sessionId to s2.sessionId
+                        }
+                    assertNotEquals(a, b, "two sessions on one connection must have distinct ids")
+                    val seen = withTimeout(5.seconds) { setOf(serverIds.receive(), serverIds.receive()) }
+                    assertEquals(setOf(a, b), seen)
+                }
+            }
+        }
+
+    // --- WebTransport Phase 2: streams (draft-ietf-webtrans-http3 §4.1 / §4.2) ---
+
+    @Test
+    fun webTransport_clientOpensBidiStream_serverEchoes() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        // Echo the first peer-opened bidirectional stream back with a prefix, then FIN.
+                        val stream = session.incomingBidiStreams.first()
+                        val msg = stream.readUtf8()
+                        stream.write(textBuffer("echo:$msg"))
+                        stream.close()
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val reply =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            val stream = session.openBidiStream()
+                            stream.write(textBuffer("hello"))
+                            stream.shutdownSend()
+                            withTimeout(5.seconds) { stream.readUtf8() }
+                        }
+                    assertEquals("echo:hello", reply)
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_clientOpensUniStream_serverReceives() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                val serverGot = CompletableDeferred<String>()
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        val stream = session.incomingUniStreams.first()
+                        serverGot.complete(stream.readUtf8())
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        webTransport = WebTransportOptions(maxSessions = 4),
+                    ) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        val session = connectWebTransport(authority = "localhost", path = "/wt")
+                        val stream = session.openUniStream()
+                        stream.write(textBuffer("uni-payload"))
+                        stream.close()
+                    }
+                    assertEquals("uni-payload", withTimeout(5.seconds) { serverGot.await() })
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_serverOpensUniStream_clientReceives() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        // Server-initiated unidirectional stream toward the client.
+                        val stream = session.openUniStream()
+                        stream.write(textBuffer("from-server"))
+                        stream.close()
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val got =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            val stream = withTimeout(5.seconds) { session.incomingUniStreams.first() }
+                            withTimeout(5.seconds) { stream.readUtf8() }
+                        }
+                    assertEquals("from-server", got)
+                }
+            }
+        }
+
+    // --- WebTransport Phase 3: datagrams (draft-ietf-webtrans-http3 §4.4, RFC 9297) ---
+
+    @Test
+    fun webTransport_datagramRoundTrip() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        val datagram = session.datagrams.first()
+                        val text = datagram.readString(datagram.remaining(), Charset.UTF8)
+                        datagram.freeIfNeeded()
+                        session.sendDatagram(textBuffer("pong:$text"))
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val reply =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            session.sendDatagram(textBuffer("ping"))
+                            val datagram = withTimeout(5.seconds) { session.datagrams.first() }
+                            val text = datagram.readString(datagram.remaining(), Charset.UTF8)
+                            datagram.freeIfNeeded()
+                            text
+                        }
+                    assertEquals("pong:ping", reply)
+                }
+            }
+        }
+
+    // --- WebTransport Phase 4: graceful close via WT_CLOSE_SESSION capsule (draft §6) ---
+
+    @Test
+    fun webTransport_clientCloses_serverObservesCodeAndReason() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                val serverClose = CompletableDeferred<WebTransportCloseInfo>()
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        serverClose.complete(session.awaitClosed())
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        webTransport = WebTransportOptions(maxSessions = 4),
+                    ) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        val session = connectWebTransport(authority = "localhost", path = "/wt")
+                        session.close(code = 42, reason = "all done")
+                        assertTrue(session.isClosed)
+                        delay(300) // let the WT_CLOSE_SESSION capsule + FIN flush before teardown
+                    }
+                    assertEquals(WebTransportCloseInfo(42, "all done"), withTimeout(5.seconds) { serverClose.await() })
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_serverCloses_clientObservesCodeAndReason() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        session.close(code = 7, reason = "server bye")
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val info =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            // The client observes the peer's close reactively via its own session signal.
+                            withTimeout(5.seconds) { session.awaitClosed() }
+                        }
+                    assertEquals(WebTransportCloseInfo(7, "server bye"), info)
+                }
+            }
+        }
+}
+
+/** Read a bidirectional WebTransport stream to end-of-stream as a UTF-8 string. */
+private suspend fun WebTransportStream.readUtf8(): String = drainUtf8 { read() }
+
+/** Read a unidirectional (receive) WebTransport stream to end-of-stream as a UTF-8 string. */
+private suspend fun WebTransportReceiveStream.readUtf8(): String = drainUtf8 { read() }
+
+private suspend fun drainUtf8(read: suspend () -> ReadResult): String {
+    val sb = StringBuilder()
+    while (true) {
+        when (val result = read()) {
+            is ReadResult.Data -> {
+                sb.append(result.buffer.readString(result.buffer.remaining(), Charset.UTF8))
+                result.buffer.freeIfNeeded()
+            }
+            ReadResult.End, ReadResult.Reset -> return sb.toString()
+        }
+    }
 }
 
 /** Result holder for the production server-role test (the block returns GET + POST results). */

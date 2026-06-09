@@ -122,6 +122,22 @@ object Http3SettingId {
 
     /** RFC 9220 — required by the Extended CONNECT used for WebTransport. */
     const val ENABLE_CONNECT_PROTOCOL: Long = 0x08
+
+    /** RFC 9297 — HTTP Datagrams. Value 1 enables them; required by WebTransport. */
+    const val H3_DATAGRAM: Long = 0x33
+
+    /**
+     * draft-ietf-webtrans-http3 — the maximum number of concurrent WebTransport sessions the
+     * endpoint is willing to accept. A non-zero value (together with [ENABLE_CONNECT_PROTOCOL]
+     * and [H3_DATAGRAM]) signals WebTransport support; 0 / absent means the peer accepts none.
+     */
+    const val WEBTRANSPORT_MAX_SESSIONS: Long = 0xc671706a
+
+    /**
+     * Legacy WebTransport toggle from draft-02 (`SETTINGS_ENABLE_WEBTRANSPORT`). Superseded by
+     * [WEBTRANSPORT_MAX_SESSIONS] but advertised alongside it for interop with older peers.
+     */
+    const val ENABLE_WEBTRANSPORT: Long = 0x2b603742
 }
 
 /**

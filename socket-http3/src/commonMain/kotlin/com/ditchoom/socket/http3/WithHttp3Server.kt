@@ -42,6 +42,8 @@ suspend fun <R> withHttp3Server(
     connectionOptions: ConnectionOptions = ConnectionOptions(),
     qpackCapacity: Long = 0,
     timeout: Duration = 15.seconds,
+    webTransport: WebTransportOptions? = null,
+    onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
     onRequest: suspend Http3ServerExchange.() -> Unit,
     block: suspend Http3Server.() -> R,
 ): R =
@@ -51,7 +53,8 @@ suspend fun <R> withHttp3Server(
             val acceptJob =
                 launch {
                     connections {
-                        Http3ServerConnection(this, connectionOptions, qpackCapacity, onRequest).serve()
+                        Http3ServerConnection(this, connectionOptions, qpackCapacity, onRequest, webTransport, onWebTransport)
+                            .serve()
                     }
                 }
             try {

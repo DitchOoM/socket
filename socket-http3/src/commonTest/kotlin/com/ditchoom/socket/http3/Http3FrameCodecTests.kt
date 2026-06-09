@@ -129,6 +129,24 @@ class Http3FrameCodecTests {
     }
 
     @Test
+    fun settings_webTransport_roundTrip() {
+        // The WebTransport SETTINGS use large code points (0x33, and 4-byte varints for
+        // WEBTRANSPORT_MAX_SESSIONS / ENABLE_WEBTRANSPORT) — exercise the codec on those ids.
+        val settings = Http3Frame.Settings(webTransportSettings(WebTransportOptions(maxSessions = 17)))
+        val bytes = encodeFrame(settings)
+        val decoded = Http3FrameCodec.decode(bufferOf(*bytes.toIntArray()), DecodeContext.Empty)
+        assertEquals(settings, decoded)
+        assertEquals(bytes.size, wireSizeOf(settings))
+
+        // The decoded peer view reports WebTransport support.
+        val peer = Http3Settings((decoded as Http3Frame.Settings).entries)
+        assertTrue(peer.enableConnectProtocol)
+        assertTrue(peer.h3DatagramEnabled)
+        assertEquals(17L, peer.wtMaxSessions)
+        assertTrue(peer.webTransportSupported)
+    }
+
+    @Test
     fun settings_truncatedPair_failsCleanly() {
         // 04 01 05 : SETTINGS, length 1 — identifier 0x05 with no room for a value.
         // Must throw rather than read the value varint past the frame boundary.
