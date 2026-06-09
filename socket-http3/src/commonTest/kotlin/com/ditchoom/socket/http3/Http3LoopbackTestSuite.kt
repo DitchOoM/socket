@@ -1292,6 +1292,142 @@ abstract class Http3LoopbackTestSuite {
                 }
             }
         }
+
+    @Test
+    fun webTransport_clientDrains_serverObservesDrain() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // The mirror of the server-drain case: drain() and the drained signal are role-agnostic
+                // (the shared mux), so a client-initiated drain must surface on the server while open.
+                val serverObservedWhileOpen = CompletableDeferred<Boolean>()
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        withTimeout(5.seconds) { session.drained.first() }
+                        // Only the drain is in flight here (the client waits for our close before closing),
+                        // so observing it while still open is deterministic. Then we finish the session.
+                        serverObservedWhileOpen.complete(session.isDrainRequested && !session.isClosed)
+                        session.close(code = 0, reason = "server done")
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        webTransport = WebTransportOptions(maxSessions = 4),
+                    ) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        val session = connectWebTransport(authority = "localhost", path = "/wt")
+                        session.drain()
+                        assertFalse(session.isClosed, "draining our own session must not close it")
+                        // Let the server observe our drain and close back; we don't close first.
+                        withTimeout(5.seconds) { session.awaitClosed() }
+                    }
+                    assertTrue(
+                        withTimeout(5.seconds) { serverObservedWhileOpen.await() },
+                        "server must observe the drain while the session is still open",
+                    )
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_drainKeepsTheTransportUsable() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // draft §5: a drain only signals intent — the session stays open and streams keep working.
+                // Enforcement (stop opening new streams) is the application's choice, not the transport's.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        session.drain()
+                        // A stream still flows after the drain is sent.
+                        val stream = session.incomingBidiStreams.first()
+                        val msg = stream.readUtf8()
+                        stream.write(textBuffer("echo:$msg"))
+                        stream.close()
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    val reply =
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            val session = connectWebTransport(authority = "localhost", path = "/wt")
+                            withTimeout(5.seconds) { session.drained.first() }
+                            assertFalse(session.isClosed, "drain must not close the session")
+                            // Open + round-trip a stream AFTER observing the drain.
+                            val stream = session.openBidiStream()
+                            stream.write(textBuffer("after-drain"))
+                            stream.shutdownSend()
+                            withTimeout(5.seconds) { stream.readUtf8() }
+                        }
+                    assertEquals("echo:after-drain", reply)
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_drainedFlowCompletesWithoutEmitting_whenSessionClosesUndrained() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // The no-hang guarantee: a `drained` collector must terminate (emitting nothing) when the
+                // session ends without ever being drained, rather than awaiting a drain that never comes.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        session.close(code = 0, reason = "no drain") // close without ever draining
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        webTransport = WebTransportOptions(maxSessions = 4),
+                    ) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        val session = connectWebTransport(authority = "localhost", path = "/wt")
+                        withTimeout(5.seconds) { session.awaitClosed() }
+                        // drainSignal completed `false` on close → the flow finishes with no element.
+                        assertTrue(
+                            withTimeout(5.seconds) { session.drained.toList() }.isEmpty(),
+                            "drained must complete without emitting when no drain ever arrived",
+                        )
+                        assertFalse(session.isDrainRequested)
+                    }
+                }
+            }
+        }
 }
 
 /** Read a bidirectional WebTransport stream to end-of-stream as a UTF-8 string. */
