@@ -184,13 +184,17 @@ interface QuicheApi {
         bufLen: Int,
     ): StreamRecvResult
 
+    /**
+     * Write to a QUIC stream. Returns a [StreamSendResult] carrying the raw quiche return plus the peer's
+     * application error code (when the peer aborted the stream and the backend exposes `out_error_code`).
+     */
     fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ): Int
+    ): StreamSendResult
 
     /**
      * Shut down one [direction] of [streamId] with application error code [err]

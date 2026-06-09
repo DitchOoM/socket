@@ -38,6 +38,41 @@ internal object WebTransportWire {
     const val MAX_CLOSE_REASON_BYTES: Int = 1024
 
     /**
+     * Base of the WebTransport slice of the HTTP/3 error-code space (draft-ietf-webtrans-http3 §4.3).
+     * A WebTransport application error code `n` maps to the HTTP/3 code `BASE + n + floor(n / 0x1e)`.
+     */
+    const val WT_ERROR_BASE: Long = 0x52e4a40fa8db
+
+    /**
+     * Map a 32-bit WebTransport application error code [webTransportCode] to the HTTP/3 / QUIC error
+     * code that carries it on a RESET_STREAM / STOP_SENDING frame (draft-ietf-webtrans-http3 §4.3).
+     *
+     * The HTTP/3 error-code space is shared by every extension, so WebTransport codes are remapped to a
+     * dedicated slice — `BASE + n + floor(n / 0x1e)` — that skips one value out of every 0x1f to dodge
+     * the reserved GREASE codes (`0x1f * N + 0x21`). [webTransportCode] is treated as an unsigned 32-bit
+     * value (the draft's domain is `0 .. 2^32 - 1`).
+     */
+    fun toHttp3ErrorCode(webTransportCode: Long): Long {
+        val n = webTransportCode and 0xFFFFFFFFL
+        return WT_ERROR_BASE + n + n / 0x1e
+    }
+
+    /**
+     * Inverse of [toHttp3ErrorCode]: recover the WebTransport application error code from the HTTP/3 /
+     * QUIC code observed on a peer's RESET_STREAM / STOP_SENDING (draft-ietf-webtrans-http3 §4.3,
+     * `shifted = h - BASE; n = shifted - floor(shifted / 0x1f)`).
+     *
+     * Defined for codes inside the WebTransport slice (`h >= BASE`). A code below the slice, or one that
+     * lands on a skipped GREASE slot, is not a WebTransport code; this still returns the formula's value
+     * (the demux paths only feed it codes a WebTransport peer produced via [toHttp3ErrorCode]).
+     */
+    fun toWebTransportErrorCode(http3Code: Long): Long {
+        val shifted = http3Code - WT_ERROR_BASE
+        if (shifted < 0) return shifted // not a WebTransport-mapped code; surface the raw offset
+        return shifted - shifted / 0x1f
+    }
+
+    /**
      * The Quarter Stream ID (RFC 9297 §2.1) that identifies datagrams for the session whose CONNECT
      * stream is [sessionId]. The CONNECT stream is always a client-initiated bidirectional stream, so
      * its id is a multiple of four and the division is exact.

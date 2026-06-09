@@ -6,8 +6,9 @@ package com.ditchoom.socket.quic
  *
  * Backends populate what they can resolve, which differs:
  * - the quiche driver reports the **direction** ([StopSending] vs [ResetStream], from the
- *   `QUICHE_ERR_STREAM_STOPPED` / `QUICHE_ERR_STREAM_RESET` sentinels) but `quiche_conn_stream_send`
- *   does not surface the peer's application error code, so [applicationErrorCode] is null there;
+ *   `QUICHE_ERR_STREAM_STOPPED` / `QUICHE_ERR_STREAM_RESET` sentinels) and the peer's
+ *   [applicationErrorCode] via `quiche_conn_stream_send`'s `out_error_code` out-parameter — surfaced on
+ *   all three quiche backends (FFM on JDK 21, JNI on JDK < 21 / Android, cinterop on K/N);
  * - Network.framework (Apple) reports the peer's [applicationErrorCode] (via
  *   `nw_quic_get_stream_application_error`) but does not distinguish the direction, so a peer reset
  *   surfacing on our write path is reported as [StopSending] (the peer no longer wants our data)

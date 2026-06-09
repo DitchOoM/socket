@@ -469,10 +469,18 @@ class FfmQuicheApi private constructor(
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ): Int =
+    ): StreamSendResult =
         Arena.ofConfined().use { arena ->
             val errOut = arena.allocate(JAVA_LONG)
-            (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
+            val result = (hStreamSend.invokeExact(seg(conn.handle), streamId.id, seg(buf), bufLen.toLong(), fin, errOut) as Long).toInt()
+            // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET.
+            val errorCode =
+                if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                    errOut.get(JAVA_LONG, 0)
+                } else {
+                    null
+                }
+            StreamSendResult(result, errorCode)
         }
 
     override fun connStreamShutdown(

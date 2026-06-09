@@ -5,7 +5,30 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicStreamException
 import kotlin.time.Duration
+
+/**
+ * A WebTransport stream was aborted by the peer (draft-ietf-webtrans-http3 §4.3): [errorCode] is the
+ * peer's WebTransport application error code, **decoded** back out of the HTTP/3 error-code space (or
+ * null when the backend can't resolve the code — e.g. the JNI quiche binding). Wraps the underlying
+ * [QuicStreamException].
+ */
+class WebTransportStreamException internal constructor(
+    val errorCode: Long?,
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)
+
+/**
+ * Translate a QUIC stream abort into a WebTransport one, decoding the peer's application error code from
+ * the HTTP/3 error-code space (draft-ietf-webtrans-http3 §4.3). The shared reset-observation seam for
+ * the WebTransport stream wrappers below.
+ */
+internal fun QuicStreamException.toWebTransport(): WebTransportStreamException {
+    val wtCode = abort.applicationErrorCode?.let { WebTransportWire.toWebTransportErrorCode(it) }
+    return WebTransportStreamException(wtCode, "WebTransport stream $streamId aborted by peer: ${abort::class.simpleName}", this)
+}
 
 /**
  * A bidirectional WebTransport stream (draft-ietf-webtrans-http3 §4.2). Rides one QUIC bidirectional
@@ -32,17 +55,28 @@ class WebTransportStream internal constructor(
     /** Read the next chunk of stream data; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset. */
     suspend fun read(timeout: Duration = readTimeout): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
 
-    /** Write [buffer]'s remaining bytes to the stream (zero-copy; the caller retains ownership). */
+    /**
+     * Write [buffer]'s remaining bytes to the stream (zero-copy; the caller retains ownership). Throws
+     * [WebTransportStreamException] if the peer has aborted the stream (its WebTransport code decoded).
+     */
     suspend fun write(
         buffer: ReadBuffer,
         timeout: Duration = writeTimeout,
-    ): BytesWritten = stream.write(buffer, timeout)
+    ): BytesWritten =
+        try {
+            stream.write(buffer, timeout)
+        } catch (e: QuicStreamException) {
+            throw e.toWebTransport()
+        }
 
     /** Half-close the send side (FIN) while keeping the read side open for the peer's data. */
     suspend fun shutdownSend() = stream.shutdownSend()
 
-    /** Abort the stream in both directions with [errorCode] (RESET_STREAM + STOP_SENDING). */
-    suspend fun reset(errorCode: Long = 0) = stream.reset(errorCode)
+    /**
+     * Abort the stream in both directions with the WebTransport application [errorCode] (RESET_STREAM +
+     * STOP_SENDING). The code is mapped into the HTTP/3 error-code space (draft §4.3) on the wire.
+     */
+    suspend fun reset(errorCode: Long = 0) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
 
     /** Gracefully close the stream (FIN both directions) and release any buffered prefix. */
     suspend fun close() {
@@ -64,16 +98,25 @@ class WebTransportSendStream internal constructor(
 ) {
     val streamId: Long get() = stream.streamId.id
 
+    /**
+     * Write [buffer]'s remaining bytes. Throws [WebTransportStreamException] if the peer sent
+     * STOP_SENDING (its WebTransport code decoded from the HTTP/3 error-code space, draft §4.3).
+     */
     suspend fun write(
         buffer: ReadBuffer,
         timeout: Duration = writeTimeout,
-    ): BytesWritten = stream.write(buffer, timeout)
+    ): BytesWritten =
+        try {
+            stream.write(buffer, timeout)
+        } catch (e: QuicStreamException) {
+            throw e.toWebTransport()
+        }
 
     /** Finish the stream cleanly (FIN). */
     suspend fun close() = stream.close()
 
-    /** Abort the stream with [errorCode] (RESET_STREAM). */
-    suspend fun reset(errorCode: Long = 0) = stream.reset(errorCode)
+    /** Abort the stream with the WebTransport application [errorCode] (RESET_STREAM), mapped per draft §4.3. */
+    suspend fun reset(errorCode: Long = 0) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
 }
 
 /**
@@ -92,11 +135,14 @@ class WebTransportReceiveStream internal constructor(
 
     suspend fun read(timeout: Duration = readTimeout): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
 
-    /** Ask the peer to stop sending (STOP_SENDING with [errorCode]) and release any buffered prefix. */
+    /**
+     * Ask the peer to stop sending (STOP_SENDING with the WebTransport application [errorCode], mapped
+     * into the HTTP/3 error-code space per draft §4.3) and release any buffered prefix.
+     */
     suspend fun cancel(errorCode: Long = 0) {
         pending?.freeIfNeeded()
         pending = null
-        stream.reset(errorCode)
+        stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
     }
 }
 

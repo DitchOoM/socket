@@ -320,17 +320,26 @@ internal object CinteropQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ): Int {
+    ): StreamSendResult {
         memScoped {
             val errorCode = alloc<ULongVar>()
-            return quiche_conn_stream_send(
-                conn.handle.toCPointer()!!,
-                streamId.id.convert(),
-                if (bufLen > 0) buf.toCPointer<UByteVar>() else null,
-                bufLen.convert(),
-                fin,
-                errorCode.ptr,
-            ).toInt()
+            val result =
+                quiche_conn_stream_send(
+                    conn.handle.toCPointer()!!,
+                    streamId.id.convert(),
+                    if (bufLen > 0) buf.toCPointer<UByteVar>() else null,
+                    bufLen.convert(),
+                    fin,
+                    errorCode.ptr,
+                ).toInt()
+            // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET.
+            val peerCode =
+                if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                    errorCode.value.toLong()
+                } else {
+                    null
+                }
+            return StreamSendResult(result, peerCode)
         }
     }
 

@@ -206,12 +206,27 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnStreamRecv)(
 
 JNIEXPORT jint JNICALL JNI_FN(nConnStreamSend)(
     JNIEnv *env, jclass cls,
-    jlong conn, jlong stream_id, jlong buf, jint buf_len, jboolean fin) {
+    jlong conn, jlong stream_id, jlong buf, jint buf_len, jboolean fin, jlong error_out) {
     uint64_t error_code = 0;
-    return (jint)quiche_conn_stream_send(
+    jint result = (jint)quiche_conn_stream_send(
         (quiche_conn *)(uintptr_t)conn, (uint64_t)stream_id,
         (const uint8_t *)(uintptr_t)buf, (size_t)buf_len,
         (bool)fin, &error_code);
+    /* error_code is only meaningful on STREAM_STOPPED / STREAM_RESET; quiche leaves it 0 otherwise.
+       Write it big-endian into the caller's 8-byte native scratch (a buffer address, not a Java array —
+       FastNative-safe) so the JVM reads it back order-independently. */
+    if (error_out != 0) {
+        uint8_t *p = (uint8_t *)(uintptr_t)error_out;
+        p[0] = (uint8_t)(error_code >> 56);
+        p[1] = (uint8_t)(error_code >> 48);
+        p[2] = (uint8_t)(error_code >> 40);
+        p[3] = (uint8_t)(error_code >> 32);
+        p[4] = (uint8_t)(error_code >> 24);
+        p[5] = (uint8_t)(error_code >> 16);
+        p[6] = (uint8_t)(error_code >> 8);
+        p[7] = (uint8_t)(error_code);
+    }
+    return result;
 }
 
 /* Shut down one direction of a stream with an application error code:

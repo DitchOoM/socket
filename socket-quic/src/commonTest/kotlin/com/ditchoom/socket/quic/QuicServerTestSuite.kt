@@ -277,17 +277,25 @@ abstract class QuicServerTestSuite {
                             serverReadFirst.await()
 
                             // The peer reset must surface here as a STREAM error, not a connection close.
-                            assertFailsWith<QuicStreamException>(
-                                "a peer stream reset must be a QuicStreamException, not a connection-level QuicCloseException",
-                            ) {
-                                repeat(50) {
-                                    val ping = BufferFactory.deterministic().allocate(4)
-                                    ping.writeString("ping", Charset.UTF8)
-                                    ping.resetForRead()
-                                    s1.write(ping, 5.seconds)
-                                    delay(100)
+                            val streamError =
+                                assertFailsWith<QuicStreamException>(
+                                    "a peer stream reset must be a QuicStreamException, not a connection-level QuicCloseException",
+                                ) {
+                                    repeat(50) {
+                                        val ping = BufferFactory.deterministic().allocate(4)
+                                        ping.writeString("ping", Charset.UTF8)
+                                        ping.resetForRead()
+                                        s1.write(ping, 5.seconds)
+                                        delay(100)
+                                    }
                                 }
-                            }
+                            // The peer's application error code must round-trip via quiche's out_error_code
+                            // on every quiche backend (FFM on JDK 21, JNI on JDK < 21, cinterop on K/N).
+                            assertEquals(
+                                0x10cL,
+                                streamError.abort.applicationErrorCode,
+                                "the peer STOP_SENDING/RESET application error code must be surfaced",
+                            )
 
                             // Connection survived: a fresh stream still round-trips.
                             val s2 = openStream()
