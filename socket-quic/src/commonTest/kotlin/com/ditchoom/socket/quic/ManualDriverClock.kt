@@ -31,8 +31,11 @@ internal class ManualDriverClock : DriverClock {
     private val ticks = Channel<Unit>(Channel.RENDEZVOUS)
 
     /** One token per arm, i.e. each time the loop is about to park in `select`. UNLIMITED so it never drops;
-     *  [advance] drains stale tokens then waits for the *post-fire* re-arm to know the branch fully ran. */
+     *  [advance] waits for the *post-fire* re-arm to know the branch fully ran. */
     private val rearmed = Channel<Unit>(Channel.UNLIMITED)
+
+    /** Set once the driver's very first arm token (emitted before any fire) has been consumed. */
+    private var initialArmConsumed = false
 
     override fun markNow(): TimeMark {
         val origin = elapsed
@@ -62,11 +65,26 @@ internal class ManualDriverClock : DriverClock {
      * and this will suspend until the run's timeout.
      */
     suspend fun advance(by: Duration) {
-        // Drop any stale "armed" tokens so the wait below pairs with the re-arm caused by THIS fire.
-        while (rearmed.tryReceive().isSuccess) { /* drain */ }
+        consumeInitialArm()
         elapsed += by
         ticks.send(Unit) // rendezvous: driver is parked, takes the tick, runs the branch, then re-arms
         rearmed.receive() // the re-arm — branch body has finished, its effect is now observable
+    }
+
+    /**
+     * Consume the driver's very first arm token — the one emitted before any fire — exactly once, with a
+     * **blocking** receive rather than a `tryReceive` drain. `armTimeout` does its `rearmed.trySend` *before*
+     * the `select` actually parks, so a `tryReceive` drain on the test thread can run before that send and
+     * miss the token; the stale token then pairs with the *next* fire's re-arm wait, returning before the
+     * timer branch ran. A blocking receive cannot miss it — it simply waits for the trySend — which is what
+     * makes [advance]/[fireExpectingNoRearm] race-free under scheduler pressure. (The driver arms exactly
+     * once before the first fire, so there is never more than this one token to clear.)
+     */
+    private suspend fun consumeInitialArm() {
+        if (!initialArmConsumed) {
+            rearmed.receive()
+            initialArmConsumed = true
+        }
     }
 
     /**
@@ -75,7 +93,7 @@ internal class ManualDriverClock : DriverClock {
      * instead (e.g. `driver.state.first { it is Closed }`), not on a re-arm that will never come.
      */
     suspend fun fireExpectingNoRearm(by: Duration) {
-        while (rearmed.tryReceive().isSuccess) { /* drain */ }
+        consumeInitialArm()
         elapsed += by
         ticks.send(Unit)
     }
