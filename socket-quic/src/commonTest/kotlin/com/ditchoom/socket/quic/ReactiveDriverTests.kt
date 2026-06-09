@@ -10,6 +10,7 @@ import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -751,6 +752,40 @@ class ReactiveDriverTests {
                 }
             } finally {
                 driver.commands.close()
+            }
+        }
+
+    @Test
+    fun keepAlive_manualClock_stress_manyConcurrentDriversStayDeterministic() =
+        runQuicTest {
+            // Regression guard for the ManualDriverClock initial-arm race (the FFM/JDK17 CI flake): a single
+            // driver rarely loses the advance()-vs-armTimeout-trySend window on a fast box, so fan out many
+            // independent driver+clock pairs advancing concurrently on Dispatchers.Default. Each pair's FIRST
+            // advance is the racy one, so 64 of them per run multiplies the exposure by ~64×. Every fire must
+            // still be observed on return for every driver.
+            val drivers = 64
+            val firesEach = 40
+            coroutineScope {
+                repeat(drivers) { d ->
+                    launch {
+                        val api = StubQuicheApi()
+                        val clock = ManualDriverClock()
+                        val driver = createTestDriver(api, keepAliveInterval = 1.seconds, clock = clock)
+                        driver.start(this)
+                        try {
+                            repeat(firesEach) { i ->
+                                clock.advance(1.seconds)
+                                assertEquals(
+                                    i + 1,
+                                    api.ackElicitingCount,
+                                    "driver $d: fire ${i + 1} not observed on return — advance() raced the timer branch",
+                                )
+                            }
+                        } finally {
+                            driver.commands.close()
+                        }
+                    }
+                }
             }
         }
 
