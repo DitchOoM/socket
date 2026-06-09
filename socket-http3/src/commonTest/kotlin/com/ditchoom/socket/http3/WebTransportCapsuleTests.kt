@@ -67,6 +67,22 @@ class WebTransportCapsuleTests {
     }
 
     @Test
+    fun drainCapsule_encodesTypeAndZeroLength() {
+        val size = WebTransportWire.drainSessionCapsuleSize()
+        val buffer: PlatformBuffer = BufferFactory.deterministic().allocate(size)
+        WebTransportWire.writeDrainSessionCapsule(buffer)
+        assertEquals(size, buffer.position(), "writer must emit exactly drainSessionCapsuleSize bytes")
+        buffer.resetForRead()
+
+        // Parse it the way the capsule loop does: Type, then a zero-length value.
+        val type = VarIntCodec.decode(buffer, DecodeContext.Empty)
+        assertEquals(WebTransportWire.WT_DRAIN_SESSION, type)
+        val length = VarIntCodec.decode(buffer, DecodeContext.Empty).toInt()
+        assertEquals(0, length, "WT_DRAIN_SESSION carries no value")
+        assertEquals(0, buffer.remaining(), "no bytes follow the zero-length value")
+    }
+
+    @Test
     fun quarterStreamId_dividesByFour() {
         // CONNECT streams are client-initiated bidirectional (id % 4 == 0), so the division is exact.
         assertEquals(0L, WebTransportWire.quarterStreamId(0))

@@ -31,7 +31,7 @@ internal object WebTransportWire {
     /** WT_CLOSE_SESSION capsule type (draft-ietf-webtrans-http3 §6): graceful session close. */
     const val WT_CLOSE_SESSION: Long = 0x2843
 
-    /** WT_DRAIN_SESSION capsule type (draft-ietf-webtrans-http3 §4.6): graceful drain request. */
+    /** WT_DRAIN_SESSION capsule type (draft-ietf-webtrans-http3 §5): graceful drain request. */
     const val WT_DRAIN_SESSION: Long = 0x78ae
 
     /** draft-ietf-webtrans-http3 §6: the application error message is capped at 1024 UTF-8 bytes. */
@@ -83,6 +83,18 @@ internal object WebTransportWire {
     fun closeSessionCapsuleSize(reasonUtf8Bytes: Int): Int {
         val valueLen = 4 + reasonUtf8Bytes // u32 error code + reason bytes
         return VarIntCodec.encodedLength(WT_CLOSE_SESSION) + VarIntCodec.encodedLength(valueLen.toLong()) + valueLen
+    }
+
+    /** Encoded byte length of a WT_DRAIN_SESSION capsule (Type + zero Length, no value). */
+    fun drainSessionCapsuleSize(): Int = VarIntCodec.encodedLength(WT_DRAIN_SESSION) + VarIntCodec.encodedLength(0L)
+
+    /**
+     * Write a WT_DRAIN_SESSION capsule (Type, Length=0; the capsule carries no value) to [buffer]
+     * (draft-ietf-webtrans-http3 §5). Signals that the session is winding down without closing it.
+     */
+    fun writeDrainSessionCapsule(buffer: WriteBuffer) {
+        VarIntCodec.encode(buffer, WT_DRAIN_SESSION, EncodeContext.Empty)
+        VarIntCodec.encode(buffer, 0L, EncodeContext.Empty)
     }
 
     /**

@@ -3,10 +3,12 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.concurrent.Volatile
 
@@ -53,6 +55,19 @@ class WebTransportSession internal constructor(
 
     private val closedSignal = CompletableDeferred<WebTransportCloseInfo>()
 
+    // true once the peer has requested a drain; false if the session ends with no drain ever seen.
+    // Completing it on close lets the [drained] flow terminate instead of hanging a collector forever.
+    private val drainSignal = CompletableDeferred<Boolean>()
+
+    @Volatile
+    private var _isDrainRequested = false
+
+    @Volatile
+    private var localDrainSent = false
+
+    /** True once the peer has asked this session to drain (WT_DRAIN_SESSION, draft §5). */
+    val isDrainRequested: Boolean get() = _isDrainRequested
+
     // Peer-initiated streams, fed by the connection's router via the mux. UNLIMITED: a burst of
     // incoming streams must never block the router thread.
     private val incomingBidi = Channel<WebTransportStream>(Channel.UNLIMITED)
@@ -80,6 +95,14 @@ class WebTransportSession internal constructor(
      */
     val datagrams: Flow<ReadBuffer> get() = incomingDatagrams.receiveAsFlow()
 
+    /**
+     * Emits exactly once when the peer asks this session to drain (WT_DRAIN_SESSION,
+     * draft-ietf-webtrans-http3 §5): the peer is winding the session down and the application should
+     * stop opening new streams, though in-flight streams and datagrams still finish until [close].
+     * Completes without emitting if the session ends before any drain arrives.
+     */
+    val drained: Flow<Unit> get() = flow { if (drainSignal.await()) emit(Unit) }
+
     /** Suspends until the session ends, returning why. */
     suspend fun awaitClosed(): WebTransportCloseInfo = closedSignal.await()
 
@@ -102,6 +125,24 @@ class WebTransportSession internal constructor(
     suspend fun sendDatagram(payload: ReadBuffer) {
         check(!isClosed) { "session $sessionId is closed" }
         mux.sendDatagram(sessionId, payload)
+    }
+
+    /**
+     * Ask the peer to wind this session down (WT_DRAIN_SESSION, draft-ietf-webtrans-http3 §5) **without**
+     * closing it: send a WT_DRAIN_SESSION capsule on the CONNECT stream so the peer learns it should stop
+     * opening new streams, while in-flight streams and datagrams still finish. The session stays open
+     * until [close]. Idempotent, and a no-op once the session is closed.
+     */
+    suspend fun drain() {
+        if (isClosed || localDrainSent) return
+        localDrainSent = true
+        try {
+            mux.sendDrainCapsule(connectStream)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Connection/stream already gone — nothing left to wind down.
+        }
     }
 
     /**
@@ -136,12 +177,19 @@ class WebTransportSession internal constructor(
         incomingDatagrams.trySend(buffer) // DROP_OLDEST: always accepted; the dropped buffer is freed
     }
 
+    /** Called by the mux's capsule loop when the peer sends WT_DRAIN_SESSION (draft §5). Idempotent. */
+    internal fun onPeerDrain() {
+        _isDrainRequested = true
+        drainSignal.complete(true)
+    }
+
     /** Called by the mux's capsule loop when the peer ends the CONNECT stream (FIN or close capsule). */
     internal suspend fun onPeerClosed(info: WebTransportCloseInfo) = finish(info)
 
     private suspend fun finish(info: WebTransportCloseInfo) {
         if (!closedSignal.complete(info)) return // already closed
         _closeInfo = info
+        drainSignal.complete(false) // no-op if a drain already arrived; else unblocks [drained] collectors
         incomingBidi.close()
         incomingUni.close()
         incomingDatagrams.close()

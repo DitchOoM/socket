@@ -1243,6 +1243,55 @@ abstract class Http3LoopbackTestSuite {
                 }
             }
         }
+
+    // --- WebTransport WT_DRAIN_SESSION (draft-ietf-webtrans-http3 §5) ---
+
+    @Test
+    fun webTransport_serverDrains_clientObservesDrainThenBothCloseCleanly() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                val serverClose = CompletableDeferred<WebTransportCloseInfo>()
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        // Wind the session down without closing it, then wait for the client's clean close.
+                        session.drain()
+                        serverClose.complete(session.awaitClosed())
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        webTransport = WebTransportOptions(maxSessions = 4),
+                    ) {
+                        withTimeout(5.seconds) { peerSettings() }
+                        val session = connectWebTransport(authority = "localhost", path = "/wt")
+                        // The peer's drain is surfaced reactively; it must NOT close the session.
+                        withTimeout(5.seconds) { session.drained.first() }
+                        assertTrue(session.isDrainRequested)
+                        assertFalse(session.isClosed, "WT_DRAIN_SESSION must not close the session")
+                        // Now finish cleanly from the client side.
+                        session.close(code = 0, reason = "drained, closing")
+                        assertTrue(session.isClosed)
+                        delay(300) // let the WT_CLOSE_SESSION capsule + FIN flush before teardown
+                    }
+                    assertEquals(
+                        WebTransportCloseInfo(0, "drained, closing"),
+                        withTimeout(5.seconds) { serverClose.await() },
+                    )
+                }
+            }
+        }
 }
 
 /** Read a bidirectional WebTransport stream to end-of-stream as a UTF-8 string. */
