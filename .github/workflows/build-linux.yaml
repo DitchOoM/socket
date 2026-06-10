@@ -343,6 +343,16 @@ jobs:
       # here keeps the published socket-http3 artifact gatekept by CI — otherwise the module
       # would publish (root publishToMavenLocal includes it) but go entirely unvalidated,
       # the same gap #74/#76 fixed for socket-quic's JS suite.
+      # Start the third-party HTTP/3 server (aioquic + lsqpack, built from socket-http3/docker-interop)
+      # so Http3DockerInteropTests — bundled in :socket-http3:jvmTest below — actually RUNS instead of
+      # self-skipping on an unreachable 127.0.0.1:4433. This is our ONLY foreign-decoder QPACK-eviction
+      # check: the in-process loopback round-trips our encoder through our OWN decoder, so a bug
+      # symmetric across both halves would hide. `start` is detached and blocks until the server logs
+      # it is serving, so the test has a provably-up peer. A build/start failure fails the job on
+      # purpose — the alternative (silently skipping) is exactly the gap this closes.
+      - name: Start HTTP/3 QPACK interop server (aioquic/lsqpack)
+        run: socket-http3/docker-interop/run-server.sh start
+
       - name: Run checks and tests
         run: >-
           ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
@@ -352,6 +362,10 @@ jobs:
           :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Stop HTTP/3 QPACK interop server
+        if: always()
+        run: socket-http3/docker-interop/run-server.sh stop
 
       # The quiche_conn_recv SIGABRT that previously required continue-on-error
       # was a JVM-side sockaddr lifetime bug (DirectByteBuffer Cleaner freeing
