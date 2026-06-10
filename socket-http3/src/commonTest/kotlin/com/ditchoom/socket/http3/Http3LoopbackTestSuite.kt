@@ -1428,6 +1428,86 @@ abstract class Http3LoopbackTestSuite {
                 }
             }
         }
+
+    // --- Composable server middleware (Http3RequestFilter + then) over the existing onRequest handler ---
+
+    @Test
+    fun requestFilters_composeAroundHandlerAndShortCircuit() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // Two filters composed in front of the real handler, handed straight to onRequest:
+                //  - `observe` is an AROUND filter — it records the path then calls the inner handler.
+                //  - `requireToken` SHORT-CIRCUITS — no x-token header ⇒ it sends 401 and never calls next,
+                //    so the handler doesn't run. With the header it delegates through.
+                // Observations cross coroutine/thread boundaries, so they go through a Channel (thread-safe),
+                // not a shared var. The wire-observed status/body alone prove the short-circuit.
+                val observed = Channel<String>(Channel.UNLIMITED)
+                val observe: Http3RequestFilter = { next ->
+                    {
+                        observed.trySend(request.path)
+                        next(this)
+                    }
+                }
+                val requireToken: Http3RequestFilter = { next ->
+                    {
+                        if (request.headers.any { it.name == "x-token" }) {
+                            next(this)
+                        } else {
+                            response.send(401) // short-circuit: inner handler never runs
+                        }
+                    }
+                }
+                val handler: Http3RequestHandler = {
+                    val body = textBuffer("ok:${request.path}")
+                    try {
+                        response.send(200, body = body)
+                    } finally {
+                        body.freeIfNeeded()
+                    }
+                }
+
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    onRequest = observe.then(requireToken).then(handler),
+                ) {
+                    delay(100)
+                    val result =
+                        withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
+                            // 1) with the token → passes both filters → handler → 200 + body.
+                            val ok =
+                                request(
+                                    Http3Request(
+                                        method = "GET",
+                                        authority = "localhost",
+                                        path = "/ok",
+                                        headers = listOf(QpackHeaderField("x-token", "secret")),
+                                    ),
+                                )
+                            val okBody = ok.readFullBody()
+                            val okText = okBody.readString(okBody.remaining(), Charset.UTF8)
+                            okBody.freeIfNeeded()
+                            val okStatus = ok.status
+                            ok.close()
+                            // 2) without the token → auth filter short-circuits → 401, handler skipped.
+                            val denied = request(Http3Request(method = "GET", authority = "localhost", path = "/denied"))
+                            denied.readFullBody().freeIfNeeded()
+                            val deniedStatus = denied.status
+                            denied.close()
+                            Triple(okStatus, okText, deniedStatus)
+                        }
+                    assertEquals(200, result.first, "authed request reached the handler")
+                    assertEquals("ok:/ok", result.second)
+                    assertEquals(401, result.third, "auth filter short-circuited the missing-token request")
+                    // The AROUND filter ran for BOTH requests (even the short-circuited one, since it wraps
+                    // the auth filter) — proving composition order outer→inner.
+                    val seen = setOf(withTimeout(2.seconds) { observed.receive() }, withTimeout(2.seconds) { observed.receive() })
+                    assertEquals(setOf("/ok", "/denied"), seen, "observe filter saw both requests")
+                }
+            }
+        }
 }
 
 /** Read a bidirectional WebTransport stream to end-of-stream as a UTF-8 string. */

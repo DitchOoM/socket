@@ -54,7 +54,10 @@ internal suspend fun <R> commonJvmWithQuicServer(
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     try {
-        // QUIC I/O needs native-memory buffers (quiche FFI); see BufferFactory.network().
+        // QUIC I/O needs native-memory buffers (quiche FFI); see BufferFactory.network(). This is not a
+        // caller-configurable knob: the quiche JNI/FFM binding dereferences buffer addresses everywhere
+        // (cert/key load, header_info out-params, recv buffers, sockaddrs), so a managed/heap factory
+        // can't back a QUIC server on ANY platform — including the JVM. See requireNativeMemory().
         val bufferFactory = BufferFactory.network()
 
         val config = api.configNew(QUICHE_PROTOCOL_VERSION)
