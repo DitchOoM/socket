@@ -7,7 +7,6 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.bufferHashCode
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.socket_getsockname
@@ -68,7 +67,7 @@ actual suspend fun <R> withQuicServer(
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
     try {
-        val bufferFactory = BufferFactory.deterministic()
+        val bufferFactory = BufferFactory.network()
 
         val config = api.configNew(QUICHE_PROTOCOL_VERSION)
 
@@ -637,7 +636,7 @@ private class ConnectionIdKey private constructor(
  */
 private class LinuxServerQuicConnection(
     private val driver: QuicheDriver,
-    private val bufferFactory: BufferFactory,
+    override val bufferFactory: BufferFactory,
     connectionScope: CoroutineScope,
 ) : QuicConnection,
     CoroutineScope by connectionScope {

@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
@@ -55,7 +54,8 @@ internal suspend fun <R> commonJvmWithQuicServer(
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     try {
-        val bufferFactory = BufferFactory.Default
+        // QUIC I/O needs native-memory buffers (quiche FFI); see BufferFactory.network().
+        val bufferFactory = BufferFactory.network()
 
         val config = api.configNew(QUICHE_PROTOCOL_VERSION)
 
@@ -271,7 +271,7 @@ internal class JvmQuicServer(
                 launch(Dispatchers.IO) {
                     val connJob = SupervisorJob(coroutineContext[Job])
                     val connScope = CoroutineScope(coroutineContext + connJob)
-                    val conn = DriverQuicConnection(driver, connScope)
+                    val conn = DriverQuicConnection(driver, bufferFactory, connScope)
                     try {
                         conn.state.first { it !is QuicConnectionState.Handshaking }
                         if (conn.state.value is QuicConnectionState.Established) {
@@ -665,12 +665,11 @@ internal class ConnectionIdKey private constructor(
  */
 internal class DriverQuicConnection(
     private val driver: QuicheDriver,
+    override val bufferFactory: BufferFactory,
     connectionScope: CoroutineScope,
 ) : QuicConnection,
     CoroutineScope by connectionScope {
     override val state: StateFlow<QuicConnectionState> = driver.state
-
-    private val bufferFactory = BufferFactory.Default
 
     private val datagramAdapter = DriverDatagramAdapter(driver, bufferFactory)
 

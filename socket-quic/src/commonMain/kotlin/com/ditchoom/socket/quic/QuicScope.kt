@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +25,23 @@ import kotlinx.coroutines.flow.emptyFlow
  * There is no connection state to check — if you're in the block, it's established.
  */
 interface QuicScope : CoroutineScope {
+    /**
+     * The [BufferFactory] this connection allocates from — the one passed via
+     * [ConnectionOptions.bufferFactory][com.ditchoom.socket.ConnectionOptions.bufferFactory] (default
+     * [BufferFactory.Default]). Allocate your send buffers and datagrams from here so they share the
+     * connection's allocation strategy (e.g. a pooled or deterministic factory) instead of reaching
+     * for a global. Pair the allocation with `use { }` so it's freed even if the write throws:
+     *
+     * ```kotlin
+     * bufferFactory.allocate(11).use { out ->
+     *     out.writeString("hello quic!", Charset.UTF8)
+     *     out.resetForRead()
+     *     stream.write(out)
+     * }
+     * ```
+     */
+    val bufferFactory: BufferFactory
+
     /** Open a new locally-initiated bidirectional stream. Caller should close() when done (sends FIN). */
     suspend fun openStream(): QuicByteStream
 

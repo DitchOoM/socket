@@ -38,7 +38,7 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     try {
         return withTimeout(timeout) {
-            val bufferFactory = connectionOptions.bufferFactory
+            val bufferFactory = connectionOptions.quicBufferFactory()
 
             // 1. Create quiche config
             val config = api.configNew(QUICHE_PROTOCOL_VERSION)

@@ -75,6 +75,7 @@ private class FakeQuicScope(
     private val incomingStreams: ArrayDeque<QuicByteStream>,
 ) : QuicScope,
     CoroutineScope by scope {
+    override val bufferFactory: BufferFactory = BufferFactory.Default
     private val incomingChannel = Channel<QuicByteStream>(Channel.UNLIMITED)
 
     init {

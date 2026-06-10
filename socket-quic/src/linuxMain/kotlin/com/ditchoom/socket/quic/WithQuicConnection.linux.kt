@@ -4,7 +4,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketConnectionException
@@ -76,9 +75,7 @@ actual suspend fun <R> withQuicConnection(
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
     try {
         return withTimeout(timeout) {
-            val bufferFactory =
-                com.ditchoom.buffer.BufferFactory
-                    .deterministic()
+            val bufferFactory = connectionOptions.quicBufferFactory()
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
@@ -251,7 +248,7 @@ actual suspend fun <R> withQuicConnection(
  */
 private class LinuxQuicConnection(
     private val driver: QuicheDriver,
-    private val bufferFactory: BufferFactory,
+    override val bufferFactory: BufferFactory,
     private val scope: CoroutineScope,
 ) : QuicConnection,
     CoroutineScope by scope {

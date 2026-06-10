@@ -121,6 +121,7 @@ class Http3ConnectionTests {
         private val bidi: ArrayDeque<QuicByteStream> = ArrayDeque(),
     ) : QuicScope,
         CoroutineScope by delegate {
+        override val bufferFactory: BufferFactory = BufferFactory.Default
         val remainingUniStreams get() = outgoing.size
 
         override suspend fun openUniStream(): QuicByteStream = outgoing.removeFirst()
