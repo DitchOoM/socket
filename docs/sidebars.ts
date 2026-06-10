@@ -17,6 +17,23 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'QUIC',
+      items: [
+        'quic/intro',
+        'quic/connection',
+        'quic/stream-mux',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'HTTP/3 & WebTransport',
+      items: [
+        'http3/intro',
+        'http3/webtransport',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Guides',
       items: [
         'guides/building-a-protocol',
