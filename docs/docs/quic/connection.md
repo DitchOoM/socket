@@ -15,9 +15,9 @@ carries unreliable datagrams.
 connection on exit:
 
 ```kotlin
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.use
 import kotlin.time.Duration.Companion.seconds
 
 val reply = withQuicConnection(
@@ -28,17 +28,18 @@ val reply = withQuicConnection(
 ) {
     val stream = openStream()
 
-    // Write — buffers are written zero-copy; reset for read before handing them off.
-    val out = BufferFactory.Default.allocate(11)
-    out.writeString("hello quic!", Charset.UTF8)
-    out.resetForRead()
-    stream.write(out, 5.seconds)
-    out.freeIfNeeded()
+    // Write — buffers are written zero-copy; you retain ownership, so free it when done.
+    // Allocate from the scope's `bufferFactory` and let `use { }` free it even if write() throws.
+    bufferFactory.allocate(11).use { out ->
+        out.writeString("hello quic!", Charset.UTF8)
+        out.resetForRead()
+        stream.write(out, 5.seconds)
+    }
 
-    // The peer is done sending us nothing more on the write side — half-close it (FIN).
+    // We won't send anything more — half-close the write side (FIN); the read side stays open.
     stream.shutdownSend()
 
-    // Read the response.
+    // Read the response. The buffer in `Data` is yours to free.
     val text = when (val r = stream.read(5.seconds)) {
         is ReadResult.Data -> {
             val s = r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
@@ -47,7 +48,7 @@ val reply = withQuicConnection(
         }
         ReadResult.End, ReadResult.Reset -> ""
     }
-    stream.close()
+    stream.close() // optional here — the scope would reclaim it — but sends a prompt FIN.
     text
 }
 ```
@@ -65,12 +66,20 @@ withQuicServer(
 ) {
     connections {
         // `this` is the per-connection QuicScope. Accept a peer-opened stream and echo it.
+        // A server connection is long-lived and may handle many streams, so release each one as
+        // you finish it — `try/finally` guarantees the close even if the body throws.
         val stream = acceptStream()
-        when (val r = stream.read(5.seconds)) {
-            is ReadResult.Data -> stream.write(r.buffer, 5.seconds) // echo (zero-copy)
-            ReadResult.End, ReadResult.Reset -> {}
+        try {
+            when (val r = stream.read(5.seconds)) {
+                is ReadResult.Data -> {
+                    stream.write(r.buffer, 5.seconds) // echo (zero-copy)
+                    r.buffer.freeIfNeeded()           // you own the read buffer
+                }
+                ReadResult.End, ReadResult.Reset -> {}
+            }
+        } finally {
+            stream.close()
         }
-        stream.close()
     }
 }
 ```
@@ -111,11 +120,11 @@ val opts = QuicOptions(alpnProtocols = listOf("h3"), datagrams = DatagramOptions
 
 withQuicConnection("example.com", 443, opts) {
     // Send.
-    val dgram = BufferFactory.Default.allocate(4)
-    dgram.writeString("ping", Charset.UTF8)
-    dgram.resetForRead()
-    sendDatagram(dgram)
-    dgram.freeIfNeeded()
+    bufferFactory.allocate(4).use { dgram ->
+        dgram.writeString("ping", Charset.UTF8)
+        dgram.resetForRead()
+        sendDatagram(dgram)
+    }
 
     // Receive — the buffer's ownership transfers to you.
     when (val r = receiveDatagram()) {
@@ -127,6 +136,29 @@ withQuicConnection("example.com", 443, opts) {
 
 `maxDatagramSize()` reports the current sendable size (`MaxDatagramSize.Bytes(n)` or `Unavailable`),
 and `datagrams(): Flow<ReadBuffer>` is a flow form of the receive loop.
+
+## Buffers: `BufferFactory.network()`
+
+Closing a stream is about *promptness* — the connection scope reclaims it on exit anyway (see
+[the overview](./intro#who-closes-what)). The thing you must not drop is a **buffer**: it isn't owned
+by the scope. Allocate it inside `use { }`, and free the `ReadBuffer` you get back from `read()`.
+
+Allocate from the scope's `bufferFactory`, not a global. Every QUIC backend hands buffer addresses
+straight to native code — quiche over FFM/JNI, quiche cinterop on Linux, Network.framework on Apple —
+so QUIC buffers must be **native memory**. `bufferFactory` defaults to `BufferFactory.network()`, the
+factory that guarantees this on every platform:
+
+```kotlin
+import com.ditchoom.socket.quic.network
+
+// The QUIC default — what `QuicScope.bufferFactory` returns unless you override it.
+val factory = BufferFactory.network()
+```
+
+To override (JVM only — native always requires `network()`), pass
+`ConnectionOptions(bufferFactory = …)` to `withQuicConnection`. Whatever the connection ends up with
+is what `bufferFactory` reports inside the block, so `bufferFactory.allocate(n).use { }` always
+matches the connection.
 
 ## Error Handling
 

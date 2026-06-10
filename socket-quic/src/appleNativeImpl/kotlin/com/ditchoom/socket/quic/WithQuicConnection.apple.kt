@@ -259,7 +259,7 @@ private suspend fun <R> connectQuicGroup(
             group,
             datagramFlow,
             incomingStreams,
-            connectionOptions.bufferFactory,
+            connectionOptions.quicBufferFactory(),
             keepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
         )
     return try {
@@ -295,7 +295,7 @@ internal class AppleQuicGroupConnection(
     private val datagramFlow: nw_connection_t?,
     // Peer-initiated streams, fed by the group's new-connection handler wired in connectQuicGroup.
     private val incomingStreams: Channel<QuicByteStream>,
-    private val bufferFactory: BufferFactory,
+    override val bufferFactory: BufferFactory,
     private val keepAliveSeconds: Int = 0,
     private val scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
 ) : QuicConnection,

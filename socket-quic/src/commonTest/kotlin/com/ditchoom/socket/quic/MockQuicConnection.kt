@@ -26,6 +26,7 @@ class MockQuicConnection(
 ) : QuicConnection {
     private val mockScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     override val coroutineContext: CoroutineContext = mockScope.coroutineContext
+    override val bufferFactory: BufferFactory = BufferFactory.Default
     private val _state = MutableStateFlow<QuicConnectionState>(initialState)
     override val state: StateFlow<QuicConnectionState> = _state
 

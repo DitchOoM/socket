@@ -1,5 +1,6 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
@@ -43,6 +44,9 @@ internal class WebTransportMux(
 ) {
     private val sessions = mutableMapOf<Long, WebTransportSession>()
     private val mutex = Mutex()
+
+    /** The connection's buffer factory — surfaced to [WebTransportSession.bufferFactory]. */
+    val bufferFactory: BufferFactory get() = scope.bufferFactory
 
     /**
      * Create a session for a CONNECT stream and table it immediately by id, before the handshake

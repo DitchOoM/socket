@@ -72,6 +72,8 @@ receives an `Http3ServerExchange` (its `request` and `response`):
 ```kotlin
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.use
+import com.ditchoom.socket.quic.network
 
 withHttp3Server(
     port = 0, // ephemeral; read it back from `port`
@@ -79,14 +81,17 @@ withHttp3Server(
     onRequest = {
         when (request.path) {
             "/hello" -> {
-                val body = BufferFactory.Default.allocate(64)
-                body.writeString("hello from h3", Charset.UTF8)
-                body.resetForRead()
-                response.send(
-                    status = 200,
-                    headers = listOf(QpackHeaderField("content-type", "text/plain")),
-                    body = body,
-                )
+                // `send` writes the body but doesn't take ownership — `use { }` frees it after.
+                // QUIC buffers must be native memory; `BufferFactory.network()` guarantees that.
+                BufferFactory.network().allocate(64).use { body ->
+                    body.writeString("hello from h3", Charset.UTF8)
+                    body.resetForRead()
+                    response.send(
+                        status = 200,
+                        headers = listOf(QpackHeaderField("content-type", "text/plain")),
+                        body = body,
+                    )
+                }
             }
             else -> response.send(404)
         }

@@ -20,7 +20,7 @@ import kotlin.time.Duration
  */
 internal class JvmQuicConnection(
     private val driver: QuicheDriver,
-    private val bufferFactory: BufferFactory,
+    override val bufferFactory: BufferFactory,
     private val scope: CoroutineScope,
 ) : QuicConnection,
     CoroutineScope by scope {

@@ -1,5 +1,6 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
@@ -46,6 +47,13 @@ class WebTransportSession internal constructor(
     internal val connectStream: QuicByteStream,
     private val mux: WebTransportMux,
 ) {
+    /**
+     * The connection's buffer factory (the underlying QUIC connection's native-memory factory; see
+     * [com.ditchoom.socket.quic.network]). Allocate stream/datagram buffers from here, paired with
+     * `use { }`.
+     */
+    val bufferFactory: BufferFactory get() = mux.bufferFactory
+
     @Volatile
     private var _closeInfo: WebTransportCloseInfo? = null
 

@@ -53,6 +53,30 @@ withQuicConnection("example.com", 443, QuicOptions(alpnProtocols = listOf("h3"))
 `QuicOptions.alpnProtocols` is the one required field — QUIC always negotiates an application
 protocol during the TLS handshake.
 
+## Who closes what
+
+The **connection scope is the resource boundary.** When the block exits, the connection — and every
+stream opened on it — is torn down, so a stream you forget to close is reclaimed, not leaked. You
+still call `stream.close()` / `shutdownSend()` to send the peer a prompt FIN, and to release streams
+as you finish them in a **long-lived** connection that opens many.
+
+**Buffers are the exception** — they aren't owned by the scope, so always pair an allocation with
+`use { }` (it frees even if the body throws). Allocate from the scope's own `bufferFactory` rather
+than a global, so your buffers match the connection's allocation strategy:
+
+```kotlin
+withQuicConnection("example.com", 443, QuicOptions(alpnProtocols = listOf("h3"))) {
+    bufferFactory.allocate(11).use { out ->  // `bufferFactory` is a QuicScope member
+        out.writeString("hello quic!", Charset.UTF8)
+        out.resetForRead()
+        openStream().write(out)
+    }
+}
+```
+
+`bufferFactory` defaults to [`BufferFactory.network()`](./connection#buffers-bufferfactorynetwork) —
+the native-memory factory QUIC needs — unless you override `ConnectionOptions.bufferFactory`.
+
 ## Next Steps
 
 - [Connections & Streams](./connection) — client, server, the `QuicByteStream` lifecycle, and datagrams

@@ -4,7 +4,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
@@ -191,7 +190,7 @@ actual suspend fun <R> withQuicServer(
             boundPort = boundPort,
             acceptedGroups = acceptedGroups,
             datagramsEnabled = datagramsEnabled,
-            bufferFactory = BufferFactory.deterministic(),
+            bufferFactory = BufferFactory.network(),
             keepAliveSeconds = keepAliveSeconds,
             scope = serverScope,
         )

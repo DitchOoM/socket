@@ -1,5 +1,6 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
@@ -105,6 +106,14 @@ class Http3Connection private constructor(
     // SETTINGS at bootstrap; [WebTransportOptions.maxSessions] is the inbound accept limit.
     private val webTransport: WebTransportOptions?,
 ) {
+    /**
+     * The [BufferFactory] this connection allocates from — the underlying QUIC connection's factory
+     * (see [com.ditchoom.socket.quic.QuicScope.bufferFactory] /
+     * [com.ditchoom.socket.quic.network]). Allocate request/response and WebTransport buffers from
+     * here, paired with `use { }`, so they match the connection's native-memory allocation strategy.
+     */
+    val bufferFactory: BufferFactory get() = scope.bufferFactory
+
     private val peerSettingsDeferred = CompletableDeferred<Http3Settings>()
     private val _goAway = MutableStateFlow<Long?>(null)
     private val connectionErrorDeferred = CompletableDeferred<Http3StreamException>()
