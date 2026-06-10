@@ -310,7 +310,12 @@ internal class WebTransportMux(
                     session.onPeerClosed(info)
                     return true
                 }
-                // WT_DRAIN_SESSION and unknown capsule types: skip the value and continue.
+                WebTransportWire.WT_DRAIN_SESSION -> {
+                    // The peer is winding the session down (draft §5); surface it but keep the session
+                    // open so in-flight streams/datagrams finish. The value is empty (length honoured).
+                    session.onPeerDrain()
+                }
+                // Unknown capsule types: skip the value (already consumed via readBuffer) and continue.
                 else -> {}
             }
         }
@@ -353,6 +358,23 @@ internal class WebTransportMux(
             capsule.freeIfNeeded()
         }
         connectStream.shutdownSend()
+    }
+
+    /**
+     * Send a WT_DRAIN_SESSION capsule (draft-ietf-webtrans-http3 §5) inside a DATA frame on
+     * [connectStream] **without** FIN-ing it: the session stays open so in-flight streams/datagrams can
+     * still finish, while the peer learns we are winding down. Mirrors [sendCloseCapsule] minus the
+     * shutdown.
+     */
+    suspend fun sendDrainCapsule(connectStream: QuicByteStream) {
+        val capsule = pool.allocate(WebTransportWire.drainSessionCapsuleSize())
+        try {
+            WebTransportWire.writeDrainSessionCapsule(capsule)
+            capsule.resetForRead()
+            writeDataFrame(connectStream, capsule)
+        } finally {
+            capsule.freeIfNeeded()
+        }
     }
 
     /** Wrap [payload] in an HTTP/3 DATA frame and write it whole to [stream]. */
