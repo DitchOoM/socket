@@ -65,7 +65,45 @@ withQuicServer(port = 4433, tlsConfig = QuicTlsConfig(certChainPath, privKeyPath
 }
 ```
 
-Backed by quiche on JVM/Android (JNI on JDK ≤20, FFM on JDK 21+), quiche cinterop on Linux native, and Network.framework on Apple. JS/wasmJs throw `UnsupportedOperationException` (no raw UDP). Stream multiplexing via `withQuicMux(..., codec) { … }` for codec-typed sessions.
+Backed by quiche on JVM/Android (JNI on JDK ≤20, FFM on JDK 21+), quiche cinterop on Linux native, and Network.framework on Apple. JS/wasmJs throw `UnsupportedOperationException` (no raw UDP).
+
+Each `QuicByteStream` has independent send/receive sides: `write()`/`read()` for bytes, `shutdownSend()` to half-close the send side (FIN) for request/response, and `reset(errorCode)` to abort both directions. `read()` returns a `ReadResult` — `Data` (a buffer), `End` (peer FIN), or `Reset` (peer abort). Unreliable datagrams (RFC 9221) are available via `sendDatagram()`/`receiveDatagram()` when `QuicOptions.datagrams` is set.
+
+#### Typed stream multiplexing
+
+`withQuicMux(..., codec) { … }` layers a `Codec<T>` over the connection so each stream exchanges typed messages instead of raw buffers:
+
+```kotlin
+withQuicMux("localhost", port, quicOptions, StringCodec) {
+    val conn = openBidirectional()
+    conn.send("hello")
+    val reply = conn.receive().first() // "echo: hello"
+    conn.close()
+}
+```
+
+#### HTTP/3 & WebTransport — `socket-http3`
+
+`socket-http3` builds HTTP/3 (RFC 9114, with QPACK + server push) and WebTransport (RFC 9220) on top of `socket-quic`:
+
+```kotlin
+// HTTP/3 client request/response
+withHttp3Connection("example.com", 443) {
+    val response = request(Http3Request(method = "GET", authority = "example.com", path = "/"))
+    val body = response.readFullBody()
+    response.close()
+}
+
+// WebTransport session with its own multiplexed streams + datagrams
+withHttp3Connection("example.com", port, webTransport = WebTransportOptions(maxSessions = 4)) {
+    val session = connectWebTransport(authority = "example.com", path = "/wt")
+    val stream = session.openBidiStream()
+    stream.write(buf); stream.shutdownSend()
+    session.close()
+}
+```
+
+See the [QUIC][quic-docs] and [HTTP/3 & WebTransport][http3-docs] guides for the full API, including server roles, datagrams, and session drain/close.
 
 ## Error Handling
 
@@ -304,3 +342,5 @@ Socket builds on the [buffer v4](https://github.com/DitchOoM/buffer) library for
     limitations under the License.
 
 [docs]: https://ditchoom.github.io/socket/
+[quic-docs]: https://ditchoom.github.io/socket/quic/intro
+[http3-docs]: https://ditchoom.github.io/socket/http3/intro
