@@ -91,6 +91,7 @@ withQuicMux("localhost", port, quicOptions, StringCodec) {
 withHttp3Connection("example.com", 443) {
     val response = request(Http3Request(method = "GET", authority = "example.com", path = "/"))
     val body = response.readFullBody()
+    body.freeIfNeeded() // you own the body buffer
     response.close()
 }
 

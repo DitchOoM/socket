@@ -68,15 +68,16 @@ A session opens streams just like raw QUIC, but scoped to the session. Bidirecti
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.use
 
 // Client: open a bidi stream, send, half-close, read the reply.
 val stream = session.openBidiStream()
 
-val out = BufferFactory.Default.allocate(5)
-out.writeString("hello", Charset.UTF8)
-out.resetForRead()
-stream.write(out)
-out.freeIfNeeded()
+BufferFactory.Default.allocate(5).use { out ->
+    out.writeString("hello", Charset.UTF8)
+    out.resetForRead()
+    stream.write(out)
+}
 stream.shutdownSend()
 
 val reply = when (val r = stream.read()) {
@@ -99,11 +100,11 @@ val msg = when (val r = stream.read()) {
     is ReadResult.Data -> r.buffer.readString(r.buffer.remaining(), Charset.UTF8).also { r.buffer.freeIfNeeded() }
     ReadResult.End, ReadResult.Reset -> ""
 }
-val out = BufferFactory.Default.allocate(64)
-out.writeString("echo:$msg", Charset.UTF8)
-out.resetForRead()
-stream.write(out)
-out.freeIfNeeded()
+BufferFactory.Default.allocate(64).use { out ->
+    out.writeString("echo:$msg", Charset.UTF8)
+    out.resetForRead()
+    stream.write(out)
+}
 stream.close()
 ```
 
@@ -118,11 +119,11 @@ the underlying connection:
 
 ```kotlin
 // Send.
-val dgram = BufferFactory.Default.allocate(4)
-dgram.writeString("ping", Charset.UTF8)
-dgram.resetForRead()
-session.sendDatagram(dgram)
-dgram.freeIfNeeded()
+BufferFactory.Default.allocate(4).use { dgram ->
+    dgram.writeString("ping", Charset.UTF8)
+    dgram.resetForRead()
+    session.sendDatagram(dgram)
+}
 
 // Receive — you own each emitted buffer.
 val incoming = session.datagrams.first()

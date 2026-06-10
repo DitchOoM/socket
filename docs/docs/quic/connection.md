@@ -18,6 +18,7 @@ connection on exit:
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.use
 import kotlin.time.Duration.Companion.seconds
 
 val reply = withQuicConnection(
@@ -28,17 +29,18 @@ val reply = withQuicConnection(
 ) {
     val stream = openStream()
 
-    // Write — buffers are written zero-copy; reset for read before handing them off.
-    val out = BufferFactory.Default.allocate(11)
-    out.writeString("hello quic!", Charset.UTF8)
-    out.resetForRead()
-    stream.write(out, 5.seconds)
-    out.freeIfNeeded()
+    // Write — buffers are written zero-copy; you retain ownership, so free it when done.
+    // `use { }` frees the buffer on the way out, even if write() throws.
+    BufferFactory.Default.allocate(11).use { out ->
+        out.writeString("hello quic!", Charset.UTF8)
+        out.resetForRead()
+        stream.write(out, 5.seconds)
+    }
 
-    // The peer is done sending us nothing more on the write side — half-close it (FIN).
+    // We won't send anything more — half-close the write side (FIN); the read side stays open.
     stream.shutdownSend()
 
-    // Read the response.
+    // Read the response. The buffer in `Data` is yours to free.
     val text = when (val r = stream.read(5.seconds)) {
         is ReadResult.Data -> {
             val s = r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
@@ -47,7 +49,7 @@ val reply = withQuicConnection(
         }
         ReadResult.End, ReadResult.Reset -> ""
     }
-    stream.close()
+    stream.close() // optional here — the scope would reclaim it — but sends a prompt FIN.
     text
 }
 ```
@@ -65,18 +67,32 @@ withQuicServer(
 ) {
     connections {
         // `this` is the per-connection QuicScope. Accept a peer-opened stream and echo it.
+        // A server connection is long-lived and may handle many streams, so release each one as
+        // you finish it — `try/finally` guarantees the close even if the body throws.
         val stream = acceptStream()
-        when (val r = stream.read(5.seconds)) {
-            is ReadResult.Data -> stream.write(r.buffer, 5.seconds) // echo (zero-copy)
-            ReadResult.End, ReadResult.Reset -> {}
+        try {
+            when (val r = stream.read(5.seconds)) {
+                is ReadResult.Data -> {
+                    stream.write(r.buffer, 5.seconds) // echo (zero-copy)
+                    r.buffer.freeIfNeeded()           // you own the read buffer
+                }
+                ReadResult.End, ReadResult.Reset -> {}
+            }
+        } finally {
+            stream.close()
         }
-        stream.close()
     }
 }
 ```
 
 `connections { … }` handles multiple connections concurrently — each invocation is a fresh scope.
 You can also collect `streams(): Flow<QuicByteStream>` to react to every peer-opened stream.
+
+:::tip Streams vs. buffers
+Closing a stream is about *promptness* — the connection scope would reclaim it anyway on exit (see
+[the overview](./intro#who-closes-what)). The thing you must not drop is a **buffer**: it isn't owned
+by the scope. Allocate it inside `use { }`, and free the `ReadBuffer` you get back from `read()`.
+:::
 
 ## The `QuicByteStream` Lifecycle
 
@@ -111,11 +127,11 @@ val opts = QuicOptions(alpnProtocols = listOf("h3"), datagrams = DatagramOptions
 
 withQuicConnection("example.com", 443, opts) {
     // Send.
-    val dgram = BufferFactory.Default.allocate(4)
-    dgram.writeString("ping", Charset.UTF8)
-    dgram.resetForRead()
-    sendDatagram(dgram)
-    dgram.freeIfNeeded()
+    BufferFactory.Default.allocate(4).use { dgram ->
+        dgram.writeString("ping", Charset.UTF8)
+        dgram.resetForRead()
+        sendDatagram(dgram)
+    }
 
     // Receive — the buffer's ownership transfers to you.
     when (val r = receiveDatagram()) {

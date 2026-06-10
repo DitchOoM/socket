@@ -53,6 +53,15 @@ withQuicConnection("example.com", 443, QuicOptions(alpnProtocols = listOf("h3"))
 `QuicOptions.alpnProtocols` is the one required field — QUIC always negotiates an application
 protocol during the TLS handshake.
 
+### Who closes what
+
+The **connection scope is the resource boundary.** When the block exits, the connection — and every
+stream opened on it — is torn down, so a stream you forget to close is reclaimed, not leaked. You
+still call `stream.close()` / `shutdownSend()` to send the peer a prompt FIN, and to release streams
+as you finish them in a **long-lived** connection that opens many. **Buffers are the exception:** they
+are not owned by the scope, so always pair an allocation with `use { }` (or `freeIfNeeded()`) — see
+the examples that follow.
+
 ## Next Steps
 
 - [Connections & Streams](./connection) — client, server, the `QuicByteStream` lifecycle, and datagrams
