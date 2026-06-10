@@ -268,14 +268,23 @@ class Http3ServerConnection internal constructor(
         return acceptedSession != null
     }
 
-    /** Accept a WebTransport session: send 200 (no FIN — the CONNECT stream stays open), register it. */
+    /** Accept a WebTransport session: register it, then send 200 (no FIN — the CONNECT stream stays open). */
     private suspend fun acceptWebTransport(
         stream: QuicByteStream,
         reader: Http3StreamReader,
     ): WebTransportSession {
-        sendWebTransportResponse(stream, 200, fin = false)
         val mux = webTransportMux ?: error("WebTransport accepted without an enabled mux")
+        // Table the session BEFORE the 200 can be observed by the client. The client may open a
+        // WebTransport stream the instant it sees the 200 (draft-ietf-webtrans-http3 §4.2); if that
+        // stream reaches our demux before the session is registered, the demux treats it as orphaned and
+        // resets it. Registering first makes the session visible no later than the response itself.
         val session = mux.preRegister(stream)
+        try {
+            sendWebTransportResponse(stream, 200, fin = false)
+        } catch (e: Throwable) {
+            mux.abandon(session) // CONNECT response never reached the peer — untable the half-open session.
+            throw e
+        }
         // The CONNECT stream stays open; its capsule loop owns the reader and ends the session on FIN
         // or a WT_CLOSE_SESSION capsule.
         mux.activate(session, reader)
