@@ -69,6 +69,8 @@ Backed by quiche on JVM/Android (JNI on JDK ≤20, FFM on JDK 21+), quiche cinte
 
 Each `QuicByteStream` has independent send/receive sides: `write()`/`read()` for bytes, `shutdownSend()` to half-close the send side (FIN) for request/response, and `reset(errorCode)` to abort both directions. `read()` returns a `ReadResult` — `Data` (a buffer), `End` (peer FIN), or `Reset` (peer abort). Unreliable datagrams (RFC 9221) are available via `sendDatagram()`/`receiveDatagram()` when `QuicOptions.datagrams` is set.
 
+Allocate send buffers from the scope's `bufferFactory` (defaults to `BufferFactory.network()` — the native-memory factory QUIC needs on every backend) and pair them with `use { }`; the connection scope reclaims streams on exit, but buffers are yours to free.
+
 #### Typed stream multiplexing
 
 `withQuicMux(..., codec) { … }` layers a `Codec<T>` over the connection so each stream exchanges typed messages instead of raw buffers:
@@ -91,6 +93,7 @@ withQuicMux("localhost", port, quicOptions, StringCodec) {
 withHttp3Connection("example.com", 443) {
     val response = request(Http3Request(method = "GET", authority = "example.com", path = "/"))
     val body = response.readFullBody()
+    body.freeIfNeeded() // you own the body buffer
     response.close()
 }
 
