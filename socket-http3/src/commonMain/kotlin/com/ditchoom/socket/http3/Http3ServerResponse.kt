@@ -85,10 +85,10 @@ class Http3ServerResponse internal constructor(
     }
 
     private suspend fun writeFrame(frame: Http3Frame) {
-        val size = (Http3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
+        val size = (HandwrittenHttp3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
         val buffer = pool.allocate(size)
         try {
-            Http3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
+            HandwrittenHttp3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
             buffer.resetForRead()
             stream.write(buffer, options.writeTimeout)
         } finally {

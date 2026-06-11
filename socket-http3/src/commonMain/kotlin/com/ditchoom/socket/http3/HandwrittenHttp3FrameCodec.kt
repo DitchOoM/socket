@@ -20,7 +20,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
  * any [Http3Frame] back, computing the length up front (so [wireSize] is always
  * [WireSize.Exact] — no back-patching).
  */
-object Http3FrameCodec : Codec<Http3Frame> {
+object HandwrittenHttp3FrameCodec : Codec<Http3Frame> {
     override fun decode(
         buffer: ReadBuffer,
         context: DecodeContext,

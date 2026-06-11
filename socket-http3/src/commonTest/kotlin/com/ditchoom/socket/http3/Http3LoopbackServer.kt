@@ -372,11 +372,11 @@ internal class Http3LoopbackServer(
                     Http3Setting(Http3SettingId.QPACK_BLOCKED_STREAMS, 0L),
                 ),
             )
-        val frameSize = (Http3FrameCodec.wireSize(settings, EncodeContext.Empty) as WireSize.Exact).bytes
+        val frameSize = (HandwrittenHttp3FrameCodec.wireSize(settings, EncodeContext.Empty) as WireSize.Exact).bytes
         val buffer = pool.allocate(VarIntCodec.encodedLength(Http3StreamType.CONTROL) + frameSize)
         try {
             VarIntCodec.encode(buffer, Http3StreamType.CONTROL, EncodeContext.Empty)
-            Http3FrameCodec.encode(buffer, settings, EncodeContext.Empty)
+            HandwrittenHttp3FrameCodec.encode(buffer, settings, EncodeContext.Empty)
             buffer.resetForRead()
             control.write(buffer, options.writeTimeout)
         } finally {
@@ -389,10 +389,10 @@ internal class Http3LoopbackServer(
         stream: QuicByteStream,
         frame: Http3Frame,
     ) {
-        val size = (Http3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
+        val size = (HandwrittenHttp3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
         val buffer = pool.allocate(size)
         try {
-            Http3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
+            HandwrittenHttp3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
             buffer.resetForRead()
             stream.write(buffer, options.writeTimeout)
         } finally {

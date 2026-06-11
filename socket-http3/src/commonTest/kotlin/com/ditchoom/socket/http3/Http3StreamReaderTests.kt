@@ -33,7 +33,7 @@ class Http3StreamReaderTests {
     /** Serializes [frame] to its RFC 9114 §7.1 bytes. */
     private fun frameBytes(frame: Http3Frame): List<Int> {
         val buf = BufferFactory.Default.allocate(256)
-        Http3FrameCodec.encode(buf, frame, EncodeContext.Empty)
+        HandwrittenHttp3FrameCodec.encode(buf, frame, EncodeContext.Empty)
         buf.resetForRead()
         return (0 until buf.remaining()).map { buf.readByte().toInt() and 0xFF }
     }

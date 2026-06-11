@@ -33,6 +33,10 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
+    // TODO(buffer 5.5.1): drop mavenLocal once the buffer release containing
+    // DitchOoM/buffer#186 (varint @FramedBy/@ForwardCompatible + ViewCodec) is
+    // on Central — this branch must not merge while on a -SNAPSHOT buffer.
+    mavenLocal()
     google()
     mavenCentral()
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }

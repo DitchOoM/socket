@@ -27,7 +27,7 @@ class Http3StreamException(
 /**
  * Reassembles a QUIC stream of RFC 9114 §7.1 frames into [Http3Frame]s. HTTP/3 packs
  * frames back-to-back on a stream with no outer delimiter, so this buffers stream chunks
- * in a [StreamProcessor] and uses [Http3FrameCodec.peekFrameSize] to know when a whole
+ * in a [StreamProcessor] and uses [HandwrittenHttp3FrameCodec.peekFrameSize] to know when a whole
  * frame — type + length varints + payload — is buffered before decoding it.
  *
  * One reader wraps one stream. [nextFrame] reassembles a frame split across reads and
@@ -51,9 +51,9 @@ class Http3StreamReader(
     suspend fun nextFrame(timeout: Duration = Duration.INFINITE): Http3Frame? {
         while (true) {
             // A fully buffered frame is returned even after FIN, so trailing complete frames drain.
-            val peek = Http3FrameCodec.peekFrameSize(processor, 0)
+            val peek = HandwrittenHttp3FrameCodec.peekFrameSize(processor, 0)
             if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
-                return Http3FrameCodec.decode(processor.readBuffer(peek.bytes), DecodeContext.Empty)
+                return HandwrittenHttp3FrameCodec.decode(processor.readBuffer(peek.bytes), DecodeContext.Empty)
             }
             if (ended) {
                 if (processor.available() == 0) return null // clean end

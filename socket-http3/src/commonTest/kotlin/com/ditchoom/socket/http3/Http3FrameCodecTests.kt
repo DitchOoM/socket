@@ -42,17 +42,17 @@ class Http3FrameCodecTests {
 
     private fun ReadBuffer.toIntList(): List<Int> = (0 until remaining()).map { readByte().toInt() and 0xFF }
 
-    private fun decodeFrame(vararg bytes: Int): Http3Frame = Http3FrameCodec.decode(bufferOf(*bytes), DecodeContext.Empty)
+    private fun decodeFrame(vararg bytes: Int): Http3Frame = HandwrittenHttp3FrameCodec.decode(bufferOf(*bytes), DecodeContext.Empty)
 
     private fun encodeFrame(frame: Http3Frame): List<Int> {
         val buf = BufferFactory.Default.allocate(64)
-        Http3FrameCodec.encode(buf, frame, EncodeContext.Empty)
+        HandwrittenHttp3FrameCodec.encode(buf, frame, EncodeContext.Empty)
         buf.resetForRead()
         return buf.toIntList()
     }
 
     private fun wireSizeOf(frame: Http3Frame): Int {
-        val size = Http3FrameCodec.wireSize(frame, EncodeContext.Empty)
+        val size = HandwrittenHttp3FrameCodec.wireSize(frame, EncodeContext.Empty)
         assertIs<WireSize.Exact>(size)
         return size.bytes
     }
@@ -123,7 +123,7 @@ class Http3FrameCodecTests {
                 ),
             )
         val bytes = encodeFrame(settings)
-        val decoded = Http3FrameCodec.decode(bufferOf(*bytes.toIntArray()), DecodeContext.Empty)
+        val decoded = HandwrittenHttp3FrameCodec.decode(bufferOf(*bytes.toIntArray()), DecodeContext.Empty)
         assertEquals(settings, decoded)
         assertEquals(bytes.size, wireSizeOf(settings))
     }
@@ -134,7 +134,7 @@ class Http3FrameCodecTests {
         // WEBTRANSPORT_MAX_SESSIONS / ENABLE_WEBTRANSPORT) — exercise the codec on those ids.
         val settings = Http3Frame.Settings(webTransportSettings(WebTransportOptions(maxSessions = 17)))
         val bytes = encodeFrame(settings)
-        val decoded = Http3FrameCodec.decode(bufferOf(*bytes.toIntArray()), DecodeContext.Empty)
+        val decoded = HandwrittenHttp3FrameCodec.decode(bufferOf(*bytes.toIntArray()), DecodeContext.Empty)
         assertEquals(settings, decoded)
         assertEquals(bytes.size, wireSizeOf(settings))
 
@@ -217,10 +217,10 @@ class Http3FrameCodecTests {
     fun decode_twoFramesBackToBack() {
         // DATA "A" (00 01 41) then SETTINGS empty (04 00)
         val buf = bufferOf(0x00, 0x01, 0x41, 0x04, 0x00)
-        val first = Http3FrameCodec.decode(buf, DecodeContext.Empty)
+        val first = HandwrittenHttp3FrameCodec.decode(buf, DecodeContext.Empty)
         assertIs<Http3Frame.Data>(first)
         assertEquals(listOf(0x41), first.payload.toIntList())
-        val second = Http3FrameCodec.decode(buf, DecodeContext.Empty)
+        val second = HandwrittenHttp3FrameCodec.decode(buf, DecodeContext.Empty)
         assertIs<Http3Frame.Settings>(second)
         assertTrue(second.entries.isEmpty())
     }
@@ -230,9 +230,9 @@ class Http3FrameCodecTests {
     @Test
     fun peekFrameSize_reportsTotal_onceHeaderPresent_evenWithoutPayload() {
         // Header only: 00 03 (DATA, length 3) — payload absent, size still known = 5.
-        assertEquals(PeekResult.Complete(5), Http3FrameCodec.peekFrameSize(streamOf(0x00, 0x03), 0))
+        assertEquals(PeekResult.Complete(5), HandwrittenHttp3FrameCodec.peekFrameSize(streamOf(0x00, 0x03), 0))
         // Full frame present.
-        assertEquals(PeekResult.Complete(5), Http3FrameCodec.peekFrameSize(streamOf(0x00, 0x03, 0x41, 0x41, 0x41), 0))
+        assertEquals(PeekResult.Complete(5), HandwrittenHttp3FrameCodec.peekFrameSize(streamOf(0x00, 0x03, 0x41, 0x41, 0x41), 0))
     }
 
     @Test
@@ -240,16 +240,16 @@ class Http3FrameCodecTests {
         // type 0x00, length = 16384 (4-byte varint 80 00 40 00) -> header 5 bytes, total 16389.
         assertEquals(
             PeekResult.Complete(1 + 4 + 16384),
-            Http3FrameCodec.peekFrameSize(streamOf(0x00, 0x80, 0x00, 0x40, 0x00), 0),
+            HandwrittenHttp3FrameCodec.peekFrameSize(streamOf(0x00, 0x80, 0x00, 0x40, 0x00), 0),
         )
     }
 
     @Test
     fun peekFrameSize_needsMoreData_whenHeaderIncomplete() {
         // Empty.
-        assertEquals(PeekResult.NeedsMoreData, Http3FrameCodec.peekFrameSize(streamOf(), 0))
+        assertEquals(PeekResult.NeedsMoreData, HandwrittenHttp3FrameCodec.peekFrameSize(streamOf(), 0))
         // Type present but length varint announces 4 bytes, only 1 of them present.
-        assertEquals(PeekResult.NeedsMoreData, Http3FrameCodec.peekFrameSize(streamOf(0x00, 0x80), 0))
+        assertEquals(PeekResult.NeedsMoreData, HandwrittenHttp3FrameCodec.peekFrameSize(streamOf(0x00, 0x80), 0))
     }
 
     // --- single-varint control frames: GOAWAY (0x07) / MAX_PUSH_ID (0x0d) / CANCEL_PUSH (0x03) ---
@@ -317,11 +317,11 @@ class Http3FrameCodecTests {
         // Control-stream tail: GOAWAY then MAX_PUSH_ID, back to back — the decoder must leave
         // the buffer aligned after each single-varint frame.
         val buf = BufferFactory.Default.allocate(32)
-        Http3FrameCodec.encode(buf, Http3Frame.GoAway(4), EncodeContext.Empty)
-        Http3FrameCodec.encode(buf, Http3Frame.MaxPushId(100), EncodeContext.Empty)
+        HandwrittenHttp3FrameCodec.encode(buf, Http3Frame.GoAway(4), EncodeContext.Empty)
+        HandwrittenHttp3FrameCodec.encode(buf, Http3Frame.MaxPushId(100), EncodeContext.Empty)
         buf.resetForRead()
-        assertEquals(Http3Frame.GoAway(4), Http3FrameCodec.decode(buf, DecodeContext.Empty))
-        assertEquals(Http3Frame.MaxPushId(100), Http3FrameCodec.decode(buf, DecodeContext.Empty))
+        assertEquals(Http3Frame.GoAway(4), HandwrittenHttp3FrameCodec.decode(buf, DecodeContext.Empty))
+        assertEquals(Http3Frame.MaxPushId(100), HandwrittenHttp3FrameCodec.decode(buf, DecodeContext.Empty))
         assertEquals(0, buf.remaining(), "both frames fully consumed")
     }
 }
