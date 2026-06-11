@@ -56,10 +56,14 @@ class Http3DockerInteropTests {
             withContext(Dispatchers.Default) {
                 var connected = false
                 try {
-                    withHttp3Connection(host, port, quicOptions, connectionOptions, timeout = 8.seconds) {
+                    // `timeout` caps the WHOLE operation (handshake + all 64 round-trips + teardown), so
+                    // it must absorb CI/full-suite CPU + single-process-aioquic contention, not just the
+                    // handshake — 30s is generous headroom over the ~0.5s isolated run. A genuinely down
+                    // server still fails instantly (connection refused), so the skip path stays fast.
+                    withHttp3Connection(host, port, quicOptions, connectionOptions, timeout = 30.seconds) {
                         // Let the server SETTINGS (its QPACK_MAX_TABLE_CAPACITY) arrive so our encoder
                         // activates its dynamic table before we start issuing requests.
-                        withTimeout(6.seconds) { peerSettings() }
+                        withTimeout(15.seconds) { peerSettings() }
                         connected = true // past the handshake — failures below are real regressions
 
                         val recurring = QpackHeaderField("x-recurring", "stable-token-kept-across-every-request")

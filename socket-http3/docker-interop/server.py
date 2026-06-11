@@ -25,7 +25,12 @@ import pathlib
 from aioquic.asyncio import serve
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.h3.connection import H3Connection
-from aioquic.h3.events import DataReceived, HeadersReceived
+from aioquic.h3.events import (
+    DataReceived,
+    DatagramReceived,
+    HeadersReceived,
+    WebTransportStreamDataReceived,
+)
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import ProtocolNegotiated, QuicEvent
 
@@ -77,6 +82,10 @@ class H3EchoProtocol(QuicConnectionProtocol):
         self._http: H3Connection | None = None
         self._request_headers: dict[int, list[tuple[bytes, bytes]]] = {}
         self._answered: set[int] = set()
+        # WebTransport: accepted session (CONNECT) stream ids, and per-bidi-stream accumulators so a
+        # stream is echoed back as one chunk on FIN (mirrors the request-on-stream-end QPACK path).
+        self._wt_sessions: set[int] = set()
+        self._wt_stream_data: dict[int, bytearray] = {}
 
     def quic_event_received(self, event: QuicEvent) -> None:
         if isinstance(event, ProtocolNegotiated) and event.alpn_protocol == "h3":
@@ -84,18 +93,41 @@ class H3EchoProtocol(QuicConnectionProtocol):
             # emits SETTINGS, so set them on the instance the constructor path consults.
             H3Connection._max_table_capacity = MAX_TABLE_CAPACITY
             H3Connection._blocked_streams = BLOCKED_STREAMS
-            self._http = H3Connection(self._quic)
+            # enable_webtransport advertises ENABLE_CONNECT_PROTOCOL + H3_DATAGRAM + ENABLE_WEBTRANSPORT
+            # (the draft-02 toggle aioquic implements) so a WebTransport CONNECT is accepted.
+            self._http = H3Connection(self._quic, enable_webtransport=True)
         if self._http is not None:
             for http_event in self._http.handle_event(event):
                 self._handle_http_event(http_event)
 
     def _handle_http_event(self, event) -> None:
         if isinstance(event, HeadersReceived):
+            headers = dict(event.headers)
+            if headers.get(b":method") == b"CONNECT" and headers.get(b":protocol") == b"webtransport":
+                # Accept the WebTransport session: 200, stream stays open (no FIN).
+                self._wt_sessions.add(event.stream_id)
+                assert self._http is not None
+                self._http.send_headers(event.stream_id, [(b":status", b"200")], end_stream=False)
+                self.transmit()
+                return
             self._request_headers[event.stream_id] = event.headers
             if event.stream_ended:
                 self._respond(event.stream_id)
         elif isinstance(event, DataReceived) and event.stream_ended:
             self._respond(event.stream_id)
+        elif isinstance(event, WebTransportStreamDataReceived):
+            # Echo a bidirectional WebTransport stream back, byte-for-byte, FINishing on the peer's FIN.
+            buf = self._wt_stream_data.setdefault(event.stream_id, bytearray())
+            buf += event.data
+            if event.stream_ended:
+                self._quic.send_stream_data(event.stream_id, bytes(buf), end_stream=True)
+                del self._wt_stream_data[event.stream_id]
+                self.transmit()
+        elif isinstance(event, DatagramReceived):
+            # Echo a WebTransport datagram back on the same session (stream_id == session/flow id).
+            assert self._http is not None
+            self._http.send_datagram(event.stream_id, event.data)
+            self.transmit()
 
     def _respond(self, stream_id: int) -> None:
         if stream_id in self._answered:
@@ -119,7 +151,7 @@ async def main() -> None:
     await serve(HOST, PORT, configuration=configuration, create_protocol=H3EchoProtocol)
     print(
         f"h3 echo server on udp/{PORT} (QPACK max_table_capacity={MAX_TABLE_CAPACITY}, "
-        f"blocked_streams={BLOCKED_STREAMS})",
+        f"blocked_streams={BLOCKED_STREAMS}, webtransport=on)",
         flush=True,
     )
     await asyncio.Future()

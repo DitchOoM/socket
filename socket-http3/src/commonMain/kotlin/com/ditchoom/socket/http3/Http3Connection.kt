@@ -59,11 +59,28 @@ data class Http3Settings(
     val wtMaxSessions: Long get() = value(Http3SettingId.WEBTRANSPORT_MAX_SESSIONS) ?: 0L
 
     /**
-     * The peer can accept WebTransport sessions we initiate: it advertised Extended CONNECT
-     * (RFC 9220), HTTP Datagrams (RFC 9297), and a non-zero session limit. Gate
-     * `connectWebTransport` on this.
+     * Legacy draft-02 WebTransport toggle (`SETTINGS_ENABLE_WEBTRANSPORT = 1`). Superseded by
+     * [wtMaxSessions], but still the *only* WebTransport setting some widely-deployed reference stacks
+     * advertise (e.g. aioquic 1.3.0). We send both (see [webTransportSettings]); to interop with those
+     * peers we must also *accept* the legacy one — hence its place in [webTransportSupported].
      */
-    val webTransportSupported: Boolean get() = enableConnectProtocol && h3DatagramEnabled && wtMaxSessions > 0
+    val enableWebTransportLegacy: Boolean get() = value(Http3SettingId.ENABLE_WEBTRANSPORT) == 1L
+
+    /**
+     * The peer can accept WebTransport sessions we initiate: it advertised Extended CONNECT
+     * (RFC 9220), HTTP Datagrams (RFC 9297), and a session limit. `WEBTRANSPORT_MAX_SESSIONS` is
+     * **authoritative when present** — an explicit `0` means the peer accepts none, so a legacy
+     * `ENABLE_WEBTRANSPORT = 1` advertised alongside it does NOT override that (an endpoint sends both
+     * but `0` is the real limit; cf. our own initiate-only `webTransportSettings`). The legacy toggle is
+     * the gate only when `WEBTRANSPORT_MAX_SESSIONS` is **absent** — a true draft-02 peer (e.g. aioquic
+     * 1.3.0) sends no count, so a bare enable means "at least one". Gate `connectWebTransport` on this.
+     */
+    val webTransportSupported: Boolean
+        get() {
+            if (!enableConnectProtocol || !h3DatagramEnabled) return false
+            val maxSessions = value(Http3SettingId.WEBTRANSPORT_MAX_SESSIONS)
+            return if (maxSessions != null) maxSessions > 0 else enableWebTransportLegacy
+        }
 }
 
 /**
