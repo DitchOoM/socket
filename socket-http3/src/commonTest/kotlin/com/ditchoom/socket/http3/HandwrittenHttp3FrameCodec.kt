@@ -11,13 +11,18 @@ import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.stream.StreamProcessor
 
 /**
- * Codec for the HTTP/3 frame envelope (RFC 9114 §7.1): `Type (i)`, `Length (i)`,
- * then `Length` payload bytes. Type and length are QUIC varints ([VarIntCodec]).
+ * The retired hand-written codec for the HTTP/3 frame envelope (RFC 9114 §7.1):
+ * `Type (i)`, `Length (i)`, then `Length` payload bytes — kept in the test
+ * source set as the **differential oracle** for the KSP-generated
+ * [Http3FrameCodec] that replaced it in production. This implementation is the
+ * one that was interop-proven against Cloudflare/Google and the aioquic docker
+ * peer, so [Http3FrameCodecDifferentialTests] pins the generated codec's wire
+ * bytes against it. Do not extend it for new frame types — new protocol work
+ * goes in the declarative [Http3Frame] model.
  *
- * [decode] recognizes DATA, HEADERS and SETTINGS; every other type decodes to
- * [Http3Frame.Unknown] with its payload captured, so callers can apply RFC 9114
- * §9's "ignore unknown frame types" rule rather than failing. [encode] writes
- * any [Http3Frame] back, computing the length up front (so [wireSize] is always
+ * [decode] recognizes the modeled frame types; every other type decodes to
+ * [Http3Frame.Unknown] with its payload captured (RFC 9114 §9 ignore-unknown).
+ * [encode] computes the length up front (so [wireSize] is always
  * [WireSize.Exact] — no back-patching).
  */
 object HandwrittenHttp3FrameCodec : Codec<Http3Frame> {

@@ -426,7 +426,7 @@ mirroring the rest of `:socket-http3`. Opt-in: pass `WebTransportOptions` to `wi
   DATA frames** on the CONNECT stream (verified against RFC 9297 §3.1). `WebTransportSession.close(code,
   reason)` sends a `WT_CLOSE_SESSION` (0x2843) capsule + FIN; the per-session capsule loop (`runCapsuleLoop`,
   replacing the Phase-1 drain) reassembles DATA payloads, parses capsules, and surfaces the peer's code +
-  reason via `awaitClosed()` / `closeInfo`. `WT_DRAIN_SESSION` (0x78ae) + unknown capsules are skipped.
+  reason via `awaitClosed()` / `closeInfo`. `WT_DRAIN_SESSION` (0x78ae) is surfaced via `drained: Flow<Unit>` / `isDrainRequested` and sent via `drain()` (PR #145); unknown capsules are skipped.
 
 **Shared engine: `WebTransportMux`** (one per connection, used verbatim by client + server) owns the session
 table, stream-open + demux, the datagram pump, and the capsule protocol — so the two roles share all WT logic.
@@ -438,9 +438,9 @@ loopback E2E tests in `Http3LoopbackTestSuite` (establish/reject/no-support/two-
 uni + server uni + datagram round-trip + client-close-observed-by-server + server-close-observed-by-client),
 all jvm + linuxX64. The loopback `QuicOptions` now enable `DatagramOptions()`.
 
-*Not done (future):* sending `WT_DRAIN_SESSION` (we only receive/skip it); Apple `reset()` parity carries over
+*Not done (future):* Apple `reset()` parity carries over
 from the existing follow-up (a WT stream `reset()` on Apple still degrades to `close()` — see the step-2 Apple
-note); third-party WT interop (no aioquic/lsqpack WT sidecar yet — the docker interop covers QPACK only).
+note). Third-party WT interop is DONE (PR #152): the aioquic docker server echoes WT bidi/uni/datagrams, `WebTransportDockerInteropTests` exercises it, and docker interop (WT + QPACK) runs in the build-linux CI lane; the same PR fixed legacy `ENABLE_WEBTRANSPORT`-only peers (aioquic 1.3.0) being treated as not-WT-capable.
 
 ## (historical) step 4b/5 plan — now DONE, see above
 
@@ -504,3 +504,36 @@ export JAVA_HOME=~/.gradle/jdks/eclipse_adoptium-21-aarch64-os_x.2/jdk-21.0.9+10
 4. Expand `:socket-http3` targets to the full matrix + publishing.
 5. Wire KSP-for-main if/when a declarative codec is introduced.
 6. Delete `origin/feature/socket-http3` once confirmed subsumed.
+
+## ✅ DONE — Http3FrameCodec migrated to the declarative buffer-codec model (branch `feat/buffer-codec-migration`)
+
+The 283-line hand-rolled `Http3FrameCodec` is replaced by the KSP-generated codec from an annotated
+`Http3Frame` (the "Why hand-rolled" rationale above is obsolete — the two blocking framework gaps were
+closed in buffer via DitchOoM/buffer#186: `@FramedBy` after a varint discriminator + `@ForwardCompatible`
+over varint unions + the `ViewCodec` zero-copy escape):
+
+- **Model** (`Http3Frame.kt`): `@DispatchOn(Http3FrameType)` varint dispatch + `@FramedBy(Http3LengthCodec,
+  after = "frameType")` **computed** varint Length (length-free model, framework derives/bounds it) +
+  `@ForwardCompatible(unknown = Unknown)` skip-and-preserve for reserved/GREASE types (full 62-bit opcode).
+  `Http3FrameType` is now a `@JvmInline` value class with the type-code consts on its companion and a
+  **clamped** `@DispatchValue` (an out-of-Int-range type maps to -1, never aliasing onto DATA). Variants
+  carry a defaulted `frameType` first field (the generated codec re-reads the discriminator); secondary
+  constructors keep all positional call sites source-compatible. Payloads stay zero-copy borrowed
+  `ReadBuffer` views via `ReadBufferViewCodec : ViewCodec` (same borrow contract `Http3StreamReader`
+  documents); encode is non-destructive as before.
+- **Write path**: `writeFrame` call sites (Http3Connection / Http3ServerConnection / Http3ServerResponse /
+  WebTransportMux) now use the framed encode (`Http3FrameCodec.encode(frame, ctx, pool): ReadBuffer`) — the
+  framework owns allocation via the slicing scheme over the connection's `BufferPool`, no wireSize+allocate
+  step. `VarIntCodec` is now a `VariableLengthCodec<Long>` (adds `peekValue`).
+- **Oracle kept**: the old codec lives in commonTest as `HandwrittenHttp3FrameCodec`, pinned against the
+  generated codec by `Http3FrameCodecDifferentialTests` — byte-identical encode, decode/peek/consumption
+  parity (incl. GREASE at all 4 varint widths + non-minimal type varints). The loopback test server still
+  writes through the oracle, so every loopback E2E is also a cross-codec interop test.
+- **One deliberate behavior change** (pinned in the differential test): a single-varint frame (GOAWAY /
+  MAX_PUSH_ID / CANCEL_PUSH) with trailing bytes inside its declared length now **throws** (RFC 9114 §7.1
+  H3_FRAME_ERROR) instead of being silently skipped.
+- **Merge gate**: the branch builds against **buffer 5.5.1-SNAPSHOT from mavenLocal** (local publish of
+  DitchOoM/buffer#186). Before merge: land buffer#186, release buffer, pin `gradle/libs.versions.toml` to
+  the released version, drop the root `mavenLocal()` repo entry.
+
+QPACK stays hand-written (bit-level Huffman / N-bit prefix integers are algorithmic, not declarative).

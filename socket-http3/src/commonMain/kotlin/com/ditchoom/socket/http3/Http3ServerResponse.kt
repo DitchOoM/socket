@@ -2,7 +2,6 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
-import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.ConnectionOptions
@@ -85,11 +84,10 @@ class Http3ServerResponse internal constructor(
     }
 
     private suspend fun writeFrame(frame: Http3Frame) {
-        val size = (HandwrittenHttp3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
-        val buffer = pool.allocate(size)
+        // The generated framed encode owns allocation (slicing scheme over the
+        // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
+        val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            HandwrittenHttp3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
-            buffer.resetForRead()
             stream.write(buffer, options.writeTimeout)
         } finally {
             buffer.freeIfNeeded()

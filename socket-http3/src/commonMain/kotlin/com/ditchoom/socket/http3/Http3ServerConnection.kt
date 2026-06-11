@@ -442,11 +442,10 @@ class Http3ServerConnection internal constructor(
         stream: QuicByteStream,
         frame: Http3Frame,
     ) {
-        val size = (HandwrittenHttp3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
-        val buffer = pool.allocate(size)
+        // The generated framed encode owns allocation (slicing scheme over the
+        // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
+        val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            HandwrittenHttp3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
-            buffer.resetForRead()
             stream.write(buffer, options.writeTimeout)
         } finally {
             buffer.freeIfNeeded()
@@ -462,15 +461,19 @@ class Http3ServerConnection internal constructor(
             )
         webTransport?.let { entries += webTransportSettings(it) }
         val settings = Http3Frame.Settings(entries)
-        val frameSize = (HandwrittenHttp3FrameCodec.wireSize(settings, EncodeContext.Empty) as WireSize.Exact).bytes
-        val buffer = pool.allocate(VarIntCodec.encodedLength(Http3StreamType.CONTROL) + frameSize)
+        val prefix = pool.allocate(VarIntCodec.encodedLength(Http3StreamType.CONTROL))
         try {
-            VarIntCodec.encode(buffer, Http3StreamType.CONTROL, EncodeContext.Empty)
-            HandwrittenHttp3FrameCodec.encode(buffer, settings, EncodeContext.Empty)
-            buffer.resetForRead()
-            control.write(buffer, options.writeTimeout)
+            VarIntCodec.encode(prefix, Http3StreamType.CONTROL, EncodeContext.Empty)
+            prefix.resetForRead()
+            control.write(prefix, options.writeTimeout)
         } finally {
-            buffer.freeIfNeeded()
+            prefix.freeIfNeeded()
+        }
+        val frame = Http3FrameCodec.encode(settings, EncodeContext.Empty, pool)
+        try {
+            control.write(frame, options.writeTimeout)
+        } finally {
+            frame.freeIfNeeded()
         }
     }
 
