@@ -100,6 +100,26 @@ class Http3FrameCodecFuzzTests {
     private fun Http3Frame.isSingleVarintFrame(): Boolean =
         this is Http3Frame.GoAway || this is Http3Frame.MaxPushId || this is Http3Frame.CancelPush
 
+    /**
+     * Whether [wire] is shorter than the frame total its own header declares
+     * (type varint + length varint + declared body) — computed directly from
+     * the bytes, independent of either codec.
+     */
+    private fun isTruncated(wire: ByteArray): Boolean {
+        if (wire.isEmpty()) return false
+        val typeLen = VarIntCodec.lengthFromPrefix(wire[0].toInt() and 0xFF)
+        if (wire.size < typeLen + 1) return false
+        val lenLen = VarIntCodec.lengthFromPrefix(wire[typeLen].toInt() and 0xFF)
+        if (wire.size < typeLen + lenLen) return false
+        var length = (wire[typeLen].toInt() and 0x3F).toLong()
+        for (i in 1 until lenLen) length = (length shl 8) or (wire[typeLen + i].toLong() and 0xFF)
+        return wire.size < typeLen + lenLen + length
+    }
+
+    /** The generated truncation guard's failure sites (`@FramedBy` variant arms, `@ForwardCompatible` preserve arm). */
+    private fun Throwable?.isFramedGuardFailure(): Boolean =
+        (this as? DecodeException)?.fieldPath?.let { it.endsWith("@FramedBy") || it.endsWith("@ForwardCompatible") } == true
+
     /** Decode [wire] on both codecs; equal frame + equal consumption, or both throw. */
     private fun assertOutcomeParity(
         wire: ByteArray,
@@ -116,13 +136,22 @@ class Http3FrameCodecFuzzTests {
                 assertEquals(oracleBuf.position(), generatedBuf.position(), "consumption for $detail")
             }
             oracle.isFailure && generated.isFailure -> Unit
-            // The documented divergence, accepted ONLY at its exact failure site: the generated
+            // Documented divergence 1, accepted ONLY at its exact failure site: the generated
             // codec's strict @FramedBy bound check on a single-varint frame. A generated failure
             // anywhere else on an oracle-decodable single-varint frame is still a divergence.
             oracle.isSuccess &&
                 generated.isFailure &&
                 oracle.getOrThrow().isSingleVarintFrame() &&
                 (generated.exceptionOrNull() as? DecodeException)?.fieldPath?.endsWith("@FramedBy") == true -> Unit
+            // Documented divergence 2: a genuinely truncated frame (verified from the wire bytes,
+            // independent of either codec). The generated truncation guard throws on every
+            // platform; the oracle is platform-dependent (JVM/native throw → both-fail above; the
+            // JS buffer clamps and "succeeds" with a short payload → lands here). Accepted only
+            // when the generated failure IS the guard, so nothing else can hide behind it.
+            oracle.isSuccess &&
+                generated.isFailure &&
+                isTruncated(wire) &&
+                generated.exceptionOrNull().isFramedGuardFailure() -> Unit
             else ->
                 fail(
                     "outcome divergence for $detail: oracle=${oracle.map { it::class.simpleName }} " +
