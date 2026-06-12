@@ -6,6 +6,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
@@ -256,19 +257,22 @@ class Http3FrameCodecDifferentialTests {
     }
 
     @Test
-    fun malformed_lengthPastBufferEnd_outcomeParity() {
-        // DATA declaring 10 payload bytes with only 2 present. JVM/native
-        // buffers throw on the over-read; the JS buffer clamps and both
-        // codecs decode a truncated payload (pre-existing platform
-        // leniency). The contract here is PARITY: the generated codec does
-        // whatever the oracle did on this platform.
+    fun malformed_lengthPastBufferEnd_generatedGuardThrowsOnEveryPlatform() {
+        // DATA declaring 10 payload bytes with only 2 present. The generated
+        // codec's framed-body truncation guard throws a DecodeException at
+        // <Variant>.@FramedBy on EVERY platform — fixed behavior, where the
+        // hand-written oracle was platform-dependent (JVM/native buffers throw
+        // on the over-read; the JS buffer clamps and decodes a truncated
+        // payload). The guard is the second deliberate strictness upgrade: it
+        // also stops the JS clamp from fabricating phantom payload bytes
+        // (found by Http3FrameCodecFuzzTests on jsNodeTest).
         val wire = byteArrayOf(0x00) + varint(10) + payloadBytes(2)
-        val oracle = runCatching { HandwrittenHttp3FrameCodec.decode(buffer(wire), DecodeContext.Empty) }
-        val generated = runCatching { Http3FrameCodec.decode(buffer(wire), DecodeContext.Empty) }
-        assertEquals(oracle.isFailure, generated.isFailure, "outcome parity for truncated DATA")
-        if (oracle.isSuccess) {
-            assertFramesEqual(oracle.getOrThrow(), generated.getOrThrow(), "truncated DATA (lenient platform)")
-        }
+        val generated =
+            assertIs<DecodeException>(
+                runCatching { Http3FrameCodec.decode(buffer(wire), DecodeContext.Empty) }.exceptionOrNull(),
+                "truncated DATA must throw the truncation guard",
+            )
+        assertEquals("Data.@FramedBy", generated.fieldPath)
     }
 
     @Test
