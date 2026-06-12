@@ -1,10 +1,12 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ByteOrder
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import kotlin.time.Duration
@@ -35,8 +37,9 @@ class Http3StreamException(
  * [Http3StreamException].
  *
  * The returned frame for DATA/HEADERS borrows a buffer owned by this reader's processor;
- * read or copy its payload before the next [nextFrame] call. [release] returns the
- * processor's buffers to the pool when the stream is done.
+ * read or copy its payload before the next [nextFrame] call — that call (or [release])
+ * recycles the previous frame's wire bytes, so a stale view is freed memory, not garbage.
+ * [release] returns the processor's buffers to the pool when the stream is done.
  */
 class Http3StreamReader(
     private val stream: ByteStream,
@@ -44,16 +47,48 @@ class Http3StreamReader(
 ) {
     private var ended = false
 
+    // The previous frame's wire buffer and its borrowed payload view. Both are released at
+    // the start of the next nextFrame() call — the documented end of the borrow window —
+    // so exact-fit chunks handed over by the processor and pool-acquired merged copies are
+    // recycled instead of leaking until GC (or forever, on native targets).
+    private var retainedFrameBuffer: ReadBuffer? = null
+    private var retainedPayload: ReadBuffer? = null
+
+    private fun recyclePreviousFrame() {
+        retainedPayload?.freeIfNeeded()
+        retainedPayload = null
+        retainedFrameBuffer?.freeIfNeeded()
+        retainedFrameBuffer = null
+    }
+
     /**
      * Returns the next complete frame, reading from the stream as needed, or null once the
      * stream has cleanly ended with no buffered bytes.
      */
     suspend fun nextFrame(timeout: Duration = Duration.INFINITE): Http3Frame? {
+        recyclePreviousFrame()
         while (true) {
             // A fully buffered frame is returned even after FIN, so trailing complete frames drain.
             val peek = Http3FrameCodec.peekFrameSize(processor, 0)
             if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
-                return Http3FrameCodec.decode(processor.readBuffer(peek.bytes), DecodeContext.Empty)
+                val frameBuffer = processor.readBuffer(peek.bytes)
+                val frame =
+                    try {
+                        Http3FrameCodec.decode(frameBuffer, DecodeContext.Empty)
+                    } catch (t: Throwable) {
+                        frameBuffer.freeIfNeeded()
+                        throw t
+                    }
+                val payload = frame.borrowedPayloadOrNull()
+                if (payload == null) {
+                    // A fully-structured frame (SETTINGS/GOAWAY/...): nothing borrows the wire bytes.
+                    frameBuffer.freeIfNeeded()
+                } else {
+                    retainedFrameBuffer = frameBuffer
+                    // EMPTY_BUFFER is a shared singleton (empty payloads) — never free it.
+                    retainedPayload = payload.takeUnless { it === ReadBuffer.EMPTY_BUFFER }
+                }
+                return frame
             }
             if (ended) {
                 if (processor.available() == 0) return null // clean end
@@ -83,7 +118,8 @@ class Http3StreamReader(
         while (true) {
             val peek = VarIntCodec.peekFrameSize(processor, 0)
             if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
-                return VarIntCodec.decode(processor.readBuffer(peek.bytes), DecodeContext.Empty)
+                // Scoped: the decoded Long owns nothing, so the wire bytes recycle immediately.
+                return processor.readBufferScoped(peek.bytes) { VarIntCodec.decode(this, DecodeContext.Empty) }
             }
             if (ended) {
                 throw Http3StreamException("stream ended before a complete varint", Http3ErrorCode.FRAME_ERROR)
@@ -136,7 +172,10 @@ class Http3StreamReader(
     }
 
     /** Return the processor's buffers to the pool. Call once the stream is fully consumed. */
-    fun release() = processor.release()
+    fun release() {
+        recyclePreviousFrame()
+        processor.release()
+    }
 
     companion object {
         fun create(
@@ -146,3 +185,15 @@ class Http3StreamReader(
         ): Http3StreamReader = Http3StreamReader(stream, StreamProcessor.create(pool, byteOrder))
     }
 }
+
+/** The frame's borrowed wire-bytes view (see [ReadBufferViewCodec]), or null for value frames. */
+private fun Http3Frame.borrowedPayloadOrNull(): ReadBuffer? =
+    when (this) {
+        is Http3Frame.Data -> payload
+        is Http3Frame.Headers -> encodedFieldSection
+        is Http3Frame.PushPromise -> encodedFieldSection
+        is Http3Frame.Unknown -> payload
+        is Http3Frame.Settings, is Http3Frame.GoAway,
+        is Http3Frame.MaxPushId, is Http3Frame.CancelPush,
+        -> null
+    }

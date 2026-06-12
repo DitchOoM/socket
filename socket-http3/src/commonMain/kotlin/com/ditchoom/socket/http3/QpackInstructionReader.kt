@@ -30,7 +30,9 @@ class QpackInstructionReader<T> private constructor(
         while (true) {
             val peeked = peek(processor)
             if (peeked is PeekResult.Complete && processor.available() >= peeked.bytes) {
-                return decode(processor.readBuffer(peeked.bytes))
+                // Scoped: instructions decode into owned values (Strings/Longs — never buffer
+                // views), so the wire bytes recycle to the pool as soon as decode returns.
+                return processor.readBufferScoped(peeked.bytes) { decode(this) }
             }
             if (ended) {
                 if (processor.available() == 0) return null

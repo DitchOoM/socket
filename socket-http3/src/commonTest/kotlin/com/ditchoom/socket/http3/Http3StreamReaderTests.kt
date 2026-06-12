@@ -194,4 +194,101 @@ class Http3StreamReaderTests {
             val r = reader(ScriptedByteStream(listOf(dataChunk(listOf(0x40)), ReadResult.End)))
             assertFailsWith<Http3StreamException> { r.nextVarInt() }
         }
+
+    // --- buffer recycling ----------------------------------------------------
+    // The reader releases the previous frame's wire buffer (and its borrowed payload view)
+    // at the start of the next nextFrame() call — the documented end of the borrow window —
+    // so pooled chunks actually return to the pool instead of leaking until GC.
+
+    /** Writes [bytes] into a buffer acquired from [pool], ready to read. */
+    private fun pooledChunk(
+        pool: BufferPool,
+        bytes: List<Int>,
+    ): ReadResult {
+        val buf = pool.acquire(bytes.size)
+        for (b in bytes) buf.writeByte(b.toByte())
+        buf.resetForRead()
+        return ReadResult.Data(buf)
+    }
+
+    @Test
+    fun recycling_exactFitPooledChunk_returnsToPoolOnNextCall() =
+        runTest {
+            val pool = pool()
+            // One chunk carrying exactly one DATA frame: the processor hands the chunk itself
+            // to the reader (zero-copy transfer), so only the reader can return it to the pool.
+            val chunk = pooledChunk(pool, frameBytes(dataFrame(0x01, 0x02)))
+            val r = Http3StreamReader(ScriptedByteStream(listOf(chunk, ReadResult.End)), StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN))
+
+            val data = r.nextFrame()
+            assertIs<Http3Frame.Data>(data)
+            // The borrow window is open: the payload view must be readable now…
+            assertEquals(listOf(0x01, 0x02), data.payload.toIntList())
+            assertEquals(0, pool.stats().currentPoolSize)
+
+            // …and the next call closes it, releasing chunk + payload refs back to the pool.
+            assertNull(r.nextFrame())
+            assertEquals(1, pool.stats().currentPoolSize)
+        }
+
+    @Test
+    fun recycling_mergedCopyFromSplitFrame_returnsToPoolOnNextCall() =
+        runTest {
+            val pool = pool()
+            // The frame straddles two chunks, so the processor merges into a pool-acquired copy.
+            val bytes = frameBytes(dataFrame(0x61, 0x62, 0x63))
+            val stream = ScriptedByteStream(listOf(dataChunk(bytes.take(3)), dataChunk(bytes.drop(3)), ReadResult.End))
+            val r = Http3StreamReader(stream, StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN))
+
+            val data = r.nextFrame()
+            assertIs<Http3Frame.Data>(data)
+            assertEquals(listOf(0x61, 0x62, 0x63), data.payload.toIntList())
+
+            assertNull(r.nextFrame())
+            assertEquals(1, pool.stats().currentPoolSize)
+        }
+
+    @Test
+    fun recycling_valueFrame_recyclesWireBytesImmediately() =
+        runTest {
+            val pool = pool()
+            // SETTINGS decodes into owned values — nothing borrows the wire bytes, so the
+            // exact-fit chunk goes back to the pool before the next call.
+            val chunk = pooledChunk(pool, frameBytes(settings()))
+            val r = Http3StreamReader(ScriptedByteStream(listOf(chunk, ReadResult.End)), StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN))
+
+            assertEquals(settings(), r.nextFrame())
+            assertEquals(1, pool.stats().currentPoolSize)
+        }
+
+    @Test
+    fun recycling_release_recyclesRetainedFrame() =
+        runTest {
+            val pool = pool()
+            val chunk = pooledChunk(pool, frameBytes(dataFrame(0x7F)))
+            val r = Http3StreamReader(ScriptedByteStream(listOf(chunk, ReadResult.End)), StreamProcessor.create(pool, ByteOrder.BIG_ENDIAN))
+
+            assertIs<Http3Frame.Data>(r.nextFrame())
+            assertEquals(0, pool.stats().currentPoolSize)
+            // No further nextFrame: release() must close the borrow window itself.
+            r.release()
+            assertEquals(1, pool.stats().currentPoolSize)
+        }
+
+    @Test
+    fun recycling_emptyPayload_doesNotFreeSharedEmptyBuffer() =
+        runTest {
+            // Two zero-length DATA frames: both payloads are the shared EMPTY_BUFFER singleton,
+            // which must survive the first frame's recycle untouched.
+            val bytes = frameBytes(dataFrame()) + frameBytes(dataFrame())
+            val r = reader(ScriptedByteStream(listOf(dataChunk(bytes), ReadResult.End)))
+
+            val first = r.nextFrame()
+            assertIs<Http3Frame.Data>(first)
+            assertEquals(0, first.payload.remaining())
+            val second = r.nextFrame()
+            assertIs<Http3Frame.Data>(second)
+            assertEquals(0, second.payload.remaining())
+            assertNull(r.nextFrame())
+        }
 }
