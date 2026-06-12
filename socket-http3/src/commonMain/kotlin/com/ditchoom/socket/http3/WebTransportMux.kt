@@ -169,7 +169,8 @@ internal class WebTransportMux(
         val n = processor.available()
         if (n == 0) return null
         val copy = pool.allocate(n)
-        copy.write(processor.readBuffer(n))
+        // Scoped: everything is copied into `copy`, so the wire bytes recycle immediately.
+        processor.readBufferScoped(n) { copy.write(this) }
         copy.resetForRead()
         return copy
     }
@@ -304,13 +305,22 @@ internal class WebTransportMux(
             val total = typeLen + lenLen + length
             if (capsules.available() < total) return false
 
-            val capsule = capsules.readBuffer(total)
-            val type = VarIntCodec.decode(capsule, DecodeContext.Empty)
-            VarIntCodec.decode(capsule, DecodeContext.Empty) // length (already known)
+            // Scoped: capsules decode into owned values (varints + a String reason), so the wire
+            // bytes recycle immediately; the suspend dispatch happens outside the scope.
+            val (type, closeInfo) =
+                capsules.readBufferScoped(total) {
+                    val type = VarIntCodec.decode(this, DecodeContext.Empty)
+                    VarIntCodec.decode(this, DecodeContext.Empty) // length (already known)
+                    type to
+                        if (type == WebTransportWire.WT_CLOSE_SESSION) {
+                            WebTransportWire.readCloseSessionValue(this, length)
+                        } else {
+                            null
+                        }
+                }
             when (type) {
                 WebTransportWire.WT_CLOSE_SESSION -> {
-                    val info = WebTransportWire.readCloseSessionValue(capsule, length)
-                    session.onPeerClosed(info)
+                    session.onPeerClosed(checkNotNull(closeInfo))
                     return true
                 }
                 WebTransportWire.WT_DRAIN_SESSION -> {
@@ -318,7 +328,7 @@ internal class WebTransportMux(
                     // open so in-flight streams/datagrams finish. The value is empty (length honoured).
                     session.onPeerDrain()
                 }
-                // Unknown capsule types: skip the value (already consumed via readBuffer) and continue.
+                // Unknown capsule types: the value bytes were consumed inside the scope; continue.
                 else -> {}
             }
         }

@@ -537,3 +537,16 @@ over varint unions + the `ViewCodec` zero-copy escape):
   the released version, drop the root `mavenLocal()` repo entry.
 
 QPACK stays hand-written (bit-level Huffman / N-bit prefix integers are algorithmic, not declarative).
+
+### Follow-up (branch `perf/h3-reader-buffer-recycle`, stacked on the migration branch)
+
+`Http3StreamReader` now *enforces* the borrow contract it documents: the previous frame's wire buffer +
+borrowed payload view are `freeIfNeeded()`d at the start of the next `nextFrame()` call (and in
+`release()`), so exact-fit chunks handed over by the `StreamProcessor` (previously a native-memory leak on
+K/N), slice refCounts pinning pooled chunks, and pool-acquired merged copies all actually recycle. Value
+frames recycle their wire bytes immediately; the shared `EMPTY_BUFFER` singleton is identity-guarded.
+`nextVarInt` / `QpackInstructionReader` / WT `drainBuffered` + `parseCapsules` decode into owned values and
+use `readBufferScoped` (its partial-path slice leak is fixed in buffer#186 commit `e1299c88`). The release
+point is deferred to the *next call* (not free-after-decode) because QPACK blocked decoding can suspend
+while holding the borrowed field section — each reader is single-coroutine sequential, so next-call is the
+earliest safe boundary.
