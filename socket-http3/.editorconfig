@@ -1,0 +1,11 @@
+# Disable all ktlint rules for KSP-generated codec files (mirrors socket-quic). The plugin's
+# srcDir-based filter excludes don't reliably catch generated sources; editorconfig does.
+# No `root = true` here so the repository-root .editorconfig rules still apply to hand-written code.
+[**/generated/**/*.kt]
+ktlint = disabled
+
+[**/ksp/**/*.kt]
+ktlint = disabled
+
+[build/generated/**/*.kt]
+ktlint = disabled

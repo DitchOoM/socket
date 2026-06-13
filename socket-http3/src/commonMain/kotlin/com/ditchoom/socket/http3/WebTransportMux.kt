@@ -5,7 +5,6 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
-import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
@@ -387,11 +386,10 @@ internal class WebTransportMux(
         payload: ReadBuffer,
     ) {
         val frame = Http3Frame.Data(payload)
-        val size = (Http3FrameCodec.wireSize(frame, EncodeContext.Empty) as WireSize.Exact).bytes
-        val buffer = pool.allocate(size)
+        // The generated framed encode owns allocation (slicing scheme over the
+        // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
+        val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            Http3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
-            buffer.resetForRead()
             stream.write(buffer, options.writeTimeout)
         } finally {
             buffer.freeIfNeeded()

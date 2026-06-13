@@ -41,7 +41,7 @@ class Http3ConnectionTests {
 
     private fun frameBytes(frame: Http3Frame): List<Int> {
         val buf = BufferFactory.Default.allocate(256)
-        Http3FrameCodec.encode(buf, frame, EncodeContext.Empty)
+        HandwrittenHttp3FrameCodec.encode(buf, frame, EncodeContext.Empty)
         buf.resetForRead()
         return (0 until buf.remaining()).map { buf.readByte().toInt() and 0xFF }
     }
@@ -370,7 +370,7 @@ class Http3ConnectionTests {
 
                 // The request stream carried exactly a HEADERS frame whose field section is the
                 // pseudo-headers in RFC 9114 §4.3.1 order.
-                val requestFrame = Http3FrameCodec.decode(bufferOf(recording.written), DecodeContext.Empty)
+                val requestFrame = HandwrittenHttp3FrameCodec.decode(bufferOf(recording.written), DecodeContext.Empty)
                 assertTrue(requestFrame is Http3Frame.Headers)
                 assertEquals(
                     listOf(
@@ -409,8 +409,8 @@ class Http3ConnectionTests {
 
                 // Request stream = HEADERS frame, then a DATA frame carrying the body.
                 val written = bufferOf(recording.written)
-                assertTrue(Http3FrameCodec.decode(written, DecodeContext.Empty) is Http3Frame.Headers)
-                val dataFrame = Http3FrameCodec.decode(written, DecodeContext.Empty)
+                assertTrue(HandwrittenHttp3FrameCodec.decode(written, DecodeContext.Empty) is Http3Frame.Headers)
+                val dataFrame = HandwrittenHttp3FrameCodec.decode(written, DecodeContext.Empty)
                 assertTrue(dataFrame is Http3Frame.Data)
                 assertEquals("body!", (dataFrame as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })
             }
@@ -513,9 +513,9 @@ class Http3ConnectionTests {
 
                 // Request stream = HEADERS, then one DATA frame per write() call, in order.
                 val written = bufferOf(recording.written)
-                assertTrue(Http3FrameCodec.decode(written, DecodeContext.Empty) is Http3Frame.Headers)
-                val first = Http3FrameCodec.decode(written, DecodeContext.Empty)
-                val second = Http3FrameCodec.decode(written, DecodeContext.Empty)
+                assertTrue(HandwrittenHttp3FrameCodec.decode(written, DecodeContext.Empty) is Http3Frame.Headers)
+                val first = HandwrittenHttp3FrameCodec.decode(written, DecodeContext.Empty)
+                val second = HandwrittenHttp3FrameCodec.decode(written, DecodeContext.Empty)
                 assertTrue(first is Http3Frame.Data && second is Http3Frame.Data)
                 assertEquals("chunk-1", (first as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })
                 assertEquals("chunk-2", (second as Http3Frame.Data).payload.let { it.readString(it.remaining(), Charset.UTF8) })

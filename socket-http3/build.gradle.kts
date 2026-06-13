@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
     signing
@@ -244,3 +245,49 @@ ktlint {
         exclude("**/build/**")
     }
 }
+
+// KSP-for-main: run the buffer-codec processor once on the common metadata compilation so the
+// generated declarative codecs land in commonMain and every target compilation sees the same
+// symbols (the KSP2 common-multiplatform shape; per-target runs would scatter sources). Mirrors
+// buffer's own buffer-codec-test wiring.
+dependencies {
+    add("kspCommonMainMetadata", libs.buffer.codec.processor)
+    add("kspCommonMainMetadata", libs.buffer.codec)
+}
+
+kotlin.sourceSets.named("commonMain") {
+    kotlin.srcDir("build/generated/ksp/metadata/commonMain/kotlin")
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
+    if (name != "kspCommonMainKotlinMetadata") {
+        dependsOn("kspCommonMainKotlinMetadata")
+    }
+}
+
+// The ktlint commonMain tasks read the KSP-generated srcDir (even though they filter it out of the
+// lint pass), so Gradle reports an implicit-dependency validation error without this. Declare it
+// explicitly (mirrors buffer's buffer-codec-test).
+tasks
+    .matching {
+        it.name == "runKtlintCheckOverCommonMainSourceSet" ||
+            it.name == "runKtlintFormatOverCommonMainSourceSet"
+    }.configureEach {
+        dependsOn("kspCommonMainKotlinMetadata")
+    }
+
+// Publishing tasks (`sourcesJar`, per-target `<target>SourcesJar`, and the Dokka-backed
+// `javadocJar`) package commonMain sources, which now include the KSP-generated srcDir — so they
+// read `kspCommonMainKotlinMetadata`'s output and Gradle reports the same implicit-dependency
+// validation error at publish time. Match by name (type-agnostic: the KMP source Jars are the base
+// `jvm.tasks.Jar`, which `withType<bundling.Jar>` misses) like the ktlint wiring above.
+// (buffer-codec-test doesn't need this: it isn't a published module, so it has no source Jars.)
+tasks
+    .matching {
+        it.name == "sourcesJar" ||
+            it.name.endsWith("SourcesJar") ||
+            it.name == "javadocJar" ||
+            it.name.endsWith("JavadocJar")
+    }.configureEach {
+        dependsOn("kspCommonMainKotlinMetadata")
+    }

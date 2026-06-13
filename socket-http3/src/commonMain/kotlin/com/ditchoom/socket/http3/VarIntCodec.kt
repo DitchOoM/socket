@@ -2,10 +2,11 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
-import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
+import com.ditchoom.buffer.codec.VarLenPeek
+import com.ditchoom.buffer.codec.VariableLengthCodec
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.stream.StreamProcessor
 
@@ -13,10 +14,13 @@ import com.ditchoom.buffer.stream.StreamProcessor
  * QUIC variable-length integer codec (RFC 9000 §16), reused unchanged by
  * HTTP/3 (RFC 9114 §16) and QPACK (RFC 9204) length fields.
  *
- * Modeled as a [Codec]<[Long]> so it composes with the buffer-codec framework:
- * HTTP/3 frame messages reference it on their `type`/`length` fields via
- * `@UseCodec(codec = VarIntCodec::class)`, and [peekFrameSize] provides the
- * non-consuming frame-boundary length-peek that streaming frame readers need.
+ * Modeled as a [VariableLengthCodec]<[Long]> so it composes with the
+ * buffer-codec framework: HTTP/3 frame messages reference it on their
+ * `type`/`length` fields via `@UseCodec(codec = VarIntCodec::class)` — the
+ * `VariableLengthCodec` marker is what makes a `@DispatchOn` discriminator
+ * wrapping it a *varint* (variable-width) dispatcher — and [peekFrameSize]
+ * provides the non-consuming frame-boundary length-peek that streaming frame
+ * readers need.
  *
  * The two most significant bits of the first byte encode the total length in
  * bytes; the remaining bits carry the value, big-endian:
@@ -38,7 +42,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
  * caller-supplied buffer — a varint must not depend on how the surrounding
  * buffer happened to be allocated.
  */
-object VarIntCodec : Codec<Long> {
+object VarIntCodec : VariableLengthCodec<Long> {
     /** Largest value representable in a QUIC varint: 2^62 − 1. */
     const val MAX_VALUE: Long = (1L shl 62) - 1
 
@@ -50,7 +54,7 @@ object VarIntCodec : Codec<Long> {
     internal fun lengthFromPrefix(firstByte: Int): Int = 1 shl ((firstByte and 0xFF) ushr 6)
 
     /** Number of bytes [encode] emits for [value]: 1, 2, 4, or 8. */
-    fun encodedLength(value: Long): Int {
+    override fun encodedLength(value: Long): Int {
         require(value in 0..MAX_VALUE) { "varint out of range [0, $MAX_VALUE]: $value" }
         return when {
             value < (1L shl 6) -> 1
@@ -136,5 +140,25 @@ object VarIntCodec : Codec<Long> {
         if (stream.available() < baseOffset + 1) return PeekResult.NeedsMoreData
         val first = stream.peekByte(baseOffset).toInt() and 0xFF
         return PeekResult.Complete(lengthFromPrefix(first))
+    }
+
+    /**
+     * Decodes the varint at [baseOffset] without consuming any bytes —
+     * [VariableLengthCodec]'s non-consuming peek, used by generated codecs to
+     * measure variable-width discriminators/prefixes in a [StreamProcessor].
+     */
+    override fun peekValue(
+        stream: StreamProcessor,
+        baseOffset: Int,
+    ): VarLenPeek<Long> {
+        if (stream.available() < baseOffset + 1) return VarLenPeek.NeedsMoreData
+        val first = stream.peekByte(baseOffset).toInt() and 0xFF
+        val length = lengthFromPrefix(first)
+        if (stream.available() < baseOffset + length) return VarLenPeek.NeedsMoreData
+        var value = (first and 0x3F).toLong()
+        for (i in 1 until length) {
+            value = (value shl 8) or (stream.peekByte(baseOffset + i).toLong() and 0xFF)
+        }
+        return VarLenPeek.Decoded(value, length)
     }
 }
