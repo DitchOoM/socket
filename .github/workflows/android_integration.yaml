@@ -113,7 +113,7 @@ jobs:
         run: ./gradlew :socket-quic:quicEchoJar --no-configuration-cache
 
       - name: Bring up quic-echo via the docker harness
-        run: cd test-harness && docker compose up -d --wait quic-echo
+        run: bash test-harness/compose-up-retry.sh quic-echo
 
       - name: AVD cache
         uses: actions/cache@v5

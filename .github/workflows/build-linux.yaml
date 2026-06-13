@@ -929,7 +929,7 @@ jobs:
       # exercises the Linux ARM64 client against this server — closing
       # the last gap in the Linux QUIC matrix.
       - name: Bring up test harness (with quic-echo)
-        run: cd test-harness && docker compose up -d --wait echo http tls toxiproxy netem-blackhole rst quic-echo
+        run: bash test-harness/compose-up-retry.sh echo http tls toxiproxy netem-blackhole rst quic-echo
 
       - name: Run ARM64 tests (base module)
         run: |
