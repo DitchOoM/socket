@@ -30,6 +30,17 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The aggregate `connectedAndroidTest` task graph reaches the root
+      # `:buildBoringsslArm64` task (the linuxArm64 Kotlin/Native BoringSSL build),
+      # whose CMake toolchain needs the GNU aarch64 cross-compiler. Without it the
+      # job failed at `:buildBoringsslArm64` with
+      # `CMAKE_CXX_COMPILER aarch64-linux-gnu-g++ ... not found`. Install it (the fix
+      # the root build.gradle.kts comment already prescribes). NOTE: building the
+      # linuxArm64 lib in an x86_64 emulator job is wasteful — de-scoping that task
+      # from the Android test graph is a follow-up.
+      - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64)
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
       - name: Install Rust + cargo-ndk
         uses: dtolnay/rust-toolchain@stable
       # All four Android Rust targets are needed because socket-quic's
