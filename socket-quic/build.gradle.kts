@@ -1671,7 +1671,13 @@ kotlin
 afterEvaluate {
     tasks.named<Jar>("jvmJar") {
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        exclude("META-INF/native/**")
+        // Bundle the build host's quiche natives INTO the base jar so a consumer that just adds
+        // `com.ditchoom:socket-quic` gets quiche with no extra classifier dependency (the base
+        // coordinate is self-sufficient on the platform it was built for). The per-host classifier
+        // JARs below are still published — they remain the path for a cross-platform release
+        // assembly that merges every arch's natives (a single-host publish only carries its own).
+        dependsOn("stageQuicheNativeResources")
+        from(stagedNativeResourcesDir) // contributes META-INF/native/<os>-<arch>/lib*.{so,dylib,dll}
         // Multi-release JAR: JDK 21+ gets FFM quiche bindings
         manifest {
             attributes("Multi-Release" to "true")
