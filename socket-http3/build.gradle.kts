@@ -275,3 +275,11 @@ tasks
     }.configureEach {
         dependsOn("kspCommonMainKotlinMetadata")
     }
+
+// Publishing tasks (`sourcesJar`, and the Dokka-backed `javadocJar`) package commonMain sources,
+// which now include the KSP-generated srcDir — so they read `kspCommonMainKotlinMetadata`'s output
+// and Gradle reports the same implicit-dependency validation error at publish time. Declare it.
+// (buffer-codec-test doesn't need this: it isn't a published module, so it has no source Jars.)
+tasks.withType<Jar>().configureEach {
+    dependsOn("kspCommonMainKotlinMetadata")
+}
