@@ -43,7 +43,16 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            // Resolve every published module across every target. socket-quic and
+            // socket-http3 are included so their per-host (Linux + Apple) root module
+            // metadata must also be merged at publish time — otherwise resolving them
+            // from an Apple target fails here. A socket-only check passed while
+            // socket-quic's root module shipped Linux-only variants (its Apple klibs
+            // existed on Central but weren't referenced by the root .module); this
+            // catches that.
             implementation("com.ditchoom:socket:$socketVersion")
+            implementation("com.ditchoom:socket-quic:$socketVersion")
+            implementation("com.ditchoom:socket-http3:$socketVersion")
         }
     }
 }

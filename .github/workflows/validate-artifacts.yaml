@@ -83,82 +83,91 @@ jobs:
             echo "Copied $target_name"
           done
 
-          # Merge root module metadata
-          LINUX_MODULE="$LINUX_BASE/socket/$version/socket-$version.module"
-          APPLE_MODULE="$APPLE_BASE/socket/$version/socket-$version.module"
-          MERGED_MODULE="$MERGED/socket/$version/socket-$version.module"
+          # Merge root .module + metadata JAR for EVERY published KMP module, not
+          # just the `socket` base. The per-target artifact dirs are already copied
+          # above (socket-* glob covers socket-quic-macosarm64 etc.), but without
+          # merging each module's ROOT .module the Apple klibs sit on Central
+          # unreferenced — so an Apple consumer of socket-quic/socket-http3 can't
+          # resolve them (the gap validate-resolution now guards against, having
+          # previously only exercised `socket`). Per-module guard: a module missing
+          # its Apple .module is simply left Linux-only (no worse than before).
+          for module in socket socket-quic socket-http3; do
+            LINUX_MODULE="$LINUX_BASE/$module/$version/$module-$version.module"
+            APPLE_MODULE="$APPLE_BASE/$module/$version/$module-$version.module"
+            MERGED_MODULE="$MERGED/$module/$version/$module-$version.module"
 
-          if [ -f "$LINUX_MODULE" ] && [ -f "$APPLE_MODULE" ]; then
-            jq -s '
-              .[0].variants = (
-                [.[0].variants[], .[1].variants[]]
-                | group_by(.name)
-                | map(.[0])
-              )
-              | .[0]
-            ' "$LINUX_MODULE" "$APPLE_MODULE" > "${MERGED_MODULE}.tmp"
-            mv "${MERGED_MODULE}.tmp" "$MERGED_MODULE"
-            echo "Merged .module: $(jq '.variants | length' "$MERGED_MODULE") variants"
-          fi
-
-          # Merge metadata JAR (kotlin-project-structure-metadata.json + klib dirs)
-          LINUX_JAR="$LINUX_BASE/socket/$version/socket-$version.jar"
-          APPLE_JAR="$APPLE_BASE/socket/$version/socket-$version.jar"
-          MERGED_JAR="$MERGED/socket/$version/socket-$version.jar"
-
-          if [ -f "$LINUX_JAR" ] && [ -f "$APPLE_JAR" ]; then
-            WORK="/tmp/merge-metadata-jar"
-            mkdir -p "$WORK/linux" "$WORK/apple" "$WORK/merged"
-
-            unzip -qo "$LINUX_JAR" -d "$WORK/linux"
-            unzip -qo "$APPLE_JAR" -d "$WORK/apple"
-
-            # Start with Linux as base
-            cp -r "$WORK/linux/"* "$WORK/merged/"
-
-            # Copy Apple klib directories
-            if [ -d "$WORK/apple" ]; then
-              for klib_dir in "$WORK/apple"/*/; do
-                dir_name=$(basename "$klib_dir")
-                [ "$dir_name" = "META-INF" ] && continue
-                if [ ! -d "$WORK/merged/$dir_name" ]; then
-                  cp -r "$klib_dir" "$WORK/merged/$dir_name"
-                  echo "Copied klib dir: $dir_name"
-                fi
-              done
-            fi
-
-            # Merge kotlin-project-structure-metadata.json
-            LINUX_PSM="$WORK/linux/META-INF/kotlin-project-structure-metadata.json"
-            APPLE_PSM="$WORK/apple/META-INF/kotlin-project-structure-metadata.json"
-            MERGED_PSM="$WORK/merged/META-INF/kotlin-project-structure-metadata.json"
-
-            if [ -f "$LINUX_PSM" ] && [ -f "$APPLE_PSM" ]; then
+            if [ -f "$LINUX_MODULE" ] && [ -f "$APPLE_MODULE" ]; then
               jq -s '
-                .[0].projectStructure.variants = (
-                  [.[0].projectStructure.variants[], .[1].projectStructure.variants[]]
-                  | group_by(.name)
-                  | map(.[0])
-                )
-                | .[0].projectStructure.sourceSets = (
-                  [.[0].projectStructure.sourceSets[], .[1].projectStructure.sourceSets[]]
+                .[0].variants = (
+                  [.[0].variants[], .[1].variants[]]
                   | group_by(.name)
                   | map(.[0])
                 )
                 | .[0]
-              ' "$LINUX_PSM" "$APPLE_PSM" > "${MERGED_PSM}.tmp"
-              mv "${MERGED_PSM}.tmp" "$MERGED_PSM"
-              echo "Merged kotlin-project-structure-metadata.json:"
-              echo "  variants: $(jq '.projectStructure.variants | length' "$MERGED_PSM")"
-              echo "  sourceSets: $(jq '.projectStructure.sourceSets | length' "$MERGED_PSM")"
+              ' "$LINUX_MODULE" "$APPLE_MODULE" > "${MERGED_MODULE}.tmp"
+              mv "${MERGED_MODULE}.tmp" "$MERGED_MODULE"
+              echo "Merged $module .module: $(jq '.variants | length' "$MERGED_MODULE") variants"
             fi
 
-            # Re-create the merged JAR
-            (cd "$WORK/merged" && zip -qr "$MERGED_JAR" .)
-            echo "Rebuilt metadata JAR"
+            # Merge metadata JAR (kotlin-project-structure-metadata.json + klib dirs)
+            LINUX_JAR="$LINUX_BASE/$module/$version/$module-$version.jar"
+            APPLE_JAR="$APPLE_BASE/$module/$version/$module-$version.jar"
+            MERGED_JAR="$MERGED/$module/$version/$module-$version.jar"
 
-            rm -rf "$WORK"
-          fi
+            if [ -f "$LINUX_JAR" ] && [ -f "$APPLE_JAR" ]; then
+              WORK="/tmp/merge-metadata-jar/$module"
+              mkdir -p "$WORK/linux" "$WORK/apple" "$WORK/merged"
+
+              unzip -qo "$LINUX_JAR" -d "$WORK/linux"
+              unzip -qo "$APPLE_JAR" -d "$WORK/apple"
+
+              # Start with Linux as base
+              cp -r "$WORK/linux/"* "$WORK/merged/"
+
+              # Copy Apple klib directories
+              if [ -d "$WORK/apple" ]; then
+                for klib_dir in "$WORK/apple"/*/; do
+                  dir_name=$(basename "$klib_dir")
+                  [ "$dir_name" = "META-INF" ] && continue
+                  if [ ! -d "$WORK/merged/$dir_name" ]; then
+                    cp -r "$klib_dir" "$WORK/merged/$dir_name"
+                    echo "Copied $module klib dir: $dir_name"
+                  fi
+                done
+              fi
+
+              # Merge kotlin-project-structure-metadata.json
+              LINUX_PSM="$WORK/linux/META-INF/kotlin-project-structure-metadata.json"
+              APPLE_PSM="$WORK/apple/META-INF/kotlin-project-structure-metadata.json"
+              MERGED_PSM="$WORK/merged/META-INF/kotlin-project-structure-metadata.json"
+
+              if [ -f "$LINUX_PSM" ] && [ -f "$APPLE_PSM" ]; then
+                jq -s '
+                  .[0].projectStructure.variants = (
+                    [.[0].projectStructure.variants[], .[1].projectStructure.variants[]]
+                    | group_by(.name)
+                    | map(.[0])
+                  )
+                  | .[0].projectStructure.sourceSets = (
+                    [.[0].projectStructure.sourceSets[], .[1].projectStructure.sourceSets[]]
+                    | group_by(.name)
+                    | map(.[0])
+                  )
+                  | .[0]
+                ' "$LINUX_PSM" "$APPLE_PSM" > "${MERGED_PSM}.tmp"
+                mv "${MERGED_PSM}.tmp" "$MERGED_PSM"
+                echo "Merged $module kotlin-project-structure-metadata.json:"
+                echo "  variants: $(jq '.projectStructure.variants | length' "$MERGED_PSM")"
+                echo "  sourceSets: $(jq '.projectStructure.sourceSets | length' "$MERGED_PSM")"
+              fi
+
+              # Re-create the merged JAR (zip -r refreshes existing entries in place)
+              (cd "$WORK/merged" && zip -qr "$MERGED_JAR" .)
+              echo "Rebuilt $module metadata JAR"
+
+              rm -rf "$WORK"
+            fi
+          done
 
       - name: Inject native libs into socket-quic JVM JAR
         run: |
