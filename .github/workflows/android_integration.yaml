@@ -30,17 +30,6 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # The aggregate `connectedAndroidTest` task graph reaches the root
-      # `:buildBoringsslArm64` task (the linuxArm64 Kotlin/Native BoringSSL build),
-      # whose CMake toolchain needs the GNU aarch64 cross-compiler. Without it the
-      # job failed at `:buildBoringsslArm64` with
-      # `CMAKE_CXX_COMPILER aarch64-linux-gnu-g++ ... not found`. Install it (the fix
-      # the root build.gradle.kts comment already prescribes). NOTE: building the
-      # linuxArm64 lib in an x86_64 emulator job is wasteful — de-scoping that task
-      # from the Android test graph is a follow-up.
-      - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64)
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
       - name: Install Rust + cargo-ndk
         uses: dtolnay/rust-toolchain@stable
       # All four Android Rust targets are needed because socket-quic's
@@ -166,7 +155,15 @@ jobs:
             # connect + migration tests. Run as a separate Gradle invocation so its
             # detached host JVM is alive before connectedAndroidTest starts.
             ./gradlew :socket-quic:startNetworkControlServer
-            ./gradlew connectedAndroidTest :socket-quic:connectedAndroidTest
+            # -Pkotlin.mpp.enableCInteropCommonization=false: the unqualified
+            # connectedAndroidTest aggregate otherwise pulls commonizeCInterop, which
+            # runs the linux cinterops for ALL native targets and so builds the
+            # linuxArm64 BoringSSL (:buildBoringsslArm64) — an arm64 lib this x86_64
+            # emulator job never uses, and which needs a GNU aarch64 cross-compiler.
+            # The LinuxSockets cinterop is linux-only (not referenced by commonMain or
+            # androidMain), so disabling commonization here drops :buildBoringsslArm64
+            # from the graph with no effect on the Android tests.
+            ./gradlew connectedAndroidTest :socket-quic:connectedAndroidTest -Pkotlin.mpp.enableCInteropCommonization=false
             ./gradlew :socket-quic:stopNetworkControlServer || true
 
       # Mirror the audit step from build-apple.yaml + build-linux.yaml:
