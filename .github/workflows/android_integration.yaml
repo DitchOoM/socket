@@ -115,8 +115,18 @@ jobs:
       - name: Bring up quic-echo via the docker harness
         run: bash test-harness/compose-up-retry.sh quic-echo
 
-      - name: AVD cache
-        uses: actions/cache@v5
+      # restore/save are deliberately SPLIT (not the unified actions/cache):
+      # the unified action saves at job END — after `run tests` — so every
+      # cache-miss run caches AVD userdata WITH the test APKs installed,
+      # possibly torn from the emulator teardown mid-write. The next run then
+      # fails before any test: the stale install can neither be uninstalled
+      # (DELETE_FAILED_INTERNAL_ERROR on old API levels) nor reinstalled over
+      # (INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES). Saving explicitly
+      # right after the create-AVD step caches the PRISTINE snapshot — no
+      # package ever installed. (Root-caused in DitchOoM/buffer#186 where the
+      # API-21 lane was failing this way on every second run.)
+      - name: AVD cache (restore)
+        uses: actions/cache/restore@v5
         id: avd-cache
         with:
           path: |
@@ -135,6 +145,15 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
+
+      - name: AVD cache (save pristine snapshot)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-x86_64-${{ matrix.api-level }}
 
       - name: run tests
         uses: reactivecircus/android-emulator-runner@v2
