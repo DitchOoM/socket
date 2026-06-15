@@ -10,7 +10,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
@@ -40,7 +40,7 @@ import kotlin.concurrent.Volatile
  */
 class Http3ServerConnection internal constructor(
     private val scope: QuicScope,
-    private val options: ConnectionOptions,
+    private val config: TransportConfig,
     private val qpackCapacity: Long,
     private val onRequest: suspend Http3ServerExchange.() -> Unit,
     // WebTransport participation (RFC 9220 + RFC 9297). Null disables it; non-null advertises the WT
@@ -51,12 +51,12 @@ class Http3ServerConnection internal constructor(
     private val onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
 ) {
     // MultiThreaded: per-stream handler coroutines allocate from this pool concurrently.
-    private val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = options.bufferFactory)
+    private val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = config.bufferFactory)
 
     // The per-connection WebTransport engine (session table, stream/datagram demux, capsule protocol).
     // Null when WebTransport was not enabled for this server.
     private val webTransportMux: WebTransportMux? =
-        if (webTransport != null) WebTransportMux(scope, pool, options) else null
+        if (webTransport != null) WebTransportMux(scope, pool, config) else null
 
     private val serverDecoder: QpackDecoder? =
         if (qpackCapacity > 0) QpackDecoder(qpackCapacity) { writeQpackDecoderInstruction(it) } else null
@@ -110,12 +110,12 @@ class Http3ServerConnection internal constructor(
                 Http3StreamType.QPACK_ENCODER ->
                     serverDecoder?.let { dec ->
                         val reader = QpackInstructionReader.encoder(stream, processor, pool)
-                        while (true) dec.applyEncoderInstruction(reader.next(options.readTimeout) ?: break)
+                        while (true) dec.applyEncoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
                     } ?: drain(stream)
                 Http3StreamType.QPACK_DECODER ->
                     if (serverDecoder != null) {
                         val reader = QpackInstructionReader.decoder(stream, processor)
-                        while (true) serverEncoder?.processDecoderInstruction(reader.next(options.readTimeout) ?: break)
+                        while (true) serverEncoder?.processDecoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
                     } else {
                         drain(stream)
                     }
@@ -166,14 +166,14 @@ class Http3ServerConnection internal constructor(
             // with the 0x41 signal, not a HEADERS frame — demultiplex it before request parsing.
             val mux = webTransportMux
             if (mux != null &&
-                reader.peekVarInt(options.readTimeout) == WebTransportWire.WT_BIDI_STREAM_SIGNAL
+                reader.peekVarInt(config.readPolicy.toDeadline()) == WebTransportWire.WT_BIDI_STREAM_SIGNAL
             ) {
                 handlerOwnsReader = true
                 mux.acceptIncomingBidi(stream, processor)
                 return
             }
             val first =
-                reader.nextFrame(options.readTimeout)
+                reader.nextFrame(config.readPolicy.toDeadline())
                     ?: throw Http3StreamException("request stream ended before a HEADERS frame", Http3ErrorCode.REQUEST_INCOMPLETE)
             if (first !is Http3Frame.Headers) {
                 throw Http3StreamException(
@@ -198,11 +198,11 @@ class Http3ServerConnection internal constructor(
                     headers = fields.filterNot { it.name.startsWith(":") },
                     reader = reader,
                     pool = pool,
-                    readTimeout = options.readTimeout,
+                    readTimeout = config.readPolicy.toDeadline(),
                     decodeFields = { decodeSection(it, streamId) },
                 )
             val response =
-                Http3ServerResponse(stream, pool, options, streamId) { sectionFields, sid -> encodeSection(sectionFields, sid) }
+                Http3ServerResponse(stream, pool, config, streamId) { sectionFields, sid -> encodeSection(sectionFields, sid) }
             val exchange =
                 Http3ServerExchange(request, response) { spec, respond -> pushResource(stream, spec, respond) }
             try {
@@ -409,7 +409,7 @@ class Http3ServerConnection internal constructor(
                 val pushStream = scope.openUniStream()
                 writePushStreamHeader(pushStream, pushId)
                 val pushResponse =
-                    Http3ServerResponse(pushStream, pool, options, pushStream.streamId.id) { fields, sid -> encodeSection(fields, sid) }
+                    Http3ServerResponse(pushStream, pool, config, pushStream.streamId.id) { fields, sid -> encodeSection(fields, sid) }
                 pushResponse.respond()
                 pushResponse.finish()
             } catch (e: CancellationException) {
@@ -431,7 +431,7 @@ class Http3ServerConnection internal constructor(
             VarIntCodec.encode(buffer, Http3StreamType.PUSH, EncodeContext.Empty)
             VarIntCodec.encode(buffer, pushId, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -446,7 +446,7 @@ class Http3ServerConnection internal constructor(
         // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
         val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -465,13 +465,13 @@ class Http3ServerConnection internal constructor(
         try {
             VarIntCodec.encode(prefix, Http3StreamType.CONTROL, EncodeContext.Empty)
             prefix.resetForRead()
-            control.write(prefix, options.writeTimeout)
+            control.write(prefix, config.writePolicy.toDeadline())
         } finally {
             prefix.freeIfNeeded()
         }
         val frame = Http3FrameCodec.encode(settings, EncodeContext.Empty, pool)
         try {
-            control.write(frame, options.writeTimeout)
+            control.write(frame, config.writePolicy.toDeadline())
         } finally {
             frame.freeIfNeeded()
         }
@@ -485,7 +485,7 @@ class Http3ServerConnection internal constructor(
         try {
             VarIntCodec.encode(buffer, type, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -504,7 +504,7 @@ class Http3ServerConnection internal constructor(
         try {
             QpackEncoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            encoderStreamWriteMutex.withLock { stream.write(buffer, options.writeTimeout) }
+            encoderStreamWriteMutex.withLock { stream.write(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }
@@ -516,7 +516,7 @@ class Http3ServerConnection internal constructor(
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            decoderStreamWriteMutex.withLock { stream.write(buffer, options.writeTimeout) }
+            decoderStreamWriteMutex.withLock { stream.write(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }
@@ -524,7 +524,7 @@ class Http3ServerConnection internal constructor(
 
     private suspend fun drain(stream: QuicByteStream) {
         while (true) {
-            when (val result = stream.read(options.readTimeout)) {
+            when (val result = stream.read(config.readPolicy.toDeadline())) {
                 is ReadResult.Data -> result.buffer.freeIfNeeded()
                 ReadResult.End, ReadResult.Reset -> return
             }

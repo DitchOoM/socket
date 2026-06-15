@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.StreamMux
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -23,7 +23,7 @@ expect suspend fun <R> withQuicConnection(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
-    connectionOptions: ConnectionOptions = ConnectionOptions(),
+    connectionOptions: TransportConfig = TransportConfig(),
     timeout: Duration = 15.seconds,
     block: suspend QuicScope.() -> R,
 ): R
@@ -37,7 +37,7 @@ suspend fun <T, R> withQuicMux(
     port: Int,
     quicOptions: QuicOptions,
     codec: Codec<T>,
-    connectionOptions: ConnectionOptions = ConnectionOptions(),
+    connectionOptions: TransportConfig = TransportConfig(),
     timeout: Duration = 15.seconds,
     block: suspend StreamMux<T>.() -> R,
 ): R =

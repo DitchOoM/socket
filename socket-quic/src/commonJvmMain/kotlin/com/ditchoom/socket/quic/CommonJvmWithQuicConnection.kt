@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,7 +27,7 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
-    connectionOptions: ConnectionOptions,
+    connectionOptions: TransportConfig,
     timeout: Duration,
     // Defaults to the production loader; a test passes a spy (e.g. CountingQuicheApi) to observe the
     // real native calls the driver makes — used to assert reactive keepalive actually PINGs.

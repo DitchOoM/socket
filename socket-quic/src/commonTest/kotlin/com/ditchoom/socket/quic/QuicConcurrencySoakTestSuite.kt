@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -29,7 +29,7 @@ import kotlin.time.Duration.Companion.seconds
  * in `androidInstrumentedTest`, which can't see `commonTest` — see `AndroidQuicConcurrencySoakTests`.)
  *
  * **Leak assertion.** The soak test injects a [TrackingBufferFactory] as the client's
- * [ConnectionOptions.bufferFactory]. That factory feeds *both* the driver's internal buffers and every
+ * [TransportConfig.bufferFactory]. That factory feeds *both* the driver's internal buffers and every
  * stream-read buffer (verified: `connectionOptions.bufferFactory` flows into `QuicheDriver` and
  * `QuicheStreamByteStream`). After `withQuicConnection` returns — i.e. the connection is fully closed —
  * `assertNoLeaks()` requires every one of those buffers to have been freed: the read buffers by the
@@ -162,7 +162,7 @@ abstract class QuicConcurrencySoakTestSuite {
                                 "127.0.0.1",
                                 port,
                                 options,
-                                ConnectionOptions(bufferFactory = tracking),
+                                TransportConfig(bufferFactory = tracking),
                                 timeout = 15.seconds.scaled,
                             ) {
                                 val stream = openStream()

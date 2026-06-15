@@ -6,7 +6,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.harness.QuicHarnessConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -75,7 +75,7 @@ class QuicHarnessIntegrationTests {
     // DNS:localhost) so Network.framework's hostname check passes; other targets
     // use the configured harness host (127.0.0.1).
     private val harnessHost = if (applePinnedTrust) "localhost" else QuicHarnessConfig.host
-    private val connOptions = ConnectionOptions(bufferFactory = bufferFactory)
+    private val connOptions = TransportConfig(bufferFactory = bufferFactory)
 
     // CI macOS QUIC handshakes against the JVM quic-echo peer run ~3–5s (cold
     // peer + shared-runner load) vs ~30ms locally, so a tight 5s connect timeout

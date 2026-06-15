@@ -158,7 +158,7 @@ internal class JvmQuicServer(
      * covering typical concurrent-driver counts.
      *
      * Ownership invariant: [bufferFactory] is a **leaf** factory per the
-     * `ConnectionOptions.bufferFactory` contract — this pool is built *from* it
+     * `TransportConfig.bufferFactory` contract — this pool is built *from* it
      * here. Never pass an already-pooled factory as `factory`: wrapping a pool
      * in a pool is the `80575c1` double-wrap regression. A `BufferPool` whose
      * leaf `factory` is itself a `BufferPool` makes `freeNativeMemory()` return

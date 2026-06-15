@@ -3,7 +3,9 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 
@@ -60,27 +62,31 @@ class QuicByteStream(
 
     override val isOpen: Boolean get() = !closed && delegate.isOpen
 
-    override suspend fun read(timeout: Duration): ReadResult {
+    override val readPolicy: ReadPolicy get() = delegate.readPolicy
+
+    override val writePolicy: WritePolicy get() = delegate.writePolicy
+
+    override suspend fun read(deadline: Duration): ReadResult {
         check(!closed) { "QuicByteStream($streamId) is closed" }
-        return delegate.read(timeout)
+        return delegate.read(deadline)
     }
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten {
         check(!closed) { "QuicByteStream($streamId) is closed" }
         check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
-        return delegate.write(buffer, timeout)
+        return delegate.write(buffer, deadline)
     }
 
     override suspend fun writeGathered(
         buffers: List<ReadBuffer>,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten {
         check(!closed) { "QuicByteStream($streamId) is closed" }
         check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
-        return delegate.writeGathered(buffers, timeout)
+        return delegate.writeGathered(buffers, deadline)
     }
 
     override suspend fun shutdownSend() {

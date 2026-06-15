@@ -157,7 +157,7 @@ class QuicheDriver(
      * connection's in-flight datagram count.
      *
      * Ownership invariant: [bufferFactory] is a **leaf** factory per the
-     * `ConnectionOptions.bufferFactory` contract — this pool is built *from* it.
+     * `TransportConfig.bufferFactory` contract — this pool is built *from* it.
      * Never pass an already-pooled factory: wrapping a pool in a pool is the
      * `80575c1` double-wrap regression (the inner pool reclaims on
      * `freeNativeMemory()` while the outer pool's accounting still counts the

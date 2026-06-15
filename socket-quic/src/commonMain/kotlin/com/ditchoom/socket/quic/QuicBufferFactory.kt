@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 
 /**
  * The platform-correct buffer factory for QUIC I/O: native-memory buffers with explicit cleanup.
@@ -17,7 +17,7 @@ import com.ditchoom.socket.ConnectionOptions
  * [withQuicConnection]/[withQuicServer] and is what [QuicScope.bufferFactory] reports.
  *
  * Allocate your own send buffers and datagrams from [QuicScope.bufferFactory] (which is this, unless
- * you overrode [ConnectionOptions.bufferFactory]) so they share the connection's allocation strategy:
+ * you overrode [TransportConfig.bufferFactory]) so they share the connection's allocation strategy:
  *
  * ```kotlin
  * withQuicConnection(host, port, quicOptions) {
@@ -57,9 +57,9 @@ internal fun BufferFactory.requireNativeMemory(): BufferFactory {
 
 /**
  * Resolve the factory a QUIC connection should allocate from, and verify it is native-memory-backed.
- * A caller that left [ConnectionOptions.bufferFactory] at its default ([BufferFactory.Default]) gets
+ * A caller that left [TransportConfig.bufferFactory] at its default ([BufferFactory.Default]) gets
  * [network] — the native-memory factory QUIC needs. An explicit override is honored as-is but still
  * checked by [requireNativeMemory], so a heap factory fails with a clear message instead of a deep NPE.
  */
-internal fun ConnectionOptions.quicBufferFactory(): BufferFactory =
+internal fun TransportConfig.quicBufferFactory(): BufferFactory =
     (if (bufferFactory === BufferFactory.Default) BufferFactory.network() else bufferFactory).requireNativeMemory()

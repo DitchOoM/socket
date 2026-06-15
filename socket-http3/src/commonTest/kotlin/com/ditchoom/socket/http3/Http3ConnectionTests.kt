@@ -9,8 +9,10 @@ import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamId
@@ -87,12 +89,14 @@ class Http3ConnectionTests {
             private set
 
         override val isOpen: Boolean get() = !closed
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
 
-        override suspend fun read(timeout: Duration): ReadResult = if (reads.isEmpty()) ReadResult.End else reads.removeFirst()
+        override suspend fun read(deadline: Duration): ReadResult = if (reads.isEmpty()) ReadResult.End else reads.removeFirst()
 
         override suspend fun write(
             buffer: ReadBuffer,
-            timeout: Duration,
+            deadline: Duration,
         ): BytesWritten {
             val n = buffer.remaining()
             repeat(n) { written += buffer.readByte().toInt() and 0xFF }
@@ -159,7 +163,7 @@ class Http3ConnectionTests {
                 val client = ClientStreams()
                 val scope = FakeQuicScope(this, client.outgoing(), incoming = emptyList())
 
-                Http3Connection.bootstrap(scope, ConnectionOptions())
+                Http3Connection.bootstrap(scope, TransportConfig())
 
                 assertEquals(0, scope.remainingUniStreams, "bootstrap should open exactly three uni streams")
                 // The client now advertises a usable QPACK dynamic table (capacity 4096, 100 blocked streams).
@@ -194,7 +198,7 @@ class Http3ConnectionTests {
                     )
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), listOf(peerControlStream(peerSettings)))
 
-                val settings = Http3Connection.bootstrap(scope, ConnectionOptions()).peerSettings()
+                val settings = Http3Connection.bootstrap(scope, TransportConfig()).peerSettings()
 
                 assertEquals(0L, settings.qpackMaxTableCapacity)
                 assertEquals(16384L, settings.maxFieldSectionSize)
@@ -229,7 +233,7 @@ class Http3ConnectionTests {
                         incoming = listOf(peerQpackEnc, peerPush, peerControlStream(clientSettings())),
                     )
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions(), maxPushId = 8)
+                val connection = Http3Connection.bootstrap(scope, TransportConfig(), maxPushId = 8)
                 val settings = connection.peerSettings()
 
                 assertEquals(0L, settings.qpackBlockedStreams)
@@ -256,7 +260,7 @@ class Http3ConnectionTests {
                         incoming = listOf(peerControlStream(clientSettings()), peerPush),
                     )
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions()) // push disabled
+                val connection = Http3Connection.bootstrap(scope, TransportConfig()) // push disabled
                 val error = connection.awaitConnectionError()
                 assertEquals(Http3ErrorCode.ID_ERROR, error.errorCode, "push when disabled ⇒ H3_ID_ERROR")
             }
@@ -279,7 +283,7 @@ class Http3ConnectionTests {
                     QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val e = assertFailsWith<Http3StreamException> { connection.peerSettings() }
                 assertEquals(Http3ErrorCode.MISSING_SETTINGS, e.errorCode, "first non-SETTINGS control frame ⇒ H3_MISSING_SETTINGS")
             }
@@ -291,7 +295,7 @@ class Http3ConnectionTests {
             coroutineScope {
                 // No incoming streams → the streams flow completes before any SETTINGS arrive.
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = emptyList())
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 assertFailsWith<Http3StreamException> { connection.peerSettings() }
             }
         }
@@ -309,7 +313,7 @@ class Http3ConnectionTests {
                         incoming = listOf(QuicByteStream(QuicStreamId(1), peerBidi), peerControlStream(clientSettings())),
                     )
 
-                Http3Connection.bootstrap(scope, ConnectionOptions()).peerSettings() // resolves despite the bidi stream
+                Http3Connection.bootstrap(scope, TransportConfig()).peerSettings() // resolves despite the bidi stream
 
                 assertTrue(peerBidi.closed, "a peer bidirectional stream should be closed, not parsed")
             }
@@ -359,7 +363,7 @@ class Http3ConnectionTests {
                 val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val response = connection.request(Http3Request(method = "GET", authority = "example.com", path = "/"))
 
                 assertEquals(200, response.status)
@@ -397,7 +401,7 @@ class Http3ConnectionTests {
                     )
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val response =
                     connection.request(
                         Http3Request(method = "POST", authority = "h.test", path = "/upload", body = asciiBuffer("body!")),
@@ -430,7 +434,7 @@ class Http3ConnectionTests {
                         ),
                     )
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
 
                 // A missing :status is a malformed *message* (RFC 9114 §4.1.2): stream-scoped, so the
                 // request stream is reset with H3_MESSAGE_ERROR — not a connection error.
@@ -456,7 +460,7 @@ class Http3ConnectionTests {
                 val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val response = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
                 assertEquals(200, response.status)
                 val body = response.readFullBody()
@@ -481,7 +485,7 @@ class Http3ConnectionTests {
                     QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
 
                 // Deterministic: the router reads the control stream's GOAWAY after SETTINGS and
                 // updates the StateFlow; await the non-null value.
@@ -501,7 +505,7 @@ class Http3ConnectionTests {
                         ),
                     )
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
 
                 val response =
                     connection.request(method = "POST", authority = "h.test", path = "/upload") {
@@ -531,7 +535,7 @@ class Http3ConnectionTests {
                 // Response stream's first frame is DATA — invalid frame sequence (RFC 9114 §4.1).
                 val recording = RecordingByteStream(listOf(dataChunk(frameBytes(Http3Frame.Data(asciiBuffer("oops")))), ReadResult.End))
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
 
                 val e =
                     assertFailsWith<Http3StreamException> {
@@ -548,7 +552,7 @@ class Http3ConnectionTests {
                 // SETTINGS is a control-stream frame; on a request stream it's H3_FRAME_UNEXPECTED.
                 val recording = RecordingByteStream(listOf(dataChunk(frameBytes(clientSettings())), ReadResult.End))
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
 
                 val e =
                     assertFailsWith<Http3StreamException> {
@@ -568,7 +572,7 @@ class Http3ConnectionTests {
                         frameBytes(clientSettings())
                 val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
 
                 val response = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
                 assertEquals(200, response.status)
@@ -589,7 +593,7 @@ class Http3ConnectionTests {
                     QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
                 assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
             }
@@ -608,7 +612,7 @@ class Http3ConnectionTests {
                     QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
                 assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
             }
@@ -625,7 +629,7 @@ class Http3ConnectionTests {
                         frameBytes(Http3Frame.Data(asciiBuffer("partial")))
                 val recording = RecordingByteStream(listOf(dataChunk(responseBytes), ReadResult.End))
                 val scope = fakeScopeWithBidi(this, QuicByteStream(QuicStreamId(0), recording))
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
 
                 val response = connection.request(Http3Request(method = "GET", authority = "h.test", path = "/"))
                 assertEquals(200, response.status)
@@ -646,7 +650,7 @@ class Http3ConnectionTests {
                     )
                 val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
 
-                val connection = Http3Connection.bootstrap(scope, ConnectionOptions())
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
                 assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, e.errorCode)
             }

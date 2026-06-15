@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -46,7 +46,7 @@ class QuicPublicEndpointInteropTests {
             verifyPeer = true, // exercise real CT-logged cert validation, the production path
             idleTimeout = 10.seconds,
         )
-    private val connOptions = ConnectionOptions(bufferFactory = BufferFactory.deterministic())
+    private val connOptions = TransportConfig(bufferFactory = BufferFactory.deterministic())
 
     @Test
     fun connectsToPublicQuicEndpoints_orSkips() =

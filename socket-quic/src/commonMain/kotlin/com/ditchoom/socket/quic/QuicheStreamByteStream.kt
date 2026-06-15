@@ -4,9 +4,12 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Platform-agnostic interface for a QUIC stream backed by a quiche connection.
@@ -40,7 +43,7 @@ interface QuicheStreamAdapter {
      * [bufferFactory] safe: the codec/mux path already honors it — a
      * `CodecConnection` hands the buffer to its `StreamProcessor`, which takes
      * ownership and frees each chunk on consume and on `release()` — so
-     * injecting such a factory via `ConnectionOptions.bufferFactory` through
+     * injecting such a factory via `TransportConfig.bufferFactory` through
      * `withQuicMux` leaks nothing. Only a consumer of the *raw* [read] API who
      * ignores the returned buffer's ownership leaks under a non-GC factory.
      */
@@ -95,6 +98,12 @@ class QuicheStreamByteStream(
 
     override val isOpen: Boolean get() = !closed
 
+    // QUIC stream policy refinement to UntilClosed (persistent WebTransport streams) is Phase 3
+    // work; the request/response-shaped Bounded default is correct for the current stream surface.
+    override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+
+    override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
     /**
      * Read the next chunk from the stream.
      *
@@ -105,18 +114,18 @@ class QuicheStreamByteStream(
      * [QuicheStreamAdapter.streamRead] for the full ownership contract; the
      * codec/mux path (`CodecConnection` → `StreamProcessor`) already honors it.
      */
-    override suspend fun read(timeout: Duration): ReadResult {
+    override suspend fun read(deadline: Duration): ReadResult {
         check(!closed) { "QuicheStreamByteStream($streamId) is closed" }
-        return adapter.streamRead(streamId, bufferFactory, bufferSize, timeout)
+        return adapter.streamRead(streamId, bufferFactory, bufferSize, deadline)
     }
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten {
         check(!closed) { "QuicheStreamByteStream($streamId) is closed" }
         check(!sendFinished) { "QuicheStreamByteStream($streamId) send side is finished" }
-        val written = adapter.streamWrite(streamId, buffer, timeout)
+        val written = adapter.streamWrite(streamId, buffer, deadline)
         return BytesWritten(written)
     }
 

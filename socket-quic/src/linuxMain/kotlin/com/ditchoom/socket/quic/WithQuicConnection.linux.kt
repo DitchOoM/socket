@@ -5,8 +5,8 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketConnectionException
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.linux.socket_getsockname
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_config_free
@@ -66,7 +66,7 @@ actual suspend fun <R> withQuicConnection(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
-    connectionOptions: ConnectionOptions,
+    connectionOptions: TransportConfig,
     timeout: Duration,
     block: suspend QuicScope.() -> R,
 ): R {

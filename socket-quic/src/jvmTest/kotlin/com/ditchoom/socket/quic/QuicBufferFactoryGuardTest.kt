@@ -3,7 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.managed
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -11,7 +11,7 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * Spike (hardening): [ConnectionOptions.quicBufferFactory] / [requireNativeMemory] reject a heap factory
+ * Spike (hardening): [TransportConfig.quicBufferFactory] / [requireNativeMemory] reject a heap factory
  * with a clear message instead of letting it NPE deep inside the quiche binding.
  *
  * QUIC hands buffer *addresses* to native code on every platform (the JVM included — the FFM/JNI binding
@@ -22,21 +22,21 @@ class QuicBufferFactoryGuardTest {
     @Test
     fun defaultResolvesToNativeNetworkFactory() {
         // The untouched default must keep working — it resolves the Default sentinel to network().
-        val resolved = ConnectionOptions().quicBufferFactory()
+        val resolved = TransportConfig().quicBufferFactory()
         assertSame(BufferFactory.network(), resolved, "Default must resolve to the native network() factory")
     }
 
     @Test
     fun explicitNativeFactoryIsHonored() {
         val native = BufferFactory.deterministic()
-        assertSame(native, ConnectionOptions(bufferFactory = native).quicBufferFactory())
+        assertSame(native, TransportConfig(bufferFactory = native).quicBufferFactory())
     }
 
     @Test
     fun managedHeapFactoryFailsFastWithExplanatoryMessage() {
         val ex =
             assertFailsWith<IllegalArgumentException> {
-                ConnectionOptions(bufferFactory = BufferFactory.managed()).quicBufferFactory()
+                TransportConfig(bufferFactory = BufferFactory.managed()).quicBufferFactory()
             }
         assertTrue(
             ex.message!!.contains("native-memory", ignoreCase = true) &&

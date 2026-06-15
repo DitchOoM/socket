@@ -10,7 +10,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -124,7 +124,7 @@ class AndroidQuicConcurrencySoakTests {
                                     "127.0.0.1",
                                     port,
                                     options,
-                                    ConnectionOptions(bufferFactory = tracking),
+                                    TransportConfig(bufferFactory = tracking),
                                     timeout = 15.seconds,
                                 ) {
                                     val stream = openStream()

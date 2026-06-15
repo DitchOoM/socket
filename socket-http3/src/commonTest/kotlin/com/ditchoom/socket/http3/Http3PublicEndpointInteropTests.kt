@@ -3,7 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -33,7 +33,7 @@ class Http3PublicEndpointInteropTests {
             "www.google.com" to 443,
         )
 
-    private val connectionOptions = ConnectionOptions(bufferFactory = BufferFactory.deterministic())
+    private val connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic())
 
     @Test
     fun getsFromPublicHttp3Endpoints_orSkips() =

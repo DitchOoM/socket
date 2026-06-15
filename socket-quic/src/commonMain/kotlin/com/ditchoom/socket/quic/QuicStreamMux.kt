@@ -7,7 +7,7 @@ import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.CodecConnection
 
 /**
@@ -17,12 +17,12 @@ import com.ditchoom.socket.transport.CodecConnection
  * messages via the codec. The [Connection.id] is set to the QUIC stream ID for
  * cross-layer log correlation.
  *
- * Buffer allocation for each stream is routed through [ConnectionOptions.bufferFactory].
+ * Buffer allocation for each stream is routed through [TransportConfig.bufferFactory].
  */
 class QuicStreamMux<T>(
     private val connection: QuicScope,
     private val codec: Codec<T>,
-    private val options: ConnectionOptions,
+    private val options: TransportConfig,
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
 ) : StreamMux<T> {
@@ -31,7 +31,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            options = options,
+            config = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -43,7 +43,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            options = options,
+            config = options,
             encodeContext = encodeContext,
             id = stream.streamId.id,
         )
@@ -54,7 +54,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            options = options,
+            config = options,
             decodeContext = decodeContext,
             encodeContext = encodeContext,
             id = stream.streamId.id,
@@ -66,7 +66,7 @@ class QuicStreamMux<T>(
         return CodecConnection(
             stream = stream,
             codec = codec,
-            options = options,
+            config = options,
             decodeContext = decodeContext,
             id = stream.streamId.id,
         )

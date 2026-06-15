@@ -7,9 +7,11 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.toNativeData
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_group
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_cancel
@@ -67,7 +69,7 @@ actual suspend fun <R> withQuicConnection(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
-    connectionOptions: ConnectionOptions,
+    connectionOptions: TransportConfig,
     timeout: Duration,
     block: suspend QuicScope.() -> R,
 ): R =
@@ -106,7 +108,7 @@ private suspend fun <R> connectQuicGroup(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
-    connectionOptions: ConnectionOptions,
+    connectionOptions: TransportConfig,
     timeout: Duration,
     block: suspend QuicScope.() -> R,
 ): R {
@@ -471,8 +473,14 @@ internal class NWQuicByteStream(
 
     override val isOpen: Boolean get() = !streamClosed
 
-    override suspend fun read(timeout: Duration): ReadResult =
-        withTimeout(timeout) {
+    // QUIC stream policy refinement to UntilClosed (persistent WebTransport streams) is Phase 3
+    // work; the request/response-shaped Bounded default is correct for the current stream surface.
+    override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+
+    override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
+    override suspend fun read(deadline: Duration): ReadResult =
+        withTimeout(deadline) {
             suspendCancellableCoroutine { cont ->
                 nw_helper_quic_receive(nwConn, 1u, 65536u) { data, isComplete, _, errorCode, _ ->
                     when {
@@ -514,9 +522,9 @@ internal class NWQuicByteStream(
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten =
-        withTimeout(timeout) {
+        withTimeout(deadline) {
             check(!sendFinished) { "NWQuicByteStream send side is finished" }
             val remaining = buffer.remaining()
             val nsData = buffer.toNativeData().nsData

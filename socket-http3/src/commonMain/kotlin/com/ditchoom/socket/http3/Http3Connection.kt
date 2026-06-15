@@ -11,7 +11,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
@@ -108,7 +108,7 @@ data class Http3Settings(
  */
 class Http3Connection private constructor(
     private val scope: QuicScope,
-    private val options: ConnectionOptions,
+    private val config: TransportConfig,
     private val pool: BufferPool,
     private val controlStream: QuicByteStream,
     private val qpackEncoderStream: QuicByteStream,
@@ -149,7 +149,7 @@ class Http3Connection private constructor(
     // The per-connection WebTransport engine: session table, stream/datagram demux, capsule protocol.
     // Null when WebTransport was not enabled at bootstrap (no WT SETTINGS advertised).
     private val webTransportMux: WebTransportMux? =
-        if (webTransport != null) WebTransportMux(scope, pool, options) else null
+        if (webTransport != null) WebTransportMux(scope, pool, config) else null
 
     // The live push-id limit (RFC 9114 §7.2.7). Starts at the advertised maxPushId and is re-issued
     // upward (never down) as pushes are observed, so the server keeps a rolling window of credit
@@ -338,7 +338,7 @@ class Http3Connection private constructor(
         reader: Http3StreamReader,
     ): Int {
         while (true) {
-            when (val frame = reader.nextFrame(options.readTimeout)) {
+            when (val frame = reader.nextFrame(config.readPolicy.toDeadline())) {
                 null ->
                     throw Http3StreamException(
                         "CONNECT stream ended before a response HEADERS frame",
@@ -427,7 +427,7 @@ class Http3Connection private constructor(
         onPushPromise: (suspend (Http3Frame.PushPromise) -> Unit)?,
     ): Http3Response {
         while (true) {
-            when (val frame = reader.nextFrame(options.readTimeout)) {
+            when (val frame = reader.nextFrame(config.readPolicy.toDeadline())) {
                 // Stream ended before the response message began (RFC 9114 §4.1).
                 null ->
                     throw Http3StreamException(
@@ -440,7 +440,15 @@ class Http3Connection private constructor(
                     val status = parseStatus(decoded)
                     val headers = decoded.filterNot { it.name.startsWith(":") }
                     // Trailers (a later field section on this stream) decode through the same decoder.
-                    return Http3Response(status, headers, stream, reader, pool, options.readTimeout, onPushPromise) { trailerSection ->
+                    return Http3Response(
+                        status,
+                        headers,
+                        stream,
+                        reader,
+                        pool,
+                        config.readPolicy.toDeadline(),
+                        onPushPromise,
+                    ) { trailerSection ->
                         decoder.decodeSection(trailerSection, streamId, pool)
                     }
                 }
@@ -521,7 +529,7 @@ class Http3Connection private constructor(
         // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
         val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -540,7 +548,7 @@ class Http3Connection private constructor(
         try {
             QpackEncoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            encoderStreamWriteMutex.withLock { qpackEncoderStream.write(buffer, options.writeTimeout) }
+            encoderStreamWriteMutex.withLock { qpackEncoderStream.write(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }
@@ -552,7 +560,7 @@ class Http3Connection private constructor(
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            decoderStreamWriteMutex.withLock { qpackDecoderStream.write(buffer, options.writeTimeout) }
+            decoderStreamWriteMutex.withLock { qpackDecoderStream.write(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }
@@ -627,14 +635,14 @@ class Http3Connection private constructor(
         try {
             VarIntCodec.encode(prefix, Http3StreamType.CONTROL, EncodeContext.Empty)
             prefix.resetForRead()
-            controlStream.write(prefix, options.writeTimeout)
+            controlStream.write(prefix, config.writePolicy.toDeadline())
         } finally {
             // Free on both paths: write() is zero-copy and does not take ownership (mirrors writeFrame).
             prefix.freeIfNeeded()
         }
         val frame = Http3FrameCodec.encode(settings, EncodeContext.Empty, pool)
         try {
-            controlStream.write(frame, options.writeTimeout)
+            controlStream.write(frame, config.writePolicy.toDeadline())
         } finally {
             frame.freeIfNeeded()
         }
@@ -649,7 +657,7 @@ class Http3Connection private constructor(
         try {
             VarIntCodec.encode(buffer, type, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             // Free on both paths: write() is zero-copy and does not take ownership (mirrors writeFrame).
             buffer.freeIfNeeded()
@@ -696,7 +704,8 @@ class Http3Connection private constructor(
                 // bidirectional stream (draft-ietf-webtrans-http3 §4.2); anything else is discarded.
                 val mux = webTransportMux
                 if (mux != null &&
-                    Http3StreamReader(stream, processor).peekVarInt(options.readTimeout) == WebTransportWire.WT_BIDI_STREAM_SIGNAL
+                    Http3StreamReader(stream, processor).peekVarInt(config.readPolicy.toDeadline()) ==
+                    WebTransportWire.WT_BIDI_STREAM_SIGNAL
                 ) {
                     handlerOwnsStream = true
                     mux.acceptIncomingBidi(stream, processor)
@@ -747,7 +756,7 @@ class Http3Connection private constructor(
     ) {
         val reader = QpackInstructionReader.encoder(stream, processor, pool)
         while (true) {
-            val instruction = reader.next(options.readTimeout) ?: break
+            val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
             decoder.applyEncoderInstruction(instruction)
         }
     }
@@ -759,7 +768,7 @@ class Http3Connection private constructor(
     ) {
         val reader = QpackInstructionReader.decoder(stream, processor)
         while (true) {
-            val instruction = reader.next(options.readTimeout) ?: break
+            val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
             // The peer only acks entries our encoder inserted, so the encoder exists by now; guard anyway.
             encoder?.processDecoderInstruction(instruction)
         }
@@ -977,7 +986,7 @@ class Http3Connection private constructor(
         var entry: PushEntry? = null
         var responseOwnsProcessor = false
         try {
-            val pushId = Http3StreamReader(stream, processor).nextVarInt(options.readTimeout)
+            val pushId = Http3StreamReader(stream, processor).nextVarInt(config.readPolicy.toDeadline())
             validatePushId(pushId)
             maybeExtendMaxPushId(pushId)
             entry = pushMutex.withLock { pushEntries.getOrPut(pushId) { PushEntry() }.also { it.pushStream = stream } }
@@ -1052,7 +1061,7 @@ class Http3Connection private constructor(
          * resolves asynchronously when the peer's control stream arrives.
          *
          * Buffer allocation (frame writes, stream readers) is routed through
-         * [ConnectionOptions.bufferFactory], mirroring [com.ditchoom.socket.quic.QuicStreamMux].
+         * [TransportConfig.bufferFactory], mirroring [com.ditchoom.socket.quic.QuicStreamMux].
          *
          * Server push (RFC 9114 §4.6) is opt-in via [maxPushId]: the default -1 disables it (no
          * MAX_PUSH_ID is sent, so the server may not push and any push is an H3_ID_ERROR). A value
@@ -1063,7 +1072,7 @@ class Http3Connection private constructor(
          */
         suspend fun bootstrap(
             scope: QuicScope,
-            options: ConnectionOptions = ConnectionOptions(),
+            options: TransportConfig = TransportConfig(),
             maxPushId: Long = -1,
             webTransport: WebTransportOptions? = null,
         ): Http3Connection {

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MemoryTransport
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -24,7 +25,7 @@ class ResourceLeakTests {
     fun stream_writeAndRead_usePattern_noLeaks() =
         runTest {
             val factory = TrackingBufferFactory()
-            val (clientSide, serverSide) = MemoryTransport.createPair(factory)
+            val (clientSide, serverSide) = MemoryTransport.createPair(TransportConfig(bufferFactory = factory))
             val stream = QuicByteStream(QuicStreamId(0), clientSide)
 
             // Write with use {} — buffer freed automatically after write
@@ -49,7 +50,7 @@ class ResourceLeakTests {
     fun stream_multipleWritesThenClose_noLeaks() =
         runTest {
             val factory = TrackingBufferFactory()
-            val (clientSide, serverSide) = MemoryTransport.createPair(factory)
+            val (clientSide, serverSide) = MemoryTransport.createPair(TransportConfig(bufferFactory = factory))
             val stream = QuicByteStream(QuicStreamId(0), clientSide)
 
             repeat(5) { i ->
@@ -77,7 +78,7 @@ class ResourceLeakTests {
     fun stream_closeWithoutReading_writeBufferFreed() =
         runTest {
             val factory = TrackingBufferFactory()
-            val (clientSide, serverSide) = MemoryTransport.createPair(factory)
+            val (clientSide, serverSide) = MemoryTransport.createPair(TransportConfig(bufferFactory = factory))
             val stream = QuicByteStream(QuicStreamId(0), clientSide)
 
             factory.allocate(4).use { buf ->

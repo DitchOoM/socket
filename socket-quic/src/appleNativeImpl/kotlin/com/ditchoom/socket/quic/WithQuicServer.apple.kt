@@ -6,7 +6,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_listener
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_cancel
@@ -259,18 +261,22 @@ private class PrefixedByteStream(
 
     override val isOpen: Boolean get() = delegate.isOpen
 
-    override suspend fun read(timeout: Duration): ReadResult {
+    override val readPolicy: ReadPolicy get() = delegate.readPolicy
+
+    override val writePolicy: WritePolicy get() = delegate.writePolicy
+
+    override suspend fun read(deadline: Duration): ReadResult {
         pending?.let {
             pending = null
             return it
         }
-        return delegate.read(timeout)
+        return delegate.read(deadline)
     }
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): BytesWritten = delegate.write(buffer, timeout)
+        deadline: Duration,
+    ): BytesWritten = delegate.write(buffer, deadline)
 
     override suspend fun shutdownSend() {
         (delegate as? HalfCloseableByteStream)?.shutdownSend()

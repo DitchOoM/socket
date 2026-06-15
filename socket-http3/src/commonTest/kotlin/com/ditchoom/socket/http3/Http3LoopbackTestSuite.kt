@@ -6,7 +6,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
@@ -88,7 +88,7 @@ abstract class Http3LoopbackTestSuite {
     // a native-memory-backed factory (deterministic()) — the same choice QuicServerTestSuite and the
     // live interop test make. Both the client (withHttp3Connection's bootstrap + request frames) and
     // the server (Http3LoopbackServer) allocate through this.
-    private val connectionOptions = ConnectionOptions(bufferFactory = BufferFactory.deterministic())
+    private val connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic())
 
     /** A native-memory (zero-copy-safe) buffer holding [s] as UTF-8, positioned for reading. */
     private fun textBuffer(s: String): PlatformBuffer =

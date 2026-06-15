@@ -1,6 +1,6 @@
 package com.ditchoom.socket.quic
 
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlin.time.Duration
 
 /**
@@ -19,7 +19,7 @@ actual suspend fun <R> withQuicConnection(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
-    connectionOptions: ConnectionOptions,
+    connectionOptions: TransportConfig,
     timeout: Duration,
     block: suspend QuicScope.() -> R,
 ): R = throw UnsupportedOperationException("QUIC is not yet implemented on JS. Track feature/socket-quic-js-wip for progress.")

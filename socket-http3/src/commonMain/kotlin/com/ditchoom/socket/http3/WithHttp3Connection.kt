@@ -1,6 +1,6 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlin.time.Duration
@@ -32,7 +32,7 @@ suspend fun <R> withHttp3Connection(
     hostname: String,
     port: Int = 443,
     quicOptions: QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN)),
-    connectionOptions: ConnectionOptions = ConnectionOptions(),
+    connectionOptions: TransportConfig = TransportConfig(),
     timeout: Duration = 15.seconds,
     maxPushId: Long = -1,
     webTransport: WebTransportOptions? = null,

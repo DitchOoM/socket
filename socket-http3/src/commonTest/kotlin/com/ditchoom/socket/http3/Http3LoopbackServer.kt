@@ -10,7 +10,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
@@ -46,7 +46,7 @@ import kotlin.concurrent.Volatile
  * asserts. Request/response bodies are modeled as UTF-8 strings for test ergonomics.
  */
 internal class Http3LoopbackServer(
-    private val options: ConnectionOptions = ConnectionOptions(),
+    private val config: TransportConfig = TransportConfig(),
     // When > 0 the server advertises that QPACK dynamic-table capacity, decodes requests through a
     // QpackDecoder, and dynamically compresses responses through a QpackEncoder — making the loopback
     // exercise dynamic QPACK in BOTH directions. 0 (default) keeps the original static-only behaviour.
@@ -94,7 +94,7 @@ internal class Http3LoopbackServer(
     )
 
     // MultiThreaded: per-stream handler coroutines allocate from this pool concurrently.
-    private val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = options.bufferFactory)
+    private val pool = BufferPool(threadingMode = ThreadingMode.MultiThreaded, factory = config.bufferFactory)
 
     // Dynamic-QPACK state (only when qpackCapacity > 0). One server instance serves one connection in
     // the tests, so per-instance state is fine. The decoder decodes requests; the encoder (created once
@@ -155,12 +155,12 @@ internal class Http3LoopbackServer(
                 Http3StreamType.QPACK_ENCODER ->
                     serverDecoder?.let { dec ->
                         val reader = QpackInstructionReader.encoder(stream, processor, pool)
-                        while (true) dec.applyEncoderInstruction(reader.next(options.readTimeout) ?: break)
+                        while (true) dec.applyEncoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
                     } ?: drain(stream)
                 Http3StreamType.QPACK_DECODER ->
                     if (serverDecoder != null) {
                         val reader = QpackInstructionReader.decoder(stream, processor)
-                        while (true) serverEncoder?.processDecoderInstruction(reader.next(options.readTimeout) ?: break)
+                        while (true) serverEncoder?.processDecoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
                     } else {
                         drain(stream)
                     }
@@ -196,7 +196,7 @@ internal class Http3LoopbackServer(
         val reader = Http3StreamReader.create(stream, pool)
         try {
             val first =
-                reader.nextFrame(options.readTimeout)
+                reader.nextFrame(config.readPolicy.toDeadline())
                     ?: throw Http3StreamException("request stream ended before a HEADERS frame")
             if (first !is Http3Frame.Headers) {
                 throw Http3StreamException("request's first frame was ${first::class.simpleName}, expected HEADERS")
@@ -215,7 +215,7 @@ internal class Http3LoopbackServer(
             // Drain request DATA frames (the body) until the client's FIN ends the stream.
             val body = StringBuilder()
             while (true) {
-                val frame = reader.nextFrame(options.readTimeout) ?: break
+                val frame = reader.nextFrame(config.readPolicy.toDeadline()) ?: break
                 if (frame is Http3Frame.Data) {
                     body.append(frame.payload.readString(frame.payload.remaining(), Charset.UTF8))
                 }
@@ -287,7 +287,7 @@ internal class Http3LoopbackServer(
             VarIntCodec.encode(header, Http3StreamType.PUSH, EncodeContext.Empty)
             VarIntCodec.encode(header, pushId, EncodeContext.Empty)
             header.resetForRead()
-            pushStream.write(header, options.writeTimeout)
+            pushStream.write(header, config.writePolicy.toDeadline())
         } finally {
             header.freeIfNeeded()
         }
@@ -319,7 +319,7 @@ internal class Http3LoopbackServer(
         // Malformed-sequence injection: a DATA frame before any HEADERS is an invalid request-stream
         // sequence (RFC 9114 §4.1) the client must treat as a connection error.
         if (response.dataBeforeHeaders) {
-            val stray = options.bufferFactory.allocate(4)
+            val stray = config.bufferFactory.allocate(4)
             stray.writeString("oops", Charset.UTF8)
             stray.resetForRead()
             try {
@@ -351,7 +351,7 @@ internal class Http3LoopbackServer(
         }
         if (response.body.isNotEmpty()) {
             // Test bodies are ASCII, so byte length == char length; allocate exactly that.
-            val bodyBuffer = options.bufferFactory.allocate(response.body.length)
+            val bodyBuffer = config.bufferFactory.allocate(response.body.length)
             try {
                 bodyBuffer.writeString(response.body, Charset.UTF8)
                 bodyBuffer.resetForRead()
@@ -378,7 +378,7 @@ internal class Http3LoopbackServer(
             VarIntCodec.encode(buffer, Http3StreamType.CONTROL, EncodeContext.Empty)
             HandwrittenHttp3FrameCodec.encode(buffer, settings, EncodeContext.Empty)
             buffer.resetForRead()
-            control.write(buffer, options.writeTimeout)
+            control.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -394,7 +394,7 @@ internal class Http3LoopbackServer(
         try {
             HandwrittenHttp3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -409,7 +409,7 @@ internal class Http3LoopbackServer(
         try {
             VarIntCodec.encode(buffer, type, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -428,7 +428,7 @@ internal class Http3LoopbackServer(
         try {
             QpackEncoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            encoderStreamWriteMutex.withLock { stream.write(buffer, options.writeTimeout) }
+            encoderStreamWriteMutex.withLock { stream.write(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }
@@ -440,7 +440,7 @@ internal class Http3LoopbackServer(
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            decoderStreamWriteMutex.withLock { stream.write(buffer, options.writeTimeout) }
+            decoderStreamWriteMutex.withLock { stream.write(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }
@@ -449,7 +449,7 @@ internal class Http3LoopbackServer(
     /** Reads and discards a unidirectional stream's bytes until end-of-stream or reset. */
     private suspend fun drain(stream: QuicByteStream) {
         while (true) {
-            when (val result = stream.read(options.readTimeout)) {
+            when (val result = stream.read(config.readPolicy.toDeadline())) {
                 is ReadResult.Data -> result.buffer.freeIfNeeded()
                 ReadResult.End, ReadResult.Reset -> return
             }

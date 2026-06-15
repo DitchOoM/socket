@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.junit.Assume.assumeTrue
@@ -50,7 +50,7 @@ class QuicKeepAlivePingSeamTest {
                             hostname = "127.0.0.1",
                             port = port,
                             quicOptions = opts,
-                            connectionOptions = ConnectionOptions(bufferFactory = BufferFactory.deterministic()),
+                            connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
                             timeout = 10.seconds,
                             api = counting,
                         ) {

@@ -7,8 +7,10 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -98,7 +100,7 @@ class QuicStreamMuxTests {
                 // de-flake.)
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val opts = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
+                        val opts = TransportConfig(readPolicy = ReadPolicy.Bounded(5.seconds), writePolicy = WritePolicy.Bounded(5.seconds))
 
                         // Server: accept bidi stream via StreamMux, echo.
                         val serverDispatched = CompletableDeferred<Unit>()

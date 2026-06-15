@@ -2,13 +2,16 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.HalfCloseableByteStream
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.ResettableByteStream
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A WebTransport stream was aborted by the peer (draft-ietf-webtrans-http3 §4.3): [errorCode] is the
@@ -56,20 +59,24 @@ class WebTransportStream internal constructor(
     override val isOpen: Boolean get() = stream.isOpen
 
     /**
+     * WebTransport streams are persistent and often idle for long stretches, so the read side delegates
+     * liveness to the transport's QUIC idle-timeout rather than imposing a per-read deadline: the no-arg
+     * [read] consults [ReadPolicy.UntilClosed]. Pass an explicit bound to [read] when a caller wants one.
+     */
+    override val readPolicy: ReadPolicy get() = ReadPolicy.UntilClosed
+
+    /** Writes are bounded by an application deadline (the connection's idle-timeout remains the liveness authority). */
+    override val writePolicy: WritePolicy get() = WritePolicy.Bounded(15.seconds)
+
+    /**
      * Read the next chunk of stream data; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset.
      *
-     * As a [ByteStream] override this carries the interface's default [timeout] — the no-arg form is bounded,
-     * not unbounded (Kotlin won't let an override change an inherited default, so it can't be widened here).
-     * That bound is an *application* deadline, not a liveness timer: the connection's QUIC idle-timeout +
-     * keepalive are the liveness authority, and a timeout here neither closes the stream nor drops the
-     * connection — it just unblocks the caller, who may read again.
-     *
-     * WebTransport streams are persistent and often idle for long stretches, so the natural call is
-     * `read(Duration.INFINITE)` — let the transport's idle-timeout decide liveness rather than imposing an
-     * arbitrary per-read cap (which would also surface a spurious timeout during a slow path migration).
-     * Pass [Duration.INFINITE] (or your own bound) explicitly when you want to wait past the [ByteStream] default.
+     * The [deadline] is an *application* deadline, not a liveness timer: the connection's QUIC idle-timeout +
+     * keepalive are the liveness authority, and a deadline here neither closes the stream nor drops the
+     * connection — it just unblocks the caller, who may read again. The no-arg [read] uses [readPolicy]
+     * ([ReadPolicy.UntilClosed]); pass [Duration.INFINITE] (or your own bound) explicitly otherwise.
      */
-    override suspend fun read(timeout: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
+    override suspend fun read(deadline: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, deadline)
 
     /**
      * Write [buffer]'s remaining bytes to the stream (zero-copy; the caller retains ownership). Throws
@@ -77,10 +84,10 @@ class WebTransportStream internal constructor(
      */
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten =
         try {
-            stream.write(buffer, timeout)
+            stream.write(buffer, deadline)
         } catch (e: QuicStreamException) {
             throw e.toWebTransport()
         }
@@ -88,10 +95,10 @@ class WebTransportStream internal constructor(
     /** Gather-write [buffers] in one operation (zero-copy; the caller retains ownership). */
     override suspend fun writeGathered(
         buffers: List<ReadBuffer>,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten =
         try {
-            stream.writeGathered(buffers, timeout)
+            stream.writeGathered(buffers, deadline)
         } catch (e: QuicStreamException) {
             throw e.toWebTransport()
         }

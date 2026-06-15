@@ -5,13 +5,16 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /** [QpackInstructionReader] reassembles instructions across arbitrary read boundaries (1 byte at a time). */
 class QpackInstructionReaderTests {
@@ -21,8 +24,10 @@ class QpackInstructionReaderTests {
     ) : ByteStream {
         private var i = 0
         override val isOpen get() = i < bytes.size
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
 
-        override suspend fun read(timeout: Duration): ReadResult {
+        override suspend fun read(deadline: Duration): ReadResult {
             if (i >= bytes.size) return ReadResult.End
             val buf = BufferFactory.Default.allocate(1)
             buf.writeByte(bytes[i++].toByte())
@@ -32,7 +37,7 @@ class QpackInstructionReaderTests {
 
         override suspend fun write(
             buffer: ReadBuffer,
-            timeout: Duration,
+            deadline: Duration,
         ): BytesWritten = BytesWritten(0)
 
         override suspend fun close() {}
