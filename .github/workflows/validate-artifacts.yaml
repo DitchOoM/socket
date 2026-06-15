@@ -91,7 +91,7 @@ jobs:
           # resolve them (the gap validate-resolution now guards against, having
           # previously only exercised `socket`). Per-module guard: a module missing
           # its Apple .module is simply left Linux-only (no worse than before).
-          for module in socket socket-quic socket-http3; do
+          for module in socket socket-quic socket-quic-quiche socket-quic-nw socket-quic-default socket-http3; do
             LINUX_MODULE="$LINUX_BASE/$module/$version/$module-$version.module"
             APPLE_MODULE="$APPLE_BASE/$module/$version/$module-$version.module"
             MERGED_MODULE="$MERGED/$module/$version/$module-$version.module"
@@ -169,14 +169,14 @@ jobs:
             fi
           done
 
-      - name: Inject native libs into socket-quic JVM JAR
+      - name: Inject native libs into socket-quic-quiche JVM JAR
         run: |
           version="${RESOLVED_VERSION}"
           MERGED="/tmp/maven-local/com/ditchoom"
-          QUIC_JAR="$MERGED/socket-quic-jvm/$version/socket-quic-jvm-$version.jar"
+          QUIC_JAR="$MERGED/socket-quic-quiche-jvm/$version/socket-quic-quiche-jvm-$version.jar"
 
           if [ ! -f "$QUIC_JAR" ]; then
-            echo "Skipping native injection: socket-quic-jvm JAR not found"
+            echo "Skipping native injection: socket-quic-quiche-jvm JAR not found"
             exit 0
           fi
 
@@ -208,7 +208,7 @@ jobs:
 
           if [ -d "$INJECT_DIR/META-INF/native" ] && [ -n "$(find "$INJECT_DIR/META-INF/native" -type f)" ]; then
             (cd "$INJECT_DIR" && zip -ur "$QUIC_JAR" META-INF/native/)
-            echo "socket-quic JVM JAR native libs:"
+            echo "socket-quic-quiche JVM JAR native libs:"
             unzip -l "$QUIC_JAR" | grep "META-INF/native" || true
           else
             echo "No platform natives found to inject"
@@ -335,14 +335,14 @@ jobs:
             fi
           fi
 
-          # ── 5. socket-quic JVM JAR native libs ──
+          # ── 5. socket-quic-quiche JVM JAR native libs ──
           # windows-x64 is intentionally NOT listed: no Windows quiche JNI
           # native is currently built into the publish pipeline (the
-          # nativeLibsByPlatform map in socket-quic/build.gradle.kts excludes
+          # nativeLibsByPlatform map in socket-quic-quiche/build.gradle.kts excludes
           # windows-*). Tracked in TODO.md \"Windows quiche JNI native\".
-          QUIC_JAR="$MERGED/socket-quic-jvm/${version}/socket-quic-jvm-${version}.jar"
+          QUIC_JAR="$MERGED/socket-quic-quiche-jvm/${version}/socket-quic-quiche-jvm-${version}.jar"
           if [ -f "$QUIC_JAR" ]; then
-            echo "socket-quic JVM JAR found"
+            echo "socket-quic-quiche JVM JAR found"
             for platform in linux-x64 linux-arm64 macos-arm64 macos-x64; do
               LIB_PATTERN="META-INF/native/$platform/"
               if unzip -l "$QUIC_JAR" | grep -q "$LIB_PATTERN"; then
@@ -353,7 +353,7 @@ jobs:
               fi
             done
           else
-            echo "INFO: socket-quic JVM JAR not found (expected if not published)"
+            echo "INFO: socket-quic-quiche JVM JAR not found (expected if not published)"
           fi
 
           # ── 6. Signing coverage — detect uncovered file types ──

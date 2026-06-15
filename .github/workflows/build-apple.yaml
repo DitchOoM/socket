@@ -45,16 +45,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # Combined quiche + JNI shim cache — shims now live under
-      # socket-quic/libs/quiche/<platform>/lib/ alongside libquiche.dylib,
+      # socket-quic-quiche/libs/quiche/<platform>/lib/ alongside libquiche.dylib,
       # matching the local-dev path so Gradle's classifier-JAR pipeline picks
       # them up from the same place. Hash quiche_jni.c so shim edits invalidate.
       - name: Cache quiche macOS
         uses: actions/cache@v5
         with:
           path: |
-            socket-quic/libs/quiche/macos-x64
-            socket-quic/libs/quiche/macos-arm64
-          key: quiche-macos-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+            socket-quic-quiche/libs/quiche/macos-x64
+            socket-quic-quiche/libs/quiche/macos-arm64
+          key: quiche-macos-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -71,7 +71,7 @@ jobs:
           set -x
           # Write into libs/quiche/<platform>/lib/ so local-dev + CI share paths
           # and the Gradle classifier-JAR pipeline (jvmNativesJar*) picks up.
-          QUICHE_LIBS="socket-quic/libs/quiche"
+          QUICHE_LIBS="socket-quic-quiche/libs/quiche"
 
           # Clone quiche once, build for both architectures
           git clone --recursive --depth 1 --branch 0.28.0 \
@@ -111,9 +111,9 @@ jobs:
               # force_load static shim cleanly — locally verified on macos-arm64.)
               cc -dynamiclib -O2 -Wall \
                 -o $DEST/libquiche_jni.dylib \
-                socket-quic/src/jni/quiche_jni.c \
+                socket-quic-quiche/src/jni/quiche_jni.c \
                 -I${JAVA_HOME}/include -I${JAVA_HOME}/include/darwin \
-                -I socket-quic/libs/quiche/include \
+                -I socket-quic-quiche/libs/quiche/include \
                 -Wl,-force_load,"$DEST/libquiche.a" \
                 -Wl,-install_name,@rpath/libquiche_jni.dylib \
                 -target $(echo $RUST_TARGET | sed 's/aarch64/arm64/;s/x86_64/x86_64/') \
@@ -133,7 +133,7 @@ jobs:
 
       - name: Verify macOS JNI shims exist
         run: |
-          find socket-quic/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
+          find socket-quic-quiche/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
 
       # macOS harness — disabled. Three fixture paths attempted on macos-latest;
       # all failed (HANDOFF.md Q1 + TODO.md):
@@ -151,7 +151,7 @@ jobs:
       # runHarnessCmd in build.gradle.kts), and isHarnessAvailable() returns
       # false at runtime so every harness-backed test (TlsConformanceTests,
       # ExceptionConformanceTests, etc.) skips cleanly via the existing guard.
-      # Apple K/N target unit tests, ktlint, and socket-quic:jvmTest still run
+      # Apple K/N target unit tests, ktlint, and socket-quic-quiche:jvmTest still run
       # — they don't depend on the harness. Cross-platform contracts are still
       # validated on build-linux's JVM/K-Native/jsNode runs.
       - name: Disable harness on macOS (no working Docker fixture)
@@ -161,11 +161,12 @@ jobs:
         run: >-
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
-          :socket-quic:jvmProcessResources
+          :socket-quic-quiche:jvmProcessResources
+          :socket-quic-nw:ktlintCheck :socket-quic-default:ktlintCheck
           :socket-http3:macosArm64Test :socket-http3:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # :socket-quic:jvmTest on macOS — re-enabled (issue #70). It was excluded
+      # :socket-quic-quiche:jvmTest on macOS — re-enabled (issue #70). It was excluded
       # because of the quiche-0.28 `quiche_conn_recv` panic (quiche/src/ffi.rs:2059
       # "unsupported address type"); that was a dangling-sockaddr GC race fixed in
       # 5e55a5f (commonJvmMain/commonMain, so it covers the macOS JNI path too).
@@ -182,12 +183,12 @@ jobs:
       # ephemeral source port on 127.0.0.1 — a distinct 4-tuple, fully validated by
       # quiche — so it needs NO privileged loopback alias. The 127.0.0.2 variant
       # (which would need `ifconfig lo0 alias`) stays a clean skip here.
-      - name: Run socket-quic JVM tests (JNI)
+      - name: Run socket-quic-quiche JVM tests (JNI)
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
         run: >-
-          ./gradlew :socket-quic:jvmTest --continue
+          ./gradlew :socket-quic-quiche:jvmTest --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Same suite on the FFM backend. -PquicheJvmBackend=ffm prepends the java21
@@ -198,23 +199,23 @@ jobs:
       # `if: !cancelled()` so FFM runs even when the JNI step above crashed — the
       # two backends are independent and a native abort in one must not blind us to
       # the other (matches build-linux.yaml).
-      - name: Run socket-quic JVM tests (FFM backend)
+      - name: Run socket-quic-quiche JVM tests (FFM backend)
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
         run: >-
-          ./gradlew :socket-quic:jvmTest -PquicheJvmBackend=ffm --continue
+          ./gradlew :socket-quic-quiche:jvmTest -PquicheJvmBackend=ffm --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # QUIC harness on macOS — runs the JVM `QuicEchoTestServer` natively on
       # the runner (no Docker; macos-latest's Colima/container-CLI fixtures
       # all fail per HANDOFF.md Q1). The fat jar produced by
-      # `:socket-quic:quicEchoJar` includes the macOS quiche dylibs from the
+      # `:socket-quic-quiche:quicEchoJar` includes the macOS quiche dylibs from the
       # earlier build step, so it runs end-to-end with no extra runtime deps.
       #
       # The quiche-0.28 `quiche_conn_recv` panic that used to threaten this
-      # server is fixed (5e55a5f) and :socket-quic:jvmTest now runs green on
+      # server is fixed (5e55a5f) and :socket-quic-quiche:jvmTest now runs green on
       # macOS above, so this is no longer the hazard it was. The defensive
       # `continue-on-error` + `timeout`/`kill` cleanup stay: the Apple QUIC
       # tests still connect and silently skip on connection failure via
@@ -240,7 +241,7 @@ jobs:
       - name: Build quic-echo fat jar with macOS dylibs
         continue-on-error: true
         run: >-
-          ./gradlew :socket-quic:quicEchoJar
+          ./gradlew :socket-quic-quiche:quicEchoJar
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Launch quic-echo on the macOS host
@@ -316,16 +317,16 @@ jobs:
       # Apple test binaries here, WITHOUT continue-on-error, turns that class of
       # regression back into a direct, correctly-attributed build failure. This
       # also primes the test step below (link tasks are then UP-TO-DATE).
-      - name: Compile socket-quic Apple native tests (hard gate)
+      - name: Compile socket-quic-nw Apple native tests (hard gate)
         run: >-
           ./gradlew
-          :socket-quic:compileTestKotlinMacosArm64
-          :socket-quic:compileTestKotlinIosSimulatorArm64
-          :socket-quic:compileTestKotlinTvosSimulatorArm64
-          :socket-quic:compileTestKotlinWatchosSimulatorArm64
+          :socket-quic-nw:compileTestKotlinMacosArm64
+          :socket-quic-nw:compileTestKotlinIosSimulatorArm64
+          :socket-quic-nw:compileTestKotlinTvosSimulatorArm64
+          :socket-quic-nw:compileTestKotlinWatchosSimulatorArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      - name: Run socket-quic Apple native tests (Network.framework)
+      - name: Run socket-quic-nw Apple native tests (Network.framework)
         continue-on-error: true
         # Tee Gradle's stdout to /tmp/socket-quic-apple.log so the audit
         # step below can grep `harness OK` / `harness SKIP` markers from
@@ -362,7 +363,7 @@ jobs:
           else
             echo "No iPhone simulator available — QUIC harness will self-skip on the sim"
           fi
-          ./gradlew :socket-quic:macosArm64Test :socket-quic:iosSimulatorArm64Test \
+          ./gradlew :socket-quic-nw:macosArm64Test :socket-quic-nw:iosSimulatorArm64Test \
             --no-configuration-cache --stacktrace --info \
             -Pkotlin.native.debug.exceptions=true \
             $SIM_ARG \
@@ -393,7 +394,7 @@ jobs:
       # the test step above) — the K/N test framework on Apple doesn't
       # route println into the JUnit XML's <system-out> block the way
       # the JVM runner does, so the previous version of this step (which
-      # grep'd socket-quic/build/test-results/*.xml) reported 0/0 every
+      # grep'd socket-quic-quiche/build/test-results/*.xml) reported 0/0 every
       # time. Surfaces in the CI log AND in the per-job step summary
       # AND as a `quic-audit-apple` artifact for the cross-platform
       # interop-matrix job to consume.
@@ -491,8 +492,10 @@ jobs:
             build/reports/tests/
             build/test-results/
             build/reports/ktlint/
-            socket-quic/build/reports/tests/
-            socket-quic/build/test-results/
+            socket-quic-quiche/build/reports/tests/
+            socket-quic-quiche/build/test-results/
+            socket-quic-nw/build/reports/tests/
+            socket-quic-nw/build/test-results/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 7
@@ -503,7 +506,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: quiche-macos-natives
-          path: socket-quic/libs/quiche/macos-*/lib/
+          path: socket-quic-quiche/libs/quiche/macos-*/lib/
           retention-days: 1
           if-no-files-found: ignore
 
