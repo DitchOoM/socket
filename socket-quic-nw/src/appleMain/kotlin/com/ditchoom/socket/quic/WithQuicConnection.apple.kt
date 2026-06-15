@@ -46,9 +46,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSData
-import platform.Foundation.NSDataBase64DecodingIgnoreUnknownCharacters
 import platform.Foundation.NSNumber
-import platform.Foundation.create
 import platform.Network.nw_connection_group_t
 import platform.Network.nw_connection_t
 import kotlin.concurrent.Volatile
@@ -377,9 +375,9 @@ internal class AppleQuicGroupConnection(
             // message (is_complete=true). Zero-copy: wrap the NSData, flip to read mode.
             nw_helper_quic_receive(flow, 1u, DATAGRAM_FRAME_SIZE_MAX.convert()) { data, _, _, errorCode, _ ->
                 when {
-                    data != null && data.length.toInt() > 0 -> {
+                    data != null && nsDataLengthInt(data) > 0 -> {
                         val buf = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
-                        buf.position(data.length.toInt())
+                        buf.position(nsDataLengthInt(data))
                         buf.resetForRead()
                         if (cont.isActive) cont.resume(DatagramReceiveResult.Received(buf))
                     }
@@ -460,7 +458,7 @@ internal class NWQuicByteStream(
             suspendCancellableCoroutine { cont ->
                 nw_helper_quic_receive(nwConn, 1u, 65536u) { data, isComplete, _, errorCode, _ ->
                     when {
-                        data != null && data.length.toInt() > 0 -> {
+                        data != null && nsDataLengthInt(data) > 0 -> {
                             // Zero-copy: wrap NSData directly. position()+resetForRead()
                             // flips the buffer to read mode (limit=length, position=0) so
                             // ReadResult.Data hands the caller a read-positioned buffer with
@@ -468,7 +466,7 @@ internal class NWQuicByteStream(
                             // (remaining()==0) and the read appears empty (cf.
                             // DriverStreamAdapter.streamRead in QuicheDriver.kt). (Issue #81.)
                             val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
-                            buffer.position(data.length.toInt())
+                            buffer.position(nsDataLengthInt(data))
                             buffer.resetForRead()
                             applyKeepAliveOnce()
                             if (cont.isActive) cont.resume(ReadResult.Data(buffer))
@@ -624,7 +622,6 @@ internal class NWQuicByteStream(
  * Foundation decodes the base64 body straight into DER-backed [NSData] — no
  * intermediate `ByteArray`.
  */
-@OptIn(kotlinx.cinterop.BetaInteropApi::class)
 private fun pemToDerCertificates(pem: String): List<NSData> {
     val begin = "-----BEGIN CERTIFICATE-----"
     val end = "-----END CERTIFICATE-----"
@@ -636,11 +633,7 @@ private fun pemToDerCertificates(pem: String): List<NSData> {
         val e = pem.indexOf(end, b + begin.length)
         if (e < 0) break
         val body = pem.substring(b + begin.length, e)
-        NSData
-            .create(
-                base64EncodedString = body,
-                options = NSDataBase64DecodingIgnoreUnknownCharacters,
-            )?.let { ders += it }
+        decodeBase64ToNSData(body)?.let { ders += it }
         search = e + end.length
     }
     return ders

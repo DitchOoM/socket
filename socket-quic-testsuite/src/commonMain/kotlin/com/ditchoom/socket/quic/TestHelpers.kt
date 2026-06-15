@@ -119,7 +119,7 @@ suspend fun awaitUntil(
  * smoke test — it never existed in the repo. Tracked under TODO.md "macOS
  * harness coverage"; a real startup probe + the -9808 fix are the follow-ups.)
  */
-internal expect fun isAppleKNative(): Boolean
+expect fun isAppleKNative(): Boolean
 
 /**
  * True when the QUIC harness suite must be skipped because it's running on an Apple
@@ -150,4 +150,4 @@ internal expect fun isAppleKNative(): Boolean
  * tvOS/watchOS simulators always skip (out of scope for now). macOS K/N (no
  * simulator, real network stack) returns false and validates the QUIC client.
  */
-internal expect fun shouldSkipQuicHarnessOnSimulator(): Boolean
+expect fun shouldSkipQuicHarnessOnSimulator(): Boolean

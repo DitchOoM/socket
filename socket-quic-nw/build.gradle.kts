@@ -66,6 +66,31 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.coroutines.test)
+            // Cross-backend conformance suites (abstract *TestSuite + harness). The Apple* wrapper
+            // subclasses in appleTest extend them; the suites themselves + the expect/actual harness
+            // live in :socket-quic-testsuite (shared with the quiche backend). The apple harness
+            // actuals also moved there (PlatformActuals).
+            implementation(project(":socket-quic-testsuite"))
+        }
+
+        // Per-target Apple actuals that touch platform-width NSUInteger (see
+        // FoundationInterop.kt). Added to each leaf source set rather than appleMain so they
+        // never compile to commonized metadata — same arrangement as the root :socket module.
+        val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
+        listOf(
+            "macosArm64Main",
+            "macosX64Main",
+            "iosArm64Main",
+            "iosSimulatorArm64Main",
+            "iosX64Main",
+            "tvosArm64Main",
+            "tvosSimulatorArm64Main",
+            "tvosX64Main",
+            "watchosArm64Main",
+            "watchosSimulatorArm64Main",
+            "watchosX64Main",
+        ).forEach { sourceSetName ->
+            findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
         }
     }
 }

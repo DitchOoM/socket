@@ -1470,6 +1470,10 @@ kotlin {
                 // the real public entrypoint via this test-only dependency. No production cycle:
                 // default→quiche-main is the only main-scope edge; quiche-test→default is test-scope.
                 implementation(project(":socket-quic-default"))
+                // Cross-backend conformance suites (abstract *TestSuite + harness). The Jvm*/Linux*
+                // wrapper subclasses live in this module's per-platform test source sets; the shared
+                // suites they extend live here. Also consumed by :socket-quic-nw (apple).
+                implementation(project(":socket-quic-testsuite"))
             }
         }
         val commonJvmMain by creating {
@@ -1507,6 +1511,9 @@ kotlin {
                 // androidInstrumentedTest does NOT dependsOn commonTest, so the test-scope back-edge to
                 // :socket-quic-default (for withQuic*) must be declared here too. See commonTest note.
                 implementation(project(":socket-quic-default"))
+                // Same reason: the Android* wrappers extend the cross-backend suites, which moved to
+                // :socket-quic-testsuite — and this source set doesn't inherit commonTest's deps.
+                implementation(project(":socket-quic-testsuite"))
             }
         }
         androidUnitTest.dependsOn(commonJvmTest)
