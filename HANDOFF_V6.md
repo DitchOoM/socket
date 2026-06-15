@@ -44,14 +44,15 @@ This is the established train (see memory `project_buffer_codec_migration`).
 - KMP spike: per-target default resolution inside the bundle without core→backend coupling.
 - Validate: JVM (JNI + FFM) + linuxX64 + Android. Apple compiles only (validate on Mac later).
 
-### Phase 3 — http3 / webtransport + capability model
-- WT streams → consolidated types; delete `WebTransportSendStream`/`WebTransportReceiveStream` (→ `ByteSink`/`ByteSource` + `Resettable`).
-- Adapter rule on `WebTransportMux`.
-- Type-gated capability model: `WebTransportSupport` sealed (+ native-only `Multiplexed`); per-session `connect(url)` in commonMain.
-- Validate: `:socket-http3` jvmTest (`*WebTransport*`, `*Http3*`).
+### Phase 3 — http3 / webtransport stream consolidation  ✅ DONE (2026-06-15)
+- WT uni streams reshaped onto the byte trichotomy (no fake capabilities): `WebTransportSendStream : ByteSink, Resettable` (+ `close()` FIN), `WebTransportReceiveStream : ByteSource, Resettable` (`reset()` = cancel). Bidi `WebTransportStream` already a `ByteStream` (post-#163) — unchanged. *(Required decoupling buffer's `Resettable` from `ByteStream` — buffer commit `b2c13234`, in `6.0.0-SNAPSHOT`.)*
+- Adapter rule applied to `WebTransportMux` (leaf no-arg `write()` propagates writePolicy; capsule loop reads `INFINITE`).
+- Validated: `:socket-http3` jvmTest (`*WebTransport*` 23, `*Http3*` all), jsNodeTest, ktlintCheck (all green). socket commit `ede73a6`.
+- **Capability model MOVED to Phase 4** (decision 2026-06-15): `WebTransportSupport` references `WebTransportSession`/`WebTransportOptions` (lives in socket-http3, not root `:socket`), its `connect(url)` lifecycle conflicts with the scoped `withHttp3Connection{}` model, and the type-gating only earns its keep alongside the browser actual — so it belongs with `socket-webtransport`.
 
 ### Phase 4 — browser + websocket + generalized capabilities
 - `:socket-webtransport` browser actual (native `WebTransport`); `:socket-websocket` (native framing + browser `WebSocket`).
+- **Type-gated capability model (moved here from Phase 3):** sealed `WebTransportSupport` (+ native-only `Multiplexed`) + per-session `connect(url)`, declared in `socket-webtransport` commonMain with browser + native actuals together (browser's `new WebTransport(url)` *is* connection+session; native delegates to socket-http3 Extended CONNECT).
 - Generalize sealed-provider capabilities (datagrams, migration, 0-RTT); per-platform `NetworkCapabilities` set.
 - Validate: JS/browser (wasmJs/js) compile + Node tests; JVM.
 
