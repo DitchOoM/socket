@@ -58,9 +58,16 @@ class WebTransportStream internal constructor(
     /**
      * Read the next chunk of stream data; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset.
      *
-     * As a [ByteStream] override this carries the interface's default [timeout]; the no-arg form is bounded
-     * (not unbounded). WebTransport streams are often idle for long stretches, so pass [Duration.INFINITE]
-     * (or your own bound) explicitly when you want to wait longer than the [ByteStream] default.
+     * As a [ByteStream] override this carries the interface's default [timeout] — the no-arg form is bounded,
+     * not unbounded (Kotlin won't let an override change an inherited default, so it can't be widened here).
+     * That bound is an *application* deadline, not a liveness timer: the connection's QUIC idle-timeout +
+     * keepalive are the liveness authority, and a timeout here neither closes the stream nor drops the
+     * connection — it just unblocks the caller, who may read again.
+     *
+     * WebTransport streams are persistent and often idle for long stretches, so the natural call is
+     * `read(Duration.INFINITE)` — let the transport's idle-timeout decide liveness rather than imposing an
+     * arbitrary per-read cap (which would also surface a spurious timeout during a slow path migration).
+     * Pass [Duration.INFINITE] (or your own bound) explicitly when you want to wait past the [ByteStream] default.
      */
     override suspend fun read(timeout: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
 
