@@ -26,7 +26,7 @@ ktlint**; the actual `compileKotlinMacos*` / `*Test` have never run.
 ## Phase 1 — root `:socket` apple compile
 
 ```bash
-./gradlew :socket:compileKotlinMacosArm64 :socket:compileKotlinIosSimulatorArm64
+./gradlew :compileKotlinMacosArm64 :compileKotlinIosSimulatorArm64
 ```
 Expect: green. This is the byte-trichotomy / `TransportConfig` core compiled for
 Apple for the first time since the redesign began.
