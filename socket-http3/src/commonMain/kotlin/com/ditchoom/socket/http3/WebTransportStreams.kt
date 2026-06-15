@@ -1,9 +1,12 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ByteSink
+import com.ditchoom.buffer.flow.ByteSource
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.HalfCloseableByteStream
@@ -122,58 +125,95 @@ class WebTransportStream internal constructor(
 
 /**
  * The send half of a unidirectional WebTransport stream (draft-ietf-webtrans-http3 §4.1) we opened —
- * a QUIC unidirectional stream prefixed with the `0x54` type + Session ID. Write-only; obtained from
+ * a QUIC unidirectional stream prefixed with the `0x54` type + Session ID. Obtained from
  * [WebTransportSession.openUniStream].
+ *
+ * Typed as a [ByteSink] + [Resettable]: the honest shape for a send-only stream (no fake [read]). The
+ * no-arg [write] consults [writePolicy]; [reset] aborts with a WebTransport application error code and
+ * [close] finishes the stream cleanly (FIN).
  */
 class WebTransportSendStream internal constructor(
     val sessionId: Long,
     private val stream: QuicByteStream,
-    private val writeTimeout: Duration,
-) {
+) : ByteSink,
+    Resettable {
+    /** The underlying QUIC stream id (RFC 9000 §2.1). */
     val streamId: Long get() = stream.streamId.id
 
+    override val isOpen: Boolean get() = stream.isOpen
+
+    /** Writes are bounded by an application deadline (the connection's idle-timeout remains the liveness authority). */
+    override val writePolicy: WritePolicy get() = WritePolicy.Bounded(15.seconds)
+
     /**
-     * Write [buffer]'s remaining bytes. Throws [WebTransportStreamException] if the peer sent
-     * STOP_SENDING (its WebTransport code decoded from the HTTP/3 error-code space, draft §4.3).
+     * Write [buffer]'s remaining bytes (zero-copy; the caller retains ownership). Throws
+     * [WebTransportStreamException] if the peer sent STOP_SENDING (its WebTransport code decoded from
+     * the HTTP/3 error-code space, draft §4.3). The no-arg [write] uses [writePolicy].
      */
-    suspend fun write(
+    override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration = writeTimeout,
+        deadline: Duration,
     ): BytesWritten =
         try {
-            stream.write(buffer, timeout)
+            stream.write(buffer, deadline)
         } catch (e: QuicStreamException) {
             throw e.toWebTransport()
         }
 
-    /** Finish the stream cleanly (FIN). */
-    suspend fun close() = stream.close()
+    /** Gather-write [buffers] in one operation (zero-copy; the caller retains ownership). */
+    override suspend fun writeGathered(
+        buffers: List<ReadBuffer>,
+        deadline: Duration,
+    ): BytesWritten =
+        try {
+            stream.writeGathered(buffers, deadline)
+        } catch (e: QuicStreamException) {
+            throw e.toWebTransport()
+        }
 
     /** Abort the stream with the WebTransport application [errorCode] (RESET_STREAM), mapped per draft §4.3. */
-    suspend fun reset(errorCode: Long = 0) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
+    override suspend fun reset(errorCode: Long) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
+
+    /** Finish the stream cleanly (FIN). */
+    suspend fun close() = stream.close()
 }
 
 /**
  * The receive half of a peer-opened unidirectional WebTransport stream
- * (draft-ietf-webtrans-http3 §4.1). Read-only; obtained from [WebTransportSession.incomingUniStreams].
- * The `0x54` type + Session ID header was stripped by the router; [read] returns any bytes buffered
+ * (draft-ietf-webtrans-http3 §4.1). Obtained from [WebTransportSession.incomingUniStreams]. The
+ * `0x54` type + Session ID header was stripped by the router; [read] returns any bytes buffered
  * alongside the header before reading the underlying QUIC stream directly.
+ *
+ * Typed as a [ByteSource] + [Resettable]: the honest shape for a receive-only stream (no fake
+ * [write]). Like the bidi stream it delegates liveness to the QUIC idle-timeout — the no-arg [read]
+ * consults [ReadPolicy.UntilClosed]. [reset] is the cancel: STOP_SENDING with a WebTransport code.
  */
 class WebTransportReceiveStream internal constructor(
     val sessionId: Long,
     private val stream: QuicByteStream,
     private var pending: ReadBuffer?,
-    private val readTimeout: Duration,
-) {
+) : ByteSource,
+    Resettable {
+    /** The underlying QUIC stream id (RFC 9000 §2.1). */
     val streamId: Long get() = stream.streamId.id
 
-    suspend fun read(timeout: Duration = readTimeout): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
+    override val isOpen: Boolean get() = stream.isOpen
+
+    /** Persistent like the bidi stream: liveness is the QUIC idle-timeout, so reads default to [ReadPolicy.UntilClosed]. */
+    override val readPolicy: ReadPolicy get() = ReadPolicy.UntilClosed
 
     /**
-     * Ask the peer to stop sending (STOP_SENDING with the WebTransport application [errorCode], mapped
-     * into the HTTP/3 error-code space per draft §4.3) and release any buffered prefix.
+     * Read the next chunk; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset. The no-arg
+     * [read] uses [readPolicy] ([ReadPolicy.UntilClosed]); pass an explicit bound to override.
      */
-    suspend fun cancel(errorCode: Long = 0) {
+    override suspend fun read(deadline: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, deadline)
+
+    /**
+     * Cancel the stream: ask the peer to stop sending (STOP_SENDING with the WebTransport application
+     * [errorCode], mapped into the HTTP/3 error-code space per draft §4.3) and release any buffered
+     * prefix. The [Resettable] contract — cancel is the reset of a receive-only stream.
+     */
+    override suspend fun reset(errorCode: Long) {
         pending?.freeIfNeeded()
         pending = null
         stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))

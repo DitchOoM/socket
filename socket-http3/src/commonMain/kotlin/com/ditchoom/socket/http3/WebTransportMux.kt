@@ -94,7 +94,7 @@ internal class WebTransportMux(
     suspend fun openUni(sessionId: Long): WebTransportSendStream {
         val stream = scope.openUniStream()
         writeStreamHeader(stream, WebTransportWire.WT_UNI_STREAM_TYPE, sessionId)
-        return WebTransportSendStream(sessionId, stream, config.writePolicy.toDeadline())
+        return WebTransportSendStream(sessionId, stream)
     }
 
     private suspend fun writeStreamHeader(
@@ -107,7 +107,9 @@ internal class WebTransportMux(
             VarIntCodec.encode(buffer, prefix, EncodeContext.Empty)
             VarIntCodec.encode(buffer, sessionId, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, config.writePolicy.toDeadline())
+            // Adapter rule: no-arg write() consults the leaf stream's writePolicy rather than clobbering
+            // it with config — the stream owns the deadline policy for its direction.
+            stream.write(buffer)
         } finally {
             buffer.freeIfNeeded()
         }
@@ -160,7 +162,7 @@ internal class WebTransportMux(
         }
         val pending = drainBuffered(processor)
         processor.release()
-        val wt = WebTransportReceiveStream(sessionId, stream, pending, Duration.INFINITE)
+        val wt = WebTransportReceiveStream(sessionId, stream, pending)
         session.deliverIncomingUni(wt)
     }
 
@@ -400,7 +402,8 @@ internal class WebTransportMux(
         // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
         val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            stream.write(buffer, config.writePolicy.toDeadline())
+            // Adapter rule: no-arg write() consults the CONNECT stream's writePolicy, not config.
+            stream.write(buffer)
         } finally {
             buffer.freeIfNeeded()
         }
