@@ -121,6 +121,12 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":socket-quic"))
+            // v6 Phase 2b.5: the withQuicConnection/withQuicServer entrypoints that WithHttp3* call
+            // live in :socket-quic-default (which selects the per-platform engine: quiche on
+            // jvm/android/linux, Network.framework on Apple, Unsupported on js/wasm). It transitively
+            // contributes the quiche backend (+ root :socket BoringSSL) on jvm/linux. implementation,
+            // not api: withQuic* are called internally; no :socket-quic-default type is in http3's API.
+            implementation(project(":socket-quic-default"))
             api(libs.buffer)
             api(libs.buffer.flow)
             api(libs.buffer.codec)
