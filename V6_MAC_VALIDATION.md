@@ -68,17 +68,29 @@ Optional booted-simulator coverage (needs a booted device UDID):
 ./gradlew :socket-quic-nw:iosSimulatorArm64Test -PiosSimulatorDevice=<udid>
 ```
 
-## Phase 2b.4/2b.5 — `:socket-quic-default` + http3 (only once those phases land)
+## Phase 2b.4 — `:socket-quic-default` (LANDED, commit 046b866)
 
-`:socket-quic-default` wires `expect val defaultQuicEngine` to `:socket-quic-nw`
-on Apple; `:socket-http3` un-darkens. Until 2b.5 lands, `:socket-http3` does NOT
-compile (its `withQuic*` callers are dark) — do not attempt http3 apple compile
-before then.
+The bundle's `expect val defaultQuicEngine` has an Apple actual = `NetworkEngine`
+(`src/appleMain/.../DefaultQuicEngine.apple.kt`), never compiled off-mac. Verify the
+apple actual resolves the public SPI `NetworkEngine` cross-module from `:socket-quic-nw`:
 
 ```bash
-./gradlew :socket-quic-default:compileKotlinMacosArm64   # apple→-nw actual resolves
-./gradlew :socket-http3:macosArm64Test                   # after 2b.5
+./gradlew :socket-quic-default:compileKotlinMacosArm64
 ```
+Watch: the `expect`/`actual` for `defaultQuicEngine` must be satisfied on every declared
+apple target (appleMain actual covers all). `NetworkEngine` is now `public` (was internal).
+
+## Phase 2b.5 — `:socket-http3` un-darked (LANDED, commit 2929de7)
+
+http3 now `implementation(:socket-quic-default)`; on Apple that routes withQuic* →
+NetworkEngine. Compile + (cert-gated) test:
+
+```bash
+./gradlew :socket-http3:compileKotlinMacosArm64
+./gradlew :socket-http3:macosArm64Test
+```
+On Linux this is 255 tests / 0 skipped both jvm + linuxX64; confirm the apple build links
+(http3's macos binaries don't need libquiche — NetworkEngine is system NW, no static lib).
 
 ## Minor / cosmetic
 - `WithQuicConnection.apple.kt` `connectQuicGroup` KDoc still links
