@@ -33,6 +33,8 @@ libs/
 # Android JNI shims (built by buildAndroidNativeLibs task)
 socket-quic/src/androidMain/jniLibs/*/*.so
 socket-quic/src/androidMain/jniLibs/*/.built-*
+socket-quic-quiche/src/androidMain/jniLibs/*/*.so
+socket-quic-quiche/src/androidMain/jniLibs/*/.built-*
 
 # Docusaurus
 docs/node_modules/
@@ -56,3 +58,14 @@ socket-quic/src/jvmTest/resources/certs/localhost.crt
 socket-quic/src/jvmTest/resources/certs/localhost.key
 socket-quic/src/androidInstrumentedTest/resources/certs/localhost.crt
 socket-quic/src/androidInstrumentedTest/resources/certs/localhost.key
+
+# Same generated test identities, now produced by the :socket-quic-quiche module
+# (quiche test-cert pipeline) and the :socket-quic `generateTestP12` task (Apple).
+socket-quic-quiche/testcerts/cert.p12
+socket-quic-quiche/testcerts/localhost.p12
+socket-quic-quiche/testcerts/localhost.crt
+socket-quic-quiche/testcerts/localhost.key
+socket-quic-quiche/src/jvmTest/resources/certs/localhost.crt
+socket-quic-quiche/src/jvmTest/resources/certs/localhost.key
+socket-quic-quiche/src/androidInstrumentedTest/resources/certs/localhost.crt
+socket-quic-quiche/src/androidInstrumentedTest/resources/certs/localhost.key

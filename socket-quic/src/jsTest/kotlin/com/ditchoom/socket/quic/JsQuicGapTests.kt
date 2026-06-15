@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.TransportConfig
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -9,22 +10,24 @@ import kotlin.time.Duration.Companion.seconds
  * Diagnostic / contract tests documenting the **known JS (Node) QUIC gap** (issue #74, Task 2).
  *
  * QUIC is not implemented on JS: a koffi-backed Node binding was explored and deferred on
- * zero-copy grounds (see `WithQuicConnection.js.kt` + branch `feature/socket-quic-js-wip`). The
- * `jsMain` actuals are documented placeholders that throw [UnsupportedOperationException].
- *
- * Task 2's first step was meant to be diagnostic — load the Node quiche binding and handshake.
- * That step immediately surfaces the real state: there is no binding, only the documented
- * placeholders. So per the issue's Risk flag, this scopes down to *documenting the gap with a
- * test that actually runs* rather than forcing a non-existent client/server green.
+ * zero-copy grounds. The JS platform default engine is [UnsupportedQuicEngine], whose every entry
+ * throws [UnsupportedOperationException].
  *
  * Crucially these are **not silent skips** — the failure mode #67/#72 fixed on Android, where a
  * "green" suite actually executed zero QUIC cases. They run on `jsNode` in CI and positively
- * assert the contract: the entry points throw [UnsupportedOperationException] (a cleanly catchable
- * signal, deliberately not [Error]/`NotImplementedError`, so callers using `catch (Exception)` get
- * a clean signal). If/when JS QUIC lands, these tests will fail — forcing real loopback / migration
- * coverage to replace this placeholder, exactly as intended.
+ * assert the contract: the engine throws [UnsupportedOperationException] (a cleanly catchable
+ * signal, deliberately not [Error]/`NotImplementedError`).
+ *
+ * v6 Phase 2b.2 note: the public `withQuicConnection` / `withQuicServer` wrappers moved out of
+ * `:socket-quic` with the engine split and return via `:socket-quic-default` (Phase 2b.4). This
+ * test now exercises the unsupported engine directly until that bundle exists.
  */
 class JsQuicGapTests {
+    private val engine =
+        UnsupportedQuicEngine(
+            connectReason = "QUIC is not yet implemented on JS. Track feature/socket-quic-js-wip for progress.",
+            bindReason = "QUIC server is not supported on JS.",
+        )
     private val quicOptions =
         QuicOptions(
             alpnProtocols = listOf("test"),
@@ -33,13 +36,11 @@ class JsQuicGapTests {
         )
 
     @Test
-    fun withQuicConnection_is_an_unsupported_placeholder_on_js() =
+    fun quicConnect_is_an_unsupported_placeholder_on_js() =
         runQuicTest {
             val error =
                 assertFailsWith<UnsupportedOperationException> {
-                    withQuicConnection("127.0.0.1", 4433, quicOptions) {
-                        error("unreachable: JS QUIC client must not establish a connection")
-                    }
+                    engine.connect("127.0.0.1", 4433, quicOptions, TransportConfig(), 10.seconds)
                 }
             assertTrue(
                 error.message?.contains("not yet implemented", ignoreCase = true) == true,
@@ -48,17 +49,17 @@ class JsQuicGapTests {
         }
 
     @Test
-    fun withQuicServer_is_an_unsupported_placeholder_on_js() =
+    fun quicBind_is_an_unsupported_placeholder_on_js() =
         runQuicTest {
             val error =
                 assertFailsWith<UnsupportedOperationException> {
-                    withQuicServer(
+                    engine.bind(
                         port = 0,
+                        host = null,
                         tlsConfig = QuicTlsConfig(certChainPath = "unused", privKeyPath = "unused"),
                         quicOptions = quicOptions,
-                    ) {
-                        error("unreachable: JS QUIC server must not bind")
-                    }
+                        timeout = 10.seconds,
+                    )
                 }
             assertTrue(
                 error.message?.contains("not supported on JS", ignoreCase = true) == true,

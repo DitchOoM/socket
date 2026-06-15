@@ -928,7 +928,7 @@ val harnessUp by tasks.registering {
     // current before `docker compose up` reads it. Subproject task is wrapped
     // in `tasks.named` so the dependency edge is resolved lazily — keeps the
     // root build script orderable against the subproject's afterEvaluate.
-    dependsOn(project(":socket-quic").tasks.named("quicEchoJar"))
+    dependsOn(project(":socket-quic-quiche").tasks.named("quicEchoJar"))
     doLast {
         val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait"))
         if (rc != 0) {
@@ -965,7 +965,7 @@ listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->
         dependsOn(harnessUp)
         finalizedBy(harnessDown)
     }
-    project(":socket-quic").tasks.matching { it.name == name }.configureEach {
+    project(":socket-quic-quiche").tasks.matching { it.name == name }.configureEach {
         dependsOn(harnessUp)
         finalizedBy(harnessDown)
     }

@@ -74,7 +74,7 @@ kotlin {
         // base :socket: cinterop's staticLibraries). Without it the binary hits
         // `undefined symbol: quiche_config_new` at runtime.
         linuxX64 {
-            val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-x64/lib")
+            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-x64/lib")
             if (quicheLibDir.resolve("libquiche.a").exists()) {
                 binaries.all {
                     linkerOpts(
@@ -95,7 +95,7 @@ kotlin {
             }
         }
         linuxArm64 {
-            val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-arm64/lib")
+            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-arm64/lib")
             if (quicheLibDir.resolve("libquiche.a").exists()) {
                 binaries.all {
                     linkerOpts(
@@ -160,7 +160,7 @@ android {
 // depend on its staging task. (Scripted unit tests don't need this — only the gated interop GET,
 // which otherwise skips with "no native lib could be loaded".)
 afterEvaluate {
-    val quicProject = project(":socket-quic")
+    val quicProject = project(":socket-quic-quiche")
     val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
     tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
         dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))

@@ -16,15 +16,6 @@ sealed interface CongestionControl {
     data object Bbr2 : CongestionControl
 }
 
-/** Maps sealed [CongestionControl] to quiche's C enum value. */
-internal val CongestionControl.quicheValue: Int
-    get() =
-        when (this) {
-            is CongestionControl.Reno -> 0
-            is CongestionControl.Cubic -> 1
-            is CongestionControl.Bbr2 -> 4
-        }
-
 /** Send pacing configuration. Exhaustive — `when` requires handling all cases. */
 sealed interface Pacing {
     /** Pacing disabled — packets sent as fast as the congestion window allows. */

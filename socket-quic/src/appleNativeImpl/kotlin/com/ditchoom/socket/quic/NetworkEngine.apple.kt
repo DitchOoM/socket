@@ -35,6 +35,3 @@ internal object NetworkEngine : QuicEngine {
         timeout: Duration,
     ): QuicServer = buildAppleQuicServer(port, host, tlsConfig, quicOptions, timeout)
 }
-
-/** Apple default QUIC engine: Network.framework. */
-internal actual val platformDefaultQuicEngine: QuicEngine = NetworkEngine

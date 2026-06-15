@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.TransportConfig
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -9,16 +10,23 @@ import kotlin.time.Duration.Companion.seconds
  * Diagnostic / contract tests documenting the **known wasmJs QUIC gap** (issue #87, suite #6).
  *
  * `wasmJsTest` previously had **zero** tests — a silently-uncovered target, exactly the failure mode
- * #67/#72 fixed on Android where a "green" suite executed zero cases. QUIC is unsupported on wasmJs for
- * the same reason as JS plus more: the browser sandbox has no raw UDP access. The `wasmJsMain` actuals
- * are documented placeholders that throw [UnsupportedOperationException].
+ * #67/#72 fixed on Android. QUIC is unsupported on wasmJs (no raw UDP in the browser sandbox); the
+ * wasmJs platform default engine is [UnsupportedQuicEngine], whose every entry throws
+ * [UnsupportedOperationException].
  *
- * These mirror [com.ditchoom.socket.quic.JsQuicGapTests] (the JS Node gap tests): they **run** on wasmJs
- * (not a silent skip) and positively assert the contract — the public entry points throw a cleanly
- * catchable [UnsupportedOperationException] (deliberately not `Error`/`NotImplementedError`). If/when
- * wasmJs QUIC ever lands, these tests fail, forcing real coverage to replace this placeholder.
+ * These **run** on wasmJs (not a silent skip) and positively assert the contract — the engine throws
+ * a cleanly catchable [UnsupportedOperationException] (deliberately not `Error`/`NotImplementedError`).
+ *
+ * v6 Phase 2b.2 note: the public `withQuicConnection` / `withQuicServer` wrappers moved out of
+ * `:socket-quic` with the engine split and return via `:socket-quic-default` (Phase 2b.4). This
+ * test now exercises the unsupported engine directly until that bundle exists.
  */
 class WasmJsQuicGapTests {
+    private val engine =
+        UnsupportedQuicEngine(
+            connectReason = "QUIC is not supported in wasmJs environments (no raw UDP access)",
+            bindReason = "QUIC server is not supported in WASM environments",
+        )
     private val quicOptions =
         QuicOptions(
             alpnProtocols = listOf("test"),
@@ -27,13 +35,11 @@ class WasmJsQuicGapTests {
         )
 
     @Test
-    fun withQuicConnection_is_an_unsupported_placeholder_on_wasmJs() =
+    fun quicConnect_is_an_unsupported_placeholder_on_wasmJs() =
         runQuicTest {
             val error =
                 assertFailsWith<UnsupportedOperationException> {
-                    withQuicConnection("127.0.0.1", 4433, quicOptions) {
-                        error("unreachable: wasmJs QUIC client must not establish a connection")
-                    }
+                    engine.connect("127.0.0.1", 4433, quicOptions, TransportConfig(), 10.seconds)
                 }
             assertTrue(
                 error.message?.contains("not supported", ignoreCase = true) == true,
@@ -42,17 +48,17 @@ class WasmJsQuicGapTests {
         }
 
     @Test
-    fun withQuicServer_is_an_unsupported_placeholder_on_wasmJs() =
+    fun quicBind_is_an_unsupported_placeholder_on_wasmJs() =
         runQuicTest {
             val error =
                 assertFailsWith<UnsupportedOperationException> {
-                    withQuicServer(
+                    engine.bind(
                         port = 0,
+                        host = null,
                         tlsConfig = QuicTlsConfig(certChainPath = "unused", privKeyPath = "unused"),
                         quicOptions = quicOptions,
-                    ) {
-                        error("unreachable: wasmJs QUIC server must not bind")
-                    }
+                        timeout = 10.seconds,
+                    )
                 }
             assertTrue(
                 error.message?.contains("not supported", ignoreCase = true) == true,

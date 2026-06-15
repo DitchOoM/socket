@@ -42,7 +42,7 @@ fun BufferFactory.Companion.network(): BufferFactory = BufferFactory.determinist
  * Cost is one throwaway 1-byte probe allocation per connection setup — negligible, and the only way
  * to ask an opaque factory whether it backs its buffers with native memory.
  */
-internal fun BufferFactory.requireNativeMemory(): BufferFactory {
+fun BufferFactory.requireNativeMemory(): BufferFactory {
     val probe = allocate(1)
     val isNative = probe.nativeMemoryAccess != null
     probe.freeIfNeeded()
@@ -61,5 +61,5 @@ internal fun BufferFactory.requireNativeMemory(): BufferFactory {
  * [network] — the native-memory factory QUIC needs. An explicit override is honored as-is but still
  * checked by [requireNativeMemory], so a heap factory fails with a clear message instead of a deep NPE.
  */
-internal fun TransportConfig.quicBufferFactory(): BufferFactory =
+fun TransportConfig.quicBufferFactory(): BufferFactory =
     (if (bufferFactory === BufferFactory.Default) BufferFactory.network() else bufferFactory).requireNativeMemory()
