@@ -172,7 +172,11 @@ class AppleQuicPassiveMigrationTests : QuicPassiveMigrationTestSuite() {
         private fun newUpstream(): Int = proxyNewUpstream(serverPort).also { proxySetRecvTimeout(it, RECV_TIMEOUT_MS) }
 
         private companion object {
-            private const val RECV_TIMEOUT_MS = 150
+            // Wakes the blocking recv loops periodically to re-check `running` / pick up a
+            // rebind's swapped fd — shutdown + rebind responsiveness only. recvfrom returns
+            // immediately when a datagram is present, so this is NOT a forwarding-latency knob;
+            // scaled so a slow runner (QUIC_TEST_TIME_SCALE>1) keeps the cadence proportional.
+            private val RECV_TIMEOUT_MS = (150 * testTimeScale()).toInt()
         }
     }
 }

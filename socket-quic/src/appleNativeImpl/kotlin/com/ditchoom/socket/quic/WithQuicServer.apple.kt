@@ -23,15 +23,17 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_listener_set_state_hand
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_listener_start
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSData
 import platform.Foundation.create
@@ -122,26 +124,14 @@ actual suspend fun <R> withQuicServer(
         // Server-initiated bidi stream ids are 0x01-based; peer-accepted ids here are
         // synthetic anyway (Network.framework hides the real QUIC stream id).
         val acceptedStreamId = AtomicLong(1L)
-        val ready = CompletableDeferred<Boolean>()
+        // Durable state bridge (shared with the client path): resolves the handshake await and
+        // — once connections() attaches the live connection — drives a post-handshake group
+        // failure/cancellation into it, unblocking acceptStream()/streams(). Replaces the old
+        // inline handler that only signalled readiness and closed the stream channel.
+        val bridge = AppleQuicGroupStateBridge(host ?: "::", port)
 
         nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
-            when (state) {
-                2 -> ready.complete(true) // ready
-                3 -> { // failed
-                    ready.complete(false)
-                    incomingStreams.close(
-                        QuicCloseException(
-                            QuicError.InternalError("group failed: code=$errorCode ${errorDesc ?: ""}"),
-                            "QUIC group failed",
-                        ),
-                    )
-                }
-                4 -> { // cancelled
-                    ready.complete(false)
-                    incomingStreams.close()
-                }
-                else -> {} // invalid=0, waiting=1 — in progress
-            }
+            bridge.onState(state, errorCode, errorDesc)
         }
         // Peer-initiated streams → incomingStreams (drained by acceptStream()/streams()),
         // each routed through filterPhantomAndEnqueue to drop Network.framework's hidden
@@ -153,7 +143,7 @@ actual suspend fun <R> withQuicServer(
             }
         }
         nw_helper_quic_group_start(group)
-        acceptedGroups.trySend(AcceptedGroup(group, incomingStreams, ready))
+        acceptedGroups.trySend(AcceptedGroup(group, incomingStreams, bridge))
     }
 
     // Await the listener reaching ready (so the OS-assigned port is known), then build
@@ -290,14 +280,15 @@ private class PrefixedByteStream(
 /**
  * An incoming QUIC tunnel handed off from the listener's new-connection-group handler.
  *
- * [ready] resolves true once the group's handshake completes, false on failure /
- * cancellation. [incomingStreams] is the per-group channel that [filterPhantomAndEnqueue]
- * feeds with real (non-phantom) peer-initiated streams.
+ * [bridge].established resolves once the group's handshake completes (or throws on
+ * failure/cancellation), and once connections() attaches the live connection the bridge also
+ * drives post-handshake group failures into it. [incomingStreams] is the per-group channel that
+ * [filterPhantomAndEnqueue] feeds with real (non-phantom) peer-initiated streams.
  */
 private class AcceptedGroup(
     val group: nw_connection_group_t,
     val incomingStreams: Channel<QuicByteStream>,
-    val ready: CompletableDeferred<Boolean>,
+    val bridge: AppleQuicGroupStateBridge,
 )
 
 /**
@@ -330,7 +321,17 @@ private class AppleQuicServer(
                     // Wait for the handshake; skip groups that failed/cancelled before ready.
                     val isReady =
                         try {
-                            accepted.ready.await()
+                            accepted.bridge.established.await()
+                            true
+                        } catch (e: CancellationException) {
+                            // connections() is being torn down before this group finished its
+                            // handshake — cancel the group here so it isn't leaked (the cleanup
+                            // below lives inside the cancelled launch, so it must be NonCancellable).
+                            withContext(NonCancellable) {
+                                accepted.incomingStreams.close()
+                                nw_helper_quic_group_cancel(accepted.group)
+                            }
+                            throw e
                         } catch (_: Throwable) {
                             false
                         }
@@ -359,6 +360,9 @@ private class AppleQuicServer(
                             bufferFactory,
                             keepAliveSeconds = keepAliveSeconds,
                         )
+                    // Route post-handshake group failures into this connection (replays one that
+                    // raced in between ready and here) — unblocks the handler's acceptStream().
+                    accepted.bridge.attach(conn)
                     try {
                         conn.handler()
                     } finally {

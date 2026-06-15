@@ -245,7 +245,11 @@ class AppleQuicImpairmentTests : QuicImpairmentTestSuite() {
         }
 
         private companion object {
-            private const val RECV_TIMEOUT_MS = 150
+            // Wakes the blocking recv loops periodically to re-check `running` — shutdown
+            // responsiveness only. recvfrom returns immediately when a datagram is present, so
+            // this is NOT a forwarding-latency knob; it's scaled so a slow runner
+            // (QUIC_TEST_TIME_SCALE>1) keeps the re-check cadence proportional to everything else.
+            private val RECV_TIMEOUT_MS = (150 * testTimeScale()).toInt()
         }
     }
 }
