@@ -65,18 +65,6 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Requires iOS 15+ / macOS 12+.
  */
-actual suspend fun <R> withQuicConnection(
-    hostname: String,
-    port: Int,
-    quicOptions: QuicOptions,
-    connectionOptions: TransportConfig,
-    timeout: Duration,
-    block: suspend QuicScope.() -> R,
-): R =
-    withTimeout(timeout) {
-        connectQuicGroup(hostname, port, quicOptions, connectionOptions, timeout, block)
-    }
-
 /**
  * Process-wide lock serializing QUIC connection-group *establishment* (issue #112).
  *
@@ -102,16 +90,16 @@ private val appleQuicEstablishMutex = Mutex()
  *     await its `ready` so [nw_helper_quic_max_datagram_size] reflects the negotiated
  *     path MTU before the user's block runs. Otherwise no datagram flow is extracted and
  *     the connection reports datagrams as [MaxDatagramSize.Unavailable].
- *  3. Hand a [AppleQuicGroupConnection] to [block]; streams are extracted lazily.
+ *  3. Return an established [AppleQuicGroupConnection]; streams are extracted lazily. The
+ *     [withQuicConnection] wrapper owns the block + close lifecycle.
  */
-private suspend fun <R> connectQuicGroup(
+internal suspend fun connectQuicGroup(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
-    block: suspend QuicScope.() -> R,
-): R {
+): AppleQuicGroupConnection {
     // Build ALPN array — pass as List which K/N bridges to NSArray.
     val alpnList: List<Any?> = quicOptions.alpnProtocols
 
@@ -264,11 +252,7 @@ private suspend fun <R> connectQuicGroup(
             connectionOptions.quicBufferFactory(),
             keepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
         )
-    return try {
-        quicConn.block()
-    } finally {
-        quicConn.close()
-    }
+    return quicConn
 }
 
 /**

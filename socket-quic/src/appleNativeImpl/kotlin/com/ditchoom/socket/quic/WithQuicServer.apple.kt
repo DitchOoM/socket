@@ -64,14 +64,18 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Requires iOS 15+ / macOS 12+ (the listener group handler).
  */
-actual suspend fun <R> withQuicServer(
+/**
+ * Build + bind an Apple Network.framework QUIC listener, returning an established [AppleQuicServer]
+ * ready to accept. The internal [withTimeout] bounds the listener handshake (so the OS-assigned port
+ * is known). Shared by [NetworkEngine.bind]; the [withQuicServer] wrapper runs the block + close.
+ */
+internal suspend fun buildAppleQuicServer(
     port: Int,
     host: String?,
     tlsConfig: QuicTlsConfig,
     quicOptions: QuicOptions,
     timeout: Duration,
-    block: suspend QuicServer.() -> R,
-): R {
+): QuicServer {
     val p12Path =
         tlsConfig.pkcs12Path
             ?: throw IllegalArgumentException(
@@ -196,11 +200,7 @@ actual suspend fun <R> withQuicServer(
             keepAliveSeconds = keepAliveSeconds,
             scope = serverScope,
         )
-    return try {
-        server.block()
-    } finally {
-        server.close()
-    }
+    return server
 }
 
 /**

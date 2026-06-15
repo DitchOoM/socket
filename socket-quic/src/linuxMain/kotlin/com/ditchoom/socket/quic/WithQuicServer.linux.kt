@@ -53,19 +53,24 @@ import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
-actual suspend fun <R> withQuicServer(
+/**
+ * Build + bind a Linux quiche-backed [LinuxQuicServer] over io_uring, returning it ready to accept.
+ * The returned server owns its teardown via [LinuxQuicServer.close]; the `onClose` lambda cancels
+ * the per-call parent scope (previously the withQuicServer wrapper's job). Shared by
+ * [QuicheEngine.bind]; the [withQuicServer] wrapper runs the block and calls `close()`.
+ */
+internal fun buildLinuxQuicServer(
     port: Int,
     @Suppress("UNUSED_PARAMETER") host: String?,
     tlsConfig: QuicTlsConfig,
     quicOptions: QuicOptions,
-    @Suppress("UNUSED_PARAMETER") timeout: Duration,
-    block: suspend QuicServer.() -> R,
-): R {
+): QuicServer {
     // Linux bind path defaults to INADDR_ANY; `host` is accepted for API parity
     // with the JVM/Android impl but not yet wired through to inet_pton / bind.
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
+    var bound = false
     try {
         val bufferFactory = BufferFactory.network()
 
@@ -150,14 +155,16 @@ actual suspend fun <R> withQuicServer(
                 bufferFactory = bufferFactory,
                 scope = parentScope,
                 keepAliveInterval = quicOptions.keepAliveInterval,
+                // server.close() frees config + drivers; the per-call parent scope is the server's
+                // to cancel last, so the withQuicServer wrapper stays a plain block + close().
+                onClose = { parentScope.cancel() },
             )
-        try {
-            return server.block()
-        } finally {
-            server.close()
-        }
+        bound = true
+        return server
     } finally {
-        parentScope.cancel()
+        // On success the server owns parentScope teardown via onClose; release here only on
+        // a bind failure before the server took ownership.
+        if (!bound) parentScope.cancel()
     }
 }
 
@@ -177,6 +184,9 @@ private class LinuxQuicServer(
     private val bufferFactory: BufferFactory,
     private val scope: CoroutineScope,
     private val keepAliveInterval: Duration? = null,
+    // Per-call lifecycle teardown wired by buildLinuxQuicServer (cancel the parent scope). Invoked
+    // last by close(); null for any direct-construction test that owns the scope externally.
+    private val onClose: (() -> Unit)? = null,
 ) : QuicServer {
     override val port: Int get() = boundPort
 
@@ -327,6 +337,9 @@ private class LinuxQuicServer(
         scidRegistrationCh.close()
         serverChannel.freeBuffers()
         localAddrBuf.freeNativeMemory()
+        // Cancel the per-call parent scope last (buildLinuxQuicServer wires this); previously the
+        // withQuicServer wrapper did it after server.close(). receiveJob/handlers are its children.
+        onClose?.invoke()
     }
 
     /**

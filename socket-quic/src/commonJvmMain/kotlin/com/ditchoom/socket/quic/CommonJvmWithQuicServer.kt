@@ -34,34 +34,32 @@ import kotlin.time.Duration
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /**
- * Shared JVM/Android [withQuicServer] implementation backed by quiche +
- * [DatagramChannel]. Owns the per-call scope + native resources for the
- * duration of [block]; closes the server (UDP socket, drivers, handler
- * coroutines) before returning.
+ * Build + bind a JVM/Android quiche-backed [JvmQuicServer], returning it ready to accept. The
+ * returned server owns its full teardown via [JvmQuicServer.close] (UDP socket, drivers, handler
+ * coroutines, config, and — via the `onClose` lambda wired below — the per-call parent scope). The
+ * caller (the [withQuicServer] wrapper) only runs the block and calls `close()`.
  *
- * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` actuals
- * delegate to it.
+ * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` reach it via [QuicheEngine.bind].
  */
-internal suspend fun <R> commonJvmWithQuicServer(
+internal fun buildJvmQuicServer(
     port: Int,
     host: String?,
     tlsConfig: QuicTlsConfig,
     quicOptions: QuicOptions,
-    @Suppress("UNUSED_PARAMETER") timeout: Duration,
-    block: suspend QuicServer.() -> R,
-): R {
+): JvmQuicServer {
     val api: QuicheApi = loadQuicheApi()
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
+    var bound = false
+
+    // QUIC I/O needs native-memory buffers (quiche FFI); see BufferFactory.network(). This is not a
+    // caller-configurable knob: the quiche JNI/FFM binding dereferences buffer addresses everywhere
+    // (cert/key load, header_info out-params, recv buffers, sockaddrs), so a managed/heap factory
+    // can't back a QUIC server on ANY platform — including the JVM. See requireNativeMemory().
+    val bufferFactory = BufferFactory.network()
+
+    val config = api.configNew(QUICHE_PROTOCOL_VERSION)
     try {
-        // QUIC I/O needs native-memory buffers (quiche FFI); see BufferFactory.network(). This is not a
-        // caller-configurable knob: the quiche JNI/FFM binding dereferences buffer addresses everywhere
-        // (cert/key load, header_info out-params, recv buffers, sockaddrs), so a managed/heap factory
-        // can't back a QUIC server on ANY platform — including the JVM. See requireNativeMemory().
-        val bufferFactory = BufferFactory.network()
-
-        val config = api.configNew(QUICHE_PROTOCOL_VERSION)
-
         writeNullTerminatedString(tlsConfig.certChainPath, bufferFactory).use { certBuf ->
             val rc = api.configLoadCertChainFromPemFile(config, certBuf.nativeMemoryAccess!!.nativeAddress.toLong())
             check(rc == 0) { "Failed to load cert chain: $rc" }
@@ -82,14 +80,27 @@ internal suspend fun <R> commonJvmWithQuicServer(
         channel.bind(InetSocketAddress(host ?: "0.0.0.0", port))
         val localAddr = channel.localAddress as InetSocketAddress
 
-        val server = JvmQuicServer(api, config, channel, localAddr, bufferFactory, parentScope, quicOptions.keepAliveInterval)
-        try {
-            return server.block()
-        } finally {
-            server.close()
-        }
+        val server =
+            JvmQuicServer(
+                api,
+                config,
+                channel,
+                localAddr,
+                bufferFactory,
+                parentScope,
+                quicOptions.keepAliveInterval,
+                // server.close() frees config + drivers; the per-call parent scope is the server's
+                // to cancel last, so the withQuicServer wrapper stays a plain block + close().
+                onClose = { parentScope.cancel() },
+            )
+        bound = true
+        return server
     } finally {
-        parentScope.cancel()
+        // Bind failed before JvmQuicServer took ownership of config + scope — release here.
+        if (!bound) {
+            api.configFree(config)
+            parentScope.cancel()
+        }
     }
 }
 
@@ -131,6 +142,9 @@ internal class JvmQuicServer(
     private val bufferFactory: BufferFactory,
     parentScope: CoroutineScope,
     private val keepAliveInterval: Duration? = null,
+    // Per-call lifecycle teardown wired by buildJvmQuicServer (cancel the parent scope). Null for
+    // any direct-construction test that owns the scope externally. Invoked last by close().
+    private val onClose: (() -> Unit)? = null,
 ) : QuicServer {
     override val port: Int get() = localAddr.port
 
@@ -322,6 +336,9 @@ internal class JvmQuicServer(
         // asserted by JvmQuicServerLifecycleTests (no coroutines outlive
         // server.close()).
         serverJob.cancel()
+        // Finally, cancel the per-call parent scope (buildJvmQuicServer wires this); previously the
+        // withQuicServer wrapper did it. serverJob is a child of it, so this is the strict superset.
+        onClose?.invoke()
     }
 
     /**

@@ -16,12 +16,12 @@ import kotlin.time.Duration
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
 /**
- * Shared JVM/Android [withQuicConnection] implementation backed by quiche +
- * [DatagramChannel]. Owns the per-call scope + native resources for the
- * duration of [block]; releases everything before returning.
+ * Shared JVM/Android [withQuicConnection] test seam backed by quiche + [DatagramChannel].
+ * Owns the per-call lifecycle for the duration of [block]; releases everything before returning.
  *
- * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` actuals
- * delegate to it.
+ * Production code reaches the same path via [QuicheEngine.connect] → [buildJvmQuicConnection];
+ * this thin wrapper survives because a test passes a spy [api] (e.g. CountingQuicheApi) to observe
+ * the real native calls the driver makes — used to assert reactive keepalive actually PINGs.
  */
 internal suspend fun <R> commonJvmWithQuicConnection(
     hostname: String,
@@ -29,166 +29,186 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     quicOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
-    // Defaults to the production loader; a test passes a spy (e.g. CountingQuicheApi) to observe the
-    // real native calls the driver makes — used to assert reactive keepalive actually PINGs.
     api: QuicheApi = loadQuicheApi(),
     block: suspend QuicScope.() -> R,
-): R {
+): R =
+    withTimeout(timeout) {
+        val connection = buildJvmQuicConnection(hostname, port, quicOptions, connectionOptions, timeout, api)
+        try {
+            connection.block()
+        } finally {
+            connection.close()
+        }
+    }
+
+/**
+ * Build + establish a JVM/Android quiche-backed [JvmQuicConnection], returning it ready to use.
+ * The returned connection owns its full lifecycle teardown via [JvmQuicConnection.close] (the
+ * `onRelease` lambda wired below: cancel the connection scope, close the UDP channel, free the
+ * quiche config). The caller only runs the user block and calls `close()`. Shared by
+ * [QuicheEngine.connect] and the [commonJvmWithQuicConnection] test seam.
+ *
+ * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` reach it.
+ */
+internal suspend fun buildJvmQuicConnection(
+    hostname: String,
+    port: Int,
+    quicOptions: QuicOptions,
+    connectionOptions: TransportConfig,
+    timeout: Duration,
+    api: QuicheApi,
+): JvmQuicConnection {
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
+    var established = false
+    val bufferFactory = connectionOptions.quicBufferFactory()
+
+    // 1. Create quiche config
+    val config = api.configNew(QUICHE_PROTOCOL_VERSION)
     try {
-        return withTimeout(timeout) {
-            val bufferFactory = connectionOptions.quicBufferFactory()
+        // ALPN — writes directly into buffer (zero-copy)
+        encodeAlpnList(quicOptions.alpnProtocols, bufferFactory).use { alpnBuf ->
+            val alpnAddr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+            api.configSetApplicationProtos(config, alpnAddr, alpnBuf.remaining())
+        }
 
-            // 1. Create quiche config
-            val config = api.configNew(QUICHE_PROTOCOL_VERSION)
+        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
+
+        // Pinned CA trust anchors (#99): load the PEM bundle as the verification
+        // anchors so non-Apple targets enforce the same private-CA trust as Apple.
+        // quiche only loads anchors from a file, so the bundle goes to a temp file
+        // whose path is handed to the native call (verifyPeer is forced on in
+        // applyQuicOptions whenever anchors are present).
+        if (quicOptions.trustedCaCertificatesPem.isNotEmpty()) {
+            val caBundlePath = writeCaBundleToTempFile(quicOptions.trustedCaCertificatesPem)
             try {
-                // ALPN — writes directly into buffer (zero-copy)
-                encodeAlpnList(quicOptions.alpnProtocols, bufferFactory).use { alpnBuf ->
-                    val alpnAddr = alpnBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-                    api.configSetApplicationProtos(config, alpnAddr, alpnBuf.remaining())
-                }
-
-                applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
-
-                // Pinned CA trust anchors (#99): load the PEM bundle as the verification
-                // anchors so non-Apple targets enforce the same private-CA trust as Apple.
-                // quiche only loads anchors from a file, so the bundle goes to a temp file
-                // whose path is handed to the native call (verifyPeer is forced on in
-                // applyQuicOptions whenever anchors are present).
-                if (quicOptions.trustedCaCertificatesPem.isNotEmpty()) {
-                    val caBundlePath = writeCaBundleToTempFile(quicOptions.trustedCaCertificatesPem)
-                    try {
-                        writeNullTerminatedString(caBundlePath, bufferFactory).use { caBuf ->
-                            val rc = api.configLoadVerifyLocationsFromFile(config, caBuf.nativeMemoryAccess!!.nativeAddress.toLong())
-                            check(rc == 0) { "Failed to load trusted CA certificates: $rc" }
-                        }
-                    } finally {
-                        runCatching { java.io.File(caBundlePath).delete() }
-                    }
-                }
-
-                // 2. Open UDP channel
-                val channel = DatagramChannel.open()
-                channel.configureBlocking(false)
-                channel.connect(InetSocketAddress(hostname, port))
-                val localAddr = channel.localAddress as InetSocketAddress
-
-                // 3. Server name — null-terminated UTF-8 in buffer
-                val serverNameBuf = bufferFactory.allocate(hostname.length + 1)
-                serverNameBuf.writeString(hostname, com.ditchoom.buffer.Charset.UTF8)
-                serverNameBuf.writeByte(0) // null terminator
-                serverNameBuf.resetForRead()
-                val serverNameAddr = serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-
-                // 4. SCID — bulk random writes (2 longs + 1 int = 20 bytes in 3 ops)
-                val scidBuf = generateScid(bufferFactory)
-                val scidAddr = scidBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-
-                // 5. Sockaddr structs via buffer factory
-                val peerSockAddr = InetSocketAddress(hostname, port).toNativeSockAddr(bufferFactory)
-                val localSockAddr = localAddr.toNativeSockAddr(bufferFactory)
-
-                val conn =
-                    try {
-                        api.connect(
-                            serverNameAddr,
-                            hostname.length,
-                            scidAddr,
-                            QUIC_MAX_CONN_ID_LEN,
-                            localSockAddr.address,
-                            localSockAddr.length,
-                            peerSockAddr.address,
-                            peerSockAddr.length,
-                            config,
-                        )
-                    } finally {
-                        // Free all config-phase buffers immediately
-                        serverNameBuf.freeNativeMemory()
-                        scidBuf.freeNativeMemory()
-                        localSockAddr.free()
-                        peerSockAddr.free()
-                    }
-
-                // 6. Build recvInfo/sendInfo for the connection
-                val connPeerSockAddr = InetSocketAddress(hostname, port).toNativeSockAddr(bufferFactory)
-                val connLocalSockAddr = localAddr.toNativeSockAddr(bufferFactory)
-                val connRecvInfo =
-                    api.recvInfoNew(
-                        connPeerSockAddr.address,
-                        connPeerSockAddr.length,
-                        connLocalSockAddr.address,
-                        connLocalSockAddr.length,
-                    )
-                val connSendInfo = api.sendInfoNew()
-
-                // 7. Create driver + connection
-                val udpChannel = NioUdpChannel(channel)
-                // onCleanup captures the sockaddr holders so they outlive every quiche
-                // call. Without this, the suspending block below stops referencing
-                // connPeerSockAddr/connLocalSockAddr after the QuicheDriver is built,
-                // making their PlatformBuffers GC-eligible — DirectByteBuffer Cleaner
-                // can then free the native memory mid-connection, leaving recvInfo.from
-                // dangling. Symptom: quiche/src/ffi.rs:2059 panic "unsupported address type".
-                val driver =
-                    QuicheDriver(
-                        api = api,
-                        conn = conn,
-                        bufferFactory = bufferFactory,
-                        recvInfo = connRecvInfo,
-                        sendInfo = connSendInfo,
-                        udpChannel = udpChannel,
-                        clientMode = true,
-                        isServer = false,
-                        keepAliveInterval = quicOptions.keepAliveInterval,
-                        // Connection-migration wiring (slice 3): the peer + primary local sockaddrs
-                        // (kept pinned by onCleanup for the driver's life) and a factory for opening
-                        // additional path sockets to the same peer.
-                        peerAddr = connPeerSockAddr.address,
-                        peerLen = connPeerSockAddr.length,
-                        primaryLocalAddr = connLocalSockAddr.address,
-                        primaryLocalLen = connLocalSockAddr.length,
-                        udpChannelFactory = NioUdpChannelFactory(InetSocketAddress(hostname, port), bufferFactory),
-                        onCleanup = {
-                            connPeerSockAddr.free()
-                            connLocalSockAddr.free()
-                        },
-                    )
-                // Create a child scope for this connection — cancelled when block returns
-                val connJob = SupervisorJob(parentScope.coroutineContext[Job])
-                val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
-
-                val quicConnection =
-                    JvmQuicConnection(
-                        driver = driver,
-                        bufferFactory = bufferFactory,
-                        scope = connScope,
-                    )
-                quicConnection.start()
-                quicConnection.awaitEstablished(timeout)
-
-                // Run the user's block with the established connection as QuicScope
-                try {
-                    quicConnection.block()
-                } finally {
-                    // Order matters: close the connection first (driver processes Close
-                    // command and flushes CONNECTION_CLOSE), then cancel remaining children,
-                    // then close the UDP channel (unblocks selector).
-                    //
-                    // IMPORTANT: close udpChannel, not just the underlying DatagramChannel.
-                    // udpChannel wraps its own Selector; closing only `channel` leaves the
-                    // selector alive with udpReaderLoop's suspend frame stuck in select(),
-                    // leaking one coroutine per connect() call.
-                    quicConnection.close()
-                    connJob.cancel()
-                    udpChannel.close()
+                writeNullTerminatedString(caBundlePath, bufferFactory).use { caBuf ->
+                    val rc = api.configLoadVerifyLocationsFromFile(config, caBuf.nativeMemoryAccess!!.nativeAddress.toLong())
+                    check(rc == 0) { "Failed to load trusted CA certificates: $rc" }
                 }
             } finally {
-                api.configFree(config)
+                runCatching { java.io.File(caBundlePath).delete() }
             }
         }
+
+        // 2. Open UDP channel
+        val channel = DatagramChannel.open()
+        channel.configureBlocking(false)
+        channel.connect(InetSocketAddress(hostname, port))
+        val localAddr = channel.localAddress as InetSocketAddress
+
+        // 3. Server name — null-terminated UTF-8 in buffer
+        val serverNameBuf = bufferFactory.allocate(hostname.length + 1)
+        serverNameBuf.writeString(hostname, com.ditchoom.buffer.Charset.UTF8)
+        serverNameBuf.writeByte(0) // null terminator
+        serverNameBuf.resetForRead()
+        val serverNameAddr = serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+
+        // 4. SCID — bulk random writes (2 longs + 1 int = 20 bytes in 3 ops)
+        val scidBuf = generateScid(bufferFactory)
+        val scidAddr = scidBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+
+        // 5. Sockaddr structs via buffer factory
+        val peerSockAddr = InetSocketAddress(hostname, port).toNativeSockAddr(bufferFactory)
+        val localSockAddr = localAddr.toNativeSockAddr(bufferFactory)
+
+        val conn =
+            try {
+                api.connect(
+                    serverNameAddr,
+                    hostname.length,
+                    scidAddr,
+                    QUIC_MAX_CONN_ID_LEN,
+                    localSockAddr.address,
+                    localSockAddr.length,
+                    peerSockAddr.address,
+                    peerSockAddr.length,
+                    config,
+                )
+            } finally {
+                // Free all config-phase buffers immediately
+                serverNameBuf.freeNativeMemory()
+                scidBuf.freeNativeMemory()
+                localSockAddr.free()
+                peerSockAddr.free()
+            }
+
+        // 6. Build recvInfo/sendInfo for the connection
+        val connPeerSockAddr = InetSocketAddress(hostname, port).toNativeSockAddr(bufferFactory)
+        val connLocalSockAddr = localAddr.toNativeSockAddr(bufferFactory)
+        val connRecvInfo =
+            api.recvInfoNew(
+                connPeerSockAddr.address,
+                connPeerSockAddr.length,
+                connLocalSockAddr.address,
+                connLocalSockAddr.length,
+            )
+        val connSendInfo = api.sendInfoNew()
+
+        // 7. Create driver + connection
+        val udpChannel = NioUdpChannel(channel)
+        // onCleanup captures the sockaddr holders so they outlive every quiche
+        // call. Without this, the suspending block below stops referencing
+        // connPeerSockAddr/connLocalSockAddr after the QuicheDriver is built,
+        // making their PlatformBuffers GC-eligible — DirectByteBuffer Cleaner
+        // can then free the native memory mid-connection, leaving recvInfo.from
+        // dangling. Symptom: quiche/src/ffi.rs:2059 panic "unsupported address type".
+        val driver =
+            QuicheDriver(
+                api = api,
+                conn = conn,
+                bufferFactory = bufferFactory,
+                recvInfo = connRecvInfo,
+                sendInfo = connSendInfo,
+                udpChannel = udpChannel,
+                clientMode = true,
+                isServer = false,
+                keepAliveInterval = quicOptions.keepAliveInterval,
+                // Connection-migration wiring (slice 3): the peer + primary local sockaddrs
+                // (kept pinned by onCleanup for the driver's life) and a factory for opening
+                // additional path sockets to the same peer.
+                peerAddr = connPeerSockAddr.address,
+                peerLen = connPeerSockAddr.length,
+                primaryLocalAddr = connLocalSockAddr.address,
+                primaryLocalLen = connLocalSockAddr.length,
+                udpChannelFactory = NioUdpChannelFactory(InetSocketAddress(hostname, port), bufferFactory),
+                onCleanup = {
+                    connPeerSockAddr.free()
+                    connLocalSockAddr.free()
+                },
+            )
+        // Create a child scope for this connection — cancelled by the connection's
+        // onRelease teardown when the withQuicConnection wrapper closes it.
+        val connJob = SupervisorJob(parentScope.coroutineContext[Job])
+        val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
+
+        val quicConnection =
+            JvmQuicConnection(
+                driver = driver,
+                bufferFactory = bufferFactory,
+                scope = connScope,
+                // Full lifecycle teardown, run once by JvmQuicConnection.close() after the block:
+                // close the connection (driver flush) first, then cancel children, close the UDP
+                // channel (unblocks the selector — closing only `channel` would leak the selector
+                // coroutine), free the quiche config, and cancel the per-call parent scope.
+                onRelease = {
+                    connJob.cancel()
+                    runCatching { udpChannel.close() }
+                    api.configFree(config)
+                    parentScope.cancel()
+                },
+            )
+        quicConnection.start()
+        quicConnection.awaitEstablished(timeout)
+        established = true
+        return quicConnection
     } finally {
-        parentScope.cancel()
+        // Establishment failed before the connection took ownership of teardown — release here.
+        // (On success the connection owns config + parentScope via onRelease above.)
+        if (!established) {
+            api.configFree(config)
+            parentScope.cancel()
+        }
     }
 }
 

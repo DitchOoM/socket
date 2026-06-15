@@ -62,19 +62,29 @@ import kotlin.time.Duration
 
 private const val MAX_CONN_ID_LEN = 20
 
-actual suspend fun <R> withQuicConnection(
+/**
+ * Build + establish a Linux quiche-backed [LinuxQuicConnection] over io_uring, returning it ready
+ * to use. The returned connection owns its teardown via [LinuxQuicConnection.close] (driver destroy
+ * closes the fd; the `onRelease` lambda cancels the per-call parent scope). Shared by
+ * [QuicheEngine.connect]; the [withQuicConnection] wrapper runs the block and calls `close()`.
+ *
+ * The quiche `config` is freed during the build (quiche copies what it needs), so the connection
+ * does not carry it. `memScoped` frees its arena on return, but the connection/driver hold only the
+ * heap sockaddr copies + the fd — nothing in the arena — so returning from inside it is safe.
+ */
+internal suspend fun buildLinuxQuicConnection(
     hostname: String,
     port: Int,
     quicOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
-    block: suspend QuicScope.() -> R,
-): R {
+): LinuxQuicConnection {
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
+    var established = false
     try {
-        return withTimeout(timeout) {
+        return run {
             val bufferFactory = connectionOptions.quicBufferFactory()
 
             val config =
@@ -225,20 +235,21 @@ actual suspend fun <R> withQuicConnection(
 
                 val connJob = SupervisorJob(parentScope.coroutineContext[Job])
                 val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
-                val quicConn = LinuxQuicConnection(driver, bufferFactory, connScope)
+                // Sockaddr buffers are freed by the driver's onCleanup (after quiche is done
+                // dereferencing recvInfo.from/to during destroy, in close()) — matches the JVM
+                // client. onRelease only cancels the per-call parent scope (the driver's destroy
+                // closes the io_uring fd), run once by close() after the block returns.
+                val quicConn = LinuxQuicConnection(driver, bufferFactory, connScope, onRelease = { parentScope.cancel() })
                 quicConn.start()
                 quicConn.awaitEstablished(timeout)
-                try {
-                    quicConn.block()
-                } finally {
-                    // Sockaddr buffers are freed by the driver's onCleanup (after quiche is done
-                    // dereferencing recvInfo.from/to during destroy) — matches the JVM client.
-                    quicConn.close()
-                }
+                established = true
+                quicConn
             }
         }
     } finally {
-        parentScope.cancel()
+        // On success the connection owns parentScope teardown via onRelease; only release here if
+        // establishment threw before the connection took ownership.
+        if (!established) parentScope.cancel()
     }
 }
 
@@ -246,10 +257,11 @@ actual suspend fun <R> withQuicConnection(
  * Thin Linux QUIC connection wrapper backed by the shared [QuicheDriver].
  * Mirrors [JvmQuicConnection] — all heavy lifting is in the driver.
  */
-private class LinuxQuicConnection(
+internal class LinuxQuicConnection(
     private val driver: QuicheDriver,
     override val bufferFactory: BufferFactory,
     private val scope: CoroutineScope,
+    private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
@@ -308,7 +320,8 @@ private class LinuxQuicConnection(
             MigrationResult.Failed("connection closed")
         }
 
-    override suspend fun close(error: QuicError) {
+    /** Driver-level terminal close (user-callable mid-block via [closeWithError]) — no [onRelease]. */
+    private suspend fun driverClose(error: QuicError) {
         try {
             val deferred = CompletableDeferred<Unit>()
             driver.commands.send(QuicheCmd.Close(error, deferred))
@@ -317,6 +330,22 @@ private class LinuxQuicConnection(
             // Already closed
         }
         driver.destroy()
+    }
+
+    /**
+     * Application-coded close (RFC 9000 §19.19) from inside the block — driver-only, so the running
+     * connection scope is not torn down here. Lifecycle teardown ([onRelease]) runs when the
+     * [withQuicConnection] wrapper calls [close] after the block returns.
+     */
+    override suspend fun closeWithError(errorCode: Long) = driverClose(QuicError.ApplicationError(errorCode))
+
+    /** Full lifecycle teardown — the wrapper's `finally` calls this: driver close, then [onRelease]. */
+    override suspend fun close(error: QuicError) {
+        try {
+            driverClose(error)
+        } finally {
+            onRelease?.invoke()
+        }
     }
 }
 
