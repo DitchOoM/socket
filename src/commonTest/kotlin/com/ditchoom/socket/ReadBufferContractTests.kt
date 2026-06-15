@@ -3,7 +3,10 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.socket.transport.TcpByteStream
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readFlowString
+import com.ditchoom.data.readInto
+import com.ditchoom.data.readString
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -36,9 +39,9 @@ class ReadBufferContractTests {
     fun readReturnsBufferInReadReadyMode() =
         runTest {
             val mock = mockWithData()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
-            val buffer = mock.read(5.seconds)
+            val buffer = mock.readBuffer(5.seconds)
             assertEquals(0, buffer.position(), "Buffer position should be 0 (read-ready)")
             assertTrue(buffer.remaining() > 0, "Buffer should have readable data")
         }
@@ -47,9 +50,9 @@ class ReadBufferContractTests {
     fun readBufferContainsCorrectData() =
         runTest {
             val mock = mockWithData()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
-            val buffer = mock.read(5.seconds)
+            val buffer = mock.readBuffer(5.seconds)
             val str = buffer.readString(buffer.remaining())
             assertEquals(testData, str)
         }
@@ -60,7 +63,7 @@ class ReadBufferContractTests {
     fun readStringReturnsActualData() =
         runTest {
             val mock = mockWithData()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
             val str = mock.readString()
             assertEquals(testData, str, "readString() must return data without double-flip")
@@ -70,7 +73,7 @@ class ReadBufferContractTests {
     fun readStringNeverReturnsEmptyForNonEmptyBuffer() =
         runTest {
             val mock = mockWithData()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
             val str = mock.readString()
             assertTrue(str.isNotEmpty(), "readString() must never return empty when data was sent")
@@ -83,7 +86,7 @@ class ReadBufferContractTests {
         runTest {
             val mock = mockWithData()
             mock.enqueueReadError(SocketClosedException.EndOfStream())
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
             val str = mock.readFlowString().first()
             assertEquals(testData, str, "readFlowString() must yield data without double-flip")
@@ -95,10 +98,10 @@ class ReadBufferContractTests {
     fun readIntoBufferCopiesCorrectData() =
         runTest {
             val mock = mockWithData()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
             val dest = BufferFactory.Default.allocate(64)
-            val bytesRead = mock.read(dest, 5.seconds)
+            val bytesRead = mock.readInto(dest, 5.seconds)
 
             assertTrue(bytesRead > 0, "Should read bytes")
             assertEquals(testData.length, bytesRead)
@@ -107,28 +110,27 @@ class ReadBufferContractTests {
             assertEquals(testData, str, "read(buffer) must copy correct data")
         }
 
-    // ── TcpByteStream wraps read() correctly ──
+    // ── ByteStream read() returns Data correctly ──
 
     @Test
-    fun tcpByteStreamReadReturnsReadableData() =
+    fun byteStreamReadReturnsReadableData() =
         runTest {
             val mock = mockWithData()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
-            val stream = TcpByteStream(mock)
-            val result = stream.read(5.seconds)
+            val result = mock.read(5.seconds)
             assertTrue(result is ReadResult.Data, "Should be Data result")
 
             val buffer = result.buffer
-            assertEquals(0, buffer.position(), "TcpByteStream buffer should be read-ready")
+            assertEquals(0, buffer.position(), "ByteStream buffer should be read-ready")
             val str = buffer.readString(buffer.remaining())
             assertEquals(testData, str)
         }
 
-    // ── TcpByteStream handles large reads without overflow ──
+    // ── ByteStream handles large reads without overflow ──
 
     @Test
-    fun tcpByteStreamLargeReadDoesNotOverflow() =
+    fun byteStreamLargeReadDoesNotOverflow() =
         runTest {
             val mock = MockClientToServerSocket()
             // 64KB payload — well above the 8KB defaultBufferSize
@@ -137,10 +139,9 @@ class ReadBufferContractTests {
             repeat(size) { largeBuf.writeByte((it % 256).toByte()) }
             largeBuf.resetForRead()
             mock.enqueueRead(largeBuf)
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
-            val stream = TcpByteStream(mock)
-            val result = stream.read(5.seconds)
+            val result = mock.read(5.seconds)
             assertTrue(result is ReadResult.Data, "Should be Data result, not overflow")
 
             val buffer = result.buffer
@@ -169,7 +170,7 @@ class ReadBufferContractTests {
                 buf.resetForRead()
                 mock.enqueueRead(buf)
             }
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", TransportConfig(connectTimeout = 5.seconds))
 
             assertEquals("first", mock.readString())
             assertEquals("second", mock.readString())

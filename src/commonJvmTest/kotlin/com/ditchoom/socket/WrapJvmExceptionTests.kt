@@ -1,5 +1,8 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -244,14 +247,14 @@ class WrapJvmExceptionTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
             clientConnected.lockWithTimeout()
 
-            val data = client.readString(timeout = 1.seconds)
+            val data = client.readString(deadline = 1.seconds)
             assertEquals("hello", data)
 
             try {
-                client.read(1.seconds)
+                client.readBuffer(1.seconds)
                 fail("Should have thrown")
             } catch (e: SocketClosedException) {
                 // Expected

@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.data.readBuffer
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -15,7 +16,7 @@ class MockSocketTests {
     fun mockReadReturnsEnqueuedData() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 1.seconds, "localhost")
+            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
 
             val expected = BufferFactory.Default.allocate(3)
             expected.writeByte(1)
@@ -24,7 +25,7 @@ class MockSocketTests {
             expected.resetForRead()
             mock.enqueueRead(expected)
 
-            val result = mock.read(1.seconds)
+            val result = mock.readBuffer(1.seconds)
             assertEquals(3, result.remaining())
             assertEquals(1.toByte(), result.readByte())
             assertEquals(2.toByte(), result.readByte())
@@ -35,14 +36,14 @@ class MockSocketTests {
     fun mockWriteRecordsData() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 1.seconds, "localhost")
+            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
 
             val buffer = BufferFactory.Default.allocate(2)
             buffer.writeByte(42)
             buffer.writeByte(43)
             buffer.resetForRead()
 
-            val written = mock.write(buffer, 1.seconds)
+            val written = mock.write(buffer, 1.seconds).count
             assertEquals(2, written)
             mock.verifyWriteCount(1)
 
@@ -56,12 +57,12 @@ class MockSocketTests {
     fun mockReadAfterCloseThrows() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 1.seconds, "localhost")
+            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
             mock.close()
 
-            assertFalse(mock.isOpen())
+            assertFalse(mock.isOpen)
             assertFailsWith<SocketClosedException> {
-                mock.read(1.seconds)
+                mock.readBuffer(1.seconds)
             }
         }
 
@@ -69,12 +70,12 @@ class MockSocketTests {
     fun mockReadErrorPropagates() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 1.seconds, "localhost")
+            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
 
             mock.enqueueReadError(SocketIOException("test error"))
 
             assertFailsWith<SocketException> {
-                mock.read(1.seconds)
+                mock.readBuffer(1.seconds)
             }
         }
 
@@ -82,13 +83,13 @@ class MockSocketTests {
     fun mockDisconnectInterruptsRead() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 1.seconds, "localhost")
+            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
 
             mock.simulateDisconnect()
-            assertFalse(mock.isOpen())
+            assertFalse(mock.isOpen)
 
             assertFailsWith<SocketClosedException> {
-                mock.read(1.seconds)
+                mock.readBuffer(1.seconds)
             }
         }
 
@@ -96,11 +97,11 @@ class MockSocketTests {
     fun mockReadBytesConvenience() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 1.seconds, "localhost")
+            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
 
             mock.enqueueReadBytes(10, 20, 30)
 
-            val result = mock.read(1.seconds)
+            val result = mock.readBuffer(1.seconds)
             assertEquals(3, result.remaining())
             assertEquals(10.toByte(), result.readByte())
             assertEquals(20.toByte(), result.readByte())
@@ -113,8 +114,8 @@ class MockSocketTests {
             val mock = MockClientToServerSocket()
             assertFalse(mock.openCalled)
 
-            mock.open(80, 1.seconds, "localhost")
+            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
             mock.verifyOpened()
-            assertTrue(mock.isOpen())
+            assertTrue(mock.isOpen)
         }
 }

@@ -1,11 +1,13 @@
 package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.flow.ByteStream
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.ConnectionState
 import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -16,13 +18,17 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 class ReconnectingConnectionTests {
-    private val testOptions = ConnectionOptions(readTimeout = 5.seconds, writeTimeout = 5.seconds)
+    private val testOptions =
+        TransportConfig(
+            readPolicy = ReadPolicy.Bounded(5.seconds),
+            writePolicy = WritePolicy.Bounded(5.seconds),
+        )
 
     private fun createCodecConnection(clientStream: ByteStream): CodecConnection<String> =
         CodecConnection(
             stream = clientStream,
             codec = TestStringCodec,
-            options = testOptions,
+            config = testOptions,
         )
 
     // ── reconnects after failure ──

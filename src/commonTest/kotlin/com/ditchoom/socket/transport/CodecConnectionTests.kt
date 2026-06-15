@@ -9,11 +9,13 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.MockClientToServerSocket
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -64,25 +66,27 @@ object TestStringCodec : Codec<String> {
 }
 
 class CodecConnectionTests {
-    private val testOptions =
-        ConnectionOptions(
-            readTimeout = 5.seconds,
-            writeTimeout = 5.seconds,
+    // Bounded(5s) read/write policy on both the stream and the codec config. With the v6 adapter
+    // rule, the deadline lives on the stream's policy; CodecConnection calls the no-arg read()/write().
+    private val testConfig =
+        TransportConfig(
+            readPolicy = ReadPolicy.Bounded(5.seconds),
+            writePolicy = WritePolicy.Bounded(5.seconds),
         )
 
     private fun createPairCodecConnections(): Pair<CodecConnection<String>, CodecConnection<String>> {
-        val (aStream, bStream) = MemoryTransport.createPair()
+        val (aStream, bStream) = MemoryTransport.createPair(testConfig)
         val a =
             CodecConnection(
                 stream = aStream,
                 codec = TestStringCodec,
-                options = testOptions,
+                config = testConfig,
             )
         val b =
             CodecConnection(
                 stream = bStream,
                 codec = TestStringCodec,
-                options = testOptions,
+                config = testConfig,
             )
         return a to b
     }
@@ -198,15 +202,15 @@ class CodecConnectionTests {
     fun receiveThrowsOnStreamReset() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", testConfig)
             mock.enqueueReadError(SocketClosedException.ConnectionReset("peer reset"))
 
-            val stream = TcpByteStream(mock)
+            // ClientSocket IS a ByteStream — pass the socket straight in, no TcpByteStream adapter.
             val codec =
                 CodecConnection(
-                    stream = stream,
+                    stream = mock,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             assertFailsWith<SocketClosedException.ConnectionReset> {
@@ -222,15 +226,14 @@ class CodecConnectionTests {
     fun receiveThrowsOnSocketTimeout() =
         runTest {
             val mock = MockClientToServerSocket()
-            mock.open(80, 5.seconds, "test")
+            mock.open(80, "test", testConfig)
             mock.enqueueReadError(SocketTimeoutException("timed out"))
 
-            val stream = TcpByteStream(mock)
             val codec =
                 CodecConnection(
-                    stream = stream,
+                    stream = mock,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             assertFailsWith<SocketTimeoutException> {
@@ -256,7 +259,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
             server.preSeed(preSeeded)
 
@@ -265,7 +268,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
             client.send("after-upgrade")
             client.close()
@@ -289,7 +292,7 @@ class CodecConnectionTests {
                     port = 8080,
                     codec = TestStringCodec,
                     transport = transport,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             assertTrue(conn.stream.isOpen)
@@ -306,13 +309,13 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
             val server =
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             // First collection (simulates handshake)
@@ -337,7 +340,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = serverStream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             // preSeed before first receive — allowed
@@ -359,7 +362,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = clientStream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
             client.close()
 
@@ -377,7 +380,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             conn.close()
@@ -394,7 +397,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             conn.close()
@@ -411,7 +414,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             conn.close()
@@ -428,7 +431,7 @@ class CodecConnectionTests {
                 CodecConnection(
                     stream = stream,
                     codec = TestStringCodec,
-                    options = testOptions,
+                    config = testConfig,
                 )
 
             conn.close()

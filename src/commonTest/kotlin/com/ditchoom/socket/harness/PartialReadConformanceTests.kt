@@ -1,7 +1,10 @@
 package com.ditchoom.socket.harness
 
 import com.ditchoom.buffer.Charset
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.writeString
 import com.ditchoom.socket.ClientSocket
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.harnessHost
 import com.ditchoom.socket.isHarnessAvailable
@@ -63,7 +66,7 @@ class PartialReadConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.toxiproxyEchoPort,
                     hostname = harnessHost(),
-                    timeout = 5.seconds,
+                    config = TransportConfig(connectTimeout = 5.seconds),
                 ) { socket ->
                     socket.writeString(sent, Charset.UTF8, 2.seconds)
                     // Drain until we have at least `sentBytes.size` bytes back. The
@@ -72,7 +75,7 @@ class PartialReadConformanceTests {
                     var filled = 0
                     withTimeout(10.seconds) {
                         while (filled < sentBytes.size) {
-                            val buf = socket.read(5.seconds)
+                            val buf = socket.readBuffer(5.seconds)
                             val take = minOf(buf.remaining(), sentBytes.size - filled)
                             val chunk = buf.readByteArray(take)
                             chunk.copyInto(accumulated, destinationOffset = filled)

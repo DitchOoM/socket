@@ -2,6 +2,8 @@ package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.SocketClosedException
@@ -9,6 +11,7 @@ import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
 import com.ditchoom.socket.nio.util.remoteAddressOrNull
 import com.ditchoom.socket.nio.util.write
+import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -28,12 +31,14 @@ abstract class BaseClientSocket(
 
     override suspend fun remotePort() = (socket.remoteAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
-    override suspend fun read(timeout: Duration): ReadBuffer {
-        if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return it.unwrap(timeout) }
-        val buffer = bufferFactory.allocate(socket.socket().receiveBufferSize)
+    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+
+    private suspend fun readRaw(deadline: Duration): ReadBuffer {
+        if (!isOpen) throw SocketClosedException.General("Socket is closed.")
+        tlsHandler?.let { return it.unwrap(deadline) }
+        val buffer = config.bufferFactory.allocate(socket.socket().receiveBufferSize)
         try {
-            read(buffer.unwrapFully() as BaseJvmBuffer, timeout)
+            read(buffer.unwrapFully() as BaseJvmBuffer, deadline)
             buffer.resetForRead()
             return buffer
         } catch (e: Exception) {
@@ -63,11 +68,11 @@ abstract class BaseClientSocket(
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): Int {
-        if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return it.wrap(buffer.unwrapFully() as BaseJvmBuffer, timeout) }
-        return rawSocketWrite(buffer, timeout)
+        deadline: Duration,
+    ): BytesWritten {
+        if (!isOpen) throw SocketClosedException.General("Socket is closed.")
+        tlsHandler?.let { return BytesWritten(it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline)) }
+        return BytesWritten(rawSocketWrite(buffer, deadline))
     }
 
     internal override suspend fun rawSocketWrite(

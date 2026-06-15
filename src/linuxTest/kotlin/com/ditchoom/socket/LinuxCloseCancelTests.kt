@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -47,7 +48,7 @@ class LinuxCloseCancelTests {
             val readResult = CompletableDeferred<Throwable?>()
             launch(Dispatchers.Default) {
                 try {
-                    client.read(30.seconds)
+                    client.readBuffer(30.seconds)
                     readResult.complete(null) // unexpected: read returned data
                 } catch (e: Throwable) {
                     readResult.complete(e)

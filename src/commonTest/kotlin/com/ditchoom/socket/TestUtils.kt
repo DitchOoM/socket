@@ -95,12 +95,12 @@ internal expect fun harnessHost(): String
  * Returns `false` immediately on browser/wasmJs (`WEBSOCKETS_ONLY`).
  */
 internal suspend fun isHarnessAvailable(): Boolean {
-    if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return false
+    if (!networkCapabilities().transports.contains(TransportKind.TCP)) return false
     return try {
         ClientSocket.connect(
             port = HarnessConfig.echoPort,
             hostname = harnessHost(),
-            timeout = 500.milliseconds,
+            config = TransportConfig(connectTimeout = 500.milliseconds),
         ) { /* immediate close — we just needed to know the listener is alive */ }
         true
     } catch (_: Throwable) {
@@ -124,12 +124,12 @@ internal suspend fun isHarnessAvailable(): Boolean {
  *  - probe returns successfully      → not the netem service (refuse this too)
  */
 internal suspend fun isNetemAvailable(): Boolean {
-    if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return false
+    if (!networkCapabilities().transports.contains(TransportKind.TCP)) return false
     return try {
         ClientSocket.connect(
             port = HarnessConfig.netemBlackholePort,
             hostname = HarnessConfig.netemBlackholeHost,
-            timeout = 200.milliseconds,
+            config = TransportConfig(connectTimeout = 200.milliseconds),
         ) { /* unreachable when netem is working — SYN-ACK is dropped */ }
         false
     } catch (_: TimeoutCancellationException) {

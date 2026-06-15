@@ -5,9 +5,13 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readInto
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.socket.SocketOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.harnessHost
 import com.ditchoom.socket.isHarnessAvailable
@@ -60,14 +64,13 @@ class TlsValidPathConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { socket ->
                     socket.writeString(
                         "GET /json HTTP/1.1\r\nHost: ${harnessHost()}\r\n" +
                             "Connection: close\r\nAccept: application/json\r\n\r\n",
                     )
-                    socket.readString(timeout = 5.seconds)
+                    socket.readString(deadline = 5.seconds)
                 }
             assertTrue(
                 response.startsWith("HTTP/1.1 200 OK"),
@@ -98,14 +101,13 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
             ) { socket ->
                 socket.writeString(
                     "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
                 )
                 val writeBuffer = BufferFactory.Default.allocate(65536) as WriteBuffer
-                val bytesRead = socket.read(writeBuffer, 5.seconds)
+                val bytesRead = socket.readInto(writeBuffer, 5.seconds)
                 assertTrue(bytesRead > 0, "WriteBuffer read should return data")
 
                 val readBuffer = writeBuffer as PlatformBuffer
@@ -136,11 +138,10 @@ class TlsValidPathConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { socket ->
                     socket.writeString(request)
-                    socket.readString(timeout = 5.seconds)
+                    socket.readString(deadline = 5.seconds)
                 }
 
             // read(WriteBuffer, timeout) path
@@ -148,12 +149,11 @@ class TlsValidPathConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { socket ->
                     socket.writeString(request)
                     val writeBuffer = BufferFactory.Default.allocate(65536) as WriteBuffer
-                    val bytesRead = socket.read(writeBuffer, 5.seconds)
+                    val bytesRead = socket.readInto(writeBuffer, 5.seconds)
                     assertTrue(bytesRead > 0, "WriteBuffer read should return data")
                     val readBuffer = writeBuffer as PlatformBuffer
                     readBuffer.setLimit(readBuffer.position())
@@ -188,18 +188,17 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
             ) { socket ->
                 socket.writeString(
                     "GET /large HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
                 )
                 var totalBytes = 0
                 var readCount = 0
-                while (socket.isOpen() && readCount < 20) {
+                while (socket.isOpen && readCount < 20) {
                     try {
                         val buf = BufferFactory.Default.allocate(65536) as WriteBuffer
-                        val n = socket.read(buf, 5.seconds)
+                        val n = socket.readInto(buf, 5.seconds)
                         if (n <= 0) break
                         totalBytes += n
                         readCount++
@@ -236,13 +235,12 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsTls13Port,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
             ) { socket ->
                 socket.writeString(
                     "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
                 )
-                val response = socket.read(5.seconds)
+                val response = socket.readBuffer(5.seconds)
                 val remaining = response.remaining()
                 assertTrue(remaining > 0, "first read should return data, not empty (NewSessionTicket)")
                 val text = response.readString(remaining, Charset.UTF8)
@@ -267,14 +265,13 @@ class TlsValidPathConformanceTests {
                             ClientSocket.connect(
                                 port = HarnessConfig.tlsValidPort,
                                 hostname = harnessHost(),
-                                socketOptions = SocketOptions.tlsDefault(),
-                                timeout = 5.seconds,
+                                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                             ) { socket ->
                                 socket.writeString(
                                     "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\n" +
                                         "Connection: close\r\n\r\n",
                                 )
-                                socket.readString(timeout = 5.seconds)
+                                socket.readString(deadline = 5.seconds)
                             }
                         }
                     }
@@ -308,17 +305,16 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
             ) { socket ->
                 socket.writeString(
                     "GET /large HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n",
                 )
                 val collected = StringBuilder()
                 var readCount = 0
-                while (socket.isOpen() && readCount < 40) {
+                while (socket.isOpen && readCount < 40) {
                     try {
-                        val chunk = socket.read(5.seconds)
+                        val chunk = socket.readBuffer(5.seconds)
                         val remaining = chunk.remaining()
                         if (remaining <= 0) break
                         collected.append(chunk.readString(remaining, Charset.UTF8))
@@ -376,24 +372,22 @@ class TlsValidPathConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "first connection should be open")
+                assertTrue(socket.isOpen, "first connection should be open")
                 socket.writeString(requestText)
-                val response = socket.readString(timeout = 5.seconds)
+                val response = socket.readString(deadline = 5.seconds)
                 assertTrue(response.startsWith("HTTP/"), "first connection should receive HTTP response")
             }
 
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "reconnection should be open")
+                assertTrue(socket.isOpen, "reconnection should be open")
                 socket.writeString(requestText)
-                val response = socket.readString(timeout = 5.seconds)
+                val response = socket.readString(deadline = 5.seconds)
                 assertTrue(response.startsWith("HTTP/"), "reconnection should receive HTTP response")
             }
         }

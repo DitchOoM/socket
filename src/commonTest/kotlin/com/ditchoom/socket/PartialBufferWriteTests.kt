@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.data.readBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -28,7 +29,7 @@ class PartialBufferWriteTests {
     @Test
     fun write_usesPositionAndLimit_advancesPosition() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
@@ -39,7 +40,7 @@ class PartialBufferWriteTests {
                 launch(Dispatchers.Default) {
                     serverFlow.collect { serverClient ->
                         while (collected.size < 14) {
-                            val buf = serverClient.read(5.seconds)
+                            val buf = serverClient.readBuffer(5.seconds)
                             val remaining = buf.remaining()
                             if (remaining == 0) break
                             val tmp = ByteArray(remaining)
@@ -52,7 +53,7 @@ class PartialBufferWriteTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
 
             // Allocate a 256-byte buffer and write 14 bytes into offsets [8, 22), matching the
             // websocket frame encoder's reserved-prefix layout.
@@ -66,7 +67,7 @@ class PartialBufferWriteTests {
             scratch.position(8)
             scratch.setLimit(22)
 
-            val bytesWritten = client.write(scratch, 5.seconds)
+            val bytesWritten = client.write(scratch, 5.seconds).count
             assertEquals(14, bytesWritten, "write() should report bytes written = remaining() = 14")
             assertEquals(22, scratch.position(), "write() should advance position() by bytesWritten")
 
@@ -84,7 +85,7 @@ class PartialBufferWriteTests {
     @Test
     fun write_pooledStyleOffsetBuffer_sendsOnlyWindow() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() != NetworkCapabilities.FULL_SOCKET_ACCESS) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
@@ -95,7 +96,7 @@ class PartialBufferWriteTests {
                 launch(Dispatchers.Default) {
                     serverFlow.collect { serverClient ->
                         while (collected.size < 7) {
-                            val buf = serverClient.read(5.seconds)
+                            val buf = serverClient.readBuffer(5.seconds)
                             val remaining = buf.remaining()
                             if (remaining == 0) break
                             val tmp = ByteArray(remaining)
@@ -108,7 +109,7 @@ class PartialBufferWriteTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
 
             // Two sequential sub-window writes from the same backing buffer — catches the case
             // where send ignores position on every call (would duplicate the first window).

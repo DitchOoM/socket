@@ -2,8 +2,11 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -27,10 +30,13 @@ class LinuxClientSocket : ClientToServerSocket {
     private var ssl: CPointer<SSL>? = null
     private var currentTlsConfig: TlsConfig = TlsConfig.DEFAULT
 
+    /** The injected transport configuration, set at the top of [open]. */
+    private var config: TransportConfig = TransportConfig()
+
     /**
      * Cached socket receive buffer size from SO_RCVBUF.
      * Queried once at connect time and reused for all read operations.
-     * Can be overridden by PlatformSocketConfig.readBufferSize if configured.
+     * Can be overridden by [IoTuning.readBufferSize] if configured.
      */
     private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
 
@@ -43,7 +49,11 @@ class LinuxClientSocket : ClientToServerSocket {
      */
     private val pendingReadUserData = AtomicLong(0L)
 
-    override fun isOpen(): Boolean = sockfd >= 0
+    override val isOpen: Boolean get() = sockfd >= 0
+
+    override val readPolicy: ReadPolicy get() = config.readPolicy
+
+    override val writePolicy: WritePolicy get() = config.writePolicy
 
     override suspend fun localPort(): Int = getLocalPort(sockfd)
 
@@ -51,12 +61,13 @@ class LinuxClientSocket : ClientToServerSocket {
 
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
-        socketOptions: SocketOptions,
+        config: TransportConfig,
     ) {
+        this.config = config
+        val timeout = config.connectTimeout
         val host = hostname ?: "localhost"
-        val tlsConfig = socketOptions.tls
+        val tlsConfig = config.tls
         this.currentTlsConfig = tlsConfig ?: TlsConfig.DEFAULT
 
         memScoped {
@@ -99,7 +110,7 @@ class LinuxClientSocket : ClientToServerSocket {
                     }
                     try {
                         setNonBlocking(candidateFd)
-                        applySocketOptions(candidateFd, socketOptions)
+                        applySocketOptions(candidateFd, config.io)
                         sockfd = candidateFd
                         connectWithIoUring(entry.ai_addr!!, entry.ai_addrlen, timeout)
                         // Connect succeeded — exit the fallback loop.
@@ -282,13 +293,15 @@ class LinuxClientSocket : ClientToServerSocket {
         }
     }
 
-    override suspend fun read(timeout: Duration): ReadBuffer {
+    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+
+    private suspend fun readRaw(deadline: Duration): ReadBuffer {
         if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
 
         // Allocate buffer with native memory for zero-copy io_uring read
-        // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
+        // Use IoTuning override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
-        val buffer = bufferFactory.allocate(bufferSize)
+        val buffer = config.bufferFactory.allocate(bufferSize)
 
         try {
             // Get native memory pointer
@@ -298,10 +311,10 @@ class LinuxClientSocket : ClientToServerSocket {
                 val bytesRead =
                     if (ssl != null) {
                         // TLS read with polling for non-blocking socket
-                        sslRead(ptr, bufferSize, timeout)
+                        sslRead(ptr, bufferSize, deadline)
                     } else {
                         // io_uring async read
-                        readWithIoUring(ptr, bufferSize, timeout)
+                        readWithIoUring(ptr, bufferSize, deadline)
                     }
 
                 return when {
@@ -332,9 +345,9 @@ class LinuxClientSocket : ClientToServerSocket {
                     array.usePinned { pinned ->
                         val ptr = pinned.addressOf(0)
                         if (ssl != null) {
-                            sslRead(ptr, bufferSize, timeout)
+                            sslRead(ptr, bufferSize, deadline)
                         } else {
-                            readWithIoUring(ptr, bufferSize, timeout)
+                            readWithIoUring(ptr, bufferSize, deadline)
                         }
                     }
 
@@ -364,90 +377,6 @@ class LinuxClientSocket : ClientToServerSocket {
             buffer.freeNativeMemory()
             throw e
         }
-    }
-
-    /**
-     * Zero-copy read into caller-provided buffer.
-     * Writes directly into the buffer using io_uring, avoiding allocations.
-     *
-     * @param buffer The buffer to write data into. Must have remaining capacity.
-     * @param timeout Read timeout duration.
-     * @return Number of bytes read, or throws on error/close.
-     */
-    override suspend fun read(
-        buffer: WriteBuffer,
-        timeout: Duration,
-    ): Int {
-        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
-
-        val capacity = buffer.remaining()
-        if (capacity == 0) return 0
-
-        // Zero-copy path: write directly into native memory
-        val nativeAccess = buffer.nativeMemoryAccess
-        if (nativeAccess != null) {
-            val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
-            val bytesRead =
-                if (ssl != null) {
-                    sslRead(ptr, capacity, timeout)
-                } else {
-                    readWithIoUring(ptr, capacity, timeout)
-                }
-
-            return when {
-                bytesRead > 0 -> {
-                    buffer.position(buffer.position() + bytesRead)
-                    bytesRead
-                }
-                bytesRead == 0 -> {
-                    closeInternal()
-                    throw SocketClosedException.EndOfStream()
-                }
-                else -> {
-                    if (ssl != null) {
-                        handleSslReadError(bytesRead)
-                    } else {
-                        handleReadError(-bytesRead)
-                    }
-                }
-            }
-        }
-
-        // Zero-copy path: write directly into managed array (pinned)
-        val managedAccess = buffer.managedMemoryAccess
-        if (managedAccess != null) {
-            val array = managedAccess.backingArray
-            val offset = managedAccess.arrayOffset + buffer.position()
-            val bytesRead =
-                array.usePinned { pinned ->
-                    val ptr = pinned.addressOf(offset)
-                    if (ssl != null) {
-                        sslRead(ptr, capacity, timeout)
-                    } else {
-                        readWithIoUring(ptr, capacity, timeout)
-                    }
-                }
-
-            return when {
-                bytesRead > 0 -> {
-                    buffer.position(buffer.position() + bytesRead)
-                    bytesRead
-                }
-                bytesRead == 0 -> {
-                    closeInternal()
-                    throw SocketClosedException.EndOfStream()
-                }
-                else -> {
-                    if (ssl != null) {
-                        handleSslReadError(bytesRead)
-                    } else {
-                        handleReadError(-bytesRead)
-                    }
-                }
-            }
-        }
-
-        throw SocketIOException("Buffer has no accessible memory for io_uring read")
     }
 
     /**
@@ -532,12 +461,12 @@ class LinuxClientSocket : ClientToServerSocket {
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): Int {
+        deadline: Duration,
+    ): BytesWritten {
         if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
 
         val remaining = buffer.remaining()
-        if (remaining == 0) return 0
+        if (remaining == 0) return BytesWritten(0)
 
         // Zero-copy path: check if buffer has native memory access
         val nativeAccess = buffer.nativeMemoryAccess
@@ -545,11 +474,11 @@ class LinuxClientSocket : ClientToServerSocket {
             val ptr = (nativeAccess.nativeAddress + buffer.position()).toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    sslWrite(ptr, remaining, timeout).toLong()
+                    sslWrite(ptr, remaining, deadline).toLong()
                 } else {
-                    writeWithIoUring(ptr, remaining, timeout).toLong()
+                    writeWithIoUring(ptr, remaining, deadline).toLong()
                 }
-            return handleWriteResult(buffer, bytesSent)
+            return BytesWritten(handleWriteResult(buffer, bytesSent))
         }
 
         // Zero-copy path: check if buffer has managed array access
@@ -561,11 +490,11 @@ class LinuxClientSocket : ClientToServerSocket {
                 val ptr = pinned.addressOf(offset)
                 val bytesSent =
                     if (ssl != null) {
-                        sslWrite(ptr, remaining, timeout).toLong()
+                        sslWrite(ptr, remaining, deadline).toLong()
                     } else {
-                        writeWithIoUring(ptr, remaining, timeout).toLong()
+                        writeWithIoUring(ptr, remaining, deadline).toLong()
                     }
-                handleWriteResult(buffer, bytesSent)
+                BytesWritten(handleWriteResult(buffer, bytesSent))
             }
         }
 
@@ -586,11 +515,11 @@ class LinuxClientSocket : ClientToServerSocket {
                     .toCPointer<ByteVar>()!!
             val bytesSent =
                 if (ssl != null) {
-                    sslWrite(ptr, remaining, timeout).toLong()
+                    sslWrite(ptr, remaining, deadline).toLong()
                 } else {
-                    writeWithIoUring(ptr, remaining, timeout).toLong()
+                    writeWithIoUring(ptr, remaining, deadline).toLong()
                 }
-            return handleWriteResult(buffer, bytesSent)
+            return BytesWritten(handleWriteResult(buffer, bytesSent))
         } finally {
             scratch.freeNativeMemory()
         }
@@ -680,11 +609,11 @@ class LinuxClientSocket : ClientToServerSocket {
 
     /**
      * Get the effective read buffer size.
-     * Returns PlatformSocketConfig.readBufferSize if explicitly configured (non-default),
+     * Returns [IoTuning.readBufferSize] if explicitly configured (non-default),
      * otherwise returns the cached SO_RCVBUF value queried at connect time.
      */
     private fun getEffectiveReadBufferSize(): Int {
-        val configuredSize = PlatformSocketConfig.readBufferSize
+        val configuredSize = config.io.readBufferSize
         // If user explicitly configured a different buffer size, use that
         if (configuredSize != DEFAULT_READ_BUFFER_SIZE) {
             return configuredSize

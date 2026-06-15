@@ -1,7 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.socket.NetworkCapabilities.FULL_SOCKET_ACCESS
-import com.ditchoom.socket.NetworkCapabilities.WEBSOCKETS_ONLY
 import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,10 +24,7 @@ internal actual fun runTestNoTimeSkipping(
                 }
             }
         } catch (e: UnsupportedOperationException) {
-            when (getNetworkCapabilities()) {
-                FULL_SOCKET_ACCESS -> throw e
-                WEBSOCKETS_ONLY -> {}
-            }
+            if (networkCapabilities().transports.contains(TransportKind.TCP)) throw e
         }
     }
 

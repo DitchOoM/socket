@@ -33,6 +33,8 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
+    // TODO(v6-release): drop mavenLocal() once buffer 6.0.0 is on Central (see libs.versions.toml).
+    mavenLocal()
     google()
     mavenCentral()
     maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }

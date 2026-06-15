@@ -1,5 +1,8 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -23,11 +26,15 @@ class ExceptionIntegrationTests {
     @Test
     fun dnsFailure_producesSocketUnknownHostException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = 80, timeout = 5.seconds, hostname = "this.host.does.not.exist.invalid")
+                    socket.open(
+                        port = 80,
+                        hostname = "this.host.does.not.exist.invalid",
+                        config = TransportConfig(connectTimeout = 5.seconds),
+                    )
                     socket.close()
                     fail("Should have thrown for invalid hostname")
                 } catch (e: SocketException) {
@@ -43,7 +50,7 @@ class ExceptionIntegrationTests {
     @Test
     fun connectionRefused_producesSocketConnectionException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             // Windows NIO2 holds the connect attempt past the 2 s budget instead
             // of returning ECONNREFUSED fast — see TODO(JVM/Windows). The
             // connect-refused contract is still validated on Linux/macOS JVM
@@ -53,7 +60,7 @@ class ExceptionIntegrationTests {
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
+                    socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
                     socket.close()
                     fail("Should have thrown for connection refused")
                 } catch (e: SocketConnectionException) {
@@ -83,15 +90,15 @@ class ExceptionIntegrationTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
             serverReady.lockWithTimeout()
 
-            val data = client.readString(timeout = 2.seconds)
+            val data = client.readString(deadline = 2.seconds)
             assertTrue(data == "hello", "Should read 'hello', got: $data")
 
             val ex =
                 try {
-                    client.read(2.seconds)
+                    client.readBuffer(2.seconds)
                     fail("Should have thrown on reading from closed connection")
                 } catch (e: SocketClosedException) {
                     e
@@ -123,14 +130,14 @@ class ExceptionIntegrationTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
             serverReady.lockWithTimeout()
 
             kotlinx.coroutines.delay(100)
 
             val ex =
                 try {
-                    client.read(2.seconds)
+                    client.readBuffer(2.seconds)
                     fail("Should have thrown on reading from closed connection")
                 } catch (e: SocketClosedException) {
                     e
@@ -149,7 +156,7 @@ class ExceptionIntegrationTests {
     @Test
     fun tlsToNonTlsServer_producesSSLSocketException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             // Windows NIO2 surfaces the TLS-against-non-TLS handshake failure as
             // neither SSLSocketException nor SocketClosedException — likely a
             // SocketIOException via the IOException→message branch in
@@ -176,9 +183,8 @@ class ExceptionIntegrationTests {
                     val socket = ClientSocket.allocate()
                     socket.open(
                         port = server.port(),
-                        timeout = 5.seconds,
                         hostname = "127.0.0.1",
-                        socketOptions = SocketOptions.tlsDefault(),
+                        config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                     )
                     socket.close()
                     fail("TLS handshake should have failed on non-TLS server")
@@ -209,14 +215,14 @@ class ExceptionIntegrationTests {
     @Test
     fun connectionRefused_exceptionHasUsefulMessage() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             // Same Windows NIO2 quirk as connectionRefused_producesSocketConnectionException.
             if (isWindowsJvm()) return@runTestNoTimeSkipping
             val port = 59100 + kotlin.random.Random.nextInt(899)
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
+                    socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
                     socket.close()
                     fail("Should have thrown")
                 } catch (e: SocketConnectionException) {
@@ -228,11 +234,11 @@ class ExceptionIntegrationTests {
     @Test
     fun dnsFailure_hostnamePreservedInException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = 80, timeout = 5.seconds, hostname = "nonexistent.test.invalid")
+                    socket.open(port = 80, hostname = "nonexistent.test.invalid", config = TransportConfig(connectTimeout = 5.seconds))
                     socket.close()
                     fail("Should have thrown")
                 } catch (e: SocketException) {

@@ -13,9 +13,9 @@ mavenPublish = "0.36.0"
 dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 kotlinWrappers = "2026.6.0"
-# 5.6.0: varint @FramedBy/@ForwardCompatible + ViewCodec + framed-body truncation
-# guard (DitchOoM/buffer#186) and pooled-buffer use {} fix (#187).
-buffer = "5.6.0"
+# v6 byte-layer reshape (ByteSource/ByteSink/ByteStream + Read/WritePolicy) — LOCAL SNAPSHOT.
+# TODO(v6-release): repin to released 6.0.0 + drop root mavenLocal() once buffer 6.0 hits Central.
+buffer = "6.0.0-SNAPSHOT"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"

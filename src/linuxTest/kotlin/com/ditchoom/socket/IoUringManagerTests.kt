@@ -1,5 +1,8 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -73,8 +76,8 @@ class IoUringManagerTests {
                             // Echo back any data received
                             launch {
                                 try {
-                                    while (client.isOpen()) {
-                                        val data = client.read(5.seconds)
+                                    while (client.isOpen) {
+                                        val data = client.readBuffer(5.seconds)
                                         if (data.remaining() > 0) {
                                             client.write(data, 5.seconds)
                                         }
@@ -101,10 +104,10 @@ class IoUringManagerTests {
                             async {
                                 val client = ClientSocket.allocate()
                                 try {
-                                    client.open(port, 5.seconds, "127.0.0.1")
+                                    client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
                                     val message = "Hello from client $i"
                                     client.writeString(message)
-                                    val response = client.readString(timeout = 5.seconds)
+                                    val response = client.readString(deadline = 5.seconds)
                                     client.close()
                                     message to response
                                 } catch (e: Exception) {
@@ -161,7 +164,7 @@ class IoUringManagerTests {
                     val client = ClientSocket.allocate()
                     // Generous connect timeout absorbs scheduler jitter; this loop
                     // is sequential so a healthy server accepts every connection.
-                    client.open(port, 5.seconds, "127.0.0.1")
+                    client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
                     client.close()
                     successCount++
                 } catch (e: Exception) {
@@ -196,7 +199,7 @@ class IoUringManagerTests {
                     launch {
                         try {
                             server.bind(0, "127.0.0.1").collect { client ->
-                                val data = client.read(5.seconds)
+                                val data = client.readBuffer(5.seconds)
                                 client.write(data, 5.seconds)
                                 client.close()
                             }
@@ -210,10 +213,10 @@ class IoUringManagerTests {
 
                 // Do a successful operation
                 val client = ClientSocket.allocate()
-                client.open(port, 5.seconds, "127.0.0.1")
+                client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
                 val testMessage = "Cycle $cycle test"
                 client.writeString(testMessage)
-                val response = client.readString(timeout = 5.seconds)
+                val response = client.readString(deadline = 5.seconds)
                 assertTrue(
                     response.contains(testMessage),
                     "Cycle $cycle: expected response to contain '$testMessage', got '$response'",
@@ -258,14 +261,14 @@ class IoUringManagerTests {
             val port = server.port()
 
             val client = ClientSocket.allocate()
-            client.open(port, 5.seconds, "127.0.0.1")
+            client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
 
             // Start a read that will block (no data coming)
             var readException: Exception? = null
             val readJob =
                 launch {
                     try {
-                        client.read(30.seconds) // Long timeout
+                        client.readBuffer(30.seconds) // Long timeout
                     } catch (e: Exception) {
                         readException = e
                     }
@@ -288,7 +291,7 @@ class IoUringManagerTests {
             // The pending read should have been cancelled or errored
             // (either SocketClosedException or SocketException with ECANCELED)
             assertTrue(
-                readException != null || !client.isOpen(),
+                readException != null || !client.isOpen,
                 "Pending read should have been interrupted by cleanup",
             )
         }
@@ -321,12 +324,12 @@ class IoUringManagerTests {
             val port = server.port()
 
             val client = ClientSocket.allocate()
-            client.open(port, 5.seconds, "127.0.0.1")
+            client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
 
             val before = IoUringManager.timeoutCancelSubmitCount.value
             var timedOut = false
             try {
-                client.read(200.milliseconds)
+                client.readBuffer(200.milliseconds)
             } catch (e: SocketTimeoutException) {
                 timedOut = true
             }
@@ -367,7 +370,7 @@ class IoUringManagerTests {
                 // Quick connect/disconnect
                 try {
                     val client = ClientSocket.allocate()
-                    client.open(port, 2.seconds, "127.0.0.1")
+                    client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 2.seconds))
                     client.close()
                 } catch (e: Exception) {
                     // May fail due to timing, that's ok

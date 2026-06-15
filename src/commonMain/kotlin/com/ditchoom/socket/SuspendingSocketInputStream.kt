@@ -4,7 +4,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.data.Reader
+import com.ditchoom.buffer.flow.ByteSource
+import com.ditchoom.data.readBuffer
 import kotlin.time.Duration
 import kotlin.time.measureTimedValue
 
@@ -13,7 +14,7 @@ import kotlin.time.measureTimedValue
  */
 class SuspendingSocketInputStream(
     private val readTimeout: Duration,
-    private val reader: Reader,
+    private val source: ByteSource,
 ) {
     internal var currentBuffer: ReadBuffer? = null
 
@@ -79,7 +80,7 @@ class SuspendingSocketInputStream(
     private suspend fun readFromReader(): ReadBuffer {
         val bufferTimed =
             measureTimedValue {
-                reader.read(readTimeout)
+                source.readBuffer(readTimeout)
             }
         val buffer = bufferTimed.value
         return buffer.slice()

@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.data.readBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -28,7 +29,7 @@ class NodeBufferPoolTests {
     @Test
     fun smallBuffersNotCorruptedBySubsequentReads() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
@@ -52,7 +53,7 @@ class NodeBufferPoolTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             serverReady.lockWithTimeout()
 
             // Read all data and collect buffers before inspecting them.
@@ -65,7 +66,7 @@ class NodeBufferPoolTests {
             while (totalRead < expectedTotal) {
                 val buffer =
                     try {
-                        client.read(5.seconds)
+                        client.readBuffer(5.seconds)
                     } catch (_: SocketClosedException) {
                         break
                     }
@@ -110,7 +111,7 @@ class NodeBufferPoolTests {
     @Test
     fun tinyBurstMessagesPreserveIntegrity() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
@@ -140,7 +141,7 @@ class NodeBufferPoolTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             serverReady.lockWithTimeout()
 
             // Read all data
@@ -151,7 +152,7 @@ class NodeBufferPoolTests {
             while (totalRead < expectedTotal) {
                 val buffer =
                     try {
-                        client.read(5.seconds)
+                        client.readBuffer(5.seconds)
                     } catch (_: SocketClosedException) {
                         break
                     }

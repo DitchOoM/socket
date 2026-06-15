@@ -1,6 +1,9 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -24,7 +27,7 @@ class LinuxExceptionSubtypeTests {
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
+                    socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
                     socket.close()
                     fail("Should have thrown for connection refused")
                 } catch (e: SocketConnectionException.Refused) {
@@ -51,15 +54,15 @@ class LinuxExceptionSubtypeTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
             serverReady.lockWithTimeout()
 
-            client.readString(timeout = 2.seconds)
+            client.readString(deadline = 2.seconds)
 
             // On Linux, graceful close + read produces bytesRead == 0 → EndOfStream
             val ex =
                 try {
-                    client.read(2.seconds)
+                    client.readBuffer(2.seconds)
                     fail("Should have thrown")
                 } catch (e: SocketClosedException) {
                     e
@@ -87,7 +90,7 @@ class LinuxExceptionSubtypeTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
             clientConnected.lockWithTimeout()
             kotlinx.coroutines.delay(200)
 
@@ -123,7 +126,11 @@ class LinuxExceptionSubtypeTests {
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = 80, timeout = 5.seconds, hostname = "nonexistent.linux.test.invalid")
+                    socket.open(
+                        port = 80,
+                        hostname = "nonexistent.linux.test.invalid",
+                        config = TransportConfig(connectTimeout = 5.seconds),
+                    )
                     socket.close()
                     fail("Should have thrown")
                 } catch (e: SocketUnknownHostException) {

@@ -4,6 +4,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
@@ -35,7 +38,7 @@ class ErrorHandlingTests {
             val port = 59000 + (kotlin.random.Random.nextInt(999))
             try {
                 val socket = ClientSocket.allocate()
-                socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
+                socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
                 // If we get here, the port happened to be open - close and skip
                 socket.close()
             } catch (e: SocketException) {
@@ -78,13 +81,13 @@ class ErrorHandlingTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             serverReady.lockWithTimeout()
 
             // Try to read with a short timeout - should timeout since server sends nothing
             try {
                 withTimeout(500.milliseconds) {
-                    client.read(500.milliseconds)
+                    client.readBuffer(500.milliseconds)
                 }
                 fail("Should have timed out")
             } catch (e: TimeoutCancellationException) {
@@ -115,7 +118,7 @@ class ErrorHandlingTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             clientConnected.lockWithTimeout()
 
             // Give server time to close
@@ -171,16 +174,16 @@ class ErrorHandlingTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             clientConnected.lockWithTimeout()
 
             // Read the data that was sent
-            val data = client.readString(timeout = 1.seconds)
+            val data = client.readString(deadline = 1.seconds)
             assertEquals("hello", data)
 
             // Now try to read more - should get EOF/closed exception
             try {
-                client.read(1.seconds)
+                client.readBuffer(1.seconds)
                 fail("Should have thrown on reading from closed connection")
             } catch (e: SocketException) {
                 // Expected - covers SocketClosedException
@@ -211,7 +214,7 @@ class ErrorHandlingTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 1.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 1.seconds))
             clientConnected.lockWithTimeout()
 
             // Server has handled the connection - close server
@@ -236,7 +239,7 @@ class ErrorHandlingTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
 
             // Multiple close calls should not throw
             client.close()
@@ -257,7 +260,7 @@ class ErrorHandlingTests {
             // Use 1 second timeout to complete before test framework timeout
             try {
                 val socket = ClientSocket.allocate()
-                socket.open(port = 80, timeout = 1.seconds, hostname = "10.255.255.1")
+                socket.open(port = 80, hostname = "10.255.255.1", config = TransportConfig(connectTimeout = 1.seconds))
                 socket.close()
                 // If connection succeeded, the address was routable in this network
             } catch (e: SocketException) {
@@ -278,18 +281,18 @@ class ErrorHandlingTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        receivedData = client.readString(timeout = 1.seconds)
+                        receivedData = client.readString(deadline = 1.seconds)
                         dataReceived.unlock()
                         client.close()
                     }
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
 
             // Write empty buffer - should succeed without error
             val emptyBuffer = BufferFactory.Default.allocate(0)
-            val bytesWritten = client.write(emptyBuffer, 1.seconds)
+            val bytesWritten = client.write(emptyBuffer, 1.seconds).count
             assertEquals(0, bytesWritten)
 
             // Write actual data to complete the test
@@ -343,12 +346,12 @@ class ErrorHandlingTests {
             val client = ClientSocket.allocate()
 
             // isOpen should return false before opening
-            assertFalse(client.isOpen(), "Socket should not be open before connect")
+            assertFalse(client.isOpen, "Socket should not be open before connect")
 
             // close() should not throw even if socket was never opened
             client.close()
 
             // After close, should still report as not open
-            assertFalse(client.isOpen(), "Socket should not be open after close")
+            assertFalse(client.isOpen, "Socket should not be open after close")
         }
 }

@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -43,7 +44,7 @@ class IoUringCancelTests {
             val readJob =
                 launch(Dispatchers.Default) {
                     try {
-                        client.read(30.seconds)
+                        client.readBuffer(30.seconds)
                     } catch (_: Exception) {
                         // Expected
                     }
@@ -91,7 +92,7 @@ class IoUringCancelTests {
                 val readJob =
                     launch(Dispatchers.Default) {
                         try {
-                            client.read(30.seconds)
+                            client.readBuffer(30.seconds)
                         } catch (_: Exception) {
                             // Expected
                         }

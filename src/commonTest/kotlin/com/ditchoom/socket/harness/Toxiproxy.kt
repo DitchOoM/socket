@@ -1,8 +1,11 @@
 package com.ditchoom.socket.harness
 
 import com.ditchoom.buffer.Charset
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.writeString
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.harnessHost
 import kotlin.time.Duration.Companion.milliseconds
@@ -77,7 +80,7 @@ internal object Toxiproxy {
             ClientSocket.connect(
                 port = HarnessConfig.toxiproxyApiPort,
                 hostname = harnessHost(),
-                timeout = 500.milliseconds,
+                config = TransportConfig(connectTimeout = 500.milliseconds),
             ) { /* immediate close — we just needed to know the API is alive */ }
             true
         } catch (_: Throwable) {
@@ -273,7 +276,7 @@ internal object Toxiproxy {
             ClientSocket.connect(
                 port = HarnessConfig.toxiproxyApiPort,
                 hostname = host,
-                timeout = 5.seconds,
+                config = TransportConfig(connectTimeout = 5.seconds),
             ) { socket ->
                 socket.writeString(request, Charset.UTF8, 5.seconds)
                 // Drain the response until the peer closes. `Connection: close`
@@ -283,7 +286,7 @@ internal object Toxiproxy {
                 val full = StringBuilder()
                 try {
                     while (true) {
-                        val chunk = socket.read(5.seconds)
+                        val chunk = socket.readBuffer(5.seconds)
                         val remaining = chunk.remaining()
                         repeat(remaining) {
                             full.append(chunk.readByte().toInt().toChar())
