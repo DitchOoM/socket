@@ -5,13 +5,15 @@ import kotlin.time.Duration
 
 /**
  * Apple [QuicEngine] backed by Network.framework (system QUIC; zero app-size cost). No quiche. The
- * [withQuicConnection] / [withQuicServer] wrappers own the lifecycle; this engine just builds +
- * establishes. In Phase 2b.3 it moves to `:socket-quic-nw` unchanged.
+ * `withQuicConnection` / `withQuicServer` wrappers (in `:socket-quic-default`) own the lifecycle;
+ * this engine just builds + establishes.
+ *
+ * Public SPI: `:socket-quic-default` names this as the Apple `defaultQuicEngine` actual.
  *
  * Network.framework does not expose controllable connection migration, so [EngineCapabilities.
  * supportsMigration] is false (a connection's `migrate()` returns [MigrationResult.Unsupported]).
  */
-internal object NetworkEngine : QuicEngine {
+object NetworkEngine : QuicEngine {
     override val capabilities: EngineCapabilities =
         EngineCapabilities(
             supportsMigration = false,

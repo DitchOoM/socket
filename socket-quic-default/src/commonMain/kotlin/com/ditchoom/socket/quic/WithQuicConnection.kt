@@ -15,7 +15,7 @@ import kotlin.time.Duration.Companion.seconds
  * resources are released.
  *
  * This is the client-facing entry point and it owns the lifecycle: it asks the
- * platform's [QuicEngine][platformDefaultQuicEngine] to [connect][QuicEngine.connect],
+ * platform's [QuicEngine][defaultQuicEngine] to [connect][QuicEngine.connect],
  * runs [block], and closes the connection in a `finally`. The engine is a
  * constructor, not a factory the caller babysits — the returned [QuicConnection]
  * never escapes this scope, so there is nothing to leak on a dropped error path.
@@ -33,7 +33,7 @@ suspend fun <R> withQuicConnection(
 ): R =
     withTimeout(timeout) {
         val connection =
-            platformDefaultQuicEngine.connect(hostname, port, quicOptions, connectionOptions, timeout)
+            defaultQuicEngine.connect(hostname, port, quicOptions, connectionOptions, timeout)
         try {
             connection.block()
         } finally {

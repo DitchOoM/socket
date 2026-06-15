@@ -1464,6 +1464,12 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
+                // Test-scope back-edge (v6 Phase 2b.4): withQuicConnection/withQuicServer/withQuicMux
+                // moved to :socket-quic-default (it owns the public default-engine facade). The quiche
+                // engine-behavior suites stay HERE (near the engine they exercise) and drive it through
+                // the real public entrypoint via this test-only dependency. No production cycle:
+                // default→quiche-main is the only main-scope edge; quiche-test→default is test-scope.
+                implementation(project(":socket-quic-default"))
             }
         }
         val commonJvmMain by creating {
@@ -1498,6 +1504,9 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
                 implementation("androidx.test:runner:1.7.0")
                 implementation("androidx.test.ext:junit:1.3.0")
+                // androidInstrumentedTest does NOT dependsOn commonTest, so the test-scope back-edge to
+                // :socket-quic-default (for withQuic*) must be declared here too. See commonTest note.
+                implementation(project(":socket-quic-default"))
             }
         }
         androidUnitTest.dependsOn(commonJvmTest)

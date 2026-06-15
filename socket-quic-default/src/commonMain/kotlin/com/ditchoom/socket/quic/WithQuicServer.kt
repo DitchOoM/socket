@@ -10,7 +10,7 @@ import kotlin.time.Duration.Companion.seconds
  * drivers destroyed, all handler coroutines cancelled.
  *
  * This is the server-facing entry point and it owns the lifecycle: it asks the
- * platform's [QuicEngine][platformDefaultQuicEngine] to [bind][QuicEngine.bind],
+ * platform's [QuicEngine][defaultQuicEngine] to [bind][QuicEngine.bind],
  * runs [block], and closes the server in a `finally`. The engine is a constructor,
  * not a factory the caller babysits — the returned [QuicServer] never escapes this
  * scope. The scope-only block boundary remains the lifecycle.
@@ -28,7 +28,7 @@ suspend fun <R> withQuicServer(
     timeout: Duration = 15.seconds,
     block: suspend QuicServer.() -> R,
 ): R {
-    val server = platformDefaultQuicEngine.bind(port, host, tlsConfig, quicOptions, timeout)
+    val server = defaultQuicEngine.bind(port, host, tlsConfig, quicOptions, timeout)
     return try {
         server.block()
     } finally {

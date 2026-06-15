@@ -11,7 +11,7 @@ import kotlin.time.Duration
  * @param connectReason explanation surfaced when a client [connect] is attempted.
  * @param bindReason explanation surfaced when a server [bind] is attempted.
  */
-internal class UnsupportedQuicEngine(
+class UnsupportedQuicEngine(
     private val connectReason: String,
     private val bindReason: String,
 ) : QuicEngine {

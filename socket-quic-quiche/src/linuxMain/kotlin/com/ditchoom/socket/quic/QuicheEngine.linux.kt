@@ -5,10 +5,12 @@ import kotlin.time.Duration
 
 /**
  * Linux/native [QuicEngine] backed by Cloudflare quiche (K/N cinterop) over io_uring UDP. The
- * [withQuicConnection] / [withQuicServer] wrappers own the lifecycle; this engine just builds +
- * establishes. In Phase 2b.2 it moves to `:socket-quic-quiche` unchanged.
+ * `withQuicConnection` / `withQuicServer` wrappers (in `:socket-quic-default`) own the lifecycle;
+ * this engine just builds + establishes.
+ *
+ * Public SPI: `:socket-quic-default` names this as the Linux `defaultQuicEngine` actual.
  */
-internal object QuicheEngine : QuicEngine {
+object QuicheEngine : QuicEngine {
     override val capabilities: EngineCapabilities =
         EngineCapabilities(
             supportsMigration = true,
@@ -32,6 +34,3 @@ internal object QuicheEngine : QuicEngine {
         timeout: Duration,
     ): QuicServer = buildLinuxQuicServer(port, host, tlsConfig, quicOptions)
 }
-
-/** Linux default QUIC engine: quiche. */
-internal actual val platformDefaultQuicEngine: QuicEngine = QuicheEngine
