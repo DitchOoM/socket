@@ -4,8 +4,10 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.HalfCloseableByteStream
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicStreamException
+import com.ditchoom.socket.quic.ResettableByteStream
 import kotlin.time.Duration
 
 /**
@@ -46,22 +48,29 @@ class WebTransportStream internal constructor(
     // Bytes buffered after the WT header when this stream was demultiplexed (peer-opened streams only);
     // returned by the first read(s) before the underlying QUIC stream is read directly. Null when none.
     private var pending: ReadBuffer?,
-    private val readTimeout: Duration,
-    private val writeTimeout: Duration,
-) {
+) : HalfCloseableByteStream,
+    ResettableByteStream {
     /** The underlying QUIC stream id (RFC 9000 §2.1). */
     val streamId: Long get() = stream.streamId.id
 
-    /** Read the next chunk of stream data; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset. */
-    suspend fun read(timeout: Duration = readTimeout): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
+    override val isOpen: Boolean get() = stream.isOpen
+
+    /**
+     * Read the next chunk of stream data; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset.
+     *
+     * As a [ByteStream] override this carries the interface's default [timeout]; the no-arg form is bounded
+     * (not unbounded). WebTransport streams are often idle for long stretches, so pass [Duration.INFINITE]
+     * (or your own bound) explicitly when you want to wait longer than the [ByteStream] default.
+     */
+    override suspend fun read(timeout: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
 
     /**
      * Write [buffer]'s remaining bytes to the stream (zero-copy; the caller retains ownership). Throws
      * [WebTransportStreamException] if the peer has aborted the stream (its WebTransport code decoded).
      */
-    suspend fun write(
+    override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration = writeTimeout,
+        timeout: Duration,
     ): BytesWritten =
         try {
             stream.write(buffer, timeout)
@@ -69,17 +78,28 @@ class WebTransportStream internal constructor(
             throw e.toWebTransport()
         }
 
+    /** Gather-write [buffers] in one operation (zero-copy; the caller retains ownership). */
+    override suspend fun writeGathered(
+        buffers: List<ReadBuffer>,
+        timeout: Duration,
+    ): BytesWritten =
+        try {
+            stream.writeGathered(buffers, timeout)
+        } catch (e: QuicStreamException) {
+            throw e.toWebTransport()
+        }
+
     /** Half-close the send side (FIN) while keeping the read side open for the peer's data. */
-    suspend fun shutdownSend() = stream.shutdownSend()
+    override suspend fun shutdownSend() = stream.shutdownSend()
 
     /**
      * Abort the stream in both directions with the WebTransport application [errorCode] (RESET_STREAM +
      * STOP_SENDING). The code is mapped into the HTTP/3 error-code space (draft §4.3) on the wire.
      */
-    suspend fun reset(errorCode: Long = 0) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
+    override suspend fun reset(errorCode: Long) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
 
     /** Gracefully close the stream (FIN both directions) and release any buffered prefix. */
-    suspend fun close() {
+    override suspend fun close() {
         pending?.freeIfNeeded()
         pending = null
         stream.close()

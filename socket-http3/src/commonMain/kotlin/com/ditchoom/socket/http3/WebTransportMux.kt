@@ -87,7 +87,7 @@ internal class WebTransportMux(
     suspend fun openBidi(sessionId: Long): WebTransportStream {
         val stream = scope.openStream()
         writeStreamHeader(stream, WebTransportWire.WT_BIDI_STREAM_SIGNAL, sessionId)
-        return WebTransportStream(sessionId, stream, pending = null, Duration.INFINITE, options.writeTimeout)
+        return WebTransportStream(sessionId, stream, pending = null)
     }
 
     /** Open a unidirectional WebTransport stream: a QUIC uni stream prefixed with `0x54` + Session ID. */
@@ -136,7 +136,7 @@ internal class WebTransportMux(
         }
         val pending = drainBuffered(processor)
         processor.release()
-        val wt = WebTransportStream(sessionId, stream, pending, Duration.INFINITE, options.writeTimeout)
+        val wt = WebTransportStream(sessionId, stream, pending)
         session.deliverIncomingBidi(wt)
     }
 
