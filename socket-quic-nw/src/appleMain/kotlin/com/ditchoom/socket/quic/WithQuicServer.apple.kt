@@ -48,26 +48,23 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Apple [withQuicServer] using Network.framework's QUIC listener (issue #112).
- *
- * Network.framework models a QUIC server as an [nw_listener_t] created with QUIC
- * parameters. Because QUIC is a multiplexing protocol, each incoming tunnel is
- * delivered to the listener's *new-connection-group* handler as an
- * [nw_connection_group_t] — the SAME multiplex group type the client
- * ([withQuicConnection]) uses — so the whole server-side connection, stream, and
- * datagram surface reuses [AppleQuicGroupConnection] / [NWQuicByteStream] verbatim.
- *
- * TLS identity: the listener needs a `sec_identity_t`, which has no public Apple
- * API to build from loose PEM cert+key. We therefore import [QuicTlsConfig.pkcs12Path]
- * (a PKCS#12 bundle of the same chain) via `SecPKCS12Import`. The PEM paths used by
- * the JVM/Linux servers are ignored here. See [nw_helper_quic_identity_from_p12].
- *
- * Requires iOS 15+ / macOS 12+ (the listener group handler).
- */
-/**
  * Build + bind an Apple Network.framework QUIC listener, returning an established [AppleQuicServer]
  * ready to accept. The internal [withTimeout] bounds the listener handshake (so the OS-assigned port
- * is known). Shared by [NetworkEngine.bind]; the [withQuicServer] wrapper runs the block + close.
+ * is known). Shared by [NetworkEngine.bind]; the default-engine `withQuicServer` wrapper runs the
+ * block + close.
+ *
+ * Network.framework models a QUIC server as an [nw_listener_t] created with QUIC parameters. Because
+ * QUIC is a multiplexing protocol, each incoming tunnel is delivered to the listener's
+ * *new-connection-group* handler as an [nw_connection_group_t] — the SAME multiplex group type the
+ * client path ([connectQuicGroup]) uses — so the whole server-side connection, stream, and datagram
+ * surface reuses [AppleQuicGroupConnection] / [NWQuicByteStream] verbatim.
+ *
+ * TLS identity: the listener needs a `sec_identity_t`, which has no public Apple API to build from
+ * loose PEM cert+key. We therefore import [QuicTlsConfig.pkcs12Path] (a PKCS#12 bundle of the same
+ * chain) via `SecPKCS12Import`. The PEM paths used by the JVM/Linux servers are ignored here. See
+ * [nw_helper_quic_identity_from_p12].
+ *
+ * Requires iOS 15+ / macOS 12+ (the listener group handler).
  */
 internal suspend fun buildAppleQuicServer(
     port: Int,

@@ -9,6 +9,7 @@ pluginManagement {
 rootProject.name = "socket"
 include(":socket-quic")
 include(":socket-quic-quiche")
+include(":socket-quic-nw")
 include(":socket-http3")
 
 plugins {

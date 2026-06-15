@@ -11,8 +11,8 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.toNativeData
-import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.SocketConnectionException
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_group
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_cancel
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_datagram_send
@@ -57,14 +57,6 @@ import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-/**
- * Apple [withQuicConnection] using Network.framework.
- *
- * Zero-copy read path: Network.framework → dispatch_data_t → NSData → NSDataBuffer (no copy)
- * Zero-copy write path: NSDataBuffer → toNativeData() → dispatch_data_t (no copy for NSData-backed buffers)
- *
- * Requires iOS 15+ / macOS 12+.
- */
 /**
  * Process-wide lock serializing QUIC connection-group *establishment* (issue #112).
  *

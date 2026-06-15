@@ -43,21 +43,17 @@ docs/.docusaurus/
 docs/static/api/
 socket-quic/hs_err_pid*.log
 
-# Generated at build time by the :socket-quic `generateTestP12` task from the
+# Generated at build time by the :socket-quic-nw `generateTestP12` task from the
 # committed PEM cert+key, for the Apple QUIC server tests (issue #112).
-socket-quic/testcerts/cert.p12
-socket-quic/testcerts/localhost.p12
+# (Apple cert pipeline moved from :socket-quic to :socket-quic-nw in v6 Phase 2b.3.)
+socket-quic-nw/testcerts/cert.p12
+socket-quic-nw/testcerts/localhost.p12
 
 # The self-signed `localhost` identity is generated fresh each build by the
-# :socket-quic `generateLocalhostCert` task (Apple's 398-day SecTrust cap makes a
-# committed cert a guaranteed expiry flake — issue #99). Written to every dir a
-# test source set reads from; none are committed.
-socket-quic/testcerts/localhost.crt
-socket-quic/testcerts/localhost.key
-socket-quic/src/jvmTest/resources/certs/localhost.crt
-socket-quic/src/jvmTest/resources/certs/localhost.key
-socket-quic/src/androidInstrumentedTest/resources/certs/localhost.crt
-socket-quic/src/androidInstrumentedTest/resources/certs/localhost.key
+# :socket-quic-nw `generateLocalhostCert` task (Apple's 398-day SecTrust cap makes a
+# committed cert a guaranteed expiry flake — issue #99). None are committed.
+socket-quic-nw/testcerts/localhost.crt
+socket-quic-nw/testcerts/localhost.key
 
 # Same generated test identities, now produced by the :socket-quic-quiche module
 # (quiche test-cert pipeline) and the :socket-quic `generateTestP12` task (Apple).
