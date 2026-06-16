@@ -3,7 +3,8 @@ package com.ditchoom.socket.quic
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.socket.SSLHandshakeFailedException
+import com.ditchoom.socket.CertificateHashPinningException
+import com.ditchoom.socket.CertificateHashPinningFailure
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -76,12 +77,17 @@ class AndroidQuicCertificateHashPinningTests {
                         try {
                             val pinned = testQuicOptions.copy(serverCertificateHashes = listOf(certHashOf(ByteArray(32) { 0 })))
                             val ex =
-                                assertFailsWith<SSLHandshakeFailedException> {
+                                assertFailsWith<CertificateHashPinningException> {
                                     withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds) {}
                                 }
+                            val failure = ex.failure
                             assertTrue(
-                                ex.message?.contains("hash", ignoreCase = true) == true,
-                                "expected a hash-mismatch message, got: ${ex.message}",
+                                failure is CertificateHashPinningFailure.HashMismatch,
+                                "expected HashMismatch, got: $failure",
+                            )
+                            assertTrue(
+                                failure.computedLeafHash.startsWith("sha-256:"),
+                                "expected an algorithm-prefixed computed hash, got: ${failure.computedLeafHash}",
                             )
                         } finally {
                             serverJob.cancel()
