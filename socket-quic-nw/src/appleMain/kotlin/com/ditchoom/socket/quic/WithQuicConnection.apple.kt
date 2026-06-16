@@ -93,13 +93,6 @@ internal suspend fun connectQuicGroup(
     connectionOptions: TransportConfig,
     timeout: Duration,
 ): AppleQuicGroupConnection {
-    // serverCertificateHashes leaf-hash pinning needs the verify_block to hash the leaf (not yet wired).
-    // Fail loudly rather than silently skip it: a connection the caller believes is pinned, but isn't, is
-    // worse than no pinning at all. (Option 1 backend WIP.)
-    check(quicOptions.serverCertificateHashes.isEmpty()) {
-        "serverCertificateHashes verification is not yet implemented on the Network.framework backend"
-    }
-
     // Build ALPN array — pass as List which K/N bridges to NSArray.
     val alpnList: List<Any?> = quicOptions.alpnProtocols
 
@@ -111,6 +104,16 @@ internal suspend fun connectQuicGroup(
             .flatMap { pemToDerCertificates(it) }
             .ifEmpty { null }
 
+    // W3C serverCertificateHashes leaf-hash pinning (Option 1): each CertificateHash.value is a 32-byte
+    // SHA-256 → NSData (non-consuming), bridged to NSArray<NSData *>. The verify_block in
+    // nw_quic_helpers.h hashes the peer's leaf DER (CC_SHA256) and compares. Empty → null (no pinning).
+    // RequireBoth additionally demands the chain validate; HashOnly makes the hash the sole trust check.
+    val serverCertHashes: List<NSData>? =
+        quicOptions.serverCertificateHashes
+            .map { it.value.toNativeData().nsData }
+            .ifEmpty { null }
+    val requireChain = quicOptions.certificateHashVerification == CertificateHashVerification.RequireBoth
+
     val datagramsEnabled = quicOptions.datagrams != null
     val maxFrameSize: UShort = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX else 0u
 
@@ -121,6 +124,8 @@ internal suspend fun connectQuicGroup(
             alpnList,
             NSNumber(bool = quicOptions.verifyPeer),
             caDerList,
+            serverCertHashes,
+            NSNumber(bool = requireChain),
             quicOptions.idleTimeout.inWholeSeconds.toInt(),
             quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
             timeout.inWholeSeconds.toInt(),

@@ -13,6 +13,8 @@
 #import <Network/Network.h>
 #import <Security/Security.h>
 #import <dispatch/dispatch.h>
+#import <CommonCrypto/CommonDigest.h> // CC_SHA256 for serverCertificateHashes leaf-hash pinning
+#include <string.h>                    // memcmp
 
 // Stream-count flow-control limit advertised to the peer on every QUIC connection (issue #112).
 // NW's default initial_max_streams_bidirectional is ~7, which wedges a connection after a handful
@@ -310,6 +312,8 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     NSArray<NSString *> * _Nonnull alpn_protocols,
     NSNumber * _Nonnull verify_certs,
     NSArray<NSData *> * _Nullable trusted_ca_ders,
+    NSArray<NSData *> * _Nullable server_cert_hashes,
+    NSNumber * _Nonnull server_cert_require_chain,
     int32_t idle_timeout_seconds,
     int32_t keepalive_interval_seconds,
     int32_t connection_timeout_seconds,
@@ -330,6 +334,10 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     const BOOL should_verify_peer = verify_certs.boolValue;
     NSArray<NSData *> * _Nullable pinned_ca_ders =
         (trusted_ca_ders.count > 0) ? [trusted_ca_ders copy] : nil;
+    // W3C serverCertificateHashes: each NSData is a 32-byte SHA-256 of an accepted leaf cert's DER.
+    NSArray<NSData *> * _Nullable pinned_leaf_hashes =
+        (server_cert_hashes.count > 0) ? [server_cert_hashes copy] : nil;
+    const BOOL hash_require_chain = server_cert_require_chain.boolValue;
 
     // Set to the created group below, captured by the verify_block so a pinned-anchor
     // REJECTION can cancel the group. Network.framework does NOT report a client-side
@@ -382,8 +390,88 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                 }
             }
 
+            // W3C serverCertificateHashes leaf-hash pinning verify_block. Under HashOnly the SHA-256 of
+            // the peer's leaf-cert DER matching a pinned value is the SOLE trust check (browser parity —
+            // authenticates a self-signed / ephemeral leaf with no CA); under RequireBoth the chain must
+            // ALSO validate (against pinned anchors when supplied, else system trust). Mirrors the quiche
+            // backend's applyQuicOptions/verifyServerCertificateHashes split. Takes precedence over the
+            // CA-only path below. (Phase 4, Option 1.)
+            if (pinned_leaf_hashes != nil) {
+                static dispatch_queue_t hash_verify_queue;
+                static dispatch_once_t hash_verify_queue_once;
+                dispatch_once(&hash_verify_queue_once, ^{
+                    hash_verify_queue = dispatch_queue_create("com.ditchoom.socket.quic.verify.hash", DISPATCH_QUEUE_SERIAL);
+                });
+                sec_protocol_options_set_verify_block(sec_options,
+                    ^(sec_protocol_metadata_t metadata, sec_trust_t sec_trust, sec_protocol_verify_complete_t complete) {
+                        (void)metadata;
+                        SecTrustRef trust_ref = sec_trust_copy_ref(sec_trust);
+                        if (!trust_ref) { complete(false); return; }
+
+                        // Leaf certificate = index 0 of the presented chain.
+                        SecCertificateRef leaf = NULL;
+                        CFArrayRef chain = NULL;
+                        if (__builtin_available(macOS 12.0, iOS 15.0, tvOS 15.0, watchOS 8.0, *)) {
+                            chain = SecTrustCopyCertificateChain(trust_ref);
+                            if (chain && CFArrayGetCount(chain) > 0) {
+                                leaf = (SecCertificateRef)CFArrayGetValueAtIndex(chain, 0); // owned by `chain`
+                            }
+                        } else {
+                            leaf = SecTrustGetCertificateAtIndex(trust_ref, 0); // get-rule: not owned
+                        }
+
+                        bool hash_match = false;
+                        if (leaf) {
+                            CFDataRef der = SecCertificateCopyData(leaf);
+                            if (der) {
+                                uint8_t digest[CC_SHA256_DIGEST_LENGTH];
+                                CC_SHA256(CFDataGetBytePtr(der), (CC_LONG)CFDataGetLength(der), digest);
+                                for (NSData *h in pinned_leaf_hashes) {
+                                    if (h.length == CC_SHA256_DIGEST_LENGTH &&
+                                        memcmp(h.bytes, digest, CC_SHA256_DIGEST_LENGTH) == 0) {
+                                        hash_match = true;
+                                        break;
+                                    }
+                                }
+                                CFRelease(der);
+                            }
+                        }
+
+                        bool ok = hash_match;
+                        if (ok && hash_require_chain) {
+                            // Defense in depth: the chain must validate too. Pin the supplied CA anchors
+                            // as the sole anchors when present; otherwise default system trust runs.
+                            if (pinned_ca_ders != nil) {
+                                CFMutableArrayRef anchors =
+                                    CFArrayCreateMutable(kCFAllocatorDefault, pinned_ca_ders.count, &kCFTypeArrayCallBacks);
+                                for (NSData *der in pinned_ca_ders) {
+                                    SecCertificateRef ca_cert = SecCertificateCreateWithData(
+                                        kCFAllocatorDefault, (__bridge CFDataRef)der);
+                                    if (ca_cert) { CFArrayAppendValue(anchors, ca_cert); CFRelease(ca_cert); }
+                                }
+                                SecTrustSetAnchorCertificates(trust_ref, anchors);
+                                SecTrustSetAnchorCertificatesOnly(trust_ref, true);
+                                SecTrustSetNetworkFetchAllowed(trust_ref, false);
+                                CFRelease(anchors);
+                            }
+                            CFErrorRef error = NULL;
+                            ok = SecTrustEvaluateWithError(trust_ref, &error);
+                            if (error) CFRelease(error);
+                        }
+
+                        if (chain) CFRelease(chain);
+                        CFRelease(trust_ref);
+
+                        complete(ok);
+                        // NW does not report a client verify_block rejection as a group state change —
+                        // cancel so it surfaces as `cancelled` (→ QuicCloseException), like the CA path.
+                        if (!ok && established_group) {
+                            nw_connection_group_cancel(established_group);
+                        }
+                    },
+                    hash_verify_queue);
             // CA-pinning verify_block (issue #81 — see this function's docstring).
-            if (pinned_ca_ders != nil) {
+            } else if (pinned_ca_ders != nil) {
                 static dispatch_queue_t verify_queue;
                 static dispatch_once_t verify_queue_once;
                 dispatch_once(&verify_queue_once, ^{
