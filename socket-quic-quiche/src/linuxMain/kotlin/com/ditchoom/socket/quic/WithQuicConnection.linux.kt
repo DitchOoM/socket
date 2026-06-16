@@ -99,14 +99,6 @@ internal suspend fun buildLinuxQuicConnection(
 
             applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config))
 
-            // serverCertificateHashes leaf-pinning needs a post-handshake quiche_conn_peer_cert() check,
-            // which is wired on the JVM/Android (FFM/JNI) backends but not yet on Linux/cinterop. Fail
-            // loudly rather than silently skip the pin — a connection the caller believes is pinned but
-            // isn't is worse than none. (Follow-up: step 4 — cinterop CinteropQuicheApi.connPeerCert.)
-            check(quicOptions.serverCertificateHashes.isEmpty()) {
-                "serverCertificateHashes verification is not yet implemented on the Linux quiche backend"
-            }
-
             // Pinned CA trust anchors (#99): load the PEM bundle as the verification
             // anchors so Linux enforces the same private-CA trust as Apple. quiche only
             // loads anchors from a file, so the bundle goes to a temp file the call reads
@@ -250,7 +242,15 @@ internal suspend fun buildLinuxQuicConnection(
                 val quicConn = LinuxQuicConnection(driver, bufferFactory, connScope, onRelease = { parentScope.cancel() })
                 quicConn.start()
                 quicConn.awaitEstablished(timeout)
+                // Connection owns teardown via onRelease now — set established first so the failure
+                // `finally` won't double-cancel; a pin mismatch tears down via quicConn.close() instead.
                 established = true
+                verifyServerCertificateHashes(
+                    quicOptions.serverCertificateHashes,
+                    bufferFactory,
+                    readPeerCertDer = quicConn::readPeerCertDer,
+                    closeConnection = { quicConn.close() },
+                )
                 quicConn
             }
         }
@@ -305,6 +305,21 @@ internal class LinuxQuicConnection(
     override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
+
+    /**
+     * Read the peer's leaf certificate DER into the native buffer at [addr] (capacity [capacity]),
+     * routed through the driver so the `quiche_conn_peer_cert` read is serialized with all other conn
+     * access. Snprintf-style return (see [QuicheCmd.PeerCert]); used by the post-handshake
+     * serverCertificateHashes verifier. Mirrors [JvmQuicConnection.readPeerCertDer].
+     */
+    suspend fun readPeerCertDer(
+        addr: Long,
+        capacity: Int,
+    ): Int {
+        val deferred = CompletableDeferred<Int>()
+        driver.commands.send(QuicheCmd.PeerCert(addr, capacity, deferred))
+        return deferred.await()
+    }
 
     override suspend fun sendDatagram(buffer: ReadBuffer) = datagramAdapter.sendDatagram(buffer)
 

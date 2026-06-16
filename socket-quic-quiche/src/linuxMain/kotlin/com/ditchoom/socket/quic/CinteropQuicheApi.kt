@@ -48,6 +48,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
 import com.ditchoom.socket.quic.quiche.quiche_conn_new_scid
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
+import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
@@ -75,6 +76,7 @@ import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_next
 import kotlinx.cinterop.BooleanVar
 import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.NativePtr
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.UIntVar
@@ -93,6 +95,7 @@ import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
+import platform.posix.memcpy
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.nanoseconds
 
@@ -363,12 +366,22 @@ internal object CinteropQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int =
-        // serverCertificateHashes leaf-pinning is not yet wired on the Linux/cinterop backend; the Linux
-        // connect path guards against it (WithQuicConnection.linux.kt), so this is never reached. Throw
-        // loudly if it ever is, rather than silently skipping the pin. Follow-up: step 4.
-        throw UnsupportedOperationException(
-            "serverCertificateHashes verification is not yet supported on the Linux quiche backend",
-        )
+        memScoped {
+            val out = alloc<CPointerVar<UByteVar>>() // const uint8_t **out
+            val outLen = alloc<ULongVar>() // size_t *out_len
+            quiche_conn_peer_cert(conn.handle.toCPointer()!!, out.ptr, outLen.ptr)
+            val len = outLen.value.toInt()
+            val src = out.value
+            if (len <= 0 || src == null) {
+                0
+            } else {
+                // Copy out only when it fits; otherwise report the needed length so the caller retries.
+                if (len <= bufLen) {
+                    memcpy(buf.toCPointer<UByteVar>()!!, src, len.convert())
+                }
+                len
+            }
+        }
 
     // --- Unreliable datagrams (RFC 9221) ---
 

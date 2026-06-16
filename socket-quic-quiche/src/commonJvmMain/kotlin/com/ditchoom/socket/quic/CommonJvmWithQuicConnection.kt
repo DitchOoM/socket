@@ -1,9 +1,7 @@
 package com.ditchoom.socket.quic
 
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
-import com.ditchoom.socket.SSLHandshakeFailedException
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -206,7 +204,12 @@ internal suspend fun buildJvmQuicConnection(
         // the failure `finally` below won't double-free it. A verification failure past this point tears
         // the connection down via quicConnection.close() instead (inside verifyServerCertificateHashes).
         established = true
-        verifyServerCertificateHashes(quicConnection, quicOptions, bufferFactory)
+        verifyServerCertificateHashes(
+            quicOptions.serverCertificateHashes,
+            bufferFactory,
+            readPeerCertDer = quicConnection::readPeerCertDer,
+            closeConnection = { quicConnection.close() },
+        )
         return quicConnection
     } finally {
         // Establishment failed before the connection took ownership of teardown — release here.
@@ -215,73 +218,6 @@ internal suspend fun buildJvmQuicConnection(
             api.configFree(config)
             parentScope.cancel()
         }
-    }
-}
-
-// W3C serverCertificateHashes pins the leaf certificate, which is small; start modest and only grow if
-// quiche reports a larger DER. The cap guards against a pathological/hostile size (a real leaf is < 4 KiB).
-private const val INITIAL_PEER_CERT_CAPACITY = 2048
-private const val MAX_PEER_CERT_CAPACITY = 1 shl 16 // 64 KiB
-
-/**
- * Enforce W3C `serverCertificateHashes` leaf-certificate pinning post-handshake (Option 1). No-op when
- * no hashes are pinned. Reads the peer's leaf DER via the driver (serialized with conn access), hashes
- * it (SHA-256) and compares against [QuicOptions.serverCertificateHashes]. On any failure — no peer
- * certificate, a too-large certificate, a hash mismatch, or a backend that cannot read the peer cert —
- * the connection is torn down and an [SSLHandshakeFailedException] is thrown, so an unverified
- * connection is never handed back.
- *
- * Under the default [CertificateHashVerification.HashOnly] the quiche handshake ran with `verify_peer`
- * off (see [applyQuicOptions]); this leaf-hash match is the sole trust check, matching the browser.
- */
-private suspend fun verifyServerCertificateHashes(
-    connection: JvmQuicConnection,
-    quicOptions: QuicOptions,
-    bufferFactory: BufferFactory,
-) {
-    val pinned = quicOptions.serverCertificateHashes
-    if (pinned.isEmpty()) return
-    try {
-        var capacity = INITIAL_PEER_CERT_CAPACITY
-        while (true) {
-            val derBuf = bufferFactory.allocate(capacity)
-            try {
-                val addr = derBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-                val len = connection.readPeerCertDer(addr, capacity)
-                when {
-                    len <= 0 ->
-                        throw SSLHandshakeFailedException(
-                            "Peer presented no certificate to match against serverCertificateHashes",
-                        )
-                    len > capacity -> {
-                        // snprintf-style: the DER did not fit; grow (bounded) and re-read.
-                        if (len > MAX_PEER_CERT_CAPACITY) {
-                            throw SSLHandshakeFailedException(
-                                "Peer leaf certificate ($len bytes) exceeds the maximum for hash pinning",
-                            )
-                        }
-                        capacity = len
-                        continue
-                    }
-                    else -> {
-                        derBuf.position(len)
-                        derBuf.resetForRead()
-                        if (!serverCertificateLeafHashMatches(derBuf, pinned, bufferFactory)) {
-                            throw SSLHandshakeFailedException(
-                                "Server certificate hash did not match any pinned serverCertificateHashes",
-                            )
-                        }
-                        return
-                    }
-                }
-            } finally {
-                derBuf.freeNativeMemory()
-            }
-        }
-    } catch (t: Throwable) {
-        // Verification failed (or the read errored) — never return an unverified connection.
-        runCatching { connection.close() }
-        throw t
     }
 }
 
