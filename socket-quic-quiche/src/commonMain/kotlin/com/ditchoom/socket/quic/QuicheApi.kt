@@ -281,6 +281,24 @@ interface QuicheApi {
         error: QuicError,
     ): Int
 
+    /**
+     * Copy the peer's TLS **leaf** certificate DER (`quiche_conn_peer_cert`) into the native buffer at
+     * [buf] (capacity [bufLen] bytes), used for `serverCertificateHashes` leaf-hash pinning. Returns:
+     * - `0` — the peer presented no certificate (e.g. `verify_peer` was off and none was sent, or this
+     *   is called before the handshake processed the peer's certificate);
+     * - `N in 1..bufLen` — the DER length; the first `N` bytes of [buf] hold the certificate;
+     * - `N > bufLen` — the DER length, but **nothing was copied** (it did not fit); the caller must
+     *   re-allocate [buf] to at least `N` bytes and call again (snprintf-style two-pass read).
+     *
+     * The DER lives in quiche-owned memory valid only for [conn]'s lifetime, so it is copied out here.
+     * quiche is single-threaded — call this only from the driver loop (via [QuicheCmd.PeerCert]).
+     */
+    fun connPeerCert(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
     // --- Path migration ---
 
     /**

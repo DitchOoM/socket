@@ -87,17 +87,24 @@ internal fun applyQuicOptions(
 
     calls.setDisableActiveMigration(options.disableActiveMigration)
     calls.setActiveConnectionIdLimit(options.activeConnectionIdLimit)
-    // Pinning CA anchors (trustedCaCertificatesPem) implies peer verification against
-    // those anchors regardless of verifyPeer's value — mirrors the Apple path, where a
-    // pinned anchor always drives a real verify_block. The anchors themselves are loaded
-    // by the platform connect path (it owns the PEM→temp-file→native handoff). (#99)
-    calls.verifyPeer(options.verifyPeer || options.trustedCaCertificatesPem.isNotEmpty())
-    // serverCertificateHashes leaf-hash pinning needs a post-handshake check against
-    // quiche_conn_peer_cert() (not yet wired). Fail loudly rather than silently skip it: a connection
-    // the caller believes is pinned, but isn't, is worse than no pinning at all. (Option 1 backend WIP.)
-    check(options.serverCertificateHashes.isEmpty()) {
-        "serverCertificateHashes verification is not yet implemented on the quiche backend"
-    }
+    // Peer verification policy.
+    // - serverCertificateHashes pinning is enforced post-handshake against quiche_conn_peer_cert() by
+    //   the connect path, NOT by quiche's chain verifier. Under the default HashOnly (browser parity:
+    //   the leaf hash is the sole trust check) we turn quiche's verify_peer OFF, so the handshake
+    //   completes against a self-signed / ephemeral leaf with no CA. RequireBoth additionally demands
+    //   the chain validate, so verify_peer stays ON (a self-signed leaf is then rejected even on a hash
+    //   match — the browser cannot express this mode).
+    // - With no pinned hashes, the prior rule applies: verify unless explicitly disabled, and always
+    //   verify when CA anchors are pinned (trustedCaCertificatesPem implies verification against those
+    //   anchors regardless of verifyPeer — mirrors the Apple verify_block; anchors are loaded by the
+    //   platform connect path). (#99)
+    val verifyPeer =
+        if (options.serverCertificateHashes.isNotEmpty()) {
+            options.certificateHashVerification == CertificateHashVerification.RequireBoth
+        } else {
+            options.verifyPeer || options.trustedCaCertificatesPem.isNotEmpty()
+        }
+    calls.verifyPeer(verifyPeer)
 
     // Congestion control
     calls.setCcAlgorithm(options.congestionControl.quicheValue)

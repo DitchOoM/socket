@@ -63,6 +63,22 @@ internal class JvmQuicConnection(
         }
     }
 
+    /**
+     * Read the peer's leaf certificate DER into the native buffer at [addr] (capacity [capacity]),
+     * routed through the driver so the `quiche_conn_peer_cert` read is serialized with all other
+     * conn access. Returns the DER length (snprintf-style: copied when <= [capacity], else re-read at
+     * the returned size; 0 = no peer certificate). Used by the post-handshake serverCertificateHashes
+     * verifier. Throws if the backend cannot read the peer certificate (e.g. JNI/Android until step 2).
+     */
+    internal suspend fun readPeerCertDer(
+        addr: Long,
+        capacity: Int,
+    ): Int {
+        val deferred = CompletableDeferred<Int>()
+        driver.commands.send(QuicheCmd.PeerCert(addr, capacity, deferred))
+        return deferred.await()
+    }
+
     override suspend fun acceptStream(): QuicByteStream = driver.incomingStreams.receive()
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()

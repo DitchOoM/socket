@@ -371,6 +371,16 @@ class QuicheDriver(
                 cmd.result.complete(result)
             }
 
+            is QuicheCmd.PeerCert -> {
+                // A throwing backend (JNI/cinterop stub until their step lands) must NOT crash the loop or
+                // wedge the awaiting caller — complete the deferred exceptionally so connect rethrows.
+                try {
+                    cmd.result.complete(api.connPeerCert(conn, cmd.addr, cmd.bufLen))
+                } catch (t: Throwable) {
+                    cmd.result.completeExceptionally(t)
+                }
+            }
+
             is QuicheCmd.Close -> {
                 api.connClose(conn, cmd.error)
                 // Sync state from quiche BEFORE signalling the close completed, so a caller
@@ -785,6 +795,9 @@ class QuicheDriver(
             // dgramWritableSignal, which throws QuicCloseException. Mirrors the stream cases above.
             is QuicheCmd.DgramRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
             is QuicheCmd.DgramSend -> cmd.result.complete(-1)
+            // Connection gone before the cert could be read — report "no certificate" (0); the verifier
+            // turns that into a handshake failure, which is the right outcome for a torn-down connection.
+            is QuicheCmd.PeerCert -> cmd.result.complete(0)
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Failed("connection closed"))
         }

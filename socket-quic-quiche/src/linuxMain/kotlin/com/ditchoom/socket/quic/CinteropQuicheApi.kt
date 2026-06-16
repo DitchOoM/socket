@@ -358,6 +358,18 @@ internal object CinteropQuicheApi : QuicheApi {
             err.convert(),
         )
 
+    override fun connPeerCert(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        // serverCertificateHashes leaf-pinning is not yet wired on the Linux/cinterop backend; the Linux
+        // connect path guards against it (WithQuicConnection.linux.kt), so this is never reached. Throw
+        // loudly if it ever is, rather than silently skipping the pin. Follow-up: step 4.
+        throw UnsupportedOperationException(
+            "serverCertificateHashes verification is not yet supported on the Linux quiche backend",
+        )
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     override fun connDgramSend(

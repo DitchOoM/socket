@@ -95,6 +95,20 @@ sealed interface QuicheCmd {
         val result: CompletableDeferred<StreamRecvResult>,
     ) : QuicheCmd
 
+    /**
+     * Read the peer's TLS leaf certificate DER into [addr]..[addr]+[bufLen] (`quiche_conn_peer_cert`),
+     * for `serverCertificateHashes` leaf-hash pinning. [result] is the DER length: copied into [addr]
+     * when it fits ([result] <= [bufLen]); when larger, nothing is copied and the caller re-allocates
+     * to [result] bytes and re-issues. 0 = peer presented no certificate. Routed through the driver so
+     * the read is serialized with all other quiche-conn access. The caller owns the buffer at [addr]
+     * and must keep it alive until [result] completes (mirrors the StreamRecv/DgramRecv lifetime rule).
+     */
+    class PeerCert(
+        val addr: Long,
+        val bufLen: Int,
+        val result: CompletableDeferred<Int>,
+    ) : QuicheCmd
+
     /** Gracefully close the connection. */
     class Close(
         val error: QuicError,

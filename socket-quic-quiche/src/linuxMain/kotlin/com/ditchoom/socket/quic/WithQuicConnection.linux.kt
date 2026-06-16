@@ -99,6 +99,14 @@ internal suspend fun buildLinuxQuicConnection(
 
             applyQuicOptions(quicOptions, LinuxQuicConfigCalls(config))
 
+            // serverCertificateHashes leaf-pinning needs a post-handshake quiche_conn_peer_cert() check,
+            // which is wired on the JVM/Android (FFM/JNI) backends but not yet on Linux/cinterop. Fail
+            // loudly rather than silently skip the pin — a connection the caller believes is pinned but
+            // isn't is worse than none. (Follow-up: step 4 — cinterop CinteropQuicheApi.connPeerCert.)
+            check(quicOptions.serverCertificateHashes.isEmpty()) {
+                "serverCertificateHashes verification is not yet implemented on the Linux quiche backend"
+            }
+
             // Pinned CA trust anchors (#99): load the PEM bundle as the verification
             // anchors so Linux enforces the same private-CA trust as Apple. quiche only
             // loads anchors from a file, so the bundle goes to a temp file the call reads

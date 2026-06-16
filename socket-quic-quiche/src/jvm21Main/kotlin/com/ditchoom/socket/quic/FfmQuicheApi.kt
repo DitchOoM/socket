@@ -178,6 +178,11 @@ class FfmQuicheApi private constructor(
         )
     }
 
+    private val hConnPeerCert by lazy {
+        // void quiche_conn_peer_cert(conn, const uint8_t **out, size_t *out_len)
+        downcall("quiche_conn_peer_cert", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+    }
+
     // --- Path migration handles ---
     private val hConnProbePath by lazy {
         downcall(
@@ -489,6 +494,25 @@ class FfmQuicheApi private constructor(
         direction: Int,
         err: Long,
     ): Int = hStreamShutdown.invokeExact(seg(conn.handle), streamId.id, direction, err) as Int
+
+    override fun connPeerCert(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        Arena.ofConfined().use { arena ->
+            val outPtr = arena.allocate(ADDRESS) // const uint8_t **out
+            val outLen = arena.allocate(JAVA_LONG) // size_t *out_len
+            hConnPeerCert.invokeExact(seg(conn.handle), outPtr, outLen)
+            val len = outLen.get(JAVA_LONG, 0).toInt()
+            if (len <= 0) return@use 0
+            // Copy out only when it fits; otherwise report the needed length so the caller retries.
+            if (len <= bufLen) {
+                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
+                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
+            }
+            len
+        }
 
     // --- Unreliable datagrams (RFC 9221) ---
 

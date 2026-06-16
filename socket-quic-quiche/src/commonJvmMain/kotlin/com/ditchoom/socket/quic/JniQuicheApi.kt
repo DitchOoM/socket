@@ -239,6 +239,12 @@ object JniQuicheApi : QuicheApi {
         err: Long,
     ): Int = nConnStreamShutdown(conn.handle, streamId.id, direction, err)
 
+    override fun connPeerCert(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnPeerCert(conn.handle, buf, bufLen)
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     override fun configEnableDgram(
@@ -651,6 +657,14 @@ object JniQuicheApi : QuicheApi {
         streamId: Long,
         direction: Int,
         err: Long,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnPeerCert(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
     ): Int
 
     @JvmStatic

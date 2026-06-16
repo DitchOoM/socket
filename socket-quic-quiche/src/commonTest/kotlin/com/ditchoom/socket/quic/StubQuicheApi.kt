@@ -234,6 +234,16 @@ internal class StubQuicheApi : QuicheApi {
         return 0
     }
 
+    /** Length [connPeerCert] reports (0 = "no peer certificate"). The stub has no real native [buf] to
+     *  copy into, so it never writes — driver-plumbing tests only assert on the returned length. */
+    @Volatile var peerCertLen: Int = 0
+
+    override fun connPeerCert(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = peerCertLen
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     /** Records the last [configEnableDgram] call so tests can assert it was wired. */

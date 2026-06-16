@@ -4,6 +4,19 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 
 /**
+ * Computes the SHA-256 (FIPS 180-4) digest of this buffer's remaining bytes (position..limit) and
+ * appends the [Sha256.DIGEST_SIZE] result bytes to [out]. Reads positionally; does **not** consume
+ * this buffer (its position is unchanged on return).
+ *
+ * TEMPORARY HOME — this mirrors the exact signature planned for `com.ditchoom:buffer`'s `ReadBuffer`
+ * (as a default interface method). When buffer ships it, delete this extension and the [Sha256]
+ * object below: every call site (`buffer.sha256(out)`) is unchanged — the buffer member just resolves
+ * instead. Living here for now is what lets both `socket-quic` (Apple backend) and `socket-quic-quiche`
+ * (quiche backend) share one digest without exposing the impl, since both already depend on buffer.
+ */
+fun ReadBuffer.sha256(out: WriteBuffer): Unit = Sha256.digest(this, out)
+
+/**
  * Minimal SHA-256 (FIPS 180-4) over a [ReadBuffer]'s remaining bytes — the digest behind the
  * `serverCertificateHashes` leaf-certificate-hash verifier ([CertificateHash]).
  *

@@ -239,6 +239,23 @@ JNIEXPORT jint JNICALL JNI_FN(nConnStreamShutdown)(
         (enum quiche_shutdown)direction, (uint64_t)err);
 }
 
+/* serverCertificateHashes leaf-pinning: copy the peer's TLS leaf certificate DER into the caller's
+   native buffer at `buf` (capacity `buf_len`). Returns the DER length: copied when it fits
+   (len <= buf_len), 0 when the peer presented no certificate, or the (larger) needed length WITHOUT
+   copying when it does not fit — the caller re-allocates and calls again (snprintf-style two-pass).
+   The DER quiche returns points into conn-owned memory valid for the connection's lifetime. */
+JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    quiche_conn_peer_cert((quiche_conn *)(uintptr_t)conn, &out, &out_len);
+    if (out == NULL || out_len == 0) return 0;
+    if ((jlong)out_len <= (jlong)buf_len) {
+        memcpy((void *)(uintptr_t)buf, out, out_len);
+    }
+    return (jint)out_len;
+}
+
 /* --- Unreliable datagrams (RFC 9221) --- */
 
 JNIEXPORT void JNICALL JNI_FN(nConfigEnableDgram)(
