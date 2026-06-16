@@ -1,6 +1,9 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.PrivateKey
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import java.util.Base64
 
 plugins {
@@ -1898,6 +1901,122 @@ val generateLocalhostCert =
         }
     }
 
+// --- W3C `serverCertificateHashes` constraint fixtures, GENERATED at build time (Phase 4) ---
+// The serverCertificateHashes pinning verifier additionally enforces the W3C leaf-cert constraints
+// (validity ≤ 14 days, currently valid, ECDSA P-256) once the leaf hash matches. The existing
+// `cert.crt` (RSA-2048, 2020–2047) violates BOTH ≤14d AND P-256, so it can't be the *accept*
+// fixture once enforcement lands. We mint a small matrix instead — one compliant leaf plus one
+// dedicated violator per constraint branch — so each backend's native X.509 parser can be proven
+// against an isolated failure mode (the day-precision boundaries live in the deterministic
+// `checkServerCertificatePinConstraints` unit tests, not here):
+//   pinned          → EC P-256, 13-day, currently valid           → the ACCEPT fixture.
+//   pinned-expired  → EC P-256, started 2d ago, 1-day validity    → NotTemporallyValid (expired).
+//   pinned-toolong  → EC P-256, 15-day validity                   → ValidityPeriodTooLong (> 14d).
+//   pinned-rsa      → RSA-2048, 13-day, currently valid           → UnsupportedPublicKey (not EC).
+// Each is emitted as `<name>.crt` + `<name>.key` + `<name>.sha256` (lowercase hex of the leaf DER,
+// computed here via java.security MessageDigest — an impl independent of the verifier under test —
+// so the Kotlin/Native tests, which have no java.security, can read the expected pin from a file
+// instead of hard-coding a hash that would drift every regeneration). All dirs are git-ignored.
+data class PinnedFixtureSpec(
+    val name: String,
+    val keyAlg: String,
+    val keyParam: List<String>,
+    val sigAlg: String,
+    val startDate: String?,
+    val validityDays: Int,
+)
+
+val pinnedFixtureSpecs =
+    listOf(
+        PinnedFixtureSpec("pinned", "EC", listOf("-groupname", "secp256r1"), "SHA256withECDSA", null, 13),
+        PinnedFixtureSpec("pinned-expired", "EC", listOf("-groupname", "secp256r1"), "SHA256withECDSA", "-2d", 1),
+        PinnedFixtureSpec("pinned-toolong", "EC", listOf("-groupname", "secp256r1"), "SHA256withECDSA", null, 15),
+        PinnedFixtureSpec("pinned-rsa", "RSA", listOf("-keysize", "2048"), "SHA256withRSA", null, 13),
+    )
+
+// Mint each fixture's PEM cert + PKCS#8 key + `.sha256` into [dir]. Pure JVM (keytool + java.security),
+// so it runs on every host including the Windows jvmTest runner.
+fun generatePinnedFixturesInto(
+    dir: File,
+    keytool: String,
+    tmpRoot: File,
+) {
+    fun keytool(vararg args: String): Process = ProcessBuilder(listOf(keytool) + args).redirectErrorStream(false).start()
+    dir.mkdirs()
+    for (spec in pinnedFixtureSpecs) {
+        val tmpP12 = tmpRoot.resolve("${spec.name}.p12").also { it.delete() }
+        val genArgs =
+            buildList {
+                addAll(listOf("-genkeypair", "-alias", spec.name, "-keyalg", spec.keyAlg))
+                addAll(spec.keyParam)
+                addAll(listOf("-sigalg", spec.sigAlg))
+                spec.startDate?.let { addAll(listOf("-startdate", it)) }
+                addAll(listOf("-validity", spec.validityDays.toString()))
+                addAll(listOf("-dname", "CN=localhost"))
+                addAll(listOf("-ext", "san=dns:localhost,ip:127.0.0.1"))
+                addAll(listOf("-ext", "eku=serverAuth"))
+                addAll(listOf("-keystore", tmpP12.absolutePath, "-storetype", "PKCS12", "-storepass", "testpass", "-keypass", "testpass"))
+            }
+        val gen = keytool(*genArgs.toTypedArray())
+        val genErr = gen.errorStream.bufferedReader().readText()
+        if (gen.waitFor() != 0) throw GradleException("keytool -genkeypair failed for ${spec.name}:\n$genErr")
+
+        val exp = keytool("-exportcert", "-rfc", "-alias", spec.name, "-keystore", tmpP12.absolutePath, "-storepass", "testpass")
+        val certPem = exp.inputStream.bufferedReader().readText()
+        val expErr = exp.errorStream.bufferedReader().readText()
+        if (exp.waitFor() != 0) throw GradleException("keytool -exportcert failed for ${spec.name}:\n$expErr")
+
+        val ks = KeyStore.getInstance("PKCS12")
+        tmpP12.inputStream().use { ks.load(it, "testpass".toCharArray()) }
+        val key = ks.getKey(spec.name, "testpass".toCharArray()) as PrivateKey
+        val b64 = Base64.getMimeEncoder(64, "\n".toByteArray()).encodeToString(key.encoded)
+        val keyPem = "-----BEGIN PRIVATE KEY-----\n$b64\n-----END PRIVATE KEY-----\n"
+
+        val x509 = CertificateFactory.getInstance("X.509").generateCertificate(certPem.byteInputStream()) as X509Certificate
+        val sha256Hex = MessageDigest.getInstance("SHA-256").digest(x509.encoded).joinToString("") { "%02x".format(it) }
+
+        dir.resolve("${spec.name}.crt").writeText(certPem)
+        dir.resolve("${spec.name}.key").writeText(keyPem)
+        dir.resolve("${spec.name}.sha256").writeText(sha256Hex)
+    }
+}
+
+// True when the `pinned` accept fixture (and, regenerated alongside it, `pinned-rsa`) is still
+// comfortably valid — it and pinned-rsa are the only currently-valid-by-design fixtures, so their
+// e2e accept / UnsupportedPublicKey tests time-bomb if the leaf expires. Regenerate when any output
+// is missing or `pinned` has < 3 days of validity left. CI starts clean so always mints fresh.
+fun pinnedFixturesFresh(dir: File): Boolean {
+    val pinnedCrt = dir.resolve("pinned.crt")
+    val allPresent =
+        pinnedFixtureSpecs.all { s ->
+            listOf("crt", "key", "sha256").all { ext -> dir.resolve("${s.name}.$ext").exists() }
+        }
+    if (!allPresent) return false
+    return try {
+        val cert = pinnedCrt.inputStream().use { CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate }
+        cert.notAfter.time - System.currentTimeMillis() > 3L * 24 * 60 * 60 * 1000
+    } catch (_: Exception) {
+        false
+    }
+}
+
+val pinnedFixtureExts = listOf("crt", "key", "sha256")
+val generatePinnedW3cCerts =
+    tasks.register("generatePinnedW3cCerts") {
+        group = "verification"
+        description = "Generate the W3C serverCertificateHashes constraint fixtures (compliant + per-branch violators)."
+        outputs.files(
+            localhostCertDirs.flatMap { dir -> pinnedFixtureSpecs.flatMap { s -> pinnedFixtureExts.map { dir.resolve("${s.name}.$it") } } },
+        )
+        outputs.upToDateWhen { localhostCertDirs.all { pinnedFixturesFresh(it) } }
+        doLast {
+            val javaHome = File(System.getProperty("java.home"))
+            val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+            val keytool = javaHome.resolve(if (isWindows) "bin/keytool.exe" else "bin/keytool").absolutePath
+            localhostCertDirs.forEach { generatePinnedFixturesInto(it, keytool, temporaryDir) }
+        }
+    }
+
 // --- PKCS#12 test identities for the Apple QUIC server tests (issues #112 + #99) ---
 // Network.framework's QUIC listener needs a sec_identity_t, which SecPKCS12Import builds from a
 // PKCS#12 bundle. Generate a `.p12` for each PEM cert+key using the system openssl (LibreSSL — its
@@ -1917,4 +2036,4 @@ tasks
         it.name.matches(Regex("(jvm|linuxX64|macos|ios|tvos|watchos)\\w*Test")) ||
             (it.name.contains("ProcessResources", ignoreCase = true) && it.name.contains("Test", ignoreCase = true)) ||
             it.name.matches(Regex("process\\w*(AndroidTest|UnitTest)\\w*Resources"))
-    }.configureEach { dependsOn(generateLocalhostCert) }
+    }.configureEach { dependsOn(generateLocalhostCert, generatePinnedW3cCerts) }

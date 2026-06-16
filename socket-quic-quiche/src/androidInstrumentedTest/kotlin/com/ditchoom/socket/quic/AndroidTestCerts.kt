@@ -34,4 +34,7 @@ internal object AndroidTestCerts {
 
     val tlsConfig: QuicTlsConfig
         get() = QuicTlsConfig(certChainPath = path("cert.crt"), privKeyPath = path("cert.key"))
+
+    /** A TLS identity from a named W3C-constraint fixture (`pinned`, `pinned-expired`, …). */
+    fun tlsConfigFor(name: String): QuicTlsConfig = QuicTlsConfig(certChainPath = path("$name.crt"), privKeyPath = path("$name.key"))
 }

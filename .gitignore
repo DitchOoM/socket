@@ -65,3 +65,12 @@ socket-quic-quiche/src/jvmTest/resources/certs/localhost.crt
 socket-quic-quiche/src/jvmTest/resources/certs/localhost.key
 socket-quic-quiche/src/androidInstrumentedTest/resources/certs/localhost.crt
 socket-quic-quiche/src/androidInstrumentedTest/resources/certs/localhost.key
+
+# W3C serverCertificateHashes constraint fixtures (compliant `pinned` + per-branch violators),
+# generated fresh each build by the `generatePinnedW3cCerts` tasks. Short-lived by design (EC P-256,
+# ≤14-day), so committing one would be a guaranteed expiry flake — like `localhost`, none are committed.
+# Covers *.crt / *.key / *.sha256 (the leaf-DER hash the K/N tests pin) and *.p12 (Apple identities).
+socket-quic-nw/testcerts/pinned*
+socket-quic-quiche/testcerts/pinned*
+socket-quic-quiche/src/jvmTest/resources/certs/pinned*
+socket-quic-quiche/src/androidInstrumentedTest/resources/certs/pinned*

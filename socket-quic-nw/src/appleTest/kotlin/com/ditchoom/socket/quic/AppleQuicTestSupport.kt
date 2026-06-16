@@ -36,6 +36,20 @@ internal fun appleQuicTestTlsConfig() =
     )
 
 /**
+ * A TLS identity from a named W3C `serverCertificateHashes` constraint fixture (`pinned`,
+ * `pinned-expired`, `pinned-toolong`, `pinned-rsa`) — the build's `generateTestP12` packages each into
+ * a `.p12` the Network.framework listener presents. The compliant `pinned` drives the accept test; the
+ * violators drive the per-constraint reject tests.
+ */
+internal fun appleQuicPinnedTlsConfig(name: String = "pinned") =
+    QuicTlsConfig(
+        certChainPath = appleTestCertPath("$name.crt"),
+        privKeyPath = appleTestCertPath("$name.key"),
+        pkcs12Path = appleTestCertPath("$name.p12"),
+        pkcs12Password = APPLE_TEST_P12_PASSWORD,
+    )
+
+/**
  * The self-signed `localhost` identity (SAN DNS:localhost,IP:127.0.0.1) the CA-pinning tests need
  * — distinct from [appleQuicTestTlsConfig] so the chain both anchors to a pinnable cert AND matches
  * the "localhost" connect hostname. Backed by `localhost.p12`, which `generateTestP12` produces
