@@ -6,12 +6,19 @@ plugins {
     alias(libs.plugins.ktlint)
 }
 
-// :socket-quic-testsuite holds the cross-backend QUIC conformance suites (the abstract `*TestSuite`
-// classes) plus the shared test harness, in MAIN source sets so BOTH backends — the quiche backend
-// (:socket-quic-quiche, jvm/android/linux) and the Network.framework backend (:socket-quic-nw,
-// apple) — can extend them from their own per-platform test source sets. Kotlin expect/actual can't
-// cross module boundaries, so the harness `expect`s and their per-platform `actual`s live here
-// together (commonJvm/linux/apple). Not published; consumed only as `testImplementation`.
+// :socket-testsuite holds the stack's cross-module conformance suites (the abstract `*TestSuite`
+// classes) plus the shared test harness, in MAIN source sets so consumers can extend them from their
+// own per-platform test source sets. Kotlin expect/actual can't cross module boundaries, so the
+// harness `expect`s and their per-platform `actual`s live here together (commonJvm/linux/apple). Not
+// published; consumed only as `testImplementation`. Two families today:
+//   - QUIC backend conformance (the `Quic*TestSuite`s): extended by the quiche backend
+//     (:socket-quic-quiche, jvm/android/linux) and the Network.framework backend (:socket-quic-nw,
+//     apple). These drive only the public default-engine entrypoints (withQuicConnection/Server).
+//   - WebTransport conformance (`WebTransportTestSuite`): extended by :socket-webtransport's native
+//     test source sets. Drives the PUBLIC h3 server (withHttp3Server) + the PUBLIC neutral client
+//     (webTransportSupport()) — never any socket-http3 codec internals, so socket-http3's white-box
+//     tests (the internal-codec Http3LoopbackServer) deliberately stay in :socket-http3's own
+//     commonTest rather than moving here.
 
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
@@ -61,6 +68,14 @@ kotlin {
             // transitively exposes the :socket-quic SPI. No cycle: the backends' *main* code never
             // depends on this test-support module (only their *test* source sets do).
             api(project(":socket-quic-default"))
+            // WebTransport conformance suite: the PUBLIC h3 server (withHttp3Server) lives in
+            // :socket-http3, and the PUBLIC neutral client (webTransportSupport()) in
+            // :socket-webtransport. socket-webtransport's http3Main pulls socket-http3 as
+            // `implementation` (not exposed transitively), so socket-http3 is named explicitly here.
+            // Both build a superset of this module's targets (jvm/android/linux/apple), so they resolve
+            // on every target. Still test-scope-only for consumers → no main-code cycle.
+            api(project(":socket-http3"))
+            api(project(":socket-webtransport"))
             api(libs.buffer)
             api(libs.buffer.flow)
             api(libs.kotlinx.coroutines.core)

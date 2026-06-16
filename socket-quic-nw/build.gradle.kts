@@ -68,9 +68,9 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
             // Cross-backend conformance suites (abstract *TestSuite + harness). The Apple* wrapper
             // subclasses in appleTest extend them; the suites themselves + the expect/actual harness
-            // live in :socket-quic-testsuite (shared with the quiche backend). The apple harness
+            // live in :socket-testsuite (shared with the quiche backend). The apple harness
             // actuals also moved there (PlatformActuals).
-            implementation(project(":socket-quic-testsuite"))
+            implementation(project(":socket-testsuite"))
         }
 
         // Per-target Apple actuals that touch platform-width NSUInteger (see

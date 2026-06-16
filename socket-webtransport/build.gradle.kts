@@ -67,8 +67,52 @@ kotlin {
     }
 
     if (isLinux) {
-        linuxX64()
-        linuxArm64()
+        // The linuxX64Test binary stands up a real QUIC server + client (via :socket-testsuite's
+        // WebTransportTestSuite → withHttp3Server / connectMultiplexed), which calls into quiche, so the
+        // test binary must whole-archive libquiche.a — exactly like :socket-http3's and :socket-quic's
+        // native binaries. Without it the binary hits `undefined symbol: quiche_config_new` at runtime.
+        linuxX64 {
+            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-x64/lib")
+            if (quicheLibDir.resolve("libquiche.a").exists()) {
+                binaries.all {
+                    linkerOpts(
+                        "-L${quicheLibDir.absolutePath}",
+                        "-Wl,-Bstatic",
+                        "-Wl,--whole-archive",
+                        "-lquiche",
+                        "-Wl,--no-whole-archive",
+                        "-Wl,-Bdynamic",
+                        "-lpthread",
+                        "-ldl",
+                        "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
+                    )
+                }
+            }
+        }
+        linuxArm64 {
+            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-arm64/lib")
+            if (quicheLibDir.resolve("libquiche.a").exists()) {
+                binaries.all {
+                    linkerOpts(
+                        "-L${quicheLibDir.absolutePath}",
+                        "-Wl,-Bstatic",
+                        "-Wl,--whole-archive",
+                        "-lquiche",
+                        "-Wl,--no-whole-archive",
+                        "-Wl,-Bdynamic",
+                        "-lpthread",
+                        "-ldl",
+                        "-lm",
+                        "-lstdc++",
+                        "--unresolved-symbols=ignore-in-object-files",
+                        "--allow-multiple-definition",
+                    )
+                }
+            }
+        }
     }
 
     applyDefaultHierarchyTemplate()
@@ -114,6 +158,23 @@ kotlin {
 
         jsMain.get().dependsOn(browserMain)
         wasmJsMain.get().dependsOn(browserMain)
+
+        // --- WebTransport conformance (the :socket-testsuite WebTransportTestSuite) ---
+        // Attached ONLY to the http3-backed test source sets (jvm + native), never commonTest: the
+        // suite drives the native Multiplexed provider + the public withHttp3Server, neither of which
+        // exists on browser — and :socket-testsuite has no js/wasmJs targets, so a commonTest edge
+        // would break the browser test compilations. The Jvm*/Linux* subclasses live in those source
+        // sets and supply testTlsConfig + wrapTestBody.
+        jvmTest.dependencies {
+            implementation(project(":socket-testsuite"))
+        }
+        if (isLinux) {
+            named("linuxX64Test") {
+                dependencies {
+                    implementation(project(":socket-testsuite"))
+                }
+            }
+        }
     }
 }
 
@@ -131,6 +192,21 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// The WebTransport conformance suite (:socket-testsuite's WebTransportTestSuite) stands up a real
+// QUIC server + client, which on JDK 21+ loads quiche via FFM as a classloader resource under
+// META-INF/native/<platform>/. :socket-quic-quiche stages those natives onto its OWN jvmTest classpath
+// but doesn't export them to dependents (they're not in the base jvmJar), so reuse the same staged dir
+// here and depend on its staging task — exactly as :socket-http3 does for its loopback/interop tests.
+// Without it the tests fail with "no native lib could be loaded" instead of running.
+afterEvaluate {
+    val quicProject = project(":socket-quic-quiche")
+    val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
+    tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
+        dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
+        classpath += files(stagedNatives)
     }
 }
 

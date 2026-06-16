@@ -1473,7 +1473,7 @@ kotlin {
                 // Cross-backend conformance suites (abstract *TestSuite + harness). The Jvm*/Linux*
                 // wrapper subclasses live in this module's per-platform test source sets; the shared
                 // suites they extend live here. Also consumed by :socket-quic-nw (apple).
-                implementation(project(":socket-quic-testsuite"))
+                implementation(project(":socket-testsuite"))
             }
         }
         val commonJvmMain by creating {
@@ -1512,8 +1512,8 @@ kotlin {
                 // :socket-quic-default (for withQuic*) must be declared here too. See commonTest note.
                 implementation(project(":socket-quic-default"))
                 // Same reason: the Android* wrappers extend the cross-backend suites, which moved to
-                // :socket-quic-testsuite — and this source set doesn't inherit commonTest's deps.
-                implementation(project(":socket-quic-testsuite"))
+                // :socket-testsuite — and this source set doesn't inherit commonTest's deps.
+                implementation(project(":socket-testsuite"))
             }
         }
         androidUnitTest.dependsOn(commonJvmTest)

@@ -175,7 +175,7 @@ abstract class QuicServerTestSuite {
      * error code must (a) still deliver the pre-reset data to the server and (b) make the
      * server's next read terminate rather than hang. Regression guard for the Apple bug
      * where [QuicByteStream.reset] silently degraded to a graceful FIN because the
-     * Network.framework stream didn't implement [ResettableByteStream] — so no RESET_STREAM
+     * Network.framework stream didn't implement [com.ditchoom.buffer.flow.Resettable] — so no RESET_STREAM
      * was ever sent. (Issue #81.) [assertResetObservedByPeer] pins the platform-exact result.
      */
     @Test
