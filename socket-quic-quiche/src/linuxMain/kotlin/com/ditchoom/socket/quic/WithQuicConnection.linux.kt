@@ -250,6 +250,8 @@ internal suspend fun buildLinuxQuicConnection(
                     bufferFactory,
                     readPeerCertDer = quicConn::readPeerCertDer,
                     closeConnection = { quicConn.close() },
+                    // TODO(step 3): pass a BoringSSL-cinterop parser here to enforce the W3C cert
+                    // constraints on Linux. Until then Linux verifies the leaf hash only.
                 )
                 quicConn
             }

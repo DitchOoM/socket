@@ -31,12 +31,13 @@ class AndroidQuicCertificateHashPinningTests {
     private val testQuicOptions =
         QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
-    private val tlsConfig get() = AndroidTestCerts.tlsConfig
+    // The W3C-compliant accept fixture (EC P-256, 13-day); the violators drive the reject tests.
+    private val tlsConfig get() = AndroidTestCerts.tlsConfigFor("pinned")
 
     /** SHA-256 of the server's leaf-cert DER, computed via `java.security` (independent of the verifier). */
     private fun expectedLeafCertHash(): CertificateHash {
         val cf = CertificateFactory.getInstance("X.509")
-        val cert = File(AndroidTestCerts.path("cert.crt")).inputStream().use { cf.generateCertificate(it) }
+        val cert = File(AndroidTestCerts.path("pinned.crt")).inputStream().use { cf.generateCertificate(it) }
         return certHashOf(MessageDigest.getInstance("SHA-256").digest(cert.encoded))
     }
 

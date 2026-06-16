@@ -209,6 +209,9 @@ internal suspend fun buildJvmQuicConnection(
             bufferFactory,
             readPeerCertDer = quicConnection::readPeerCertDer,
             closeConnection = { quicConnection.close() },
+            // JVM/Android extract the W3C constraint fields via java.security (Linux wires its BoringSSL
+            // parser separately; until then it passes no parser and enforces hash-only).
+            parseLeafFields = ::parsePinnedLeafFieldsJvm,
         )
         return quicConnection
     } finally {

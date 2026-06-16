@@ -277,4 +277,16 @@ sealed interface CertificateHashPinningFailure {
     ) : CertificateHashPinningFailure {
         override val description get() = "Pinned leaf certificate public key is not ECDSA P-256: $detail"
     }
+
+    /**
+     * The leaf certificate matched a pin but its DER could not be parsed to extract the W3C constraint
+     * fields (validity / public key) — so the constraints could not be checked. Should be unreachable
+     * (the leaf was already read and hashed), but the verifier fails closed rather than skip the
+     * constraints. [detail] describes the parse error.
+     */
+    data class CertificateParseFailed(
+        val detail: String,
+    ) : CertificateHashPinningFailure {
+        override val description get() = "Pinned leaf certificate matched a pin but could not be parsed to check W3C constraints: $detail"
+    }
 }

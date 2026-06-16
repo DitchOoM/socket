@@ -12,25 +12,38 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Shared **W3C `serverCertificateHashes` leaf-hash pinning** test suite (Phase 4, Option 1). Exercises
- * the full quiche-backend verifier end-to-end against a real loopback server: handshake (with
- * `verify_peer` off under the default [CertificateHashVerification.HashOnly]), then the post-handshake
- * `quiche_conn_peer_cert` read → SHA-256 → compare.
+ * Shared **W3C `serverCertificateHashes` leaf-hash pinning + certificate-constraint** test suite (Phase 4,
+ * Option 1). Exercises the full quiche-backend verifier end-to-end against a real loopback server:
+ * handshake (with `verify_peer` off under the default [CertificateHashVerification.HashOnly]), then the
+ * post-handshake `quiche_conn_peer_cert` read → SHA-256 → compare → (once matched) the W3C constraint
+ * check (validity ≤ 14 days, currently valid, ECDSA P-256).
  *
- * Same 3-tier shape as the other suites: this commonMain abstract drives the test; per-platform
- * subclasses supply [testTlsConfig] and [expectedLeafCertHash] (the SHA-256 of that cert's leaf DER —
- * computed independently of the impl under test: JVM via `java.security`, Linux a hardcoded value from
- * `openssl ... | openssl dgst -sha256`). Running on both JVM (FFM/JNI) and Linux (cinterop) validates
- * each backend's [QuicheApi.connPeerCert] at runtime.
+ * Same 3-tier shape as the other suites: this commonMain abstract drives the tests against the build's
+ * generated fixture matrix; per-platform subclasses resolve a fixture's TLS config + the expected pin
+ * (the SHA-256 of that cert's leaf DER — computed independently of the impl under test: JVM via
+ * `java.security`, Linux/Apple via the build-written `<fixture>.sha256` file).
+ *
+ * Fixtures (see the `generatePinnedW3cCerts` build task): `pinned` is the compliant accept cert (EC
+ * P-256, 13-day); each violator isolates one constraint branch — `pinned-expired` (NotTemporallyValid),
+ * `pinned-toolong` (ValidityPeriodTooLong), `pinned-rsa` (UnsupportedPublicKey). The day-precision
+ * boundaries themselves are covered deterministically in `ServerCertificatePinConstraintsTests`.
  */
 abstract class QuicCertificateHashPinningTestSuite {
-    abstract fun testTlsConfig(): QuicTlsConfig
+    /** TLS identity for a named fixture (`pinned`, `pinned-expired`, `pinned-toolong`, `pinned-rsa`). */
+    abstract fun fixtureTlsConfig(name: String): QuicTlsConfig
 
-    /** The expected pin: SHA-256 of [testTlsConfig]'s leaf certificate DER, as a [CertificateHash]. */
-    abstract fun expectedLeafCertHash(): CertificateHash
+    /** The expected pin: SHA-256 of the named fixture's leaf certificate DER, as a [CertificateHash]. */
+    abstract fun fixtureLeafHash(name: String): CertificateHash
 
     /** Platform hook for skip-on-missing-native-lib (JVM converts `UnsatisfiedLinkError` to a skip). */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
+
+    /**
+     * Whether this backend enforces the W3C certificate constraints yet. Backends wire their native
+     * X.509 parser in their own step (Linux step 3, Apple step 4); until then they verify the leaf hash
+     * only, and the constraint-reject tests skip. The accept + wrong-hash tests run regardless.
+     */
+    protected open fun enforcesW3cConstraints(): Boolean = true
 
     private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
@@ -48,12 +61,12 @@ abstract class QuicCertificateHashPinningTestSuite {
         runQuicTest {
             wrapTestBody {
                 val opts = options()
-                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
+                withQuicServer(port = 0, tlsConfig = fixtureTlsConfig("pinned"), quicOptions = opts) {
                     val handlerRan = CompletableDeferred<Unit>()
                     val serverJob = launch { connections { handlerRan.complete(Unit) } }
                     try {
-                        val pinned = opts.copy(serverCertificateHashes = listOf(expectedLeafCertHash()))
-                        // No throw == the leaf-hash pin verified.
+                        val pinned = opts.copy(serverCertificateHashes = listOf(fixtureLeafHash("pinned")))
+                        // No throw == the leaf-hash pin verified AND the W3C constraints passed.
                         withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
                         handlerRan.await()
                     } finally {
@@ -74,7 +87,7 @@ abstract class QuicCertificateHashPinningTestSuite {
         runQuicTest {
             wrapTestBody {
                 val opts = options()
-                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
+                withQuicServer(port = 0, tlsConfig = fixtureTlsConfig("pinned"), quicOptions = opts) {
                     val serverJob = launch { runCatching { connections {} } }
                     try {
                         val pinned = opts.copy(serverCertificateHashes = listOf(wrongHash()))
@@ -97,4 +110,62 @@ abstract class QuicCertificateHashPinningTestSuite {
                 }
             }
         }
+
+    /** A pinned leaf whose hash matches but whose validity window is in the past — NotTemporallyValid. */
+    @Test
+    fun rejectsExpiredLeaf() =
+        runConstraintRejectTest("pinned-expired") { failure ->
+            assertTrue(
+                failure is CertificateHashPinningFailure.NotTemporallyValid,
+                "expected NotTemporallyValid, got: $failure",
+            )
+        }
+
+    /** A pinned leaf whose validity period exceeds 14 days — ValidityPeriodTooLong. */
+    @Test
+    fun rejectsOverlyLongValidityLeaf() =
+        runConstraintRejectTest("pinned-toolong") { failure ->
+            assertTrue(
+                failure is CertificateHashPinningFailure.ValidityPeriodTooLong,
+                "expected ValidityPeriodTooLong, got: $failure",
+            )
+        }
+
+    /** A pinned leaf with a non-ECDSA-P-256 (RSA) key — UnsupportedPublicKey. */
+    @Test
+    fun rejectsNonP256KeyLeaf() =
+        runConstraintRejectTest("pinned-rsa") { failure ->
+            assertTrue(
+                failure is CertificateHashPinningFailure.UnsupportedPublicKey,
+                "expected UnsupportedPublicKey, got: $failure",
+            )
+        }
+
+    /**
+     * Drive a constraint-violation fixture end-to-end: the server presents [fixture], the client pins
+     * that leaf's real hash (so the hash matches and the W3C constraint check is what rejects), and
+     * [assertFailure] checks the structured failure. Skips on backends not yet enforcing constraints.
+     */
+    private fun runConstraintRejectTest(
+        fixture: String,
+        assertFailure: (CertificateHashPinningFailure) -> Unit,
+    ) = runQuicTest {
+        wrapTestBody {
+            if (!enforcesW3cConstraints()) return@wrapTestBody
+            val opts = options()
+            withQuicServer(port = 0, tlsConfig = fixtureTlsConfig(fixture), quicOptions = opts) {
+                val serverJob = launch { runCatching { connections {} } }
+                try {
+                    val pinned = opts.copy(serverCertificateHashes = listOf(fixtureLeafHash(fixture)))
+                    val ex =
+                        assertFailsWith<CertificateHashPinningException> {
+                            withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
+                        }
+                    assertFailure(ex.failure)
+                } finally {
+                    serverJob.cancel()
+                }
+            }
+        }
+    }
 }

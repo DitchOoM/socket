@@ -13,17 +13,22 @@ import com.ditchoom.buffer.deterministic
  * verify_block's reason out-param), so no per-platform assertion override is needed.
  */
 class AppleQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite() {
-    override fun testTlsConfig() = appleQuicTestTlsConfig()
+    override fun fixtureTlsConfig(name: String) = appleQuicPinnedTlsConfig(name)
 
-    override fun expectedLeafCertHash(): CertificateHash {
-        // SHA-256 of testcerts/cert.crt's leaf DER (the p12 identity is generated from the same PEM), a
-        // stable fixture computed independently via `openssl x509 -outform DER | openssl dgst -sha256`:
-        val bytes = hexToBytes("3e7b7dd003758ae1d66932d3a3ee57d24b1113f35ff63f915ddff6e83a0ad209")
+    override fun fixtureLeafHash(name: String): CertificateHash {
+        // The build writes `<name>.sha256` (lowercase hex of the leaf DER, computed by java.security —
+        // an impl independent of the verify_block under test) alongside the cert, so the K/N test reads
+        // the expected pin from disk rather than hard-coding a hash that drifts every regeneration.
+        val bytes = hexToBytes(appleReadFileText(appleTestCertPath("$name.sha256")).trim())
         val buf = BufferFactory.deterministic().allocate(bytes.size)
         bytes.forEach { buf.writeByte(it) }
         buf.resetForRead()
         return CertificateHash(buf)
     }
+
+    // Apple enforces the W3C constraints once its Security.framework extraction lands (step 4); until
+    // then the verify_block checks the leaf hash only, so the constraint-reject tests skip.
+    override fun enforcesW3cConstraints() = false
 
     /** Skip on `--standalone` Apple simulators (see [shouldSkipQuicHarnessOnSimulator]). */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {

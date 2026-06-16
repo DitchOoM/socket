@@ -1,3 +1,5 @@
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
@@ -5,6 +7,8 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.CertificateHashPinningException
 import com.ditchoom.socket.CertificateHashPinningFailure
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /** SHA-256 digest length in bytes — the only algorithm `serverCertificateHashes` defines. */
 private const val SHA256_DIGEST_BYTES = 32
@@ -27,12 +31,21 @@ private const val MAX_PEER_CERT_CAPACITY = 1 shl 16 // 64 KiB
  *
  * Under the default [CertificateHashVerification.HashOnly] the quiche handshake ran with `verify_peer`
  * off (see [applyQuicOptions]); this leaf-hash match is the sole trust check, matching the browser.
+ *
+ * Once the hash matches, the W3C `serverCertificateHashes` certificate constraints (validity ≤ 14 days,
+ * currently valid, ECDSA P-256) are enforced — but only when [parseLeafFields] is supplied. Each backend
+ * passes its own native X.509 parser (java.security on JVM/Android, BoringSSL on Linux); a backend whose
+ * parser is not yet wired passes `null`, in which case the constraints are not yet enforced (hash-only,
+ * the prior behaviour). A non-null parser that returns `null` on a leaf that already hash-matched is a
+ * fail-closed [CertificateHashPinningFailure.CertificateParseFailed].
  */
 internal suspend fun verifyServerCertificateHashes(
     pinned: List<CertificateHash>,
     bufferFactory: BufferFactory,
     readPeerCertDer: suspend (addr: Long, capacity: Int) -> Int,
     closeConnection: suspend () -> Unit,
+    parseLeafFields: ((der: ReadBuffer) -> X509PinFields?)? = null,
+    now: Instant = Clock.System.now(),
 ) {
     if (pinned.isEmpty()) return
     try {
@@ -63,6 +76,20 @@ internal suspend fun verifyServerCertificateHashes(
                             throw CertificateHashPinningException(
                                 CertificateHashPinningFailure.HashMismatch(pinned.size, match.computedLeafHash),
                             )
+                        }
+                        // The leaf is the operator's own pinned cert; enforce the W3C constraints on it so
+                        // native accepts exactly what a browser would. `matchLeafHash` is non-consuming;
+                        // rewind to the DER start (position 0) — keeping the limit at `len` — before parsing.
+                        if (parseLeafFields != null) {
+                            derBuf.position(0)
+                            val fields =
+                                parseLeafFields(derBuf)
+                                    ?: throw CertificateHashPinningException(
+                                        CertificateHashPinningFailure.CertificateParseFailed("native X.509 parser returned no fields"),
+                                    )
+                            checkServerCertificatePinConstraints(fields, now)?.let {
+                                throw CertificateHashPinningException(it)
+                            }
                         }
                         return
                     }

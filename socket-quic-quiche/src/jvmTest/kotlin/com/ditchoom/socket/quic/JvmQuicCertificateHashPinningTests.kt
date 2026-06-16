@@ -20,11 +20,11 @@ class JvmQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite()
         return File(url.toURI()).absolutePath
     }
 
-    override fun testTlsConfig() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
+    override fun fixtureTlsConfig(name: String) = QuicTlsConfig(certChainPath = certPath("$name.crt"), privKeyPath = certPath("$name.key"))
 
-    override fun expectedLeafCertHash(): CertificateHash {
+    override fun fixtureLeafHash(name: String): CertificateHash {
         val cf = CertificateFactory.getInstance("X.509")
-        val cert = File(certPath("cert.crt")).inputStream().use { cf.generateCertificate(it) }
+        val cert = File(certPath("$name.crt")).inputStream().use { cf.generateCertificate(it) }
         val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded) // ByteArray — test code
         val buf = BufferFactory.Default.allocate(digest.size)
         digest.forEach { buf.writeByte(it) }
