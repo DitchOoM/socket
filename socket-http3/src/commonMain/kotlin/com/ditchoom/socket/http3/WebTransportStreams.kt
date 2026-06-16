@@ -3,16 +3,16 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteSink
 import com.ditchoom.buffer.flow.ByteSource
+import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.quic.HalfCloseableByteStream
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicStreamException
-import com.ditchoom.socket.quic.ResettableByteStream
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -54,8 +54,9 @@ class WebTransportStream internal constructor(
     // Bytes buffered after the WT header when this stream was demultiplexed (peer-opened streams only);
     // returned by the first read(s) before the underlying QUIC stream is read directly. Null when none.
     private var pending: ReadBuffer?,
-) : HalfCloseableByteStream,
-    ResettableByteStream {
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
     /** The underlying QUIC stream id (RFC 9000 §2.1). */
     val streamId: Long get() = stream.streamId.id
 

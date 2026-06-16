@@ -78,7 +78,7 @@ class Http3ConnectionTests {
     private class RecordingByteStream(
         readScript: List<ReadResult> = emptyList(),
     ) : ByteStream,
-        com.ditchoom.socket.quic.ResettableByteStream {
+        com.ditchoom.buffer.flow.Resettable {
         val written = mutableListOf<Int>()
         private val reads = ArrayDeque(readScript)
         var closed = false

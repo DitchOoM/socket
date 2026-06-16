@@ -6,9 +6,12 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.toNativeData
 import com.ditchoom.socket.SocketConnectionException
@@ -434,8 +437,9 @@ internal class NWQuicByteStream(
     private val nwConn: nw_connection_t,
     private val streamId: Long = -1L,
     private val keepAliveSeconds: Int = 0,
-) : HalfCloseableByteStream,
-    ResettableByteStream {
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
     @Volatile
     private var streamClosed = false
 

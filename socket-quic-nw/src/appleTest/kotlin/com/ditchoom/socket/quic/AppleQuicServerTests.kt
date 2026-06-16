@@ -27,7 +27,7 @@ class AppleQuicServerTests : QuicServerTestSuite() {
     /**
      * Network.framework surfaces a peer RESET_STREAM distinctly as [ReadResult.Reset]
      * (unlike the quiche driver, which collapses it to EOF). This is the regression guard
-     * for issue #81: before the fix, [NWQuicByteStream] didn't implement [ResettableByteStream],
+     * for issue #81: before the fix, [NWQuicByteStream] didn't implement [com.ditchoom.buffer.flow.Resettable],
      * so [QuicByteStream.reset] degraded to a graceful FIN and the peer saw `End`, not `Reset`.
      */
     override fun assertResetObservedByPeer(resultClassName: String?) {

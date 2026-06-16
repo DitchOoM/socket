@@ -4,8 +4,10 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
@@ -88,8 +90,9 @@ class QuicheStreamByteStream(
     private val adapter: QuicheStreamAdapter,
     private val bufferFactory: BufferFactory,
     private val bufferSize: Int = 65536,
-) : HalfCloseableByteStream,
-    ResettableByteStream {
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
     @Volatile
     private var closed = false
 

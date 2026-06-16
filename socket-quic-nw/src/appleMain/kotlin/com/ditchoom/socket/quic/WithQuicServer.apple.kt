@@ -6,8 +6,10 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_create_quic_listener
@@ -252,8 +254,9 @@ private val PHANTOM_PEEK_TIMEOUT: Duration = 30.seconds
 private class PrefixedByteStream(
     first: ReadResult.Data,
     private val delegate: ByteStream,
-) : HalfCloseableByteStream,
-    ResettableByteStream {
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
     private var pending: ReadResult.Data? = first
 
     override val isOpen: Boolean get() = delegate.isOpen
@@ -276,7 +279,7 @@ private class PrefixedByteStream(
     ): BytesWritten = delegate.write(buffer, deadline)
 
     override suspend fun shutdownSend() {
-        (delegate as? HalfCloseableByteStream)?.shutdownSend()
+        (delegate as? HalfCloseable)?.shutdownSend()
     }
 
     override suspend fun reset(errorCode: Long) {
@@ -284,7 +287,7 @@ private class PrefixedByteStream(
         // STOP_SENDING) so server-accepted streams reset like client streams; a
         // non-resettable delegate just gets a graceful close. (Issue #81.)
         pending = null
-        (delegate as? ResettableByteStream)?.reset(errorCode) ?: delegate.close()
+        (delegate as? Resettable)?.reset(errorCode) ?: delegate.close()
     }
 
     override suspend fun close() = delegate.close()
