@@ -3,6 +3,7 @@ package com.ditchoom.socket.webtransport
 import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.http3.Http3Connection
 import com.ditchoom.socket.http3.withHttp3Connection
+import com.ditchoom.socket.quic.CertificateHash
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import kotlinx.coroutines.CancellationException
@@ -35,12 +36,12 @@ internal class Http3WebTransportSupport : WebTransportSupport.Multiplexed {
     override suspend fun connect(
         url: String,
         options: WebTransportOptions,
-    ): WebTransportSession = connectInternal(url, Http3WebTransportConfig())
+    ): WebTransportSession = connectInternal(url, options.toNativeConfig())
 
     override suspend fun connectMultiplexed(
         url: String,
         options: WebTransportOptions,
-    ): MultiplexedWebTransport = connectMultiplexedInternal(url, Http3WebTransportConfig())
+    ): MultiplexedWebTransport = connectMultiplexedInternal(url, options.toNativeConfig())
 
     /** Core of [connect]: both the neutral overload and the native [Http3WebTransportConfig] one land here. */
     internal suspend fun connectInternal(
@@ -155,8 +156,32 @@ internal class Http3WebTransportSupport : WebTransportSupport.Multiplexed {
  * WebTransport default (`h3` ALPN + DATAGRAM support — datagrams must be enabled or the session's
  * sendDatagram/datagrams would be dead).
  */
-private fun Http3WebTransportConfig.resolvedQuicOptions(): QuicOptions =
-    quicOptions ?: QuicOptions(alpnProtocols = listOf(HTTP3_ALPN), datagrams = DatagramOptions())
+private fun Http3WebTransportConfig.resolvedQuicOptions(): QuicOptions = quicOptions ?: defaultWebTransportQuicOptions()
+
+/** The default QUIC options for a WebTransport dial: `h3` ALPN + DATAGRAM support. */
+private fun defaultWebTransportQuicOptions(): QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN), datagrams = DatagramOptions())
+
+/**
+ * Map the neutral [WebTransportOptions] onto the native [Http3WebTransportConfig]. Today only
+ * [WebTransportOptions.serverCertificateHashes] needs threading: when set, the neutral hashes are folded
+ * into the default WebTransport QUIC options and verified per the default
+ * ([CertificateHashVerification.HashOnly] — the leaf hash is the sole trust check, matching the
+ * browser, so a self-signed leaf works identically on both); the native [connect]/[connectMultiplexed]
+ * config overloads can opt into [CertificateHashVerification.RequireBoth] to additionally require chain
+ * validation. [WebTransportOptions.allowPooling] is not yet acted on natively (no transparent
+ * connection reuse), so a hash-less options maps to the plain default config.
+ */
+private fun WebTransportOptions.toNativeConfig(): Http3WebTransportConfig =
+    if (serverCertificateHashes.isEmpty()) {
+        Http3WebTransportConfig()
+    } else {
+        Http3WebTransportConfig(
+            quicOptions =
+                defaultWebTransportQuicOptions().copy(
+                    serverCertificateHashes = serverCertificateHashes.map { CertificateHash(it.value, it.algorithm) },
+                ),
+        )
+    }
 
 /**
  * A held HTTP/3 connection (Fork 2 option 1) backing many WebTransport sessions — the native

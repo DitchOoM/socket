@@ -147,6 +147,29 @@ data class QuicOptions(
      * evaluation against the pinned anchors — not a bypass. (#99)
      */
     val trustedCaCertificatesPem: List<String> = emptyList(),
+    /**
+     * Pinned server **leaf**-certificate hashes (W3C WebTransport `serverCertificateHashes`). When
+     * non-empty, the peer's TLS leaf certificate is accepted iff the hash of its DER encoding matches one
+     * of these. Empty (the default) disables leaf-hash pinning. See [certificateHashVerification] for how
+     * this combines with chain validation.
+     *
+     * Unlike [trustedCaCertificatesPem] (CA-anchor pinning), this pins the leaf itself, so it can
+     * authenticate a self-signed or short-lived certificate with no CA — the canonical WebTransport use.
+     * By default ([certificateHashVerification] = [CertificateHashVerification.HashOnly]) the hash match
+     * is the sole trust check, matching the browser.
+     *
+     * **Caveat (divergence from browsers):** the native verifier does not (yet) enforce the W3C
+     * `serverCertificateHashes` certificate constraints — leaf validity <= 14 days and an ECDSA P-256
+     * key. It performs the hash match only. (Follow-up.)
+     */
+    val serverCertificateHashes: List<CertificateHash> = emptyList(),
+    /**
+     * How [serverCertificateHashes] combines with ordinary chain validation. Ignored when
+     * [serverCertificateHashes] is empty. Defaults to [CertificateHashVerification.HashOnly] (browser
+     * parity — the leaf hash is the sole trust check); set [CertificateHashVerification.RequireBoth] to
+     * additionally require the chain to validate (native-only, defense in depth for CA-issued leaves).
+     */
+    val certificateHashVerification: CertificateHashVerification = CertificateHashVerification.HashOnly,
     /** Enable Path MTU Discovery. */
     val enablePmtuDiscovery: Boolean = false,
     /** Enable 0-RTT early data. */

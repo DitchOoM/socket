@@ -93,6 +93,13 @@ internal suspend fun connectQuicGroup(
     connectionOptions: TransportConfig,
     timeout: Duration,
 ): AppleQuicGroupConnection {
+    // serverCertificateHashes leaf-hash pinning needs the verify_block to hash the leaf (not yet wired).
+    // Fail loudly rather than silently skip it: a connection the caller believes is pinned, but isn't, is
+    // worse than no pinning at all. (Option 1 backend WIP.)
+    check(quicOptions.serverCertificateHashes.isEmpty()) {
+        "serverCertificateHashes verification is not yet implemented on the Network.framework backend"
+    }
+
     // Build ALPN array — pass as List which K/N bridges to NSArray.
     val alpnList: List<Any?> = quicOptions.alpnProtocols
 

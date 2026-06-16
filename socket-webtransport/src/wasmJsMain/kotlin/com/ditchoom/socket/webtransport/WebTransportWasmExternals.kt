@@ -26,9 +26,33 @@ internal external fun createWebTransport(
     options: JsAny,
 ): WebTransportJs
 
-/** Build the `WebTransport` constructor's init bag: `{ allowPooling }`. */
-@JsFun("(allowPooling) => ({ allowPooling })")
-internal external fun makeWtInit(allowPooling: Boolean): JsAny
+/**
+ * Build the `WebTransport` constructor's init bag: `{ allowPooling }`, plus `serverCertificateHashes`
+ * when [serverCertificateHashes] is a non-empty array (W3C WebTransport). An empty array is omitted so
+ * the browser keeps ordinary trust evaluation rather than treating it as "pin to nothing".
+ */
+@JsFun(
+    "(allowPooling, serverCertificateHashes) => { " +
+        "const o = { allowPooling }; " +
+        "if (serverCertificateHashes && serverCertificateHashes.length) o.serverCertificateHashes = serverCertificateHashes; " +
+        "return o; }",
+)
+internal external fun makeWtInit(
+    allowPooling: Boolean,
+    serverCertificateHashes: JsAny,
+): JsAny
+
+/** A fresh empty JS array, to accumulate `serverCertificateHashes` entries into. */
+@JsFun("() => []")
+internal external fun jsNewArray(): JsAny
+
+/** Append a `{ algorithm, value }` `serverCertificateHashes` entry to [array]. */
+@JsFun("(array, algorithm, value) => { array.push({ algorithm, value }); }")
+internal external fun jsPushCertHash(
+    array: JsAny,
+    algorithm: String,
+    value: JsAny,
+)
 
 /** Build the `WebTransport.close()` info bag: `{ closeCode, reason }` (draft §6). */
 @JsFun("(closeCode, reason) => ({ closeCode, reason })")

@@ -92,6 +92,12 @@ internal fun applyQuicOptions(
     // pinned anchor always drives a real verify_block. The anchors themselves are loaded
     // by the platform connect path (it owns the PEM→temp-file→native handoff). (#99)
     calls.verifyPeer(options.verifyPeer || options.trustedCaCertificatesPem.isNotEmpty())
+    // serverCertificateHashes leaf-hash pinning needs a post-handshake check against
+    // quiche_conn_peer_cert() (not yet wired). Fail loudly rather than silently skip it: a connection
+    // the caller believes is pinned, but isn't, is worse than no pinning at all. (Option 1 backend WIP.)
+    check(options.serverCertificateHashes.isEmpty()) {
+        "serverCertificateHashes verification is not yet implemented on the quiche backend"
+    }
 
     // Congestion control
     calls.setCcAlgorithm(options.congestionControl.quicheValue)

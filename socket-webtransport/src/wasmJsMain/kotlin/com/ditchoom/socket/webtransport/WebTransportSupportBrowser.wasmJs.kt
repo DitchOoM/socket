@@ -34,7 +34,14 @@ internal class BrowserWebTransportSupport : WebTransportSupport {
         url: String,
         options: WebTransportOptions,
     ): WebTransportSession {
-        val wt = createWebTransport(url, makeWtInit(options.allowPooling))
+        // W3C WebTransport serverCertificateHashes: [{ algorithm, value: BufferSource }]. The browser
+        // treats these as the sole trust check (no chain validation). Each value is copied to a fresh
+        // Uint8Array at the wasm/JS boundary; toJsUint8Array does not advance the source buffer.
+        val certHashes = jsNewArray()
+        for (hash in options.serverCertificateHashes) {
+            jsPushCertHash(certHashes, hash.algorithm, hash.value.toJsUint8Array(hash.value.remaining()))
+        }
+        val wt = createWebTransport(url, makeWtInit(options.allowPooling, certHashes))
         try {
             wt.ready.await()
         } catch (c: CancellationException) {

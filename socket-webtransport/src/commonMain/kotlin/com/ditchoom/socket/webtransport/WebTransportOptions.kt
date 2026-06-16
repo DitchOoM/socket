@@ -15,7 +15,14 @@ package com.ditchoom.socket.webtransport
  *   hold the connection and open sessions on it yourself. The browser honors it directly; native
  *   treats it as "this `connect` may reuse an existing connection rather than dialing a fresh one."
  *   Default `false` (matches the browser default: a dedicated connection).
+ * @property serverCertificateHashes pinned server **leaf**-certificate hashes (W3C WebTransport
+ *   `serverCertificateHashes`). When non-empty, the session is accepted only if the peer's TLS leaf
+ *   certificate hashes to one of these. Both backings use the hash match as the sole trust check by
+ *   default (browser parity — a self-signed / ephemeral leaf works identically everywhere); the
+ *   native-only `Http3WebTransportConfig` can opt into *also* requiring chain validation. Empty (the
+ *   default) uses ordinary trust evaluation. See [WebTransportCertificateHash].
  */
 data class WebTransportOptions(
     val allowPooling: Boolean = false,
+    val serverCertificateHashes: List<WebTransportCertificateHash> = emptyList(),
 )

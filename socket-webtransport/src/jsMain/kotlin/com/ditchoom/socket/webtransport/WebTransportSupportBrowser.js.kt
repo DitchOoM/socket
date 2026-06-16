@@ -33,6 +33,19 @@ internal class BrowserWebTransportSupport : WebTransportSupport {
     ): WebTransportSession {
         val init: dynamic = js("({})")
         init.allowPooling = options.allowPooling
+        if (options.serverCertificateHashes.isNotEmpty()) {
+            // W3C WebTransport: { serverCertificateHashes: [{ algorithm, value: BufferSource }] }. The
+            // browser treats these as the sole trust check (no chain validation). The value is the one
+            // sanctioned Uint8Array boundary view; asUint8Array does not advance the source buffer.
+            init.serverCertificateHashes =
+                options.serverCertificateHashes
+                    .map { hash ->
+                        val entry: dynamic = js("({})")
+                        entry.algorithm = hash.algorithm
+                        entry.value = hash.value.asUint8Array(hash.value.remaining())
+                        entry
+                    }.toTypedArray()
+        }
         val wt = WebTransport(url, init)
         try {
             wt.ready.await()
