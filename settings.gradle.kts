@@ -13,6 +13,7 @@ include(":socket-quic-quiche")
 include(":socket-quic-nw")
 include(":socket-quic-default")
 include(":socket-http3")
+include(":socket-webtransport")
 
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
