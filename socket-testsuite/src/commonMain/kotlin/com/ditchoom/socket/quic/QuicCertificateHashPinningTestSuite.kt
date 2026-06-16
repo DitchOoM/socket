@@ -31,6 +31,22 @@ abstract class QuicCertificateHashPinningTestSuite {
     /** Platform hook for skip-on-missing-native-lib (JVM converts `UnsatisfiedLinkError` to a skip). */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
+    /**
+     * Assert that [connect] fails **because the pinned hash did not match**. The quiche backends
+     * (JVM/Android/Linux) verify post-handshake and throw [SSLHandshakeFailedException] with a
+     * hash-mismatch message — the "hash" wording (distinct from the "no certificate" message) also
+     * proves `connPeerCert` returned a real leaf DER at runtime. Apple/NW rejects inside the handshake
+     * verify_block, which surfaces as a connection failure rather than that specific exception, so the
+     * Apple subclass overrides this.
+     */
+    protected open suspend fun assertWrongHashRejected(connect: suspend () -> Unit) {
+        val ex = assertFailsWith<SSLHandshakeFailedException> { connect() }
+        assertTrue(
+            ex.message?.contains("hash", ignoreCase = true) == true,
+            "expected a hash-mismatch message, got: ${ex.message}",
+        )
+    }
+
     private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
     /** A pin that does NOT match the server's leaf (32 zero bytes) — must be rejected. */
@@ -73,16 +89,9 @@ abstract class QuicCertificateHashPinningTestSuite {
                     val serverJob = launch { runCatching { connections {} } }
                     try {
                         val pinned = opts.copy(serverCertificateHashes = listOf(wrongHash()))
-                        val ex =
-                            assertFailsWith<SSLHandshakeFailedException> {
-                                withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
-                            }
-                        // "hash did not match" — distinct from the "no certificate" message, so this also
-                        // proves connPeerCert returned a real leaf DER at runtime (not 0 / garbage).
-                        assertTrue(
-                            ex.message?.contains("hash", ignoreCase = true) == true,
-                            "expected a hash-mismatch message, got: ${ex.message}",
-                        )
+                        assertWrongHashRejected {
+                            withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
+                        }
                     } finally {
                         serverJob.cancel()
                     }
