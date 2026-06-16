@@ -314,6 +314,8 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     NSArray<NSData *> * _Nullable trusted_ca_ders,
     NSArray<NSData *> * _Nullable server_cert_hashes,
     NSNumber * _Nonnull server_cert_require_chain,
+    int32_t * _Nullable server_cert_pin_failure_out,
+    uint8_t * _Nullable server_cert_pin_computed_hash_out,
     int32_t idle_timeout_seconds,
     int32_t keepalive_interval_seconds,
     int32_t connection_timeout_seconds,
@@ -405,8 +407,16 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                 sec_protocol_options_set_verify_block(sec_options,
                     ^(sec_protocol_metadata_t metadata, sec_trust_t sec_trust, sec_protocol_verify_complete_t complete) {
                         (void)metadata;
+                        // Reason codes mirror Kotlin's CertificateHashPinningFailure: 1 = HashMismatch
+                        // (digest written to ..._computed_hash_out), 2 = NoPeerCertificate, 0 = not a pin
+                        // failure (e.g. RequireBoth chain failure → generic handshake rejection).
                         SecTrustRef trust_ref = sec_trust_copy_ref(sec_trust);
-                        if (!trust_ref) { complete(false); return; }
+                        if (!trust_ref) {
+                            if (server_cert_pin_failure_out) *server_cert_pin_failure_out = 2;
+                            complete(false);
+                            if (established_group) nw_connection_group_cancel(established_group);
+                            return;
+                        }
 
                         // Leaf certificate = index 0 of the presented chain.
                         SecCertificateRef leaf = NULL;
@@ -421,11 +431,13 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                         }
 
                         bool hash_match = false;
+                        bool got_leaf_digest = false;
+                        uint8_t digest[CC_SHA256_DIGEST_LENGTH];
                         if (leaf) {
                             CFDataRef der = SecCertificateCopyData(leaf);
                             if (der) {
-                                uint8_t digest[CC_SHA256_DIGEST_LENGTH];
                                 CC_SHA256(CFDataGetBytePtr(der), (CC_LONG)CFDataGetLength(der), digest);
+                                got_leaf_digest = true;
                                 for (NSData *h in pinned_leaf_hashes) {
                                     if (h.length == CC_SHA256_DIGEST_LENGTH &&
                                         memcmp(h.bytes, digest, CC_SHA256_DIGEST_LENGTH) == 0) {
@@ -459,12 +471,28 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                             if (error) CFRelease(error);
                         }
 
+                        // Record why pinning rejected, so the Kotlin side throws a typed
+                        // CertificateHashPinningException (matching the quiche backends) rather than a
+                        // generic cancellation. A hash matched + chain failure (RequireBoth) leaves the
+                        // code 0 → generic handshake rejection, mirroring quiche (chain failure isn't a
+                        // pin failure there either).
+                        if (!ok && server_cert_pin_failure_out) {
+                            if (got_leaf_digest && !hash_match) {
+                                *server_cert_pin_failure_out = 1; // HashMismatch
+                                if (server_cert_pin_computed_hash_out) {
+                                    memcpy(server_cert_pin_computed_hash_out, digest, CC_SHA256_DIGEST_LENGTH);
+                                }
+                            } else if (!got_leaf_digest) {
+                                *server_cert_pin_failure_out = 2; // NoPeerCertificate
+                            }
+                        }
+
                         if (chain) CFRelease(chain);
                         CFRelease(trust_ref);
 
                         complete(ok);
                         // NW does not report a client verify_block rejection as a group state change —
-                        // cancel so it surfaces as `cancelled` (→ QuicCloseException), like the CA path.
+                        // cancel so it surfaces as `cancelled` (→ typed exception), like the CA path.
                         if (!ok && established_group) {
                             nw_connection_group_cancel(established_group);
                         }

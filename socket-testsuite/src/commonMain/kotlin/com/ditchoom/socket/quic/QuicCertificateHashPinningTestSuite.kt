@@ -2,7 +2,8 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.socket.SSLHandshakeFailedException
+import com.ditchoom.socket.CertificateHashPinningException
+import com.ditchoom.socket.CertificateHashPinningFailure
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlin.test.Test
@@ -30,22 +31,6 @@ abstract class QuicCertificateHashPinningTestSuite {
 
     /** Platform hook for skip-on-missing-native-lib (JVM converts `UnsatisfiedLinkError` to a skip). */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
-
-    /**
-     * Assert that [connect] fails **because the pinned hash did not match**. The quiche backends
-     * (JVM/Android/Linux) verify post-handshake and throw [SSLHandshakeFailedException] with a
-     * hash-mismatch message — the "hash" wording (distinct from the "no certificate" message) also
-     * proves `connPeerCert` returned a real leaf DER at runtime. Apple/NW rejects inside the handshake
-     * verify_block, which surfaces as a connection failure rather than that specific exception, so the
-     * Apple subclass overrides this.
-     */
-    protected open suspend fun assertWrongHashRejected(connect: suspend () -> Unit) {
-        val ex = assertFailsWith<SSLHandshakeFailedException> { connect() }
-        assertTrue(
-            ex.message?.contains("hash", ignoreCase = true) == true,
-            "expected a hash-mismatch message, got: ${ex.message}",
-        )
-    }
 
     private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
@@ -78,20 +63,34 @@ abstract class QuicCertificateHashPinningTestSuite {
             }
         }
 
-    /** Pinning a non-matching hash must reject the connection post-handshake with a hash-mismatch error. */
+    /**
+     * Pinning a non-matching hash must reject the connection with a [CertificateHashPinningException]
+     * whose [CertificateHashPinningFailure.HashMismatch] carries the leaf the server actually presented.
+     * Every backend throws the identical type (quiche post-handshake; Apple/NW from the verify_block),
+     * and `HashMismatch` (vs `NoPeerCertificate`) also proves the leaf DER was read at runtime.
+     */
     @Test
     fun rejectsWrongLeafHash() =
         runQuicTest {
             wrapTestBody {
                 val opts = options()
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
-                    // Handshake completes (verify_peer off); the client tears down on the failed pin.
                     val serverJob = launch { runCatching { connections {} } }
                     try {
                         val pinned = opts.copy(serverCertificateHashes = listOf(wrongHash()))
-                        assertWrongHashRejected {
-                            withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
-                        }
+                        val ex =
+                            assertFailsWith<CertificateHashPinningException> {
+                                withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds.scaled) {}
+                            }
+                        val failure = ex.failure
+                        assertTrue(
+                            failure is CertificateHashPinningFailure.HashMismatch,
+                            "expected HashMismatch, got: $failure",
+                        )
+                        assertTrue(
+                            failure.computedLeafHash.startsWith("sha-256:"),
+                            "expected an algorithm-prefixed computed hash, got: ${failure.computedLeafHash}",
+                        )
                     } finally {
                         serverJob.cancel()
                     }
