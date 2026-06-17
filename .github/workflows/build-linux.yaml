@@ -44,8 +44,46 @@ jobs:
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@v2
 
+      # accept-android-sdk-licenses is DISABLED here on purpose. The action's
+      # built-in license pass (`sdkmanager --licenses`, run when this input is
+      # true) doesn't just write license files — after accepting, sdkmanager
+      # *completes* the runner image's pending Android Emulator package, which
+      # downloads + unzips it from dl.google.com. That download intermittently
+      # arrives truncated, so sdkmanager aborts with
+      #   "Error reading Zip content from a SeekableByteChannel" -> exit 1
+      # and the action has no retry, reddening the whole build-linux lane for a
+      # transient network glitch (run 27561470552 attempt 1, step "Setup Android
+      # SDK"). The package-install loop below (`tools platform-tools`) still
+      # auto-accepts each package's own license via the action's stdin handler,
+      # so the only thing deferred is the standalone all-licenses pass — which we
+      # re-run with retry in the next step.
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+
+      # Accept the remaining SDK licenses with retry. `sdkmanager --licenses`
+      # is idempotent and the emulator-package prep it triggers is exactly the
+      # transient dl.google.com download that flakes above, so retry it with
+      # backoff — same model as test-harness/compose-up-retry.sh absorbing
+      # transient Docker Hub pulls. Finite `printf` of 'y' lines (not `yes |`,
+      # which would hand pipefail a SIGPIPE 141 from the killed generator and
+      # mask sdkmanager's real exit code) feeds the prompts.
+      - name: Accept Android SDK licenses (retry transient package prep)
+        run: |
+          attempts=3
+          for i in $(seq 1 "$attempts"); do
+            if printf 'y\n%.0s' $(seq 1 50) | sdkmanager --licenses; then
+              exit 0
+            fi
+            if [ "$i" -lt "$attempts" ]; then
+              backoff=$((i * 15))
+              echo "::warning::'sdkmanager --licenses' failed (attempt $i/$attempts) — likely a transient dl.google.com package-download corruption; retrying in ${backoff}s"
+              sleep "$backoff"
+            fi
+          done
+          echo "::error::Android SDK license acceptance failed after $attempts attempts"
+          exit 1
 
       - name: Cache Konan
         uses: actions/cache@v5

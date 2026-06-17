@@ -47,6 +47,7 @@ import kotlinx.cinterop.get
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -64,6 +65,8 @@ import platform.Foundation.NSData
 import platform.Foundation.NSNumber
 import platform.Network.nw_connection_group_t
 import platform.Network.nw_connection_t
+import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -188,7 +191,39 @@ internal suspend fun connectQuicGroup(
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     val acceptedStreamId = kotlin.concurrent.AtomicLong(1L) // server-initiated bidi ids (synthetic; NW hides the real id)
 
-    // Wait for the group (QUIC handshake) to become ready. Group states: 2=ready, 3=failed, 4=cancelled.
+    // Durable state bridge: NW keeps delivering group state changes for the connection's whole
+    // life, not just the handshake. The bridge resolves the establish await on the first terminal
+    // event, then — once the live connection is attached — drives a *post-handshake* failure or
+    // cancellation into [AppleQuicGroupConnection], unblocking parked readers / acceptStream().
+    // This is the Apple analog of the quiche driver's StateFlow being the single source of truth;
+    // before it, every state change after `ready` was silently dropped (a mid-session peer close
+    // left _state Established and acceptStream() hanging until the caller's own timeout).
+    //
+    // The cancelled (state 4) establish failure is pin-failure-aware: a leaf-hash pin rejection
+    // cancels the group from the verify_block (NW reports no other signal), so its reason out-param
+    // is mapped to the SAME typed CertificateHashPinningException the quiche backends throw. This
+    // lambda is evaluated ONLY pre-`ready` (a post-`ready` cancel drives onTransportClosed with the
+    // generic reason and never reads the pin out-params, which are freed once establish resolves).
+    val stateBridge =
+        AppleQuicGroupStateBridge(
+            hostname,
+            port,
+            cancelledEstablishException = {
+                when (pinFailureOut?.value ?: 0) {
+                    1 ->
+                        CertificateHashPinningException(
+                            CertificateHashPinningFailure.HashMismatch(
+                                quicOptions.serverCertificateHashes.size,
+                                "sha-256:" + (pinHashOut?.let { computedHashHex(it) } ?: ""),
+                            ),
+                        )
+                    2 -> CertificateHashPinningException(CertificateHashPinningFailure.NoPeerCertificate)
+                    else -> QuicCloseException(QuicError.NoError, "QUIC group cancelled")
+                }
+            },
+        )
+
+    // Wait for the group (QUIC handshake) to become ready (resolved via the bridge below).
     //
     // Serialized process-wide via [appleQuicEstablishMutex]: Network.framework fails a QUIC
     // group handshake with POSIX ENOMEM ("Cannot allocate memory") whenever another group is
@@ -200,75 +235,33 @@ internal suspend fun connectQuicGroup(
     val constraintViolation: CertificateHashPinningFailure? =
         try {
             appleQuicEstablishMutex.withLock {
-                suspendCancellableCoroutine { cont ->
-                    nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
-                        when (state) {
-                            2 -> if (cont.isActive) cont.resume(Unit)
-                            3 ->
-                                if (cont.isActive) {
-                                    cont.resumeWithException(
-                                        SocketConnectionException.Refused(
-                                            hostname,
-                                            port,
-                                            platformError = "QUIC group handshake failed: code=$errorCode ${errorDesc ?: ""}",
-                                        ),
-                                    )
-                                }
-                            4 ->
-                                if (cont.isActive) {
-                                    // A leaf-hash pin rejection cancels the group from the verify_block (NW reports
-                                    // no other signal). Map its reason out-param to the SAME typed exception the
-                                    // quiche backends throw; code 0 (any other cancel, incl. RequireBoth chain
-                                    // failure) stays a generic QuicCloseException.
-                                    cont.resumeWithException(
-                                        when (pinFailureOut?.value ?: 0) {
-                                            1 ->
-                                                CertificateHashPinningException(
-                                                    CertificateHashPinningFailure.HashMismatch(
-                                                        quicOptions.serverCertificateHashes.size,
-                                                        "sha-256:" + (pinHashOut?.let { computedHashHex(it) } ?: ""),
-                                                    ),
-                                                )
-                                            2 -> CertificateHashPinningException(CertificateHashPinningFailure.NoPeerCertificate)
-                                            else -> QuicCloseException(QuicError.NoError, "QUIC group cancelled")
-                                        },
-                                    )
-                                }
-                            1 ->
-                                // "waiting" = NW couldn't establish and is holding to retry. During the
-                                // bounded-timeout CLIENT handshake there's no recovery path, so an
-                                // error-carrying "waiting" (no route, refused, etc.) should fail fast
-                                // rather than burn the whole connect timeout retrying. A benign pre-ready
-                                // "waiting" carries no error (errorCode == 0) and is left in-progress.
-                                // (Note: a pinned-anchor TLS rejection does NOT arrive here — NW reports
-                                // no group state for it at all; nw_quic_helpers.h cancels the group from
-                                // the verify_block instead, which surfaces as `cancelled` below.)
-                                if (errorCode != 0 && cont.isActive) {
-                                    cont.resumeWithException(
-                                        QuicCloseException(
-                                            QuicError.CryptoError(0),
-                                            "QUIC handshake failed connecting to $hostname:$port: code=$errorCode ${errorDesc ?: ""}",
-                                        ),
-                                    )
-                                }
-                            else -> {} // invalid=0 — in progress
-                        }
-                    }
-                    // Wire peer-initiated streams into acceptStream() — MUST be set before start.
-                    // The block runs on the group's serial callback queue; trySend into an UNLIMITED
-                    // channel is non-blocking and thread-safe.
-                    nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
-                        // Take ownership (action 1 of NW's three): start the flow on the shared serial
-                        // queue, then enqueue it. Runs synchronously inside the block, so the connection
-                        // is owned before the block returns.
-                        nw_helper_quic_start(streamConn)
-                        val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
-                        incomingStreams.trySend(
-                            QuicByteStream(sid, NWQuicByteStream(streamConn, sid.id)),
-                        )
-                    }
-                    nw_helper_quic_group_start(group)
-                    cont.invokeOnCancellation { nw_helper_quic_group_cancel(group) }
+                nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
+                    stateBridge.onState(state, errorCode, errorDesc)
+                }
+                // Wire peer-initiated streams into acceptStream() — MUST be set before start.
+                // The block runs on the group's serial callback queue; trySend into an UNLIMITED
+                // channel is non-blocking and thread-safe.
+                nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
+                    // Take ownership (action 1 of NW's three): start the flow on the shared serial
+                    // queue, then enqueue it. Runs synchronously inside the block, so the connection
+                    // is owned before the block returns.
+                    nw_helper_quic_start(streamConn)
+                    val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
+                    incomingStreams.trySend(
+                        QuicByteStream(sid, NWQuicByteStream(streamConn, sid.id)),
+                    )
+                }
+                nw_helper_quic_group_start(group)
+                try {
+                    // Throws the bridge's establish exception on failed/cancelled/error-waiting, or
+                    // CancellationException if the connect timeout fires.
+                    stateBridge.established.await()
+                } catch (e: Throwable) {
+                    // Establish failed, timed out, or was cancelled: cancel the group so NW abandons
+                    // the handshake and the establish mutex is freed for the next connector (no
+                    // watchdog hang).
+                    nw_helper_quic_group_cancel(group)
+                    throw e
                 }
             }
             // Handshake succeeded (group ready). The leaf already hash-matched in the verify_block; now run
@@ -350,7 +343,125 @@ internal suspend fun connectQuicGroup(
             connectionOptions.quicBufferFactory(),
             keepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
         )
+    // Route any post-handshake group failure/cancellation into the live connection. attach()
+    // also replays a close that raced in between `ready` and here (see the bridge).
+    stateBridge.attach(quicConn)
     return quicConn
+}
+
+/**
+ * Bridges a Network.framework connection-group's state-changed callbacks to Kotlin across the
+ * group's *entire* lifetime — the durable counterpart to the establish-only handler that used to
+ * drop every state change after `ready`.
+ *
+ * NW delivers group state on a single serial queue, so [onState] is never re-entrant. The two
+ * consumers live at different times: first the connecting coroutine awaiting [established], then
+ * the live [AppleQuicGroupConnection] once [attach]ed. The handoff between them — and the window
+ * where a failure arrives after `ready` but before [attach] — is made race-free by the lock-free
+ * [sink] CAS, while [established] (a [CompletableDeferred], idempotent) absorbs the establish race.
+ *
+ * [cancelledEstablishException] supplies the *pre-`ready`* failure for a cancelled group (state 4):
+ * the client path maps a leaf-hash pin rejection to a typed [CertificateHashPinningException]; the
+ * server path uses the generic default. It is evaluated only when [established] has not yet resolved
+ * — a post-`ready` cancel drives [AppleQuicGroupConnection.onTransportClosed] with the structured
+ * reason instead and never reads the (by-then-freed) pin out-params.
+ */
+internal class AppleQuicGroupStateBridge(
+    private val hostname: String,
+    private val port: Int,
+    private val cancelledEstablishException: () -> Throwable = {
+        QuicCloseException(QuicError.NoError, "QUIC group cancelled")
+    },
+) {
+    /** Completed on the first terminal establish event: [Unit] on ready, else the connect failure. */
+    val established = CompletableDeferred<Unit>()
+
+    private sealed interface Sink {
+        /** Live (post-`ready`) phase; [conn] is null until [attach]. */
+        class Live(
+            val conn: AppleQuicGroupConnection?,
+        ) : Sink
+
+        /** A post-handshake transport close already happened; [reason] is replayed to a late [attach]. */
+        class Closed(
+            val reason: QuicError,
+        ) : Sink
+    }
+
+    private val sink = AtomicReference<Sink>(Sink.Live(null))
+
+    /** Group states (NB: no `preparing` for groups): 0=invalid, 1=waiting, 2=ready, 3=failed, 4=cancelled. */
+    fun onState(
+        state: Int,
+        errorCode: Int,
+        errorDesc: String?,
+    ) {
+        when (state) {
+            2 -> established.complete(Unit) // ready
+            3 ->
+                terminal(QuicError.InternalError("QUIC group failed: code=$errorCode ${errorDesc ?: ""}")) {
+                    SocketConnectionException.Refused(
+                        hostname,
+                        port,
+                        platformError = "QUIC group handshake failed: code=$errorCode ${errorDesc ?: ""}",
+                    )
+                }
+            4 -> terminal(QuicError.NoError) { cancelledEstablishException() }
+            1 ->
+                // "waiting" = NW couldn't establish and is holding to retry. ONLY terminal during the
+                // bounded-timeout handshake: there's no recovery path then, so an error-carrying
+                // "waiting" (no route, refused, etc.) fails fast rather than burning the whole connect
+                // timeout. A benign "waiting" carries no error (errorCode == 0). POST-`ready`, "waiting"
+                // is NW transiently holding (e.g. loopback path re-evaluation) and recovers to ready —
+                // NOT a close; treating it as one prematurely tore down a healthy connection.
+                // (A pinned-anchor TLS rejection does NOT arrive here — NW reports no group state for
+                // it; nw_quic_helpers.h cancels the group from the verify_block, surfacing as state 4.)
+                if (errorCode != 0 && !established.isCompleted) {
+                    terminal(QuicError.CryptoError(0)) {
+                        QuicCloseException(
+                            QuicError.CryptoError(0),
+                            "QUIC handshake failed connecting to $hostname:$port: code=$errorCode ${errorDesc ?: ""}",
+                        )
+                    }
+                }
+            else -> {} // invalid=0 — in progress
+        }
+    }
+
+    private fun terminal(
+        reason: QuicError,
+        establishError: () -> Throwable,
+    ) {
+        // Pre-`ready`: surface as the connect failure. The [establishError] lambda is evaluated only
+        // here (so the pin out-params are read only while alive). Serial NW queue ⇒ no concurrent
+        // completion, so this isCompleted check is race-free against the connecting coroutine.
+        if (!established.isCompleted) {
+            established.completeExceptionally(establishError())
+            return
+        }
+        // Post-`ready` close: drive the live connection (or replay to a late attach).
+        while (true) {
+            val cur = sink.value
+            if (cur is Sink.Closed) return // already closed once
+            if (sink.compareAndSet(cur, Sink.Closed(reason))) {
+                (cur as Sink.Live).conn?.onTransportClosed(reason)
+                return
+            }
+        }
+    }
+
+    /** Register the live connection so post-handshake failures reach it (replaying one that raced in). */
+    fun attach(conn: AppleQuicGroupConnection) {
+        while (true) {
+            when (val cur = sink.value) {
+                is Sink.Closed -> {
+                    conn.onTransportClosed(cur.reason)
+                    return
+                }
+                is Sink.Live -> if (sink.compareAndSet(cur, Sink.Live(conn))) return
+            }
+        }
+    }
 }
 
 /**
@@ -397,6 +508,10 @@ internal class AppleQuicGroupConnection(
     @Volatile
     private var closed = false
 
+    // Single claim shared by close() and onTransportClosed() so the teardown body runs exactly
+    // once whether the close is caller-initiated or NW-initiated (no check-then-set race).
+    private val closeClaim = AtomicInt(0)
+
     override suspend fun openStream(): QuicByteStream {
         check(!closed) { "AppleQuicGroupConnection is closed" }
         check(_state.value is QuicConnectionState.Established) {
@@ -439,17 +554,24 @@ internal class AppleQuicGroupConnection(
     // live max, caller retains ownership on send, ownership transfers to caller on receive.
 
     override suspend fun sendDatagram(buffer: ReadBuffer) {
-        if (closed) throw QuicCloseException(closeReason(), "connection closed")
         val flow =
             datagramFlow
                 ?: throw IllegalStateException("QUIC datagrams are not enabled, or the peer did not advertise support")
         val remaining = buffer.remaining()
+        // Validate the size against the last-known max FIRST — a pure local precondition, exactly as
+        // the quiche DriverDatagramAdapter validates against driver.lastMaxDatagramSize. An oversized
+        // datagram is a programming error (IllegalArgumentException) independent of connection
+        // liveness, so the check must not be gated behind the closed-check below (a peer that closed
+        // the connection between negotiating the size and this call must not turn it into a
+        // QuicCloseException — that divergence broke datagramTooLargeThrows once close became
+        // observable).
         when (val max = maxDatagramSize()) {
             is MaxDatagramSize.Unavailable ->
                 throw IllegalStateException("QUIC datagrams are not enabled, or the peer did not advertise support")
             is MaxDatagramSize.Bytes ->
                 require(remaining <= max.bytes) { "datagram too large: $remaining > ${max.bytes} bytes" }
         }
+        if (closed) throw QuicCloseException(closeReason(), "connection closed")
 
         // dispatch_data_create (in the helper) copies the bytes synchronously, so the
         // caller may free `buffer` the instant we return; we still suspend until the
@@ -510,21 +632,51 @@ internal class AppleQuicGroupConnection(
         }
     }
 
+    // Last positive max-datagram-size NW reported, cached so it survives connection close — the
+    // quiche driver does the same via lastMaxDatagramSize. Without it, a live read after close
+    // returns Unavailable and a size precondition check can't be evaluated.
+    @Volatile
+    private var lastMaxDatagram: MaxDatagramSize = MaxDatagramSize.Unavailable
+
     override fun maxDatagramSize(): MaxDatagramSize {
-        if (closed) return MaxDatagramSize.Unavailable
         val flow = datagramFlow ?: return MaxDatagramSize.Unavailable
+        if (closed) return lastMaxDatagram
         val bytes = nw_helper_quic_max_datagram_size(flow).toInt()
-        return if (bytes > 0) MaxDatagramSize.Bytes(bytes) else MaxDatagramSize.Unavailable
+        val result = if (bytes > 0) MaxDatagramSize.Bytes(bytes) else lastMaxDatagram
+        lastMaxDatagram = result
+        return result
     }
 
     override suspend fun close(error: QuicError) {
-        if (closed) return
+        if (!closeClaim.compareAndSet(0, 1)) return
         closed = true
         _state.value = QuicConnectionState.Draining
         datagramFlow?.let { nw_helper_quic_cancel(it) }
         nw_helper_quic_group_cancel(group)
         incomingStreams.close()
         _state.value = QuicConnectionState.Closed(error)
+    }
+
+    /**
+     * NW reported the underlying group failed/cancelled *after* the handshake (peer close, idle
+     * timeout, network loss) — driven here by [AppleQuicGroupStateBridge]. Mirrors the quiche
+     * driver transitioning its StateFlow to Closed: publishes the reason and closes
+     * [incomingStreams] (with the reason as cause) so a parked acceptStream()/streams() unblocks
+     * with a [QuicCloseException] instead of hanging until the caller's timeout. Idempotent and
+     * safe against a concurrent caller close() via the shared [closeClaim].
+     */
+    internal fun onTransportClosed(reason: QuicError) {
+        if (!closeClaim.compareAndSet(0, 1)) return
+        closed = true
+        _state.value = QuicConnectionState.Closed(reason)
+        // Close WITHOUT a cause, matching the quiche driver (QuicheDriver.cleanup), so a parked
+        // acceptStream()/streams() ends the same way on every platform (clean channel close, not a
+        // thrown QuicCloseException). The structured reason is still available via state/closeReason().
+        incomingStreams.close()
+        // NW has already torn the group down; cancel is a harmless no-op but releases the
+        // datagram flow we extracted.
+        datagramFlow?.let { nw_helper_quic_cancel(it) }
+        nw_helper_quic_group_cancel(group)
     }
 
     /** The structured close reason if known, else [fallback]. */
@@ -545,16 +697,15 @@ internal class NWQuicByteStream(
 ) : ByteStream,
     HalfCloseable,
     Resettable {
-    @Volatile
-    private var streamClosed = false
-
-    @Volatile
-    private var sendFinished = false
+    // Lifecycle state machine, atomic so concurrent shutdownSend()/close()/reset() can never
+    // double-FIN or skip teardown — a TOCTOU the prior @Volatile check-then-set flags allowed:
+    //   LIFECYCLE_OPEN → LIFECYCLE_SEND_FINISHED (half-close) → LIFECYCLE_CLOSED.
+    private val lifecycle = AtomicInt(LIFECYCLE_OPEN)
 
     @Volatile
     private var keepAliveApplied = false
 
-    override val isOpen: Boolean get() = !streamClosed
+    override val isOpen: Boolean get() = lifecycle.value != LIFECYCLE_CLOSED
 
     // QUIC stream policy refinement to UntilClosed (persistent WebTransport streams) is Phase 3
     // work; the request/response-shaped Bounded default is correct for the current stream surface.
@@ -608,7 +759,7 @@ internal class NWQuicByteStream(
         deadline: Duration,
     ): BytesWritten =
         withTimeout(deadline) {
-            check(!sendFinished) { "NWQuicByteStream send side is finished" }
+            check(lifecycle.value == LIFECYCLE_OPEN) { "NWQuicByteStream send side is finished" }
             val remaining = buffer.remaining()
             val nsData = buffer.toNativeData().nsData
 
@@ -633,28 +784,32 @@ internal class NWQuicByteStream(
         }
 
     override suspend fun shutdownSend() {
-        if (streamClosed || sendFinished) return
-        sendFinished = true
-        // Send-side FIN only; the read side stays open for the response (HTTP/3 §4
-        // half-close). Network.framework has no separate shutdown — the FIN is an
-        // empty FINAL_MESSAGE, same wire effect as quiche's stream_send(fin=true).
+        // Claim open→send-finished exactly once; no-op if already half- or fully-closed.
+        // Send-side FIN only; the read side stays open for the response (HTTP/3 §4 half-close).
+        // Network.framework has no separate shutdown — the FIN is an empty FINAL_MESSAGE, same
+        // wire effect as quiche's stream_send(fin=true).
+        if (!lifecycle.compareAndSet(LIFECYCLE_OPEN, LIFECYCLE_SEND_FINISHED)) return
         sendFin()
     }
 
     override suspend fun close() {
-        if (streamClosed) return
-        streamClosed = true
-        // Avoid a duplicate FIN if the send side was already shut down.
-        if (!sendFinished) sendFin()
+        when {
+            // Open → closed: the send side was never finished, so flush a FIN now.
+            lifecycle.compareAndSet(LIFECYCLE_OPEN, LIFECYCLE_CLOSED) -> sendFin()
+            // Half-closed → closed: shutdownSend() already sent the FIN; just finalize.
+            lifecycle.compareAndSet(LIFECYCLE_SEND_FINISHED, LIFECYCLE_CLOSED) -> {}
+            // Already closed → no-op.
+            else -> {}
+        }
     }
 
     override suspend fun reset(errorCode: Long) {
-        if (streamClosed) return
-        streamClosed = true
-        // Abort both directions with the application error code — RESET_STREAM (send)
-        // + STOP_SENDING (read), RFC 9000 §19.4/§19.5 — matching QuicheStreamByteStream.
-        // NW stamps the error onto the stream metadata and cancels (no FIN); fire-and-
-        // forget, so no send-complete callback to await (unlike sendFin). (Issue #81.)
+        // Claim closed from any prior state; no-op if already closed. Abort both directions with
+        // the application error code — RESET_STREAM (send) + STOP_SENDING (read), RFC 9000
+        // §19.4/§19.5 — matching QuicheStreamByteStream. NW stamps the error onto the stream
+        // metadata and cancels (no FIN); fire-and-forget, so no send-complete callback to await
+        // (unlike sendFin). (Issue #81.)
+        if (lifecycle.getAndSet(LIFECYCLE_CLOSED) == LIFECYCLE_CLOSED) return
         nw_helper_quic_reset_stream(nwConn, errorCode.toULong())
     }
 
@@ -716,6 +871,11 @@ internal class NWQuicByteStream(
     }
 
     private companion object {
+        // Lifecycle states (see [lifecycle]).
+        private const val LIFECYCLE_OPEN = 0
+        private const val LIFECYCLE_SEND_FINISHED = 1
+        private const val LIFECYCLE_CLOSED = 2
+
         // Upper bound for flushing the stream FIN during close(). The FIN should
         // complete near-instantly once the send queue is unblocked; this only
         // guards against a wedged Network.framework send callback.

@@ -1,10 +1,14 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.deterministic
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -96,4 +100,75 @@ abstract class QuicServerLifecycleTestSuite {
                 }
             }
         }
+
+    /**
+     * A peer consuming peer-initiated streams ([QuicScope.streams] / [QuicScope.acceptStream], which
+     * share one incoming-streams channel) must be released when the connection ends, not hang until
+     * the caller's own timeout.
+     *
+     * Here the connection ends via idle timeout — the close signal Network.framework delivers
+     * reliably. The client establishes a stream, then collects streams() while idle; when the idle
+     * timer fires, the connection closes and the flow must complete. On every quiche-backed platform
+     * this always held (the driver closes its incoming-streams channel on close); on Apple the
+     * post-handshake connection state used to be dropped, so the channel was never closed and a
+     * streams() collector / parked acceptStream() hung forever. The quiche platforms keep this
+     * regression honest cross-platform.
+     *
+     * Collecting streams() (vs a single acceptStream) also tolerates Network.framework delivering a
+     * hidden phantom initial stream to the client; it is simply drained, so the test asserts exactly
+     * the close-unblocks-consumers contract and nothing incidental.
+     */
+    @Test
+    fun streamsFlowCompletesWhenConnectionCloses() =
+        runQuicTest {
+            wrapTestBody {
+                val opts =
+                    QuicOptions(
+                        alpnProtocols = listOf("test"),
+                        verifyPeer = false,
+                        idleTimeout = 3.seconds,
+                    )
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                // Accept the client's stream then stay, so the connection closes via
+                                // the idle timer (not a handler return).
+                                acceptStream()
+                                kotlinx.coroutines.awaitCancellation()
+                            }
+                        }
+                    try {
+                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds.scaled) {
+                            openStream().writeString("hi") // establish a stream on the server, then go idle
+                            var completed = false
+                            // If streams() never completes, this withTimeout throws and the test fails loudly.
+                            withTimeout(15.seconds.scaled) {
+                                streams().collect { stream -> runCatching { stream.close() } } // drain any phantom
+                                completed = true
+                            }
+                            assertTrue(
+                                completed,
+                                "streams() must complete when the connection idles out, not hang",
+                            )
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    // ---- helpers -----------------------------------------------------------------------------------
+
+    private suspend fun QuicByteStream.writeString(payload: String) {
+        val out = BufferFactory.deterministic().allocate(payload.length)
+        out.writeString(payload, Charset.UTF8)
+        out.resetForRead()
+        try {
+            write(out, 5.seconds.scaled)
+        } finally {
+            out.freeNativeMemory()
+        }
+    }
 }

@@ -66,8 +66,11 @@ internal expect fun timeScaleEnv(): String?
  * under the idle timeout", "idle fires before the read backstop") are preserved exactly. A
  * malformed/garbage value falls back to 1.0; an absurdly large one is capped so a typo can't
  * hang CI for hours.
+ *
+ * Public so platform test modules layered on this suite (e.g. :socket-quic-nw's Apple UDP-proxy
+ * harness) can scale their own native recv backstops by the same factor.
  */
-internal fun testTimeScale(): Double = timeScaleEnv()?.trim()?.toDoubleOrNull()?.coerceIn(1.0, 10.0) ?: 1.0
+fun testTimeScale(): Double = timeScaleEnv()?.trim()?.toDoubleOrNull()?.coerceIn(1.0, 10.0) ?: 1.0
 
 /**
  * Scale a deadline/backstop [Duration] by [testTimeScale]. Apply to `withTimeout` budgets,
