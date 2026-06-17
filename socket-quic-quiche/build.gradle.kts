@@ -1392,6 +1392,21 @@ kotlin {
                     defFile("src/nativeInterop/cinterop/Quiche.def")
                     includeDirs("libs/quiche/include")
                 }
+                // BoringSSL X.509 bindings for the W3C serverCertificateHashes cert-constraint parser
+                // (PinnedLeafFields.linux.kt). Headers come from the base :socket: module's BoringSSL
+                // build; the symbols are already linked into this binary via that module's cinterop
+                // (staticLibraries.linux = libcrypto.a), so no extra linkerOpts are added here.
+                create("BoringSslX509") {
+                    defFile("src/nativeInterop/cinterop/BoringSslX509.def")
+                    includeDirs(
+                        rootProject.projectDir.resolve("libs/boringssl/linux-x64/include").absolutePath,
+                        "/usr/include",
+                        "/usr/include/x86_64-linux-gnu",
+                    )
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(rootProject.tasks.named("buildBoringsslX64"))
+                    }
+                }
             }
             // Link against quiche — prefer static if no OpenSSL conflict, else shared
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
@@ -1428,6 +1443,19 @@ kotlin {
                 create("Quiche") {
                     defFile("src/nativeInterop/cinterop/Quiche.def")
                     includeDirs("libs/quiche/include")
+                }
+                // See linuxX64: BoringSSL X.509 bindings for the cert-constraint parser. Symbols are
+                // contributed transitively by the base :socket: module's arm64 cinterop.
+                create("BoringSslX509") {
+                    defFile("src/nativeInterop/cinterop/BoringSslX509.def")
+                    includeDirs(
+                        rootProject.projectDir.resolve("libs/boringssl/linux-arm64/include").absolutePath,
+                        "/usr/aarch64-linux-gnu/include",
+                        "/usr/include/aarch64-linux-gnu",
+                    )
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(rootProject.tasks.named("buildBoringsslArm64"))
+                    }
                 }
             }
             val quicheLibArm64 = projectDir.resolve("libs/quiche/linux-arm64/lib/libquiche.a")

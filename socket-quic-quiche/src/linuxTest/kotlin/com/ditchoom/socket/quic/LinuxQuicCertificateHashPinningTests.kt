@@ -63,9 +63,8 @@ class LinuxQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite
         return CertificateHash(buf)
     }
 
-    // Linux enforces the W3C constraints once its BoringSSL-cinterop parser lands (step 3); until then it
-    // verifies the leaf hash only, so the constraint-reject tests skip.
-    override fun enforcesW3cConstraints() = false
+    // Linux enforces the W3C constraints via its BoringSSL-cinterop parser ([parsePinnedLeafFieldsLinux]),
+    // so the constraint-reject tests run (inherits enforcesW3cConstraints() = true).
 
     private fun hexToBytes(hex: String): ByteArray =
         ByteArray(hex.length / 2) {

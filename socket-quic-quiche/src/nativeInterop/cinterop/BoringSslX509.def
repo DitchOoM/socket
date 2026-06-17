@@ -1,0 +1,85 @@
+language = C
+package = com.ditchoom.socket.quic.boringssl
+
+# BoringSSL X.509 leaf-certificate field extraction for the W3C
+# serverCertificateHashes constraint checks (validity <= 14 days, currently
+# valid, ECDSA P-256). The single static-inline wrapper below does the whole
+# extraction in C and is what Kotlin calls — cinterop always exposes
+# static-inline functions defined in the .def body, whereas raw declarations
+# pulled only from headers= come back EMPTY here (the base :socket: module hits
+# the same wall and likewise wraps every OpenSSL call in a .def-body inline).
+# Using a C wrapper also keeps the BoringSSL logic in C (mirrors the Apple
+# backend's CommonCrypto verify_block) and avoids per-symbol cinterop binding.
+#
+# The X509/EVP/EC/ASN1 symbols themselves are ALREADY linked into the
+# linuxX64/linuxArm64 binary via the base :socket: module's cinterop
+# (staticLibraries.linux = libssl.a libcrypto.a), contributed transitively to
+# dependents — hence NO libraryPaths/staticLibraries/linkerOpts here.
+headers = openssl/x509.h openssl/evp.h openssl/ec.h openssl/asn1.h openssl/obj_mac.h stdint.h
+
+compilerOpts.linux = -D_GNU_SOURCE
+
+---
+
+// Extract the W3C serverCertificateHashes constraint fields from a leaf cert's
+// DER. Returns 1 on success (out-params populated), 0 on parse failure.
+//   out_not_before / out_not_after : validity bounds as Unix epoch seconds.
+//     This BoringSSL build exports neither ASN1_TIME_to_posix_time nor
+//     ASN1_TIME_to_tm, so each ASN1_TIME is converted to absolute epoch
+//     seconds by diffing against a time_t=0 (Unix-epoch) reference via
+//     ASN1_TIME_diff. Both operands are fixed cert/reference values — no wall
+//     clock — so the result is deterministic.
+//   out_is_ec_p256 : 1 iff the subject public key is ECDSA on NIST P-256.
+//   out_key_base_id : EVP_PKEY base id (e.g. NID_X9_62_id_ecPublicKey, RSA),
+//     for the human key description.
+//   out_curve_nid : EC curve NID when the key is EC, else 0 (also for the
+//     description).
+static inline int ditchoom_x509_pin_fields(
+    const uint8_t *der,
+    long der_len,
+    int64_t *out_not_before,
+    int64_t *out_not_after,
+    int *out_is_ec_p256,
+    int *out_key_base_id,
+    int *out_curve_nid) {
+    const uint8_t *p = der;
+    X509 *cert = d2i_X509(NULL, &p, der_len);
+    if (!cert) return 0;
+
+    int ok = 0;
+    *out_is_ec_p256 = 0;
+    *out_key_base_id = 0;
+    *out_curve_nid = 0;
+
+    ASN1_TIME *epoch = ASN1_TIME_set(NULL, 0);
+    if (epoch) {
+        const ASN1_TIME *nb = X509_get0_notBefore(cert);
+        const ASN1_TIME *na = X509_get0_notAfter(cert);
+        int nb_day = 0, nb_sec = 0, na_day = 0, na_sec = 0;
+        if (nb && na &&
+            ASN1_TIME_diff(&nb_day, &nb_sec, epoch, nb) == 1 &&
+            ASN1_TIME_diff(&na_day, &na_sec, epoch, na) == 1) {
+            *out_not_before = (int64_t)nb_day * 86400 + nb_sec;
+            *out_not_after = (int64_t)na_day * 86400 + na_sec;
+
+            EVP_PKEY *pkey = X509_get_pubkey(cert);
+            if (pkey) {
+                int base_id = EVP_PKEY_base_id(pkey);
+                *out_key_base_id = base_id;
+                if (base_id == EVP_PKEY_EC) {
+                    EC_KEY *ec = EVP_PKEY_get0_EC_KEY(pkey);
+                    const EC_GROUP *grp = ec ? EC_KEY_get0_group(ec) : NULL;
+                    int nid = grp ? EC_GROUP_get_curve_name(grp) : 0;
+                    *out_curve_nid = nid;
+                    *out_is_ec_p256 = (nid == NID_X9_62_prime256v1) ? 1 : 0;
+                }
+                ok = 1;
+                EVP_PKEY_free(pkey);
+            }
+        }
+        ASN1_TIME_free(epoch);
+    }
+
+    X509_free(cert);
+    return ok;
+}
