@@ -34,10 +34,10 @@ class AndroidQuicCertificateHashPinningTests {
     // The W3C-compliant accept fixture (EC P-256, 13-day); the violators drive the reject tests.
     private val tlsConfig get() = AndroidTestCerts.tlsConfigFor("pinned")
 
-    /** SHA-256 of the server's leaf-cert DER, computed via `java.security` (independent of the verifier). */
-    private fun expectedLeafCertHash(): CertificateHash {
+    /** SHA-256 of a named fixture's leaf-cert DER, computed via `java.security` (independent of the verifier). */
+    private fun leafHashFor(name: String): CertificateHash {
         val cf = CertificateFactory.getInstance("X.509")
-        val cert = File(AndroidTestCerts.path("pinned.crt")).inputStream().use { cf.generateCertificate(it) }
+        val cert = File(AndroidTestCerts.path("$name.crt")).inputStream().use { cf.generateCertificate(it) }
         return certHashOf(MessageDigest.getInstance("SHA-256").digest(cert.encoded))
     }
 
@@ -57,7 +57,7 @@ class AndroidQuicCertificateHashPinningTests {
                         val handlerRan = CompletableDeferred<Unit>()
                         val serverJob = launch(Dispatchers.IO) { connections { handlerRan.complete(Unit) } }
                         try {
-                            val pinned = testQuicOptions.copy(serverCertificateHashes = listOf(expectedLeafCertHash()))
+                            val pinned = testQuicOptions.copy(serverCertificateHashes = listOf(leafHashFor("pinned")))
                             withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds) {}
                             withTimeout(10.seconds) { handlerRan.await() }
                         } finally {
@@ -97,6 +97,56 @@ class AndroidQuicCertificateHashPinningTests {
                 }
             }
         }
+
+    /** A pinned leaf whose hash matches but whose validity window is in the past — NotTemporallyValid. */
+    @Test
+    fun rejectsExpiredLeaf() =
+        runConstraintRejectTest("pinned-expired") { failure ->
+            assertTrue(failure is CertificateHashPinningFailure.NotTemporallyValid, "expected NotTemporallyValid, got: $failure")
+        }
+
+    /** A pinned leaf whose validity period exceeds 14 days — ValidityPeriodTooLong. */
+    @Test
+    fun rejectsOverlyLongValidityLeaf() =
+        runConstraintRejectTest("pinned-toolong") { failure ->
+            assertTrue(failure is CertificateHashPinningFailure.ValidityPeriodTooLong, "expected ValidityPeriodTooLong, got: $failure")
+        }
+
+    /** A pinned leaf with a non-ECDSA-P-256 (RSA) key — UnsupportedPublicKey. */
+    @Test
+    fun rejectsNonP256KeyLeaf() =
+        runConstraintRejectTest("pinned-rsa") { failure ->
+            assertTrue(failure is CertificateHashPinningFailure.UnsupportedPublicKey, "expected UnsupportedPublicKey, got: $failure")
+        }
+
+    /**
+     * Drive a constraint-violation fixture end-to-end: the server presents [fixture], the client pins that
+     * leaf's real hash (so the hash matches and the W3C constraint check — java.security parser + shared
+     * policy — is what rejects), and [assertFailure] checks the structured failure. Android is always an
+     * Enforced platform, so these run on-device.
+     */
+    private fun runConstraintRejectTest(
+        fixture: String,
+        assertFailure: (CertificateHashPinningFailure) -> Unit,
+    ) = runBlocking(Dispatchers.IO) {
+        skipOnMissingNativeLib {
+            withTimeout(20.seconds) {
+                withQuicServer(port = 0, tlsConfig = AndroidTestCerts.tlsConfigFor(fixture), quicOptions = testQuicOptions) {
+                    val serverJob = launch(Dispatchers.IO) { runCatching { connections {} } }
+                    try {
+                        val pinned = testQuicOptions.copy(serverCertificateHashes = listOf(leafHashFor(fixture)))
+                        val ex =
+                            assertFailsWith<CertificateHashPinningException> {
+                                withQuicConnection("127.0.0.1", port, pinned, timeout = 10.seconds) {}
+                            }
+                        assertFailure(ex.failure)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+    }
 
     private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
         try {
