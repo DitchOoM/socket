@@ -26,9 +26,9 @@ class AppleQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite
         return CertificateHash(buf)
     }
 
-    // Apple enforces the W3C constraints once its Security.framework extraction lands (step 4); until
-    // then the verify_block checks the leaf hash only, so the constraint-reject tests skip.
-    override fun enforcesW3cConstraints() = false
+    // Constraint enforcement now follows the modeled serverCertificateConstraintSupport capability (macOS =
+    // Enforced via Security.framework; iOS/tvOS/watchOS = LeafHashOnly), so the suite's default gate is
+    // correct here and no override is needed — macosArm64Test runs all 5 cases.
 
     /** Skip on `--standalone` Apple simulators (see [shouldSkipQuicHarnessOnSimulator]). */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {

@@ -39,11 +39,13 @@ abstract class QuicCertificateHashPinningTestSuite {
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
     /**
-     * Whether this backend enforces the W3C certificate constraints yet. Backends wire their native
-     * X.509 parser in their own step (Linux step 3, Apple step 4); until then they verify the leaf hash
-     * only, and the constraint-reject tests skip. The accept + wrong-hash tests run regardless.
+     * Whether this platform enforces the W3C certificate constraints — driven by the modeled
+     * [serverCertificateConstraintSupport] capability rather than a hand-maintained per-backend flag. The
+     * constraint-reject tests run on a [ServerCertificateConstraintSupport.Enforced] platform (JVM/Android,
+     * Linux, macOS, web) and skip on a [ServerCertificateConstraintSupport.LeafHashOnly] one (iOS/tvOS/watchOS,
+     * which lack a public cert-validity API). The accept + wrong-hash tests run regardless.
      */
-    protected open fun enforcesW3cConstraints(): Boolean = true
+    protected open fun enforcesW3cConstraints(): Boolean = serverCertificateConstraintSupport is ServerCertificateConstraintSupport.Enforced
 
     private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 

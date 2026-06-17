@@ -306,6 +306,105 @@ static inline void nw_helper_quic_set_keepalive(
  * @param max_datagram_frame_size 0 disables DATAGRAM frames; >0 advertises support.
  * @return nw_connection_group_t or NULL on parameter error.
  */
+#if TARGET_OS_OSX
+/**
+ * Pull a CFAbsoluteTime (seconds since the 2001 CF reference date) for an X.509 validity OID out of a
+ * SecCertificateCopyValues result dictionary. Each top-level value is itself a property dict keyed by
+ * kSecPropertyKeyValue. Returns true on success.
+ */
+static inline bool ditchoom_apple_copy_validity(
+    CFDictionaryRef _Nonnull values, CFStringRef _Nonnull oid, double * _Nonnull out)
+{
+    CFDictionaryRef prop = (CFDictionaryRef)CFDictionaryGetValue(values, oid);
+    if (!prop) return false;
+    CFNumberRef num = (CFNumberRef)CFDictionaryGetValue(prop, kSecPropertyKeyValue);
+    if (!num) return false;
+    return CFNumberGetValue(num, kCFNumberDoubleType, out);
+}
+#endif
+
+/**
+ * Extract the W3C `serverCertificateHashes` constraint fields from a leaf certificate's DER via
+ * Security.framework — the platform-native X.509 parser (no hand-rolled ASN.1). Mirrors the Linux
+ * BoringSSL wrapper (`ditchoom_x509_pin_fields`): it returns only the RAW fields; the constraint POLICY
+ * (validity ≤ 14 days, currently valid, ECDSA P-256) stays in shared Kotlin
+ * (`checkServerCertificatePinConstraints`).
+ *
+ * **macOS only:** `SecCertificateCopyValues` (the only public validity-date API) is `__IPHONE_NA`, so on
+ * iOS/tvOS/watchOS this is compiled out and returns 0. The Kotlin caller never invokes it there anyway —
+ * `serverCertificateConstraintSupport` reports `LeafHashOnly` on those platforms, gating the call out.
+ *
+ * @param der / der_len the leaf certificate DER (the matched leaf the verify_block captured).
+ * @param not_before_unix_seconds_out / not_after_unix_seconds_out the validity window as Unix epoch seconds.
+ * @param key_type_out 0 = unknown/other, 1 = EC (ECSECPrimeRandom — Apple's NIST prime curves), 2 = RSA.
+ * @param key_size_bits_out the key size in bits (256 + EC ⇒ secp256r1 / P-256 on Apple's SecKey).
+ * @return 1 on success (all out-params populated), 0 on parse failure / unsupported platform.
+ */
+static inline int ditchoom_apple_pin_leaf_fields(
+    const uint8_t * _Nonnull der,
+    int32_t der_len,
+    double * _Nonnull not_before_unix_seconds_out,
+    double * _Nonnull not_after_unix_seconds_out,
+    int32_t * _Nonnull key_type_out,
+    int32_t * _Nonnull key_size_bits_out)
+{
+#if TARGET_OS_OSX
+    if (der == NULL || der_len <= 0) return 0;
+    CFDataRef cf_data = CFDataCreate(kCFAllocatorDefault, der, (CFIndex)der_len);
+    if (!cf_data) return 0;
+    SecCertificateRef cert = SecCertificateCreateWithData(kCFAllocatorDefault, cf_data);
+    CFRelease(cf_data);
+    if (!cert) return 0;
+
+    // Validity window. Passing NULL keys returns all properties; we read the two validity OIDs.
+    double not_before = 0, not_after = 0;
+    bool got_dates = false;
+    CFDictionaryRef values = SecCertificateCopyValues(cert, NULL, NULL);
+    if (values) {
+        bool got_nb = ditchoom_apple_copy_validity(values, kSecOIDX509V1ValidityNotBefore, &not_before);
+        bool got_na = ditchoom_apple_copy_validity(values, kSecOIDX509V1ValidityNotAfter, &not_after);
+        got_dates = got_nb && got_na;
+        CFRelease(values);
+    }
+
+    // Subject public key type/size. Apple reports a NIST prime-random EC key as ECSECPrimeRandom + a bit
+    // size; 256-bit prime-random EC is secp256r1 (P-256). SecKey has no separate named-curve attribute.
+    int32_t key_type = 0, key_size = 0;
+    SecKeyRef key = SecCertificateCopyKey(cert);
+    if (key) {
+        CFDictionaryRef attrs = SecKeyCopyAttributes(key);
+        if (attrs) {
+            CFStringRef type = (CFStringRef)CFDictionaryGetValue(attrs, kSecAttrKeyType);
+            if (type) {
+                if (CFEqual(type, kSecAttrKeyTypeECSECPrimeRandom)) key_type = 1;
+                else if (CFEqual(type, kSecAttrKeyTypeRSA)) key_type = 2;
+            }
+            CFNumberRef size_num = (CFNumberRef)CFDictionaryGetValue(attrs, kSecAttrKeySizeInBits);
+            if (size_num) CFNumberGetValue(size_num, kCFNumberSInt32Type, &key_size);
+            CFRelease(attrs);
+        }
+        CFRelease(key);
+    }
+
+    int result = 0;
+    if (got_dates) {
+        // CFAbsoluteTime (since 2001-01-01) → Unix epoch (since 1970-01-01).
+        *not_before_unix_seconds_out = not_before + kCFAbsoluteTimeIntervalSince1970;
+        *not_after_unix_seconds_out = not_after + kCFAbsoluteTimeIntervalSince1970;
+        *key_type_out = key_type;
+        *key_size_bits_out = key_size;
+        result = 1;
+    }
+    CFRelease(cert);
+    return result;
+#else
+    (void)der; (void)der_len;
+    (void)not_before_unix_seconds_out; (void)not_after_unix_seconds_out;
+    (void)key_type_out; (void)key_size_bits_out;
+    return 0;
+#endif
+}
+
 static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     const char * _Nonnull host,
     uint16_t port,
@@ -316,6 +415,9 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
     NSNumber * _Nonnull server_cert_require_chain,
     int32_t * _Nullable server_cert_pin_failure_out,
     uint8_t * _Nullable server_cert_pin_computed_hash_out,
+    uint8_t * _Nullable server_cert_leaf_der_out,
+    int32_t server_cert_leaf_der_capacity,
+    int32_t * _Nullable server_cert_leaf_der_len_out,
     int32_t idle_timeout_seconds,
     int32_t keepalive_interval_seconds,
     int32_t connection_timeout_seconds,
@@ -443,6 +545,19 @@ static inline nw_connection_group_t _Nullable nw_helper_create_quic_group(
                                         memcmp(h.bytes, digest, CC_SHA256_DIGEST_LENGTH) == 0) {
                                         hash_match = true;
                                         break;
+                                    }
+                                }
+                                // On a match, hand the matched leaf's full DER back to the Kotlin caller so
+                                // it can run the W3C `serverCertificateHashes` certificate constraints
+                                // (validity ≤ 14 days, currently valid, ECDSA P-256) post-handshake via
+                                // Security.framework — the constraint POLICY stays in shared Kotlin, only
+                                // the parse happens per-platform. snprintf-style: always report the needed
+                                // length; copy only when it fits the caller's buffer (a real leaf is < 4 KiB).
+                                if (hash_match && server_cert_leaf_der_len_out) {
+                                    CFIndex der_len = CFDataGetLength(der);
+                                    *server_cert_leaf_der_len_out = (int32_t)der_len;
+                                    if (server_cert_leaf_der_out && der_len <= (CFIndex)server_cert_leaf_der_capacity) {
+                                        memcpy(server_cert_leaf_der_out, CFDataGetBytePtr(der), (size_t)der_len);
                                     }
                                 }
                                 CFRelease(der);

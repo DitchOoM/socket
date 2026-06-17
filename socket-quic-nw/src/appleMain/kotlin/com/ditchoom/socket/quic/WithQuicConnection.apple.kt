@@ -137,9 +137,19 @@ internal suspend fun connectQuicGroup(
     val pinFailureOut = if (serverCertHashes != null) nativeHeap.alloc<IntVar>().apply { value = 0 } else null
     val pinHashOut = if (serverCertHashes != null) nativeHeap.allocArray<UByteVar>(SHA256_DIGEST_BYTES) else null
 
+    // On a successful hash match the verify_block also hands back the matched leaf's full DER (snprintf-
+    // style into this buffer + length), so this side can run the W3C `serverCertificateHashes` certificate
+    // constraints (validity ≤ 14 days, currently valid, ECDSA P-256) post-handshake via Security.framework
+    // — but only where this platform reports them enforceable (macOS; see serverCertificateConstraintSupport).
+    // A real leaf DER is < 4 KiB; the buffer is generous and an overflow fails closed.
+    val pinLeafDerOut = if (serverCertHashes != null) nativeHeap.allocArray<UByteVar>(PINNED_LEAF_DER_CAPACITY) else null
+    val pinLeafDerLenOut = if (serverCertHashes != null) nativeHeap.alloc<IntVar>().apply { value = 0 } else null
+
     fun freePinOutParams() {
         pinFailureOut?.let { nativeHeap.free(it) }
         pinHashOut?.let { nativeHeap.free(it) }
+        pinLeafDerOut?.let { nativeHeap.free(it) }
+        pinLeafDerLenOut?.let { nativeHeap.free(it) }
     }
 
     val group =
@@ -155,6 +165,9 @@ internal suspend fun connectQuicGroup(
                     NSNumber(bool = requireChain),
                     pinFailureOut?.ptr,
                     pinHashOut,
+                    pinLeafDerOut,
+                    PINNED_LEAF_DER_CAPACITY,
+                    pinLeafDerLenOut?.ptr,
                     quicOptions.idleTimeout.inWholeSeconds.toInt(),
                     quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
                     timeout.inWholeSeconds.toInt(),
@@ -184,83 +197,101 @@ internal suspend fun connectQuicGroup(
     // groups coexist fine; only the establishment step must be one-at-a-time. The lock is held
     // just for the handshake (released before the user's block runs), so long-lived connections
     // don't block new ones.
-    try {
-        appleQuicEstablishMutex.withLock {
-            suspendCancellableCoroutine { cont ->
-                nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
-                    when (state) {
-                        2 -> if (cont.isActive) cont.resume(Unit)
-                        3 ->
-                            if (cont.isActive) {
-                                cont.resumeWithException(
-                                    SocketConnectionException.Refused(
-                                        hostname,
-                                        port,
-                                        platformError = "QUIC group handshake failed: code=$errorCode ${errorDesc ?: ""}",
-                                    ),
-                                )
-                            }
-                        4 ->
-                            if (cont.isActive) {
-                                // A leaf-hash pin rejection cancels the group from the verify_block (NW reports
-                                // no other signal). Map its reason out-param to the SAME typed exception the
-                                // quiche backends throw; code 0 (any other cancel, incl. RequireBoth chain
-                                // failure) stays a generic QuicCloseException.
-                                cont.resumeWithException(
-                                    when (pinFailureOut?.value ?: 0) {
-                                        1 ->
-                                            CertificateHashPinningException(
-                                                CertificateHashPinningFailure.HashMismatch(
-                                                    quicOptions.serverCertificateHashes.size,
-                                                    "sha-256:" + (pinHashOut?.let { computedHashHex(it) } ?: ""),
-                                                ),
-                                            )
-                                        2 -> CertificateHashPinningException(CertificateHashPinningFailure.NoPeerCertificate)
-                                        else -> QuicCloseException(QuicError.NoError, "QUIC group cancelled")
-                                    },
-                                )
-                            }
-                        1 ->
-                            // "waiting" = NW couldn't establish and is holding to retry. During the
-                            // bounded-timeout CLIENT handshake there's no recovery path, so an
-                            // error-carrying "waiting" (no route, refused, etc.) should fail fast
-                            // rather than burn the whole connect timeout retrying. A benign pre-ready
-                            // "waiting" carries no error (errorCode == 0) and is left in-progress.
-                            // (Note: a pinned-anchor TLS rejection does NOT arrive here — NW reports
-                            // no group state for it at all; nw_quic_helpers.h cancels the group from
-                            // the verify_block instead, which surfaces as `cancelled` below.)
-                            if (errorCode != 0 && cont.isActive) {
-                                cont.resumeWithException(
-                                    QuicCloseException(
-                                        QuicError.CryptoError(0),
-                                        "QUIC handshake failed connecting to $hostname:$port: code=$errorCode ${errorDesc ?: ""}",
-                                    ),
-                                )
-                            }
-                        else -> {} // invalid=0 — in progress
+    val constraintViolation: CertificateHashPinningFailure? =
+        try {
+            appleQuicEstablishMutex.withLock {
+                suspendCancellableCoroutine { cont ->
+                    nw_helper_quic_group_set_state_handler(group) { state, _, errorCode, errorDesc ->
+                        when (state) {
+                            2 -> if (cont.isActive) cont.resume(Unit)
+                            3 ->
+                                if (cont.isActive) {
+                                    cont.resumeWithException(
+                                        SocketConnectionException.Refused(
+                                            hostname,
+                                            port,
+                                            platformError = "QUIC group handshake failed: code=$errorCode ${errorDesc ?: ""}",
+                                        ),
+                                    )
+                                }
+                            4 ->
+                                if (cont.isActive) {
+                                    // A leaf-hash pin rejection cancels the group from the verify_block (NW reports
+                                    // no other signal). Map its reason out-param to the SAME typed exception the
+                                    // quiche backends throw; code 0 (any other cancel, incl. RequireBoth chain
+                                    // failure) stays a generic QuicCloseException.
+                                    cont.resumeWithException(
+                                        when (pinFailureOut?.value ?: 0) {
+                                            1 ->
+                                                CertificateHashPinningException(
+                                                    CertificateHashPinningFailure.HashMismatch(
+                                                        quicOptions.serverCertificateHashes.size,
+                                                        "sha-256:" + (pinHashOut?.let { computedHashHex(it) } ?: ""),
+                                                    ),
+                                                )
+                                            2 -> CertificateHashPinningException(CertificateHashPinningFailure.NoPeerCertificate)
+                                            else -> QuicCloseException(QuicError.NoError, "QUIC group cancelled")
+                                        },
+                                    )
+                                }
+                            1 ->
+                                // "waiting" = NW couldn't establish and is holding to retry. During the
+                                // bounded-timeout CLIENT handshake there's no recovery path, so an
+                                // error-carrying "waiting" (no route, refused, etc.) should fail fast
+                                // rather than burn the whole connect timeout retrying. A benign pre-ready
+                                // "waiting" carries no error (errorCode == 0) and is left in-progress.
+                                // (Note: a pinned-anchor TLS rejection does NOT arrive here — NW reports
+                                // no group state for it at all; nw_quic_helpers.h cancels the group from
+                                // the verify_block instead, which surfaces as `cancelled` below.)
+                                if (errorCode != 0 && cont.isActive) {
+                                    cont.resumeWithException(
+                                        QuicCloseException(
+                                            QuicError.CryptoError(0),
+                                            "QUIC handshake failed connecting to $hostname:$port: code=$errorCode ${errorDesc ?: ""}",
+                                        ),
+                                    )
+                                }
+                            else -> {} // invalid=0 — in progress
+                        }
                     }
+                    // Wire peer-initiated streams into acceptStream() — MUST be set before start.
+                    // The block runs on the group's serial callback queue; trySend into an UNLIMITED
+                    // channel is non-blocking and thread-safe.
+                    nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
+                        // Take ownership (action 1 of NW's three): start the flow on the shared serial
+                        // queue, then enqueue it. Runs synchronously inside the block, so the connection
+                        // is owned before the block returns.
+                        nw_helper_quic_start(streamConn)
+                        val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
+                        incomingStreams.trySend(
+                            QuicByteStream(sid, NWQuicByteStream(streamConn, sid.id)),
+                        )
+                    }
+                    nw_helper_quic_group_start(group)
+                    cont.invokeOnCancellation { nw_helper_quic_group_cancel(group) }
                 }
-                // Wire peer-initiated streams into acceptStream() — MUST be set before start.
-                // The block runs on the group's serial callback queue; trySend into an UNLIMITED
-                // channel is non-blocking and thread-safe.
-                nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
-                    // Take ownership (action 1 of NW's three): start the flow on the shared serial
-                    // queue, then enqueue it. Runs synchronously inside the block, so the connection
-                    // is owned before the block returns.
-                    nw_helper_quic_start(streamConn)
-                    val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
-                    incomingStreams.trySend(
-                        QuicByteStream(sid, NWQuicByteStream(streamConn, sid.id)),
-                    )
-                }
-                nw_helper_quic_group_start(group)
-                cont.invokeOnCancellation { nw_helper_quic_group_cancel(group) }
             }
+            // Handshake succeeded (group ready). The leaf already hash-matched in the verify_block; now run
+            // the W3C `serverCertificateHashes` certificate constraints on the captured leaf DER — but only
+            // where this platform can extract them (macOS, via Security.framework). iOS/tvOS/watchOS report
+            // LeafHashOnly (no public cert-validity API) → leaf-hash-only, no constraint check.
+            if (serverCertHashes != null && serverCertificateConstraintSupport is ServerCertificateConstraintSupport.Enforced) {
+                checkApplePinnedCertificateConstraints(pinLeafDerOut, pinLeafDerLenOut?.value ?: 0, PINNED_LEAF_DER_CAPACITY)
+            } else {
+                null
+            }
+        } finally {
+            // The verify_block runs only during the handshake; once it has resolved (success or failure)
+            // the pin out-params are no longer referenced, so release them on every exit path.
+            freePinOutParams()
         }
-    } finally {
-        // The verify_block runs only during the handshake; once it has resolved (success or failure)
-        // the pin out-params are no longer referenced, so release them on every exit path.
-        freePinOutParams()
+
+    // A constraint violation means the leaf matched the pin but is not W3C-compliant (over-long validity,
+    // expired/not-yet-valid, or a non-P-256 key). Tear down the established group and surface the SAME typed
+    // exception the quiche backends throw, so the reject is uniform across every backend.
+    if (constraintViolation != null) {
+        nw_helper_quic_group_cancel(group)
+        throw CertificateHashPinningException(constraintViolation)
     }
 
     // Extract THE datagram flow (one per connection) only when datagrams are enabled.
@@ -694,6 +725,13 @@ internal class NWQuicByteStream(
 
 /** SHA-256 digest length in bytes — the only algorithm `serverCertificateHashes` defines. */
 private const val SHA256_DIGEST_BYTES = 32
+
+/**
+ * Capacity of the buffer the verify_block copies the matched leaf DER into for the post-handshake W3C
+ * constraint check. A real leaf certificate DER is < 4 KiB; this is generous, and an overflow fails closed
+ * (the verify_block still reports the true length, which the Kotlin side treats as a parse failure).
+ */
+private const val PINNED_LEAF_DER_CAPACITY = 8192
 
 private const val HEX_DIGITS = "0123456789abcdef"
 
