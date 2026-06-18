@@ -118,9 +118,10 @@ internal class LeafHashMatch(
  * `"sha-256:<hex>"` of the leaf. Non-consuming on [leafCertDer] and every pinned hash. Only `"sha-256"`
  * is supported (enforced by [CertificateHash]).
  *
- * [bufferFactory] supplies a scratch buffer for the digest; it is freed before returning. `sha256` is the
- * swappable seam from `socket-quic` (mirrors the planned `com.ditchoom:buffer` member), shared cross-module
- * because both modules already depend on buffer.
+ * [bufferFactory] supplies a scratch buffer for the digest; it is freed before returning. [sha256Into] is
+ * the per-backend native digest (buffer-crypto's JCA on JVM/Android; the already-linked BoringSSL via
+ * cinterop on Linux — see its actuals for why Linux can't take buffer-crypto's BoringSSL); it reads
+ * [leafCertDer] non-destructively.
  */
 internal fun matchLeafHash(
     leafCertDer: ReadBuffer,
@@ -129,7 +130,7 @@ internal fun matchLeafHash(
 ): LeafHashMatch {
     val digest = bufferFactory.allocate(SHA256_DIGEST_BYTES)
     return try {
-        leafCertDer.sha256(digest)
+        sha256Into(leafCertDer, digest)
         digest.resetForRead()
         val matched = hashes.any { it.value.contentEquals(digest) }
         LeafHashMatch(matched, "sha-256:" + digest.toLowerHex())

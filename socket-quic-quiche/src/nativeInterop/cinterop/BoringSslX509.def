@@ -15,7 +15,7 @@ package = com.ditchoom.socket.quic.boringssl
 # linuxX64/linuxArm64 binary via the base :socket: module's cinterop
 # (staticLibraries.linux = libssl.a libcrypto.a), contributed transitively to
 # dependents — hence NO libraryPaths/staticLibraries/linkerOpts here.
-headers = openssl/x509.h openssl/evp.h openssl/ec.h openssl/asn1.h openssl/obj_mac.h stdint.h
+headers = openssl/x509.h openssl/evp.h openssl/ec.h openssl/asn1.h openssl/obj_mac.h openssl/sha.h stdint.h stddef.h
 
 compilerOpts.linux = -D_GNU_SOURCE
 
@@ -82,4 +82,16 @@ static inline int ditchoom_x509_pin_fields(
 
     X509_free(cert);
     return ok;
+}
+
+// One-shot SHA-256 of [data_len] bytes at [data], writing the 32-byte digest to [out]. Backs the W3C
+// serverCertificateHashes leaf-cert pin on Linux (see Sha256.linux.kt). Uses the SHA256 already linked
+// via the base :socket: module's libcrypto.a — Linux must NOT pull buffer-crypto's separate BoringSSL,
+// which would put a second, ABI-incompatible libcrypto in the same K/N binary (duplicate SHA256_* under
+// --allow-multiple-definition → SIGSEGV). BoringSSL's one-shot SHA256() cannot fail, so this is void.
+static inline void ditchoom_sha256(
+    const uint8_t *data,
+    size_t data_len,
+    uint8_t *out) {
+    SHA256(data, data_len, out);
 }

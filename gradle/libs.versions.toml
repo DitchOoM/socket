@@ -27,6 +27,7 @@ buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
 buffer-flow = { module = "com.ditchoom:buffer-flow", version.ref = "buffer" }
 buffer-codec = { module = "com.ditchoom:buffer-codec", version.ref = "buffer" }
 buffer-codec-processor = { module = "com.ditchoom:buffer-codec-processor", version.ref = "buffer" }
+buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "kotlinxCoroutines" }
