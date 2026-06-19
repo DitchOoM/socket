@@ -175,8 +175,8 @@ class WebTransportSendStream internal constructor(
     /** Abort the stream with the WebTransport application [errorCode] (RESET_STREAM), mapped per draft §4.3. */
     override suspend fun reset(errorCode: Long) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
 
-    /** Finish the stream cleanly (FIN). */
-    suspend fun close() = stream.close()
+    /** Finish the stream cleanly (FIN) — the [ByteSink.close] contract for a send-only stream. */
+    override suspend fun close() = stream.close()
 }
 
 /**

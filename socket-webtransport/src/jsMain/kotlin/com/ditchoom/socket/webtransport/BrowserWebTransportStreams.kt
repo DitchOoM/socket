@@ -69,8 +69,8 @@ internal class BrowserSendStream(
         writer.abort().await()
     }
 
-    /** Finish the stream cleanly (FIN). */
-    suspend fun close() {
+    /** Finish the stream cleanly (FIN) — the [ByteSink.close] contract for a send-only stream. */
+    override suspend fun close() {
         open = false
         writer.close().await()
     }

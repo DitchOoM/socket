@@ -14,6 +14,7 @@ import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -133,6 +134,50 @@ class QuicStreamMuxTests {
                                     r
                                 }
                             assertEquals("echo: hello", response)
+                        } finally {
+                            serverJob.cancel()
+                        }
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun unidirectionalStreamMuxExchange() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                withTimeout(30.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val opts = TransportConfig(readPolicy = ReadPolicy.Bounded(5.seconds), writePolicy = WritePolicy.Bounded(5.seconds))
+
+                        // Server: accept a unidirectional stream via StreamMux and drain it to EOF (FIN).
+                        val serverReceived = CompletableDeferred<List<String>>()
+                        val serverDispatched = CompletableDeferred<Unit>()
+                        val serverJob =
+                            launch(Dispatchers.IO) {
+                                serverDispatched.complete(Unit)
+                                connections {
+                                    val mux = QuicStreamMux(this, TestCodec, opts)
+                                    val receiver = mux.acceptUnidirectional()
+                                    serverReceived.complete(receiver.receive().toList())
+                                }
+                            }
+                        serverDispatched.await()
+
+                        try {
+                            // Client opens a real uni stream (QuicScope.openUniStream), sends two framed
+                            // messages, then FINs via Sender.close(). The server's receive() flow yields
+                            // both and completes on the FIN.
+                            withQuicMux("localhost", port, testQuicOptions, TestCodec, connectionOptions = opts) {
+                                val sender = openUnidirectional()
+                                assertTrue(sender.id >= 0)
+                                sender.send("uni-1")
+                                sender.send("uni-2")
+                                sender.close() // FIN
+                                // Keep the connection alive until the server has drained the FINned stream.
+                                serverReceived.await()
+                            }
+                            assertEquals(listOf("uni-1", "uni-2"), serverReceived.await())
                         } finally {
                             serverJob.cancel()
                         }
