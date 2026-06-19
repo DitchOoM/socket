@@ -160,7 +160,7 @@ jobs:
     # exit criterion per PLAN.md Phase 2 rule 4.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -212,7 +212,7 @@ jobs:
     name: "Validate Docs Generation"
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:

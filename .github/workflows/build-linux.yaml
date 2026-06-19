@@ -26,7 +26,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Install both 17 and 21. The build/toolchain runs on 21 (the last entry
       # becomes the default JAVA_HOME) — required to compile the FFM bindings —
@@ -919,7 +919,7 @@ jobs:
       # This job runs raw K/Native .kexe binaries and bypasses Gradle, so the
       # harnessUp/harnessDown Gradle tasks never fire. We bring the harness
       # up/down at the YAML level instead.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download ARM64 test binary
         uses: actions/download-artifact@v8
