@@ -14,23 +14,19 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import com.ditchoom.socket.http3.WebTransportOptions as Http3WebTransportOptions
-import com.ditchoom.socket.http3.WebTransportSession as Http3WebTransportSession
 
 /**
  * The jvm/android/native WebTransport provider: a [WebTransportSupport.Multiplexed] backed by
  * socket-http3 / socket-quic (real QUIC on the classpath).
  *
- * ### Lifecycle (Fork 2 = option 1 now, evolve to 2)
- * [connect] returns a **held** session: a private, session-owned `CoroutineScope` runs
- * `withHttp3Connection(authority, port, webTransport = …) { connectWebTransport(authority, path); awaitCancellation() }`,
- * and the wrapping [WebTransportSession.close] cancels that scope (structured-concurrency teardown —
- * the connection can never be left in a half-open state). This keeps socket-quic's scope-only
- * `QuicScope` invariant untouched: there is no new unscoped `open()` primitive (rejected option 3).
- *
- * [connectMultiplexed] (the Phase-4 DONE bar) holds one HTTP/3 connection open under a private scope and
- * opens many sessions over it via [MultiplexedHttp3WebTransport.openSession]. [connect] stays a distinct
- * held-single-session path (option 1); folding it into `connectMultiplexed` + `openSession` is the
- * option-2 evolution, deferred.
+ * ### Lifecycle (Fork 2 = option 2)
+ * [connectMultiplexed] holds one HTTP/3 connection open under a private, detached `SupervisorJob` scope
+ * (so it outlives the connect() call and is torn down only by [MultiplexedWebTransport.close], never by
+ * the caller's scope ending) and opens many sessions over it via [MultiplexedHttp3WebTransport.openSession].
+ * [connect] is just that with exactly one session opened, wrapped so the session's
+ * [WebTransportSession.close] also closes the held connection — one held-scope implementation, no
+ * duplicated bootstrap. This keeps socket-quic's scope-only `QuicScope` invariant untouched: there is no
+ * new unscoped `open()` primitive (rejected option 3).
  */
 internal class Http3WebTransportSupport : WebTransportSupport.Multiplexed {
     override suspend fun connect(
@@ -43,63 +39,30 @@ internal class Http3WebTransportSupport : WebTransportSupport.Multiplexed {
         options: WebTransportOptions,
     ): MultiplexedWebTransport = connectMultiplexedInternal(url, options.toNativeConfig())
 
-    /** Core of [connect]: both the neutral overload and the native [Http3WebTransportConfig] one land here. */
+    /**
+     * Core of [connect]: both the neutral overload and the native [Http3WebTransportConfig] one land here.
+     *
+     * Fork 2 = option 2: a single held session is just a [connectMultiplexedInternal] connection with
+     * exactly one session opened on it, whose [WebTransportSession.close] tears the whole connection down.
+     * One held-scope implementation ([connectMultiplexedInternal]); no duplicated bootstrap dance.
+     */
     internal suspend fun connectInternal(
         url: String,
         config: Http3WebTransportConfig,
     ): WebTransportSession {
-        val target = parseWebTransportUrl(url)
-        // The session OWNS this scope (Fork 2 option 1): the held HTTP/3 connection lives for exactly as
-        // long as the scope, and close() cancels it. Detached SupervisorJob — the held connection must
-        // outlive this connect() call and is torn down only by close(), not by the caller's scope ending.
-        val scope = CoroutineScope(SupervisorJob())
-        val ready = CompletableDeferred<Http3WebTransportSession>()
-        scope.launch {
-            try {
-                withHttp3Connection(
-                    hostname = target.host,
-                    port = target.port,
-                    quicOptions = config.resolvedQuicOptions(),
-                    connectionOptions = config.connectionOptions,
-                    // Non-null so the connection advertises Extended CONNECT + H3 Datagrams (required by
-                    // connectWebTransport). Default maxSessions: we only initiate here, but advertising a
-                    // session budget is harmless and keeps the door open for peer-initiated streams.
-                    webTransport = Http3WebTransportOptions(),
-                ) {
-                    val session =
-                        try {
-                            connectWebTransport(target.authority, target.path)
-                        } catch (t: Throwable) {
-                            // Report to the awaiting connect() and unwind cleanly (return — do NOT rethrow,
-                            // which would reach the global handler; the connection tears down as the block exits).
-                            ready.completeExceptionally(t)
-                            return@withHttp3Connection
-                        }
-                    ready.complete(session)
-                    // Hold the connection open until close() cancels the scope; the resulting
-                    // CancellationException unwinds the block, which tears down the H3/QUIC connection.
-                    awaitCancellation()
-                }
-            } catch (c: CancellationException) {
-                throw c
-            } catch (t: Throwable) {
-                // The QUIC/TLS handshake or H3 bootstrap failed *before* the block ran (so the inner
-                // catch never saw it), or the held connection later dropped. If ready already completed
-                // this is a no-op; otherwise it unblocks ready.await() instead of hanging forever.
-                ready.completeExceptionally(t)
-            }
+        val path = parseWebTransportUrl(url).path
+        val held = connectMultiplexedInternal(url, config)
+        return try {
+            // Single session over the held connection; closing it closes the connection (option-1 semantics).
+            SingleSessionOverHeldConnection(held.openSession(path), held)
+        } catch (c: CancellationException) {
+            held.close()
+            throw c
+        } catch (t: Throwable) {
+            // openSession already wraps failures as WebTransportException; just release the held connection.
+            held.close()
+            throw t
         }
-        val http3Session =
-            try {
-                ready.await()
-            } catch (c: CancellationException) {
-                scope.cancel()
-                throw c
-            } catch (t: Throwable) {
-                scope.cancel()
-                throw WebTransportException("WebTransport connect to $url failed: ${t.message}", t)
-            }
-        return HeldHttp3WebTransportSession(NativeWebTransportSession(http3Session), scope)
     }
 
     /** Core of [connectMultiplexed]: both the neutral overload and the native config one land here. */
@@ -222,14 +185,14 @@ private class MultiplexedHttp3WebTransport(
 actual fun webTransportSupport(): WebTransportSupport = Http3WebTransportSupport()
 
 /**
- * A [connect]-returned held session (Fork 2 option 1): the [NativeWebTransportSession] adapter plus the
- * private [scope] whose cancellation tears down the owning `withHttp3Connection`. Everything but [close]
- * delegates straight to the adapter; [close] additionally cancels the scope so the held HTTP/3
- * connection is released (no half-open state can survive).
+ * A [connect]-returned single held session (Fork 2 option 2): one session opened on a held
+ * [MultiplexedWebTransport] connection. Everything but [close] delegates to the session adapter; [close]
+ * ends the session *and* closes the owning connection, so a single-session dial releases its whole
+ * connection (no half-open state can survive) — the same observable lifetime as the old option-1 path.
  */
-private class HeldHttp3WebTransportSession(
-    private val delegate: NativeWebTransportSession,
-    private val scope: CoroutineScope,
+private class SingleSessionOverHeldConnection(
+    private val delegate: WebTransportSession,
+    private val owner: MultiplexedWebTransport,
 ) : WebTransportSession by delegate {
     override suspend fun close(
         code: Int,
@@ -238,9 +201,8 @@ private class HeldHttp3WebTransportSession(
         try {
             delegate.close(code, reason)
         } finally {
-            // Cancels awaitCancellation() inside the launched block → withHttp3Connection returns →
-            // the HTTP/3 connection (and its QUIC connection) are torn down. Idempotent.
-            scope.cancel()
+            // Tears down the held HTTP/3 (and underlying QUIC) connection. Idempotent.
+            owner.close()
         }
     }
 }

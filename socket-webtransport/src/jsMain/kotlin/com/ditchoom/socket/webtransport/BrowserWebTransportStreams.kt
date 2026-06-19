@@ -49,6 +49,20 @@ private suspend fun writeChunk(
     return BytesWritten(n)
 }
 
+/**
+ * A WHATWG abort/cancel reason carrying the WebTransport application [code] as the stream error code.
+ * W3C WebTransport maps a `WebTransportError.streamErrorCode` onto RESET_STREAM / STOP_SENDING in the
+ * HTTP/3 error space, so aborting the writable (or cancelling the readable) with this reason carries the
+ * code to the peer. Returns `undefined` when the runtime lacks the `WebTransportError` constructor, so the
+ * caller falls back to a plain abort (RESET_STREAM with code 0). Untested in-repo (no headless WT harness);
+ * the fallback guarantees no regression versus a plain abort.
+ */
+private fun webTransportResetReason(code: Double): dynamic =
+    js("typeof WebTransportError === 'function' ? new WebTransportError('stream reset', { streamErrorCode: code }) : undefined")
+
+/** Clamp a WebTransport application error code to its 32-bit wire range, as a JS number. */
+private fun Long.toStreamErrorCode(): Double = (this and 0xFFFFFFFFL).toDouble()
+
 /** Outgoing unidirectional WebTransport stream (draft §4.1): a [ByteSink] + [Resettable]. */
 internal class BrowserSendStream(
     private val writer: WritableStreamDefaultWriterJs,
@@ -63,10 +77,10 @@ internal class BrowserSendStream(
         deadline: Duration,
     ): BytesWritten = writeChunk(writer, buffer, deadline)
 
-    /** Abort the send side (`RESET_STREAM`). Error-code → WebTransportError wire mapping is a follow-up. */
+    /** Abort the send side (`RESET_STREAM`) carrying [errorCode] via [webTransportResetReason]. */
     override suspend fun reset(errorCode: Long) {
         open = false
-        writer.abort().await()
+        writer.abort(webTransportResetReason(errorCode.toStreamErrorCode())).await()
     }
 
     /** Finish the stream cleanly (FIN) — the [ByteSink.close] contract for a send-only stream. */
@@ -92,10 +106,10 @@ internal class BrowserReceiveStream(
         return result
     }
 
-    /** Cancel the receive side (`STOP_SENDING`) — the [Resettable] contract for a receive-only stream. */
+    /** Cancel the receive side (`STOP_SENDING`) carrying [errorCode] — the [Resettable] contract for a receive-only stream. */
     override suspend fun reset(errorCode: Long) {
         open = false
-        reader.cancel().await()
+        reader.cancel(webTransportResetReason(errorCode.toStreamErrorCode())).await()
     }
 }
 
@@ -128,11 +142,12 @@ internal class BrowserBidiStream(
         writer.close().await()
     }
 
-    /** Abort both directions (`RESET_STREAM` + `STOP_SENDING`). */
+    /** Abort both directions (`RESET_STREAM` + `STOP_SENDING`) carrying [errorCode]. */
     override suspend fun reset(errorCode: Long) {
         open = false
-        writer.abort().await()
-        reader.cancel().await()
+        val reason = webTransportResetReason(errorCode.toStreamErrorCode())
+        writer.abort(reason).await()
+        reader.cancel(reason).await()
     }
 
     /** Graceful close: FIN the send side and release the read side. */

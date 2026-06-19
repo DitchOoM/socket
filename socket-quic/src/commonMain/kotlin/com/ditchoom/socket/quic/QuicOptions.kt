@@ -158,9 +158,11 @@ data class QuicOptions(
      * By default ([certificateHashVerification] = [CertificateHashVerification.HashOnly]) the hash match
      * is the sole trust check, matching the browser.
      *
-     * **Caveat (divergence from browsers):** the native verifier does not (yet) enforce the W3C
-     * `serverCertificateHashes` certificate constraints — leaf validity <= 14 days and an ECDSA P-256
-     * key. It performs the hash match only. (Follow-up.)
+     * Beyond the hash match, the W3C `serverCertificateHashes` certificate *constraints* (leaf validity
+     * <= 14 days, currently within the validity window, ECDSA P-256 key) are enforced on every platform
+     * with a native X.509 parser — JVM/Android (`java.security`), Linux (BoringSSL), macOS
+     * (Security.framework). iOS/tvOS/watchOS lack a public cert-validity API and so check the leaf hash
+     * only. Branch on [serverCertificateConstraintSupport] to see what the current platform enforces.
      */
     val serverCertificateHashes: List<CertificateHash> = emptyList(),
     /**

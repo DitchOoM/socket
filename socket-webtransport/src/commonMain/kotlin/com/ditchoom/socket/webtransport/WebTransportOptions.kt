@@ -12,8 +12,10 @@ package com.ditchoom.socket.webtransport
  *   other HTTP/3 sessions (draft-ietf-webtrans-http3; the browser `WebTransport` constructor's
  *   `allowPooling`). This is the *transparent* form of connection reuse — the platform decides — and is
  *   distinct from the explicit, app-controlled pooling of [WebTransportSupport.Multiplexed], where you
- *   hold the connection and open sessions on it yourself. The browser honors it directly; native
- *   treats it as "this `connect` may reuse an existing connection rather than dialing a fresh one."
+ *   hold the connection and open sessions on it yourself. The browser honors it directly. Native does
+ *   **not** transparently pool — each native `connect` dials a dedicated connection regardless of this
+ *   flag; for connection reuse on native, hold a [WebTransportSupport.Multiplexed] and open many
+ *   sessions on it. So on native this flag is currently a no-op (a browser-only hint).
  *   Default `false` (matches the browser default: a dedicated connection).
  * @property serverCertificateHashes pinned server **leaf**-certificate hashes (W3C WebTransport
  *   `serverCertificateHashes`). When non-empty, the session is accepted only if the peer's TLS leaf
