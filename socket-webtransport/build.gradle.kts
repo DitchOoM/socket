@@ -252,7 +252,10 @@ afterEvaluate {
 // --- Apple QUIC server identity (PKCS#12) for the WebTransport conformance suite ---
 // Network.framework's QUIC listener needs a `sec_identity_t` it can only build from a PKCS#12 blob
 // (loose PEM cert+key won't do — see QuicTlsConfig.pkcs12Path). The committed testcerts/cert.{crt,key}
-// (the long-lived quiche example identity, CN=quic.tech) feed an openssl export into testcerts/cert.p12
+// (a long-lived self-signed EC P-256 leaf, CN=localhost — EC deliberately: NW under-counts the client
+// Initial for RFC 9000 §8.1 anti-amplification, so an NW QUIC server must keep its cert flight small or
+// the handshake deadlocks a non-Apple client; see the limitation note on the Apple buildAppleQuicServer)
+// feed an openssl export into testcerts/cert.p12
 // (passphrase `testpass`, the same convention :socket-quic-nw uses). The p12 is gitignored and
 // regenerated on demand; the Apple K/N test tasks depend on it. JVM/Linux ignore it (PEM-only servers).
 if (isMacOS) {

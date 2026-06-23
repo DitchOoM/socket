@@ -69,6 +69,26 @@ import kotlin.time.Duration.Companion.seconds
  * chain) via `SecPKCS12Import`. The PEM paths used by the JVM/Linux servers are ignored here. See
  * [nw_helper_quic_identity_from_p12].
  *
+ * ### Network.framework anti-amplification limitation — keep the TLS handshake flight small
+ *
+ * **Present a small (EC / ECDSA P-256) leaf certificate with a minimal or empty chain.** Apple's
+ * QUIC stack (libquic) under-credits the client's first flight for the RFC 9000 §8.1
+ * anti-amplification limit: it counts only a fraction (~3×) of the padded 1200-byte client Initial,
+ * and then spends that meager budget padding its *own* ServerHello Initial to 1200 bytes — leaving
+ * almost nothing to send the Certificate flight. A normal RSA-2048 leaf (~1.3 KB flight) cannot be
+ * delivered, so the QUIC handshake **deadlocks** against a standards-compliant non-Apple client
+ * (quiche, Chrome): the server can't send its cert, the client never validates the address, and the
+ * connection idle-times-out. There is **no public Network.framework knob** for address validation,
+ * Retry, or amplification (verified against `quic_options.h`), and the behavior is libquic-wide — a
+ * plain non-group `NWListener` server is affected identically — so the only mitigation under our
+ * control is keeping the server's cert flight under NW's budget (~900 B). A P-256 leaf (~410 B DER,
+ * ~80 B ECDSA CertificateVerify) fits; an RSA-2048 leaf (~750 B DER, ~256 B RSA CertificateVerify)
+ * does not. This affects only the *server* role and only non-Apple peers — Apple↔Apple loopback and
+ * the Apple *client* are unaffected (NW's own client sends a larger ClientHello / different path
+ * flow). Validated by the cross-impl interop harness (quiche client ↔ this NW server). This costs
+ * **zero per-packet bytes** — it shrinks the one-time handshake. (Apple radar: under-counted QUIC
+ * server anti-amplification budget.)
+ *
  * Requires iOS 15+ / macOS 12+ (the listener group handler).
  */
 internal suspend fun buildAppleQuicServer(

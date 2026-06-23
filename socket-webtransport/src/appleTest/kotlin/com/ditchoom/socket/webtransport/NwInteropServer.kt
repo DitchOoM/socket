@@ -146,9 +146,13 @@ class NwInteropServer {
     )
 
     /**
-     * Resolve a cert bundle by base name. `cert` → the long-lived `testcerts/cert.*` (CN=quic.tech), good
-     * for durable native↔native cells. `pinned` → `socket-quic-nw/testcerts/pinned.*` (EC P-256, ≤14-day)
-     * for the Chrome cell's `serverCertificateHashes`. The macosArm64Test working dir is the module dir.
+     * Resolve a cert bundle by base name. `cert` → the long-lived `testcerts/cert.*` (self-signed EC
+     * P-256, CN=localhost), good for durable native↔native cells — EC deliberately, because an NW QUIC
+     * server must keep its cert flight small to interoperate with non-Apple clients (Network.framework
+     * under-counts the client Initial for RFC 9000 §8.1 anti-amplification; a large/RSA cert deadlocks
+     * the handshake — see the limitation note on the Apple buildAppleQuicServer). `pinned` →
+     * `socket-quic-nw/testcerts/pinned.*` (EC P-256, ≤14-day) for the Chrome cell's
+     * `serverCertificateHashes`. The macosArm64Test working dir is the module dir.
      */
     private fun resolveCert(name: String): Cert =
         when (name) {
