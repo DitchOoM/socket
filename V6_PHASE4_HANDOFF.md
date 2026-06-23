@@ -5,6 +5,38 @@ Written 2026-06-23 after a full re-investigation. Read this first in the fresh s
 
 ---
 
+## ⏩⏩⏩⏩⏩⏩ SESSION 7 UPDATE (2026-06-23) — default-ON anti-amplification GUARD shipped; read FIRST
+
+**The SESSION-6 "NEXT" guard is DONE.** Branch `redesign/major-api-v6`, **PUSHED** (origin now at `9348a96`):
+`feat(v6/nw): default-ON anti-amplification guard for Apple QUIC server cert`. The library now fails loud /
+works out-of-the-box for Apple↔quiche↔Chrome — a silent 10s handshake deadlock becomes an instant bind-time
+error.
+
+- **cinterop** `nw_quic_helpers.h`: new `nw_helper_quic_identity_leaf_info(identity, key_type_out, leaf_der_len_out)`
+  — from the imported `sec_identity_t`, returns leaf DER length + key type (1=EC, 2=RSA) via
+  `sec_identity_copy_ref`→`SecIdentityCopyCertificate`→`SecCertificateCopyData` +
+  `SecCertificateCopyKey`/`SecKeyCopyAttributes`. Cross-platform (not macOS-gated).
+- **guard** `buildAppleQuicServer` (`WithQuicServer.apple.kt`): estimates flight = `leafDer + (RSA 260 / EC 80)
+  + 260 fixed`; throws `IllegalArgumentException` (naming the NW bug + the opt-out flag) when `> ~1000B`.
+  **Fails open** if the leaf can't be inspected (import already succeeded). Inline `memScoped` call keeps the
+  opaque `sec_identity_t` type inferred.
+- **opt-out** new `QuicOptions.appleAllowOversizedServerCert: Boolean = false` (commonMain; Apple-only, ignored
+  on quiche/JVM/Linux + client role; mirrors `datagramStreamConflictPolicy`).
+- **cert migration** (blast radius from SESSION 6): committed EC P-256 `socket-quic-nw/testcerts/cert.*` (435B
+  DER, CN=localhost+SAN, 10y); `generateLocalhostCert` keytool task now emits EC P-256 (was RSA-2048). The
+  shared `QuicCertificateHashPinningTestSuite` sets the opt-out for the constraint-reject path so the
+  deliberate `pinned-rsa` fixture still binds (NW↔NW client is unaffected by the bug; the suite tests pinning,
+  not interop). `pinned-rsa.*` itself stays RSA.
+- **tests** `AppleQuicServerCertGuardTests` (RSA rejected / EC passes / opt-out bypasses).
+- **Validated:** `:socket-quic-nw:macosArm64Test` **53/53**, `:socket-webtransport:macosArm64Test` **5/5**,
+  `:socket-quic-quiche:jvmTest` cert-pinning suite — all GREEN; ktlint clean.
+
+**Remaining v6 release work unchanged** (see SESSION 6 + §2/§6 below): buffer 6.0.0 → Central + repin + drop
+the mavenLocal pins; the dedicated cross-impl CI workflow; file the Apple-WT-datagram issue. Linux cinterop
+half of typed-close (`CinteropQuicheApi.kt`) still UNVERIFIED on macOS — confirm on aliens/CI.
+
+---
+
 ## ⏩⏩⏩⏩⏩ SESSION 6 UPDATE (2026-06-23 late night) — NW-server↔quiche-client deadlock FIXED; read FIRST
 
 **The SESSION-5 🔴 BUG is FIXED.** Branch `redesign/major-api-v6`, **PUSHED** (origin now at `408a6a8`):
