@@ -5,7 +5,28 @@ Written 2026-06-23 after a full re-investigation. Read this first in the fresh s
 
 ---
 
-## ⏩⏩ SESSION 3 UPDATE (2026-06-23 late) — read FIRST; supersedes SESSION 2 + §1–§3 where they conflict
+## ⏩⏩⏩ SESSION 4 UPDATE (2026-06-23 latest) — read FIRST; supersedes SESSION 3 where they conflict
+
+**HEADLINE: the WebTransport VALIDATION GAP is CLOSED on all remaining targets — Apple, Android, AND browser are GREEN.** All changes are **uncommitted** on `redesign/major-api-v6` (branch was clean at `67ba524` before this session).
+
+**1. Apple H3 coverage parity (the SESSION-3 next-step) — DONE.** Wired `socket-http3`'s `appleTest` + `AppleHttp3LoopbackTest : Http3LoopbackTestSuite()` + a `generateHttp3TestP12` Gradle task (mirrors `socket-webtransport`'s p12 task). `:socket-http3:macosArm64Test` = **28 tests, 1 skipped, 0 failures.**
+- It surfaced a real bug (as predicted): 4 tests awaiting `peerSettings()` timed out. **Root cause = test fidelity, not a product bug:** `Http3LoopbackTestSuite` dialed `withQuicServer` DIRECTLY with raw options (default `PreferDatagrams`), so on Apple the server extracted a datagram flow → killed server-initiated control-stream (SETTINGS) delivery. **Fix:** apply `.forHttp3()` (forces `PreferStreams`) to the suite's server+client `QuicOptions` — exactly what production `withHttp3Server`/`withHttp3Connection` always do. No-op on quiche; JVM stayed 28/28 incl. the datagram test.
+- The lone WT-datagram test is `@Ignore`-overridden on the Apple subclass (genuine NW datagram/inbound-stream limitation). Required making `Http3LoopbackTestSuite.webTransport_datagramRoundTrip` `open`.
+
+**2. Android (SESSION-2 test, step 2) — DONE.** `AndroidWebTransportTest` = **3/3 on `Pixel_3a_API_33_arm64-v8a`** incl. the multiplexed DONE-bar. Two ENV fixes (not code): (a) rustup's cargo (has the android Rust std) must precede Homebrew's on PATH for the quiche-android cross-compile; (b) deleted STALE orphan `socket-quic/src/androidMain/jniLibs/*/libquiche_jni.so` (quiche 0.28.0, Apr-22, untracked/gitignored, predates the quiche-backend split) — they collided with `socket-quic-quiche`'s in `mergeDebugAndroidTestNativeLibs`.
+
+**3. Browser (step 3 fork) — DONE, BOTH halves.** (i) **MCP-driven proof:** real Chrome via Chrome DevTools MCP → W3C `WebTransport` + `serverCertificateHashes` (the `pinned` EC P-256 leaf) against our quiche `withHttp3Server`: bidi over two sessions + uni + datagram all round-trip; the server log cross-confirms (`path=/a`,`/b`; `WT_UNI_RECEIVED text=uni-payload`). (ii) **Automated Karma:** `:socket-webtransport:jsBrowserTest` = **2/2 GREEN in ChromeHeadless 149**, driving the production `browserMain` wrapper.
+- New, all **gated behind `-PwtBrowserInterop`** so default builds/CI never require Chrome (verified: without the flag the gated source isn't compiled and `generateBrowserInteropConfig` isn't registered): `socket-webtransport/src/jvmTest/.../BrowserInteropServer.kt` (gated `-Dwt.interop.server=true` harness — ephemeral port, pinned cert, echoes, writes `build/wt-interop/config.properties`), `src/jsBrowserInterop/.../BrowserWebTransportInteropTest.kt`, `scripts/browser-interop.sh` (orchestrates server↔jsBrowserTest), and build wiring (`useChromeHeadless`, generated `BrowserInteropConfig.kt`, jsTest srcDir, ktlint exclude of the generated file).
+- **CAVEAT:** the `pinned` fixture is valid ~13 days (expires ~2026-07-06). Re-run `:socket-quic-nw:generatePinnedW3cCerts` before future browser runs. Chrome at `/Applications/Google Chrome.app/...` (`CHROME_BIN`). JDK 21 + `CHROME_BIN` + rustup not needed for the JS half.
+
+**STILL OPEN (next session):**
+- **File the tracking issue** for the Apple WebTransport-datagram limitation (NW can't deliver datagrams + inbound streams together; documented in `WebTransportSession` KDoc + the Apple `@Ignore`).
+- **buffer 6.0.0 → Central** (§2/§6) + repin `5.13.2`→`6.0.0` + drop the 8× `mavenLocal()` — the only remaining v6-release blocker.
+- Cross-platform/cross-implementation interop matrix (quiche↔NW↔Chrome) is a possible follow-up — all current suites are SAME-platform loopback; the `BrowserInteropServer` external-server pattern is the template for cross-impl pairs.
+
+---
+
+## ⏩⏩ SESSION 3 UPDATE (2026-06-23 late) — read after SESSION 4; supersedes SESSION 2 + §1–§3 where they conflict
 
 **HEADLINE: Apple WebTransport DONE-bar is GREEN.** `:socket-webtransport:macosArm64Test`
 `AppleWebTransportTest` 3/3 pass, including `multiplexed_twoSessionsOverOneConnection_eachRoundTrip`

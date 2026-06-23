@@ -67,13 +67,22 @@ abstract class Http3LoopbackTestSuite {
 
     // Datagrams enabled so the WebTransport datagram tests (RFC 9297) work; harmless for the others
     // (it only advertises max_datagram_frame_size in the QUIC handshake).
+    //
+    // `.forHttp3()` (PreferStreams) is applied to match exactly what the production withHttp3Server /
+    // withHttp3Connection entrypoints force at their boundary: on Apple's Network.framework, extracting
+    // a datagram flow steals inbound/server-initiated stream delivery (the control stream's SETTINGS
+    // never reach the peer), so HTTP/3 must prioritize streams. The client tests already route through
+    // withHttp3Connection (which calls forHttp3 itself); the loopback SERVER here is built with a raw
+    // withQuicServer, so without this it would run a transport config production never uses — and its
+    // control-stream SETTINGS would silently not arrive on Apple. On quiche (JVM/Linux) PreferStreams is
+    // a no-op for datagrams, so the datagram round-trip test is unaffected there.
     private val serverQuicOptions =
         QuicOptions(
             alpnProtocols = listOf(HTTP3_ALPN),
             verifyPeer = false,
             idleTimeout = 10.seconds,
             datagrams = DatagramOptions(),
-        )
+        ).forHttp3()
 
     private val clientQuicOptions =
         QuicOptions(
@@ -81,7 +90,7 @@ abstract class Http3LoopbackTestSuite {
             verifyPeer = false,
             idleTimeout = 10.seconds,
             datagrams = DatagramOptions(),
-        )
+        ).forHttp3()
 
     // QUIC stream I/O is zero-copy: it reads each buffer's native address. On Kotlin/Native,
     // BufferFactory.Default allocates heap (no native memory), so frame/body buffers MUST come from
@@ -1069,8 +1078,12 @@ abstract class Http3LoopbackTestSuite {
 
     // --- WebTransport Phase 3: datagrams (draft-ietf-webtrans-http3 §4.4, RFC 9297) ---
 
+    // `open` so the Apple subclass can override-and-@Ignore it: on Network.framework's QUIC
+    // connection-group API, extracting a datagram flow steals inbound *stream* delivery, so HTTP/3
+    // (which needs inbound streams) forces PreferStreams and WebTransport datagrams are unavailable
+    // there. Every other test in this suite is stream-based and runs on Apple unchanged.
     @Test
-    fun webTransport_datagramRoundTrip() =
+    open fun webTransport_datagramRoundTrip() =
         runHttp3LoopbackTest {
             wrapTestBody {
                 withHttp3Server(

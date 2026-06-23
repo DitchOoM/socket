@@ -174,6 +174,51 @@ afterEvaluate {
     }
 }
 
+// --- Apple QUIC server identity (PKCS#12) for the Http3 loopback suite ---
+// On Apple the loopback server is Network.framework's QUIC listener (provided transitively through
+// socket-quic-default → :socket-quic-nw), and NW can only build its `sec_identity_t` from a PKCS#12
+// blob (loose PEM cert+key won't do — see QuicTlsConfig.pkcs12Path). The committed testcerts/cert.{crt,key}
+// feed an openssl export into testcerts/cert.p12 (passphrase `testpass`, the same convention :socket-quic-nw
+// and :socket-webtransport use). The p12 is gitignored and regenerated on demand; the Apple K/N test tasks
+// depend on it. JVM/Linux ignore it (their quiche server reads the PEM cert+key directly).
+if (isMacOS) {
+    val generateHttp3TestP12 =
+        tasks.register("generateHttp3TestP12") {
+            group = "verification"
+            description = "Generate testcerts/cert.p12 from the committed PEM cert+key for the Apple Http3 loopback tests."
+            val certDir = projectDir.resolve("testcerts")
+            val crt = certDir.resolve("cert.crt")
+            val key = certDir.resolve("cert.key")
+            inputs.files(crt, key)
+            outputs.file(certDir.resolve("cert.p12"))
+            doLast {
+                val process =
+                    ProcessBuilder(
+                        "openssl",
+                        "pkcs12",
+                        "-export",
+                        "-out",
+                        certDir.resolve("cert.p12").absolutePath,
+                        "-inkey",
+                        key.absolutePath,
+                        "-in",
+                        crt.absolutePath,
+                        "-passout",
+                        "pass:testpass",
+                    ).redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().readText()
+                if (process.waitFor() != 0) {
+                    throw GradleException("openssl pkcs12 export failed for cert.p12 (rc != 0):\n$output")
+                }
+            }
+        }
+
+    // Apple K/N test tasks read testcerts/cert.p12 at runtime.
+    tasks
+        .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
+        .configureEach { dependsOn(generateHttp3TestP12) }
+}
+
 // --- Publishing ---
 // Coordinates come from socket-http3/gradle.properties (artifactName=socket-http3); the rest of
 // the POM mirrors :socket-quic. Signing + Maven Central upload only engage on a main-branch CI

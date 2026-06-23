@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -44,7 +45,15 @@ kotlin {
     }
     jvm()
     js {
-        browser()
+        browser {
+            // The browser WebTransport interop test runs in real headless Chrome via Karma. Opt-in only
+            // (`-PwtBrowserInterop`) so a default `jsBrowserTest` / CI `check` never requires Chrome.
+            if (project.hasProperty("wtBrowserInterop")) {
+                testTask {
+                    useKarma { useChromeHeadless() }
+                }
+            }
+        }
         nodejs()
     }
     wasmJs {
@@ -230,6 +239,13 @@ afterEvaluate {
     tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
         dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
         classpath += files(stagedNatives)
+        // Forward `wt.*` system properties to the forked test worker JVM (CLI `-D` does NOT propagate
+        // to test workers). Used by the manually-launched BrowserInteropServer harness
+        // (-Dwt.interop.server=true) for browser interop validation; a no-op for ordinary test runs.
+        for ((k, v) in System.getProperties()) {
+            val key = k.toString()
+            if (key.startsWith("wt.")) systemProperty(key, v.toString())
+        }
     }
 }
 
@@ -275,6 +291,60 @@ if (isMacOS) {
     tasks
         .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
         .configureEach { dependsOn(generateWebTransportTestP12) }
+}
+
+// --- Browser WebTransport interop (opt-in: `-PwtBrowserInterop`) ---
+// Real headless Chrome (via Karma) drives the production browserMain WebTransport wrapper against an
+// externally-launched withHttp3Server (the BrowserInteropServer harness, JVM/quiche) presenting the
+// `pinned` EC P-256 leaf — the only self-signed path a browser accepts (W3C serverCertificateHashes).
+// The harness binds an ephemeral port and writes build/wt-interop/config.properties (url + leaf hash);
+// `generateBrowserInteropConfig` bakes that into BrowserInteropConfig.kt so the jsTest compiles against
+// the actual port (no fixed ports, no runtime Karma fetch). Orchestration: scripts/browser-interop.sh
+// starts the server, runs jsBrowserTest, then stops it. Gated so default builds/CI never require Chrome.
+if (project.hasProperty("wtBrowserInterop")) {
+    val interopConfigDir = layout.buildDirectory.dir("generated/wt-interop/kotlin")
+    val configProps = layout.buildDirectory.file("wt-interop/config.properties")
+    val generateBrowserInteropConfig =
+        tasks.register("generateBrowserInteropConfig") {
+            description = "Generate BrowserInteropConfig.kt from the running interop server's config.properties."
+            val outDir = interopConfigDir
+            val propsFile = configProps
+            outputs.dir(outDir)
+            outputs.upToDateWhen { false } // input is a runtime-written file; never cache
+            doLast {
+                val props = Properties()
+                val f = propsFile.get().asFile
+                if (f.exists()) f.inputStream().use { props.load(it) }
+                val url = props.getProperty("url", "")
+                val hash = props.getProperty("certSha256", "")
+                val pkgDir = outDir.get().dir("com/ditchoom/socket/webtransport").asFile
+                pkgDir.mkdirs()
+                pkgDir.resolve("BrowserInteropConfig.kt").writeText(
+                    """
+                    package com.ditchoom.socket.webtransport
+
+                    internal object BrowserInteropConfig {
+                        const val URL: String = "$url"
+                        const val CERT_SHA256_HEX: String = "$hash"
+                    }
+                    """.trimIndent() + "\n",
+                )
+            }
+        }
+    kotlin.sourceSets.named("jsTest") {
+        kotlin.srcDir("src/jsBrowserInterop/kotlin")
+        kotlin.srcDir(interopConfigDir)
+        dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.core)
+        }
+    }
+    tasks.named("compileTestKotlinJs") { dependsOn(generateBrowserInteropConfig) }
+    // ktlint over jsTest reads the generated srcDir (even though the file is excluded from linting), so
+    // declare the producer dependency to avoid Gradle's implicit-dependency validation error.
+    tasks
+        .matching { it.name == "runKtlintCheckOverJsTestSourceSet" || it.name == "runKtlintFormatOverJsTestSourceSet" }
+        .configureEach { dependsOn(generateBrowserInteropConfig) }
 }
 
 // --- Publishing ---
@@ -352,5 +422,10 @@ ktlint {
     filter {
         exclude("**/generated/**")
         exclude("**/build/**")
+        // The string globs above match each file's path RELATIVE TO ITS SOURCE ROOT, so a generated
+        // srcDir rooted under build/ (the wtBrowserInterop BrowserInteropConfig.kt) slips through — its
+        // relative path has no "build"/"generated" segment. Exclude it by filename, which the
+        // relative-path matcher does see.
+        exclude("**/BrowserInteropConfig.kt")
     }
 }
