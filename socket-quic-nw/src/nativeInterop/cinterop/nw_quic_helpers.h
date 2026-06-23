@@ -1176,6 +1176,28 @@ static inline void nw_helper_quic_listener_set_new_connection_group_handler(
 }
 
 /**
+ * DIAGNOSTIC ONLY (anti-amplification interop probe, not used by the production server).
+ * Block delivering an incoming QUIC connection as a SINGLE [nw_connection_t] (one QUIC
+ * stream), the non-group QUIC model. Mutually exclusive with the group handler above.
+ * Used by the NwPlainListenerProbe appleTest to test whether a plain (non-group) NW QUIC
+ * listener under-credits the client Initial for RFC 9000 §8.1 anti-amplification the same
+ * way the connection-group server does — i.e. whether the bug is libquic-wide or
+ * group-specific. The connection is NOT started; the Kotlin handler drives it via
+ * nw_helper_quic_start / nw_helper_quic_set_state_handler.
+ */
+typedef void (^quic_new_connection_handler_t)(nw_connection_t _Nonnull connection);
+
+static inline void nw_helper_quic_listener_set_new_connection_handler(
+    nw_listener_t _Nonnull listener,
+    quic_new_connection_handler_t _Nonnull handler)
+{
+    nw_listener_set_new_connection_handler(listener,
+        ^(nw_connection_t _Nonnull connection) {
+            handler(connection);
+        });
+}
+
+/**
  * Start the listener on a dedicated SERIAL callback queue — same K/N
  * foreign-thread-safety rationale as nw_helper_quic_start (one callback at a time).
  */

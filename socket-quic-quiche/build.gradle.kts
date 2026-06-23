@@ -589,6 +589,14 @@ afterEvaluate {
         // can extract them as classloader resources.
         classpath += files(stagedNativeResourcesDir)
 
+        // Forward `nw.plain.*` system properties to the forked worker JVM (CLI `-D` does NOT propagate
+        // to test workers). Used by the manually-launched QuichePlainProbeClient anti-amplification
+        // probe (-Dnw.plain.client=true); a no-op for ordinary test runs.
+        for ((k, v) in System.getProperties()) {
+            val key = k.toString()
+            if (key.startsWith("nw.plain.")) systemProperty(key, v.toString())
+        }
+
         // --- Heap-corruption / UAF guard ---------------------------------------
         // `-PquicMallocCheck` runs the forked test workers under glibc's malloc
         // consistency checks. The worst QUIC bug class (the 3.2.12 JNI stream-
