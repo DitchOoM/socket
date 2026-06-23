@@ -5,6 +5,42 @@ Written 2026-06-23 after a full re-investigation. Read this first in the fresh s
 
 ---
 
+## ⏩⏩⏩⏩⏩ SESSION 6 UPDATE (2026-06-23 late night) — NW-server↔quiche-client deadlock FIXED; read FIRST
+
+**The SESSION-5 🔴 BUG is FIXED.** Branch `redesign/major-api-v6`, **PUSHED** (origin now at `408a6a8`):
+- `1a2dad4` test — plain-NWListener control probe (gated diagnostic)
+- `408a6a8` fix — small EC server cert clears the anti-amplification deadlock + docs
+
+**Refined root cause (proven with `/usr/bin/log stream` AND `tcpdump -i lo0` — I'm in `access_bpf` so
+tcpdump needs no sudo; `log` is a zsh builtin → use `/usr/bin/log`):** Apple libquic's QUIC server
+**under-counts the client's 1200B Initial for RFC 9000 §8.1** (credits ~3×~400B ≈ ClientHello payload, not
+3×1200B) **AND pads its own ServerHello Initial to 1200B** (wire-confirmed), spending the whole meager
+budget before the Certificate. So a normal **RSA-2048** flight (~1.3KB) can't be sent → deadlock; a tiny
+**EC P-256** flight (~770B) completes in 40ms. NW **never** reaches amplification-"validated" (its
+`path: probing→validated` is the migration FSM, unrelated). Confirmed **no public NW knob** exists (checked
+`quic_options.h`) and the bug is **libquic-wide, not group-specific** (the plain-`NWListener` control probe
+shows identical wire behaviour; a plain listener is single-stream anyway → can't host WebTransport).
+
+**THE FIX (only lever; zero per-packet cost):** keep the NW server's TLS flight small. Switched the
+fixture `socket-webtransport/testcerts/cert.*` from RSA-2048 to a durable self-signed **EC P-256** leaf
+(CN=localhost, 10y). Documented the limitation + EC requirement on `buildAppleQuicServer`
+(`WithQuicServer.apple.kt`) and `QuicTlsConfig.pkcs12Path`.
+
+**Validated:** cross-impl `nw-server` cell GREEN (quiche client ↔ NW server, round-trip 0.42s);
+**NW-server ↔ real Chrome GREEN** (drove Chrome via the DevTools MCP, pinned EC cert via
+`serverCertificateHashes`, bidi `echo:from-chrome`, session accepted) — this also closes NEXT-PHASE cell #2;
+`AppleWebTransportTest` still GREEN; ktlint clean across the 4 touched modules.
+
+**Open / deferred (decide with user):** a runtime cert-size **guard/warning** in `buildAppleQuicServer`
+was proposed but NOT built — the lib has no logging facility and the threshold depends on the peer's
+ClientHello size (false-positive-prone for RSA that works Apple↔Apple / Apple-client). I recommended
+**docs-over-guard**. The gated probe artifacts (`NwPlainListenerProbe`, `QuichePlainProbeClient`, the
+`nw_helper_quic_listener_set_new_connection_handler` helper, `nw.plain.*` jvmTest forwarding) were kept as
+diagnostics — droppable if undesired. **Remaining v6 release work unchanged:** buffer 6.0.0 → Central +
+repin + drop 8× mavenLocal (§2/§6); the dedicated cross-impl CI workflow; file the Apple-WT-datagram issue.
+
+---
+
 ## ⏩⏩⏩⏩ SESSION 5 UPDATE (2026-06-23 night) — read FIRST; this is the live cross-impl-interop work
 
 **Branch `redesign/major-api-v6`. SESSION 5 is COMMITTED + PUSHED** as two commits on top of SESSION 4:
