@@ -26,6 +26,37 @@ Written 2026-06-23 after a full re-investigation. Read this first in the fresh s
 
 ---
 
+## ⏭ NEXT-PHASE PLAN (cross-implementation interop + Android/iOS server-in-CI) — for a FRESH session
+
+**Why:** every current suite is SAME-platform loopback (server+client, one process, one impl). Under ~15 targets there are only **3 independent QUIC/H3 impls**: **quiche** (JVM/Android/Linux), **Network.framework** (all Apple), **Chrome** (browser, client-only). Cross-IMPL interop is what guards against divergences like the Apple NW stream-id bugs. Also: explicitly prove **Android + iOS can serve** (incl. to a browser, where feasible).
+
+**Server-capable = JVM, Android, Linux, Apple(macOS/iOS/tvOS/watchOS via NWListener). Browser = client-only.** Matrix (✦ = valuable cross-impl, ✅ = covered by loopback):
+
+| server ↓ \ client → | quiche | Network.framework | Chrome |
+|---|---|---|---|
+| quiche | ✅ loopback | ✦ #1 | ✦ DONE (JVM↔ChromeHeadless) |
+| Network.framework | ✦ #1 | ✅ Apple loopback | ✦ #2 |
+| Chrome | — (no server) | — | — |
+
+**Cells to build, by ROI/cost (all localhost on the dev Mac / a macOS CI runner — no 2nd device):**
+1. **NW-server ↔ quiche-client AND quiche-server ↔ NW-client** *(highest value, CI-feasible on macOS runner).* Two processes over localhost: a macOS K/N NW server + a JVM quiche client, and vice versa. Directly guards the two-native-backend protocol boundary.
+2. **NW-server ↔ Chrome** *(cheap, novel; CI-feasible on macOS runner w/ Chrome).* Reuse the browser harness but run the interop server on **macOS (NW)** instead of JVM (quiche). NW server must present the pinned EC P-256 leaf (same `serverCertificateHashes` constraint).
+3. **iOS-sim as server (NW)** *(needs infra first).* iOS-sim shares the host loopback, so iOS-sim NW server ↔ macOS quiche client (or ↔ Chrome) is plausible — BUT iOS-sim QUIC-server tests currently self-skip (`shouldSkipQuicHarnessOnSimulator`) because certs are cwd-relative and unreachable in the sim sandbox; needs certs bundled into the sim app + the never-implemented `standalone.set(false)`/device wiring (see [[v6-phase4-webtransport]] "iOS-SIM CAN'T RUN" note). Effortful; CI-feasible on macOS runners after.
+
+**Server-capability proofs the user explicitly wants:**
+- **Android server:** already proven on-device (AndroidWebTransportTest multiplexed = real `withHttp3Server`). Browser↔Android-server is **NOT CI-automatable** — `adb forward` is TCP-only and emulator user-mode net can't host→guest UDP (QUIC); only a **real device on the same LAN** can do browser↔Android. Cover Android-server-for-native-client (have it) + document the browser cell as real-device-manual.
+- **iOS server:** functionally fine (same NW code as macOS, proven). The automated proof = cell #3 (do the sim cert-bundling) OR accept macOS-NW as the authoritative Apple-server check + document iOS as covered-by-same-code.
+
+**Design template (generalize the browser harness):** a reusable external-server runner parameterized by backend (the existing `BrowserInteropServer` is the quiche/JVM one; add an NW/macOS K/N server runner) that binds an ephemeral port, presents the pinned cert, and writes `build/wt-interop/config.properties`; a per-impl client runner reads it; a script coordinates (start server → run client → stop). Reuse the generated-`BrowserInteropConfig` injection + `scripts/browser-interop.sh` pattern.
+
+**Hard constraints already learned (don't rediscover):** (a) the server build must be a SEPARATE process from the client/test build — they can't share one Gradle daemon (server build blocks); use `--no-daemon` or a standalone exec. (b) Gradle forks test workers → CLI `-D` doesn't reach them (forward `wt.*` props in the test task, as done). (c) `pinned` cert is 13-day; `:socket-quic-nw:generatePinnedW3cCerts` to regen. (d) browser needs ECDSA-P-256 ≤14d leaf via `serverCertificateHashes`; localhost is a secure context.
+
+**CI wiring fork (settle with user):** a new macOS `review.yaml` job (or workflow) running the localhost cross-impl + NW↔Chrome cells, opt-in/gated like `-PwtBrowserInterop` so it only runs where Chrome/sim exist. Decide: separate workflow vs added job; whether to invest in iOS-sim cert-bundling now or defer.
+
+**Open forks for the fresh session to resolve with the user:** (1) native server-runner shape — keep a gated test, or a real `application`/JavaExec (JVM) + a K/N executable (NW)? (2) reuse generated-Kotlin-config + script orchestration, or a served-file approach? (3) iOS-server-in-CI now vs defer-to-macOS-coverage.
+
+---
+
 ## ⏩⏩ SESSION 3 UPDATE (2026-06-23 late) — read after SESSION 4; supersedes SESSION 2 + §1–§3 where they conflict
 
 **HEADLINE: Apple WebTransport DONE-bar is GREEN.** `:socket-webtransport:macosArm64Test`
