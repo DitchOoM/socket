@@ -31,13 +31,36 @@ fixture `socket-webtransport/testcerts/cert.*` from RSA-2048 to a durable self-s
 `serverCertificateHashes`, bidi `echo:from-chrome`, session accepted) — this also closes NEXT-PHASE cell #2;
 `AppleWebTransportTest` still GREEN; ktlint clean across the 4 touched modules.
 
-**Open / deferred (decide with user):** a runtime cert-size **guard/warning** in `buildAppleQuicServer`
-was proposed but NOT built — the lib has no logging facility and the threshold depends on the peer's
-ClientHello size (false-positive-prone for RSA that works Apple↔Apple / Apple-client). I recommended
-**docs-over-guard**. The gated probe artifacts (`NwPlainListenerProbe`, `QuichePlainProbeClient`, the
-`nw_helper_quic_listener_set_new_connection_handler` helper, `nw.plain.*` jvmTest forwarding) were kept as
-diagnostics — droppable if undesired. **Remaining v6 release work unchanged:** buffer 6.0.0 → Central +
+**NEXT (user leaning yes): a default-ON hard-error GUARD so it works out-of-the-box / fails loud.** User
+wants smart defaults for Apple↔quiche↔Chrome. The honest framing: we can't change a user-PROVIDED cert, but
+(a) every cert WE ship/generate is now EC (interop works out of the box), and (b) a guard converts the
+silent 10s deadlock into an instant, actionable bind-time error. **Plan:**
+- cinterop helper in `nw_quic_helpers.h`: from the imported `sec_identity_t`, return leaf DER length +
+  key-type (RSA vs EC) — `SecIdentityCopyCertificate` → `SecCertificateCopyData` (len) +
+  `SecCertificateCopyKey`/`SecKeyCopyAttributes` (`kSecAttrKeyType`). (Security APIs already used here.)
+- `buildAppleQuicServer`: estimate flight ≈ leafDer + (RSA 260 / EC 80) + ~260 fixed; if > ~1000B and not
+  opted out → throw a clear `QuicTlsConfig`/`SocketException` naming the NW anti-amplification bug + the
+  opt-out flag. EC P-256 (~410B → ~750B) passes; RSA-2048 (~750B → ~1260B) fails.
+- new `QuicOptions` flag (Apple-only, mirrors `datagramStreamConflictPolicy`), e.g.
+  `appleAllowOversizedServerCert: Boolean = false` (default false = guard ON). Escape hatch for Apple-only-
+  client deployments / the RSA pinning tests.
+- **BLAST RADIUS (measured 2026-06-23) — a default-throw guard breaks our own Apple suite, so MIGRATE first:**
+  `socket-quic-nw` appleTest uses RSA server certs everywhere — `appleQuicTestTlsConfig` (RSA `cert.p12`,
+  753B) ×17, `appleQuicLocalhostTlsConfig` (RSA `localhost.p12`, 786B) ×2, `appleQuicPinnedTlsConfig("pinned-rsa")`
+  (RSA, deliberately). Migrate `socket-quic-nw/testcerts/cert.*` + `localhost.*` to **EC P-256** (these are
+  NW↔NW / NW↔Apple-client, EC is fine), and have the `pinned-rsa` pinning test set the opt-out flag (it
+  tests pinning, not interop). Only 2 appleTest files actually `bind()` a server; the rest reuse the helpers.
+  Then run the FULL `:socket-quic-nw:macosArm64Test` (~47 tests) to confirm no regression. (`socket-quic`
+  /JVM/Linux servers don't have the bug → guard is Apple-only, no effect there.)
+- Trade-off to confirm: this rejects RSA-on-NW-server even when it'd only serve Apple clients (works today) —
+  that's the intended "fail loud toward universal interop" default, with the opt-out for the Apple-only case.
+
+The gated probe artifacts (`NwPlainListenerProbe`, `QuichePlainProbeClient`, the
+`nw_helper_quic_listener_set_new_connection_handler` helper, `nw.plain.*` jvmTest forwarding) are KEPT
+(user: keep as gated diagnostics). **Remaining v6 release work unchanged:** buffer 6.0.0 → Central +
 repin + drop 8× mavenLocal (§2/§6); the dedicated cross-impl CI workflow; file the Apple-WT-datagram issue.
+Note: the linux cinterop half of the typed-close-error work (`CinteropQuicheApi.kt`) is still UNVERIFIED on
+macOS — confirm it builds on aliens/CI.
 
 ---
 
