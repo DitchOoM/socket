@@ -5,6 +5,119 @@ Written 2026-06-23 after a full re-investigation. Read this first in the fresh s
 
 ---
 
+## ⏩⏩⏩⏩ SESSION 5 UPDATE (2026-06-23 night) — read FIRST; this is the live cross-impl-interop work
+
+**Branch `redesign/major-api-v6`. SESSION 5 is COMMITTED + PUSHED** as two commits on top of SESSION 4:
+- `0cd87a2` feat(v6/quic): capture typed QUIC close reason (peer/local error, IdleTimeout)
+- `c134814` test(v6/phase4): cross-implementation interop harness (quiche <-> Network.framework)
+
+(SESSION 4's `314fb94`+`ab0add1` were also pushed in this push.) The bug below is NOT yet fixed — it's the
+next-session target. Files that landed in these two commits:
+```
+ M socket-quic/.../QuicError.kt              # + QuicError.IdleTimeout, + fun describe()
+ M socket-quic/.../QuicCloseException.kt      # message auto-appends [describe()] when error != NoError
+ M socket-quic/.../(commonTest) QuicErrorTests.kt   # +3 tests (idleTimeout, describe, msg-append)
+ M socket-quic-quiche/.../QuicheApi.kt        # + connPeerError()/connLocalError() (default null)
+ M socket-quic-quiche/.../QuicheDriver.kt     # transitionToClosed → resolveCloseError() (peer/local/timeout)
+ M socket-quic-quiche/.../FfmQuicheApi.kt     # bind quiche_conn_{peer,local}_error (readConnError)
+ M socket-quic-quiche/.../CinteropQuicheApi.kt# same for linux (UNVERIFIED on Mac — needs aliens/CI)
+ M socket-quic-quiche/.../(commonTest) StubQuicheApi.kt     # + peerError/localError/timedOut vars
+ M socket-quic-quiche/.../(commonTest) ReactiveDriverTests.kt# +3 driver tests (peer/local/timeout capture)
+ M socket-webtransport/.../(jvmTest) BrowserInteropServer.kt # + wt.interop.cert (cert|pinned), datagrams= line
+?? socket-webtransport/scripts/cross-impl-interop.sh                 # orchestrator {nw-server|quiche-server}
+?? socket-webtransport/.../(appleTest) NwInteropServer.kt / NwInteropClient.kt / NwInteropIo.kt
+?? socket-webtransport/.../(jvmTest) QuicheInteropClient.kt
+```
+All JVM + macosArm64 compiles GREEN; `QuicErrorTests` + `ReactiveDriverTests` GREEN (6 new tests). ktlint clean.
+
+**WHAT THIS SESSION DID** (the NEXT-PHASE plan's cell #1 = cross-IMPLEMENTATION interop, quiche ↔ Network.framework over localhost, two processes):
+
+1. **Built the cross-impl harness** (decisions made with user: gated tests + script; runtime file/env config;
+   defer iOS; separate CI workflow — CI workflow NOT yet written). `cross-impl-interop.sh nw-server` runs an
+   NW K/N server (`macosArm64Test`, gated by `WT_INTEROP_SERVER` env) ↔ quiche JVM client
+   (`QuicheInteropClient`, gated `-Dwt.interop.client`). `quiche-server` runs the reverse (reuses
+   `BrowserInteropServer` with `-Dwt.interop.cert=cert`) ↔ NW K/N client (`NwInteropClient`, env
+   `WT_INTEROP_CLIENT`). Server `--no-daemon` (env staleness + blocking), config via
+   `build/wt-interop/cross-impl-config.properties` (its existence = readiness). DONE-bar shape: 2 sessions over
+   1 held conn, each bidi round-trips + a uni. Cross-impl is STREAMS-ONLY (NW datagram limit, issue #173).
+
+2. **RESULT: 3 of 4 cross-impl confirmations pass.** ✅ quiche-server ↔ NW-client (real round-trip,
+   `WT_CLIENT_OK`). ✅ both loopbacks (existing). ❌ **NW-server ↔ quiche-client** — see THE BUG below.
+
+3. **Typed close-error reporting (a user ask, DONE + validated).** Was: `QuicheDriver.transitionToClosed()`
+   recorded `Closed(null)` always → every `QuicCloseException` said `NoError`. Now: bound
+   `quiche_conn_peer_error`/`quiche_conn_local_error` (FFM + cinterop; JNI/Android keep the interface default
+   `null`) → `resolveCloseError()` maps the wire code to the **sealed `QuicError`** (peer pref, then local,
+   then `IdleTimeout` if `connIsTimedOut`). Added typed **`QuicError.IdleTimeout`** (code -1; idle timeout was
+   masquerading as a clean `NoError` close). `QuicCloseException` now appends `[error.describe()]` to its
+   message. User directive honored: **errors stay the exhaustive sealed `QuicError`, never strings** (the only
+   string is the advisory RFC 9000 §19.19 reason phrase, which we deliberately drop). The interop failure now
+   reports `connection closed [IdleTimeout (0x-1)]`.
+
+### 🔴 THE BUG — NW-server ↔ quiche-client QUIC handshake DEADLOCK (next session's target)
+> **The user's stance (correct): Apple/NW must interoperate with quiche. This is a real bug to FIX, not document.**
+
+**Symptom:** a quiche JVM client dialing an NW K/N server idle-times-out at exactly 10s (its `idleTimeout`);
+the NW server's `onWebTransport` never fires (no `WT_SESSION_ACCEPTED`). The QUIC handshake never completes.
+
+**Root cause (proven via `log stream --predicate 'subsystem == "com.apple.network"'` on the NW server):**
+The NW server **receives** the client's Initial on `lo0`, starts QUIC `[C1]`, runs the **full** TLS server
+handshake (ServerHello 90B, EncryptedExt 117B, **Certificate 766B**, CertVerify 264B, Finished 36B — all
+produced by boringssl), then hits:
+```
+quic_conn_can_send_frames [C1] client address not validated. can't send more data.
+quic_crypto_send [C1] unable to send CRYPTO frames
+```
+This is the **RFC 9000 §8.1 anti-amplification limit** (server may send ≤ 3× bytes received from an
+unvalidated client). **The client is NOT at fault — measured (temp trace in flushOutgoing): it sends two
+correctly-padded 1200-byte Initials** then small ACKs. 3×1200 = 3600B budget should dwarf the ~1.3KB server
+flight, yet the server blocks after only emitting ServerHello. So **the NW connection-group server is
+crediting only ~ServerHello-worth (~a few hundred B), not the full received 1200B Initial(s)**, toward its
+amplification budget. The client ACKs the ServerHello (Initial level) but never receives the server's
+Handshake packets (Cert/Finished), so it can't produce its own Finished, never escalates to Handshake level,
+and idle-times-out. **Deadlock, NW-server-side.** Note a CID handoff happens right before the block: the
+listener `[L1]` accepts, then `[C1]` adopts a NEW 20-byte SCID — suspect the received-byte credit is lost / not
+carried across that `nw_listener`→connection (connection-group) handoff, so budget ≈ 0.
+
+**Why it matters / why it's NW-group-specific:** our NW server is built on the raw `nw_connection_group` QUIC
+API (needed for WebTransport multi-stream/datagram), not a plain `NWListener`. NW↔NW loopback works because
+NW's own client uses a path/CID flow that doesn't trip this; a quiche client's standard handshake does.
+
+**FRESH-SESSION PLAN (fix NW server ↔ quiche client):**
+1. **Reproduce + watch NW internals** (≈90s/run): set `JAVA_HOME` (see below), `export PATH="$HOME/.cargo/bin:$PATH"`,
+   then `./socket-webtransport/scripts/cross-impl-interop.sh nw-server`. In parallel capture NW logs:
+   `log stream --level debug --predicate 'subsystem == "com.apple.network"' > /tmp/nwlog.txt` and
+   `grep "test.kexe" /tmp/nwlog.txt | grep -iE "quic|boringssl|amplif|validate|address"`. The K/N server's
+   stdout (`WT_SERVER_*`) lands in `socket-webtransport/build/test-results/macosArm64Test/*.xml`; the client
+   exception in `.../jvmTest/*QuicheInteropClient*.xml`.
+2. **Cheap confirmation experiment:** swap the NW server cert for a TINY leaf (e.g. small EC, no chain) so the
+   server flight fits within even a small budget. If the handshake then completes, the amplification-credit
+   accounting is *definitively* the cause and the fix is to make NW credit received bytes (or avoid the
+   group-handoff credit loss).
+3. **NW-server-side fixes to try** (in `socket-quic-nw/.../WithQuicServer.apple.kt` + `nw_quic_helpers.h`):
+   - How the `nw_connection_group` / listener is configured for inbound — is there an address-validation or
+     amplification-related parameter? Does NW expect us to drive a **Retry** for validation?
+   - Whether the listener→connection (CID change) handoff drops the received-byte credit; can we keep the
+     connection on the original path/CID, or pre-validate.
+   - Compare against a **plain NWListener** (non-group) QUIC server as a control — does *that* interoperate
+     with quiche? If yes, the bug is the group API; weigh group-vs-listener for the server role.
+   - Transport params (recall #112: `initial_max_streams=1024`, `max_udp_payload=1350`) — check none of these,
+     or a missing `max_idle_timeout`/validation knob, induce the credit shortfall.
+4. **Client-side mitigation (fallback, less ideal):** quiche could break the deadlock by sending an
+   ack-eliciting **Handshake-level** packet on PTO (validating the address) once it has handshake keys from
+   ServerHello — but the right fix is NW-server-side. Don't lead with this.
+
+**Reusable knowledge:** `log stream` on the NW process (`test.kexe`) is the single best diagnostic — it shows
+boringssl + libquic internals directly. The typed-close-error work means the client exception now names the
+failure mode (`IdleTimeout`) instead of a bare "connection closed".
+
+**Also still open from the plan (after the bug):** cell #2 NW-server ↔ Chrome (will likely hit the SAME
+deadlock — Chrome is a quiche-class external client), separate CI workflow (decided: dedicated macOS
+`cross-impl-interop.yaml`, gated). iOS deferred (covered-by-same-NW-code). Then back to the main v6 release
+blockers (buffer 6.0 → Central, repin, drop 8× mavenLocal — §2/§6 below).
+
+---
+
 ## ⏩⏩⏩ SESSION 4 UPDATE (2026-06-23 latest) — read FIRST; supersedes SESSION 3 where they conflict
 
 **HEADLINE: the WebTransport VALIDATION GAP is CLOSED on all remaining targets — Apple, Android, AND browser are GREEN.** All changes are **uncommitted** on `redesign/major-api-v6` (branch was clean at `67ba524` before this session).
