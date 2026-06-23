@@ -299,6 +299,29 @@ interface QuicheApi {
         bufLen: Int,
     ): Int
 
+    /**
+     * The peer's CONNECTION_CLOSE reason as a typed [QuicError], or `null` if the peer has not closed
+     * the connection (we closed first, or it is still open). Maps `quiche_conn_peer_error`, decoding the
+     * C API's `is_app` flag + numeric code into the sealed hierarchy — application closes (frame 0x1d) →
+     * [QuicError.ApplicationError]; transport closes (frame 0x1c) → [QuicError.fromTransportCode] (which
+     * folds the 0x100..0x1ff range into [QuicError.CryptoError]). No stringly errors: the wire code
+     * becomes an exhaustive [QuicError]. Used to populate [QuicConnectionState.Closed.error] so a remote
+     * close surfaces its real reason instead of [QuicError.NoError].
+     *
+     * quiche is single-threaded — call only from the driver loop. Defaults to `null` for backends that
+     * do not bind it yet (JNI/Android).
+     */
+    fun connPeerError(conn: QuicheConn): QuicError? = null
+
+    /**
+     * Our local CONNECTION_CLOSE reason as a typed [QuicError], or `null` if we have not closed locally.
+     * Maps `quiche_conn_local_error`. Complements [connPeerError]: when quiche itself tears the
+     * connection down (it rejected the peer's transport parameters, the TLS handshake failed, a protocol
+     * violation, …) the cause is here, not in the peer error. Same typed decoding as [connPeerError].
+     * Defaults to `null` for backends that do not bind it yet (JNI/Android).
+     */
+    fun connLocalError(conn: QuicheConn): QuicError? = null
+
     // --- Path migration ---
 
     /**

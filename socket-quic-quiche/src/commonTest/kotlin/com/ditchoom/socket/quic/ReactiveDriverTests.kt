@@ -246,6 +246,120 @@ class ReactiveDriverTests {
             Unit
         }
 
+    @Test
+    fun connection_close_captures_peer_error_as_typed_reason() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.established = true
+            // The peer sent CONNECTION_CLOSE(PROTOCOL_VIOLATION); quiche_conn_peer_error reports it.
+            api.peerError = QuicError.ProtocolViolation
+            val driver = createTestDriver(api)
+            driver.start(this)
+
+            try {
+                sendOpenStream(driver)
+                assertIs<QuicConnectionState.Established>(driver.state.value)
+
+                api.closed = true
+                val d2 = CompletableDeferred<Unit>()
+                driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
+                d2.await()
+
+                val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
+                // The peer's reason flows into Closed.error as an exhaustive QuicError (was always null
+                // before) — and closeReasonOr surfaces it instead of the NoError fallback.
+                assertEquals(QuicError.ProtocolViolation, closed.error)
+                assertEquals(QuicError.ProtocolViolation, driver.closeReasonOr(QuicError.NoError))
+                assertTrue(!closed.isCleanShutdown)
+            } finally {
+                driver.destroy()
+            }
+            Unit
+        }
+
+    @Test
+    fun connection_close_falls_back_to_local_error_when_no_peer_error() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.established = true
+            // quiche tore the connection down locally (e.g. it rejected the peer's transport params):
+            // no peer error, but a local one.
+            api.peerError = null
+            api.localError = QuicError.TransportParameterError("local")
+            val driver = createTestDriver(api)
+            driver.start(this)
+
+            try {
+                sendOpenStream(driver)
+                api.closed = true
+                val d2 = CompletableDeferred<Unit>()
+                driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
+                d2.await()
+
+                val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
+                assertEquals(QuicError.TransportParameterError("local"), closed.error)
+            } finally {
+                driver.destroy()
+            }
+            Unit
+        }
+
+    @Test
+    fun connection_close_reports_idle_timeout_when_no_close_frame() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.established = true
+            // No peer/local CONNECTION_CLOSE (a stalled/idle connection sends none), but quiche reports
+            // the idle timeout fired — the close reason must be the typed IdleTimeout, not a clean null.
+            api.peerError = null
+            api.localError = null
+            api.timedOut = true
+            val driver = createTestDriver(api)
+            driver.start(this)
+
+            try {
+                sendOpenStream(driver)
+                api.closed = true
+                val d2 = CompletableDeferred<Unit>()
+                driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
+                d2.await()
+
+                val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
+                assertEquals(QuicError.IdleTimeout, closed.error)
+                assertTrue(!closed.isCleanShutdown)
+            } finally {
+                driver.destroy()
+            }
+            Unit
+        }
+
+    @Test
+    fun clean_close_with_no_quic_error_stays_null() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.established = true
+            // A graceful shutdown: quiche reports NO_ERROR — Closed.error must stay null (clean), not a
+            // spurious NoError object.
+            api.peerError = QuicError.NoError
+            val driver = createTestDriver(api)
+            driver.start(this)
+
+            try {
+                sendOpenStream(driver)
+                api.closed = true
+                val d2 = CompletableDeferred<Unit>()
+                driver.commands.send(QuicheCmd.Close(QuicError.NoError, d2))
+                d2.await()
+
+                val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
+                assertNull(closed.error)
+                assertTrue(closed.isCleanShutdown)
+            } finally {
+                driver.destroy()
+            }
+            Unit
+        }
+
     /**
      * **Deterministic** isolation / regression guard for the Close→state ordering race that flaked
      * [connection_close_sets_closed_state] on linuxX64 (observed in a release deploy:

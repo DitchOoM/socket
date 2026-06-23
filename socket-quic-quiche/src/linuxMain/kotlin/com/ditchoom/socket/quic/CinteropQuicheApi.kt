@@ -383,6 +383,39 @@ internal object CinteropQuicheApi : QuicheApi {
             }
         }
 
+    override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(conn, peer = true)
+
+    override fun connLocalError(conn: QuicheConn): QuicError? = readConnError(conn, peer = false)
+
+    /**
+     * Shared decode for `quiche_conn_{peer,local}_error`: the typed [QuicError] when the C call reports a
+     * close, else null. The reason-phrase out-params are read but ignored — the close reason is the
+     * sealed [QuicError], not a free-form string. `is_app` selects the application vs transport mapping.
+     */
+    private fun readConnError(
+        conn: QuicheConn,
+        peer: Boolean,
+    ): QuicError? =
+        memScoped {
+            val isApp = alloc<BooleanVar>()
+            val code = alloc<ULongVar>()
+            val reason = alloc<CPointerVar<UByteVar>>()
+            val reasonLen = alloc<ULongVar>()
+            val present =
+                if (peer) {
+                    quiche_conn_peer_error(conn.handle.toCPointer()!!, isApp.ptr, code.ptr, reason.ptr, reasonLen.ptr)
+                } else {
+                    quiche_conn_local_error(conn.handle.toCPointer()!!, isApp.ptr, code.ptr, reason.ptr, reasonLen.ptr)
+                }
+            if (!present) {
+                null
+            } else if (isApp.value) {
+                QuicError.ApplicationError(code.value.toLong())
+            } else {
+                QuicError.fromTransportCode(code.value.toLong())
+            }
+        }
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     override fun connDgramSend(

@@ -190,6 +190,13 @@ class QuicErrorTests {
     }
 
     @Test
+    fun idleTimeout_hasNoWireCode_andRendersClearly() {
+        // Idle timeout is a local event (no CONNECTION_CLOSE on the wire) → code -1, distinct from NoError.
+        assertEquals(-1L, QuicError.IdleTimeout.code)
+        assertEquals("IdleTimeout (0x-1)", QuicError.IdleTimeout.describe())
+    }
+
+    @Test
     fun platformError_hasNegativeCode() {
         val error = QuicError.PlatformError(RuntimeException("boom"))
         assertEquals(-1L, error.code)
@@ -211,7 +218,26 @@ class QuicErrorTests {
         assertIs<SocketClosedException>(ex)
         // ...while the structured protocol reason survives the throw.
         assertIs<QuicError.ProtocolViolation>(ex.quicError)
-        assertEquals("boom", ex.message)
+        // ...and the human message is enriched with the typed reason + hex code (no stringly parsing
+        // needed — quicError stays the source of truth; this is only the rendering).
+        assertEquals("boom [ProtocolViolation (0xa)]", ex.message)
+    }
+
+    @Test
+    fun quicCloseException_cleanShutdown_doesNotAppendNoError() {
+        // A clean close carries NoError; appending "[NoError]" would be noise, so the bare message wins.
+        val ex = QuicCloseException(QuicError.NoError, "connection closed")
+        assertEquals("connection closed", ex.message)
+    }
+
+    // --- describe(): human rendering of the exhaustive type ---
+
+    @Test
+    fun describe_includesTypeAndHexCode() {
+        assertEquals("ProtocolViolation (0xa)", QuicError.ProtocolViolation.describe())
+        assertEquals("NoError (0x0)", QuicError.NoError.describe())
+        // Application + crypto codes render their numeric code in hex too.
+        assertEquals("ApplicationError(applicationCode=256) (0x100)", QuicError.ApplicationError(0x100).describe())
     }
 
     // --- Decoder/type consistency (guards against the 0x0c-style drift bug) ---

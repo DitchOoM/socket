@@ -495,7 +495,26 @@ class QuicheDriver(
     private fun transitionToClosed() {
         if (_state.value is QuicConnectionState.Closed) return
         commands.close()
-        _state.value = QuicConnectionState.Closed(null)
+        _state.value = QuicConnectionState.Closed(resolveCloseError())
+    }
+
+    /**
+     * The typed [QuicError] for why the connection closed, or `null` for a clean shutdown. Prefers the
+     * **peer's** CONNECTION_CLOSE (the remote tore us down — e.g. a strict server rejecting our streams
+     * or transport params) over our **local** close (quiche itself aborted — handshake/TLS failure,
+     * protocol violation), since the peer's reason is the more actionable one when both exist. quiche is
+     * single-threaded; this runs on the driver loop alongside [updateState], so the reads are safe.
+     * Both helpers default to `null` on backends that don't bind the C calls yet (JNI/Android), so the
+     * behavior there is unchanged (clean-looking close).
+     */
+    private fun resolveCloseError(): QuicError? {
+        (api.connPeerError(conn) ?: api.connLocalError(conn))
+            ?.takeUnless { it is QuicError.NoError }
+            ?.let { return it }
+        // No CONNECTION_CLOSE frame: distinguish an idle/handshake-stall timeout (a local event, no wire
+        // code) from a genuinely clean shutdown — otherwise a stalled connection looks like NoError.
+        if (api.connIsTimedOut(conn)) return QuicError.IdleTimeout
+        return null
     }
 
     private suspend fun flushOutgoing() {

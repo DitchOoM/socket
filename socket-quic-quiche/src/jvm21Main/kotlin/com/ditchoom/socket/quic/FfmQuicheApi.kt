@@ -183,6 +183,15 @@ class FfmQuicheApi private constructor(
         downcall("quiche_conn_peer_cert", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
     }
 
+    private val hConnPeerError by lazy {
+        // bool quiche_conn_peer_error(conn, bool *is_app, uint64 *code, const uint8 **reason, size_t *reason_len)
+        downcall("quiche_conn_peer_error", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
+    private val hConnLocalError by lazy {
+        // bool quiche_conn_local_error(conn, bool *is_app, uint64 *code, const uint8 **reason, size_t *reason_len)
+        downcall("quiche_conn_local_error", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
+    }
+
     // --- Path migration handles ---
     private val hConnProbePath by lazy {
         downcall(
@@ -512,6 +521,31 @@ class FfmQuicheApi private constructor(
                 MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
             }
             len
+        }
+
+    override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(hConnPeerError, conn)
+
+    override fun connLocalError(conn: QuicheConn): QuicError? = readConnError(hConnLocalError, conn)
+
+    /**
+     * Shared decode for `quiche_conn_{peer,local}_error`: returns the typed [QuicError] when the C call
+     * reports a close (true), else null. The reason-phrase out-params are bound but ignored — the close
+     * reason is the sealed [QuicError], not a free-form string (RFC 9000 §19.19 reason phrases are
+     * advisory). `is_app` selects the application vs transport mapping.
+     */
+    private fun readConnError(
+        handle: MethodHandle,
+        conn: QuicheConn,
+    ): QuicError? =
+        Arena.ofConfined().use { arena ->
+            val isApp = arena.allocate(JAVA_BOOLEAN)
+            val codeOut = arena.allocate(JAVA_LONG)
+            val reasonPtr = arena.allocate(ADDRESS)
+            val reasonLen = arena.allocate(JAVA_LONG)
+            val present = handle.invokeExact(seg(conn.handle), isApp, codeOut, reasonPtr, reasonLen) as Boolean
+            if (!present) return@use null
+            val code = codeOut.get(JAVA_LONG, 0)
+            if (isApp.get(JAVA_BOOLEAN, 0)) QuicError.ApplicationError(code) else QuicError.fromTransportCode(code)
         }
 
     // --- Unreliable datagrams (RFC 9221) ---

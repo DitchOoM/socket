@@ -12,6 +12,12 @@ internal class StubQuicheApi : QuicheApi {
 
     @Volatile var closed = false
 
+    /** If non-null, [connPeerError] returns it — simulates the peer's typed CONNECTION_CLOSE reason. */
+    @Volatile var peerError: QuicError? = null
+
+    /** If non-null, [connLocalError] returns it — simulates our local typed CONNECTION_CLOSE reason. */
+    @Volatile var localError: QuicError? = null
+
     @Volatile var streamRecvResult: StreamRecvResult = StreamRecvResult.Done
 
     /**
@@ -244,6 +250,10 @@ internal class StubQuicheApi : QuicheApi {
         bufLen: Int,
     ) = peerCertLen
 
+    override fun connPeerError(conn: QuicheConn): QuicError? = peerError
+
+    override fun connLocalError(conn: QuicheConn): QuicError? = localError
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     /** Records the last [configEnableDgram] call so tests can assert it was wired. */
@@ -290,7 +300,10 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connIsClosed(conn: QuicheConn) = closed
 
-    override fun connIsTimedOut(conn: QuicheConn) = false
+    /** When true, [connIsTimedOut] reports a timeout — drives the IdleTimeout close-reason fallback. */
+    @Volatile var timedOut = false
+
+    override fun connIsTimedOut(conn: QuicheConn) = timedOut
 
     /** Controllable quiche timeout. Null (default) = "no quiche timer pending", so the keepalive deadline
      *  is the only thing that can wake the driver loop — see the keepalive driver tests. */
