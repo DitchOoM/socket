@@ -27,6 +27,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_listener_set_state_hand
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_listener_start
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_stream_real_id
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -208,16 +209,21 @@ internal suspend fun buildAppleQuicServer(
  * and is dropped. NB: a peer stream opened with a pure FIN and no payload is therefore not
  * delivered — an accepted limitation of NW hiding the real stream id (we cannot otherwise
  * tell it apart from the phantom).
+ *
+ * Shared by the server ([withQuicServer]) and client ([connectQuicGroup]) accept paths: the same
+ * phantom filtering applies on both sides, and — crucially — peeking the first read makes the flow
+ * live so [nw_helper_quic_stream_real_id] can return the REAL stream id (with the correct RFC 9000
+ * directionality bit). Querying before the first read returns UINT64_MAX, which would mislabel a
+ * peer *unidirectional* stream (e.g. an HTTP/3 server's control/SETTINGS stream) as bidirectional.
  */
-private suspend fun filterPhantomAndEnqueue(
+internal suspend fun filterPhantomAndEnqueue(
     streamConn: nw_connection_t,
     incomingStreams: Channel<QuicByteStream>,
     acceptedStreamId: AtomicLong,
     keepAliveSeconds: Int,
 ) {
     nw_helper_quic_start(streamConn)
-    val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
-    val raw = NWQuicByteStream(streamConn, sid.id, keepAliveSeconds)
+    val raw = NWQuicByteStream(streamConn, keepAliveSeconds = keepAliveSeconds)
     val first =
         try {
             raw.read(PHANTOM_PEEK_TIMEOUT)
@@ -225,10 +231,17 @@ private suspend fun filterPhantomAndEnqueue(
             ReadResult.End
         }
     when (first) {
-        is ReadResult.Data ->
+        is ReadResult.Data -> {
+            // The flow is now live, so its REAL QUIC stream id is readable — and the real id carries
+            // the correct directionality (RFC 9000 bit 1) the HTTP/3 router needs to tell a peer
+            // *unidirectional* control/QPACK stream from a *bidirectional* request/WebTransport stream.
+            // Fall back to a synthetic id only if NW hasn't populated the metadata yet.
+            val real = nw_helper_quic_stream_real_id(streamConn)
+            val sid = if (real != ULong.MAX_VALUE) QuicStreamId(real.toLong()) else QuicStreamId(acceptedStreamId.getAndAdd(4))
             incomingStreams.trySend(
                 QuicByteStream(sid, PrefixedByteStream(first, raw)),
             )
+        }
         else -> nw_helper_quic_cancel(streamConn) // hidden phantom / empty / reset → drop
     }
 }

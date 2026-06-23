@@ -175,6 +175,29 @@ kotlin {
                 }
             }
         }
+        if (isMacOS) {
+            // `appleTest` (default-template parent of macos/ios/tvos/watchos Test) gets the suite once;
+            // the Apple QUIC server backing comes transitively through nativeMain → socket-http3 →
+            // socket-quic-default → socket-quic-nw (Network.framework), so no cinterop/linker opts here.
+            named("appleTest") {
+                dependencies {
+                    implementation(project(":socket-testsuite"))
+                }
+            }
+        }
+        // Android instrumented (on-device) WebTransport conformance. Android runs the same quiche backing
+        // as JVM; the quiche JNI `.so` is merged into the test APK transitively from :socket-quic-quiche's
+        // androidMain/jniLibs. androidInstrumentedTest does NOT dependsOn commonTest, so the suite +
+        // coroutines-test must be pulled in explicitly here (mirrors :socket-quic-quiche).
+        val androidInstrumentedTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.test)
+                implementation("androidx.test:runner:1.7.0")
+                implementation("androidx.test.ext:junit:1.3.0")
+                implementation(project(":socket-testsuite"))
+            }
+        }
     }
 }
 
@@ -208,6 +231,50 @@ afterEvaluate {
         dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
         classpath += files(stagedNatives)
     }
+}
+
+// --- Apple QUIC server identity (PKCS#12) for the WebTransport conformance suite ---
+// Network.framework's QUIC listener needs a `sec_identity_t` it can only build from a PKCS#12 blob
+// (loose PEM cert+key won't do — see QuicTlsConfig.pkcs12Path). The committed testcerts/cert.{crt,key}
+// (the long-lived quiche example identity, CN=quic.tech) feed an openssl export into testcerts/cert.p12
+// (passphrase `testpass`, the same convention :socket-quic-nw uses). The p12 is gitignored and
+// regenerated on demand; the Apple K/N test tasks depend on it. JVM/Linux ignore it (PEM-only servers).
+if (isMacOS) {
+    val generateWebTransportTestP12 =
+        tasks.register("generateWebTransportTestP12") {
+            group = "verification"
+            description = "Generate testcerts/cert.p12 from the committed PEM cert+key for the Apple WebTransport tests."
+            val certDir = projectDir.resolve("testcerts")
+            val crt = certDir.resolve("cert.crt")
+            val key = certDir.resolve("cert.key")
+            inputs.files(crt, key)
+            outputs.file(certDir.resolve("cert.p12"))
+            doLast {
+                val process =
+                    ProcessBuilder(
+                        "openssl",
+                        "pkcs12",
+                        "-export",
+                        "-out",
+                        certDir.resolve("cert.p12").absolutePath,
+                        "-inkey",
+                        key.absolutePath,
+                        "-in",
+                        crt.absolutePath,
+                        "-passout",
+                        "pass:testpass",
+                    ).redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().readText()
+                if (process.waitFor() != 0) {
+                    throw GradleException("openssl pkcs12 export failed for cert.p12 (rc != 0):\n$output")
+                }
+            }
+        }
+
+    // Apple K/N test tasks read testcerts/cert.p12 at runtime.
+    tasks
+        .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
+        .configureEach { dependsOn(generateWebTransportTestP12) }
 }
 
 // --- Publishing ---

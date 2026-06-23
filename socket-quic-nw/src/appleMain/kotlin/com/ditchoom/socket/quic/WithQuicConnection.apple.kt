@@ -49,6 +49,8 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +58,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -189,7 +192,13 @@ internal suspend fun connectQuicGroup(
     // before start) and are drained by acceptStream()/streams(). Declared here so the handler
     // — which the API requires to be set before nw_helper_quic_group_start — can target it.
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
-    val acceptedStreamId = kotlin.concurrent.AtomicLong(1L) // server-initiated bidi ids (synthetic; NW hides the real id)
+    val acceptedStreamId = kotlin.concurrent.AtomicLong(1L) // synthetic fallback id (used only if the real id is unreadable)
+    // Peer-stream acceptance peeks the first read (to filter NW's phantom stream AND to make the flow
+    // live so the REAL stream id — hence the correct directionality bit — is readable), which suspends,
+    // so it can't run on NW's serial callback queue. This scope runs it; it's cancelled on connection
+    // teardown (see AppleQuicGroupConnection.close/onTransportClosed).
+    val streamAcceptScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+    val acceptKeepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0
 
     // Durable state bridge: NW keeps delivering group state changes for the connection's whole
     // life, not just the handshake. The bridge resolves the establish await on the first terminal
@@ -242,14 +251,14 @@ internal suspend fun connectQuicGroup(
                 // The block runs on the group's serial callback queue; trySend into an UNLIMITED
                 // channel is non-blocking and thread-safe.
                 nw_helper_quic_group_set_new_connection_handler(group) { streamConn ->
-                    // Take ownership (action 1 of NW's three): start the flow on the shared serial
-                    // queue, then enqueue it. Runs synchronously inside the block, so the connection
-                    // is owned before the block returns.
-                    nw_helper_quic_start(streamConn)
-                    val sid = QuicStreamId(acceptedStreamId.getAndAdd(4))
-                    incomingStreams.trySend(
-                        QuicByteStream(sid, NWQuicByteStream(streamConn, sid.id)),
-                    )
+                    // Peek-then-classify off the serial callback queue (it suspends): filter NW's
+                    // phantom stream AND read the REAL stream id on the now-live flow, so a peer
+                    // *unidirectional* stream (e.g. the HTTP/3 server's control/SETTINGS stream) is
+                    // labeled unidirectional rather than mislabeled bidirectional. Shared with the
+                    // server accept path. nw_helper_quic_start is called inside the helper.
+                    streamAcceptScope.launch {
+                        filterPhantomAndEnqueue(streamConn, incomingStreams, acceptedStreamId, acceptKeepAliveSeconds)
+                    }
                 }
                 nw_helper_quic_group_start(group)
                 try {
@@ -342,6 +351,7 @@ internal suspend fun connectQuicGroup(
             incomingStreams,
             connectionOptions.quicBufferFactory(),
             keepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0,
+            streamAcceptScope = streamAcceptScope,
         )
     // Route any post-handshake group failure/cancellation into the live connection. attach()
     // also replays a close that raced in between `ready` and here (see the bridge).
@@ -493,6 +503,9 @@ internal class AppleQuicGroupConnection(
     override val bufferFactory: BufferFactory,
     private val keepAliveSeconds: Int = 0,
     private val scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
+    // Runs the suspending peer-stream peek/classify launched from the group's new-connection handler;
+    // owned here so connection teardown cancels any in-flight accept (mirrors closing incomingStreams).
+    private val streamAcceptScope: CoroutineScope? = null,
 ) : QuicConnection,
     CoroutineScope by scope {
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Established("h3"))
@@ -651,6 +664,7 @@ internal class AppleQuicGroupConnection(
         if (!closeClaim.compareAndSet(0, 1)) return
         closed = true
         _state.value = QuicConnectionState.Draining
+        streamAcceptScope?.cancel()
         datagramFlow?.let { nw_helper_quic_cancel(it) }
         nw_helper_quic_group_cancel(group)
         incomingStreams.close()
@@ -669,6 +683,7 @@ internal class AppleQuicGroupConnection(
         if (!closeClaim.compareAndSet(0, 1)) return
         closed = true
         _state.value = QuicConnectionState.Closed(reason)
+        streamAcceptScope?.cancel()
         // Close WITHOUT a cause, matching the quiche driver (QuicheDriver.cleanup), so a parked
         // acceptStream()/streams() ends the same way on every platform (clean channel close, not a
         // thrown QuicCloseException). The structured reason is still available via state/closeReason().

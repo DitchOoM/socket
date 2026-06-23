@@ -250,6 +250,32 @@ static inline uint64_t nw_helper_quic_stream_application_error(
 }
 
 /**
+ * The REAL QUIC stream id (RFC 9000 §2.1) of a peer-initiated stream flow, or UINT64_MAX if
+ * unavailable.
+ *
+ * Earlier code assumed "Network.framework hides the real QUIC stream id" and synthesized one for
+ * each accepted stream — but a synthetic id can't carry the real directionality (bit 1) or
+ * initiator (bit 0), and the HTTP/3 router dispatches control/QPACK *unidirectional* streams vs
+ * request/WebTransport *bidirectional* streams purely on QuicStreamId.isUnidirectional. NW DOES
+ * expose the real id via the stream flow's QUIC metadata (nw_quic_get_stream_id), which makes the
+ * synthetic id unnecessary for accepted streams: the real id has correct direction + initiator bits
+ * and matches the peer's view.
+ *
+ * Like the keepalive/app-error accessors, the per-stream metadata is only populated on a STARTED,
+ * live flow; callers query after the flow has produced its first read. Returns UINT64_MAX if the
+ * metadata isn't available yet, so the caller can fall back to a synthetic id.
+ */
+static inline uint64_t nw_helper_quic_stream_real_id(
+    nw_connection_t _Nonnull connection)
+{
+    nw_protocol_definition_t quic_def = nw_protocol_copy_quic_definition();
+    nw_protocol_metadata_t metadata =
+        nw_connection_copy_protocol_metadata(connection, quic_def);
+    if (!metadata) return UINT64_MAX;
+    return nw_quic_get_stream_id(metadata);
+}
+
+/**
  * Set the QUIC keepalive interval (RFC 9000 §10.1.2) so an otherwise-idle connection
  * sends ack-eliciting PINGs and survives past the idle timeout.
  *

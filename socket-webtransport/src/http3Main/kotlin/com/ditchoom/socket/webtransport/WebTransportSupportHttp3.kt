@@ -131,8 +131,10 @@ private fun defaultWebTransportQuicOptions(): QuicOptions = QuicOptions(alpnProt
  * ([CertificateHashVerification.HashOnly] — the leaf hash is the sole trust check, matching the
  * browser, so a self-signed leaf works identically on both); the native [connect]/[connectMultiplexed]
  * config overloads can opt into [CertificateHashVerification.RequireBoth] to additionally require chain
- * validation. [WebTransportOptions.allowPooling] is not yet acted on natively (no transparent
- * connection reuse), so a hash-less options maps to the plain default config.
+ * validation. [WebTransportOptions.allowPooling] is **intentionally** not mapped here: native has no
+ * transparent (platform-decides) connection reuse — each [connect] dials a dedicated connection, and the
+ * app-controlled equivalent is to hold a [WebTransportSupport.Multiplexed] and open many sessions on it
+ * (see the [WebTransportOptions.allowPooling] KDoc). So a hash-less options maps to the plain default config.
  */
 private fun WebTransportOptions.toNativeConfig(): Http3WebTransportConfig =
     if (serverCertificateHashes.isEmpty()) {

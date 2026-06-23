@@ -74,3 +74,8 @@ socket-quic-nw/testcerts/pinned*
 socket-quic-quiche/testcerts/pinned*
 socket-quic-quiche/src/jvmTest/resources/certs/pinned*
 socket-quic-quiche/src/androidInstrumentedTest/resources/certs/pinned*
+
+# Generated at build time by the :socket-webtransport `generateWebTransportTestP12` task from the
+# committed PEM cert+key, so the Apple WebTransport conformance suite (AppleWebTransportTest) can
+# present a Network.framework `sec_identity_t`. JVM/Linux use the committed PEMs directly.
+socket-webtransport/testcerts/cert.p12
