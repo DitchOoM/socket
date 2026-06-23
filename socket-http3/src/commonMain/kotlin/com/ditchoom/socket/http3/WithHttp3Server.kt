@@ -47,7 +47,7 @@ suspend fun <R> withHttp3Server(
     onRequest: suspend Http3ServerExchange.() -> Unit,
     block: suspend Http3Server.() -> R,
 ): R =
-    withQuicServer(port, host, tlsConfig, quicOptions, timeout) {
+    withQuicServer(port, host, tlsConfig, quicOptions.forHttp3(), timeout) {
         val server = Http3Server(this)
         coroutineScope {
             val acceptJob =

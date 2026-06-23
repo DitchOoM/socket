@@ -815,11 +815,31 @@ static inline void nw_helper_quic_group_cancel(nw_connection_group_t _Nonnull gr
  * call opens a REAL distinct QUIC stream (unlike the single-connection path, where
  * every "stream" aliased the one nw_connection). The returned connection must have
  * its queue set and be started (nw_helper_quic_start) before use.
+ *
+ * We do NOT pass NULL options: once nw_helper_quic_group_extract_uni_stream has flipped
+ * is_unidirectional on options derived from the group, a subsequent NULL-options ("group
+ * default") extract inherits that dirty state and opens a UNIDIRECTIONAL stream — the
+ * peer then sees a uni id (e.g. a request bidi arriving as id 14, classified uni, so the
+ * HTTP/3 server drains it instead of routing it). So we mirror the uni path: copy the
+ * group's own QUIC options (a fresh nw_quic_create_options() is torn down with ENETDOWN,
+ * issue #109) and EXPLICITLY set is_unidirectional = false, which is robust to any leaked
+ * state. Falls back to NULL options only if the QUIC options can't be derived.
  */
 static inline nw_connection_t _Nullable nw_helper_quic_group_extract_stream(
     nw_connection_group_t _Nonnull group)
 {
-    // nil protocol options → default bidirectional stream.
+    nw_parameters_t params = nw_connection_group_copy_parameters(group);
+    if (params) {
+        nw_protocol_stack_t stack = nw_parameters_copy_default_protocol_stack(params);
+        if (stack) {
+            nw_protocol_options_t quic_options = nw_protocol_stack_copy_transport_protocol(stack);
+            if (quic_options && nw_protocol_options_is_quic(quic_options)) {
+                nw_quic_set_stream_is_unidirectional(quic_options, false);
+                return nw_connection_group_extract_connection(group, NULL, quic_options);
+            }
+        }
+    }
+    // Couldn't derive the group's options → fall back to the group default (bidirectional).
     return nw_connection_group_extract_connection(group, NULL, NULL);
 }
 

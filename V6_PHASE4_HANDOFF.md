@@ -5,6 +5,64 @@ Written 2026-06-23 after a full re-investigation. Read this first in the fresh s
 
 ---
 
+## ⏩⏩ SESSION 3 UPDATE (2026-06-23 late) — read FIRST; supersedes SESSION 2 + §1–§3 where they conflict
+
+**HEADLINE: Apple WebTransport DONE-bar is GREEN.** `:socket-webtransport:macosArm64Test`
+`AppleWebTransportTest` 3/3 pass, including `multiplexed_twoSessionsOverOneConnection_eachRoundTrip`
+(the documented Phase-4 DONE bar). Full `:socket-quic-nw:macosArm64Test` regression suite green (11
+suites / 47 tests, 0 failures) — the fix is safe in the hot path for every Apple QUIC stream.
+
+**The blocker was NOT the datagram limitation — it was two Network.framework STREAM-ID bugs** (full
+write-up in memory `apple-nw-stream-id-bugs.md`):
+1. **Bidi-after-uni misclassified as unidirectional.** `extract_uni_stream` (nw_quic_helpers.h) sets
+   `is_unidirectional=true` on options derived from the group; the bidi `extract_stream` passed NULL
+   ("group default") and inherited the leaked flag → a request bidi opened after uni streams went out
+   uni (wire id 14) → the H3 server routed it to `handleUniStream` → drained → `onRequest` never fired.
+   **Fix:** `extract_stream` now copies the group's options and explicitly sets `is_unidirectional=false`.
+2. **Client used synthetic stream ids that diverge from the wire.** NW's phantom stream consumes bidi
+   id 0, so the first real client bidi is wire id 4, but the client labeled it 0. The WebTransport
+   session id IS the CONNECT stream id, so `cliSid=0 != srvSid=4` → the server dropped every WT stream
+   (`acceptIncomingBidi` found no session). **Fix:** client `openStream`/`openUniStream` now read NW's
+   real wire id via `nw_helper_quic_stream_real_id` AFTER awaiting the flow's ready state (new helper
+   `startAndResolveRealId`; the id is nil until the flow is live, so querying right after start is too
+   early). Falls back to synthetic on a `STREAM_READY_TIMEOUT` (5s).
+
+**Datagram-conflict fix (the option-A decision, IMPLEMENTED):** new `DatagramStreamConflictPolicy` enum
++ `QuicOptions.datagramStreamConflictPolicy` (default `PreferDatagrams`). `withHttp3Connection`/
+`withHttp3Server` force `PreferStreams` via `QuicOptions.forHttp3()`, so the Apple NW backend skips
+datagram-flow EXTRACTION (keeps inbound streams) while still advertising `max_datagram_frame_size`. WT
+datagrams are therefore unavailable on Apple (documented on `WebTransportSession.sendDatagram`/`datagrams`
+KDoc; **still need to file the tracking issue**).
+
+**Files changed this session (uncommitted at time of writing — see close-out below):**
+- `socket-quic/.../QuicOptions.kt` — `DatagramStreamConflictPolicy` + field.
+- `socket-quic-nw/.../WithQuicConnection.apple.kt` — extract-datagram gating; `startAndResolveRealId` +
+  real-id in `openStream`/`openUniStream`; `STREAM_READY_TIMEOUT`.
+- `socket-quic-nw/.../WithQuicServer.apple.kt` — extract-datagram gating (mirror).
+- `socket-quic-nw/.../nw_quic_helpers.h` — `extract_stream` sets `is_unidirectional=false`.
+- `socket-http3/.../WithHttp3Connection.kt` (+ `WithHttp3Server.kt`) — `QuicOptions.forHttp3()` forces
+  `PreferStreams`.
+- `socket-webtransport/commonMain/.../WebTransportSession.kt` — Apple datagram-limitation KDoc.
+- `socket-quic-nw/appleTest/.../AppleQuicUniStreamProbeTests.kt` — 3 NEW regression probes kept
+  (`multipleConcurrentInboundStreams`, `lateBidiStream_afterRoundTrip`, `bidiHalfClose_roundTrip`).
+- DELETED the throwaway `socket-webtransport/appleTest/.../AppleHttp3DiagnosticTest.kt` (bisection
+  scaffolding; superseded by AppleWebTransportTest + the probes).
+
+**COVERAGE GAP STILL OPEN (next session, decided):** Apple runs the 3-test `WebTransportTestSuite` (DONE
+bar) + QUIC suites, but NOT the comprehensive `Http3LoopbackTestSuite` (~30 tests: plain GET/POST,
+dynamic QPACK, server push, full WT matrix incl. uni streams both directions, close/drain/reset,
+middleware) — that runs only on jvm+linuxX64. **NEXT: wire `socket-http3`'s `appleTest` source set + an
+`AppleHttp3LoopbackTest : Http3LoopbackTestSuite()`** (mirror `LinuxHttp3LoopbackTest` + a p12 cert task
+like socket-webtransport's `generateWebTransportTestP12`). This is real parity AND will surface any
+remaining Apple-specific bugs in the untested paths. CAVEAT: that suite's **WT-datagram tests cannot
+pass on Apple** (the NW limitation) — override/skip them on the Apple subclass + document.
+
+**Remaining v6 work (unchanged):** Android emulator test (handoff §5.3 / step 2 — `Pixel_3a_API_33`);
+browser (§3 Karma + DevTools MCP); buffer 6.0 Central release (§2/§6). Buffer still pinned to mavenLocal
+`5.13.2` with 8× `mavenLocal()`.
+
+---
+
 ## ⏩ SESSION 2 UPDATE (2026-06-23 PM) — read this first; supersedes §1–§3 where they conflict
 
 **Working tree (uncommitted, NOT pushed):** clean of debug/experiment artifacts. Changes:

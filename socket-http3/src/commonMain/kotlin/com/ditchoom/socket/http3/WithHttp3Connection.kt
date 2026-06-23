@@ -1,6 +1,7 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.quic.DatagramStreamConflictPolicy
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlin.time.Duration
@@ -8,6 +9,23 @@ import kotlin.time.Duration.Companion.seconds
 
 /** ALPN protocol identifier for HTTP/3 (RFC 9114 §3.1). */
 const val HTTP3_ALPN: String = "h3"
+
+/**
+ * HTTP/3 structurally requires inbound (peer-initiated) streams — the peer's control and QPACK
+ * encoder/decoder streams are unidirectional and server-initiated. On platforms where a datagram
+ * flow and inbound streams cannot coexist (Apple Network.framework), [DatagramStreamConflictPolicy]
+ * must therefore resolve to [DatagramStreamConflictPolicy.PreferStreams] for any HTTP/3 connection,
+ * regardless of what the caller passed. This is a no-op everywhere the two coexist (quiche, browsers)
+ * and when [QuicOptions.datagrams] is null. Applied at the [withHttp3Connection]/[withHttp3Server]
+ * boundary so every HTTP/3 and WebTransport path — including callers that build their own
+ * [QuicOptions] — is correct without thinking about it.
+ */
+internal fun QuicOptions.forHttp3(): QuicOptions =
+    if (datagramStreamConflictPolicy == DatagramStreamConflictPolicy.PreferStreams) {
+        this
+    } else {
+        copy(datagramStreamConflictPolicy = DatagramStreamConflictPolicy.PreferStreams)
+    }
 
 /**
  * Open an HTTP/3 connection to [hostname]:[port] and run [block] with the bootstrapped
@@ -38,6 +56,6 @@ suspend fun <R> withHttp3Connection(
     webTransport: WebTransportOptions? = null,
     block: suspend Http3Connection.() -> R,
 ): R =
-    withQuicConnection(hostname, port, quicOptions, connectionOptions, timeout) {
+    withQuicConnection(hostname, port, quicOptions.forHttp3(), connectionOptions, timeout) {
         Http3Connection.bootstrap(this, connectionOptions, maxPushId, webTransport).block()
     }

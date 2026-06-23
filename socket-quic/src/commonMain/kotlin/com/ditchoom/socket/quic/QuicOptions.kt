@@ -88,6 +88,28 @@ data class DatagramOptions(
 }
 
 /**
+ * On the rare platform where a QUIC datagram flow and inbound (peer-initiated) streams cannot
+ * coexist on one connection, this decides which to keep. Today the only such platform is Apple's
+ * Network.framework: extracting the connection-group datagram flow makes NW deliver inbound *stream*
+ * bytes onto that flow, so inbound streams stop being delivered entirely. Everywhere else (quiche on
+ * JVM/Linux/Android, and the browser WebTransport object) the two coexist and this is ignored. It is
+ * also ignored when [QuicOptions.datagrams] is null.
+ *
+ * You almost never set this directly: it defaults to [PreferDatagrams] (preserving datagram-only
+ * connections), and the HTTP/3 / WebTransport stack forces [PreferStreams] internally because inbound
+ * streams are structurally required by HTTP/3 (control + QPACK encoder/decoder are peer-initiated
+ * unidirectional streams). It exists only for raw-QUIC callers that deliberately combine datagrams
+ * with inbound streams on Apple and must choose.
+ */
+enum class DatagramStreamConflictPolicy {
+    /** Keep the datagram flow; on Apple this suppresses inbound stream delivery. */
+    PreferDatagrams,
+
+    /** Keep inbound streams; on Apple the datagram flow is not extracted, so datagrams report unavailable. */
+    PreferStreams,
+}
+
+/**
  * QUIC-specific transport configuration.
  *
  * Uses sealed interfaces for [congestionControl] and [pacing] so `when` expressions
@@ -184,6 +206,13 @@ data class QuicOptions(
      * [DatagramOptions] to advertise `max_datagram_frame_size` and enable the datagram queues.
      */
     val datagrams: DatagramOptions? = null,
+    /**
+     * Which to keep when a platform cannot carry a datagram flow and inbound streams on the same QUIC
+     * connection — see [DatagramStreamConflictPolicy]. Defaults to [DatagramStreamConflictPolicy.PreferDatagrams]
+     * and is ignored when [datagrams] is null or on platforms where both coexist. The HTTP/3 /
+     * WebTransport stack overrides this to [DatagramStreamConflictPolicy.PreferStreams] for you.
+     */
+    val datagramStreamConflictPolicy: DatagramStreamConflictPolicy = DatagramStreamConflictPolicy.PreferDatagrams,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

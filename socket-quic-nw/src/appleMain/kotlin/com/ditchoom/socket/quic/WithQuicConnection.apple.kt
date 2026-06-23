@@ -36,6 +36,7 @@ import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_keepalive
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_set_state_handler
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_start
 import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_stream_application_error
+import com.ditchoom.socket.quic.nwhelpers.nw_helper_quic_stream_real_id
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.UByteVar
@@ -134,6 +135,15 @@ internal suspend fun connectQuicGroup(
 
     val datagramsEnabled = quicOptions.datagrams != null
     val maxFrameSize: UShort = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX else 0u
+    // NW limitation: extracting the connection-group datagram flow makes NW deliver inbound *stream*
+    // bytes onto that flow, so the group's new-connection handler stops delivering inbound streams
+    // (bidi AND uni). Advertising max_datagram_frame_size above is harmless — only the extraction
+    // below breaks streams. So when the caller prioritizes inbound streams (HTTP/3 forces this — its
+    // control/QPACK streams are peer-initiated), skip extraction; datagrams then report unavailable
+    // via the null-flow path, and inbound streams are delivered normally.
+    val extractDatagramFlow =
+        datagramsEnabled &&
+            quicOptions.datagramStreamConflictPolicy != DatagramStreamConflictPolicy.PreferStreams
 
     // Out-params the leaf-hash verify_block writes on rejection (only allocated when pinning is active):
     // a reason code (1 = HashMismatch, 2 = NoPeerCertificate; 0 = not a pin failure) and the 32-byte
@@ -296,9 +306,10 @@ internal suspend fun connectQuicGroup(
         throw CertificateHashPinningException(constraintViolation)
     }
 
-    // Extract THE datagram flow (one per connection) only when datagrams are enabled.
+    // Extract THE datagram flow (one per connection) only when datagrams are enabled AND the caller
+    // hasn't asked to prioritize inbound streams (see extractDatagramFlow above).
     val datagramFlow: nw_connection_t? =
-        if (!datagramsEnabled) {
+        if (!extractDatagramFlow) {
             null
         } else {
             // NULL below macOS 13 / iOS 16 — the only place the datagram feature is gated.
@@ -533,8 +544,15 @@ internal class AppleQuicGroupConnection(
         val streamConn =
             nw_helper_quic_group_extract_stream(group)
                 ?: throw QuicCloseException(closeReason(), "Failed to open QUIC stream")
-        nw_helper_quic_start(streamConn)
-        val streamId = QuicStreamId(nextClientStreamId.getAndAdd(4))
+        // Prefer NW's REAL wire id over a synthetic one (0,4,8…). A synthetic id diverges from the id the
+        // PEER sees once NW's hidden phantom stream consumes bidi id 0 (so the first real client bidi is
+        // wire id 4), which breaks anything keyed on the stream id across the wire — notably the
+        // WebTransport session id (the CONNECT stream id), which the server registers under its real id
+        // (Apple WT bidi streams were dropped because cliSid=0 != srvSid=4). The real id is only readable
+        // once the flow is live, so start it + await ready before querying; fall back to synthetic if it
+        // doesn't ready in time.
+        val real = startAndResolveRealId(streamConn)
+        val streamId = if (real != ULong.MAX_VALUE) QuicStreamId(real.toLong()) else QuicStreamId(nextClientStreamId.getAndAdd(4))
         return QuicByteStream(streamId, NWQuicByteStream(streamConn, streamId.id, keepAliveSeconds))
     }
 
@@ -548,9 +566,34 @@ internal class AppleQuicGroupConnection(
         val streamConn =
             nw_helper_quic_group_extract_uni_stream(group)
                 ?: throw QuicCloseException(closeReason(), "Failed to open unidirectional QUIC stream")
-        nw_helper_quic_start(streamConn)
-        val streamId = QuicStreamId(nextClientUniStreamId.getAndAdd(4))
+        // Prefer NW's REAL wire id (see openStream) so client-side uni ids agree with the peer's view.
+        val real = startAndResolveRealId(streamConn)
+        val streamId = if (real != ULong.MAX_VALUE) QuicStreamId(real.toLong()) else QuicStreamId(nextClientUniStreamId.getAndAdd(4))
         return QuicByteStream(streamId, NWQuicByteStream(streamConn, streamId.id))
+    }
+
+    /**
+     * Start [streamConn] and await its first ready transition so NW populates the per-stream QUIC
+     * metadata, then return its REAL wire stream id ([ULong.MAX_VALUE] if it never readied in time).
+     * The id — like maxDatagramSize and the keepalive metadata — is nil on a not-yet-live flow, so a
+     * caller needing the real id at open time must await ready first (querying right after start returns
+     * UINT64_MAX). Bounded by [STREAM_READY_TIMEOUT] so a flow that never readies degrades to a synthetic
+     * id rather than hanging.
+     */
+    private suspend fun startAndResolveRealId(streamConn: nw_connection_t): ULong {
+        withTimeoutOrNull(STREAM_READY_TIMEOUT) {
+            suspendCancellableCoroutine { cont ->
+                nw_helper_quic_set_state_handler(streamConn) { state, _, _, _ ->
+                    // 3=ready, 4=failed, 5=cancelled — resume on any so we never hang; a non-ready flow
+                    // simply yields no id and the caller falls back to a synthetic one.
+                    if (state == 3 || state == 4 || state == 5) {
+                        if (cont.isActive) cont.resume(Unit)
+                    }
+                }
+                nw_helper_quic_start(streamConn)
+            }
+        }
+        return nw_helper_quic_stream_real_id(streamConn)
     }
 
     override suspend fun acceptStream(): QuicByteStream {
@@ -897,6 +940,9 @@ internal class NWQuicByteStream(
         private val FIN_TIMEOUT: Duration = 5.seconds
     }
 }
+
+/** Upper bound on awaiting a locally-opened stream's ready transition before reading its real wire id. */
+private val STREAM_READY_TIMEOUT: Duration = 5.seconds
 
 /** SHA-256 digest length in bytes — the only algorithm `serverCertificateHashes` defines. */
 private const val SHA256_DIGEST_BYTES = 32

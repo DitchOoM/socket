@@ -95,6 +95,12 @@ internal suspend fun buildAppleQuicServer(
 
     val datagramsEnabled = quicOptions.datagrams != null
     val maxFrameSize: UShort = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX else 0u
+    // See WithQuicConnection.apple.kt: extracting the datagram flow suppresses inbound stream
+    // delivery on NW. Advertise max_datagram_frame_size regardless, but only extract the flow when
+    // the caller hasn't asked to prioritize inbound streams (HTTP/3 forces PreferStreams).
+    val extractDatagramFlow =
+        datagramsEnabled &&
+            quicOptions.datagramStreamConflictPolicy != DatagramStreamConflictPolicy.PreferStreams
     val alpnList: List<Any?> = quicOptions.alpnProtocols
     val keepAliveSeconds = quicOptions.keepAliveInterval?.inWholeSeconds?.toInt() ?: 0
 
@@ -185,7 +191,7 @@ internal suspend fun buildAppleQuicServer(
             listener = listener,
             boundPort = boundPort,
             acceptedGroups = acceptedGroups,
-            datagramsEnabled = datagramsEnabled,
+            extractDatagramFlow = extractDatagramFlow,
             bufferFactory = BufferFactory.network(),
             keepAliveSeconds = keepAliveSeconds,
             scope = serverScope,
@@ -320,7 +326,7 @@ private class AppleQuicServer(
     private val listener: nw_listener_t,
     private val boundPort: Int,
     private val acceptedGroups: Channel<AcceptedGroup>,
-    private val datagramsEnabled: Boolean,
+    private val extractDatagramFlow: Boolean,
     private val bufferFactory: BufferFactory,
     private val keepAliveSeconds: Int,
     private val scope: CoroutineScope,
@@ -360,11 +366,11 @@ private class AppleQuicServer(
                         return@launch
                     }
 
-                    // Extract the one datagram flow only when datagrams are enabled, and
-                    // await its readiness so maxDatagramSize() is known before the handler
-                    // runs — mirrors connectQuicGroup on the client.
+                    // Extract the one datagram flow only when datagrams are enabled and inbound
+                    // streams aren't prioritized (extractDatagramFlow), and await its readiness so
+                    // maxDatagramSize() is known before the handler runs — mirrors the client path.
                     val datagramFlow: nw_connection_t? =
-                        if (!datagramsEnabled) {
+                        if (!extractDatagramFlow) {
                             null
                         } else {
                             nw_helper_quic_group_extract_datagram_flow(accepted.group, DATAGRAM_FRAME_SIZE_MAX)
