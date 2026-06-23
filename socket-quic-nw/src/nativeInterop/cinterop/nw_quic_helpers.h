@@ -1007,6 +1007,65 @@ static inline sec_identity_t _Nullable nw_helper_quic_identity_from_p12(
 }
 
 /**
+ * Inspect the server's TLS leaf certificate to feed the Network.framework anti-amplification guard
+ * (see buildAppleQuicServer). From the imported sec_identity_t we pull the leaf SecCertificateRef
+ * (sec_identity_copy_ref → SecIdentityCopyCertificate), its DER length (SecCertificateCopyData), and
+ * its public-key type (SecCertificateCopyKey + SecKeyCopyAttributes / kSecAttrKeyType). The Kotlin
+ * guard turns leaf_der_len + key_type into an estimated TLS handshake-flight size and rejects an
+ * RSA-on-NW-server cert (which deadlocks against quiche/Chrome — see the limitation note on
+ * buildAppleQuicServer) unless the caller opts out.
+ *
+ * Cross-platform: SecIdentityCopyCertificate / SecCertificateCopyData / SecCertificateCopyKey are all
+ * public on every Apple OS (unlike the validity-date API in ditchoom_apple_pin_leaf_fields), so this is
+ * not gated to macOS.
+ *
+ * @param key_type_out 0 = unknown/other, 1 = EC (ECSECPrimeRandom — Apple's NIST prime curves), 2 = RSA.
+ * @param leaf_der_len_out the leaf certificate DER length in bytes.
+ * @return 1 on success (both out-params populated), 0 on failure (no identity cert / DER copy failed).
+ */
+static inline int nw_helper_quic_identity_leaf_info(
+    sec_identity_t _Nonnull identity,
+    int32_t * _Nonnull key_type_out,
+    int32_t * _Nonnull leaf_der_len_out)
+{
+    SecIdentityRef ref = sec_identity_copy_ref(identity); // retained — release below
+    if (!ref) return 0;
+    SecCertificateRef cert = NULL;
+    OSStatus status = SecIdentityCopyCertificate(ref, &cert);
+    CFRelease(ref);
+    if (status != errSecSuccess || cert == NULL) {
+        if (cert) CFRelease(cert);
+        return 0;
+    }
+
+    int result = 0;
+    CFDataRef der = SecCertificateCopyData(cert);
+    if (der) {
+        *leaf_der_len_out = (int32_t)CFDataGetLength(der);
+        CFRelease(der);
+
+        int32_t key_type = 0;
+        SecKeyRef key = SecCertificateCopyKey(cert);
+        if (key) {
+            CFDictionaryRef attrs = SecKeyCopyAttributes(key);
+            if (attrs) {
+                CFStringRef type = (CFStringRef)CFDictionaryGetValue(attrs, kSecAttrKeyType);
+                if (type) {
+                    if (CFEqual(type, kSecAttrKeyTypeECSECPrimeRandom)) key_type = 1;
+                    else if (CFEqual(type, kSecAttrKeyTypeRSA)) key_type = 2;
+                }
+                CFRelease(attrs);
+            }
+            CFRelease(key);
+        }
+        *key_type_out = key_type;
+        result = 1;
+    }
+    CFRelease(cert);
+    return result;
+}
+
+/**
  * Create a QUIC *listener* — the server analog of nw_helper_create_quic_group.
  *
  * Same QUIC parameter setup as the client group: ALPN via the QUIC-specific

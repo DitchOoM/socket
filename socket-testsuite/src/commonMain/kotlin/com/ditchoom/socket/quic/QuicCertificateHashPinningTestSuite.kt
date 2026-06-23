@@ -155,7 +155,13 @@ abstract class QuicCertificateHashPinningTestSuite {
         wrapTestBody {
             if (!enforcesW3cConstraints()) return@wrapTestBody
             val opts = options()
-            withQuicServer(port = 0, tlsConfig = fixtureTlsConfig(fixture), quicOptions = opts) {
+            // The `pinned-rsa` fixture deliberately presents an RSA leaf. On Apple that trips the
+            // Network.framework server anti-amplification guard (RSA flight can't be delivered to a
+            // non-Apple client). This suite is NW↔NW on Apple (the client is also Network.framework, which
+            // the bug doesn't affect), and it tests *pinning*, not interop — so bypass the guard for the
+            // server. The flag is ignored on every non-Apple backend and for the EC fixtures.
+            val serverOpts = opts.copy(appleAllowOversizedServerCert = true)
+            withQuicServer(port = 0, tlsConfig = fixtureTlsConfig(fixture), quicOptions = serverOpts) {
                 val serverJob = launch { runCatching { connections {} } }
                 try {
                     val pinned = opts.copy(serverCertificateHashes = listOf(fixtureLeafHash(fixture)))

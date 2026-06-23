@@ -213,6 +213,20 @@ data class QuicOptions(
      * WebTransport stack overrides this to [DatagramStreamConflictPolicy.PreferStreams] for you.
      */
     val datagramStreamConflictPolicy: DatagramStreamConflictPolicy = DatagramStreamConflictPolicy.PreferDatagrams,
+    /**
+     * Apple-only escape hatch for the Network.framework QUIC **server** anti-amplification guard.
+     *
+     * Apple's libquic under-credits a non-Apple client's first flight for the RFC 9000 §8.1
+     * anti-amplification limit, so an oversized server certificate flight (notably an RSA-2048 leaf)
+     * can never be delivered and the handshake deadlocks against quiche/Chrome. To fail loud instead of
+     * silently timing out, the Apple server [bind] estimates the leaf's TLS flight at bind time and
+     * throws when it exceeds NW's budget unless this is true. Default false (guard ON) — keep it and
+     * present a small EC (ECDSA P-256) leaf for out-of-the-box interop. Set true only when the server
+     * will serve **Apple clients exclusively** (Apple↔Apple is unaffected) or you have another reason to
+     * accept the deadlock risk. Ignored on every non-Apple target and for the client role (those don't
+     * have the bug). See the limitation note on `buildAppleQuicServer` / [QuicTlsConfig.pkcs12Path].
+     */
+    val appleAllowOversizedServerCert: Boolean = false,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

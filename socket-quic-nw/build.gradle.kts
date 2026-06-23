@@ -225,17 +225,20 @@ val generateLocalhostCert =
 
             fun keytool(vararg args: String): Process = ProcessBuilder(listOf(keytool) + args).redirectErrorStream(false).start()
 
+            // EC P-256 (not RSA): the Apple Network.framework QUIC server's anti-amplification guard
+            // rejects an oversized (RSA-2048) leaf, and these certs back NW *server* tests. A small EC
+            // P-256 leaf keeps the TLS handshake flight under NW's budget. See buildAppleQuicServer.
             val gen =
                 keytool(
                     "-genkeypair",
                     "-alias",
                     "localhost",
                     "-keyalg",
-                    "RSA",
-                    "-keysize",
-                    "2048",
+                    "EC",
+                    "-groupname",
+                    "secp256r1",
                     "-sigalg",
-                    "SHA256withRSA",
+                    "SHA256withECDSA",
                     "-validity",
                     "397",
                     "-dname",
