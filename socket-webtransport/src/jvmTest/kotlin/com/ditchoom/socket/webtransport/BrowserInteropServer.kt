@@ -60,9 +60,16 @@ class BrowserInteropServer {
             "BrowserInteropServer only runs with -Dwt.interop.server=true (manual browser interop harness)",
             System.getProperty("wt.interop.server") == "true",
         )
-        val certCrt = resolvePinned("pinned.crt")
-        val certKey = resolvePinned("pinned.key")
-        val certSha256 = resolvePinned("pinned.sha256").readText().trim()
+        // Cert selection. Default `pinned` (EC P-256 ≤14-day) for the browser cell — the only self-signed
+        // leaf a browser accepts via serverCertificateHashes. `cert` is the long-lived testcerts/cert.*
+        // (CN=quic.tech), used by the durable native↔native cross-impl cell (quiche-server ↔ NW-client),
+        // where the client dials with verifyPeer=false and never pins, so the 13-day pinned treadmill is
+        // unnecessary.
+        val certName = System.getProperty("wt.interop.cert", "pinned")
+        val certCrt = resolveCert("$certName.crt")
+        val certKey = resolveCert("$certName.key")
+        val certSha256 =
+            if (certName == "pinned") resolveCert("$certName.sha256").readText().trim() else ""
         val stopFile =
             File(System.getProperty("wt.interop.stopFile") ?: File(System.getProperty("java.io.tmpdir"), "wt-interop-stop").path)
         stopFile.delete() // clear any stale sentinel from a previous run
@@ -100,7 +107,9 @@ class BrowserInteropServer {
                     System.getProperty("wt.interop.configFile")?.let { cfg ->
                         File(cfg).apply {
                             parentFile?.mkdirs()
-                            writeText("url=https://localhost:$port/\ncertSha256=$certSha256\n")
+                            // datagrams=true: this quiche server can carry WT datagrams (RFC 9297). A
+                            // cross-impl client involving NW ignores this and tests streams only.
+                            writeText("url=https://localhost:$port/\ncertSha256=$certSha256\ndatagrams=true\n")
                         }
                     }
                     val deadline = MAX_LIFETIME.inWholeMilliseconds
@@ -151,18 +160,21 @@ class BrowserInteropServer {
         stream.close()
     }
 
-    private fun resolvePinned(name: String): File {
-        // jvmTest's working dir is the module dir (socket-webtransport/); the pinned fixture is generated
-        // (gitignored) under socket-quic-nw/testcerts by that module's pinned-fixture Gradle task.
+    private fun resolveCert(name: String): File {
+        // jvmTest's working dir is the module dir (socket-webtransport/). The `pinned` fixture is generated
+        // (gitignored) under socket-quic-nw/testcerts (:socket-quic-nw:generatePinnedW3cCerts); the
+        // long-lived `cert` PEM lives under this module's own testcerts. Probe both.
         val candidates =
             listOf(
                 File("../socket-quic-nw/testcerts/$name"),
                 File("socket-quic-nw/testcerts/$name"),
+                File("testcerts/$name"),
+                File("socket-webtransport/testcerts/$name"),
             )
         return candidates.firstOrNull { it.exists() }
             ?: error(
-                "pinned fixture '$name' not found (tried ${candidates.map { it.absolutePath }}). " +
-                    "Run ':socket-quic-nw:generatePinnedW3cCerts' to generate it.",
+                "cert fixture '$name' not found (tried ${candidates.map { it.absolutePath }}). " +
+                    "Run ':socket-quic-nw:generatePinnedW3cCerts' (pinned) or ensure testcerts/cert.* exists.",
             )
     }
 
