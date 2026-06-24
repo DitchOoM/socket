@@ -43,12 +43,14 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_closed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_timed_out
+import com.ditchoom.socket.quic.quiche.quiche_conn_local_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
 import com.ditchoom.socket.quic.quiche.quiche_conn_new_scid
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert
+import com.ditchoom.socket.quic.quiche.quiche_conn_peer_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
