@@ -25,6 +25,7 @@ plugins {
 // non-macOS validation gate for this phase) do not execute them.
 
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
+val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 
 repositories {
     mavenLocal()
@@ -44,20 +45,158 @@ fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuicHel
     }
 }
 
+// --- OS-26 Swift Network bridge (issue #173) — build-plumbing spike (PLAN step 1) ---
+// K/N has Obj-C interop only, not Swift; the macOS/iOS 26 NetworkConnection<QUIC> API is Swift-only,
+// so we must compile a thin @objc Swift shim to a static archive + generated ObjC header and cinterop
+// THAT header. swiftc has no Gradle-plugin support, so this mirrors how :socket-quic-quiche feeds its
+// native dep into cinterop: build the native lib -> point the .def at its header -> make the cinterop
+// task dependsOn the build -> link the archive (here also the Swift runtime) via binaries{}.
+// SCOPE: this step is plumbing de-risk only — the shim is a trivial @objc fn, NOT the real bridge.
+// Per-SDK path resolution, cached (xcrun is slow). Resolved at configuration time because the Swift
+// runtime -L path below feeds binaries{} linkerOpts, which must be set during configuration.
+val swiftSdkPaths = mutableMapOf<String, String>()
+
+fun resolveSwiftSdkPath(sdkName: String): String =
+    swiftSdkPaths.getOrPut(sdkName) {
+        ProcessBuilder("xcrun", "--sdk", sdkName, "--show-sdk-path")
+            .start()
+            .inputStream
+            .bufferedReader()
+            .readText()
+            .trim()
+    }
+
+fun registerNWQuic26SwiftTask(
+    knTarget: String,
+    swiftTriple: String,
+    sdkPath: String,
+): TaskProvider<Task> {
+    val cap = knTarget.replaceFirstChar { it.uppercase() }
+    val outDir = layout.buildDirectory.dir("nwquic26/$knTarget")
+    return tasks.register("buildNWQuic26Swift$cap") {
+        group = "build"
+        description = "Compile the OS-26 Swift Network bridge shim to a static archive + ObjC header for $knTarget"
+        val swiftSrc = projectDir.resolve("src/nativeInterop/swift/NWQuic26Bridge.swift")
+        inputs.file(swiftSrc)
+        inputs.property("swiftTriple", swiftTriple)
+        inputs.property("sdkPath", sdkPath)
+        val lib = outDir.get().asFile.resolve("libNWQuic26.a")
+        val header = outDir.get().asFile.resolve("NWQuic26-Swift.h")
+        outputs.files(lib, header)
+        onlyIf { isMacOS }
+        doLast {
+            outDir.get().asFile.mkdirs()
+            val cmd =
+                listOf(
+                    "swiftc",
+                    "-emit-library",
+                    "-static",
+                    "-emit-module",
+                    "-module-name",
+                    "NWQuic26",
+                    "-emit-objc-header",
+                    "-emit-objc-header-path",
+                    header.absolutePath,
+                    "-target",
+                    swiftTriple,
+                    "-sdk",
+                    sdkPath,
+                    "-O",
+                    "-o",
+                    lib.absolutePath,
+                    swiftSrc.absolutePath,
+                )
+            logger.lifecycle("swiftc NWQuic26 bridge ($knTarget, $swiftTriple)...")
+            val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            if (process.waitFor() != 0) throw GradleException("swiftc failed for NWQuic26 bridge ($knTarget)")
+        }
+    }
+}
+
+fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuic26SwiftBridge(
+    swiftTriple: String,
+    sdkName: String,
+) {
+    val knTarget = name
+    val sdkPath = resolveSwiftSdkPath(sdkName)
+    val swiftTask = registerNWQuic26SwiftTask(knTarget, swiftTriple, sdkPath)
+    val genDir =
+        layout.buildDirectory
+            .dir("nwquic26/$knTarget")
+            .get()
+            .asFile
+    compilations["main"].cinterops {
+        create("NWQuic26") {
+            defFile("src/nativeInterop/cinterop/NWQuic26.def")
+            includeDirs(genDir)
+            tasks.named(interopProcessingTaskName) { dependsOn(swiftTask) }
+        }
+    }
+    binaries.all {
+        // force_load: ObjC classes are referenced by the cinterop bindings via runtime lookup, so the
+        // class symbol must be present in the link even though nothing C-references it directly.
+        // The archive's embedded LC_LINKER_OPTION load commands request the Swift runtime
+        // (libswiftCore/libswiftFoundation); -L<sdk>/usr/lib/swift lets ld resolve them against the
+        // SDK .tbd stubs. Swift is ABI-stable and ships in every target OS, so nothing is bundled —
+        // this works identically for macOS / device / simulator (no rpath needed; it's a system path).
+        linkerOpts(
+            "-Wl,-force_load,${genDir.resolve("libNWQuic26.a").absolutePath}",
+            "-L$sdkPath/usr/lib/swift",
+        )
+    }
+}
+
 kotlin {
     jvmToolchain(21)
 
-    macosArm64 { configureNWQuicHelpersCinterop() }
-    macosX64 { configureNWQuicHelpersCinterop() }
-    iosArm64 { configureNWQuicHelpersCinterop() }
-    iosSimulatorArm64 { configureNWQuicHelpersCinterop() }
-    iosX64 { configureNWQuicHelpersCinterop() }
-    tvosArm64 { configureNWQuicHelpersCinterop() }
-    tvosSimulatorArm64 { configureNWQuicHelpersCinterop() }
-    tvosX64 { configureNWQuicHelpersCinterop() }
-    watchosArm64 { configureNWQuicHelpersCinterop() }
-    watchosSimulatorArm64 { configureNWQuicHelpersCinterop() }
-    watchosX64 { configureNWQuicHelpersCinterop() }
+    // The OS-26 Swift bridge cinterop is wired on every Apple target (triples + SDK names verified to
+    // compile the shim with the correct arch, incl. arm64_32 for watchosArm64). The OS-gated runtime
+    // fallback to the legacy nw_connection_group backend below 26 is a Kotlin-side concern (step 5).
+    macosArm64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("arm64-apple-macos26.0", "macosx")
+    }
+    macosX64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("x86_64-apple-macos26.0", "macosx")
+    }
+    iosArm64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("arm64-apple-ios26.0", "iphoneos")
+    }
+    iosSimulatorArm64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("arm64-apple-ios26.0-simulator", "iphonesimulator")
+    }
+    iosX64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("x86_64-apple-ios26.0-simulator", "iphonesimulator")
+    }
+    tvosArm64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("arm64-apple-tvos26.0", "appletvos")
+    }
+    tvosSimulatorArm64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("arm64-apple-tvos26.0-simulator", "appletvsimulator")
+    }
+    tvosX64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("x86_64-apple-tvos26.0-simulator", "appletvsimulator")
+    }
+    watchosArm64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("arm64_32-apple-watchos26.0", "watchos")
+    }
+    watchosSimulatorArm64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("arm64-apple-watchos26.0-simulator", "watchsimulator")
+    }
+    watchosX64 {
+        configureNWQuicHelpersCinterop()
+        configureNWQuic26SwiftBridge("x86_64-apple-watchos26.0-simulator", "watchsimulator")
+    }
 
     applyDefaultHierarchyTemplate()
     sourceSets {
