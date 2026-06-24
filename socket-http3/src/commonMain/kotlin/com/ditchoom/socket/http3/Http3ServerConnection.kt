@@ -76,6 +76,13 @@ class Http3ServerConnection internal constructor(
     private val pushIdMutex = Mutex()
     private var nextPushId: Long = 0
 
+    // Connection-abort latch (RFC 9114 §8): a fatal connection-level violation closes the connection
+    // exactly once. Guarded by abortMutex so concurrent stream handlers can't double-close.
+    private val abortMutex = Mutex()
+
+    @Volatile
+    private var aborted = false
+
     /** Run the HTTP/3 server role over [scope] (one accepted QUIC connection). Returns when it closes. */
     suspend fun serve() {
         writeControlStreamHeader(scope.openUniStream())
@@ -132,23 +139,95 @@ class Http3ServerConnection internal constructor(
         }
     }
 
-    /** Read the client control stream: its SETTINGS sizes our encoder; ignore subsequent frames. */
+    /**
+     * Read the client's control stream and enforce its framing rules (RFC 9114 §6.2.1 / §7.2.4),
+     * mirroring the client [Http3Connection.handleControl]: the first frame MUST be SETTINGS (else
+     * [Http3ErrorCode.MISSING_SETTINGS], or [Http3ErrorCode.CLOSED_CRITICAL_STREAM] when the critical
+     * stream ends first); the SETTINGS are validated (duplicate / reserved-HTTP2 ids ⇒
+     * [Http3ErrorCode.SETTINGS_ERROR]) and size our encoder. Subsequent frames are checked by
+     * [readControlFrames]. Any violation is a *connection* error, so it [aborts the connection].
+     */
     private suspend fun handleControl(reader: Http3StreamReader) {
-        val first = reader.nextFrame()
-        if (qpackCapacity > 0 && first is Http3Frame.Settings) {
-            val clientSettings = Http3Settings(first.entries)
-            val clientMax = clientSettings.qpackMaxTableCapacity
-            if (clientMax > 0) {
-                serverEncoder =
-                    QpackEncoder(clientMax, clientSettings.qpackBlockedStreams) { writeQpackEncoderInstruction(it) }
-                        .also { it.setCapacity(minOf(qpackCapacity, clientMax)) }
+        try {
+            when (val first = reader.nextFrame()) {
+                // The control stream is critical; the peer ending it before SETTINGS is fatal (§6.2.1).
+                null ->
+                    abortConnection(Http3StreamException(Http3Violation.ControlStreamEndedBeforeSettings))
+                !is Http3Frame.Settings ->
+                    abortConnection(Http3StreamException(Http3Violation.FirstControlFrameNotSettings(first.wireType)))
+                else -> {
+                    // Reject duplicate / reserved-HTTP2 setting ids (H3_SETTINGS_ERROR) before using them.
+                    val clientSettings = validatePeerSettings(first.entries)
+                    if (qpackCapacity > 0) {
+                        val clientMax = clientSettings.qpackMaxTableCapacity
+                        if (clientMax > 0) {
+                            serverEncoder =
+                                QpackEncoder(clientMax, clientSettings.qpackBlockedStreams) { writeQpackEncoderInstruction(it) }
+                                    .also { it.setCapacity(minOf(qpackCapacity, clientMax)) }
+                        }
+                    }
+                    readControlFrames(reader)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Http3StreamException) {
+            abortConnection(e)
+        } catch (e: Throwable) {
+            abortConnection(Http3StreamException(Http3Violation.ControlStreamError(e)))
+        }
+    }
+
+    /**
+     * Read the client control frames after SETTINGS, enforcing §7.2.4 sequencing. MAX_PUSH_ID sizes our
+     * server-push credit (RFC 9114 §7.2.7); GOAWAY (client graceful shutdown, §5.2) and CANCEL_PUSH
+     * (client withdrawing a promised push, §7.2.3) are accepted; GREASE/unknown frames are ignored (§9).
+     * A reserved HTTP/2 frame, a second SETTINGS, a PUSH_PROMISE, or a request-stream frame (DATA/HEADERS)
+     * on the control stream is [Http3ErrorCode.FRAME_UNEXPECTED] — thrown for [handleControl] to abort on.
+     */
+    private suspend fun readControlFrames(reader: Http3StreamReader) {
+        while (true) {
+            when (val frame = reader.nextFrame()) {
+                null -> break // control stream ended
+                // MAX_PUSH_ID is client→server (§7.2.7); it is non-decreasing, so take the latest.
+                is Http3Frame.MaxPushId -> clientMaxPushId = frame.pushId
+                // A client may send GOAWAY (§5.2) / CANCEL_PUSH (§7.2.3) on its control stream — accept.
+                is Http3Frame.GoAway, is Http3Frame.CancelPush -> {}
+                // GREASE/unknown frames are ignored (§9); a reserved HTTP/2 type is FRAME_UNEXPECTED (§7.1).
+                is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
+                // PUSH_PROMISE is a request-stream frame and never valid on the control stream (§7.2.5).
+                is Http3Frame.PushPromise ->
+                    throw Http3StreamException(Http3Violation.PushPromiseOnControlStream)
+                // SETTINGS may appear only once, as the first frame; a second is a violation (§7.2.4).
+                is Http3Frame.Settings ->
+                    throw Http3StreamException(Http3Violation.SecondSettingsFrame)
+                // DATA/HEADERS are request-stream frames and are never valid on the control stream (§4.1).
+                is Http3Frame.Data, is Http3Frame.Headers ->
+                    throw Http3StreamException(
+                        Http3Violation.UnexpectedFrame(frame.wireType, Http3FrameContext.CONTROL_STREAM),
+                    )
             }
         }
-        // Capture MAX_PUSH_ID so the server knows whether (and how much) it may push (RFC 9114 §7.2.7);
-        // it is non-decreasing, so just take the latest. Other control frames are accepted + ignored.
-        while (true) {
-            val frame = reader.nextFrame() ?: break
-            if (frame is Http3Frame.MaxPushId) clientMaxPushId = frame.pushId
+    }
+
+    /**
+     * Record a fatal connection-level violation (RFC 9114 §8) and close the connection exactly once,
+     * sending a CONNECTION_CLOSE carrying [Http3StreamException.errorCode] as the application error code
+     * ([QuicScope.closeWithError]). Idempotent — a second violation, or a close that fails because the
+     * connection is already gone, is ignored.
+     */
+    private suspend fun abortConnection(error: Http3StreamException) {
+        abortMutex.withLock {
+            if (aborted) return
+            aborted = true
+        }
+        try {
+            scope.closeWithError(error.errorCode)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Connection already torn down (or the platform can't send an app-coded close) — the
+            // violation is still recorded via the latch.
         }
     }
 
@@ -172,12 +251,7 @@ class Http3ServerConnection internal constructor(
                 mux.acceptIncomingBidi(stream, processor)
                 return
             }
-            val first =
-                reader.nextFrame(config.readPolicy.toDeadline())
-                    ?: throw Http3StreamException(Http3Violation.StreamEndedBeforeHeaders(Http3FrameContext.BEFORE_REQUEST_HEADERS))
-            if (first !is Http3Frame.Headers) {
-                throw Http3StreamException(Http3Violation.UnexpectedFrame(first.wireType, Http3FrameContext.REQUEST_HEAD))
-            }
+            val first = readRequestHeaders(reader)
             val streamId = stream.streamId.id
             val fields = decodeSection(first.encodedFieldSection, streamId)
             // Extended CONNECT (RFC 9220): a CONNECT carrying `:protocol` is routed to WebTransport,
@@ -215,6 +289,28 @@ class Http3ServerConnection internal constructor(
             throw e
         } finally {
             if (!handlerOwnsReader) reader.release()
+        }
+    }
+
+    /**
+     * Read frames off a request [reader] until its first HEADERS frame (RFC 9114 §4.1), mirroring the
+     * client [Http3Connection.readResponseHead]. GREASE/unknown extension frames before HEADERS are
+     * ignored (§9); a reserved HTTP/2 type, a DATA-before-HEADERS, or any other request-stream frame is
+     * an invalid sequence ⇒ [Http3ErrorCode.FRAME_UNEXPECTED]. A stream that ends first is
+     * [Http3ErrorCode.REQUEST_INCOMPLETE].
+     */
+    private suspend fun readRequestHeaders(reader: Http3StreamReader): Http3Frame.Headers {
+        while (true) {
+            when (val frame = reader.nextFrame(config.readPolicy.toDeadline())) {
+                null ->
+                    throw Http3StreamException(Http3Violation.StreamEndedBeforeHeaders(Http3FrameContext.BEFORE_REQUEST_HEADERS))
+                is Http3Frame.Headers -> return frame
+                // GREASE/unknown frames are ignored (§9); a reserved HTTP/2 type is FRAME_UNEXPECTED (§7.1).
+                is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
+                // DATA before HEADERS, SETTINGS, GOAWAY, … on a request stream — an invalid sequence (§4.1).
+                else ->
+                    throw Http3StreamException(Http3Violation.UnexpectedFrame(frame.wireType, Http3FrameContext.REQUEST_HEAD))
+            }
         }
     }
 
@@ -315,7 +411,7 @@ class Http3ServerConnection internal constructor(
     ) {
         try {
             when (error.errorCode) {
-                Http3ErrorCode.FRAME_UNEXPECTED -> scope.closeWithError(error.errorCode)
+                Http3ErrorCode.FRAME_UNEXPECTED -> abortConnection(error)
                 else -> stream.reset(error.errorCode)
             }
         } catch (e: CancellationException) {
