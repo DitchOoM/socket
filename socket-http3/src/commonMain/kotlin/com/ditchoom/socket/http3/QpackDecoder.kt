@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -91,13 +92,20 @@ class QpackDecoder(
         scratchPool: BufferPool?,
     ): List<QpackHeaderField> {
         // Any failure to decode a field section — a bad prefix, an out-of-range static/dynamic index,
-        // a malformed prefixed integer, invalid Huffman, a string literal past the buffer — is a
-        // *connection* error of type QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2): the dynamic-table
-        // state desynchronizes irrecoverably. The leaf codecs throw the buffer layer's DecodeException;
-        // translate it to the typed HTTP/3 error at this boundary so callers see one error currency.
+        // a malformed prefixed integer, invalid Huffman, a string literal or varint that reads past the
+        // (bounded) section buffer, or a non-UTF-8 string octet (which the buffer's readString rejects
+        // on some platforms) — is a *connection* error of type QPACK_DECOMPRESSION_FAILED (RFC 9204
+        // §2.2): the dynamic-table state desynchronizes irrecoverably. The leaf codecs raise the buffer
+        // layer's DecodeException or a platform-specific buffer-underflow / decoding error; translate ANY
+        // such wire-driven Throwable to the typed HTTP/3 error here so callers see one error currency.
+        // Only CancellationException (the blocking await) propagates unchanged. The Section
+        // Acknowledgment (stream I/O) is emitted only after a successful decode, OUTSIDE this catch, so a
+        // write failure is never mistyped.
+        val prefix: QpackPrefix
+        val fields: List<QpackHeaderField>
         try {
             // Snapshot the insert count from the StateFlow (atomic) for the prefix reconstruction.
-            val prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, insertCount.value)
+            prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, insertCount.value)
             // Block until enough entries have been inserted to resolve this section (§2.2.1) — OUTSIDE the
             // mutex, so the encoder-stream router can keep inserting (and unblock us). The
             // QPACK_BLOCKED_STREAMS limit (how many sections may block at once) is the peer encoder's
@@ -105,18 +113,20 @@ class QpackDecoder(
             if (prefix.requiredInsertCount > insertCount.value) {
                 insertCount.first { it >= prefix.requiredInsertCount }
             }
-            val fields =
+            fields =
                 mutex.withLock {
                     buildList { while (buffer.hasRemaining()) add(decodeFieldLine(buffer, prefix.base, scratchPool)) }
                 }
-            if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
-            return fields
-        } catch (e: DecodeException) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
             throw Http3StreamException(
                 "QPACK field-section decode failed: ${e.message}",
                 Http3ErrorCode.QPACK_DECOMPRESSION_FAILED,
             )
         }
+        if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
+        return fields
     }
 
     /** Notify the peer's encoder that [streamId]'s outstanding section references are abandoned (§4.4.2). */

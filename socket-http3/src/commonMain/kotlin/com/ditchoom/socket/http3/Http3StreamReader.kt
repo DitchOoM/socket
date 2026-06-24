@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import kotlinx.coroutines.CancellationException
 import kotlin.time.Duration
 
 /**
@@ -70,7 +71,28 @@ class Http3StreamReader(
         recyclePreviousFrame()
         while (true) {
             // A fully buffered frame is returned even after FIN, so trailing complete frames drain.
-            val peek = Http3FrameCodec.peekFrameSize(processor, 0)
+            // peekFrameSize reads the type+length varints to size the frame; a Length above Int.MAX
+            // (Http3LengthCodec) is rejected here, before decode — that is still H3_FRAME_ERROR (§7.1).
+            val peek =
+                try {
+                    Http3FrameCodec.peekFrameSize(processor, 0)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Http3StreamException) {
+                    throw e
+                } catch (e: Throwable) {
+                    throw Http3StreamException("malformed HTTP/3 frame: ${e.message}", Http3ErrorCode.FRAME_ERROR)
+                }
+            // A frame whose *total* size (type + length varints + a Length up to Int.MAX) exceeds the
+            // Int-addressable range overflows peekFrameSize's byte count to negative. It can't be buffered
+            // in a single ReadBuffer, so it is H3_FRAME_ERROR — the same bound as a Length above Int.MAX,
+            // caught here before readBuffer(negative) would fault with an untyped error. (Fuzzer-found.)
+            if (peek is PeekResult.Complete && peek.bytes < 0) {
+                throw Http3StreamException(
+                    "HTTP/3 frame size exceeds the addressable range",
+                    Http3ErrorCode.FRAME_ERROR,
+                )
+            }
             if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
                 val frameBuffer = processor.readBuffer(peek.bytes)
                 val frame =
@@ -85,9 +107,21 @@ class Http3StreamReader(
                             "malformed HTTP/3 frame: ${e.message}",
                             Http3ErrorCode.FRAME_ERROR,
                         )
-                    } catch (t: Throwable) {
+                    } catch (e: CancellationException) {
                         frameBuffer.freeIfNeeded()
-                        throw t
+                        throw e
+                    } catch (e: Http3StreamException) {
+                        frameBuffer.freeIfNeeded()
+                        throw e
+                    } catch (e: Throwable) {
+                        // A structured-body frame that under-reads its own bounded length (a SETTINGS
+                        // frame ending mid-entry, a buffer-underflow or platform decoding error from the
+                        // codec) is equally malformed ⇒ H3_FRAME_ERROR. Only CancellationException propagates.
+                        frameBuffer.freeIfNeeded()
+                        throw Http3StreamException(
+                            "malformed HTTP/3 frame: ${e.message}",
+                            Http3ErrorCode.FRAME_ERROR,
+                        )
                     }
                 val payload = frame.borrowedPayloadOrNull()
                 if (payload == null) {

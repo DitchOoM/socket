@@ -270,4 +270,46 @@ class Http3ConformanceCorpusTests {
             val e = assertFailsWith<Http3StreamException> { while (reader.next() != null) Unit }
             assertEquals(Http3ErrorCode.QPACK_DECODER_STREAM_ERROR, e.errorCode)
         }
+
+    // =====================================================================================
+    // E. Regression corpus — minimized crashers the Phase-1 invariant fuzzer found (each once leaked an
+    //    untyped buffer failure from the *peek* stage; now typed). Deterministic forever after.
+    // =====================================================================================
+
+    @Test
+    fun frame_lengthAboveIntMax_viaReader_isFrameError() =
+        runTest {
+            // The reader path for an over-Int.MAX frame Length: peekFrameSize reads the 8-byte length
+            // varint (0x80000000) and rejects it before decode. Must surface as H3_FRAME_ERROR, not a
+            // raw DecodeException leaking out of the peek. (Fuzz seed 0x7730100001, streamReader#0.)
+            val r = frameReaderOf(0x00, 0xC0, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00)
+            val e = assertFailsWith<Http3StreamException> { r.nextFrame() }
+            assertEquals(Http3ErrorCode.FRAME_ERROR, e.errorCode)
+        }
+
+    @Test
+    fun frame_totalSizeIntOverflow_viaReader_isFrameError() =
+        runTest {
+            // DATA frame with Length 0x7ffffff8 (just under Int.MAX, so Http3LengthCodec accepts it) — but
+            // type+length+body overflows the reader's Int byte count to negative. Must be H3_FRAME_ERROR,
+            // not an untyped readBuffer(negative) fault. (Jazzer http3CodecFuzz finding, 1054 execs.)
+            val r = frameReaderOf(0x00, 0xC0, 0x00, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xF8)
+            val e = assertFailsWith<Http3StreamException> { r.nextFrame() }
+            assertEquals(Http3ErrorCode.FRAME_ERROR, e.errorCode)
+        }
+
+    @Test
+    fun qpack_encoderInstructionLengthOverflow_isEncoderStreamError() =
+        runTest {
+            // Insert With Literal Name (0x40 | H=0 | name-len prefix 0x1f) followed by a continuation run
+            // that overflows the name length past Int — the peekLength under-read once leaked a raw
+            // BufferUnderflowException. Must be QPACK_ENCODER_STREAM_ERROR. (Fuzz seed 0x7730100003.)
+            val reader =
+                QpackInstructionReader.encoder(
+                    ScriptedByteStream(listOf(dataChunk(listOf(0x5F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF)), ReadResult.End)),
+                    pool(),
+                )
+            val e = assertFailsWith<Http3StreamException> { while (reader.next() != null) Unit }
+            assertEquals(Http3ErrorCode.QPACK_ENCODER_STREAM_ERROR, e.errorCode)
+        }
 }

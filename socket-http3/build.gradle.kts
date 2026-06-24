@@ -342,3 +342,72 @@ tasks
     }.configureEach {
         dependsOn("kspCommonMainKotlinMetadata")
     }
+
+// --- Coverage-guided fuzzing (Jazzer) ----------------------------------------
+// `http3CodecFuzz` drives Http3CodecFuzzer (src/jvmTest) — the hand-rolled HTTP/3 + QPACK *decoder*,
+// the module's real RFC-9114/9204 risk surface — under Jazzer/libFuzzer. The code under test is pure
+// Kotlin, so unlike :socket-quic-quiche's native header-info fuzzer this gets REAL edge coverage of the
+// parser, not just crash signals. Jazzer is runtime-only: the target uses the `byte[]` entry-point form
+// so nothing in jvmTest compiles against Jazzer; the driver comes from the dedicated `jazzer`
+// configuration. The committed seed corpus (fuzz/corpus/http3-codec) starts every run warm with the
+// Phase-0 crafted vectors; new inputs and crash repros go under build/ (gitignored).
+//
+// NOTE: this task is staged-but-dormant in CI until buffer 5.13.2 publishes to Central (the whole
+// redesign branch is buffer-blocked); run it locally with -PquicFuzzSeconds=<n> (default 60).
+val http3JazzerConfig =
+    configurations.create("jazzer") {
+        isCanBeConsumed = false
+        isCanBeResolved = true
+    }
+dependencies { add("jazzer", libs.jazzer) }
+
+val http3FuzzCorpusDir = projectDir.resolve("fuzz/corpus/http3-codec")
+val http3FuzzWorkDir = layout.buildDirectory.dir("fuzz/http3-codec")
+
+tasks.register<JavaExec>("http3CodecFuzz") {
+    group = "verification"
+    description = "Coverage-guided Jazzer fuzzing of the HTTP/3 + QPACK decoder (Http3CodecFuzzer). " +
+        "Configure runtime with -PquicFuzzSeconds=<n> (default 60)."
+    dependsOn("jvmTestClasses")
+
+    // Build the classpath from the jvm test compilation (compiled main+test output + all runtime
+    // deps) WITHOUT referencing the jvmTest *task*, so launching the fuzzer doesn't first run the
+    // whole suite. The Jazzer driver itself comes from the dedicated `jazzer` configuration.
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath =
+        files(
+            jvmTestCompilation.output.allOutputs,
+            jvmTestCompilation.runtimeDependencyFiles,
+        ) + http3JazzerConfig
+
+    mainClass.set("com.code_intelligence.jazzer.Jazzer")
+
+    val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60")
+    val corpusDir = http3FuzzCorpusDir
+    val workDir = http3FuzzWorkDir
+
+    doFirst {
+        corpusDir.mkdirs()
+        workDir
+            .get()
+            .asFile
+            .resolve("corpus")
+            .mkdirs()
+    }
+
+    // libFuzzer writes crash-*/oom-*/timeout-* repro files to artifact_prefix, and new interesting
+    // inputs only to the FIRST positional corpus dir. We make that a gitignored build/ dir so the
+    // committed seed corpus (passed second) stays pristine across local runs.
+    argumentProviders.add {
+        val work = workDir.get().asFile
+        listOf(
+            "--target_class=com.ditchoom.socket.http3.fuzz.Http3CodecFuzzer",
+            "--instrumentation_includes=com.ditchoom.socket.http3.**",
+            "-print_final_stats=1",
+            "-artifact_prefix=${work.absolutePath}/",
+            "-max_total_time=${maxSeconds.get()}",
+            work.resolve("corpus").absolutePath,
+            corpusDir.absolutePath,
+        )
+    }
+}
