@@ -44,9 +44,23 @@ error.
   `macosArm64Test` is now GREEN end-to-end** (`:socket-quic-default` / `:socket-testsuite` SKIP = no test
   sources, expected). The 2026-06-15 Mac-only test regressions noted in memory are resolved.
 
-**Remaining v6 release work unchanged** (see SESSION 6 + §2/§6 below): buffer 6.0.0 → Central + repin + drop
-the mavenLocal pins; the dedicated cross-impl CI workflow; file the Apple-WT-datagram issue. Linux cinterop
-half of typed-close (`CinteropQuicheApi.kt`) still UNVERIFIED on macOS — confirm on aliens/CI.
+**Two more SESSION-7 items DONE (commit `5e43aa1` + issue #173):**
+- **Apple-WT-datagram issue FILED — GitHub #173** ("Apple Network.framework: WebTransport/QUIC datagrams
+  cannot coexist with inbound streams"). #173 is also the number the cross-impl harness +
+  `cross-impl-interop.sh` already referenced as a placeholder, so those refs now resolve. The code already
+  routes around it (`DatagramStreamConflictPolicy.PreferStreams` for H3/WT; `@Ignore`d datagram loopback test).
+- **Dedicated cross-impl CI workflow SHIPPED — no-Gradle, every PR.** New `cross-impl-interop` job in
+  `review.yaml` (needs:[build-apple], macos-latest) runs NW K/N ↔ quiche JVM over localhost in BOTH
+  directions off pre-built artifacts (no Gradle/Konan/quiche cache; ~2-3 min). Pieces: new
+  `socket-webtransport:webtransportInteropJar` (JNI-only fat jar of the quiche-JVM interop endpoints +
+  macOS dylibs), `scripts/ci-cross-impl-nogradle.sh` (runs the standalone `test.kexe` via `--ktest_filter`
+  + `WT_INTEROP_*` env and the jar via `java … JUnitCore`), and 3 new build-apple uploads (kexe/jar/p12).
+  Validated locally end-to-end: both directions PASS. Soft downloads (missing artifact skips), real
+  interop failure blocks the PR.
+
+**Remaining v6 release work** (see SESSION 6 + §2/§6 below): buffer 6.0.0 → Central + repin + drop
+the mavenLocal pins. Linux cinterop half of typed-close (`CinteropQuicheApi.kt`) still UNVERIFIED on macOS —
+confirm on aliens/CI.
 
 ---
 
