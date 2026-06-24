@@ -27,6 +27,32 @@
 // same 1350 keeps packetization comparable across platforms; >= the 1200 QUIC minimum.
 #define NW_QUIC_MAX_UDP_PAYLOAD 1350
 
+/**
+ * Decompose an [nw_error_t] into the (domain, code, description) triple every Kotlin callback here
+ * expects. [out_desc] receives an autoreleased NSString (or nil). Factored out of the six identical
+ * inline copies that previously lived in each send/receive/state-changed block — change the NW error
+ * mapping in ONE place. All three out-params are always written (zeroed/nil when [error] is NULL).
+ */
+static inline void nw_helper_fill_error(
+    nw_error_t _Nullable error,
+    int32_t * _Nonnull out_domain,
+    int32_t * _Nonnull out_code,
+    NSString * _Nullable * _Nonnull out_desc)
+{
+    *out_domain = 0;
+    *out_code = 0;
+    *out_desc = nil;
+    if (error) {
+        *out_domain = nw_error_get_error_domain(error);
+        *out_code = nw_error_get_error_code(error);
+        CFErrorRef cf_error = nw_error_copy_cf_error(error);
+        if (cf_error) {
+            *out_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
+            CFRelease(cf_error);
+        }
+    }
+}
+
 #pragma mark - QUIC State Handler
 
 typedef void (^quic_state_handler_t)(
@@ -57,19 +83,9 @@ static inline void nw_helper_quic_set_state_handler(
                 default: mapped_state = 0; break;
             }
 
-            int32_t err_domain = 0;
-            int32_t err_code = 0;
-            NSString *err_desc = nil;
-
-            if (error) {
-                err_domain = nw_error_get_error_domain(error);
-                err_code = nw_error_get_error_code(error);
-                CFErrorRef cf_error = nw_error_copy_cf_error(error);
-                if (cf_error) {
-                    err_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
-                    CFRelease(cf_error);
-                }
-            }
+            int32_t err_domain, err_code;
+            NSString *err_desc;
+            nw_helper_fill_error(error, &err_domain, &err_code, &err_desc);
 
             handler(mapped_state, err_domain, err_code, err_desc);
         });
@@ -104,18 +120,9 @@ static inline void nw_helper_quic_receive(
                 data = (NSData *)content;
             }
 
-            int32_t err_domain = 0;
-            int32_t err_code = 0;
-            NSString *err_desc = nil;
-            if (error) {
-                err_domain = nw_error_get_error_domain(error);
-                err_code = nw_error_get_error_code(error);
-                CFErrorRef cf_error = nw_error_copy_cf_error(error);
-                if (cf_error) {
-                    err_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
-                    CFRelease(cf_error);
-                }
-            }
+            int32_t err_domain, err_code;
+            NSString *err_desc;
+            nw_helper_fill_error(error, &err_domain, &err_code, &err_desc);
 
             handler(data, [NSNumber numberWithBool:is_complete], err_domain, err_code, err_desc);
         });
@@ -155,18 +162,9 @@ static inline void nw_helper_quic_send(
     // so the FIN's send-complete callback never fires and close() hangs. (Issue #81.)
     nw_connection_send(connection, dispatch_data, context, true,
         ^(nw_error_t _Nullable error) {
-            int32_t err_domain = 0;
-            int32_t err_code = 0;
-            NSString *err_desc = nil;
-            if (error) {
-                err_domain = nw_error_get_error_domain(error);
-                err_code = nw_error_get_error_code(error);
-                CFErrorRef cf_error = nw_error_copy_cf_error(error);
-                if (cf_error) {
-                    err_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
-                    CFRelease(cf_error);
-                }
-            }
+            int32_t err_domain, err_code;
+            NSString *err_desc;
+            nw_helper_fill_error(error, &err_domain, &err_code, &err_desc);
             handler(err_domain, err_code, err_desc);
         });
 }
@@ -742,18 +740,9 @@ static inline void nw_helper_quic_group_set_state_handler(
                 default: mapped_state = 0; break;
             }
 
-            int32_t err_domain = 0;
-            int32_t err_code = 0;
-            NSString *err_desc = nil;
-            if (error) {
-                err_domain = nw_error_get_error_domain(error);
-                err_code = nw_error_get_error_code(error);
-                CFErrorRef cf_error = nw_error_copy_cf_error(error);
-                if (cf_error) {
-                    err_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
-                    CFRelease(cf_error);
-                }
-            }
+            int32_t err_domain, err_code;
+            NSString *err_desc;
+            nw_helper_fill_error(error, &err_domain, &err_code, &err_desc);
 
             handler(mapped_state, err_domain, err_code, err_desc);
         });
@@ -922,18 +911,9 @@ static inline void nw_helper_quic_datagram_send(
 
     nw_connection_send(connection, dispatch_data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true,
         ^(nw_error_t _Nullable error) {
-            int32_t err_domain = 0;
-            int32_t err_code = 0;
-            NSString *err_desc = nil;
-            if (error) {
-                err_domain = nw_error_get_error_domain(error);
-                err_code = nw_error_get_error_code(error);
-                CFErrorRef cf_error = nw_error_copy_cf_error(error);
-                if (cf_error) {
-                    err_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
-                    CFRelease(cf_error);
-                }
-            }
+            int32_t err_domain, err_code;
+            NSString *err_desc;
+            nw_helper_fill_error(error, &err_domain, &err_code, &err_desc);
             handler(err_domain, err_code, err_desc);
         });
 }
@@ -1189,18 +1169,9 @@ static inline void nw_helper_quic_listener_set_state_handler(
                 default: mapped_state = 0; break;
             }
 
-            int32_t err_domain = 0;
-            int32_t err_code = 0;
-            NSString *err_desc = nil;
-            if (error) {
-                err_domain = nw_error_get_error_domain(error);
-                err_code = nw_error_get_error_code(error);
-                CFErrorRef cf_error = nw_error_copy_cf_error(error);
-                if (cf_error) {
-                    err_desc = (__bridge_transfer NSString *)CFErrorCopyDescription(cf_error);
-                    CFRelease(cf_error);
-                }
-            }
+            int32_t err_domain, err_code;
+            NSString *err_desc;
+            nw_helper_fill_error(error, &err_domain, &err_code, &err_desc);
 
             handler(mapped_state, err_domain, err_code, err_desc);
         });
