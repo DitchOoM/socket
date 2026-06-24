@@ -372,10 +372,12 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 try await connection.inboundStreams { stream in
                     let isUni = stream.directionality == .unidirectional
                     let serverInit = stream.initiator == .server
+                    // Deliver and RETURN immediately. The stream's lifetime is bound to the CONNECTION,
+                    // not this handler closure (verified: a delivered stream reads fine after the handler
+                    // returns), and `inboundStreams` invokes the handler SERIALLY — parking here to "keep
+                    // the stream alive" would block every subsequent inbound stream (a multiplexing
+                    // deadlock). The returned NWQuic26Stream retains the Swift stream for Kotlin.
                     self?.inboundStreamHandler?(NWQuic26Stream(stream: stream), stream.streamID, isUni, serverInit)
-                    // Keep the per-stream closure alive while Kotlin reads it; the wrapper drives close.
-                    // inboundStreams' handler lifetime bounds the stream, so park until the stream ends.
-                    try? await Task.sleep(nanoseconds: .max)
                 }
             } catch {
                 // Connection gone — end the accept loop.
@@ -460,12 +462,19 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, *)
 @objc public final class NWQuic26Stream: NSObject {
-    private let stream: QUIC.Stream<QUICStream>
+    // `var?` (not `let`) so reset() can drop our reference deterministically — the new Stream has no
+    // cancel(), so RESET_STREAM/STOP_SENDING is emitted when the LAST reference deallocs. Stamping the
+    // error code then nil-ing here (rather than waiting for the Kotlin wrapper to be GC'd) makes the
+    // reset prompt. In-flight send/receive Tasks captured the stream locally, so they keep it alive
+    // until they finish — a reset races them, which is the intended abort semantics.
+    private var stream: QUIC.Stream<QUICStream>?
+    private let cachedStreamId: UInt64
 
-    @objc public var streamId: UInt64 { stream.streamID }
+    @objc public var streamId: UInt64 { cachedStreamId }
 
     init(stream: QUIC.Stream<QUICStream>) {
         self.stream = stream
+        self.cachedStreamId = stream.streamID
         super.init()
     }
 
@@ -474,6 +483,10 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         endOfStream: Bool,
         completion: @escaping (Int32, NSString?) -> Void
     ) {
+        guard let stream else {
+            completion(-1, "stream is reset/closed" as NSString)
+            return
+        }
         let payload = data as Data
         Task {
             do {
@@ -491,6 +504,10 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         maxBytes: Int32,
         completion: @escaping (NSData?, Bool, UInt64, Int32, NSString?) -> Void
     ) {
+        guard let stream else {
+            completion(nil, true, UInt64.max, 0, nil)
+            return
+        }
         Task {
             do {
                 let msg = try await stream.receive(atLeast: 1, atMost: Int(maxBytes))
@@ -510,10 +527,11 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     }
 
     @objc public func reset(appErrorCode: UInt64) {
-        // No cancel() on the new Stream — stamping the application error code makes NW emit
-        // RESET_STREAM / STOP_SENDING (RFC 9000 §19.4/§19.5) when the stream tears down (ARC, once the
-        // Kotlin QuicByteStream drops this wrapper). Validated in step 3.
-        stream.streamApplicationErrorCode = appErrorCode
+        // No cancel() on the new Stream — stamp the application error code, then drop our reference so
+        // the stream deallocs and NW emits RESET_STREAM / STOP_SENDING (RFC 9000 §19.4/§19.5) promptly,
+        // rather than waiting for the Kotlin wrapper to be garbage-collected.
+        stream?.streamApplicationErrorCode = appErrorCode
+        stream = nil
     }
 }
 

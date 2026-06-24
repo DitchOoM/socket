@@ -4,26 +4,9 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Bridge
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Conn
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.get
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.set
-import kotlinx.cinterop.toKString
-import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import platform.Foundation.NSData
-import platform.Foundation.create
-import platform.posix.F_OK
-import platform.posix.access
-import platform.posix.fclose
-import platform.posix.fopen
-import platform.posix.fread
-import platform.posix.memcpy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
@@ -48,7 +31,7 @@ class NWQuic26BridgeDatagramTest {
             withTimeout(25.seconds) {
                 val alpn = listOf("nwq26-dgram-test")
                 val p12 = testCertPath("pinned.p12")
-                val pinHash = readFileText(testCertPath("pinned.sha256")).trim().hexToByteArray().toNSData()
+                val pinHash = pinFor("pinned")
 
                 val bridge = NWQuic26Bridge()
 
@@ -129,48 +112,4 @@ class NWQuic26BridgeDatagramTest {
                 listener.cancel()
             }
         }
-}
-
-// --- self-contained helpers (macosArm64Test can't see appleTest's shared helpers) ---
-
-private fun testCertPath(name: String): String =
-    listOf("testcerts/$name", "socket-quic-nw/testcerts/$name")
-        .firstOrNull { access(it, F_OK) == 0 }
-        ?: error("Test cert not found: $name (did generateTestP12 run?)")
-
-private fun readFileText(path: String): String =
-    memScoped {
-        val fp = fopen(path, "r") ?: error("Cannot open $path")
-        try {
-            val sb = StringBuilder()
-            val bufSize = 4096
-            val buf = allocArray<ByteVar>(bufSize)
-            while (true) {
-                val n = fread(buf, 1.convert(), (bufSize - 1).convert(), fp).toInt()
-                if (n <= 0) break
-                buf[n] = 0
-                sb.append(buf.toKString())
-            }
-            sb.toString()
-        } finally {
-            fclose(fp)
-        }
-    }
-
-private fun String.hexToByteArray(): ByteArray =
-    ByteArray(length / 2) { ((this[it * 2].digitToInt(16) shl 4) or this[it * 2 + 1].digitToInt(16)).toByte() }
-
-private fun ByteArray.toNSData(): NSData =
-    if (isEmpty()) {
-        NSData()
-    } else {
-        usePinned { pinned -> NSData.create(bytes = pinned.addressOf(0), length = size.convert()) }
-    }
-
-private fun NSData.toByteArray(): ByteArray {
-    val len = length.toInt()
-    if (len == 0) return ByteArray(0)
-    val out = ByteArray(len)
-    out.usePinned { pinned -> memcpy(pinned.addressOf(0), bytes, length) }
-    return out
 }
