@@ -1,7 +1,15 @@
 # Apple OS-26 Swift Network bridge — scoping (issue #173)
 
-**Status:** scoped; capability spike PROVEN (2026-06-24, macOS 26.5.1). **Sequencing step 1 (build
-plumbing) DONE + generalized to all 11 Apple targets (2026-06-24)** — see "Step 1 status" below.
+**Status: COMPLETE (2026-06-24, macOS 26.5.1). ALL sequencing steps 1–5 DONE + committed** on
+`redesign/major-api-v6` (78e353b … d58c561). WebTransport datagrams on Apple work: the legacy-blocked
+`AppleHttp3LoopbackTest.webTransport_datagramRoundTrip` is un-`@Ignore`d and GREEN. Validation (macOS
+26.5): AppleHttp3LoopbackTest 28/28, AppleWebTransportTest 3/3, socket-quic-nw 56/56. The bridge is the
+real `@objc` `NWQuic26Bridge.swift` (client + server + datagrams + streams/ids + reset + pinning) wired
+into the Kotlin `QuicConnection`/`QuicServer` contracts via `WithQuicSwiftConnection.apple.kt`; the
+engine picks it iff `datagrams != null && datagramStreamConflictPolicy == PreferStreams &&
+isAppleOS26OrLater()` (the H3/WT coexistence case), else the proven `nw_connection_group` backend.
+Hard-won facts live in "Step 2 status" below + the `apple-nw-datagram-breaks-inbound-streams` memory.
+The sections below are the original scoping doc, kept for the rationale + per-target build details.
 
 ## Step 2 status — real @objc bridge, datagram slice GREEN (macosArm64)
 
