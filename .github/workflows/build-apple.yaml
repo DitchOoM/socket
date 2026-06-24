@@ -244,6 +244,52 @@ jobs:
           ./gradlew :socket-quic-quiche:quicEchoJar
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Cross-impl interop artifacts for the no-Gradle `cross-impl-interop` job in review.yaml.
+      # Produces three self-contained pieces the downstream macOS job runs WITHOUT Gradle:
+      #   - the macosArm64 webtransport appleTest binary (NW K/N server+client, selected via
+      #     --ktest_filter; config flows through WT_INTEROP_* env vars),
+      #   - webtransport-interop.jar (quiche-JVM server+client + the macOS quiche dylibs baked under
+      #     META-INF/native/), and
+      #   - the testcerts (cert.crt/key + the generated cert.p12 the NW server presents).
+      # See socket-webtransport/scripts/ci-cross-impl-nogradle.sh.
+      - name: Build cross-impl interop artifacts (NW kexe + quiche jar + p12)
+        run: >-
+          ./gradlew
+          :socket-webtransport:linkDebugTestMacosArm64
+          :socket-webtransport:webtransportInteropJar
+          :socket-webtransport:generateWebTransportTestP12
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Upload cross-impl NW test binary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: webtransport-macos-test-binary
+          path: socket-webtransport/build/bin/macosArm64/debugTest/test.kexe
+          retention-days: 1
+          if-no-files-found: warn
+
+      - name: Upload cross-impl quiche interop jar
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: webtransport-interop-jar
+          path: socket-webtransport/build/libs/webtransport-interop.jar
+          retention-days: 1
+          if-no-files-found: warn
+
+      - name: Upload cross-impl interop testcerts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: webtransport-interop-testcerts
+          path: |
+            socket-webtransport/testcerts/cert.crt
+            socket-webtransport/testcerts/cert.key
+            socket-webtransport/testcerts/cert.p12
+          retention-days: 1
+          if-no-files-found: warn
+
       - name: Launch quic-echo on the macOS host
         id: launch-quic-echo
         continue-on-error: true

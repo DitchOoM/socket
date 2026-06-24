@@ -147,6 +147,120 @@ jobs:
             exit 1
           fi
 
+  # Cross-IMPLEMENTATION QUIC/WebTransport interop: an Apple Network.framework (K/N) stack against a
+  # quiche (JVM) stack over localhost, both directions. Every WebTransportTestSuite subclass is
+  # same-impl loopback; this is the only lane that exercises the two native QUIC backends against each
+  # OTHER. It runs entirely off the pre-built artifacts build-apple uploaded (the macosArm64 NW test
+  # .kexe + the quiche-JVM interop jar + the testcerts), so it needs NO Gradle, no Konan/quiche cache,
+  # and no recompile — just download + run two short processes (~2-3 min). Streams only (issue #173: NW
+  # can't carry a datagram flow + inbound streams together). Mirrors quic-interop-summary's reporting:
+  # if: always(), soft downloads (a missing/expired artifact skips, never red-X), and a real interop
+  # failure fails the job. macos-latest because it needs both the K/N binary and a JVM with the macOS
+  # quiche dylib. See socket-webtransport/scripts/ci-cross-impl-nogradle.sh.
+  cross-impl-interop:
+    name: "Cross-Impl QUIC Interop (NW <-> quiche)"
+    needs: [build-apple]
+    if: always()
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6 # the orchestration script + committed testcerts (cert.crt/key)
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      # All three downloads are soft: a missing/expired artifact (e.g. build-apple failed) must skip the
+      # interop run, not red-X the PR. The run step below detects the absence and exits 0.
+      - name: Download NW interop test binary
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: webtransport-macos-test-binary
+          path: socket-webtransport/build/bin/macosArm64/debugTest/
+          digest-mismatch: warn
+
+      - name: Download quiche interop jar
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: webtransport-interop-jar
+          path: socket-webtransport/build/libs/
+          digest-mismatch: warn
+
+      - name: Download interop testcerts
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: webtransport-interop-testcerts
+          path: socket-webtransport/testcerts/
+          digest-mismatch: warn
+
+      - name: Run cross-impl interop (both directions, no Gradle)
+        id: interop
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          KEXE=socket-webtransport/build/bin/macosArm64/debugTest/test.kexe
+          JAR=socket-webtransport/build/libs/webtransport-interop.jar
+          if [ ! -f "$KEXE" ] || [ ! -f "$JAR" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "Cross-impl artifacts unavailable (build-apple upload missing/expired) — skipping."
+            exit 0
+          fi
+          # GHA strips the executable bit off uploaded artifacts.
+          chmod +x "$KEXE"
+          bash socket-webtransport/scripts/ci-cross-impl-nogradle.sh 2>&1 | tee /tmp/cross-impl-interop.log
+
+      - name: Report cross-impl result into step summary
+        if: always()
+        run: |
+          if [ "${{ steps.interop.outputs.missing }}" = "true" ]; then
+            {
+              echo "## Cross-Impl QUIC/WebTransport Interop"
+              echo ""
+              echo "_Skipped — pre-built interop artifacts unavailable this run (build-apple upload missing/expired)._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          RESULT=socket-webtransport/build/wt-interop/cross-impl-result.env
+          NW=fail
+          QS=fail
+          if [ -f "$RESULT" ]; then
+            # shellcheck disable=SC1090
+            . "$RESULT"
+            NW=${nw_server:-fail}
+            QS=${quiche_server:-fail}
+          fi
+          icon() { if [ "$1" = pass ]; then echo "PASS"; else echo "FAIL"; fi; }
+          {
+            echo "## Cross-Impl QUIC/WebTransport Interop"
+            echo ""
+            echo "Two native QUIC stacks over localhost, no Gradle (streams only — issue #173)."
+            echo ""
+            echo "| Direction | Server | Client | Result |"
+            echo "|---|---|---|---|"
+            echo "| NW -> quiche | NW (Apple K/N) | quiche (JVM) | $(icon "$NW") |"
+            echo "| quiche -> NW | quiche (JVM) | NW (Apple K/N) | $(icon "$QS") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$NW" != pass ] || [ "$QS" != pass ]; then
+            echo "::error::Cross-impl interop failed — see step summary / the cross-impl-interop-log artifact"
+            exit 1
+          fi
+
+      - name: Upload cross-impl interop logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cross-impl-interop-log
+          path: |
+            /tmp/cross-impl-interop.log
+            socket-webtransport/build/wt-interop/*-server.log
+          retention-days: 3
+          if-no-files-found: ignore
+
   build-windows:
     name: "Windows JVM Tests"
     runs-on: windows-latest

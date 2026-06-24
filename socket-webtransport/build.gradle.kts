@@ -294,6 +294,58 @@ if (isMacOS) {
     tasks
         .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
         .configureEach { dependsOn(generateWebTransportTestP12) }
+
+    // --- No-Gradle cross-impl interop jar (CI: NW K/N server/client ↔ quiche JVM server/client) ---
+    // A runnable fat jar of the JVM (quiche-backed) interop endpoints — QuicheInteropClient and
+    // BrowserInteropServer — so the cross-impl CI job can run them with a plain `java -cp interop.jar
+    // org.junit.runner.JUnitCore <Class>` (no Gradle, no daemon). Modeled on :socket-quic-quiche's
+    // quicEchoJar, but JNI-only: we deliberately DON'T set Multi-Release / bundle the java21 FFM
+    // bindings, so a JDK 21 run deterministically uses the base JNI backend (matching what this module's
+    // jvmTest does today). The macOS quiche dylibs are reused from :socket-quic-quiche's staged native
+    // resources (same dir its jvmTest classpath uses, dropped under META-INF/native/<os>-<arch>/). The
+    // .kexe (NW K/N) half needs no jar — it runs standalone (see scripts/ci-cross-impl-nogradle.sh).
+    val quicheProject = project(":socket-quic-quiche")
+    val stagedQuicheNatives = quicheProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
+    tasks.register<Jar>("webtransportInteropJar") {
+        group = "build"
+        description =
+            "Build a runnable fat jar of the quiche-backed WebTransport interop endpoints " +
+            "(QuicheInteropClient + BrowserInteropServer) for the no-Gradle cross-impl CI job. " +
+            "Output: build/libs/webtransport-interop.jar"
+        dependsOn(
+            "compileTestKotlinJvm",
+            "jvmTestProcessResources",
+            quicheProject.tasks.named("stageQuicheNativeResources"),
+        )
+
+        archiveBaseName.set("webtransport-interop")
+        archiveVersion.set("")
+
+        // No Main-Class: the CI runner invokes a specific endpoint via JUnit4's runner
+        // (`java -cp webtransport-interop.jar org.junit.runner.JUnitCore <Class>`), so no
+        // dispatcher main() is needed and the interop @Test classes stay unchanged.
+
+        val jvm = kotlin.jvm()
+        val testCompilation = jvm.compilations["test"]
+        val mainCompilation = jvm.compilations["main"]
+
+        // The interop endpoints live in jvmTest; main is for the production wrapper classes they touch.
+        from(testCompilation.output.allOutputs)
+        from(mainCompilation.output.allOutputs)
+        // Overlay the staged quiche natives (already prefixed META-INF/native/<os>-<arch>/) so
+        // NativeLibLoader extracts libquiche.dylib + libquiche_jni.dylib from the classpath at runtime.
+        from(stagedQuicheNatives)
+        // Unpack every runtime dep jar (kotlin stdlib, coroutines, buffer, the :socket-* module jars,
+        // JUnit4) so the result is `java -cp`-runnable with zero external classpath.
+        from({
+            testCompilation.runtimeDependencyFiles.files
+                .filter { it.isFile && it.name.endsWith(".jar") }
+                .map { zipTree(it) }
+        })
+
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/INDEX.LIST", "module-info.class")
+    }
 }
 
 // --- Browser WebTransport interop (opt-in: `-PwtBrowserInterop`) ---
