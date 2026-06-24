@@ -18,23 +18,25 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * A WebTransport stream was aborted by the peer (draft-ietf-webtrans-http3 §4.3): [errorCode] is the
- * peer's WebTransport application error code, **decoded** back out of the HTTP/3 error-code space (or
- * null when the backend can't resolve the code — e.g. the JNI quiche binding). Wraps the underlying
- * [QuicStreamException].
+ * peer's WebTransport application error code, **decoded** back out of the HTTP/3 error-code space. It is
+ * a **32-bit unsigned** value (draft §4.3), hence [UInt], and non-null — the underlying
+ * [QuicStreamException] always carries the peer's QUIC application error code on a real abort (every
+ * quiche binding surfaces `out_error_code`; Apple surfaces `nw_quic_get_stream_application_error`). Wraps
+ * the underlying [QuicStreamException].
  */
 class WebTransportStreamException internal constructor(
-    val errorCode: Long?,
+    val errorCode: UInt,
     message: String,
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
 /**
  * Translate a QUIC stream abort into a WebTransport one, decoding the peer's application error code from
- * the HTTP/3 error-code space (draft-ietf-webtrans-http3 §4.3). The shared reset-observation seam for
- * the WebTransport stream wrappers below.
+ * the HTTP/3 error-code space (draft-ietf-webtrans-http3 §4.3) down to its 32-bit WebTransport value. The
+ * shared reset-observation seam for the WebTransport stream wrappers below.
  */
 internal fun QuicStreamException.toWebTransport(): WebTransportStreamException {
-    val wtCode = abort.applicationErrorCode?.let { WebTransportWire.toWebTransportErrorCode(it) }
+    val wtCode = WebTransportWire.toWebTransportErrorCode(abort.applicationErrorCode).toUInt()
     return WebTransportStreamException(wtCode, "WebTransport stream $streamId aborted by peer: ${abort::class.simpleName}", this)
 }
 

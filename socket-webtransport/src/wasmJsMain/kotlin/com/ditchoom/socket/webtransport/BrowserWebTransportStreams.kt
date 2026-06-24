@@ -12,9 +12,12 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.await
 import kotlinx.coroutines.withTimeout
 import kotlin.js.ExperimentalWasmJsInterop
+import kotlin.js.JsAny
+import kotlin.js.JsException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -30,11 +33,33 @@ import kotlin.time.Duration.Companion.seconds
  */
 private val DEFAULT_WRITE_POLICY = WritePolicy.Bounded(15.seconds)
 
+/** Read `WebTransportError.streamErrorCode` off a thrown JS value, or -1 if it isn't a stream reset. */
+private fun jsStreamErrorCode(e: JsAny): Double = js("(e && e.source === 'stream' && e.streamErrorCode != null) ? e.streamErrorCode : -1")
+
+/**
+ * The 32-bit WebTransport application code of a peer **stream** RESET_STREAM / STOP_SENDING carried by a
+ * caught `WebTransportError`, or null for a session/transport error — the inbound counterpart to
+ * [webTransportResetReason]. Maps the browser error onto the neutral [ReadResult.Reset] /
+ * [WebTransportStreamException] so a peer abort surfaces identically to the native backend.
+ */
+private fun streamResetCode(e: Throwable): UInt? {
+    val thrown = (e as? JsException)?.thrownValue ?: return null
+    val code = jsStreamErrorCode(thrown)
+    return if (code >= 0) code.toLong().toUInt() else null
+}
+
 private suspend fun readChunk(
     reader: ReadableStreamDefaultReaderJs,
     deadline: Duration,
 ): ReadResult {
-    val chunk = withTimeout(deadline) { reader.read().await() }
+    val chunk =
+        try {
+            withTimeout(deadline) { reader.read().await() }
+        } catch (t: TimeoutCancellationException) {
+            throw t
+        } catch (e: Throwable) {
+            return if (streamResetCode(e) != null) ReadResult.Reset else ReadResult.End
+        }
     if (chunk.done) return ReadResult.End
     return ReadResult.Data(chunk.value!!.uint8ArrayToReadBuffer())
 }
@@ -47,7 +72,15 @@ private suspend fun writeChunk(
     val n = buffer.remaining()
     if (n == 0) return BytesWritten(0)
     val chunk = buffer.toJsUint8Array(n)
-    withTimeout(deadline) { writer.write(chunk).await() }
+    try {
+        withTimeout(deadline) { writer.write(chunk).await() }
+    } catch (t: TimeoutCancellationException) {
+        throw t
+    } catch (e: Throwable) {
+        val code = streamResetCode(e)
+        if (code != null) throw WebTransportStreamException(code, "WebTransport stream reset by peer (code $code)", e)
+        throw e
+    }
     buffer.position(buffer.position() + n)
     return BytesWritten(n)
 }

@@ -584,6 +584,7 @@ class ReactiveDriverTests {
                     val buf = bufferFactory.allocate(64)
 
                     api.connStreamSendResult = code
+                    api.connStreamSendErrorCode = 0x10cL // quiche's out_error_code on STREAM_STOPPED/RESET
                     val ex =
                         assertFailsWith<QuicStreamException>("stream-level quiche error $code must throw a stream error") {
                             withTimeout(2.seconds) { adapter.streamWrite(slot.id, buf, 2.seconds) }
@@ -591,12 +592,16 @@ class ReactiveDriverTests {
                     assertEquals(slot.id.id, ex.streamId, "exception must carry the affected stream id")
                     val expectedAbort =
                         if (code == QuicheDriver.QUICHE_ERR_STREAM_STOPPED) {
-                            QuicStreamAbort.StopSending()
+                            QuicStreamAbort.StopSending(0x10cL)
                         } else {
-                            QuicStreamAbort.ResetStream()
+                            QuicStreamAbort.ResetStream(0x10cL)
                         }
                     assertEquals(expectedAbort, ex.abort, "exception must carry the typed abort for quiche code $code")
-                    assertNull(ex.abort.applicationErrorCode, "quiche does not surface the peer application error code")
+                    assertEquals(
+                        0x10cL,
+                        ex.abort.applicationErrorCode,
+                        "the peer application error code from quiche's out_error_code must round-trip",
+                    )
                     assertTrue(
                         ex !is SocketClosedException,
                         "a stopped/reset stream is not a closed connection — must not be a SocketClosedException",

@@ -1206,7 +1206,7 @@ abstract class Http3LoopbackTestSuite {
         runHttp3LoopbackTest {
             wrapTestBody {
                 // A code that straddles a §4.3 skip boundary, so a naive pass-through would not round-trip.
-                val wtCode = 0x1e7L
+                val wtCode = 0x1e7u
                 withHttp3Server(
                     port = 0,
                     tlsConfig = testTlsConfig(),
@@ -1219,7 +1219,7 @@ abstract class Http3LoopbackTestSuite {
                         // Read the opener's first chunk, then abort the stream with a WebTransport code.
                         // reset() maps it into the HTTP/3 error-code space on the RESET_STREAM/STOP_SENDING.
                         withTimeout(5.seconds) { stream.read() }
-                        stream.reset(wtCode)
+                        stream.reset(wtCode.toLong()) // Resettable.reset is the buffer-flow Long contract
                     },
                     onRequest = { response.send(404) },
                 ) {
@@ -1240,7 +1240,7 @@ abstract class Http3LoopbackTestSuite {
                             // Keep writing until the peer's STOP_SENDING surfaces; the WT layer decodes the
                             // HTTP/3 code back to the original WebTransport application error code.
                             withTimeout(5.seconds) {
-                                var code: Long? = null
+                                var code: UInt? = null
                                 while (code == null) {
                                     try {
                                         stream.write(textBuffer("x"))

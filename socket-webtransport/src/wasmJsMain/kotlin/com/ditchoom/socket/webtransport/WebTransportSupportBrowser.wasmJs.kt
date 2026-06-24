@@ -77,11 +77,11 @@ internal class BrowserWebTransportSession(
         scope.launch {
             val info =
                 try {
-                    wt.closed.await().let { WebTransportCloseInfo(it.closeCode, it.reason) }
+                    wt.closed.await().let { WebTransportCloseInfo(it.closeCode.toUInt(), it.reason) }
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
-                    WebTransportCloseInfo(0, t.message ?: "session error")
+                    WebTransportCloseInfo(0u, t.message ?: "session error")
                 }
             finish(info)
         }
@@ -119,12 +119,14 @@ internal class BrowserWebTransportSession(
         get() = readableStreamFlow(wt.datagrams.readable) { it.uint8ArrayToReadBuffer() }
 
     override suspend fun close(
-        code: Int,
+        code: UInt,
         reason: String,
     ) {
         if (isClosed) return
         try {
-            wt.close(makeCloseInfo(code, reason))
+            // WebIDL coerces closeCode to `unsigned long` (ToUint32), so the signed Int bit pattern of a
+            // 32-bit-unsigned code round-trips to the correct unsigned value.
+            wt.close(makeCloseInfo(code.toInt(), reason))
         } catch (_: Throwable) {
             // Already gone — fall through to local teardown.
         }

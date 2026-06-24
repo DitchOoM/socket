@@ -10,6 +10,7 @@ import com.ditchoom.buffer.toReadBuffer
 import com.ditchoom.buffer.wrap
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.promise
 import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Int8Array
@@ -63,6 +64,37 @@ class BrowserWebTransportInteropTest {
             } finally {
                 a.close()
                 b.close()
+            }
+        }
+
+    @Test
+    fun streamReset_surfacesNeutralExceptionWithCode() =
+        GlobalScope.promise {
+            val base = BrowserInteropConfig.URL
+            if (base.isEmpty()) return@promise // no interop server configured → skip
+            // The `/reset` route makes the server abort the stream with 0x1e7 (kept in sync with
+            // BrowserInteropServer.BROWSER_RESET_CODE). The browser must surface it as the SAME neutral
+            // WebTransportStreamException + 32-bit UInt code the native backends do (cross-backend parity).
+            val session = webTransportSupport().connect("${base}reset", pinnedOptions())
+            try {
+                val observed =
+                    withTimeout(5.seconds) {
+                        val stream = session.openBidiStream()
+                        stream.write("hello".toReadBuffer(Charset.UTF8))
+                        var code: UInt? = null
+                        while (code == null) {
+                            try {
+                                stream.write("x".toReadBuffer(Charset.UTF8))
+                                delay(25)
+                            } catch (e: WebTransportStreamException) {
+                                code = e.errorCode
+                            }
+                        }
+                        code
+                    }
+                assertEquals(0x1e7u, observed)
+            } finally {
+                session.close()
             }
         }
 

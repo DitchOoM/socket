@@ -225,7 +225,19 @@ internal class StubQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
         fin: Boolean,
-    ) = StreamSendResult(connStreamSendResult ?: bufLen, connStreamSendErrorCode)
+    ): StreamSendResult {
+        val result = connStreamSendResult ?: bufLen
+        // Mirror real quiche: out_error_code is written ONLY on STREAM_STOPPED / STREAM_RESET, and is
+        // always present there (0 if the peer used 0). So default the code to 0 on those results when a
+        // test didn't set one, and leave it null otherwise (a normal send carries no error code).
+        val code =
+            if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                connStreamSendErrorCode ?: 0L
+            } else {
+                connStreamSendErrorCode
+            }
+        return StreamSendResult(result, code)
+    }
 
     /** Records each [connStreamShutdown] call as (streamId, direction, errorCode) so tests can assert resets. */
     val streamShutdowns = mutableListOf<Triple<Long, Int, Long>>()

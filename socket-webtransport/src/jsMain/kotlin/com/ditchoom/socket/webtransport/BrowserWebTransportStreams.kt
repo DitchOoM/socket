@@ -10,11 +10,26 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.await
 import kotlinx.coroutines.withTimeout
 import org.khronos.webgl.Uint8Array
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+
+/**
+ * If [e] is a `WebTransportError` raised by a peer **stream** RESET_STREAM / STOP_SENDING, its
+ * `streamErrorCode` (the 32-bit WebTransport application code, W3C `unsigned long`); else null. A session/
+ * transport-level error has `source === "session"` and no stream code. This is the inbound counterpart to
+ * [webTransportResetReason] (which carries our code out): it maps the browser's error back onto the
+ * platform-neutral [ReadResult.Reset] (read side) / [WebTransportStreamException] (write side), so a peer
+ * abort surfaces identically to the native backend.
+ */
+private fun streamResetCode(e: Throwable): UInt? {
+    val dyn = e.asDynamic()
+    if (dyn == null || dyn.source != "stream" || dyn.streamErrorCode == null) return null
+    return (dyn.streamErrorCode.unsafeCast<Double>()).toLong().toUInt()
+}
 
 /**
  * The browser WebTransport streams, bridging WHATWG `ReadableStream`/`WritableStream` onto the
@@ -31,7 +46,16 @@ private suspend fun readChunk(
     reader: ReadableStreamDefaultReaderJs,
     deadline: Duration,
 ): ReadResult {
-    val chunk = withTimeout(deadline) { reader.read().await() }
+    val chunk =
+        try {
+            withTimeout(deadline) { reader.read().await() }
+        } catch (t: TimeoutCancellationException) {
+            throw t
+        } catch (e: Throwable) {
+            // A peer RESET_STREAM rejects the read with a WebTransportError → the neutral ReadResult.Reset
+            // (matching the native backend); any other rejection means the stream is done → End.
+            return if (streamResetCode(e) != null) ReadResult.Reset else ReadResult.End
+        }
     if (chunk.done) return ReadResult.End
     return ReadResult.Data((chunk.value.unsafeCast<Uint8Array>()).asReadBuffer())
 }
@@ -44,7 +68,17 @@ private suspend fun writeChunk(
     val n = buffer.remaining()
     if (n == 0) return BytesWritten(0)
     val chunk = buffer.asUint8Array(n)
-    withTimeout(deadline) { writer.write(chunk).await() }
+    try {
+        withTimeout(deadline) { writer.write(chunk).await() }
+    } catch (t: TimeoutCancellationException) {
+        throw t
+    } catch (e: Throwable) {
+        // A peer STOP_SENDING rejects the write with a WebTransportError carrying its code → raise the
+        // neutral stream-scoped exception (the native backend's QuicStreamException analog).
+        val code = streamResetCode(e)
+        if (code != null) throw WebTransportStreamException(code, "WebTransport stream reset by peer (code $code)", e)
+        throw e
+    }
     buffer.position(buffer.position() + n)
     return BytesWritten(n)
 }

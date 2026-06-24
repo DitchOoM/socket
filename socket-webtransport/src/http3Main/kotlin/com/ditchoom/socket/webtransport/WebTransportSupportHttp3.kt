@@ -197,7 +197,7 @@ private class SingleSessionOverHeldConnection(
     private val owner: MultiplexedWebTransport,
 ) : WebTransportSession by delegate {
     override suspend fun close(
-        code: Int,
+        code: UInt,
         reason: String,
     ) {
         try {

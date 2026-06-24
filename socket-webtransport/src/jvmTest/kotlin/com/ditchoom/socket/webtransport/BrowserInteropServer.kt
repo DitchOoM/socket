@@ -7,6 +7,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ByteSource
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.http3.HTTP3_ALPN
@@ -127,12 +128,16 @@ class BrowserInteropServer {
     /** Echo every peer-initiated bidi/uni stream + datagram for one accepted session, until it closes. */
     private suspend fun com.ditchoom.socket.http3.WebTransportServerExchange.echoSession() {
         val session = accept()
-        println("WT_SESSION_ACCEPTED id=${session.sessionId} authority=$authority path=$path")
+        // The `/reset` path drives the browser stream-reset parity test: instead of echoing, the server
+        // aborts each incoming bidi stream with BROWSER_RESET_CODE so the browser client observes the
+        // neutral WebTransportStreamException carrying that 32-bit code (matching the native suite).
+        val resetMode = path.endsWith("reset")
+        println("WT_SESSION_ACCEPTED id=${session.sessionId} authority=$authority path=$path resetMode=$resetMode")
         coroutineScope {
             launch {
                 session.incomingBidiStreams.collect { stream ->
-                    // Launch per stream so concurrent bidi streams echo independently.
-                    launch { runCatching { echoBidi(stream) } }
+                    // Launch per stream so concurrent bidi streams echo (or reset) independently.
+                    launch { runCatching { if (resetMode) resetBidi(stream) else echoBidi(stream) } }
                 }
             }
             launch {
@@ -160,6 +165,12 @@ class BrowserInteropServer {
         stream.close()
     }
 
+    /** Read the opener's first chunk, then abort the stream with [BROWSER_RESET_CODE] (RESET_STREAM + STOP_SENDING). */
+    private suspend fun resetBidi(stream: WebTransportStream) {
+        runCatching { stream.read() }
+        (stream as Resettable).reset(BROWSER_RESET_CODE.toLong())
+    }
+
     private fun resolveCert(name: String): File {
         // jvmTest's working dir is the module dir (socket-webtransport/). The `pinned` fixture is generated
         // (gitignored) under socket-quic-nw/testcerts (:socket-quic-nw:generatePinnedW3cCerts); the
@@ -181,6 +192,14 @@ class BrowserInteropServer {
     private companion object {
         val MAX_LIFETIME = 30.minutes
         const val POLL_MS = 500L
+
+        /**
+         * The WebTransport application error code the `/reset` route aborts streams with. 0x1e7 straddles
+         * a §4.3 skip boundary (so a naive pass-through would not round-trip), matching the native suite's
+         * reset test. Kept in sync with [BrowserWebTransportInteropTest]'s expected value (different source
+         * sets — can't share a constant).
+         */
+        const val BROWSER_RESET_CODE: UInt = 0x1e7u
     }
 }
 

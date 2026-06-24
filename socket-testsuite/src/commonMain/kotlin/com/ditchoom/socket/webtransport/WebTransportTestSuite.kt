@@ -7,6 +7,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ByteSource
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.http3.HTTP3_ALPN
@@ -139,6 +140,57 @@ abstract class WebTransportTestSuite {
                         b.close()
                     } finally {
                         held.close()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun connect_peerResetsStream_surfacesNeutralExceptionWithCode(): TestResult =
+        runWebTransportTest {
+            wrapTestBody {
+                // A code that straddles a §4.3 skip boundary, so a naive pass-through would not round-trip.
+                // 32-bit unsigned WebTransport application code (draft §4.3).
+                val wtCode = 0x1e7u
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = Http3WebTransportOptions(maxSessions = 4),
+                    onWebTransport = {
+                        val session = accept()
+                        val stream = session.incomingBidiStreams.first()
+                        // Read the opener's first chunk, then abort the stream with a WebTransport code.
+                        withTimeout(5.seconds) { stream.read() }
+                        (stream as Resettable).reset(wtCode.toLong()) // Resettable.reset is the buffer-flow Long contract
+                    },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(SETTLE)
+                    val session = openSingleSession("https://localhost:$port/wt")
+                    try {
+                        val observed =
+                            withTimeout(5.seconds) {
+                                val stream = session.openBidiStream()
+                                stream.write(textBuffer("hello"))
+                                // Keep writing until the peer's STOP_SENDING surfaces as the NEUTRAL
+                                // WebTransportStreamException — the same type + 32-bit code the browser
+                                // backend raises (this is the cross-backend exception-parity guard).
+                                var code: UInt? = null
+                                while (code == null) {
+                                    try {
+                                        stream.write(textBuffer("x"))
+                                        delay(25)
+                                    } catch (e: WebTransportStreamException) {
+                                        code = e.errorCode
+                                    }
+                                }
+                                code
+                            }
+                        assertEquals(wtCode, observed)
+                    } finally {
+                        session.close()
                     }
                 }
             }
