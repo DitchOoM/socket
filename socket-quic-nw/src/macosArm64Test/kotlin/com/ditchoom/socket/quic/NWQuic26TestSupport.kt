@@ -92,7 +92,7 @@ internal suspend fun NWQuic26Stream.sendAwait(
     endOfStream: Boolean,
 ): Unit =
     suspendCancellableCoroutine { cont ->
-        send(bytes.toNSData(), endOfStream) { errCode, desc ->
+        send(bytes.toNSData(), endOfStream) { errCode, _, desc ->
             if (errCode == 0) {
                 cont.resume(Unit)
             } else {

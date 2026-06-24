@@ -99,6 +99,7 @@ internal suspend fun connectQuicSwift(
                     ?.toInt() ?: 0,
             serverCertificateHashes = serverCertHashes,
             requireChain = requireChain,
+            verifyPeer = quicOptions.verifyPeer,
             onReady = { _, _ -> }, // establishment is driven by onStateChanged below (unified client+server)
         )
     swiftConn.attach(handle, hostname, port)
@@ -389,21 +390,40 @@ internal class NWQuic26ByteStream(
             val remaining = buffer.remaining()
             val nsData = buffer.toNativeData().nsData
             suspendCancellableCoroutine { cont ->
-                stream.send(nsData, endOfStream = false) { errCode, desc ->
+                stream.send(nsData, endOfStream = false) { errCode, resetCode, desc ->
                     if (errCode != 0) {
-                        if (cont.isActive) {
-                            cont.resumeWithException(
-                                QuicCloseException(
-                                    QuicError.InternalError("QUIC write error: $errCode"),
-                                    "QUIC write error: $errCode ${desc ?: ""}",
-                                ),
-                            )
-                        }
+                        if (cont.isActive) cont.resumeWithException(writeError(resetCode, errCode, desc))
                     } else if (cont.isActive) {
                         cont.resume(BytesWritten(remaining))
                     }
                 }
             }
+        }
+
+    /**
+     * Classify a non-zero send error: a peer STOP_SENDING/RESET_STREAM (carries the stream's QUIC
+     * application error code in [resetCode], else [ULong.MAX_VALUE]) is a stream-scoped
+     * [QuicStreamException] — the connection stays usable — whereas anything else is a connection-level
+     * [QuicCloseException]. NW reports both a peer stream reset AND a connection close as POSIX 57, so the
+     * stream application error code is the only reliable discriminator (mirrors [NWQuicByteStream], issue
+     * #134). The WebTransport layer decodes the [QuicStreamAbort.StopSending] code back to its app code.
+     */
+    private fun writeError(
+        resetCode: ULong,
+        errCode: Int,
+        desc: String?,
+    ): Throwable =
+        if (resetCode != ULong.MAX_VALUE) {
+            QuicStreamException(
+                stream.streamId().toLong(),
+                QuicStreamAbort.StopSending(resetCode.toLong()),
+                "QUIC stream ${stream.streamId()} reset by peer (application error $resetCode)",
+            )
+        } else {
+            QuicCloseException(
+                QuicError.InternalError("QUIC write error: $errCode"),
+                "QUIC write error: $errCode ${desc ?: ""}",
+            )
         }
 
     override suspend fun shutdownSend() {
@@ -428,7 +448,7 @@ internal class NWQuic26ByteStream(
     private suspend fun sendFin() {
         kotlinx.coroutines.withTimeoutOrNull(FIN_TIMEOUT) {
             suspendCancellableCoroutine { cont ->
-                stream.send(NSData(), endOfStream = true) { _, _ ->
+                stream.send(NSData(), endOfStream = true) { _, _, _ ->
                     if (cont.isActive) cont.resume(Unit)
                 }
             }

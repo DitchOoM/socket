@@ -241,6 +241,7 @@ class NWQuic26BridgeStreamTest {
                 keepAliveMs = 0,
                 serverCertificateHashes = listOf(pinFor("pinned")),
                 requireChain = false,
+                verifyPeer = true,
                 onReady = { errCode, desc ->
                     if (errCode == 0) {
                         clientReady.complete(Unit)

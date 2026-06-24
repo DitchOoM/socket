@@ -5,8 +5,6 @@ package com.ditchoom.socket.http3
 import com.ditchoom.socket.quic.QuicTlsConfig
 import platform.posix.F_OK
 import platform.posix.access
-import kotlin.test.Ignore
-import kotlin.test.Test
 
 /**
  * Apple subclass of [Http3LoopbackTestSuite] — the first comprehensive HTTP/3 exercise on
@@ -20,7 +18,12 @@ import kotlin.test.Test
  * PKCS#12 bundle (loose PEM cert+key cannot — see [QuicTlsConfig.pkcs12Path]); the `generateHttp3TestP12`
  * Gradle task exports `testcerts/cert.p12` (passphrase `testpass`) and the Apple K/N test tasks depend on it.
  *
- * **WebTransport datagrams are unavailable on Apple** — see [webTransport_datagramRoundTrip] below.
+ * **WebTransport datagrams now work on Apple via the OS-26 Swift backend** (issue #173): when datagrams
+ * are requested the engine routes to `connectQuicSwift` / `buildAppleQuicSwiftServer`
+ * (`NetworkConnection<QUIC>`), where datagrams and inbound streams coexist on one connection — so the
+ * inherited [Http3LoopbackTestSuite.webTransport_datagramRoundTrip] is no longer overridden/`@Ignore`d.
+ * (Below macOS/iOS 26 the engine falls back to the legacy group backend, where datagrams remain
+ * unavailable; this suite runs on macOS 26 here.)
  */
 class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
     private fun certPath(name: String): String {
@@ -42,18 +45,4 @@ class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
             pkcs12Path = certPath("cert.p12"),
             pkcs12Password = "testpass",
         )
-
-    /**
-     * Skipped on Apple. On Network.framework's raw QUIC connection-group API, extracting the datagram
-     * flow makes NW deliver ALL inbound data — including inbound *stream* bytes — onto the datagram flow,
-     * killing inbound-stream delivery. Because HTTP/3 fundamentally needs inbound streams,
-     * `QuicOptions.forHttp3()` forces `PreferStreams`, so the Apple backend never extracts a datagram flow
-     * and WebTransport datagrams are unavailable here. The stream-based tests in this suite all pass; this
-     * one cannot. (Tracking the NW limitation as a follow-up issue, adjacent to the datagram backlog.)
-     */
-    @Test
-    @Ignore
-    override fun webTransport_datagramRoundTrip() {
-        // no-op: WebTransport datagrams cannot coexist with inbound streams on Apple NW (see KDoc).
-    }
 }

@@ -19,3 +19,10 @@ internal expect fun nsDataLengthInt(data: NSData): Int
 
 /** Decode a base64 string (ignoring unknown characters) straight into DER-backed [NSData]. */
 internal expect fun decodeBase64ToNSData(base64: String): NSData?
+
+/**
+ * True on macOS 26 / iOS 26 / tvOS 26 / watchOS 26 or later — where the Swift `NetworkConnection<QUIC>`
+ * API (and thus the [connectQuicSwift] backend) is available. `NSProcessInfo.operatingSystemVersion`
+ * reads `NSInteger` (platform-width), so this stays a per-target actual like [nsDataLengthInt].
+ */
+internal expect fun isAppleOS26OrLater(): Boolean

@@ -75,6 +75,7 @@ private func nwErrorCode(_ error: NWError) -> Int {
         keepAliveMs: Int32,
         serverCertificateHashes: NSArray?,
         requireChain: Bool,
+        verifyPeer: Bool,
         onReady: @escaping (Int32, NSString?) -> Void
     ) -> NWQuic26Conn {
         let alpnList = (alpn as? [String]) ?? []
@@ -92,13 +93,22 @@ private func nwErrorCode(_ error: NWError) -> Int {
                 idleTimeoutMs: Int(idleTimeoutMs),
                 maxDatagramFrameSize: Int(maxDatagramFrameSize)
             )
-            guard let pins else { return base }
-            // Hash-pin validator (approach C): hash the peer leaf DER and compare in Swift. Returning
-            // true accepts (so a self-signed but pinned leaf validates); record a typed failure reason
-            // + the computed hash / matched leaf DER for Kotlin to read on rejection.
-            return base.tls.certificateValidator { _, trust in
-                conn.evaluatePin(trust: trust, expectedHashes: pins, requireChain: requireChain)
+            if let pins {
+                // Hash-pin validator (approach C): hash the peer leaf DER and compare in Swift. Returning
+                // true accepts (so a self-signed but pinned leaf validates); record a typed failure reason
+                // + the computed hash / matched leaf DER for Kotlin to read on rejection. The pin IS the
+                // trust check (W3C serverCertificateHashes), independent of verifyPeer.
+                return base.tls.certificateValidator { _, trust in
+                    conn.evaluatePin(trust: trust, expectedHashes: pins, requireChain: requireChain)
+                }
             }
+            if !verifyPeer {
+                // verifyPeer=false (insecure / loopback self-signed): accept any peer certificate. This is
+                // the new-API analog of the legacy verify_block returning true; without it NW runs default
+                // system trust and rejects a self-signed leaf.
+                return base.tls.certificateValidator { _, _ in true }
+            }
+            return base // default NW trust evaluation (trustedCaCertificatesPem anchors: TODO, not yet wired)
         }()
 
         let endpoint = NWEndpoint.hostPort(
@@ -437,7 +447,9 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         // and drop our reference so the connection deinits. On the SERVER side, resuming the run-closure
         // (cont) returns it, which is what actually ends the accepted connection.
         if appErrorCode != 0, let connection {
-            connection.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode)
+            // reason MUST be non-nil: NW's nw_quic_set_application_error_reason calls strlen() on it, so a
+            // nil reason (the ApplicationError(code:) default) crashes with SIGSEGV (strlen(NULL)). Pass "".
+            connection.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
         }
         for t in serveTasks { t.cancel() }
         serveTasks.removeAll()
@@ -513,22 +525,28 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         super.init()
     }
 
+    /// `completion(errCode, streamResetCode, desc)`: on failure, `streamResetCode` carries the peer's
+    /// RESET_STREAM/STOP_SENDING application error code (so a stream-scoped abort is distinguishable from
+    /// a connection close), or UInt64.max when the failure is not a stream reset.
     @objc public func send(
         _ data: NSData,
         endOfStream: Bool,
-        completion: @escaping (Int32, NSString?) -> Void
+        completion: @escaping (Int32, UInt64, NSString?) -> Void
     ) {
         guard let stream else {
-            completion(-1, "stream is reset/closed" as NSString)
+            completion(-1, UInt64.max, "stream is reset/closed" as NSString)
             return
         }
         let payload = data as Data
         Task {
             do {
                 try await stream.send(payload, endOfStream: endOfStream)
-                completion(0, nil)
+                completion(0, UInt64.max, nil)
             } catch {
-                completion(-1, "stream send failed: \(error)" as NSString)
+                // A peer STOP_SENDING/RESET_STREAM surfaces as a send error (POSIX 57) AND stamps the
+                // stream's application error code; a connection close is POSIX 57 with no stream code (0).
+                let rc = stream.streamApplicationErrorCode
+                completion(-1, rc != 0 ? rc : UInt64.max, "stream send failed: \(error)" as NSString)
             }
         }
     }

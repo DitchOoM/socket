@@ -77,6 +77,7 @@ class NWQuic26BridgeDatagramTest {
                         keepAliveMs = 0,
                         serverCertificateHashes = listOf(pinHash),
                         requireChain = false,
+                        verifyPeer = true,
                         onReady = { errCode, desc ->
                             if (errCode == 0) {
                                 clientReady.complete(Unit)

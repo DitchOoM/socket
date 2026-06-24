@@ -126,36 +126,49 @@ fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuic26S
             .dir("nwquic26/$knTarget")
             .get()
             .asFile
+    val swiftArchive = genDir.resolve("libNWQuic26.a")
+
+    // Generate the cinterop .def PER TARGET with the link flags baked into `linkerOpts`. Unlike a
+    // binaries{} linkerOpts block (which configures only THIS module's own binaries), linkerOpts recorded
+    // in the .def travel with the produced klib, so EVERY downstream consumer (e.g. :socket-http3's test
+    // binary) inherits them and links the shim's ObjC class + Swift runtime correctly. The flags:
+    //   -force_load: keep the @objc class symbol (referenced only via ObjC runtime lookup) from being
+    //                dead-stripped; absolute archive path (the build graph guarantees it exists by link).
+    //   -L<sdk>/usr/lib/swift: resolve the archive's LC_LINKER_OPTION Swift-runtime requests
+    //                (libswiftCore/libswift_Concurrency/...) against the SDK .tbd stubs.
+    //   -rpath /usr/lib/swift: libswift_Concurrency.dylib (async/await) is referenced via @rpath and is
+    //                OS-resident in the dyld shared cache on OS 26 (without it the binary aborts at launch).
+    //   frameworks: the system frameworks the shim links (Network / Security / CryptoKit / Foundation).
+    // K/N passes .def linkerOpts straight to `ld` (NOT via the clang driver), so use ld-native flag
+    // syntax — `-force_load <path>` / `-rpath <path>`, NOT the `-Wl,`-prefixed driver forms (ld rejects
+    // those: "unknown options: -Wl,..."). Tokens are whitespace-split, so the archive path must not
+    // contain spaces (build paths here don't).
+    genDir.mkdirs()
+    val generatedDef = genDir.resolve("NWQuic26.def")
+    generatedDef.writeText(
+        """
+        language = Objective-C
+        package = com.ditchoom.socket.quic.nwquic26
+        headers = NWQuic26-Swift.h
+        headerFilter = NWQuic26-Swift.h
+        linkerOpts = -force_load ${swiftArchive.absolutePath} -L$sdkPath/usr/lib/swift -rpath /usr/lib/swift -framework Network -framework Security -framework CryptoKit -framework Foundation -framework CoreFoundation
+        """.trimIndent() + "\n",
+    )
+
     compilations["main"].cinterops {
         create("NWQuic26") {
-            defFile("src/nativeInterop/cinterop/NWQuic26.def")
+            defFile(generatedDef)
             includeDirs(genDir)
             tasks.named(interopProcessingTaskName) { dependsOn(swiftTask) }
         }
     }
-    val swiftArchive = genDir.resolve("libNWQuic26.a")
+    // The link pulls the archive via the force_load linkerOpts string (opaque to Gradle's up-to-date
+    // check), and the cinterop klib captures only the generated ObjC header — so a Swift *impl*-only edit
+    // (header unchanged) would NOT relink THIS module's binaries, silently running a stale one. Track the
+    // archive as an explicit link-task input (+ depend on swiftc) to force a relink. (Downstream modules
+    // link against the klib, whose header is unchanged on an impl edit, so during local iteration a shim
+    // change needs their test task re-run with --rerun-tasks; a clean CI build is always correct.)
     binaries.all {
-        // force_load: ObjC classes are referenced by the cinterop bindings via runtime lookup, so the
-        // class symbol must be present in the link even though nothing C-references it directly.
-        // The archive's embedded LC_LINKER_OPTION load commands request the Swift runtime
-        // (libswiftCore/libswiftFoundation); -L<sdk>/usr/lib/swift lets ld resolve them against the
-        // SDK .tbd stubs. Swift is ABI-stable and ships in every target OS, so nothing is bundled —
-        // this works identically for macOS / device / simulator (no rpath needed; it's a system path).
-        linkerOpts(
-            "-Wl,-force_load,${swiftArchive.absolutePath}",
-            "-L$sdkPath/usr/lib/swift",
-            // The ABI-stable Swift libs (Core/Foundation) have absolute install names, but
-            // libswift_Concurrency.dylib (pulled in by the shim's async/await) is referenced via
-            // @rpath. On OS 26 it is OS-resident in the dyld shared cache under /usr/lib/swift, so an
-            // rpath there resolves it at launch (without it the test.kexe aborts: "Library not loaded:
-            // @rpath/libswift_Concurrency.dylib"). Same path on macOS / device / simulator.
-            "-Wl,-rpath,/usr/lib/swift",
-        )
-        // The link consumes the archive via force_load above, but a linkerOpts string is opaque to
-        // Gradle's up-to-date check — and the cinterop klib only captures the GENERATED ObjC header, not
-        // the archive's code. So a change to the Swift *implementation* (header unchanged) would NOT
-        // relink, silently running a stale binary. Track the archive as an explicit link-task input (and
-        // depend on the swiftc task) so an impl-only edit correctly forces a relink.
         linkTaskProvider.configure {
             dependsOn(swiftTask)
             inputs.file(swiftArchive)
