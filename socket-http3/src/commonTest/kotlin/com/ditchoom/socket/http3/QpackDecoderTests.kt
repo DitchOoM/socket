@@ -3,7 +3,6 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.codec.DecodeException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -137,7 +136,10 @@ class QpackDecoderTests {
             d.applyEncoderInstruction(QpackEncoderInstruction.InsertWithLiteralName("x-a", "1")) // abs 0
             // Base=1 with relIndex 5 → abs = 1-1-5 = -5: no such entry.
             val buf = section(requiredInsertCount = 1, base = 1) { dynamicIndexed(5) }
-            assertFailsWith<DecodeException> { d.decodeSection(buf, streamId = 0, scratchPool = null) }
+            // A field-section decode failure is a connection error of type QPACK_DECOMPRESSION_FAILED
+            // (RFC 9204 §2.2) — typed at the decodeSection boundary, not a raw DecodeException.
+            val e = assertFailsWith<Http3StreamException> { d.decodeSection(buf, streamId = 0, scratchPool = null) }
+            assertEquals(Http3ErrorCode.QPACK_DECOMPRESSION_FAILED, e.errorCode)
         }
 
     @Test

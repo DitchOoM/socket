@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
@@ -75,6 +76,15 @@ class Http3StreamReader(
                 val frame =
                     try {
                         Http3FrameCodec.decode(frameBuffer, DecodeContext.Empty)
+                    } catch (e: DecodeException) {
+                        // A malformed frame — payload bytes past the framed length, or a Length above
+                        // Int.MAX (Http3LengthCodec) — is H3_FRAME_ERROR (RFC 9114 §7.1), not an
+                        // untyped codec failure. Surface it typed so the connection aborts with 0x0106.
+                        frameBuffer.freeIfNeeded()
+                        throw Http3StreamException(
+                            "malformed HTTP/3 frame: ${e.message}",
+                            Http3ErrorCode.FRAME_ERROR,
+                        )
                     } catch (t: Throwable) {
                         frameBuffer.freeIfNeeded()
                         throw t

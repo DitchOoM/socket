@@ -2,6 +2,7 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
@@ -32,7 +33,15 @@ class QpackInstructionReader<T> private constructor(
             if (peeked is PeekResult.Complete && processor.available() >= peeked.bytes) {
                 // Scoped: instructions decode into owned values (Strings/Longs — never buffer
                 // views), so the wire bytes recycle to the pool as soon as decode returns.
-                return processor.readBufferScoped(peeked.bytes) { decode(this) }
+                // A malformed instruction body (bad prefixed integer, string literal past its
+                // bytes) throws the buffer layer's DecodeException; an instruction stream is
+                // critical (RFC 9204 §4.2), so retype it to this reader's QPACK stream error
+                // (QPACK_ENCODER_STREAM_ERROR / QPACK_DECODER_STREAM_ERROR) for the connection.
+                return try {
+                    processor.readBufferScoped(peeked.bytes) { decode(this) }
+                } catch (e: DecodeException) {
+                    throw Http3StreamException("malformed QPACK instruction: ${e.message}", errorCode)
+                }
             }
             if (ended) {
                 if (processor.available() == 0) return null

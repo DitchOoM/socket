@@ -2,6 +2,7 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.stream.StreamProcessor
 
 /**
@@ -78,11 +79,19 @@ object QpackPrefixedInteger {
             // Bound the integer BEFORE accumulating (RFC 7541 §5.1): cap the shift
             // so the left-shift can't wrap, then reject an addend that would push
             // the sum past MAX_VALUE — otherwise a long continuation run overflows
-            // Long and yields a negative result.
-            require(shift <= 56) { "prefixed integer exceeds $MAX_VALUE" }
-            val addend = (byte.toLong() and 0x7F) shl shift
-            require(value <= MAX_VALUE - addend) { "prefixed integer exceeds $MAX_VALUE" }
-            value += addend
+            // Long and yields a negative result. This is wire-driven (an attacker can
+            // craft an over-long continuation run), so it is a DecodeException — a
+            // malformed field section — not an IllegalArgumentException: the QPACK
+            // decode boundary maps it to QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2).
+            if (shift > 56 || value > MAX_VALUE - ((byte.toLong() and 0x7F) shl shift)) {
+                throw DecodeException(
+                    fieldPath = "QpackPrefixedInteger",
+                    bufferPosition = buffer.position(),
+                    expected = "an integer in 0..$MAX_VALUE",
+                    actual = "a continuation run exceeding $MAX_VALUE",
+                )
+            }
+            value += (byte.toLong() and 0x7F) shl shift
             if (byte and 0x80 == 0) break
             shift += 7
         }

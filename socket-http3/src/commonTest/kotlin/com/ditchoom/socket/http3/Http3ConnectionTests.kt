@@ -210,15 +210,17 @@ class Http3ConnectionTests {
     fun peerSettings_resolvesWithQpackAndPushStreamsPresent() =
         runTest {
             coroutineScope {
-                // Peer QPACK encoder (id 7), drained, and a push stream (id 11) with push ENABLED
-                // (maxPushId = 8). The push id (1) is within the limit, so the push stream is accepted
-                // and processed concurrently; its truncated body just fails that one push. Neither stream
-                // blocks the peer control stream from resolving SETTINGS.
+                // Peer QPACK encoder (id 7) carrying one benign instruction (Set Dynamic Table Capacity 0
+                // = 0x20), then drained, and a push stream (id 11) with push ENABLED (maxPushId = 8). The
+                // push id (1) is within the limit, so the push stream is accepted and processed
+                // concurrently; its truncated body just fails that one push. Neither stream blocks the peer
+                // control stream from resolving SETTINGS. (A *malformed* encoder instruction would instead
+                // be a connection error of type QPACK_ENCODER_STREAM_ERROR — covered in the corpus.)
                 val peerQpackEnc =
                     QuicByteStream(
                         QuicStreamId(7),
                         RecordingByteStream(
-                            listOf(dataChunk(listOf(Http3StreamType.QPACK_ENCODER.toInt(), 0x00, 0xFF)), ReadResult.End),
+                            listOf(dataChunk(listOf(Http3StreamType.QPACK_ENCODER.toInt(), 0x20)), ReadResult.End),
                         ),
                     )
                 val peerPush =
@@ -653,6 +655,78 @@ class Http3ConnectionTests {
                 val connection = Http3Connection.bootstrap(scope, TransportConfig())
                 val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
                 assertEquals(Http3ErrorCode.CLOSED_CRITICAL_STREAM, e.errorCode)
+            }
+        }
+
+    @Test
+    fun control_duplicateSettingIdentifier_abortsWithSettingsError() =
+        runTest {
+            coroutineScope {
+                // A single SETTINGS frame repeating one identifier — H3_SETTINGS_ERROR (RFC 9114 §7.2.4.1).
+                val badSettings =
+                    Http3Frame.Settings(
+                        listOf(
+                            Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 4096L),
+                            Http3Setting(Http3SettingId.QPACK_MAX_TABLE_CAPACITY, 0L),
+                        ),
+                    )
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControlStream(badSettings)))
+
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
+                val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
+                assertEquals(Http3ErrorCode.SETTINGS_ERROR, e.errorCode)
+            }
+        }
+
+    @Test
+    fun control_reservedHttp2SettingIdentifier_abortsWithSettingsError() =
+        runTest {
+            coroutineScope {
+                // A reserved HTTP/2 setting id (0x02) — receipt MUST be H3_SETTINGS_ERROR (§7.2.4.1 / §11.2.2).
+                val badSettings = Http3Frame.Settings(listOf(Http3Setting(0x02L, 1L)))
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControlStream(badSettings)))
+
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
+                val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
+                assertEquals(Http3ErrorCode.SETTINGS_ERROR, e.errorCode)
+            }
+        }
+
+    @Test
+    fun control_reservedHttp2FrameType_abortsWithFrameUnexpected() =
+        runTest {
+            coroutineScope {
+                // Control stream: SETTINGS then a reserved HTTP/2 frame type 0x02 (PRIORITY) with empty
+                // body — receipt MUST be H3_FRAME_UNEXPECTED (RFC 9114 §7.1), not silently ignored.
+                val controlBytes =
+                    listOf(Http3StreamType.CONTROL.toInt()) + frameBytes(clientSettings()) + listOf(0x02, 0x00)
+                val peerControl =
+                    QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
+
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
+                val e = withTimeout(5.seconds) { connection.awaitConnectionError() }
+                assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
+            }
+        }
+
+    @Test
+    fun control_greaseFrameType_isIgnored_andSettingsResolve() =
+        runTest {
+            coroutineScope {
+                // Control stream: SETTINGS then a GREASE frame (type 0x21) — ignored (RFC 9114 §9), so
+                // peerSettings still resolves and no connection error is raised.
+                val controlBytes =
+                    listOf(Http3StreamType.CONTROL.toInt()) +
+                        frameBytes(clientSettings()) +
+                        listOf(0x21, 0x01, 0xAA) // GREASE frame type 0x21, 1-byte payload
+                val peerControl =
+                    QuicByteStream(QuicStreamId(3), RecordingByteStream(listOf(dataChunk(controlBytes), ReadResult.End)))
+                val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = listOf(peerControl))
+
+                val connection = Http3Connection.bootstrap(scope, TransportConfig())
+                val settings = withTimeout(5.seconds) { connection.peerSettings() }
+                assertEquals(0L, settings.qpackMaxTableCapacity, "GREASE frame ignored; SETTINGS parsed normally")
             }
         }
 }

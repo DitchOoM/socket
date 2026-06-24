@@ -84,6 +84,34 @@ data class Http3Settings(
 }
 
 /**
+ * Validate a peer SETTINGS frame's [entries] (RFC 9114 §7.2.4.1) and wrap them in an [Http3Settings].
+ *
+ * Two violations are a connection error of type H3_SETTINGS_ERROR: a **duplicate** setting identifier
+ * ("The same setting identifier MUST NOT occur more than once") and a **reserved HTTP/2** identifier
+ * ([Http3SettingId.RESERVED_HTTP2_IDS]). GREASE identifiers (`0x1f * N + 0x21`) and any other unknown
+ * identifier are legal and ignored — [Http3Settings] simply doesn't surface them. Throws
+ * [Http3StreamException] with [Http3ErrorCode.SETTINGS_ERROR] on a violation.
+ */
+internal fun validatePeerSettings(entries: List<Http3Setting>): Http3Settings {
+    val seen = HashSet<Long>(entries.size)
+    for (entry in entries) {
+        if (entry.identifier in Http3SettingId.RESERVED_HTTP2_IDS) {
+            throw Http3StreamException(
+                "reserved HTTP/2 setting identifier 0x${entry.identifier.toString(16)} in SETTINGS",
+                Http3ErrorCode.SETTINGS_ERROR,
+            )
+        }
+        if (!seen.add(entry.identifier)) {
+            throw Http3StreamException(
+                "duplicate setting identifier 0x${entry.identifier.toString(16)} in SETTINGS",
+                Http3ErrorCode.SETTINGS_ERROR,
+            )
+        }
+    }
+    return Http3Settings(entries)
+}
+
+/**
  * A bootstrapped HTTP/3 client connection layered over a [QuicScope] (RFC 9114 §3.2).
  *
  * [bootstrap] opens the three client-initiated unidirectional streams HTTP/3 requires —
@@ -346,8 +374,9 @@ class Http3Connection private constructor(
                     )
                 is Http3Frame.Headers ->
                     return parseStatus(decoder.decodeSection(frame.encodedFieldSection, stream.streamId.id, pool))
-                // Unknown/reserved frames are ignored (RFC 9114 §9); anything else before HEADERS is invalid.
-                is Http3Frame.Unknown -> {}
+                // GREASE/unknown frames are ignored (RFC 9114 §9); a reserved HTTP/2 type is
+                // FRAME_UNEXPECTED. Anything else before HEADERS is an invalid sequence.
+                is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
                 else ->
                     throw Http3StreamException(
                         "unexpected ${frame::class.simpleName} before the CONNECT response HEADERS",
@@ -462,8 +491,9 @@ class Http3Connection private constructor(
                             Http3ErrorCode.FRAME_UNEXPECTED,
                         )
                     )(frame)
-                // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
-                is Http3Frame.Unknown -> {}
+                // GREASE/unknown frame types are ignored (RFC 9114 §9); a reserved HTTP/2 type is
+                // FRAME_UNEXPECTED.
+                is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
                 // Any other frame before the response's first HEADERS — DATA, SETTINGS, GOAWAY,
                 // … — is an invalid sequence on a request stream: H3_FRAME_UNEXPECTED (§4.1).
                 else ->
@@ -481,13 +511,20 @@ class Http3Connection private constructor(
      * whole connection is [aborted][abortConnection]; a malformed *message*
      * ([Http3ErrorCode.MESSAGE_ERROR]) is stream-scoped (§4.1.2), so only this request stream is
      * reset. Other errors (a clean [Http3ErrorCode.REQUEST_INCOMPLETE], a peer reset) need no action.
+     *
+     * A malformed frame ([Http3ErrorCode.FRAME_ERROR], RFC 9114 §7.1) and a QPACK field-section decode
+     * failure ([Http3ErrorCode.QPACK_DECOMPRESSION_FAILED], RFC 9204 §2.2) are both *connection* errors —
+     * the QPACK case irrecoverably because the dynamic table state desynchronizes — so they abort too.
      */
     private suspend fun reactToResponseError(
         stream: QuicByteStream,
         error: Http3StreamException,
     ) {
         when (error.errorCode) {
-            Http3ErrorCode.FRAME_UNEXPECTED -> abortConnection(error)
+            Http3ErrorCode.FRAME_UNEXPECTED,
+            Http3ErrorCode.FRAME_ERROR,
+            Http3ErrorCode.QPACK_DECOMPRESSION_FAILED,
+            -> abortConnection(error)
             Http3ErrorCode.MESSAGE_ERROR -> resetStreamQuietly(stream, Http3ErrorCode.MESSAGE_ERROR)
         }
     }
@@ -749,11 +786,16 @@ class Http3Connection private constructor(
         }
     }
 
-    /** Feed the peer's QPACK encoder-stream instructions into our decoder until the stream ends. */
+    /**
+     * Feed the peer's QPACK encoder-stream instructions into our decoder until the stream ends. The
+     * encoder stream is critical (RFC 9204 §4.2): a malformed instruction or a table-invariant
+     * violation is a *connection* error of type QPACK_ENCODER_STREAM_ERROR, so [abort it][abortConnection]
+     * rather than letting [route] swallow it (which would silently leave the decoder table desynced).
+     */
     private suspend fun readPeerEncoderInstructions(
         stream: QuicByteStream,
         processor: StreamProcessor,
-    ) {
+    ) = readCriticalQpackStream {
         val reader = QpackInstructionReader.encoder(stream, processor, pool)
         while (true) {
             val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
@@ -761,16 +803,35 @@ class Http3Connection private constructor(
         }
     }
 
-    /** Feed the peer's QPACK decoder-stream instructions into our encoder until the stream ends. */
+    /**
+     * Feed the peer's QPACK decoder-stream instructions into our encoder until the stream ends. Like the
+     * encoder stream, the decoder stream is critical (RFC 9204 §4.2): an error aborts the connection with
+     * QPACK_DECODER_STREAM_ERROR.
+     */
     private suspend fun readPeerDecoderInstructions(
         stream: QuicByteStream,
         processor: StreamProcessor,
-    ) {
+    ) = readCriticalQpackStream {
         val reader = QpackInstructionReader.decoder(stream, processor)
         while (true) {
             val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
             // The peer only acks entries our encoder inserted, so the encoder exists by now; guard anyway.
             encoder?.processDecoderInstruction(instruction)
+        }
+    }
+
+    /**
+     * Run a critical QPACK stream reader [body], turning an [Http3StreamException] (the typed QPACK
+     * stream error its [QpackInstructionReader] / [QpackDecoder] raises) into a connection abort. A clean
+     * end-of-stream returns normally; cancellation propagates.
+     */
+    private suspend inline fun readCriticalQpackStream(body: () -> Unit) {
+        try {
+            body()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Http3StreamException) {
+            abortConnection(e)
         }
     }
 
@@ -801,7 +862,9 @@ class Http3Connection private constructor(
                         ),
                     )
                 else -> {
-                    peerSettingsDeferred.complete(Http3Settings(first.entries))
+                    // Reject duplicate / reserved-HTTP/2 setting ids (H3_SETTINGS_ERROR) before
+                    // exposing the settings; the throw is caught below and aborts the connection.
+                    peerSettingsDeferred.complete(validatePeerSettings(first.entries))
                     readControlFrames(reader)
                 }
             }
@@ -832,8 +895,8 @@ class Http3Connection private constructor(
                         "MAX_PUSH_ID received from the server",
                         Http3ErrorCode.FRAME_UNEXPECTED,
                     )
-                // Reserved/GREASE frames are ignored (RFC 9114 §9).
-                is Http3Frame.Unknown -> {}
+                // GREASE/unknown frames are ignored (RFC 9114 §9); a reserved HTTP/2 type is FRAME_UNEXPECTED.
+                is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
                 // PUSH_PROMISE is a request-stream frame and never valid on the control stream (§7.2.5).
                 is Http3Frame.PushPromise ->
                     throw Http3StreamException(

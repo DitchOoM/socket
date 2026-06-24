@@ -79,8 +79,9 @@ class Http3Response internal constructor(
                         }
                     handler(frame)
                 }
-                // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
-                is Http3Frame.Unknown -> {}
+                // GREASE/unknown frame types are ignored (RFC 9114 §9); a reserved HTTP/2 type is
+                // FRAME_UNEXPECTED.
+                is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
                 // Only DATA and a trailing HEADERS section are valid in a response body; anything
                 // else (SETTINGS, GOAWAY, …) on a request stream is H3_FRAME_UNEXPECTED (§4.1).
                 else -> {

@@ -90,21 +90,33 @@ class QpackDecoder(
         streamId: Long,
         scratchPool: BufferPool?,
     ): List<QpackHeaderField> {
-        // Snapshot the insert count from the StateFlow (atomic) for the prefix reconstruction.
-        val prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, insertCount.value)
-        // Block until enough entries have been inserted to resolve this section (§2.2.1) — OUTSIDE the
-        // mutex, so the encoder-stream router can keep inserting (and unblock us). The
-        // QPACK_BLOCKED_STREAMS limit (how many sections may block at once) is the peer encoder's
-        // responsibility; here we simply wait for the inserts it promised via the Required Insert Count.
-        if (prefix.requiredInsertCount > insertCount.value) {
-            insertCount.first { it >= prefix.requiredInsertCount }
-        }
-        val fields =
-            mutex.withLock {
-                buildList { while (buffer.hasRemaining()) add(decodeFieldLine(buffer, prefix.base, scratchPool)) }
+        // Any failure to decode a field section — a bad prefix, an out-of-range static/dynamic index,
+        // a malformed prefixed integer, invalid Huffman, a string literal past the buffer — is a
+        // *connection* error of type QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2): the dynamic-table
+        // state desynchronizes irrecoverably. The leaf codecs throw the buffer layer's DecodeException;
+        // translate it to the typed HTTP/3 error at this boundary so callers see one error currency.
+        try {
+            // Snapshot the insert count from the StateFlow (atomic) for the prefix reconstruction.
+            val prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, insertCount.value)
+            // Block until enough entries have been inserted to resolve this section (§2.2.1) — OUTSIDE the
+            // mutex, so the encoder-stream router can keep inserting (and unblock us). The
+            // QPACK_BLOCKED_STREAMS limit (how many sections may block at once) is the peer encoder's
+            // responsibility; here we simply wait for the inserts it promised via the Required Insert Count.
+            if (prefix.requiredInsertCount > insertCount.value) {
+                insertCount.first { it >= prefix.requiredInsertCount }
             }
-        if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
-        return fields
+            val fields =
+                mutex.withLock {
+                    buildList { while (buffer.hasRemaining()) add(decodeFieldLine(buffer, prefix.base, scratchPool)) }
+                }
+            if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
+            return fields
+        } catch (e: DecodeException) {
+            throw Http3StreamException(
+                "QPACK field-section decode failed: ${e.message}",
+                Http3ErrorCode.QPACK_DECOMPRESSION_FAILED,
+            )
+        }
     }
 
     /** Notify the peer's encoder that [streamId]'s outstanding section references are abandoned (§4.4.2). */

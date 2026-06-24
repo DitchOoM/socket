@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.codec.DecodeException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -136,11 +137,13 @@ class QpackPrefixedIntegerTests {
     fun decode_overlongContinuation_throwsInsteadOfOverflowing() {
         // 0xff prefix(8)=255 then a long run of 0xff continuation groups: by the
         // group at shift 56 the running sum blows past MAX_VALUE, which must be
-        // rejected rather than overflowing Long into a negative result.
+        // rejected rather than overflowing Long into a negative result. The overflow
+        // is wire-driven, so it is a DecodeException (a malformed field section), which
+        // the QPACK decode boundary maps to QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2).
         val buf = BufferFactory.Default.allocate(10)
         buf.fill(0xff.toByte())
         buf.resetForRead()
-        assertFailsWith<IllegalArgumentException> {
+        assertFailsWith<DecodeException> {
             QpackPrefixedInteger.decodeFromFirstByte(buf, 0xff, prefixBits = 8)
         }
     }
