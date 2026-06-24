@@ -411,3 +411,40 @@ tasks.register<JavaExec>("http3CodecFuzz") {
         )
     }
 }
+
+// --- h3spec conformance server (Phase 2 STEP 2) ------------------------------------------------
+// `h3specServer` runs the PRODUCTION withHttp3Server (H3SpecServerMain, src/jvmTest) so the external
+// h3spec client (github.com/kazu-yamamoto/h3spec) can probe it and externally prove the Phase-0/STEP-1
+// typed Http3Violation error codes — the inverse of the aioquic docker-interop, where WE are the client.
+// The QUIC transport needs :socket-quic-quiche's native lib on the classpath, so this stages it exactly
+// like the jvmTest task does (the afterEvaluate block above). Driven by socket-http3/h3spec/run-h3spec.sh.
+//
+// NOTE: this is staged-but-dormant — it is wired but not run by CI (the build-linux `run-h3spec` input
+// defaults false, and the whole redesign branch is buffer-blocked until buffer 5.13.2 publishes to
+// Central). Run it locally via socket-http3/h3spec/run-h3spec.sh once Docker + a built quiche native exist.
+afterEvaluate {
+    val quicProject = project(":socket-quic-quiche")
+    val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
+    tasks.register<JavaExec>("h3specServer") {
+        group = "verification"
+        description = "Run the production withHttp3Server (H3SpecServerMain) for the external h3spec " +
+            "conformance client. Configure via env H3SPEC_PORT/H3SPEC_CERT/H3SPEC_KEY/H3SPEC_QPACK_CAPACITY."
+        dependsOn("jvmTestClasses")
+        dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
+
+        // Reuse the jvm test compilation's output + runtime deps (which include withHttp3Server and the
+        // QuicTlsConfig types), plus the staged quiche native resources the FFM backend loads at runtime —
+        // mirroring how the jvmTest task is wired above. Built WITHOUT referencing the jvmTest *task*, so
+        // launching the server doesn't first run the whole suite.
+        val jvmTestCompilation = kotlin.jvm().compilations["test"]
+        classpath =
+            files(
+                jvmTestCompilation.output.allOutputs,
+                jvmTestCompilation.runtimeDependencyFiles,
+                stagedNatives,
+            )
+        mainClass.set("com.ditchoom.socket.http3.h3spec.H3SpecServerMain")
+        // Default cert paths (testcerts/cert.{crt,key}) resolve relative to the module dir.
+        workingDir = projectDir
+    }
+}

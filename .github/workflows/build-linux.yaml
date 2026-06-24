@@ -8,6 +8,11 @@ on:
         required: false
         default: ""
         type: string
+      run-h3spec:
+        description: "Run the h3spec HTTP/3 conformance lane against withHttp3Server (staged-dormant; needs buffer on Central)."
+        required: false
+        default: false
+        type: boolean
     outputs:
       version:
         description: "Computed next version"
@@ -407,6 +412,15 @@ jobs:
       - name: Stop HTTP/3 QPACK interop server
         if: always()
         run: socket-http3/docker-interop/run-server.sh stop
+
+      # HTTP/3 error-path conformance (Phase 2 STEP 2): probe the PRODUCTION withHttp3Server with the
+      # external h3spec client (socket-http3/h3spec) to externally prove the typed Http3Violation error
+      # codes the deterministic Http3ServerConnectionTests assert in-process. STAGED-BUT-DORMANT: gated
+      # off by default (run-h3spec=false) and the branch is buffer-blocked; flip run-h3spec=true to enable
+      # this lane once it's proven. See socket-http3/h3spec/README.md.
+      - name: HTTP/3 conformance (h3spec vs withHttp3Server) [staged-dormant]
+        if: ${{ inputs.run-h3spec }}
+        run: socket-http3/h3spec/run-h3spec.sh
 
       # The quiche_conn_recv SIGABRT that previously required continue-on-error
       # was a JVM-side sockaddr lifetime bug (DirectByteBuffer Cleaner freeing
