@@ -195,7 +195,12 @@ kotlin {
             implementation(project(":socket-testsuite"))
         }
         if (isLinux) {
-            named("linuxX64Test") {
+            // Attach to the SHARED `linuxTest` source set (default-hierarchy parent of linuxX64Test +
+            // linuxArm64Test) so the LinuxWebTransportTest conformance subclass — and the cross-backend
+            // exception-parity test it inherits — builds and runs on BOTH linux arches, not just x64.
+            // (linuxArm64 has no native QUIC harness host in CI, but the binary cross-links on x64 and
+            // runs on real arm64 Linux, e.g. via Apple's `container`.)
+            named("linuxTest") {
                 dependencies {
                     implementation(project(":socket-testsuite"))
                 }
