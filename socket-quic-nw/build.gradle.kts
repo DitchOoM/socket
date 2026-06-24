@@ -118,6 +118,12 @@ fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuic26S
     swiftTriple: String,
     sdkName: String,
 ) {
+    // Apple targets are still REGISTERED on a non-Mac host (KGP just disables their cross-compilation), so
+    // this function runs at configuration time everywhere. resolveSwiftSdkPath shells out to `xcrun`, which
+    // doesn't exist off macOS — and since these targets can't be built on Linux/Windows anyway, the whole
+    // Swift-bridge cinterop is moot there. Bail before touching xcrun so the multi-project build configures
+    // on Linux (where sibling modules' :linuxX64Test etc. run). Mac behavior is unchanged.
+    if (!isMacOS) return
     val knTarget = name
     val sdkPath = resolveSwiftSdkPath(sdkName)
     val swiftTask = registerNWQuic26SwiftTask(knTarget, swiftTriple, sdkPath)
