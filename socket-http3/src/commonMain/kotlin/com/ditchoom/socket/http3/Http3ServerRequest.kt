@@ -59,8 +59,7 @@ class Http3ServerRequest internal constructor(
                 else -> {
                     bodyDone = true
                     throw Http3StreamException(
-                        "unexpected ${frame::class.simpleName} in the request body",
-                        Http3ErrorCode.FRAME_UNEXPECTED,
+                        Http3Violation.UnexpectedFrame(frame.wireType, Http3FrameContext.REQUEST_BODY),
                     )
                 }
             }

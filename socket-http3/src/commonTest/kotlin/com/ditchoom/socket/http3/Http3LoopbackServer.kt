@@ -197,9 +197,9 @@ internal class Http3LoopbackServer(
         try {
             val first =
                 reader.nextFrame(config.readPolicy.toDeadline())
-                    ?: throw Http3StreamException("request stream ended before a HEADERS frame")
+                    ?: throw Http3StreamException(Http3Violation.StreamEndedBeforeHeaders(Http3FrameContext.BEFORE_REQUEST_HEADERS))
             if (first !is Http3Frame.Headers) {
-                throw Http3StreamException("request's first frame was ${first::class.simpleName}, expected HEADERS")
+                throw Http3StreamException(Http3Violation.UnexpectedFrame(first.wireType, Http3FrameContext.REQUEST_HEAD))
             }
             val decoder = serverDecoder
             val fields =
@@ -461,5 +461,5 @@ internal class Http3LoopbackServer(
         name: String,
     ): String =
         fields.firstOrNull { it.name == name }?.value
-            ?: throw Http3StreamException("request HEADERS missing the $name pseudo-header")
+            ?: throw Http3StreamException(Http3Violation.MissingPseudoHeader(name, inPushPromise = false))
 }

@@ -151,10 +151,7 @@ sealed interface Http3Frame {
  */
 internal fun Http3Frame.Unknown.rejectIfReservedHttp2Frame() {
     if (Http3FrameType.isReservedHttp2(type)) {
-        throw Http3StreamException(
-            "reserved HTTP/2 frame type 0x${type.toString(16)} received",
-            Http3ErrorCode.FRAME_UNEXPECTED,
-        )
+        throw Http3StreamException(Http3Violation.ReservedHttp2Frame(type))
     }
 }
 

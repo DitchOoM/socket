@@ -49,7 +49,7 @@ class QpackDecoder(
                 when (instruction) {
                     is QpackEncoderInstruction.SetCapacity -> {
                         if (!table.setCapacity(instruction.capacity)) {
-                            throw encoderStreamError("Set Dynamic Table Capacity ${instruction.capacity} exceeds the advertised maximum")
+                            throw Http3StreamException(Http3Violation.QpackSetCapacityExceedsMax(instruction.capacity))
                         }
                         false // no insert
                     }
@@ -120,10 +120,7 @@ class QpackDecoder(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            throw Http3StreamException(
-                "QPACK field-section decode failed: ${e.message}",
-                Http3ErrorCode.QPACK_DECOMPRESSION_FAILED,
-            )
+            throw Http3StreamException(Http3Violation.QpackDecompressionFailed(e))
         }
         if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
         return fields
@@ -229,11 +226,11 @@ class QpackDecoder(
     /** Resolve an encoder-stream relative index (RFC 9204 §3.2.5): absolute = insertCount - 1 - index. */
     private fun relativeEntry(relativeIndex: Long): QpackDynamicTable.Entry =
         table.getByAbsolute(table.insertCount - 1 - relativeIndex)
-            ?: throw encoderStreamError("encoder-stream relative index $relativeIndex references a missing entry")
+            ?: throw Http3StreamException(Http3Violation.QpackEncoderRelativeIndexMissing(relativeIndex))
 
     private fun staticName(index: Long): String {
         if (index < 0 || index >= QpackStaticTable.size) {
-            throw encoderStreamError("static name index $index out of range")
+            throw Http3StreamException(Http3Violation.QpackStaticNameIndexOutOfRange(index))
         }
         return QpackStaticTable.entry(index.toInt()).name
     }
@@ -243,10 +240,9 @@ class QpackDecoder(
         value: String,
     ) {
         if (table.insert(name, value) == null) {
-            throw encoderStreamError("inserted entry (size ${qpackEntrySize(name, value)}) exceeds table capacity ${table.capacity}")
+            throw Http3StreamException(
+                Http3Violation.QpackInsertExceedsCapacity(qpackEntrySize(name, value), table.capacity),
+            )
         }
     }
-
-    private fun encoderStreamError(message: String): Http3StreamException =
-        Http3StreamException("QPACK encoder stream: $message", Http3ErrorCode.QPACK_ENCODER_STREAM_ERROR)
 }

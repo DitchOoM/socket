@@ -38,14 +38,33 @@ class Http3ErrorCodeTests {
     }
 
     @Test
-    fun streamExceptionDefaultsToGeneralProtocolError() {
-        assertEquals(Http3ErrorCode.GENERAL_PROTOCOL_ERROR, Http3StreamException("boom").errorCode)
+    fun streamExceptionDerivesErrorCodeFromViolation() {
+        // The exception's wire error code is derived from its typed violation, never passed loose.
+        assertEquals(Http3ErrorCode.GENERAL_PROTOCOL_ERROR, Http3StreamException(Http3Violation.StreamResetByPeer).errorCode)
+        assertEquals(
+            Http3ErrorCode.FRAME_UNEXPECTED,
+            Http3StreamException(Http3Violation.UnexpectedFrame(Http3FrameType.DATA, Http3FrameContext.CONTROL_STREAM)).errorCode,
+        )
+        assertEquals(Http3ErrorCode.SETTINGS_ERROR, Http3StreamException(Http3Violation.DuplicateSetting(0x01)).errorCode)
     }
 
     @Test
-    fun streamExceptionCarriesExplicitCode() {
-        val e = Http3StreamException("unexpected frame", Http3ErrorCode.FRAME_UNEXPECTED)
-        assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, e.errorCode)
-        assertEquals("unexpected frame", e.message)
+    fun violationDescribeRendersTypedFields() {
+        // describe() builds the diagnostic message from the variant's typed fields (no hand-written strings).
+        assertEquals(
+            "reserved HTTP/2 frame type 0x2 received",
+            Http3StreamException(Http3Violation.ReservedHttp2Frame(0x02)).message,
+        )
+        assertEquals(
+            "push id 9 exceeds the current maximum (4)",
+            Http3Violation.PushIdExceedsMax(pushId = 9, max = 4).describe(),
+        )
+    }
+
+    @Test
+    fun violationChainsUnderlyingCause() {
+        // A wire-driven failure wrapped into a cause-bearing violation is chained onto the exception.
+        val root = IllegalStateException("boom")
+        assertEquals(root, Http3StreamException(Http3Violation.QpackDecompressionFailed(root)).cause)
     }
 }

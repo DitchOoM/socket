@@ -174,12 +174,9 @@ class Http3ServerConnection internal constructor(
             }
             val first =
                 reader.nextFrame(config.readPolicy.toDeadline())
-                    ?: throw Http3StreamException("request stream ended before a HEADERS frame", Http3ErrorCode.REQUEST_INCOMPLETE)
+                    ?: throw Http3StreamException(Http3Violation.StreamEndedBeforeHeaders(Http3FrameContext.BEFORE_REQUEST_HEADERS))
             if (first !is Http3Frame.Headers) {
-                throw Http3StreamException(
-                    "request's first frame was ${first::class.simpleName}, expected HEADERS",
-                    Http3ErrorCode.FRAME_UNEXPECTED,
-                )
+                throw Http3StreamException(Http3Violation.UnexpectedFrame(first.wireType, Http3FrameContext.REQUEST_HEAD))
             }
             val streamId = stream.streamId.id
             val fields = decodeSection(first.encodedFieldSection, streamId)
@@ -536,7 +533,7 @@ class Http3ServerConnection internal constructor(
         name: String,
     ): String =
         fields.firstOrNull { it.name == name }?.value
-            ?: throw Http3StreamException("request HEADERS missing the $name pseudo-header", Http3ErrorCode.MESSAGE_ERROR)
+            ?: throw Http3StreamException(Http3Violation.MissingPseudoHeader(name, inPushPromise = false))
 
     /** Like [pseudo] but returns null instead of throwing when the pseudo-header is absent. */
     private fun pseudoOrNull(

@@ -73,8 +73,7 @@ class Http3Response internal constructor(
                         onPushPromise ?: run {
                             bodyDone = true
                             throw Http3StreamException(
-                                "PUSH_PROMISE in a push stream's response body",
-                                Http3ErrorCode.FRAME_UNEXPECTED,
+                                Http3Violation.UnexpectedFrame(Http3FrameType.PUSH_PROMISE, Http3FrameContext.PUSH_STREAM),
                             )
                         }
                     handler(frame)
@@ -87,8 +86,7 @@ class Http3Response internal constructor(
                 else -> {
                     bodyDone = true
                     throw Http3StreamException(
-                        "unexpected ${frame::class.simpleName} in the response body",
-                        Http3ErrorCode.FRAME_UNEXPECTED,
+                        Http3Violation.UnexpectedFrame(frame.wireType, Http3FrameContext.RESPONSE_BODY),
                     )
                 }
             }
