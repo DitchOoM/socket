@@ -46,8 +46,14 @@ start_server() {
 
 cleanup() {
   if [ "${SERVER_GROUP:-0}" = 1 ]; then
+    # setsid path (Linux/CI): the leader PID == PGID, so TERM the whole group — reaps gradle + the
+    # JavaExec-forked server JVM together.
     kill -TERM "-$SERVER_PID" 2>/dev/null || true
   else
+    # Fallback (e.g. a macOS dev box without setsid): TERM gradle AND its descendant tree, since the
+    # JavaExec-forked server JVM (the UDP listener) is a child that would otherwise outlive a bare TERM
+    # of the launcher and leak the bound port across repeated local runs.
+    pkill -TERM -P "$SERVER_PID" 2>/dev/null || true
     kill -TERM "$SERVER_PID" 2>/dev/null || true
   fi
   rm -f "$LOG"

@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ReadResult
@@ -279,7 +280,20 @@ class Http3ServerConnection internal constructor(
             try {
                 exchange.onRequest()
             } finally {
-                runCatching { request.drain() }
+                // Draining an unread body can surface a connection-level violation the handler never
+                // read (a reserved-HTTP2 / unexpected frame ⇒ FRAME_UNEXPECTED, or a malformed trailing
+                // field section ⇒ QPACK_DECOMPRESSION_FAILED). Route it through reactToRequestError rather
+                // than swallowing it, so the connection still aborts (RFC 9114 §7.1 / RFC 9204 §2.2);
+                // a benign teardown failure (peer reset, connection already gone) is ignored.
+                try {
+                    request.drain()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Http3StreamException) {
+                    reactToRequestError(stream, e)
+                } catch (_: Throwable) {
+                    // Non-H3 drain failure — best-effort cleanup.
+                }
                 runCatching { response.finish() }
             }
         } catch (e: CancellationException) {
@@ -400,10 +414,14 @@ class Http3ServerConnection internal constructor(
     }
 
     /**
-     * React to a violation while reading a request (RFC 9114 §8): a malformed *message*
-     * ([Http3ErrorCode.MESSAGE_ERROR]) resets just this stream; an invalid frame *sequence*
-     * ([Http3ErrorCode.FRAME_UNEXPECTED]) is a connection error, so the whole connection is closed
-     * with the code. Best-effort — a failure because the stream/connection is already gone is ignored.
+     * React to a violation while reading a request, per its scope (RFC 9114 §8) — mirroring the client
+     * [Http3Connection.reactToResponseError]. An invalid frame *sequence*
+     * ([Http3ErrorCode.FRAME_UNEXPECTED]), a malformed *frame* ([Http3ErrorCode.FRAME_ERROR], §7.1), and a
+     * QPACK field-section decode failure ([Http3ErrorCode.QPACK_DECOMPRESSION_FAILED], RFC 9204 §2.2 — the
+     * latter irrecoverably, since the dynamic table desynchronizes) are all *connection* errors, so the
+     * whole connection is [aborted][abortConnection] with the code. A malformed *message*
+     * ([Http3ErrorCode.MESSAGE_ERROR], §4.1.2) is stream-scoped, so only this request stream is reset.
+     * Best-effort — a failure because the stream/connection is already gone is ignored.
      */
     private suspend fun reactToRequestError(
         stream: QuicByteStream,
@@ -411,7 +429,10 @@ class Http3ServerConnection internal constructor(
     ) {
         try {
             when (error.errorCode) {
-                Http3ErrorCode.FRAME_UNEXPECTED -> abortConnection(error)
+                Http3ErrorCode.FRAME_UNEXPECTED,
+                Http3ErrorCode.FRAME_ERROR,
+                Http3ErrorCode.QPACK_DECOMPRESSION_FAILED,
+                -> abortConnection(error)
                 else -> stream.reset(error.errorCode)
             }
         } catch (e: CancellationException) {
@@ -447,7 +468,14 @@ class Http3ServerConnection internal constructor(
         return if (decoder != null) {
             decoder.decodeSection(section, streamId, pool)
         } else {
-            QpackFieldSectionCodec.decode(section, DecodeContext.Empty.with(QpackScratchPoolKey, pool))
+            // The static codec throws a raw DecodeException; type it as QPACK_DECOMPRESSION_FAILED so a
+            // malformed request HEADERS / trailer section is a typed connection error (RFC 9204 §2.2),
+            // exactly as the dynamic QpackDecoder path does — not an untyped leak past reactToRequestError.
+            try {
+                QpackFieldSectionCodec.decode(section, DecodeContext.Empty.with(QpackScratchPoolKey, pool))
+            } catch (e: DecodeException) {
+                throw Http3StreamException(Http3Violation.QpackDecompressionFailed(e))
+            }
         }
     }
 

@@ -81,6 +81,13 @@ class Http3ServerConnectionTests {
         return buf
     }
 
+    private fun rawBuffer(bytes: List<Int>): ReadBuffer {
+        val buf = BufferFactory.Default.allocate(bytes.size.coerceAtLeast(1))
+        for (b in bytes) buf.writeByte(b.toByte())
+        buf.resetForRead()
+        return buf
+    }
+
     /** A valid GET request HEADERS frame (pseudo-headers in RFC 9114 §4.3.1 order). */
     private fun requestHeadersFrame(): Http3Frame.Headers =
         Http3Frame.Headers(
@@ -291,7 +298,9 @@ class Http3ServerConnectionTests {
 
     @Test
     fun control_maxPushIdAfterSettings_isAccepted(): TestResult =
-        // MAX_PUSH_ID is client→server (§7.2.7); the server accepts it (it sizes server-push credit).
+        // MAX_PUSH_ID is client→server (§7.2.7) and legal on the control stream — assert no abort. (This
+        // is a no-abort acceptance guard only; the credit-sizing effect, clientMaxPushId, is private and
+        // is exercised end-to-end by the server-push loopback tests, not observable here.)
         runServer(listOf(clientControl(frameBytes(clientSettings()) + frameBytes(Http3Frame.MaxPushId(8))))) { scope ->
             assertFalse(scope.closeErrorCode.isCompleted, "MAX_PUSH_ID from the client is legal on its control stream")
         }
@@ -338,5 +347,34 @@ class Http3ServerConnectionTests {
             onRequest = { request.readFullBody() },
         ) { scope ->
             assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, scope.awaitCloseCode())
+        }
+
+    @Test
+    fun request_reservedHttp2FrameInBody_unreadByHandler_isFrameUnexpected(): TestResult =
+        // Same violation but the handler returns WITHOUT reading the body — the framework's body drain
+        // must still surface it as a connection error (the drain path no longer swallows it).
+        runServer(
+            listOf(clientRequest(frameBytes(requestHeadersFrame()) + listOf(0x02, 0x00))),
+            onRequest = { response.send(200) },
+        ) { scope ->
+            assertEquals(Http3ErrorCode.FRAME_UNEXPECTED, scope.awaitCloseCode())
+        }
+
+    @Test
+    fun request_malformedFrame_isFrameError(): TestResult =
+        // A malformed first frame — DATA (type 0x00) with a Length varint above Int.MAX — ⇒ H3_FRAME_ERROR
+        // (§7.1), a CONNECTION error (was wrongly demoted to a stream reset before reactToRequestError
+        // gained the FRAME_ERROR arm).
+        runServer(listOf(clientRequest(listOf(0x00, 0xC0, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00)))) { scope ->
+            assertEquals(Http3ErrorCode.FRAME_ERROR, scope.awaitCloseCode())
+        }
+
+    @Test
+    fun request_malformedQpackHeaders_isQpackDecompressionFailed(): TestResult =
+        // A HEADERS frame whose field section is a QPACK dynamic index into an empty table (0x00 0x00 0x80)
+        // ⇒ H3_QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2), a CONNECTION error. The static codec throws a
+        // raw DecodeException that decodeSection now types, and reactToRequestError now aborts on it.
+        runServer(listOf(clientRequest(frameBytes(Http3Frame.Headers(rawBuffer(listOf(0x00, 0x00, 0x80))))))) { scope ->
+            assertEquals(Http3ErrorCode.QPACK_DECOMPRESSION_FAILED, scope.awaitCloseCode())
         }
 }
