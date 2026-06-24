@@ -133,6 +133,7 @@ fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuic26S
             tasks.named(interopProcessingTaskName) { dependsOn(swiftTask) }
         }
     }
+    val swiftArchive = genDir.resolve("libNWQuic26.a")
     binaries.all {
         // force_load: ObjC classes are referenced by the cinterop bindings via runtime lookup, so the
         // class symbol must be present in the link even though nothing C-references it directly.
@@ -141,9 +142,24 @@ fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureNWQuic26S
         // SDK .tbd stubs. Swift is ABI-stable and ships in every target OS, so nothing is bundled —
         // this works identically for macOS / device / simulator (no rpath needed; it's a system path).
         linkerOpts(
-            "-Wl,-force_load,${genDir.resolve("libNWQuic26.a").absolutePath}",
+            "-Wl,-force_load,${swiftArchive.absolutePath}",
             "-L$sdkPath/usr/lib/swift",
+            // The ABI-stable Swift libs (Core/Foundation) have absolute install names, but
+            // libswift_Concurrency.dylib (pulled in by the shim's async/await) is referenced via
+            // @rpath. On OS 26 it is OS-resident in the dyld shared cache under /usr/lib/swift, so an
+            // rpath there resolves it at launch (without it the test.kexe aborts: "Library not loaded:
+            // @rpath/libswift_Concurrency.dylib"). Same path on macOS / device / simulator.
+            "-Wl,-rpath,/usr/lib/swift",
         )
+        // The link consumes the archive via force_load above, but a linkerOpts string is opaque to
+        // Gradle's up-to-date check — and the cinterop klib only captures the GENERATED ObjC header, not
+        // the archive's code. So a change to the Swift *implementation* (header unchanged) would NOT
+        // relink, silently running a stale binary. Track the archive as an explicit link-task input (and
+        // depend on the swiftc task) so an impl-only edit correctly forces a relink.
+        linkTaskProvider.configure {
+            dependsOn(swiftTask)
+            inputs.file(swiftArchive)
+        }
     }
 }
 

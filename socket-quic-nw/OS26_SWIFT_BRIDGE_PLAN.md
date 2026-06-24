@@ -3,6 +3,46 @@
 **Status:** scoped; capability spike PROVEN (2026-06-24, macOS 26.5.1). **Sequencing step 1 (build
 plumbing) DONE + generalized to all 11 Apple targets (2026-06-24)** — see "Step 1 status" below.
 
+## Step 2 status — real @objc bridge, datagram slice GREEN (macosArm64)
+
+The trivial shim is replaced by the REAL `@objc` bridge over the OS-26 `NetworkConnection<QUIC>` Swift
+API. **Client `connect` + server `listen` + datagram round-trip validated end-to-end through K/N**
+(`NWQuic26BridgeDatagramTest.clientServerDatagramRoundTrip`, macosArm64; full `:socket-quic-nw:macosArm64Test`
+52/52 green; all 11 targets compile + `linkDebugTest` clean). The `@objc` surface (settled with the user
+— see below) is the full sketch in "Target API surface": `connect`/`listen` on `NWQuic26Bridge`;
+`NWQuic26Conn` with `onStateChanged`/`sendDatagram`/`onDatagram`/`maxDatagramSize`/`openStream`/
+`onInboundStream`/`close` + pin-diagnostic getters; `NWQuic26Stream` (`send`/`receive`/`reset`); `NWQuic26Listener`.
+
+DESIGN FORKS settled with the user (all the recommended option): (A) inbound datagrams/streams use
+**push handlers backed by Swift serving Tasks**, Kotlin re-wraps into Channels; caller-initiated ops use
+one-shot completion blocks. (B) the shim **imports the p12 itself** (`SecPKCS12Import` +
+`kSecImportToMemoryOnly`) — no `sec_identity_t` marshaled across `@objc`. (C) cert pinning passes the
+expected SHA-256 hashes in and **compares in Swift** (CryptoKit) inside `QUIC.tls.certificateValidator`,
+exposing typed failure via `pinFailureReason`/`pinComputedHashHex`/`pinMatchedLeafDer`.
+
+Hard-won facts (DO NOT relearn):
+- **`.waiting(POSIX 50 / ENETDOWN)` is TRANSIENT** mid-handshake on loopback and RECOVERS to `.ready`.
+  Only `.ready`/`.failed`/`.cancelled` are terminal for `connect`; treating `.waiting` as a failure kills
+  the connect before it readies. (This cost the most time — compounded by the build bug below.)
+- **The new `NetworkConnection`/`NetworkListener`/`QUIC.Stream` have NO `cancel()`** — teardown is via
+  ARC: stamp `connection.applicationError` / `stream.streamApplicationErrorCode`, drop references; for the
+  server, returning the `listener.run { }` closure is what ends the accepted connection (the shim parks it
+  on a `CheckedContinuation` until Kotlin `close()`s).
+- **swiftc → static archive code changes did NOT relink the K/N test binary** (the archive enters the link
+  only via a `force_load` linkerOpts string Gradle can't see, and the cinterop klib captures only the
+  generated header). FIXED: the link task now tracks the archive as an explicit input + `dependsOn` the
+  swiftc task. Symptom if it regresses: a Swift impl edit silently runs a stale `test.kexe`.
+- **`libswift_Concurrency.dylib`** (async/await) is referenced via `@rpath` (unlike the absolute-install-name
+  Core/Foundation), so the binaries need `-Wl,-rpath,/usr/lib/swift` (OS-resident in the dyld shared cache
+  on OS 26) or the test aborts at launch ("Library not loaded"). `-framework CryptoKit` added to the `.def`.
+- K/N imports `_Nonnull` ObjC block params as **nullable**; Swift readonly `@objc` props export as **methods**
+  (`pinFailureReason()`).
+
+NEXT = step 3 (streams + ids: `openStream`/`onInboundStream` + send/receive/half-close/reset, validated by
+a macosArm64Test stream loopback) — the shim code is already wired; it needs a test. Then step 4 (wire the
+server into the Kotlin `QuicServer`/`AppleQuicSwiftConnection` path) and step 5 (OS gating + fallback +
+un-`@Ignore` `AppleHttp3LoopbackTest.webTransport_datagramRoundTrip` + Apple `WebTransportTestSuite`).
+
 ## Step 1 status — build plumbing DONE (all Apple targets)
 
 The swiftc → static archive → generated `-Swift.h` → cinterop → Kotlin/Native call chain is wired and
