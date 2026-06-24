@@ -14,10 +14,11 @@ import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.await
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.JsAny
-import kotlin.js.JsException
+import kotlin.js.Promise
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -37,13 +38,43 @@ private val DEFAULT_WRITE_POLICY = WritePolicy.Bounded(15.seconds)
 private fun jsStreamErrorCode(e: JsAny): Double = js("(e && e.source === 'stream' && e.streamErrorCode != null) ? e.streamErrorCode : -1")
 
 /**
+ * A caught JS promise rejection that **preserves** the original JS reason [value]. kotlinx-coroutines'
+ * wasmJs `Promise.await()` collapses a non-Kotlin rejection (e.g. a `WebTransportError`) into a generic
+ * `Exception` carrying only a string message — which would drop the `streamErrorCode` we need for
+ * cross-backend parity. So the stream awaits route through [awaitOrThrowRejection], which preserves the
+ * reason here intact for [streamResetCode] to inspect.
+ */
+private class WebTransportJsRejection(
+    val value: JsAny?,
+) : Exception()
+
+/**
+ * Await [this]. On fulfilment resume with the value; on rejection throw a [WebTransportJsRejection]
+ * carrying the JS reason verbatim (unlike `await()`, which discards it — see [WebTransportJsRejection]).
+ * Modeled on coroutines' own `Promise.await`, only differing in how the rejection is surfaced.
+ */
+private suspend fun <T : JsAny?> Promise<T>.awaitOrThrowRejection(): T =
+    suspendCancellableCoroutine { cont ->
+        then(
+            { value ->
+                cont.resumeWith(Result.success(value))
+                null
+            },
+            { reason ->
+                cont.resumeWith(Result.failure(WebTransportJsRejection(reason)))
+                null
+            },
+        )
+    }
+
+/**
  * The 32-bit WebTransport application code of a peer **stream** RESET_STREAM / STOP_SENDING carried by a
  * caught `WebTransportError`, or null for a session/transport error — the inbound counterpart to
  * [webTransportResetReason]. Maps the browser error onto the neutral [ReadResult.Reset] /
  * [WebTransportStreamException] so a peer abort surfaces identically to the native backend.
  */
 private fun streamResetCode(e: Throwable): UInt? {
-    val thrown = (e as? JsException)?.thrownValue ?: return null
+    val thrown = (e as? WebTransportJsRejection)?.value ?: return null
     val code = jsStreamErrorCode(thrown)
     return if (code >= 0) code.toLong().toUInt() else null
 }
@@ -54,7 +85,7 @@ private suspend fun readChunk(
 ): ReadResult {
     val chunk =
         try {
-            withTimeout(deadline) { reader.read().await() }
+            withTimeout(deadline) { reader.read().awaitOrThrowRejection() }
         } catch (t: TimeoutCancellationException) {
             throw t
         } catch (e: Throwable) {
@@ -73,7 +104,7 @@ private suspend fun writeChunk(
     if (n == 0) return BytesWritten(0)
     val chunk = buffer.toJsUint8Array(n)
     try {
-        withTimeout(deadline) { writer.write(chunk).await() }
+        withTimeout(deadline) { writer.write(chunk).awaitOrThrowRejection() }
     } catch (t: TimeoutCancellationException) {
         throw t
     } catch (e: Throwable) {

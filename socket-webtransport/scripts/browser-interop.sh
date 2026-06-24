@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Browser WebTransport interop runner (handoff §3): start an external withHttp3Server (the
-# BrowserInteropServer harness, JVM/quiche, `pinned` EC P-256 leaf), then run the jsBrowserTest in real
-# headless Chrome via Karma against it. The harness binds an ephemeral port and writes its config
+# BrowserInteropServer harness, JVM/quiche, `pinned` EC P-256 leaf), then run the jsBrowserTest AND
+# wasmJsBrowserTest (shared src/browserInterop test) in real headless Chrome via Karma against it — so
+# both browser backends' reset → neutral-exception mapping is exercised, not just compile-checked. The
+# harness binds an ephemeral port and writes its config
 # (url + leaf SHA-256) to build/wt-interop/config.properties; generateBrowserInteropConfig bakes that
 # into the compiled test. Requires JAVA_HOME=<JDK21> and Chrome on PATH (or set CHROME_BIN).
 #
@@ -50,3 +52,7 @@ echo "[interop] server ready: $(tr '\n' ' ' <"$CFG")"
 echo "[interop] running jsBrowserTest (headless Chrome via Karma)..."
 ./gradlew -PwtBrowserInterop :socket-webtransport:jsBrowserTest --rerun-tasks --console=plain
 echo "[interop] jsBrowserTest PASSED"
+
+echo "[interop] running wasmJsBrowserTest (headless Chrome via Karma)..."
+./gradlew -PwtBrowserInterop :socket-webtransport:wasmJsBrowserTest --rerun-tasks --console=plain
+echo "[interop] wasmJsBrowserTest PASSED"

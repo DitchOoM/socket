@@ -57,7 +57,24 @@ kotlin {
         nodejs()
     }
     wasmJs {
-        browser()
+        // The shared browser interop test (src/browserInterop, compiled for js AND wasmJs) returns the
+        // wasmJs `Promise<JsAny?>` from GlobalScope.promise, which is gated behind ExperimentalWasmJsInterop.
+        // It can't carry the wasmJs-only `@OptIn` (js wouldn't resolve it), so opt in at the target instead;
+        // production wasmJs sources already file-opt-in, so this only covers the shared test.
+        compilerOptions {
+            optIn.add("kotlin.js.ExperimentalWasmJsInterop")
+        }
+        browser {
+            // Same opt-in as js: run the wasmJs browser WebTransport interop test in real headless Chrome
+            // via Karma under `-PwtBrowserInterop`, so the wasmJs reset → neutral-exception mapping is
+            // Chrome-verified rather than merely compile-checked. A default `wasmJsBrowserTest` / CI `check`
+            // never requires Chrome.
+            if (project.hasProperty("wtBrowserInterop")) {
+                testTask {
+                    useKarma { useChromeHeadless() }
+                }
+            }
+        }
         nodejs()
     }
 
@@ -353,9 +370,11 @@ if (isMacOS) {
 // externally-launched withHttp3Server (the BrowserInteropServer harness, JVM/quiche) presenting the
 // `pinned` EC P-256 leaf — the only self-signed path a browser accepts (W3C serverCertificateHashes).
 // The harness binds an ephemeral port and writes build/wt-interop/config.properties (url + leaf hash);
-// `generateBrowserInteropConfig` bakes that into BrowserInteropConfig.kt so the jsTest compiles against
-// the actual port (no fixed ports, no runtime Karma fetch). Orchestration: scripts/browser-interop.sh
-// starts the server, runs jsBrowserTest, then stops it. Gated so default builds/CI never require Chrome.
+// `generateBrowserInteropConfig` bakes that into BrowserInteropConfig.kt so the js/wasmJs tests compile
+// against the actual port (no fixed ports, no runtime Karma fetch). The interop test source set
+// (src/browserInterop/kotlin) is shared by both jsTest and wasmJsTest. Orchestration:
+// scripts/browser-interop.sh starts the server, runs jsBrowserTest + wasmJsBrowserTest, then stops it.
+// Gated so default builds/CI never require Chrome.
 if (project.hasProperty("wtBrowserInterop")) {
     val interopConfigDir = layout.buildDirectory.dir("generated/wt-interop/kotlin")
     val configProps = layout.buildDirectory.file("wt-interop/config.properties")
@@ -386,20 +405,36 @@ if (project.hasProperty("wtBrowserInterop")) {
                 )
             }
         }
-    kotlin.sourceSets.named("jsTest") {
-        kotlin.srcDir("src/jsBrowserInterop/kotlin")
-        kotlin.srcDir(interopConfigDir)
-        dependencies {
-            implementation(kotlin("test"))
-            implementation(libs.kotlinx.coroutines.core)
+    // The interop test (src/browserInterop/kotlin) is platform-neutral browser code — it speaks only the
+    // neutral WebTransport API + buffer types (allocateNative is the one allocator js and wasmJs share), so
+    // the SAME source set compiles into both the jsTest and wasmJsTest binaries. Adding it as a srcDir to
+    // each (rather than an expect/actual source-set hierarchy) keeps the wiring symmetric with how jsTest
+    // already consumed it. Both also pick up the generated BrowserInteropConfig (port + leaf hash).
+    for (testSourceSet in listOf("jsTest", "wasmJsTest")) {
+        kotlin.sourceSets.named(testSourceSet) {
+            kotlin.srcDir("src/browserInterop/kotlin")
+            kotlin.srcDir(interopConfigDir)
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+            }
         }
     }
     tasks.named("compileTestKotlinJs") { dependsOn(generateBrowserInteropConfig) }
-    // ktlint over jsTest reads the generated srcDir (even though the file is excluded from linting), so
-    // declare the producer dependency to avoid Gradle's implicit-dependency validation error.
+    tasks.named("compileTestKotlinWasmJs") { dependsOn(generateBrowserInteropConfig) }
+    // ktlint over the js/wasmJs test source sets reads the generated srcDir (even though the file is
+    // excluded from linting), so declare the producer dependency to avoid Gradle's implicit-dependency
+    // validation error.
     tasks
-        .matching { it.name == "runKtlintCheckOverJsTestSourceSet" || it.name == "runKtlintFormatOverJsTestSourceSet" }
-        .configureEach { dependsOn(generateBrowserInteropConfig) }
+        .matching {
+            it.name in
+                setOf(
+                    "runKtlintCheckOverJsTestSourceSet",
+                    "runKtlintFormatOverJsTestSourceSet",
+                    "runKtlintCheckOverWasmJsTestSourceSet",
+                    "runKtlintFormatOverWasmJsTestSourceSet",
+                )
+        }.configureEach { dependsOn(generateBrowserInteropConfig) }
 }
 
 // --- Publishing ---
