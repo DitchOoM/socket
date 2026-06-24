@@ -26,10 +26,17 @@ error.
   DER, CN=localhost+SAN, 10y); `generateLocalhostCert` keytool task now emits EC P-256 (was RSA-2048). The
   shared `QuicCertificateHashPinningTestSuite` sets the opt-out for the constraint-reject path so the
   deliberate `pinned-rsa` fixture still binds (NW↔NW client is unaffected by the bug; the suite tests pinning,
-  not interop). `pinned-rsa.*` itself stays RSA.
+  not interop). `pinned-rsa.*` itself stays RSA. **Also `socket-http3/testcerts/cert.*` → EC P-256** (commit
+  `0619724`) — the guard rejected its RSA quic.tech leaf and broke all 27 `AppleHttp3LoopbackTest` cases;
+  the same PEMs back the JVM/Linux quiche http3 server, which handles EC fine. (`socket-webtransport`'s
+  cert.* was already EC from SESSION 6.)
 - **tests** `AppleQuicServerCertGuardTests` (RSA rejected / EC passes / opt-out bypasses).
-- **Validated:** `:socket-quic-nw:macosArm64Test` **53/53**, `:socket-webtransport:macosArm64Test` **5/5**,
-  `:socket-quic-quiche:jvmTest` cert-pinning suite — all GREEN; ktlint clean.
+- **Validated (full Apple suite, no regression):** `:socket-quic-nw:macosArm64Test` **53/53**,
+  `:socket-webtransport:macosArm64Test` **5/5**, `:socket-http3:macosArm64Test` **255 (1 skipped)** +
+  `:socket-http3:jvmTest` **255**, root `:macosArm64Test` GREEN, `:socket-quic-quiche:jvmTest` cert-pinning
+  suite GREEN; ktlint clean. **Pre-existing unrelated RED:** `:socket-quic:macosArm64Test` doesn't compile on
+  Apple — the `socket-quic` module has no Apple test source set providing `actual`s for `TestHelpers.kt`
+  expect-funs (`timeScaleEnv`/`isAppleKNative`/`shouldSkipQuicHarnessOnSimulator`); independent of this work.
 
 **Remaining v6 release work unchanged** (see SESSION 6 + §2/§6 below): buffer 6.0.0 → Central + repin + drop
 the mavenLocal pins; the dedicated cross-impl CI workflow; file the Apple-WT-datagram issue. Linux cinterop
