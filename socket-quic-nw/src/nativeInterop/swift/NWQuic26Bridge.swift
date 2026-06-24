@@ -212,8 +212,11 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private var connection: NetworkConnection<QUIC>?
 
     // Datagram channel resolved once (obtaining it drives the handshake). Both sendDatagram and the
-    // receive loop await this Task's value.
+    // receive loop await this Task's value. The resolved channel is also cached so the synchronous
+    // maxDatagramSize() can read its `maximumDatagramSize` (the connection-level `usableDatagramFrameSize`
+    // is always 0 — wrong accessor; the channel's value is the real negotiated usable size).
     private var datagramsTask: Task<QUIC.Datagrams<QUICDatagram>, Error>?
+    private var datagramsChannel: QUIC.Datagrams<QUICDatagram>?
     private let datagramsLock = NSLock()
 
     private var stateHandler: ((Int32, Int32, NSString?) -> Void)?
@@ -294,7 +297,35 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         datagramsLock.lock()
         defer { datagramsLock.unlock() }
         if datagramsTask == nil, let connection {
-            datagramsTask = Task { try await connection.datagrams }
+            datagramsTask = Task { [weak self] in
+                let dg = try await connection.datagrams
+                self?.storeDatagramsChannel(dg)
+                return dg
+            }
+        }
+    }
+
+    private func storeDatagramsChannel(_ dg: QUIC.Datagrams<QUICDatagram>) {
+        datagramsLock.lock()
+        defer { datagramsLock.unlock() }
+        datagramsChannel = dg
+    }
+
+    /// Resolve the datagram channel (creating it if needed) so `maxDatagramSize()` reflects the
+    /// negotiated usable size before the first send. completion errCode != 0 ⇒ datagrams unavailable.
+    @objc public func ensureDatagramsReady(_ completion: @escaping (Int32, NSString?) -> Void) {
+        ensureDatagramsTask()
+        guard let datagramsTask else {
+            completion(-1, "datagrams not enabled on this connection" as NSString)
+            return
+        }
+        Task {
+            do {
+                _ = try await datagramsTask.value
+                completion(0, nil)
+            } catch {
+                completion(-1, "datagrams not ready: \(error)" as NSString)
+            }
         }
     }
 
@@ -336,8 +367,12 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     }
 
     @objc public func maxDatagramSize() -> Int32 {
-        guard let connection else { return 0 }
-        return Int32(truncatingIfNeeded: connection.usableDatagramFrameSize)
+        // The datagram CHANNEL's maximumDatagramSize is the negotiated usable size; the connection-level
+        // usableDatagramFrameSize is always 0. 0 here means the channel hasn't resolved yet (call
+        // ensureDatagramsReady first to guarantee a positive value before sending).
+        datagramsLock.lock()
+        defer { datagramsLock.unlock() }
+        return Int32(truncatingIfNeeded: datagramsChannel?.maximumDatagramSize ?? 0)
     }
 
     // --- streams (validated in step 3; wired here) ---
