@@ -131,9 +131,20 @@ jobs:
             fi
           done
 
+      # HARD check — the quiche build step above is continue-on-error, so a build
+      # failure (clone/cargo/cc) would otherwise sail past here and only surface
+      # downstream as a confusing UnsatisfiedLinkError. A missing shim is a
+      # should-have-built-but-didn't: fail now, with the right attribution.
       - name: Verify macOS JNI shims exist
         run: |
-          find socket-quic-quiche/libs/quiche/macos-*/lib -name "libquiche_jni.dylib" -o -name "libquiche.dylib" 2>/dev/null || echo "WARN: no macOS JNI shims"
+          set -euo pipefail
+          found=$(find socket-quic-quiche/libs/quiche/macos-*/lib \
+            \( -name "libquiche_jni.dylib" -o -name "libquiche.dylib" \) 2>/dev/null || true)
+          if [ -z "$found" ]; then
+            echo "::error::No macOS quiche/JNI shims were built — the continue-on-error quiche build step failed."
+            exit 1
+          fi
+          echo "$found"
 
       # macOS harness — disabled. Three fixture paths attempted on macos-latest;
       # all failed (HANDOFF.md Q1 + TODO.md):
@@ -515,6 +526,68 @@ jobs:
           if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
             echo "::warning::Every QuicHarnessIntegrationTest skipped on macOS — Apple QUIC client not actually validated"
           fi
+
+      # HARD gate (no continue-on-error) — closes the false-green the soft
+      # "Run socket-quic-nw Apple native tests" step opens. That step keeps
+      # continue-on-error on purpose (a harness/peer-connection failure must
+      # skip, not fail) but continue-on-error ALSO swallows REAL test failures:
+      # a regression in any of the 59 NW tests reads green, with no signal.
+      # withHarness turns a peer-connection failure into a clean *skip* (a pass
+      # in JUnit XML), so any <failure>/<error> in these result sets is a genuine
+      # regression — fail on it. Part B additionally fails when the macOS QUIC
+      # harness ran 0 tests for real while the peer was confirmed up (launched
+      # =true) yet a test skipped for a non-intentional reason — a
+      # should-have-run-but-didn't (the audit step only ::warning::s that today).
+      - name: Enforce Apple native test results (hard gate)
+        if: always()
+        run: |
+          set -uo pipefail
+          FAIL=0
+
+          # Part A: real JUnit failures/errors in the soft-run Apple test sets.
+          RESULT_DIRS=(
+            socket-quic-nw/build/test-results/macosArm64Test
+            socket-quic-nw/build/test-results/iosSimulatorArm64Test
+          )
+          TOTAL_FAIL=0
+          for dir in "${RESULT_DIRS[@]}"; do
+            [ -d "$dir" ] || continue
+            for xml in "$dir"/*.xml; do
+              [ -f "$xml" ] || continue
+              n=$(grep -oE '(failures|errors)="[0-9]+"' "$xml" \
+                | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
+              if [ "${n:-0}" -gt 0 ]; then
+                TOTAL_FAIL=$((TOTAL_FAIL + n))
+                echo "::error::Apple test failure(s) in $(basename "$xml"): $n"
+                grep -oE 'testcase name="[^"]+"[^>]*' "$xml" | head -50 || true
+              fi
+            done
+          done
+          if [ "$TOTAL_FAIL" -gt 0 ]; then
+            echo "Apple native tests reported $TOTAL_FAIL failure(s)/error(s) — continue-on-error must not mask these."
+            FAIL=1
+          fi
+
+          # Part B: macOS harness silently skipped everything despite the peer up.
+          AUDIT=/tmp/quic-audit/apple.txt
+          if [ -f "$AUDIT" ]; then
+            launched=$(sed -n 's/^launched=//p' "$AUDIT")
+            ok=$(sed -n 's/^ok=//p' "$AUDIT")
+            skip=$(sed -n 's/^skip=//p' "$AUDIT")
+            intentional=$(sed -n 's/^intentional_skip=//p' "$AUDIT")
+            : "${launched:=false}"; : "${ok:=0}"; : "${skip:=0}"; : "${intentional:=0}"
+            non_intentional=$((skip - intentional))
+            if [ "$launched" = "true" ] && [ "$ok" -eq 0 ] && [ "$non_intentional" -gt 0 ]; then
+              echo "::error::macOS QUIC harness ran 0 tests for real (ok=0) but $non_intentional skipped for a non-intentional reason while the peer was up — a should-have-run regression."
+              FAIL=1
+            fi
+          fi
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "Apple hard gate: FAIL"
+            exit 1
+          fi
+          echo "Apple hard gate: OK (no masked failures)"
 
       - name: Upload Apple QUIC audit artifact
         if: always() && steps.launch-quic-echo.outputs.ready == 'true'
