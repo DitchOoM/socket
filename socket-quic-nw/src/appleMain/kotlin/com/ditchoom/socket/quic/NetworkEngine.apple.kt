@@ -28,7 +28,7 @@ object NetworkEngine : QuicEngine {
         transport: TransportConfig,
         timeout: Duration,
     ): QuicConnection =
-        if (useSwiftBackend(quicOptions)) {
+        if (useSwiftBackend()) {
             connectQuicSwift(hostname, port, quicOptions, transport, timeout)
         } else {
             connectQuicGroup(hostname, port, quicOptions, transport, timeout)
@@ -41,7 +41,7 @@ object NetworkEngine : QuicEngine {
         quicOptions: QuicOptions,
         timeout: Duration,
     ): QuicServer =
-        if (useSwiftBackend(quicOptions)) {
+        if (useSwiftBackend()) {
             buildAppleQuicSwiftServer(port, host, tlsConfig, quicOptions, timeout)
         } else {
             buildAppleQuicServer(port, host, tlsConfig, quicOptions, timeout)
@@ -59,26 +59,23 @@ object NetworkEngine : QuicEngine {
     internal var backendOverrideForTest: AppleQuicBackend? = null
 
     /**
-     * Pick the OS-26 Swift `NetworkConnection<QUIC>` backend ([connectQuicSwift] /
-     * [buildAppleQuicSwiftServer]) over the legacy `nw_connection_group` path only when datagrams AND
-     * inbound streams must coexist on one connection — the case the group backend cannot serve (issue
-     * #173): it extracts a datagram flow that suppresses inbound-stream delivery. That requirement is
-     * signalled by [DatagramStreamConflictPolicy.PreferStreams], which the HTTP/3 / WebTransport stack
-     * sets via `forHttp3()` (it needs peer-initiated control/QPACK streams). The new Swift API carries
-     * both, so it wins there. Everything else stays on the proven group backend: PURE datagram use
-     * ([DatagramStreamConflictPolicy.PreferDatagrams], no inbound streams) works fine on the group's
-     * extracted flow, and non-datagram connections never needed the new API. Below macOS/iOS 26 we also
-     * fall back to the group backend (WebTransport datagrams remain unavailable there — pre-26 needs
-     * quiche-on-Apple).
+     * Apple QUIC runs on the OS-26 Swift `NetworkConnection<QUIC>` backend ([connectQuicSwift] /
+     * [buildAppleQuicSwiftServer]) for every connection on macOS/iOS 26+. Unlike the legacy
+     * `nw_connection_group` path it carries datagrams AND inbound streams on one connection (issue #173 —
+     * the group backend extracts a datagram flow that suppresses inbound-stream delivery), and it has full
+     * parity with the group path on the raw-QUIC surface (cert pinning, the server anti-amplification
+     * guard, keepalive, bulk transfer, and impairment recovery), so there is no longer a case for the
+     * group backend at runtime.
+     *
+     * The legacy path stays reachable ONLY via [backendOverrideForTest] (so a single OS-26 runner can still
+     * exercise it) until it is removed outright. The Apple deployment floor is macOS/iOS 26+, so below 26
+     * there is no Apple QUIC backend at all (no quiche-on-Apple fallback); [isAppleOS26OrLater] gates that.
      */
-    private fun useSwiftBackend(quicOptions: QuicOptions): Boolean =
+    private fun useSwiftBackend(): Boolean =
         when (backendOverrideForTest) {
             AppleQuicBackend.Swift -> true
             AppleQuicBackend.Legacy -> false
-            null ->
-                quicOptions.datagrams != null &&
-                    quicOptions.datagramStreamConflictPolicy == DatagramStreamConflictPolicy.PreferStreams &&
-                    isAppleOS26OrLater()
+            null -> isAppleOS26OrLater()
         }
 }
 
