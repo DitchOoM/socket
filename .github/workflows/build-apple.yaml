@@ -226,8 +226,38 @@ jobs:
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
           :socket-quic-quiche:jvmProcessResources
           :socket-quic-nw:ktlintCheck :socket-quic-default:ktlintCheck
-          :socket-http3:macosArm64Test :socket-http3:ktlintCheck
+          :socket-http3:ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # socket-http3 Apple loopback tests run in their OWN step with QUIC_NW_DIAG=1 so the env-gated
+      # NW↔NW lifecycle trace (NWQuic26Bridge Swift + AppleQuicSwiftConnection Kotlin) is captured —
+      # this is the macos-26 CI-only blocker (PR #176: push test → ENOTCONN; uniStream → never
+      # arrives). --info surfaces the K/N test process stdout/stderr into the teed log (same pattern as
+      # the socket-quic-nw step below); the log uploads on every run so a PASSING trace can be diffed
+      # against a FAILING one (the defect is intermittent). NOT continue-on-error: a real test failure
+      # must stay red (it IS the tracked blocker) — `set -o pipefail` + tee writes the log first, and
+      # the upload below is if: always().
+      - name: Run socket-http3 Apple loopback tests (QUIC_NW_DIAG trace)
+        env:
+          QUIC_NW_DIAG: "1"
+        run: |
+          set -o pipefail
+          ./gradlew :socket-http3:macosArm64Test \
+            --no-configuration-cache --info \
+            -Pkotlin.native.debug.exceptions=true \
+            ${{ inputs.gradle-args }} 2>&1 | tee /tmp/apple-http3-diag.log
+
+      - name: Upload socket-http3 NW loopback trace
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: apple-http3-nw-diag
+          path: |
+            /tmp/apple-http3-diag.log
+            socket-http3/build/test-results/macosArm64Test/
+            socket-http3/build/reports/tests/macosArm64Test/
+          retention-days: 7
+          if-no-files-found: warn
 
       # :socket-quic-quiche:jvmTest on macOS — re-enabled (issue #70). It was excluded
       # because of the quiche-0.28 `quiche_conn_recv` panic (quiche/src/ffi.rs:2059
