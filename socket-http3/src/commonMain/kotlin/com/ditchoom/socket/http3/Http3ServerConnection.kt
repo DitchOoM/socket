@@ -102,6 +102,8 @@ class Http3ServerConnection internal constructor(
                 } catch (_: QuicStreamException) {
                     // Peer STOP_SENDING / RESET_STREAM on this one stream (e.g. a client cancelling a
                     // request mid-response) — stream-scoped; the connection keeps serving other streams.
+                    // (Apple's NW backend reclassifies a code-less POSIX-57 stream-write failure on a live
+                    // connection into this same stream-scoped type, so this catch is cross-platform.)
                 }
             }
         }

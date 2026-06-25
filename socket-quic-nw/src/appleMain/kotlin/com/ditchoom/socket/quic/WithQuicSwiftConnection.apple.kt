@@ -104,7 +104,7 @@ internal suspend fun connectQuicSwift(
             onReady = { _, _ -> }, // establishment is driven by onStateChanged below (unified client+server)
         )
     swiftConn.attach(handle, hostname, port)
-    wireInbound(handle, incomingStreams, datagramChannel, tag = "cli")
+    wireInbound(handle, incomingStreams, datagramChannel, tag = "cli", isConnectionLive = swiftConn::connectionLive)
 
     try {
         withTimeout(timeout) { swiftConn.established.await() }
@@ -136,12 +136,13 @@ private fun wireInbound(
     incomingStreams: Channel<QuicByteStream>,
     datagramChannel: Channel<ReadBuffer>?,
     tag: String,
+    isConnectionLive: () -> Boolean,
 ) {
     conn.onInboundStream { stream, id, isUni, serverInit ->
         // Real RFC 9000 wire id + directionality come straight from the new API — no synthetic-id or
         // phantom-stream filtering the legacy group path needed.
         nwDiag("$tag inbound stream id=$id uni=$isUni serverInit=$serverInit -> Kotlin channel")
-        incomingStreams.trySend(QuicByteStream(QuicStreamId(id.toLong()), NWQuic26ByteStream(stream!!)))
+        incomingStreams.trySend(QuicByteStream(QuicStreamId(id.toLong()), NWQuic26ByteStream(stream!!, isConnectionLive)))
     }
     if (datagramChannel != null) {
         conn.onDatagram { data -> datagramChannel.trySend(nsDataToReadBuffer(data!!)) }
@@ -185,6 +186,14 @@ internal class AppleQuicSwiftConnection(
 
     @Volatile
     private var closed = false
+
+    /**
+     * Whether this connection is still usable — i.e. we have NOT observed a terminal state (peer/local
+     * close, idle timeout, transport failure). Used by [NWQuic26ByteStream] to tell a STREAM-scoped abort
+     * from a true connection close when Network.framework hands back a code-less POSIX 57 (issue #134):
+     * if the connection is still live, a failed stream write is stream-scoped, not a connection close.
+     */
+    internal fun connectionLive(): Boolean = !closed
 
     @Volatile
     private var lastMaxDatagram: MaxDatagramSize = MaxDatagramSize.Unavailable
@@ -255,7 +264,7 @@ internal class AppleQuicSwiftConnection(
         return suspendCancellableCoroutine { cont ->
             conn.openStreamWithUni(uni) { stream, id, errCode, desc ->
                 if (stream != null && errCode == 0) {
-                    cont.resume(QuicByteStream(QuicStreamId(id.toLong()), NWQuic26ByteStream(stream)))
+                    cont.resume(QuicByteStream(QuicStreamId(id.toLong()), NWQuic26ByteStream(stream, ::connectionLive)))
                 } else if (cont.isActive) {
                     cont.resumeWithException(QuicCloseException(closeReason(), "Failed to open QUIC stream: $errCode ${desc ?: ""}"))
                 }
@@ -367,6 +376,7 @@ internal class AppleQuicSwiftConnection(
  */
 internal class NWQuic26ByteStream(
     private val stream: NWQuic26Stream,
+    private val isConnectionLive: () -> Boolean,
 ) : ByteStream,
     HalfCloseable,
     Resettable {
@@ -427,17 +437,35 @@ internal class NWQuic26ByteStream(
         errCode: Int,
         desc: String?,
     ): Throwable =
-        if (resetCode != ULong.MAX_VALUE) {
-            QuicStreamException(
-                stream.streamId().toLong(),
-                QuicStreamAbort.StopSending(resetCode.toLong()),
-                "QUIC stream ${stream.streamId()} reset by peer (application error $resetCode)",
-            )
-        } else {
-            QuicCloseException(
-                QuicError.InternalError("QUIC write error: $errCode"),
-                "QUIC write error: $errCode ${desc ?: ""}",
-            )
+        when {
+            resetCode != ULong.MAX_VALUE ->
+                // NW resolved the peer's stream application error code → unambiguously a stream-scoped
+                // abort (STOP_SENDING on our write path, per QuicStreamAbort's KDoc).
+                QuicStreamException(
+                    stream.streamId().toLong(),
+                    QuicStreamAbort.StopSending(resetCode.toLong()),
+                    "QUIC stream ${stream.streamId()} reset by peer (application error $resetCode)",
+                )
+            isConnectionLive() ->
+                // No per-stream code, but the connection is still up. NW collapses a peer
+                // STOP_SENDING/RESET and a true connection close to the SAME POSIX 57 (issue #134); since
+                // the connection remains live, this is a STREAM-scoped abort whose code NW didn't surface
+                // — NOT a connection close. Mapping it to QuicCloseException would tear down a healthy
+                // connection (the exact anti-pattern QuicStreamException's KDoc warns against) and diverge
+                // from quiche, which always reports a peer reset as a QuicStreamException. Report it as a
+                // stream abort with the direction/code unresolved so callers abandon just this stream and
+                // the connection keeps serving its others (PR #176 macos-26 loopback race).
+                QuicStreamException(
+                    stream.streamId().toLong(),
+                    QuicStreamAbort.Unspecified(0L),
+                    "QUIC stream ${stream.streamId()} aborted (POSIX $errCode; peer application code unavailable) ${desc ?: ""}",
+                )
+            else ->
+                // The connection itself is gone — a genuine connection-level failure.
+                QuicCloseException(
+                    QuicError.InternalError("QUIC write error: $errCode"),
+                    "QUIC write error: $errCode ${desc ?: ""}",
+                )
         }
 
     override suspend fun shutdownSend() {
@@ -535,7 +563,7 @@ internal suspend fun buildAppleQuicSwiftServer(
                         negotiatedAlpn = quicOptions.alpnProtocols.firstOrNull() ?: "",
                     )
                 swiftConn.attach(conn, host ?: "::", port)
-                wireInbound(conn, incomingStreams, datagramChannel, tag = "srv")
+                wireInbound(conn, incomingStreams, datagramChannel, tag = "srv", isConnectionLive = swiftConn::connectionLive)
                 acceptedConns.trySend(swiftConn)
             },
             onListenerState = { errCode, listenerPort, desc ->
