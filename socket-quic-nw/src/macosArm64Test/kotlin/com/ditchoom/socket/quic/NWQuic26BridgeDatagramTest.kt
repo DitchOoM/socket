@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.nwquic26.NWQuic26Conn
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
@@ -95,18 +96,17 @@ class NWQuic26BridgeDatagramTest {
                 clientReady.await()
 
                 val echoed = CompletableDeferred<String>()
-                client.onDatagram { data -> echoed.complete(data!!.toByteArray().decodeToString()) }
+                client.onDatagram { data -> if (!echoed.isCompleted) echoed.complete(data!!.toByteArray().decodeToString()) }
 
-                val sent = CompletableDeferred<Unit>()
+                // QUIC DATAGRAMs are unreliable by design (RFC 9221 — no retransmit), so a single
+                // loopback drop of the request OR the echo would otherwise hang the round-trip. Re-send
+                // until the echo arrives, bounded by the outer 25s withTimeout; duplicate echoes are
+                // idempotent (the receiver completes [echoed] once).
                 val payload = "cli-dg".encodeToByteArray().toNSData()
-                client.sendDatagram(payload) { errCode, desc ->
-                    if (errCode == 0) {
-                        sent.complete(Unit)
-                    } else {
-                        sent.completeExceptionally(IllegalStateException("send failed: $errCode ${desc ?: ""}"))
-                    }
+                while (!echoed.isCompleted) {
+                    client.sendDatagram(payload) { _, _ -> }
+                    withTimeoutOrNull(500) { echoed.await() }
                 }
-                sent.await()
 
                 assertEquals("cli-dg", echoed.await())
 
