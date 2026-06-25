@@ -15,6 +15,30 @@ import CryptoKit
 // State codes marshaled to Kotlin (matching nw_helper_quic_set_state_handler's mapping):
 //   0=setup/invalid, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled.
 
+// --- env-gated lifecycle diagnostics (QUIC_NW_DIAG) ---
+// Set QUIC_NW_DIAG=1 to trace the in-process NW↔NW QUIC loopback lifecycle to stderr with a
+// monotonic millisecond stamp. Built to nail the macos-26 CI-only race (PR #176): which inbound
+// stream NW actually delivers (or drops), and the exact connection state at an ENOTCONN write.
+// Zero cost when unset (a single bool check). Stderr (not stdout) so it survives a test hang/kill.
+private let nwDiagEnabled = ProcessInfo.processInfo.environment["QUIC_NW_DIAG"] != nil
+private let nwDiagStartNs = DispatchTime.now().uptimeNanoseconds
+private let nwDiagSeqLock = NSLock()
+private var nwDiagSeq = 0
+
+private func nwDiagNextSeq() -> Int {
+    nwDiagSeqLock.lock()
+    defer { nwDiagSeqLock.unlock() }
+    nwDiagSeq += 1
+    return nwDiagSeq
+}
+
+private func nwDiag(_ message: @autoclosure () -> String) {
+    guard nwDiagEnabled else { return }
+    let ms = Double(DispatchTime.now().uptimeNanoseconds &- nwDiagStartNs) / 1_000_000.0
+    let line = "[NWQ26 +\(String(format: "%8.1f", ms))ms] \(message())\n"
+    FileHandle.standardError.write(Data(line.utf8))
+}
+
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, *)
 private func makeQuic(alpn: [String], idleTimeoutMs: Int, maxDatagramFrameSize: Int) -> QUIC {
     // Generous stream credits + data windows: the new API defaults these low/0, which STARVES a
@@ -117,6 +141,7 @@ private func nwErrorCode(_ error: NWError) -> Int {
         )
         let connection = NetworkConnection(to: endpoint) { quic }
         conn.attach(connection: connection, onReady: onReady)
+        nwDiag("\(conn.diagTag) connect() -> \(host):\(port) dg=\(maxDatagramFrameSize > 0) alpn=\(alpnList)")
         _ = connection.start()
         return conn
     }
@@ -181,10 +206,12 @@ private func nwErrorCode(_ error: NWError) -> Int {
                     // `datagrams` / `inboundStreams` is what drives the handshake to completion (a passive
                     // ready-wait STALLS establishment, per the spike). Deliver to Kotlin, then keep the
                     // run-closure suspended (its lifetime == the connection's) until Kotlin closes it.
+                    nwDiag("\(wrapped.diagTag) listener accepted a connection (state=\(connection.state))")
                     wrapped.attach(connection: connection, onReady: { _, _ in })
                     wrapped.serveAsAccepted()
                     onConnection(wrapped)
                     await wrapped.awaitClosed()
+                    nwDiag("\(wrapped.diagTag) run-closure returning (connection closed)")
                 }
             }
             listenerBox.attach(runTask: runTask)
@@ -246,6 +273,10 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     @objc public private(set) var pinComputedHashHex: NSString?
     @objc public private(set) var pinMatchedLeafDer: NSData?
 
+    // Stable short tag for QUIC_NW_DIAG traces, e.g. "srv#3" / "cli#4".
+    private let connSeq = nwDiagNextSeq()
+    var diagTag: String { "\(isServer ? "srv" : "cli")#\(connSeq)" }
+
     init(datagramsEnabled: Bool, isServer: Bool, keepAliveMs: Int) {
         self.datagramsEnabled = datagramsEnabled
         self.isServer = isServer
@@ -258,6 +289,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         self.connection = connection
         connection.onStateUpdate { [weak self] _, state in
             let (code, errCode, desc) = mapConnState(state)
+            nwDiag("\(self?.diagTag ?? "?") state=\(code) (\(state)) errCode=\(errCode)")
             switch state {
             case .ready:
                 if self?.markReadyFiredOnce() == true { onReady(0, nil) }
@@ -289,6 +321,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     /// Server-side: the connection is already accepted, so start the serving Tasks now (this drives the
     /// handshake to completion — a passive wait would stall it).
     func serveAsAccepted() {
+        nwDiag("\(diagTag) serveAsAccepted (datagramsEnabled=\(datagramsEnabled))")
         if datagramsEnabled {
             ensureDatagramsTask()
         }
@@ -307,10 +340,17 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         datagramsLock.lock()
         defer { datagramsLock.unlock() }
         if datagramsTask == nil, let connection {
+            nwDiag("\(diagTag) datagrams task: awaiting connection.datagrams")
             datagramsTask = Task { [weak self] in
-                let dg = try await connection.datagrams
-                self?.storeDatagramsChannel(dg)
-                return dg
+                do {
+                    let dg = try await connection.datagrams
+                    nwDiag("\(self?.diagTag ?? "?") datagrams channel resolved max=\(dg.maximumDatagramSize)")
+                    self?.storeDatagramsChannel(dg)
+                    return dg
+                } catch {
+                    nwDiag("\(self?.diagTag ?? "?") datagrams channel FAILED: \(error)")
+                    throw error
+                }
             }
         }
     }
@@ -398,11 +438,13 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
             return
         }
         let dir: QUICStream.Directionality = uni ? .unidirectional : .bidirectional
-        Task {
+        Task { [weak self] in
             do {
                 let s = try await connection.openStream(directionality: dir)
+                nwDiag("\(self?.diagTag ?? "?") openStream uni=\(uni) -> id=\(s.streamID)")
                 completion(NWQuic26Stream(stream: s), s.streamID, 0, nil)
             } catch {
+                nwDiag("\(self?.diagTag ?? "?") openStream uni=\(uni) FAILED: \(error)")
                 completion(nil, 0, -1, "openStream failed: \(error)" as NSString)
             }
         }
@@ -413,10 +455,12 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         inboundStreamHandler = handler
         guard let connection else { return }
         let task = Task { [weak self] in
+            nwDiag("\(self?.diagTag ?? "?") inboundStreams loop START")
             do {
                 try await connection.inboundStreams { stream in
                     let isUni = stream.directionality == .unidirectional
                     let serverInit = stream.initiator == .server
+                    nwDiag("\(self?.diagTag ?? "?") inboundStream FIRED id=\(stream.streamID) uni=\(isUni) serverInit=\(serverInit)")
                     // Deliver and RETURN immediately. The stream's lifetime is bound to the CONNECTION,
                     // not this handler closure (verified: a delivered stream reads fine after the handler
                     // returns), and `inboundStreams` invokes the handler SERIALLY — parking here to "keep
@@ -424,7 +468,9 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                     // deadlock). The returned NWQuic26Stream retains the Swift stream for Kotlin.
                     self?.inboundStreamHandler?(NWQuic26Stream(stream: stream), stream.streamID, isUni, serverInit)
                 }
+                nwDiag("\(self?.diagTag ?? "?") inboundStreams loop ENDED (clean)")
             } catch {
+                nwDiag("\(self?.diagTag ?? "?") inboundStreams loop ENDED err=\(error)")
                 // Connection gone — end the accept loop.
             }
         }
@@ -440,6 +486,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         let cont = closedContinuation
         closedContinuation = nil
         closeLock.unlock()
+        nwDiag("\(diagTag) close(appErrorCode=\(appErrorCode)) alreadyClosed=\(alreadyClosed)")
         if alreadyClosed { return }
 
         // The new NetworkConnection has no cancel() — teardown is via ARC. Stamp the application close
@@ -546,6 +593,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 // A peer STOP_SENDING/RESET_STREAM surfaces as a send error (POSIX 57) AND stamps the
                 // stream's application error code; a connection close is POSIX 57 with no stream code (0).
                 let rc = stream.streamApplicationErrorCode
+                nwDiag("stream id=\(stream.streamID) send FAILED rc=\(rc) eos=\(endOfStream) err=\(error)")
                 completion(-1, rc != 0 ? rc : UInt64.max, "stream send failed: \(error)" as NSString)
             }
         }

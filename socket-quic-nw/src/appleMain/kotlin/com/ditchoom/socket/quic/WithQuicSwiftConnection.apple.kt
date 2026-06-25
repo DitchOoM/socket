@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSData
+import platform.posix.getenv
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
@@ -103,7 +104,7 @@ internal suspend fun connectQuicSwift(
             onReady = { _, _ -> }, // establishment is driven by onStateChanged below (unified client+server)
         )
     swiftConn.attach(handle, hostname, port)
-    wireInbound(handle, incomingStreams, datagramChannel)
+    wireInbound(handle, incomingStreams, datagramChannel, tag = "cli")
 
     try {
         withTimeout(timeout) { swiftConn.established.await() }
@@ -117,16 +118,29 @@ internal suspend fun connectQuicSwift(
     return swiftConn
 }
 
+// Env-gated (QUIC_NW_DIAG) trace for the in-process NW↔NW loopback race (PR #176). Pairs with the
+// Swift bridge's `nwDiag` (stderr): the Swift side proves whether NW *delivered* an inbound stream;
+// this Kotlin side proves whether it reached the Channel the H3/WT router consumes — bisecting an
+// NW-layer drop from an above-NW routing drop. No timestamp here (the Swift line it brackets carries
+// the monotonic stamp); zero cost when the env var is unset.
+private val nwDiagEnabled: Boolean = getenv("QUIC_NW_DIAG") != null
+
+private fun nwDiag(message: String) {
+    if (nwDiagEnabled) println("[NWQ26-kt] $message")
+}
+
 // Wire the shim's inbound push handlers into the Kotlin channels. Safe to call before `ready` — the
 // serving Tasks internally await readiness (verified by the step-3 stream tests).
 private fun wireInbound(
     conn: NWQuic26Conn,
     incomingStreams: Channel<QuicByteStream>,
     datagramChannel: Channel<ReadBuffer>?,
+    tag: String,
 ) {
-    conn.onInboundStream { stream, id, _, _ ->
+    conn.onInboundStream { stream, id, isUni, serverInit ->
         // Real RFC 9000 wire id + directionality come straight from the new API — no synthetic-id or
         // phantom-stream filtering the legacy group path needed.
+        nwDiag("$tag inbound stream id=$id uni=$isUni serverInit=$serverInit -> Kotlin channel")
         incomingStreams.trySend(QuicByteStream(QuicStreamId(id.toLong()), NWQuic26ByteStream(stream!!)))
     }
     if (datagramChannel != null) {
@@ -521,7 +535,7 @@ internal suspend fun buildAppleQuicSwiftServer(
                         negotiatedAlpn = quicOptions.alpnProtocols.firstOrNull() ?: "",
                     )
                 swiftConn.attach(conn, host ?: "::", port)
-                wireInbound(conn, incomingStreams, datagramChannel)
+                wireInbound(conn, incomingStreams, datagramChannel, tag = "srv")
                 acceptedConns.trySend(swiftConn)
             },
             onListenerState = { errCode, listenerPort, desc ->
