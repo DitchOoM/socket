@@ -49,8 +49,7 @@ class LinuxQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite
             }
         }
 
-    override fun fixtureTlsConfig(name: String) =
-        QuicTlsConfig(certChainPath = certPath("$name.crt"), privKeyPath = certPath("$name.key"))
+    override fun fixtureTlsConfig(name: String) = QuicTlsConfig(certChainPath = certPath("$name.crt"), privKeyPath = certPath("$name.key"))
 
     override fun fixtureLeafHash(name: String): CertificateHash {
         // The build writes `<name>.sha256` (lowercase hex of the leaf DER, computed by java.security —
