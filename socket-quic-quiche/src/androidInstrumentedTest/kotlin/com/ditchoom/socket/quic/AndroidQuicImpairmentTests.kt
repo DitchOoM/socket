@@ -15,14 +15,10 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.net.InetSocketAddress
-import java.net.SocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.concurrent.thread
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -243,14 +239,7 @@ class AndroidQuicImpairmentTests {
         serverPort: Int,
         private val policy: Policy,
     ) {
-        private val clientChannel = DatagramChannel.open().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
-        val proxyPort: Int = (clientChannel.localAddress as InetSocketAddress).port
-        private val upstream = DatagramChannel.open().apply { connect(InetSocketAddress("127.0.0.1", serverPort)) }
         private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "impair-sched").apply { isDaemon = true } }
-
-        @Volatile private var clientAddr: SocketAddress? = null
-
-        @Volatile private var running = true
 
         @Volatile private var armed = false
 
@@ -316,65 +305,33 @@ class AndroidQuicImpairmentTests {
             }
         }
 
-        private fun sendUpstreamLive(b: ByteBuffer) = guarded { upstream.write(b) }
+        private val c2sPump =
+            DirectionPump(Direction.ClientToServer, { relay.writeToServer(it) }, { relay.writeToServerBytes(it) })
+        private val s2cPump =
+            DirectionPump(Direction.ServerToClient, { relay.writeToClient(it) }, { relay.writeToClientBytes(it) })
 
-        private fun sendUpstreamBytes(a: ByteArray) = guarded { upstream.write(ByteBuffer.wrap(a)) }
+        // The relay owns all DatagramChannel I/O on a single non-blocking Selector loop, making the
+        // close-time `IOException: Success` teardown race structurally impossible (see its KDoc).
+        // Explicitly typed lateinit + init{} construction: the pump callbacks reference the relay and the
+        // relay's ctor references the pumps, so an inferred `val` would form a type-inference cycle.
+        private lateinit var relay: SelectorDatagramRelay
 
-        private fun sendClientLive(b: ByteBuffer) = guarded { clientAddr?.let { clientChannel.send(b, it) } }
+        val proxyPort: Int get() = relay.proxyPort
 
-        private fun sendClientBytes(a: ByteArray) = guarded { clientAddr?.let { clientChannel.send(ByteBuffer.wrap(a), it) } }
-
-        private inline fun guarded(block: () -> Unit) {
-            try {
-                block()
-            } catch (_: Exception) {
-                // Best-effort forward — a closed channel during teardown is expected.
-            }
+        init {
+            relay =
+                SelectorDatagramRelay(
+                    serverPort = serverPort,
+                    maxDatagram = MAX_DATAGRAM,
+                    onClientToServer = { buf, n -> c2sPump.handle(buf, n) },
+                    onServerToClient = { buf, n -> s2cPump.handle(buf, n) },
+                )
+            relay.start()
         }
 
-        private val c2sPump = DirectionPump(Direction.ClientToServer, ::sendUpstreamLive, ::sendUpstreamBytes)
-        private val s2cPump = DirectionPump(Direction.ServerToClient, ::sendClientLive, ::sendClientBytes)
-
-        private val clientToServer =
-            thread(isDaemon = true, name = "impair-c2s") {
-                val buf = ByteBuffer.allocate(MAX_DATAGRAM)
-                while (running) {
-                    try {
-                        buf.clear()
-                        val from = clientChannel.receive(buf) ?: continue
-                        clientAddr = from
-                        buf.flip()
-                        c2sPump.handle(buf, buf.remaining())
-                    } catch (_: Exception) {
-                        if (!running) break
-                    }
-                }
-            }
-
-        private val serverToClient =
-            thread(isDaemon = true, name = "impair-s2c") {
-                val buf = ByteBuffer.allocate(MAX_DATAGRAM)
-                while (running) {
-                    try {
-                        buf.clear()
-                        val n = upstream.read(buf)
-                        if (n > 0) {
-                            buf.flip()
-                            s2cPump.handle(buf, n)
-                        }
-                    } catch (_: Exception) {
-                        if (!running) break
-                    }
-                }
-            }
-
         fun close() {
-            running = false
             scheduler.shutdownNow()
-            clientChannel.close()
-            upstream.close()
-            clientToServer.interrupt()
-            serverToClient.interrupt()
+            relay.close()
         }
     }
 

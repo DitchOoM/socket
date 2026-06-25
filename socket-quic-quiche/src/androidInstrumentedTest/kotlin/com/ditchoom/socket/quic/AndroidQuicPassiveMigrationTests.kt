@@ -13,11 +13,6 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.net.InetSocketAddress
-import java.net.SocketAddress
-import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
-import kotlin.concurrent.thread
 import kotlin.test.assertEquals
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -128,70 +123,34 @@ class AndroidQuicPassiveMigrationTests {
 
     /**
      * Minimal userspace UDP forwarder that simulates a NAT rebind. Client ↔ [proxyPort] ↔ server.
-     * [rebind] swaps the upstream (server-facing) socket for one with a new source port, so the
-     * server sees the same connection arrive from a new 4-tuple. Two daemon threads pump each
-     * direction with blocking [DatagramChannel]s (test-only; ByteBuffer is fine in tests).
+     * [rebind] swaps the upstream (server-facing) socket for one with a new source port, so the server
+     * sees the same connection arrive from a new 4-tuple. Datagram I/O runs on a shared non-blocking
+     * [SelectorDatagramRelay], so neither the rebind nor teardown can hit the `IOException: Success`
+     * close-while-blocked-read race (test-only; ByteBuffer is fine in tests).
      */
     private class RebindingUdpProxy(
-        private val serverPort: Int,
+        serverPort: Int,
     ) {
-        private val clientChannel = DatagramChannel.open().apply { bind(InetSocketAddress("127.0.0.1", 0)) }
-        val proxyPort: Int = (clientChannel.localAddress as InetSocketAddress).port
+        // lateinit + init{}: the pass-through callbacks reference the relay, so an inferred `val` whose
+        // type comes from those same callbacks would be a type-inference cycle.
+        private lateinit var relay: SelectorDatagramRelay
 
-        @Volatile private var upstream = newUpstream()
+        val proxyPort: Int get() = relay.proxyPort
 
-        @Volatile private var clientAddr: SocketAddress? = null
-
-        @Volatile private var running = true
-
-        private fun newUpstream(): DatagramChannel = DatagramChannel.open().apply { connect(InetSocketAddress("127.0.0.1", serverPort)) }
-
-        private val clientToServer =
-            thread(isDaemon = true, name = "proxy-c2s") {
-                val buf = ByteBuffer.allocate(2048)
-                while (running) {
-                    try {
-                        buf.clear()
-                        val from = clientChannel.receive(buf) ?: continue
-                        clientAddr = from
-                        buf.flip()
-                        upstream.write(buf)
-                    } catch (_: Exception) {
-                        if (!running) break
-                    }
-                }
-            }
-
-        private val serverToClient =
-            thread(isDaemon = true, name = "proxy-s2c") {
-                val buf = ByteBuffer.allocate(2048)
-                while (running) {
-                    try {
-                        buf.clear()
-                        val n = upstream.read(buf) // reads the current upstream; throws when swapped/closed
-                        if (n > 0) {
-                            buf.flip()
-                            clientAddr?.let { clientChannel.send(buf, it) }
-                        }
-                    } catch (_: Exception) {
-                        if (!running) break // else: upstream was swapped (closed) — next iteration reads the new one
-                    }
-                }
-            }
+        init {
+            relay =
+                SelectorDatagramRelay(
+                    serverPort = serverPort,
+                    maxDatagram = 2048,
+                    onClientToServer = { buf, _ -> relay.writeToServer(buf) },
+                    onServerToClient = { buf, _ -> relay.writeToClient(buf) },
+                )
+            relay.start()
+        }
 
         /** Swap the upstream socket for a fresh source port — the NAT rebind. */
-        fun rebind() {
-            val old = upstream
-            upstream = newUpstream()
-            old.close() // unblocks serverToClient's read on the old channel
-        }
+        fun rebind() = relay.rebindUpstream()
 
-        fun close() {
-            running = false
-            clientChannel.close()
-            upstream.close()
-            clientToServer.interrupt()
-            serverToClient.interrupt()
-        }
+        fun close() = relay.close()
     }
 }
