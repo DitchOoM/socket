@@ -15,7 +15,6 @@ val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 repositories {
-    mavenLocal()
     google()
     mavenCentral()
 }

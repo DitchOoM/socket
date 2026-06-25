@@ -24,7 +24,6 @@ val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 repositories {
-    mavenLocal()
     google()
     mavenCentral()
 }

@@ -28,7 +28,6 @@ val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 
 repositories {
-    mavenLocal()
     google()
     mavenCentral()
 }

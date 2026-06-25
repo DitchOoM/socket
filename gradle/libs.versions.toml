@@ -13,12 +13,9 @@ mavenPublish = "0.36.0"
 dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 kotlinWrappers = "2026.6.0"
-# v6 byte-layer reshape (ByteSource/ByteSink/ByteStream + Read/WritePolicy).
-# Pinned to the CI-built buffer #213 (redesign/buffer-6.0 @ 812c098a) from mavenLocal — full target
-# matrix incl. all Apple targets + buffer-codec runtime (the macosArm64-only SNAPSHOT lacked these).
-# The PR-branch nextVersion is 5.13.2; the same tree publishes as 6.0.0 on merge to main.
-# TODO(v6-release): repin to released 6.0.0 + drop root mavenLocal() once buffer 6.0 hits Central.
-buffer = "5.13.2"
+# v6 byte-layer reshape (ByteSource/ByteSink/ByteStream + Read/WritePolicy), released to Central
+# from buffer PR #213 (merge 51fed90).
+buffer = "6.0.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
