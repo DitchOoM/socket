@@ -412,6 +412,56 @@ tasks.register<JavaExec>("http3CodecFuzz") {
     }
 }
 
+// `http3RoundTripFuzz` is the encoder-side twin: it drives Http3RoundTripFuzzer (src/jvmTest), which
+// feeds the same Jazzer byte[] into the shared Http3FuzzGenerators to build a STRUCTURALLY VALID frame /
+// QPACK header list, then asserts `encode → decode` returns it unchanged. Where http3CodecFuzz hunts
+// untyped decoder crashes, this hunts wire-format bijection breaks (encode/decode disagreement, lossy
+// round-trips). Same dormancy + corpus discipline as above; separate committed seed corpus.
+val http3RoundTripCorpusDir = projectDir.resolve("fuzz/corpus/http3-roundtrip")
+val http3RoundTripWorkDir = layout.buildDirectory.dir("fuzz/http3-roundtrip")
+
+tasks.register<JavaExec>("http3RoundTripFuzz") {
+    group = "verification"
+    description = "Coverage-guided Jazzer fuzzing of the HTTP/3 + QPACK encode→decode round-trip " +
+        "(Http3RoundTripFuzzer). Configure runtime with -PquicFuzzSeconds=<n> (default 60)."
+    dependsOn("jvmTestClasses")
+
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath =
+        files(
+            jvmTestCompilation.output.allOutputs,
+            jvmTestCompilation.runtimeDependencyFiles,
+        ) + http3JazzerConfig
+
+    mainClass.set("com.code_intelligence.jazzer.Jazzer")
+
+    val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60")
+    val corpusDir = http3RoundTripCorpusDir
+    val workDir = http3RoundTripWorkDir
+
+    doFirst {
+        corpusDir.mkdirs()
+        workDir
+            .get()
+            .asFile
+            .resolve("corpus")
+            .mkdirs()
+    }
+
+    argumentProviders.add {
+        val work = workDir.get().asFile
+        listOf(
+            "--target_class=com.ditchoom.socket.http3.fuzz.Http3RoundTripFuzzer",
+            "--instrumentation_includes=com.ditchoom.socket.http3.**",
+            "-print_final_stats=1",
+            "-artifact_prefix=${work.absolutePath}/",
+            "-max_total_time=${maxSeconds.get()}",
+            work.resolve("corpus").absolutePath,
+            corpusDir.absolutePath,
+        )
+    }
+}
+
 // --- h3spec conformance server (Phase 2 STEP 2) ------------------------------------------------
 // `h3specServer` runs the PRODUCTION withHttp3Server (H3SpecServerMain, src/jvmTest) so the external
 // h3spec client (github.com/kazu-yamamoto/h3spec) can probe it and externally prove the Phase-0/STEP-1
