@@ -132,10 +132,34 @@ kotlin {
             api(libs.buffer.codec)
             implementation(libs.kotlinx.coroutines.core)
         }
-        commonTest.dependencies {
-            implementation(kotlin("test"))
-            implementation(libs.kotlinx.coroutines.core)
-            implementation(libs.kotlinx.coroutines.test)
+        commonTest {
+            // The HTTP/3 loopback suite + its in-process server and hand-rolled frame codec live in a
+            // standalone srcDir (not plain src/commonTest) so the on-device androidInstrumentedTest set —
+            // which does NOT dependsOn commonTest — can compile the SAME abstract suite without dragging in
+            // the rest of commonTest (the fuzzers, codec unit tests, gated interop). Mirrors the
+            // browserInterop pattern in :socket-webtransport. The other commonTest files that use
+            // HandwrittenHttp3FrameCodec still see it here (same compilation).
+            kotlin.srcDir("src/loopbackShared/kotlin")
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
+            }
+        }
+        // Android instrumented (on-device) HTTP/3 loopback conformance — the 27-test parity gap vs
+        // JVM/Linux/Apple. Android runs the same quiche backing as the JVM; the quiche JNI `.so` merges
+        // into the test APK transitively from :socket-quic-quiche's androidMain/jniLibs (via
+        // :socket-quic-default). The shared suite compiles in through the srcDir; coroutines-test + the
+        // AndroidJUnit runner are explicit because androidInstrumentedTest does NOT dependsOn commonTest.
+        val androidInstrumentedTest by getting {
+            kotlin.srcDir("src/loopbackShared/kotlin")
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
+                implementation("androidx.test:runner:1.7.0")
+                implementation("androidx.test.ext:junit:1.3.0")
+            }
         }
     }
 }
