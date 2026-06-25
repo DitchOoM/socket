@@ -39,14 +39,28 @@ kotlin {
     jvm()
     js {
         browser()
-        nodejs()
+        nodejs {
+            // The seeded codec fuzzers (Http3DecoderCorpusFuzzTests etc.) run thousands of decode
+            // iterations and exceed Mocha's 2s default on Node; match the root module's 30s budget.
+            testTask {
+                useMocha {
+                    timeout = "30s"
+                }
+            }
+        }
     }
     wasmJs {
         // Pure-Kotlin codecs compile here; QUIC itself is unimplemented on wasmJs in
         // :socket-quic (gap-tested), so the live interop/loopback suites have no wasmJs
         // concrete subclass and don't run — only the deterministic codec tests do.
         browser()
-        nodejs()
+        nodejs {
+            testTask {
+                useMocha {
+                    timeout = "30s"
+                }
+            }
+        }
     }
 
     if (isMacOS) {
