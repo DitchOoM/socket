@@ -2,10 +2,8 @@
 
 package com.ditchoom.socket.quic
 
-import kotlinx.cinterop.useContents
 import platform.Foundation.NSData
 import platform.Foundation.NSDataBase64DecodingIgnoreUnknownCharacters
-import platform.Foundation.NSProcessInfo
 import platform.Foundation.create
 import platform.Foundation.length
 
@@ -20,5 +18,3 @@ internal actual fun decodeBase64ToNSData(base64: String): NSData? =
         base64EncodedString = base64,
         options = NSDataBase64DecodingIgnoreUnknownCharacters,
     )
-
-internal actual fun isAppleOS26OrLater(): Boolean = NSProcessInfo.processInfo.operatingSystemVersion.useContents { majorVersion >= 26 }

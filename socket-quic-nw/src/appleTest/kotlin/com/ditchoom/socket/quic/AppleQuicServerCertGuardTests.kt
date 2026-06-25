@@ -13,7 +13,7 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Regression tests for the Network.framework QUIC **server** anti-amplification guard
- * ([buildAppleQuicServer]). Apple's libquic under-credits a non-Apple client's first flight for
+ * ([guardAppleServerCertFlight]). Apple's libquic under-credits a non-Apple client's first flight for
  * RFC 9000 §8.1, so an oversized (RSA-2048) server certificate flight can never be delivered and the
  * handshake silently deadlocks against quiche/Chrome. The guard estimates the leaf's TLS flight at
  * bind time (via `nw_helper_quic_identity_leaf_info`) and throws a clear error for an oversized leaf,

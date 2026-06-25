@@ -55,11 +55,10 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The OS-26 Swift-API QUIC backend (issue #173) — a sibling to the legacy [connectQuicGroup] /
- * [AppleQuicGroupConnection] path, built over the `NetworkConnection<QUIC>` Swift shim
- * (`NWQuic26Bridge`). Unlike the `nw_connection_group` backend, this models datagrams AND inbound
- * streams on the SAME connection, so WebTransport datagrams coexist with streams. Selected at
- * connect/bind time on macOS 26 / iOS 26+ (the OS gating lives in the engine; step 5).
+ * The Apple QUIC backend (issue #173), built over the `NetworkConnection<QUIC>` Swift shim
+ * (`NWQuic26Bridge`). It models datagrams AND inbound streams on the SAME connection, so WebTransport
+ * datagrams coexist with streams. The Apple deployment floor is macOS 26 / iOS 26+, so this is the only
+ * Apple QUIC backend ([NetworkEngine] dispatches every connect/bind here).
  *
  * The shim hands events back via push handlers (one Swift serving Task per inbound-stream / datagram
  * loop); this Kotlin layer re-wraps them into the same `Channel<QuicByteStream>` / `Channel<ReadBuffer>`
@@ -198,9 +197,9 @@ private fun nsDataToReadBuffer(data: NSData): ReadBuffer {
 }
 
 /**
- * A [QuicConnection] backed by the OS-26 `NetworkConnection<QUIC>` Swift shim. Mirrors
- * [AppleQuicGroupConnection]'s contract (state, streams, datagrams, close) but over the new API, where
- * datagrams and inbound streams coexist. [established] is driven by [onStateChanged] (state 3 = ready),
+ * A [QuicConnection] backed by the OS-26 `NetworkConnection<QUIC>` Swift shim — state, streams,
+ * datagrams, and close over the Swift API, where datagrams and inbound streams coexist on one
+ * connection. [established] is driven by [onStateChanged] (state 3 = ready),
  * so the same instance serves both the client connect-await and the server's pre-handler readiness wait.
  */
 internal class AppleQuicSwiftConnection(
@@ -593,8 +592,8 @@ internal class NWQuic26ByteStream(
 }
 
 /**
- * Build + bind an OS-26 Swift-API QUIC server. Sibling to [buildAppleQuicServer] (the legacy group
- * listener). The shim imports the PKCS#12 identity itself; each accepted connection is wired (inbound
+ * Build + bind the Apple QUIC server over the OS-26 Swift API. The shim imports the PKCS#12 identity
+ * itself; each accepted connection is wired (inbound
  * stream/datagram handlers SET synchronously, which drives its handshake) and delivered to
  * [connections] as a ready-to-await [AppleQuicSwiftConnection].
  */

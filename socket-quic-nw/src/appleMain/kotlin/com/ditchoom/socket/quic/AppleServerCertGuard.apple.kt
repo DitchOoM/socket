@@ -13,14 +13,13 @@ import platform.Foundation.NSData
 import platform.Foundation.create
 
 /**
- * Network.framework QUIC **server** anti-amplification cert guard, shared by both Apple QUIC backends —
- * the legacy `nw_connection_group` listener ([buildAppleQuicServer]) and the OS-26 Swift listener
+ * Network.framework QUIC **server** anti-amplification cert guard for the OS-26 Swift listener
  * ([buildAppleQuicSwiftServer]). Single source of truth: the flight estimate, the budget, and the
  * actionable error message live here once.
  *
  * **Why:** Apple's libquic under-credits a non-Apple client's first flight for RFC 9000 §8.1, so an
  * oversized (notably RSA-2048) server certificate flight can never be delivered and the QUIC handshake
- * silently deadlocks against quiche/Chrome (see the limitation note on [buildAppleQuicServer] and issue
+ * silently deadlocks against quiche/Chrome (see issue
  * [nw-server-quiche-client-amplification-deadlock]). The guard estimates the leaf's TLS flight at bind
  * time and throws a clear error for an oversized leaf, turning a 10s timeout into an instant, actionable
  * failure. A small EC P-256 leaf passes; [QuicOptions.appleAllowOversizedServerCert] bypasses the guard.
@@ -38,8 +37,8 @@ internal fun guardAppleServerCertFlight(
     allowOversized: Boolean,
 ) {
     if (allowOversized) return
-    // Inspect the leaf inline (DER length + key type) via the same cinterop helper the legacy path uses,
-    // so the opaque sec_identity_t type stays inferred. Importing the PKCS#12 again here (memory-only, no
+    // Inspect the leaf inline (DER length + key type) via the cinterop leaf-info helper, so the opaque
+    // sec_identity_t type stays inferred. Importing the PKCS#12 again here (memory-only, no
     // keychain side effects) is a one-shot bind-time cost.
     val p12Data = NSData.create(contentsOfFile = p12Path) ?: return
     val identity = nw_helper_quic_identity_from_p12(p12Data, p12Password) ?: return
@@ -62,9 +61,9 @@ internal fun guardAppleServerCertFlight(
 private const val NW_LEAF_KEY_TYPE_RSA = 2
 
 /**
- * Network.framework's effective server amplification budget for the first flight (~1 KB; see the
- * limitation note on [buildAppleQuicServer]). An estimated TLS flight above this can't be delivered to a
- * non-Apple client.
+ * Network.framework's effective server amplification budget for the first flight (~1 KB; see issue
+ * [nw-server-quiche-client-amplification-deadlock]). An estimated TLS flight above this can't be delivered
+ * to a non-Apple client.
  */
 private const val NW_AMPLIFICATION_BUDGET = 1000
 
