@@ -23,6 +23,8 @@ import java.io.File
  * Runs on a connected device/emulator (`./gradlew :socket-http3:connectedAndroidTest`).
  */
 class AndroidHttp3LoopbackTest : Http3LoopbackTestSuite() {
+    override val timeScale: Double get() = parseTimeScale(System.getenv("QUIC_TEST_TIME_SCALE"))
+
     private val cacheDir: File by lazy {
         InstrumentationRegistry.getInstrumentation().context.cacheDir
     }

@@ -3,8 +3,10 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicTlsConfig
+import kotlinx.cinterop.toKString
 import platform.posix.F_OK
 import platform.posix.access
+import platform.posix.getenv
 
 /**
  * linuxX64 subclass of [Http3LoopbackTestSuite]. The test binary whole-archives `libquiche.a`
@@ -14,6 +16,8 @@ import platform.posix.access
  * binding is fixed at compile time, so there's no `UnsatisfiedLinkError` to translate.
  */
 class LinuxHttp3LoopbackTest : Http3LoopbackTestSuite() {
+    override val timeScale: Double get() = parseTimeScale(getenv("QUIC_TEST_TIME_SCALE")?.toKString())
+
     private fun certPath(name: String): String {
         val candidates =
             listOf(

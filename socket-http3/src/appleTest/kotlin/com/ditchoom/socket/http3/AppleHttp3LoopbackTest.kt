@@ -2,10 +2,11 @@
 
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicTlsConfig
+import kotlinx.cinterop.toKString
 import platform.posix.F_OK
 import platform.posix.access
+import platform.posix.getenv
 
 /**
  * Apple subclass of [Http3LoopbackTestSuite] — the first comprehensive HTTP/3 exercise on
@@ -27,30 +28,9 @@ import platform.posix.access
  * unavailable; this suite runs on macOS 26 here.)
  */
 class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
-    // TEMP DIAGNOSTIC (remove after capturing the CI-only Swift-backend close reason): Gradle's
-    // console failure summary prints only "<ExceptionClass> at null:-1" for K/N tests — it strips the
-    // message, where QuicCloseException already encodes the real reason (errCode + QuicError.describe()).
-    // K/N test stdout IS streamed to the CI log, so dump the full cause chain there before rethrowing.
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (t: Throwable) {
-            println("DIAG: Apple HTTP/3 test failed ↓")
-            var c: Throwable? = t
-            var depth = 0
-            while (c != null && depth < 8) {
-                println("DIAG[$depth] ${c::class.qualifiedName}: ${c.message}")
-                val qce = c as? QuicCloseException
-                if (qce != null) {
-                    val err = qce.quicError
-                    println("DIAG[$depth]   quicError=$err code=0x${err.code.toString(16)} describe=${err.describe()}")
-                }
-                c = c.cause
-                depth++
-            }
-            throw t
-        }
-    }
+    // The virtualized macos-26 CI runner stalls the scheduler for seconds at a time, tripping the
+    // suite's loopback timeouts (a CI-only flake; bare-metal macOS 26 passes). Honour QUIC_TEST_TIME_SCALE.
+    override val timeScale: Double get() = parseTimeScale(getenv("QUIC_TEST_TIME_SCALE")?.toKString())
 
     private fun certPath(name: String): String {
         val candidates =
