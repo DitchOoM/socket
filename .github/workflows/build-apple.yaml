@@ -48,17 +48,38 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Combined quiche + JNI shim cache — shims now live under
-      # socket-quic-quiche/libs/quiche/<platform>/lib/ alongside libquiche.dylib,
-      # matching the local-dev path so Gradle's classifier-JAR pipeline picks
-      # them up from the same place. Hash quiche_jni.c so shim edits invalidate.
-      - name: Cache quiche macOS
+      # quiche dylib/.a (libquiche.dylib + libquiche.a + the .built-<ver> marker) — depends ONLY on
+      # the quiche version (libs.versions.toml), NOT on the JNI shim source. Split out from the shim
+      # cache so editing quiche_jni.c no longer busts the EXPENSIVE part: the from-source cargo build
+      # of quiche + vendored BoringSSL for both arches (~10-20 min). The build step below skips cargo
+      # entirely on a hit (gated on the .built-<ver> marker, so a restore-key match from a different
+      # version is correctly rebuilt). restore-keys lets a near-match seed the cache.
+      - name: Cache quiche dylibs (macOS)
         uses: actions/cache@v5
         with:
           path: |
-            socket-quic-quiche/libs/quiche/macos-x64
-            socket-quic-quiche/libs/quiche/macos-arm64
-          key: quiche-macos-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+            socket-quic-quiche/libs/quiche/macos-arm64/lib/libquiche.dylib
+            socket-quic-quiche/libs/quiche/macos-arm64/lib/libquiche.a
+            socket-quic-quiche/libs/quiche/macos-arm64/lib/.built-*
+            socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche.dylib
+            socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche.a
+            socket-quic-quiche/libs/quiche/macos-x64/lib/.built-*
+          key: quiche-dylib-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: quiche-dylib-v1-
+
+      # JNI shim (libquiche_jni.dylib + .jni-built-<ver> marker) — depends on quiche_jni.c AND the
+      # quiche version. EXACT key only (no restore-keys): a shim is an opaque binary the build step
+      # can't validate against the current source, so a miss must cleanly rebuild it — which is just
+      # one `cc` re-link (seconds, force-loading the cached libquiche.a), not the cargo build.
+      - name: Cache quiche JNI shim (macOS)
+        uses: actions/cache@v5
+        with:
+          path: |
+            socket-quic-quiche/libs/quiche/macos-arm64/lib/libquiche_jni.dylib
+            socket-quic-quiche/libs/quiche/macos-arm64/lib/.jni-built-*
+            socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche_jni.dylib
+            socket-quic-quiche/libs/quiche/macos-x64/lib/.jni-built-*
+          key: quiche-shim-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -76,31 +97,67 @@ jobs:
           # Write into libs/quiche/<platform>/lib/ so local-dev + CI share paths
           # and the Gradle classifier-JAR pipeline (jvmNativesJar*) picks up.
           QUICHE_LIBS="socket-quic-quiche/libs/quiche"
+          # Derive the quiche version from the catalog so the clone branch + .built/.jni-built markers
+          # never drift from the pin (and so the cache-skip checks below match the cache keys' hash).
+          QV=$(grep -E '^quiche = ' gradle/libs.versions.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "quiche version = $QV"
 
-          # Clone quiche once, build for both architectures
-          git clone --recursive --depth 1 --branch 0.28.0 \
-            https://github.com/cloudflare/quiche.git /tmp/quiche-src
+          # Decide per-arch whether the dylib cache already supplied a valid quiche build. A hit means
+          # libquiche.dylib + libquiche.a + the .built-<QV> marker are all present (the marker pins the
+          # version, so a restore-key match from another version correctly counts as a MISS). Only
+          # clone + cargo build when at least one arch needs it — the expensive part we want to skip.
+          NEED_CLONE=false
+          for pair in "aarch64-apple-darwin macos-arm64" "x86_64-apple-darwin macos-x64"; do
+            PLATFORM="${pair##* }"
+            DEST="$QUICHE_LIBS/$PLATFORM/lib"
+            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV" ]; then
+              echo "quiche dylib cache HIT for $PLATFORM ($QV) — will skip cargo"
+            else
+              echo "quiche dylib cache MISS for $PLATFORM ($QV) — cargo build required"
+              NEED_CLONE=true
+            fi
+          done
 
-          # Add the cross-compile target (ARM64 runner needs x64 target and vice versa)
-          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          if [ "$NEED_CLONE" = true ]; then
+            git clone --recursive --depth 1 --branch "$QV" \
+              https://github.com/cloudflare/quiche.git /tmp/quiche-src
+            # Add the cross-compile target (ARM64 runner needs x64 target and vice versa)
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          fi
 
           for pair in "aarch64-apple-darwin macos-arm64" "x86_64-apple-darwin macos-x64"; do
             RUST_TARGET="${pair%% *}"
             PLATFORM="${pair##* }"
             DEST="$QUICHE_LIBS/$PLATFORM/lib"
+            mkdir -p "$DEST"
 
-            cd /tmp/quiche-src
-            cargo build --release --package quiche --target $RUST_TARGET \
-              --no-default-features --features ffi,boringssl-vendored
-            cd ${{ github.workspace }}
+            # --- quiche dylib/.a (expensive: cargo + vendored BoringSSL). Skip on a verified cache hit.
+            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV" ]; then
+              echo "Reusing cached quiche dylib for $PLATFORM"
+            else
+              cd /tmp/quiche-src
+              cargo build --release --package quiche --target $RUST_TARGET \
+                --no-default-features --features ffi,boringssl-vendored
+              cd ${{ github.workspace }}
+              QUICHE_DYLIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.dylib"
+              QUICHE_STATIC="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.a"
+              if [ -f "$QUICHE_DYLIB" ]; then
+                cp "$QUICHE_DYLIB" "$DEST/libquiche.dylib"
+                strip -x "$DEST/libquiche.dylib"
+                cp "$QUICHE_STATIC" "$DEST/libquiche.a"
+                # Marker so prepareQuicheNativeLib treats these as authoritative and does NOT trigger a
+                # second from-source quiche build inside the 60-min job. Keyed on quiche version,
+                # matching the markers createBuildJvmShared*/createBuildJvmJniShimTask write.
+                echo "quiche $QV (CI macOS prebuilt)" > "$DEST/.built-$QV"
+              else
+                echo "WARN: libquiche.dylib not found at $QUICHE_DYLIB"
+              fi
+            fi
 
-            QUICHE_DYLIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.dylib"
-            QUICHE_STATIC="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.a"
-            if [ -f "$QUICHE_DYLIB" ]; then
-              mkdir -p $DEST
-              cp "$QUICHE_DYLIB" "$DEST/libquiche.dylib"
-              strip -x "$DEST/libquiche.dylib"
-              cp "$QUICHE_STATIC" "$DEST/libquiche.a"
+            # --- JNI shim (cheap: one `cc` force-loading libquiche.a). Skip on a verified cache hit.
+            if [ -f "$DEST/libquiche_jni.dylib" ] && [ -f "$DEST/.jni-built-$QV" ]; then
+              echo "Reusing cached JNI shim for $PLATFORM"
+            elif [ -f "$DEST/libquiche.a" ]; then
               # Build a SELF-CONTAINED JNI shim: -force_load pulls every quiche
               # (+ vendored BoringSSL) symbol from libquiche.a into the dylib, so
               # it re-exports the full quiche C API. This is required by BOTH
@@ -110,9 +167,6 @@ jobs:
               #     by the dylib, not its dynamic deps, so a thin `-lquiche` shim
               #     would let create() succeed then throw UnsatisfiedLinkError on the
               #     first quiche_* downcall. Mirrors createBuildJvmJniShimTask (macOS).
-              # (The old "static linking breaks Rust runtime init → panic" note was
-              # stale: quiche 0.28 + the 5e55a5f sockaddr-lifetime fix run the
-              # force_load static shim cleanly — locally verified on macos-arm64.)
               cc -dynamiclib -O2 -Wall \
                 -o $DEST/libquiche_jni.dylib \
                 socket-quic-quiche/src/jni/quiche_jni.c \
@@ -123,15 +177,9 @@ jobs:
                 -target $(echo $RUST_TARGET | sed 's/aarch64/arm64/;s/x86_64/x86_64/') \
                 && strip -x $DEST/libquiche_jni.dylib \
                 && echo "Built $DEST/libquiche_jni.dylib ($(du -h $DEST/libquiche_jni.dylib | cut -f1))" \
-                && echo "With $DEST/libquiche.dylib ($(du -h $DEST/libquiche.dylib | cut -f1))"
-              # Write the Gradle build markers so prepareQuicheNativeLib treats these
-              # as authoritative and does NOT trigger a second from-source quiche
-              # build inside the 60-min job. Keyed on quiche version, matching the
-              # markers createBuildJvmShared*/createBuildJvmJniShimTask write.
-              echo "quiche 0.28.0 (CI macOS prebuilt)" > "$DEST/.built-0.28.0"
-              echo "quiche 0.28.0 JNI shim (CI macOS prebuilt)" > "$DEST/.jni-built-0.28.0"
+                && echo "quiche $QV JNI shim (CI macOS prebuilt)" > "$DEST/.jni-built-$QV"
             else
-              echo "WARN: libquiche.dylib not found at $QUICHE_DYLIB"
+              echo "WARN: cannot build JNI shim for $PLATFORM — libquiche.a missing"
             fi
           done
 
