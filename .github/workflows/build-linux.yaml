@@ -378,8 +378,12 @@ jobs:
       # tests, running on Node) that was never wired in — so Node QUIC went
       # entirely unvalidated in CI (#74 Task 2). It needs no native quiche (the
       # JS impls are documented placeholders that throw), so it just rides the
-      # Node already on this runner. Browser/wasmJs stay out (no raw UDP / lower
-      # priority per #74).
+      # Node already on this runner. wasmJsNodeTest is now wired alongside
+      # jsNodeTest (same Node runtime, no raw UDP needed — the JS/Wasm QUIC impls
+      # are documented placeholders): the wasmJs target shipped real common tests
+      # that had NEVER run in CI on any module. Validated green locally (root +
+      # socket-quic + socket-http3). Browser (jsBrowserTest/wasmJsBrowserTest)
+      # still stays out — it needs a headless Chrome the Linux runner lacks.
       # :socket-http3 is a pure-Kotlin HTTP/3 layer on :socket-quic. Its deterministic
       # codec/connection suite + the in-process loopback run on jvm, jsNode, and linuxX64
       # (the live interop GET self-skips when the endpoint is unreachable). Wiring these
@@ -397,13 +401,25 @@ jobs:
       - name: Start HTTP/3 + WebTransport interop server (aioquic)
         run: socket-http3/docker-interop/run-server.sh start
 
+      # Start the ls-qpack (pylsqpack) DIFFERENTIAL oracle on 127.0.0.1:4434 so
+      # QpackDifferentialInteropTests (bundled in :socket-http3:jvmTest below) RUNS
+      # instead of self-skipping. It cross-checks our hand-rolled QPACK encoder
+      # against an independent implementation — our only differential QPACK check
+      # (the in-process round-trip would hide a bug symmetric across our own
+      # encode+decode). `start` is detached and blocks until the oracle logs ready,
+      # so the test has a provably-up peer; a build/start failure fails the job on
+      # purpose, same as the aioquic server above (a silent skip is the gap this
+      # closes). Validated live previously vs pylsqpack 0.3.24 (1200 round-trips).
+      - name: Start QPACK differential oracle (ls-qpack)
+        run: socket-http3/qpack-diff/run-qpack-diff.sh start
+
       - name: Run checks and tests
         run: >-
-          ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
-          :socket-quic:jsNodeTest
+          ./gradlew :jvmTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck
+          :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest
           :socket-quic-quiche:jvmProcessResources
           :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck
-          :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:linuxX64Test
+          :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test
           :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck
           :socket-webtransport:jvmTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck
           -PquicEchoAllArches=true
@@ -412,6 +428,10 @@ jobs:
       - name: Stop HTTP/3 QPACK interop server
         if: always()
         run: socket-http3/docker-interop/run-server.sh stop
+
+      - name: Stop QPACK differential oracle
+        if: always()
+        run: socket-http3/qpack-diff/run-qpack-diff.sh stop
 
       # HTTP/3 error-path conformance (Phase 2 STEP 2): probe the PRODUCTION withHttp3Server with the
       # external h3spec client (socket-http3/h3spec) to externally prove the typed Http3Violation error
@@ -568,6 +588,23 @@ jobs:
           ./gradlew :socket-quic-quiche:quicHeaderFuzz -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Coverage-guided Jazzer fuzzing of the HAND-ROLLED HTTP/3 + QPACK codec —
+      # the module's real RFC-9114/9204 risk surface (quiche/NW own the transport;
+      # this is OUR parser/encoder). http3CodecFuzz hunts untyped decoder crashes;
+      # http3RoundTripFuzz hunts encode→decode bijection breaks. Pure-JVM Jazzer
+      # (no native toolchain), time-boxed and gating exactly like the quiche header
+      # lane above: a crash-*/oom-*/timeout-* repro fails the job and is uploaded
+      # below; committed seed corpora (socket-http3/fuzz/corpus/*) start them warm.
+      # Validated green locally (303k / 405k runs, 0 crashes). `if: !cancelled()`
+      # for the same independence reason as the quiche fuzz lanes.
+      - name: Fuzz HTTP/3 + QPACK codec (Jazzer, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 9
+        run: >-
+          ./gradlew :socket-http3:http3CodecFuzz :socket-http3:http3RoundTripFuzz
+          -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       # Native ASAN + coverage-guided lane: cargo-fuzz builds quiche with
       # SanitizerCoverage + AddressSanitizer, so libFuzzer gets REAL edge
       # coverage of the parser (the JVM lane above plateaus — it can't
@@ -647,6 +684,12 @@ jobs:
             socket-quic-quiche/build/fuzz/header-info/oom-*
             socket-quic-quiche/build/fuzz/header-info/timeout-*
             socket-quic-quiche/fuzz/native/artifacts/**
+            socket-http3/build/fuzz/http3-codec/crash-*
+            socket-http3/build/fuzz/http3-codec/oom-*
+            socket-http3/build/fuzz/http3-codec/timeout-*
+            socket-http3/build/fuzz/http3-roundtrip/crash-*
+            socket-http3/build/fuzz/http3-roundtrip/oom-*
+            socket-http3/build/fuzz/http3-roundtrip/timeout-*
           if-no-files-found: ignore
 
       # Audit step: mirror the macOS + Linux ARM64 audits — count
