@@ -221,6 +221,43 @@ abstract class WebTransportTestSuite {
                 }
             }
         }
+
+    @Test
+    fun connect_twoSessions_areDedicatedConnections_notTransparentlyPooled(): TestResult =
+        runWebTransportTest {
+            wrapTestBody {
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    // onWebTransport fires once per accepted CONNECT — i.e. once per session/connection —
+                    // so each of the two independent connect()s below gets its own one-shot echo handler.
+                    webTransport = Http3WebTransportOptions(maxSessions = 4),
+                    onWebTransport = { echoFirstBidiStream() },
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(SETTLE)
+                    // Two separate connect() calls to the SAME authority. On native each dials a DEDICATED
+                    // HTTP/3 connection — WebTransportOptions.allowPooling is a documented no-op here (never
+                    // mapped in WebTransportSupportHttp3.connectInternal); transparent pooling is browser-only.
+                    // Proof they are not pooled onto one shared connection: in the held-lifetime model
+                    // session.close() tears down THAT session's own connection, so closing the first must
+                    // leave the second fully usable. (If they shared one pooled connection, the second
+                    // round-trip below would fail after the first close.)
+                    val first = openSingleSession("https://localhost:$port/wt")
+                    val second = openSingleSession("https://localhost:$port/wt")
+                    try {
+                        assertEquals("echo:one", first.roundTripBidi("one"))
+                        first.close()
+                        assertEquals("echo:two", second.roundTripBidi("two"))
+                    } finally {
+                        first.close()
+                        second.close()
+                    }
+                }
+            }
+        }
 }
 
 /** Server-side echo: accept the session, read its first peer bidi stream, write it back prefixed, FIN. */
