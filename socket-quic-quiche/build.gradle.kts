@@ -208,13 +208,20 @@ fun createBuildQuicheSharedTask(
 
             logger.lifecycle("Building quiche $quicheVersion (shared, $os-$arch)...")
 
-            // Use pre-built BoringSSL if available
+            // Use pre-built BoringSSL if available. Probe ONCE: this single decision determines
+            // both whether libquiche.a vendors its own BoringSSL and whether the JNI shim must
+            // link the external archives. Re-probing `libs/boringssl` independently in the shim
+            // task races a concurrent :buildBoringssl* populating that dir mid-build — a vendored
+            // libquiche.a then gets the external libcrypto.a linked alongside it, yielding
+            // duplicate-symbol link errors (v3_utl.c.o, a2i_IPADDRESS, …). We record the choice
+            // in a marker next to libquiche.a and have the shim read THAT, never the live dir.
             val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
+            val usesExternalBssl = boringsslDir.resolve("lib/libssl.a").exists()
             val env = mutableMapOf<String, String>()
             // Note: avoid -C lto=thin / -C embed-bitcode=yes — they conflict with
             // pre-built BoringSSL objects that lack LTO bitcode.
             env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
-            if (boringsslDir.resolve("lib/libssl.a").exists()) {
+            if (usesExternalBssl) {
                 env["QUICHE_BSSL_PATH"] = boringsslDir.absolutePath
                 logger.lifecycle("Using pre-built BoringSSL from ${boringsslDir.absolutePath}")
             }
@@ -222,8 +229,7 @@ fun createBuildQuicheSharedTask(
                 env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
             }
 
-            val quicheFeatures =
-                if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi" else "ffi,boringssl-vendored"
+            val quicheFeatures = if (usesExternalBssl) "ffi" else "ffi,boringssl-vendored"
 
             val process =
                 ProcessBuilder(
@@ -259,6 +265,20 @@ fun createBuildQuicheSharedTask(
             val builtStatic = sourceDir.resolve("target/$cargoTarget/release/libquiche.a")
             if (builtStatic.exists()) {
                 builtStatic.copyTo(outputDir.resolve("lib/libquiche.a"), overwrite = true)
+            }
+            // Record whether this libquiche.a was built against external BoringSSL (so it has
+            // unresolved SSL_*/EVP_*/CRYPTO_* refs the shim must satisfy) or vendored its own
+            // (already self-contained — the shim must NOT add the external archives, or ld sees
+            // every BoringSSL object twice). The shim reads this marker, NOT the live boringssl
+            // dir, so a concurrent :buildBoringssl* can't flip the decision out from under it.
+            val externalMarker = outputDir.resolve("lib/.bssl-external")
+            val vendoredMarker = outputDir.resolve("lib/.bssl-vendored")
+            if (usesExternalBssl) {
+                externalMarker.writeText("external\n")
+                if (vendoredMarker.exists()) vendoredMarker.delete()
+            } else {
+                vendoredMarker.writeText("vendored\n")
+                if (externalMarker.exists()) externalMarker.delete()
             }
             // Copy quiche.h for the JNI shim compile (Android task reads from libs/quiche/include).
             val headerSrc = sourceDir.resolve("quiche/include/quiche.h")
@@ -398,12 +418,38 @@ fun createBuildJvmJniShimTask(
                         "-Wl,-install_name,@rpath/libquiche_jni.$libExt",
                     )
             } else {
-                // When the cargo build used QUICHE_BSSL_PATH (shared BoringSSL from base socket
-                // module), libquiche.a has unresolved SSL_*/EVP_*/CRYPTO_* refs. Link those
-                // archives inside the same --whole-archive pair — mirrors build-linux.yaml.
+                // Whether libquiche.a needs the external BoringSSL archives is decided ONCE, at
+                // quiche-build time, and recorded in `.bssl-external` next to libquiche.a (see the
+                // shared-build task). Read THAT marker — never re-probe the live `libs/boringssl`
+                // dir, which a concurrent :buildBoringssl* can populate after the cargo build chose
+                // boringssl-vendored, causing the external libcrypto.a to be linked on top of the
+                // already-vendored objects (duplicate-symbol ld failure: v3_utl.c.o, a2i_IPADDRESS…).
                 val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch/lib")
+                // Primary signal: the marker the shared build wrote next to this libquiche.a.
+                // Fallback (legacy artifact predating the marker, or a partial cache): ask the
+                // archive itself — a vendored libquiche.a carries the BoringSSL objects (e.g.
+                // v3_utl.c.o) as members, an external one does not. Either way the decision comes
+                // from the artifact we're about to link, never the racy live `libs/boringssl` dir.
+                val bsslMarker = outputDir.resolve(".bssl-external")
+                val usedExternalBssl =
+                    if (bsslMarker.exists()) {
+                        true
+                    } else if (outputDir.resolve(".bssl-vendored").exists()) {
+                        false
+                    } else {
+                        // No marker — inspect the archive members. `ar t` lists object files;
+                        // vendored builds include BoringSSL's, external builds don't.
+                        val members =
+                            ProcessBuilder("ar", "t", quicheStatic.absolutePath)
+                                .redirectErrorStream(true)
+                                .start()
+                                .inputStream
+                                .bufferedReader()
+                                .readText()
+                        !members.lineSequence().any { it.contains("v3_utl") || it.contains("boringssl") }
+                    }
                 val bsslArchives =
-                    if (boringsslLibDir.resolve("libssl.a").exists()) {
+                    if (usedExternalBssl) {
                         listOf(
                             boringsslLibDir.resolve("libssl.a").absolutePath,
                             boringsslLibDir.resolve("libcrypto.a").absolutePath,

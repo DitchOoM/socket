@@ -16,7 +16,11 @@ on:
 jobs:
   build:
     name: "Apple Targets"
-    runs-on: macos-latest
+    # macOS 26 image: the NWQuic26 Swift bridge (socket-quic-nw) references the
+    # macOS-26-SDK types NetworkListener<QUIC>/QUIC. @available gates them at runtime,
+    # but they must exist in the SDK to *compile* — macos-latest's default Xcode is
+    # older and fails swiftc with "cannot find type 'NetworkListener' in scope".
+    runs-on: macos-26
     timeout-minutes: 60
     outputs:
       version: ${{ steps.version.outputs.version }}

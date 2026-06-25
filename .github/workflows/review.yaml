@@ -161,7 +161,10 @@ jobs:
     name: "Cross-Impl QUIC Interop (NW <-> quiche)"
     needs: [build-apple]
     if: always()
-    runs-on: macos-latest
+    # macOS 26 to match build-apple: it runs the prebuilt macosArm64 NW .kexe, whose
+    # NW QUIC path is gated @available(macOS 26, *) and is now compiled against the
+    # macOS-26 SDK there. The runner that executes it must provide that runtime.
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6 # the orchestration script + committed testcerts (cert.crt/key)
