@@ -619,6 +619,10 @@ jobs:
             socket-quic-quiche/build/test-results/
             socket-quic-nw/build/reports/tests/
             socket-quic-nw/build/test-results/
+            socket-http3/build/reports/tests/
+            socket-http3/build/test-results/
+            socket-webtransport/build/reports/tests/
+            socket-webtransport/build/test-results/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 7
