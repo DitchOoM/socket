@@ -48,6 +48,17 @@ object NetworkEngine : QuicEngine {
         }
 
     /**
+     * Test-only override of the backend-selection rule in [useSwiftBackend]. `null` (the default and
+     * the only production value) defers to the real OS-driven rule. The two backends are otherwise
+     * selected purely by the host OS version, so on any single runner only one of them runs and the
+     * other rots untested — in particular, on a macOS/iOS-26 runner the legacy `nw_connection_group`
+     * datagram+`PreferStreams` fallback (what every pre-26 client actually executes) is never
+     * exercised. `AppleBackendSelectionTest` sets this to force each path on one OS-26 machine and
+     * MUST reset it to `null` in a `finally`. Internal: visible only to this module's `appleTest`.
+     */
+    internal var backendOverrideForTest: AppleQuicBackend? = null
+
+    /**
      * Pick the OS-26 Swift `NetworkConnection<QUIC>` backend ([connectQuicSwift] /
      * [buildAppleQuicSwiftServer]) over the legacy `nw_connection_group` path only when datagrams AND
      * inbound streams must coexist on one connection — the case the group backend cannot serve (issue
@@ -61,7 +72,19 @@ object NetworkEngine : QuicEngine {
      * quiche-on-Apple).
      */
     private fun useSwiftBackend(quicOptions: QuicOptions): Boolean =
-        quicOptions.datagrams != null &&
-            quicOptions.datagramStreamConflictPolicy == DatagramStreamConflictPolicy.PreferStreams &&
-            isAppleOS26OrLater()
+        when (backendOverrideForTest) {
+            AppleQuicBackend.Swift -> true
+            AppleQuicBackend.Legacy -> false
+            null ->
+                quicOptions.datagrams != null &&
+                    quicOptions.datagramStreamConflictPolicy == DatagramStreamConflictPolicy.PreferStreams &&
+                    isAppleOS26OrLater()
+        }
 }
+
+/**
+ * The two Apple QUIC backends [NetworkEngine] chooses between. Used only by
+ * [NetworkEngine.backendOverrideForTest] so a single OS-26 runner can exercise both the OS-26 Swift
+ * `NetworkConnection<QUIC>` path and the legacy `nw_connection_group` path (see that field's KDoc).
+ */
+internal enum class AppleQuicBackend { Swift, Legacy }
