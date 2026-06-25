@@ -494,16 +494,15 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         nwDiag("\(diagTag) close(appErrorCode=\(appErrorCode)) alreadyClosed=\(alreadyClosed)")
         if alreadyClosed { return }
 
-        // The new NetworkConnection has no cancel() — teardown is via ARC. Cancel the (inbound) serving
-        // Tasks first; the OUTBOUND send queue is owned by NW, not these Tasks, so it keeps flushing as
-        // long as the connection object is alive. On the SERVER side, resuming the run-closure (cont)
-        // returns it, which is what actually ends the accepted connection.
-        for t in serveTasks { t.cancel() }
-        serveTasks.removeAll()
-        datagramsTask?.cancel()
-
+        // The new NetworkConnection has no cancel() — teardown is via ARC. Snapshot the connection + its
+        // serving Tasks; how/when we release them depends on whether this is a graceful close or an abort.
         let conn = connection
+        let tasks = serveTasks
+        let dgTask = datagramsTask
+        serveTasks.removeAll()
         connection = nil
+        datagramsTask = nil
+
         if let conn {
             if appErrorCode != 0 {
                 // Application abort: stamp the application close code (CONNECTION_CLOSE, RFC 9000 §19.19)
@@ -511,19 +510,32 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 // nw_quic_set_application_error_reason calls strlen() on it, so a nil reason (the
                 // ApplicationError(code:) default) crashes with SIGSEGV (strlen(NULL)). Pass "".
                 conn.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
+                for t in tasks { t.cancel() }
+                dgTask?.cancel()
             } else {
                 // Graceful close (code 0): a bare ARC drop here strands stream bytes NW has ACCEPTED
                 // (`stream.send` completed) but not yet put on the wire — the peer then observes ENOTCONN
                 // instead of the data, losing a just-written unidirectional stream (the PR #176 macos-26
                 // loopback race, where `webTransport_clientOpensUniStream_serverReceives` writes then
-                // immediately tears down). Hold the connection for a bounded drain so NW flushes the
-                // outstanding stream data + FINs, THEN release it. Detached, so close() still returns at
-                // once; the cap (gracefulDrainNanos) guarantees a wedged flush can't leak the connection.
+                // immediately tears down). Hold the connection AND keep its receive loops RUNNING for a
+                // bounded drain: on the flaky CI loopback a passively-held connection (no active I/O) has
+                // its path dropped, so the peer sees it vanish (POSIX 57) before the last stream is
+                // delivered — keeping it engaged lets NW keep the path up and flush the outstanding stream
+                // data + FINs, THEN tear down. Detached, so close() still returns at once; the cap
+                // (gracefulDrainNanos) guarantees a wedged drain can't leak the connection.
+                let tag = diagTag
                 Task {
+                    nwDiag("\(tag) graceful drain START (keeping loops engaged)")
                     try? await Task.sleep(nanoseconds: NWQuic26Conn.gracefulDrainNanos)
+                    nwDiag("\(tag) graceful drain END — releasing")
+                    for t in tasks { t.cancel() }
+                    dgTask?.cancel()
                     withExtendedLifetime(conn) {}
                 }
             }
+        } else {
+            for t in tasks { t.cancel() }
+            dgTask?.cancel()
         }
         cont?.resume()
     }
