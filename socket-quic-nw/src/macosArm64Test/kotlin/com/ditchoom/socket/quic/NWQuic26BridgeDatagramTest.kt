@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Bridge
+import com.ditchoom.socket.quic.nwquic26.NWQuic26ClientTls
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Conn
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
@@ -44,9 +45,7 @@ class NWQuic26BridgeDatagramTest {
                         alpn = alpn,
                         p12Path = p12,
                         p12Password = "testpass",
-                        idleTimeoutMs = 30_000,
-                        maxDatagramFrameSize = 1200,
-                        keepAliveMs = 0,
+                        config = testConfig(maxDatagramFrameSize = 1200),
                         onConnection = { conn ->
                             // K/N imports _Nonnull ObjC block params as nullable; they're never null here.
                             val c = conn!!
@@ -72,13 +71,14 @@ class NWQuic26BridgeDatagramTest {
                         host = "127.0.0.1",
                         port = port.toUShort(),
                         alpn = alpn,
-                        idleTimeoutMs = 30_000,
-                        maxDatagramFrameSize = 1200,
-                        keepAliveMs = 0,
-                        serverCertificateHashes = listOf(pinHash),
-                        trustedCaCertificateDers = null,
-                        requireChain = false,
-                        verifyPeer = true,
+                        config = testConfig(maxDatagramFrameSize = 1200),
+                        tls =
+                            NWQuic26ClientTls(
+                                serverCertificateHashes = listOf(pinHash),
+                                trustedCaCertificateDers = null,
+                                requireChain = false,
+                                verifyPeer = true,
+                            ),
                         onReady = { errCode, desc ->
                             if (errCode == 0) {
                                 clientReady.complete(Unit)

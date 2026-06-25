@@ -2,7 +2,9 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.nwquic26.NWQuic26Config
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Conn
+import com.ditchoom.socket.quic.nwquic26.NWQuic26FlowControl
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Stream
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.addressOf
@@ -28,6 +30,27 @@ import kotlin.coroutines.resume
 // AppleQuicTestSupport) because the NWQuic26 cinterop bindings are per-target — macosArm64Test is the
 // only source set that can see them. K/N imports `_Nonnull` ObjC block params as nullable; the bridge
 // never delivers null for them, so the `!!` below are safe.
+
+/** Generous default flow-control limits for the direct bridge tests (mirrors QuicOptions.flowControl). */
+internal fun testFlowControl(): NWQuic26FlowControl =
+    NWQuic26FlowControl(
+        initialMaxData = 1L shl 23,
+        initialMaxStreamDataBidiLocal = 1L shl 20,
+        initialMaxStreamDataBidiRemote = 1L shl 20,
+        initialMaxStreamDataUni = 1L shl 20,
+        initialMaxStreamsBidi = 128,
+        initialMaxStreamsUni = 128,
+    )
+
+/** Default QUIC config for the direct bridge tests; [maxDatagramFrameSize] > 0 enables datagrams. */
+internal fun testConfig(maxDatagramFrameSize: Int = 0): NWQuic26Config =
+    NWQuic26Config(
+        idleTimeoutMs = 30_000,
+        maxUdpPayloadSize = 1350,
+        maxDatagramFrameSize = maxDatagramFrameSize,
+        keepAliveMs = 0,
+        flowControl = testFlowControl(),
+    )
 
 internal fun testCertPath(name: String): String =
     listOf("testcerts/$name", "socket-quic-nw/testcerts/$name")

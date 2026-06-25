@@ -40,23 +40,148 @@ private func nwDiag(_ message: @autoclosure () -> String) {
 }
 
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, *)
-private func makeQuic(alpn: [String], idleTimeoutMs: Int, maxDatagramFrameSize: Int) -> QUIC {
-    // Generous stream credits + data windows: the new API defaults these low/0, which STARVES a
-    // peer-opened stream (spike gotcha), so mirror the legacy NW_QUIC_MAX_STREAMS=1024 intent. idle
-    // timeout is MILLISECONDS here (`.idleTimeout(30)` would idle-kill at 30 ms — another spike gotcha).
+private func makeQuic(alpn: [String], config: NWQuic26Config) -> QUIC {
+    // Flow-control windows + stream credits come from QuicOptions.flowControl (Kotlin). The new API
+    // defaults these low/0, which STARVES a peer-opened stream and caps a bulk transfer at a tiny window
+    // (spike gotcha), so the caller's values — not a hardcoded guess — must be applied (e.g. the
+    // large-payload suite sets an 8 MB connection window so a 1 MB transfer cycling a 128 KB stream window
+    // never wedges on the connection window). idle timeout is MILLISECONDS here (`.idleTimeout(30)` would
+    // idle-kill at 30 ms — another spike gotcha).
+    let flow = config.flowControl
     var q =
         QUIC(alpn: alpn)
-            .idleTimeout(idleTimeoutMs)
-            .initialMaxData(1 << 20)
-            .initialMaxStreamDataBidirectionalRemote(1 << 20)
-            .initialMaxStreamDataBidirectionalLocal(1 << 20)
-            .initialMaxStreamDataUnidirectional(1 << 20)
-            .initialMaxBidirectionalStreams(128)
-            .initialMaxUnidirectionalStreams(128)
-    if maxDatagramFrameSize > 0 {
-        q = q.maxDatagramFrameSize(maxDatagramFrameSize)
+            .idleTimeout(Int(config.idleTimeoutMs))
+            // Cap the UDP payload (RFC 9000 max_udp_payload_size). NW otherwise uses the path MTU, which on
+            // loopback is tens of KB, so one packet carries many KB — non-standard and inconsistent with the
+            // quiche targets (which cap at 1350). Pinning the same value keeps packetization comparable.
+            .maxUDPPayloadSize(Int(config.maxUdpPayloadSize))
+            .initialMaxData(Int(flow.initialMaxData))
+            .initialMaxStreamDataBidirectionalRemote(Int(flow.initialMaxStreamDataBidiRemote))
+            .initialMaxStreamDataBidirectionalLocal(Int(flow.initialMaxStreamDataBidiLocal))
+            .initialMaxStreamDataUnidirectional(Int(flow.initialMaxStreamDataUni))
+            .initialMaxBidirectionalStreams(Int(flow.initialMaxStreamsBidi))
+            .initialMaxUnidirectionalStreams(Int(flow.initialMaxStreamsUni))
+    if config.datagramsEnabled {
+        q = q.maxDatagramFrameSize(Int(config.maxDatagramFrameSize))
     }
     return q
+}
+
+@available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, *)
+private extension QUIC {
+    /// Install exactly one TLS verification strategy for a client, derived from [tls] (see
+    /// [NWQuic26ClientTls]). The chosen validator publishes its outcome on [conn] as a single
+    /// [NWQuic26Verdict] that Kotlin reads once establishment resolves.
+    func withClientVerification(_ tls: NWQuic26ClientTls, conn: NWQuic26Conn) -> QUIC {
+        if let pins = tls.serverCertificateHashes {
+            // Leaf-hash pin validator (W3C serverCertificateHashes, approach C): SHA-256 the peer leaf DER
+            // and compare in Swift. The pin IS the trust check, independent of verifyPeer; under RequireBoth
+            // the chain must also validate (against the pinned CA anchors when supplied). Accepted carries
+            // the matched leaf DER for the post-handshake W3C constraint check; rejections carry their reason.
+            let requireChain = tls.requireChain
+            let caAnchors = tls.trustedCaCertificateDers
+            return self.tls.certificateValidator { _, trust in
+                conn.evaluatePin(trust: trust, expectedHashes: pins, requireChain: requireChain, caAnchors: caAnchors)
+            }
+        }
+        if let caAnchors = tls.trustedCaCertificateDers {
+            // CA-anchor pinning (issue #81): validate the peer chain against these as the SOLE trust anchors.
+            // Supplying anchors forces real peer verification regardless of verifyPeer (matches the legacy
+            // nw_connection_group CA verify_block and the JVM/quiche path).
+            return self.tls.certificateValidator { _, trust in
+                conn.evaluateCaAnchors(trust: trust, anchorDers: caAnchors)
+            }
+        }
+        if !tls.verifyPeer {
+            // verifyPeer=false (insecure / loopback self-signed): accept any peer certificate. The new-API
+            // analog of the legacy verify_block returning true; without it NW runs default system trust and
+            // rejects a self-signed leaf.
+            return self.tls.certificateValidator { _, _ in true }
+        }
+        return self // default NW system trust evaluation
+    }
+}
+
+/// QUIC transport tuning forwarded from `QuicOptions`, grouped into one value carrier so `connect`/`listen`
+/// take a single `config:` argument rather than a row of positional Int32s. Scalars are `Int32` (Kotlin
+/// `Int`); `makeQuic` widens them to the Swift API's `Int`.
+@objc public final class NWQuic26Config: NSObject {
+    let idleTimeoutMs: Int32
+    let maxUdpPayloadSize: Int32
+    let maxDatagramFrameSize: Int32
+    let keepAliveMs: Int32
+    let flowControl: NWQuic26FlowControl
+
+    var datagramsEnabled: Bool { maxDatagramFrameSize > 0 }
+
+    @objc public init(
+        idleTimeoutMs: Int32,
+        maxUdpPayloadSize: Int32,
+        maxDatagramFrameSize: Int32,
+        keepAliveMs: Int32,
+        flowControl: NWQuic26FlowControl
+    ) {
+        self.idleTimeoutMs = idleTimeoutMs
+        self.maxUdpPayloadSize = maxUdpPayloadSize
+        self.maxDatagramFrameSize = maxDatagramFrameSize
+        self.keepAliveMs = keepAliveMs
+        self.flowControl = flowControl
+        super.init()
+    }
+}
+
+/// Client-side TLS verification inputs forwarded from `QuicOptions`, grouped so `connect` takes one `tls:`
+/// argument. Exactly one validator is installed from these (see `connect`): leaf-hash pinning when
+/// [serverCertificateHashes] is set, else CA-anchor pinning when [trustedCaCertificateDers] is set, else
+/// accept-any when [verifyPeer] is false, else default system trust.
+@objc public final class NWQuic26ClientTls: NSObject {
+    let serverCertificateHashes: [Data]?
+    let trustedCaCertificateDers: [Data]?
+    let requireChain: Bool
+    let verifyPeer: Bool
+
+    @objc public init(
+        serverCertificateHashes: NSArray?,
+        trustedCaCertificateDers: NSArray?,
+        requireChain: Bool,
+        verifyPeer: Bool
+    ) {
+        self.serverCertificateHashes = (serverCertificateHashes as? [NSData])?.map { $0 as Data }
+        self.trustedCaCertificateDers = (trustedCaCertificateDers as? [NSData])?.map { $0 as Data }
+        self.requireChain = requireChain
+        self.verifyPeer = verifyPeer
+        super.init()
+    }
+}
+
+/// QUIC flow-control limits forwarded from `QuicOptions.flowControl`. A plain value carrier so the
+/// `connect`/`listen` selectors don't grow six positional Int parameters each.
+@objc public final class NWQuic26FlowControl: NSObject {
+    // Int64 (not Swift's platform-width Int) so Kotlin/Native sees a uniform `Long` across every Apple
+    // target — a width-varying `Int` is rejected in shared appleMain signatures. makeQuic narrows to `Int`.
+    let initialMaxData: Int64
+    let initialMaxStreamDataBidiLocal: Int64
+    let initialMaxStreamDataBidiRemote: Int64
+    let initialMaxStreamDataUni: Int64
+    let initialMaxStreamsBidi: Int64
+    let initialMaxStreamsUni: Int64
+
+    @objc public init(
+        initialMaxData: Int64,
+        initialMaxStreamDataBidiLocal: Int64,
+        initialMaxStreamDataBidiRemote: Int64,
+        initialMaxStreamDataUni: Int64,
+        initialMaxStreamsBidi: Int64,
+        initialMaxStreamsUni: Int64
+    ) {
+        self.initialMaxData = initialMaxData
+        self.initialMaxStreamDataBidiLocal = initialMaxStreamDataBidiLocal
+        self.initialMaxStreamDataBidiRemote = initialMaxStreamDataBidiRemote
+        self.initialMaxStreamDataUni = initialMaxStreamDataUni
+        self.initialMaxStreamsBidi = initialMaxStreamsBidi
+        self.initialMaxStreamsUni = initialMaxStreamsUni
+        super.init()
+    }
 }
 
 /// Map a `NetworkChannel.State` (connection) to the Kotlin-side integer + extracted NWError fields.
@@ -80,6 +205,7 @@ private func nwErrorCode(_ error: NWError) -> Int {
     case .posix(let code): return Int(code.rawValue)
     case .dns(let code): return Int(code)
     case .tls(let code): return Int(code)
+    case .wifiAware(let code): return Int(code)
     @unknown default: return -1
     }
 }
@@ -94,57 +220,15 @@ private func nwErrorCode(_ error: NWError) -> Int {
         host: NSString,
         port: UInt16,
         alpn: NSArray,
-        idleTimeoutMs: Int32,
-        maxDatagramFrameSize: Int32,
-        keepAliveMs: Int32,
-        serverCertificateHashes: NSArray?,
-        trustedCaCertificateDers: NSArray?,
-        requireChain: Bool,
-        verifyPeer: Bool,
+        config: NWQuic26Config,
+        tls: NWQuic26ClientTls,
         onReady: @escaping (Int32, NSString?) -> Void
     ) -> NWQuic26Conn {
         let alpnList = (alpn as? [String]) ?? []
-        let pins: [Data]? = (serverCertificateHashes as? [NSData])?.map { $0 as Data }
-        let caAnchors: [Data]? = (trustedCaCertificateDers as? [NSData])?.map { $0 as Data }
 
-        let conn = NWQuic26Conn(
-            datagramsEnabled: maxDatagramFrameSize > 0,
-            isServer: false,
-            keepAliveMs: Int(keepAliveMs)
-        )
+        let conn = NWQuic26Conn(datagramsEnabled: config.datagramsEnabled, isServer: false, keepAliveMs: Int(config.keepAliveMs))
 
-        let quic: QUIC = {
-            let base = makeQuic(
-                alpn: alpnList,
-                idleTimeoutMs: Int(idleTimeoutMs),
-                maxDatagramFrameSize: Int(maxDatagramFrameSize)
-            )
-            if let pins {
-                // Leaf-hash pin validator (W3C serverCertificateHashes, approach C): SHA-256 the peer leaf
-                // DER and compare in Swift. The pin IS the trust check, independent of verifyPeer; under
-                // RequireBoth the chain must also validate (against the pinned CA anchors when supplied).
-                // The whole decision is published as one NWQuic26Verdict (Accepted carries the matched leaf
-                // DER for the post-handshake W3C constraint check; rejections carry their typed reason).
-                return base.tls.certificateValidator { _, trust in
-                    conn.evaluatePin(trust: trust, expectedHashes: pins, requireChain: requireChain, caAnchors: caAnchors)
-                }
-            }
-            if let caAnchors {
-                // CA-anchor pinning (issue #81): validate the peer chain against these as the SOLE trust
-                // anchors. Supplying anchors forces real peer verification regardless of verifyPeer
-                // (matches the legacy nw_connection_group CA verify_block and the JVM/quiche path).
-                return base.tls.certificateValidator { _, trust in
-                    conn.evaluateCaAnchors(trust: trust, anchorDers: caAnchors)
-                }
-            }
-            if !verifyPeer {
-                // verifyPeer=false (insecure / loopback self-signed): accept any peer certificate. This is
-                // the new-API analog of the legacy verify_block returning true; without it NW runs default
-                // system trust and rejects a self-signed leaf.
-                return base.tls.certificateValidator { _, _ in true }
-            }
-            return base // default NW system trust evaluation
-        }()
+        let quic = makeQuic(alpn: alpnList, config: config).withClientVerification(tls, conn: conn)
 
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host as String),
@@ -152,7 +236,7 @@ private func nwErrorCode(_ error: NWError) -> Int {
         )
         let connection = NetworkConnection(to: endpoint) { quic }
         conn.attach(connection: connection, onReady: onReady)
-        nwDiag("\(conn.diagTag) connect() -> \(host):\(port) dg=\(maxDatagramFrameSize > 0) alpn=\(alpnList)")
+        nwDiag("\(conn.diagTag) connect() -> \(host):\(port) dg=\(config.datagramsEnabled) alpn=\(alpnList)")
         _ = connection.start()
         return conn
     }
@@ -167,9 +251,7 @@ private func nwErrorCode(_ error: NWError) -> Int {
         alpn: NSArray,
         p12Path: NSString,
         p12Password: NSString,
-        idleTimeoutMs: Int32,
-        maxDatagramFrameSize: Int32,
-        keepAliveMs: Int32,
+        config: NWQuic26Config,
         onConnection: @escaping (NWQuic26Conn) -> Void,
         onListenerState: @escaping (Int32, UInt16, NSString?) -> Void
     ) -> NWQuic26Listener {
@@ -181,14 +263,10 @@ private func nwErrorCode(_ error: NWError) -> Int {
             return listenerBox
         }
 
-        let quic = makeQuic(
-            alpn: alpnList,
-            idleTimeoutMs: Int(idleTimeoutMs),
-            maxDatagramFrameSize: Int(maxDatagramFrameSize)
-        ).tls.localIdentity(identity)
+        let quic = makeQuic(alpn: alpnList, config: config).tls.localIdentity(identity)
 
-        let datagramsEnabled = maxDatagramFrameSize > 0
-        let keepAliveMsInt = Int(keepAliveMs)
+        let datagramsEnabled = config.datagramsEnabled
+        let keepAliveMsInt = Int(config.keepAliveMs)
 
         do {
             let listener = try NetworkListener { quic }
@@ -307,21 +385,56 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private var datagramsChannel: QUIC.Datagrams<QUICDatagram>?
     private let datagramsLock = NSLock()
 
-    private let stateHandlerLock = NSLock()
-    private var stateHandler: ((Int32, Int32, NSString?) -> Void)?
-    // If the verify validator rejects the peer before Kotlin has wired [stateHandler], stash the synthetic
-    // terminal so the setter delivers it. See signalVerifyRejected for why we drive it ourselves.
-    private var pendingVerifyRejection = false
-    private var datagramHandler: ((NSData) -> Void)?
-    private var inboundStreamHandler: ((NWQuic26Stream, UInt64, Bool, Bool) -> Void)?
+    // How connection-state events reach Kotlin. `.pending` means Kotlin hasn't wired its handler yet — and
+    // remembers whether a verify rejection raced ahead, so the handler receives it the instant it's wired.
+    // `.wired` carries the handler. Modeling it as one value (rather than a `handler?` + a separate
+    // `pendingVerifyRejection` bool) makes the impossible "handler set AND a pending flag still latched"
+    // state unrepresentable, and keeps the rejection-stash inseparable from the not-yet-wired case.
+    private enum StateDelivery {
+        case pending(verifyRejected: Bool)
+        case wired(StateHandler)
+    }
+    private typealias StateHandler = (Int32, Int32, NSString?) -> Void
+    private let stateLock = NSLock()
+    private var stateDelivery: StateDelivery = .pending(verifyRejected: false)
 
     private var serveTasks: [Task<Void, Never>] = []
 
+    // Locally-opened streams, retained for the connection's lifetime. The new `QUIC.Stream` emits
+    // RESET_STREAM when its LAST reference deallocs (that's how reset() works), so without an owner here a
+    // stream whose only reference is the Kotlin wrapper is RESET the moment Kotlin garbage-collects that
+    // wrapper — dropping any send bytes NW has accepted (`stream.send` returns once data is BUFFERED, not
+    // flushed) but not yet put on the wire, truncating a bulk transfer mid-flight. The new API binds a
+    // stream's lifetime to its connection (see the inboundStreams note — NW retains inbound streams the
+    // same way), so we mirror that for opened streams: hold them until close() releases them (after the
+    // graceful drain, so the final flush completes).
+    private var openedStreams: [NWQuic26Stream] = []
+    private let openedStreamsLock = NSLock()
+
+    private func retainOpenedStream(_ stream: NWQuic26Stream) {
+        openedStreamsLock.lock()
+        defer { openedStreamsLock.unlock() }
+        openedStreams.append(stream)
+    }
+
+    private func drainOpenedStreams() -> [NWQuic26Stream] {
+        openedStreamsLock.lock()
+        defer { openedStreamsLock.unlock() }
+        let snapshot = openedStreams
+        openedStreams.removeAll()
+        return snapshot
+    }
+
+    // The connection's progress through its lifecycle, one-directional: `handshaking` until the first
+    // terminal state resolves the connect (firing onReady exactly once), then `settled` while it's live,
+    // then `closed` once close() runs (which may also fire straight from `handshaking` for a connect torn
+    // down before it readies). One enum replaces the former readyFired/isClosed booleans, which could
+    // encode the impossible "closed yet onReady never claimed" and were read across separate methods.
+    private enum Lifecycle { case handshaking, settled, closed }
+    private let lifecycleLock = NSLock()
+    private var lifecycle: Lifecycle = .handshaking
     // Resumed by close(), unblocking the server run-closure (whose lifetime == connection lifetime).
     private var closedContinuation: CheckedContinuation<Void, Never>?
-    private var isClosed = false
-    private let closeLock = NSLock()
-    private var readyFired = false
 
     // The single published TLS verify outcome (issue #81). nil means no custom verification ran, or it
     // accepted generically (CA-anchor trust / verifyPeer=false / default system trust — none of which
@@ -360,9 +473,10 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
             nwDiag("\(self?.diagTag ?? "?") state=\(code) (\(state)) errCode=\(errCode)")
             switch state {
             case .ready:
-                if self?.markReadyFiredOnce() == true { onReady(0, nil) }
+                self?.applyKeepAlive()
+                if self?.claimSettled() == true { onReady(0, nil) }
             case .failed, .cancelled:
-                if self?.markReadyFiredOnce() == true {
+                if self?.claimSettled() == true {
                     onReady(errCode == 0 ? -1 : errCode, (desc ?? "connection \(state)") as NSString)
                 }
             default:
@@ -372,18 +486,30 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 // only terminal outcomes for connect are .ready / .failed / .cancelled.
                 break
             }
-            self?.stateHandler?(code, errCode, desc as NSString?)
+            self?.deliverState(code, errCode, desc as NSString?)
         }
     }
 
-    /// Claim the one-shot onReady firing; returns true exactly once (NW delivers state serially, but
-    /// guard anyway so a post-ready failure never re-fires onReady).
-    private func markReadyFiredOnce() -> Bool {
-        closeLock.lock()
-        defer { closeLock.unlock() }
-        if readyFired { return false }
-        readyFired = true
+    /// Claim the one-shot connect resolution (`handshaking` → `settled`), firing onReady. Returns true
+    /// exactly once — and never once close() has won, so a late `.ready` after close can't fire onReady on
+    /// a dead connection.
+    private func claimSettled() -> Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        guard lifecycle == .handshaking else { return false }
+        lifecycle = .settled
         return true
+    }
+
+    /// Apply the configured QUIC keepalive interval once the connection is live (RFC 9000 §10.1.2). The
+    /// new API exposes keepalive as a settable connection property (`KeepAliveBehavior`) — the analog of
+    /// the legacy path's `nw_quic_set_keepalive_interval` on a started flow's metadata, which is why it's
+    /// applied here on `.ready` rather than on the create-time options. `.seconds` takes whole seconds, so
+    /// a sub-second interval is clamped up to 1s; keepAliveMs == 0 (disabled) is a no-op. Idempotent across
+    /// repeated `.ready` deliveries. (Issue #130 keepalive parity.)
+    private func applyKeepAlive() {
+        guard keepAliveMs > 0, let connection else { return }
+        connection.keepalive = .seconds(max(1, keepAliveMs / 1000))
     }
 
     /// Server-side: the connection is already accepted, so start the serving Tasks now (this drives the
@@ -398,26 +524,38 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     // --- lifecycle/state ---
 
     @objc public func onStateChanged(_ handler: @escaping (Int32, Int32, NSString?) -> Void) {
-        stateHandlerLock.lock()
-        stateHandler = handler
-        let deliverPending = pendingVerifyRejection
-        pendingVerifyRejection = false
-        stateHandlerLock.unlock()
-        // A verify rejection that raced ahead of this wiring is delivered now (state 4 = failed).
-        if deliverPending { handler(4, 0, "certificate verification rejected" as NSString) }
+        stateLock.lock()
+        // Carry forward a verify rejection that raced ahead of this wiring (delivered below).
+        let deliverRejection: Bool
+        if case .pending(let rejected) = stateDelivery { deliverRejection = rejected } else { deliverRejection = false }
+        stateDelivery = .wired(handler)
+        stateLock.unlock()
+        if deliverRejection { handler(4, 0, "certificate verification rejected" as NSString) }
+    }
+
+    /// Forward a connection state change to Kotlin, if its handler is wired yet (early states can arrive
+    /// before `onStateChanged`; Kotlin re-reads the terminal state when it wires up).
+    private func deliverState(_ code: Int32, _ errCode: Int32, _ desc: NSString?) {
+        stateLock.lock()
+        let handler: StateHandler? = { if case .wired(let h) = stateDelivery { return h } else { return nil } }()
+        stateLock.unlock()
+        handler?(code, errCode, desc)
     }
 
     /// The TLS verify validator rejected the peer. Network.framework does NOT report a client verify
     /// rejection as a connection state change — the handshake just stalls (the same gotcha the legacy
     /// nw_connection_group path cancels the group to work around). So drive a synthetic terminal (state
-    /// 4 = failed) to Kotlin, which reads the already-published [verdict] to throw the typed exception.
+    /// 4 = failed) to Kotlin, which reads the already-published [verdict] to throw the typed exception. If
+    /// Kotlin hasn't wired its handler yet, stash the rejection in `.pending` so wiring delivers it.
     private func signalVerifyRejected() {
-        stateHandlerLock.lock()
-        let handler = stateHandler
-        if handler == nil { pendingVerifyRejection = true }
-        stateHandlerLock.unlock()
-        nwDiag("\(diagTag) signalVerifyRejected handler=\(handler != nil ? "set" : "nil(pending)")")
-        handler?(4, 0, "certificate verification rejected" as NSString)
+        stateLock.lock()
+        let target: StateHandler?
+        switch stateDelivery {
+        case .wired(let h): target = h
+        case .pending: stateDelivery = .pending(verifyRejected: true); target = nil
+        }
+        stateLock.unlock()
+        target?(4, 0, "certificate verification rejected" as NSString)
     }
 
     /// Publish [v] as the (single) verify outcome and drive the synthetic terminal; returns false so the
@@ -494,15 +632,16 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     /// Register a push handler for inbound datagrams; spins the serving Task that loops `datagrams.receive()`.
     @objc public func onDatagram(_ handler: @escaping (NSData) -> Void) {
-        datagramHandler = handler
         ensureDatagramsTask()
         guard let datagramsTask else { return }
-        let task = Task { [weak self] in
+        // Capture `handler` + the task directly (not via self) so the serving Task holds no reference to
+        // this connection — it ends when the datagram channel closes, or when close() cancels it.
+        let task = Task {
             do {
                 let dg = try await datagramsTask.value
                 while !Task.isCancelled {
                     let msg = try await dg.receive()
-                    self?.datagramHandler?(msg.content as NSData)
+                    handler(msg.content as NSData)
                 }
             } catch {
                 // Connection gone / cancelled — end the loop; Kotlin observes close via onStateChanged.
@@ -537,7 +676,10 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
             do {
                 let s = try await connection.openStream(directionality: dir)
                 nwDiag("\(self?.diagTag ?? "?") openStream uni=\(uni) -> id=\(s.streamID)")
-                completion(NWQuic26Stream(stream: s), s.streamID, 0, nil)
+                let wrapped = NWQuic26Stream(stream: s)
+                // Retain so a GC of the Kotlin wrapper can't dealloc-then-RESET the stream mid-flush.
+                self?.retainOpenedStream(wrapped)
+                completion(wrapped, s.streamID, 0, nil)
             } catch {
                 nwDiag("\(self?.diagTag ?? "?") openStream uni=\(uni) FAILED: \(error)")
                 completion(nil, 0, -1, "openStream failed: \(error)" as NSString)
@@ -547,25 +689,27 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     /// Register a push handler for peer-initiated streams (the new API's `inboundStreams { }` loop).
     @objc public func onInboundStream(_ handler: @escaping (NWQuic26Stream, UInt64, Bool, Bool) -> Void) {
-        inboundStreamHandler = handler
         guard let connection else { return }
-        let task = Task { [weak self] in
-            nwDiag("\(self?.diagTag ?? "?") inboundStreams loop START")
+        // Capture `handler` + `tag` directly (not via self) so the serving Task — and the @Sendable
+        // `inboundStreams` closure it nests — hold no reference to this connection.
+        let tag = diagTag
+        let task = Task {
+            nwDiag("\(tag) inboundStreams loop START")
             do {
                 try await connection.inboundStreams { stream in
                     let isUni = stream.directionality == .unidirectional
                     let serverInit = stream.initiator == .server
-                    nwDiag("\(self?.diagTag ?? "?") inboundStream FIRED id=\(stream.streamID) uni=\(isUni) serverInit=\(serverInit)")
+                    nwDiag("\(tag) inboundStream FIRED id=\(stream.streamID) uni=\(isUni) serverInit=\(serverInit)")
                     // Deliver and RETURN immediately. The stream's lifetime is bound to the CONNECTION,
                     // not this handler closure (verified: a delivered stream reads fine after the handler
                     // returns), and `inboundStreams` invokes the handler SERIALLY — parking here to "keep
                     // the stream alive" would block every subsequent inbound stream (a multiplexing
                     // deadlock). The returned NWQuic26Stream retains the Swift stream for Kotlin.
-                    self?.inboundStreamHandler?(NWQuic26Stream(stream: stream), stream.streamID, isUni, serverInit)
+                    handler(NWQuic26Stream(stream: stream), stream.streamID, isUni, serverInit)
                 }
-                nwDiag("\(self?.diagTag ?? "?") inboundStreams loop ENDED (clean)")
+                nwDiag("\(tag) inboundStreams loop ENDED (clean)")
             } catch {
-                nwDiag("\(self?.diagTag ?? "?") inboundStreams loop ENDED err=\(error)")
+                nwDiag("\(tag) inboundStreams loop ENDED err=\(error)")
                 // Connection gone — end the accept loop.
             }
         }
@@ -575,12 +719,12 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     // --- close ---
 
     @objc public func close(appErrorCode: UInt64) {
-        closeLock.lock()
-        let alreadyClosed = isClosed
-        isClosed = true
+        lifecycleLock.lock()
+        let alreadyClosed = lifecycle == .closed
+        lifecycle = .closed
         let cont = closedContinuation
         closedContinuation = nil
-        closeLock.unlock()
+        lifecycleLock.unlock()
         nwDiag("\(diagTag) close(appErrorCode=\(appErrorCode)) alreadyClosed=\(alreadyClosed)")
         if alreadyClosed { return }
 
@@ -589,6 +733,9 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         let conn = connection
         let tasks = serveTasks
         let dgTask = datagramsTask
+        // Snapshot the retained opened streams: an abort releases them now (RESET); a graceful close holds
+        // them through the drain so their buffered bytes flush before they dealloc.
+        let streams = drainOpenedStreams()
         serveTasks.removeAll()
         connection = nil
         datagramsTask = nil
@@ -602,6 +749,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 conn.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
                 for t in tasks { t.cancel() }
                 dgTask?.cancel()
+                _ = streams // released as this scope exits — the abort wants the streams gone
             } else {
                 // Graceful close (code 0): a bare ARC drop here strands stream bytes NW has ACCEPTED
                 // (`stream.send` completed) but not yet put on the wire — the peer then observes ENOTCONN
@@ -620,12 +768,16 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                     nwDiag("\(tag) graceful drain END — releasing")
                     for t in tasks { t.cancel() }
                     dgTask?.cancel()
+                    // Hold the opened streams alive THROUGH the drain too — releasing them at close() would
+                    // dealloc-then-RESET them and truncate the very flush this drain exists to complete.
+                    withExtendedLifetime(streams) {}
                     withExtendedLifetime(conn) {}
                 }
             }
         } else {
             for t in tasks { t.cancel() }
             dgTask?.cancel()
+            _ = streams
         }
         cont?.resume()
     }
@@ -639,9 +791,9 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     /// Stash the close continuation (sync, so no lock crosses an await); false ⇒ already closed.
     private func registerCloseContinuation(_ cont: CheckedContinuation<Void, Never>) -> Bool {
-        closeLock.lock()
-        defer { closeLock.unlock() }
-        if isClosed { return false }
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        if lifecycle == .closed { return false }
         closedContinuation = cont
         return true
     }

@@ -19,7 +19,10 @@ import com.ditchoom.socket.CertificateHashPinningFailure
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Bridge
+import com.ditchoom.socket.quic.nwquic26.NWQuic26ClientTls
+import com.ditchoom.socket.quic.nwquic26.NWQuic26Config
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Conn
+import com.ditchoom.socket.quic.nwquic26.NWQuic26FlowControl
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Listener
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Stream
 import com.ditchoom.socket.quic.nwquic26.NWQuic26VerdictAccepted
@@ -108,20 +111,14 @@ internal suspend fun connectQuicSwift(
             host = hostname,
             port = port.toUShort(),
             alpn = quicOptions.alpnProtocols,
-            idleTimeoutMs =
-                quicOptions.idleTimeout.inWholeMilliseconds
-                    .coerceAtMost(Int.MAX_VALUE.toLong())
-                    .toInt(),
-            maxDatagramFrameSize = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX.toInt() else 0,
-            keepAliveMs =
-                quicOptions.keepAliveInterval
-                    ?.inWholeMilliseconds
-                    ?.coerceAtMost(Int.MAX_VALUE.toLong())
-                    ?.toInt() ?: 0,
-            serverCertificateHashes = serverCertHashes,
-            trustedCaCertificateDers = caDerList,
-            requireChain = requireChain,
-            verifyPeer = quicOptions.verifyPeer,
+            config = quicOptions.toBridgeConfig(datagramsEnabled),
+            tls =
+                NWQuic26ClientTls(
+                    serverCertificateHashes = serverCertHashes,
+                    trustedCaCertificateDers = caDerList,
+                    requireChain = requireChain,
+                    verifyPeer = quicOptions.verifyPeer,
+                ),
             onReady = { _, _ -> }, // establishment is driven by onStateChanged below (unified client+server)
         )
     swiftConn.attach(handle, hostname, port)
@@ -169,6 +166,28 @@ private fun wireInbound(
         conn.onDatagram { data -> datagramChannel.trySend(nsDataToReadBuffer(data!!)) }
     }
 }
+
+/** Carry [QuicOptions.flowControl] across the @objc boundary so the Swift `QUIC` builder applies the
+ *  caller's windows/credits instead of a hardcoded guess (the new API defaults them low/0). */
+private fun FlowControl.toBridge(): NWQuic26FlowControl =
+    NWQuic26FlowControl(
+        initialMaxData = initialMaxData,
+        initialMaxStreamDataBidiLocal = initialMaxStreamDataBidiLocal,
+        initialMaxStreamDataBidiRemote = initialMaxStreamDataBidiRemote,
+        initialMaxStreamDataUni = initialMaxStreamDataUni,
+        initialMaxStreamsBidi = initialMaxStreamsBidi,
+        initialMaxStreamsUni = initialMaxStreamsUni,
+    )
+
+/** Group the QUIC transport tuning into the single [NWQuic26Config] carrier `connect`/`listen` take. */
+private fun QuicOptions.toBridgeConfig(datagramsEnabled: Boolean): NWQuic26Config =
+    NWQuic26Config(
+        idleTimeoutMs = idleTimeout.inWholeMilliseconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+        maxUdpPayloadSize = maxUdpPayloadSize,
+        maxDatagramFrameSize = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX.toInt() else 0,
+        keepAliveMs = keepAliveInterval?.inWholeMilliseconds?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 0,
+        flowControl = flowControl.toBridge(),
+    )
 
 /** Wrap an inbound NW datagram/stream chunk as a read-positioned zero-copy [ReadBuffer]. */
 private fun nsDataToReadBuffer(data: NSData): ReadBuffer {
@@ -591,6 +610,13 @@ internal suspend fun buildAppleQuicSwiftServer(
             ?: throw IllegalArgumentException(
                 "Apple QUIC server requires QuicTlsConfig.pkcs12Path — Network.framework needs a sec_identity_t.",
             )
+    // Anti-amplification guard (shared with the legacy listener): reject an oversized/RSA server leaf at
+    // bind time so it fails loud instead of silently deadlocking a non-Apple client. See [guardAppleServerCertFlight].
+    guardAppleServerCertFlight(
+        p12Path = p12Path,
+        p12Password = tlsConfig.pkcs12Password ?: "",
+        allowOversized = quicOptions.appleAllowOversizedServerCert,
+    )
     val datagramsEnabled = quicOptions.datagrams != null
     val acceptedConns = Channel<AppleQuicSwiftConnection>(Channel.UNLIMITED)
     val boundPort = CompletableDeferred<Int>()
@@ -603,16 +629,7 @@ internal suspend fun buildAppleQuicSwiftServer(
             alpn = quicOptions.alpnProtocols,
             p12Path = p12Path,
             p12Password = tlsConfig.pkcs12Password ?: "",
-            idleTimeoutMs =
-                quicOptions.idleTimeout.inWholeMilliseconds
-                    .coerceAtMost(Int.MAX_VALUE.toLong())
-                    .toInt(),
-            maxDatagramFrameSize = if (datagramsEnabled) DATAGRAM_FRAME_SIZE_MAX.toInt() else 0,
-            keepAliveMs =
-                quicOptions.keepAliveInterval
-                    ?.inWholeMilliseconds
-                    ?.coerceAtMost(Int.MAX_VALUE.toLong())
-                    ?.toInt() ?: 0,
+            config = quicOptions.toBridgeConfig(datagramsEnabled),
             onConnection = { rawConn ->
                 // Runs on the shim's Swift thread synchronously. Wire everything NOW (setting the inbound
                 // handlers drives the server handshake — a passive wait would stall it), then deliver a

@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Bridge
+import com.ditchoom.socket.quic.nwquic26.NWQuic26ClientTls
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Conn
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Listener
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Stream
@@ -207,9 +208,7 @@ class NWQuic26BridgeStreamTest {
                 alpn = alpn,
                 p12Path = testCertPath("pinned.p12"),
                 p12Password = "testpass",
-                idleTimeoutMs = 30_000,
-                maxDatagramFrameSize = 0,
-                keepAliveMs = 0,
+                config = testConfig(),
                 onConnection = { conn -> onConnection(conn!!) },
                 onListenerState = { errCode, boundPort, desc ->
                     if (errCode == 0) {
@@ -236,13 +235,14 @@ class NWQuic26BridgeStreamTest {
                 host = "127.0.0.1",
                 port = port.toUShort(),
                 alpn = alpn,
-                idleTimeoutMs = 30_000,
-                maxDatagramFrameSize = 0,
-                keepAliveMs = 0,
-                serverCertificateHashes = listOf(pinFor("pinned")),
-                trustedCaCertificateDers = null,
-                requireChain = false,
-                verifyPeer = true,
+                config = testConfig(),
+                tls =
+                    NWQuic26ClientTls(
+                        serverCertificateHashes = listOf(pinFor("pinned")),
+                        trustedCaCertificateDers = null,
+                        requireChain = false,
+                        verifyPeer = true,
+                    ),
                 onReady = { errCode, desc ->
                     if (errCode == 0) {
                         clientReady.complete(Unit)
