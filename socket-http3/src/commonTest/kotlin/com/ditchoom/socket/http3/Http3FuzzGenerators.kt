@@ -1,16 +1,25 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.buffer.stream.StreamProcessor
 import kotlin.random.Random
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Structured generators + round-trip oracles shared by the deterministic, every-platform
@@ -309,6 +318,69 @@ object Http3FuzzGenerators {
             val capacity = longArrayOf(0L, 256L, 4096L)[e.int(3)]
             val blocked = if (capacity == 0L) 0L else 16L
             assertQpackRoundTrips(e, pool, capacity, blocked)
+        }
+    }
+
+    // ---- Decoder entry-point harness (shared with the native decoder fuzzers) -----------------------
+
+    /** A read-only [ByteStream] yielding [source]'s bytes in one chunk, then End. */
+    private class OneShotByteStream(
+        private val source: ReadBuffer,
+    ) : ByteStream {
+        private var delivered = false
+        override val isOpen: Boolean get() = !delivered
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(5.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(5.seconds)
+
+        override suspend fun read(deadline: Duration): ReadResult {
+            if (delivered) return ReadResult.End
+            delivered = true
+            return ReadResult.Data(source)
+        }
+
+        override suspend fun write(
+            buffer: ReadBuffer,
+            deadline: Duration,
+        ): BytesWritten = throw UnsupportedOperationException("read-only fuzz stream")
+
+        override suspend fun close() = Unit
+    }
+
+    private fun decoderPool() =
+        BufferPool(threadingMode = ThreadingMode.SingleThreaded, maxPoolSize = 8, defaultBufferSize = 256, factory = BufferFactory.Default)
+
+    /** A typed [Http3StreamException] is the expected outcome for malformed input; everything else propagates. */
+    private inline fun tolerate(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Http3StreamException) {
+            // Expected: the codec rejected malformed input with a typed error.
+        }
+    }
+
+    /**
+     * Run [wire] through all four hand-rolled decoder entry points (the frame reassembler, the QPACK
+     * field-section decoder on a capacity-0 decoder so a non-zero RIC is rejected rather than blocking, and
+     * the QPACK encoder/decoder instruction readers). Each entry point must either return or throw a typed
+     * [Http3StreamException]; any other [Throwable] (a raw underflow, IOOBE, NPE, hang, …) propagates to the
+     * caller as the bug. This is the every-platform — crucially **including Kotlin/Native** — decoder
+     * invariant harness shared by [Http3DecoderInvariantFuzzTests]-style fuzzers and the corpus replay.
+     */
+    suspend fun runDecoderEntryPoints(wire: ByteArray) {
+        tolerate {
+            val reader = Http3StreamReader(OneShotByteStream(buffer(wire)), StreamProcessor.create(decoderPool(), ByteOrder.BIG_ENDIAN))
+            while (reader.nextFrame() != null) Unit
+        }
+        tolerate {
+            QpackDecoder(maxCapacity = 0) {}.decodeSection(buffer(wire), streamId = 0, scratchPool = null)
+        }
+        tolerate {
+            val reader = QpackInstructionReader.encoder(OneShotByteStream(buffer(wire)), decoderPool())
+            while (reader.next() != null) Unit
+        }
+        tolerate {
+            val reader = QpackInstructionReader.decoder(OneShotByteStream(buffer(wire)), decoderPool())
+            while (reader.next() != null) Unit
         }
     }
 }
