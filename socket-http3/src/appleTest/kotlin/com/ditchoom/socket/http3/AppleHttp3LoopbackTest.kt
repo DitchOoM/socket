@@ -40,7 +40,11 @@ class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
             var depth = 0
             while (c != null && depth < 8) {
                 println("DIAG[$depth] ${c::class.qualifiedName}: ${c.message}")
-                (c as? QuicCloseException)?.let { println("DIAG[$depth]   quicError=${it.quicError} describe=${it.quicError.describe()} code=0x${it.quicError.code.toString(16)}") }
+                val qce = c as? QuicCloseException
+                if (qce != null) {
+                    val err = qce.quicError
+                    println("DIAG[$depth]   quicError=$err code=0x${err.code.toString(16)} describe=${err.describe()}")
+                }
                 c = c.cause
                 depth++
             }
