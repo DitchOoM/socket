@@ -256,6 +256,30 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
     return (jint)out_len;
 }
 
+/*
+ * The peer's (peer=JNI_TRUE) or our local (peer=JNI_FALSE) CONNECTION_CLOSE reason.
+ * Returns JNI_FALSE when no close frame applies (still open / we closed first). On JNI_TRUE
+ * it writes out[0]=is_app (1/0) and out[1]=code (the uint64 wire code, reinterpreted as jlong)
+ * so JniQuicheApi can map it to QuicError.ApplicationError vs QuicError.fromTransportCode.
+ * Mirrors FfmQuicheApi.readConnError; the reason string is intentionally ignored (errors stay typed).
+ */
+JNIEXPORT jboolean JNICALL JNI_FN(nConnError)(
+    JNIEnv *env, jclass cls, jlong conn, jboolean peer, jlongArray out) {
+    bool is_app = false;
+    uint64_t code = 0;
+    const uint8_t *reason = NULL;
+    size_t reason_len = 0;
+    bool present = peer
+        ? quiche_conn_peer_error((quiche_conn *)(uintptr_t)conn, &is_app, &code, &reason, &reason_len)
+        : quiche_conn_local_error((quiche_conn *)(uintptr_t)conn, &is_app, &code, &reason, &reason_len);
+    if (!present) return JNI_FALSE;
+    jlong vals[2];
+    vals[0] = (jlong)(is_app ? 1 : 0);
+    vals[1] = (jlong)code;
+    (*env)->SetLongArrayRegion(env, out, 0, 2, vals);
+    return JNI_TRUE;
+}
+
 /* --- Unreliable datagrams (RFC 9221) --- */
 
 JNIEXPORT void JNICALL JNI_FN(nConfigEnableDgram)(

@@ -287,6 +287,20 @@ object JniQuicheApi : QuicheApi {
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean = nConnIsTimedOut(conn.handle)
 
+    override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(conn, peer = true)
+
+    override fun connLocalError(conn: QuicheConn): QuicError? = readConnError(conn, peer = false)
+
+    private fun readConnError(
+        conn: QuicheConn,
+        peer: Boolean,
+    ): QuicError? {
+        val out = longArrayOf(0L, 0L)
+        if (!nConnError(conn.handle, peer, out)) return null
+        val code = out[1]
+        return if (out[0] != 0L) QuicError.ApplicationError(code) else QuicError.fromTransportCode(code)
+    }
+
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = nConnTimeoutAsNanos(conn.handle)
         // JNI casts uint64_t to jlong: UINT64_MAX becomes -1L (or any negative)
@@ -666,6 +680,14 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int
+
+    // Not @FastNative: writes the result through a JNI array region (SetLongArrayRegion).
+    @JvmStatic
+    private external fun nConnError(
+        conn: Long,
+        peer: Boolean,
+        out: LongArray,
+    ): Boolean
 
     @JvmStatic
     private external fun nConfigEnableDgram(

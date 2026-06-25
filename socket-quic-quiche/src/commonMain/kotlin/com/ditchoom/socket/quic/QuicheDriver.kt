@@ -504,8 +504,8 @@ class QuicheDriver(
      * or transport params) over our **local** close (quiche itself aborted — handshake/TLS failure,
      * protocol violation), since the peer's reason is the more actionable one when both exist. quiche is
      * single-threaded; this runs on the driver loop alongside [updateState], so the reads are safe.
-     * Both helpers default to `null` on backends that don't bind the C calls yet (JNI/Android), so the
-     * behavior there is unchanged (clean-looking close).
+     * Both helpers are bound on every real backend (FFM, JNI/Android, cinterop); only test doubles
+     * return `null`, in which case the close looks clean.
      */
     private fun resolveCloseError(): QuicError? {
         (api.connPeerError(conn) ?: api.connLocalError(conn))

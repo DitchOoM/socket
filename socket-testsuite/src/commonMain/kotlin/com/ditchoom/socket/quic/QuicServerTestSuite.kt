@@ -315,6 +315,95 @@ abstract class QuicServerTestSuite {
             }
         }
 
+    /** Application close code the peer-observation test below aborts the whole connection with. */
+    private val connectionCloseAppCode = 0xBEEFL
+
+    /**
+     * The typed reason a peer observes when the remote aborts the whole CONNECTION with an
+     * application error code (RFC 9000 §19.19, CONNECTION_CLOSE frame type 0x1d).
+     *
+     * The quiche-backed targets (JVM/Android/Linux) decode the peer's code via
+     * `quiche_conn_peer_error` into [QuicError.ApplicationError] — the default asserts the exact
+     * round-trip. Network.framework does **not** expose a peer's CONNECTION_CLOSE application code
+     * to the client (the same surfacing limitation that makes Apple unable to distinguish RESET from
+     * STOP_SENDING, #134), so the Apple subclass loosens this to "a terminal close was observed".
+     */
+    protected open fun assertConnectionCloseErrorObservedByPeer(observed: QuicError) {
+        assertEquals(
+            QuicError.ApplicationError(connectionCloseAppCode),
+            observed,
+            "the peer's CONNECTION_CLOSE application error code must round-trip as a typed QuicError",
+        )
+    }
+
+    /**
+     * When one peer aborts the whole connection with [QuicScope.closeWithError], the other peer's
+     * next operation must surface a connection-level [QuicCloseException] carrying the typed reason
+     * — never a stream-scoped [QuicStreamException] (the entire connection is gone, not one stream).
+     *
+     * This is the END-TO-END complement to the driver-level
+     * `connection_close_captures_peer_error_as_typed_reason` (which injects the peer error via a
+     * stub): here a real peer sends a real CONNECTION_CLOSE over loopback, exercising each quiche
+     * binding's `connPeerError` (FFM on JDK 21, JNI on JDK < 21 / Android, cinterop on K/N) and the
+     * Apple NW close path. [assertConnectionCloseErrorObservedByPeer] pins the platform-exact reason.
+     *
+     * `open` because Network.framework's connection close is a **local group cancel** that does not
+     * transmit the QUIC application close code on the wire (the same family of limitation as #134),
+     * so a peer cannot observe it — the Apple subclass overrides this with the NW-available contract
+     * rather than asserting something NW can't honor.
+     */
+    @Test
+    open fun connectionCloseWithErrorIsObservedByPeer() =
+        runQuicTest {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                    val serverReadFirst = CompletableDeferred<Unit>()
+                    val serverJob =
+                        launch {
+                            connections {
+                                // Read the client's priming byte so the connection is fully live, then
+                                // abort the WHOLE connection with an application close code.
+                                val stream = acceptStream()
+                                stream.read(5.seconds)
+                                serverReadFirst.complete(Unit)
+                                closeWithError(connectionCloseAppCode)
+                            }
+                        }
+                    delay(100)
+
+                    try {
+                        withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                            val stream = openStream()
+                            val hello = BufferFactory.deterministic().allocate(5)
+                            hello.writeString("hello", Charset.UTF8)
+                            hello.resetForRead()
+                            stream.write(hello, 5.seconds)
+                            serverReadFirst.await()
+
+                            // After the peer's CONNECTION_CLOSE the next writes must raise a
+                            // connection-level QuicCloseException (mirrors the stream-reset test's
+                            // shape: repeated writes flush the peer's close frame in, then throw).
+                            val closeError =
+                                assertFailsWith<QuicCloseException>(
+                                    "a peer connection abort must surface as a connection-level QuicCloseException",
+                                ) {
+                                    repeat(50) {
+                                        val ping = BufferFactory.deterministic().allocate(4)
+                                        ping.writeString("ping", Charset.UTF8)
+                                        ping.resetForRead()
+                                        stream.write(ping, 5.seconds)
+                                        delay(100)
+                                    }
+                                }
+                            assertConnectionCloseErrorObservedByPeer(closeError.quicError)
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
     // --- Pinned CA trust (#99) ---
     // QuicOptions.trustedCaCertificatesPem must drive real chain validation on the
     // quiche-backed targets (JVM/Android/Linux), matching the Apple path. Before #99 the

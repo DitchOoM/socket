@@ -308,8 +308,9 @@ interface QuicheApi {
      * becomes an exhaustive [QuicError]. Used to populate [QuicConnectionState.Closed.error] so a remote
      * close surfaces its real reason instead of [QuicError.NoError].
      *
-     * quiche is single-threaded — call only from the driver loop. Defaults to `null` for backends that
-     * do not bind it yet (JNI/Android).
+     * quiche is single-threaded — call only from the driver loop. Bound on every real backend (FFM,
+     * JNI/Android, cinterop); the interface default returns `null` only for test doubles that don't model
+     * a close reason.
      */
     fun connPeerError(conn: QuicheConn): QuicError? = null
 
@@ -318,7 +319,8 @@ interface QuicheApi {
      * Maps `quiche_conn_local_error`. Complements [connPeerError]: when quiche itself tears the
      * connection down (it rejected the peer's transport parameters, the TLS handshake failed, a protocol
      * violation, …) the cause is here, not in the peer error. Same typed decoding as [connPeerError].
-     * Defaults to `null` for backends that do not bind it yet (JNI/Android).
+     * Bound on every real backend (FFM, JNI/Android, cinterop); the interface default returns `null`
+     * only for test doubles that don't model a close reason.
      */
     fun connLocalError(conn: QuicheConn): QuicError? = null
 
