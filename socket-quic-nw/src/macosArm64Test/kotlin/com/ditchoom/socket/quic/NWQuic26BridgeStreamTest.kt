@@ -240,6 +240,7 @@ class NWQuic26BridgeStreamTest {
                 maxDatagramFrameSize = 0,
                 keepAliveMs = 0,
                 serverCertificateHashes = listOf(pinFor("pinned")),
+                trustedCaCertificateDers = null,
                 requireChain = false,
                 verifyPeer = true,
                 onReady = { errCode, desc ->
@@ -247,7 +248,7 @@ class NWQuic26BridgeStreamTest {
                         clientReady.complete(Unit)
                     } else {
                         clientReady.completeExceptionally(
-                            IllegalStateException("connect failed: $errCode ${desc ?: ""} pinReason=${ref?.pinFailureReason()}"),
+                            IllegalStateException("connect failed: $errCode ${desc ?: ""} verdict=${ref?.verdict()}"),
                         )
                     }
                 },

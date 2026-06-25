@@ -11,7 +11,9 @@ import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.value
+import platform.Foundation.NSData
 import kotlin.time.Instant
 
 /**
@@ -51,6 +53,29 @@ internal fun checkApplePinnedCertificateConstraints(
                 "Security.framework could not extract the leaf certificate fields",
             )
     return checkServerCertificatePinConstraints(fields)
+}
+
+/**
+ * [checkApplePinnedCertificateConstraints] over the matched leaf DER as an [NSData] — the form the OS-26
+ * Swift bridge hands back ([NWQuic26VerdictAccepted.leafDer]). Reuses the same [extractAppleLeafFields]
+ * parse + shared [checkServerCertificatePinConstraints] policy as the CPointer overload, so the Swift and
+ * legacy backends enforce the identical W3C constraints. Fails closed on a missing / empty DER.
+ */
+internal fun checkApplePinnedCertificateConstraints(leafDer: NSData?): CertificateHashPinningFailure? {
+    // nsDataLengthInt is expect/actual to dodge the NSUInteger bit-width-commonization trap (length is
+    // 32-bit on some apple targets, 64-bit on others — a raw length.toInt() here won't compile in appleMain).
+    if (leafDer == null || nsDataLengthInt(leafDer) <= 0) {
+        return CertificateHashPinningFailure.CertificateParseFailed(
+            "OS-26 verify validator captured no matched leaf certificate",
+        )
+    }
+    val len = nsDataLengthInt(leafDer)
+    val ptr =
+        leafDer.bytes?.reinterpret<UByteVar>()
+            ?: return CertificateHashPinningFailure.CertificateParseFailed(
+                "matched leaf certificate DER has no readable bytes",
+            )
+    return checkApplePinnedCertificateConstraints(ptr, len, len)
 }
 
 /** EC over a NIST prime-random curve, as Security.framework reports it (see [ditchoom_apple_pin_leaf_fields]). */

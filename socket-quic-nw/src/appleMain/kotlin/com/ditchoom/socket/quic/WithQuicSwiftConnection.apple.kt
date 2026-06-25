@@ -14,12 +14,18 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.toNativeData
+import com.ditchoom.socket.CertificateHashPinningException
+import com.ditchoom.socket.CertificateHashPinningFailure
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Bridge
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Conn
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Listener
 import com.ditchoom.socket.quic.nwquic26.NWQuic26Stream
+import com.ditchoom.socket.quic.nwquic26.NWQuic26VerdictAccepted
+import com.ditchoom.socket.quic.nwquic26.NWQuic26VerdictHashMismatch
+import com.ditchoom.socket.quic.nwquic26.NWQuic26VerdictNoPeerCertificate
+import com.ditchoom.socket.quic.nwquic26.NWQuic26VerdictTrustRejected
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,6 +76,13 @@ internal suspend fun connectQuicSwift(
             .ifEmpty { null }
     val requireChain = quicOptions.certificateHashVerification == CertificateHashVerification.RequireBoth
 
+    // Pinned-CA trust anchors (issue #81): PEM → DER NSData. Empty → null so the shim keeps NW's default
+    // system trust (or the leaf-hash / verifyPeer=false validators). See NWQuic26Bridge.connect.
+    val caDerList: List<NSData>? =
+        quicOptions.trustedCaCertificatesPem
+            .flatMap { pemToDerCertificates(it) }
+            .ifEmpty { null }
+
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     val datagramChannel = if (datagramsEnabled) Channel<ReadBuffer>(Channel.UNLIMITED) else null
 
@@ -81,6 +94,13 @@ internal suspend fun connectQuicSwift(
             bufferFactory = connectionOptions.quicBufferFactory(),
             datagramsEnabled = datagramsEnabled,
             negotiatedAlpn = quicOptions.alpnProtocols.firstOrNull() ?: "",
+            // Client-side W3C leaf-hash pinning context: how many hashes were pinned (for the HashMismatch
+            // failure) and whether this platform enforces the post-handshake leaf constraints (macOS).
+            // Server connections leave these at their defaults (no self-pinning).
+            pinnedHashCount = quicOptions.serverCertificateHashes.size,
+            enforceLeafConstraints =
+                serverCertHashes != null &&
+                    serverCertificateConstraintSupport is ServerCertificateConstraintSupport.Enforced,
         )
 
     val handle =
@@ -99,6 +119,7 @@ internal suspend fun connectQuicSwift(
                     ?.coerceAtMost(Int.MAX_VALUE.toLong())
                     ?.toInt() ?: 0,
             serverCertificateHashes = serverCertHashes,
+            trustedCaCertificateDers = caDerList,
             requireChain = requireChain,
             verifyPeer = quicOptions.verifyPeer,
             onReady = { _, _ -> }, // establishment is driven by onStateChanged below (unified client+server)
@@ -169,6 +190,12 @@ internal class AppleQuicSwiftConnection(
     override val bufferFactory: BufferFactory,
     private val datagramsEnabled: Boolean,
     private val negotiatedAlpn: String,
+    // Client-side W3C `serverCertificateHashes` pinning context. [pinnedHashCount] is the number of pinned
+    // hashes (reported in a HashMismatch failure); [enforceLeafConstraints] is true only on a client whose
+    // platform enforces the post-handshake leaf constraints (macOS). Both default off — a server connection
+    // never pins against its own certificate.
+    private val pinnedHashCount: Int = 0,
+    private val enforceLeafConstraints: Boolean = false,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : QuicConnection,
     CoroutineScope by scope {
@@ -217,25 +244,15 @@ internal class AppleQuicSwiftConnection(
         desc: String?,
     ) {
         when (stateCode) {
-            3 -> {
-                if (established.complete(Unit)) _state.value = QuicConnectionState.Established(negotiatedAlpn)
-            }
+            3 -> onTlsReady()
             4, 5 -> {
                 if (!established.isCompleted) {
-                    // Pre-ready terminal: surface as the connect failure. (`.waiting` carrying a transient
-                    // ENETDOWN is state 1 and is correctly ignored here — it recovers to ready.)
-                    established.completeExceptionally(
-                        SocketConnectionException.Refused(
-                            hostname,
-                            port,
-                            platformError = "QUIC connect failed: code=$errCode ${desc ?: ""}",
-                        ),
-                    )
+                    // Pre-ready terminal: surface the typed connect failure. (`.waiting` carrying a
+                    // transient ENETDOWN is state 1 and is correctly ignored here — it recovers to ready.)
+                    established.completeExceptionally(verifyFailure(errCode, desc))
                 } else {
                     onTransportClosed(
-                        if (errCode ==
-                            0
-                        ) {
+                        if (errCode == 0) {
                             QuicError.NoError
                         } else {
                             QuicError.PlatformError(RuntimeException("NW $errCode ${desc ?: ""}"))
@@ -246,6 +263,56 @@ internal class AppleQuicSwiftConnection(
             else -> {} // setup / waiting / preparing — non-terminal
         }
     }
+
+    /**
+     * TLS handshake reached `ready`. On a client that pins leaf hashes, run the W3C leaf constraints
+     * (validity ≤ 14 days / currently valid / EC-P256) on the matched leaf the verify validator captured
+     * BEFORE publishing [QuicConnectionState.Established] — so a connection we are about to reject for a
+     * non-compliant (but hash-matching) leaf is never observed as established. A violation fails
+     * [established] with the same typed [CertificateHashPinningException] the quiche backends throw and
+     * tears the connection down. The constraint check is synchronous, so it runs inline on NW's callback.
+     */
+    private fun onTlsReady() {
+        if (enforceLeafConstraints) {
+            val leafDer = (conn.verdict() as? NWQuic26VerdictAccepted)?.leafDer()
+            val violation = checkApplePinnedCertificateConstraints(leafDer)
+            if (violation != null) {
+                if (established.completeExceptionally(CertificateHashPinningException(violation))) {
+                    onTransportClosed(QuicError.NoError)
+                }
+                return
+            }
+        }
+        if (established.complete(Unit)) _state.value = QuicConnectionState.Established(negotiatedAlpn)
+    }
+
+    /**
+     * Map a pre-`ready` terminal state to a typed connect failure, reading the single [NWQuic26Verdict]
+     * the verify validator published (issue #81). A leaf-hash rejection becomes the same
+     * [CertificateHashPinningException] the quiche backends throw; a trust-chain / CA-anchor rejection
+     * becomes a connection-level [QuicCloseException] (parity with the legacy cancelled-group path);
+     * anything else is a generic [SocketConnectionException.Refused].
+     */
+    private fun verifyFailure(
+        errCode: Int,
+        desc: String?,
+    ): Throwable =
+        when (val v = conn.verdict()) {
+            is NWQuic26VerdictHashMismatch ->
+                CertificateHashPinningException(
+                    CertificateHashPinningFailure.HashMismatch(pinnedHashCount, "sha-256:" + v.computedHashHex()),
+                )
+            is NWQuic26VerdictNoPeerCertificate ->
+                CertificateHashPinningException(CertificateHashPinningFailure.NoPeerCertificate)
+            is NWQuic26VerdictTrustRejected ->
+                QuicCloseException(QuicError.NoError, "QUIC connection rejected: certificate trust evaluation failed")
+            else ->
+                SocketConnectionException.Refused(
+                    hostname,
+                    port,
+                    platformError = "QUIC connect failed: code=$errCode ${desc ?: ""}",
+                )
+        }
 
     /** Resolve the datagram channel so [maxDatagramSize] is accurate before the first send (no-op if disabled). */
     suspend fun ensureDatagramsReady() {

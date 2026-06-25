@@ -974,7 +974,7 @@ private fun computedHashHex(digest: CPointer<UByteVar>): String {
  * Foundation decodes the base64 body straight into DER-backed [NSData] — no
  * intermediate `ByteArray`.
  */
-private fun pemToDerCertificates(pem: String): List<NSData> {
+internal fun pemToDerCertificates(pem: String): List<NSData> {
     val begin = "-----BEGIN CERTIFICATE-----"
     val end = "-----END CERTIFICATE-----"
     val ders = mutableListOf<NSData>()

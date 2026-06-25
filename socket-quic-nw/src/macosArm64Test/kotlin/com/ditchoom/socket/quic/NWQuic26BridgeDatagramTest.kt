@@ -76,6 +76,7 @@ class NWQuic26BridgeDatagramTest {
                         maxDatagramFrameSize = 1200,
                         keepAliveMs = 0,
                         serverCertificateHashes = listOf(pinHash),
+                        trustedCaCertificateDers = null,
                         requireChain = false,
                         verifyPeer = true,
                         onReady = { errCode, desc ->
@@ -84,7 +85,7 @@ class NWQuic26BridgeDatagramTest {
                             } else {
                                 clientReady.completeExceptionally(
                                     IllegalStateException(
-                                        "connect failed: $errCode ${desc ?: ""} pinReason=${clientRef?.pinFailureReason()}",
+                                        "connect failed: $errCode ${desc ?: ""} verdict=${clientRef?.verdict()}",
                                     ),
                                 )
                             }

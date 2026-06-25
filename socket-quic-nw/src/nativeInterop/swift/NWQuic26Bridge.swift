@@ -98,12 +98,14 @@ private func nwErrorCode(_ error: NWError) -> Int {
         maxDatagramFrameSize: Int32,
         keepAliveMs: Int32,
         serverCertificateHashes: NSArray?,
+        trustedCaCertificateDers: NSArray?,
         requireChain: Bool,
         verifyPeer: Bool,
         onReady: @escaping (Int32, NSString?) -> Void
     ) -> NWQuic26Conn {
         let alpnList = (alpn as? [String]) ?? []
         let pins: [Data]? = (serverCertificateHashes as? [NSData])?.map { $0 as Data }
+        let caAnchors: [Data]? = (trustedCaCertificateDers as? [NSData])?.map { $0 as Data }
 
         let conn = NWQuic26Conn(
             datagramsEnabled: maxDatagramFrameSize > 0,
@@ -118,12 +120,21 @@ private func nwErrorCode(_ error: NWError) -> Int {
                 maxDatagramFrameSize: Int(maxDatagramFrameSize)
             )
             if let pins {
-                // Hash-pin validator (approach C): hash the peer leaf DER and compare in Swift. Returning
-                // true accepts (so a self-signed but pinned leaf validates); record a typed failure reason
-                // + the computed hash / matched leaf DER for Kotlin to read on rejection. The pin IS the
-                // trust check (W3C serverCertificateHashes), independent of verifyPeer.
+                // Leaf-hash pin validator (W3C serverCertificateHashes, approach C): SHA-256 the peer leaf
+                // DER and compare in Swift. The pin IS the trust check, independent of verifyPeer; under
+                // RequireBoth the chain must also validate (against the pinned CA anchors when supplied).
+                // The whole decision is published as one NWQuic26Verdict (Accepted carries the matched leaf
+                // DER for the post-handshake W3C constraint check; rejections carry their typed reason).
                 return base.tls.certificateValidator { _, trust in
-                    conn.evaluatePin(trust: trust, expectedHashes: pins, requireChain: requireChain)
+                    conn.evaluatePin(trust: trust, expectedHashes: pins, requireChain: requireChain, caAnchors: caAnchors)
+                }
+            }
+            if let caAnchors {
+                // CA-anchor pinning (issue #81): validate the peer chain against these as the SOLE trust
+                // anchors. Supplying anchors forces real peer verification regardless of verifyPeer
+                // (matches the legacy nw_connection_group CA verify_block and the JVM/quiche path).
+                return base.tls.certificateValidator { _, trust in
+                    conn.evaluateCaAnchors(trust: trust, anchorDers: caAnchors)
                 }
             }
             if !verifyPeer {
@@ -132,7 +143,7 @@ private func nwErrorCode(_ error: NWError) -> Int {
                 // system trust and rejects a self-signed leaf.
                 return base.tls.certificateValidator { _, _ in true }
             }
-            return base // default NW trust evaluation (trustedCaCertificatesPem anchors: TODO, not yet wired)
+            return base // default NW system trust evaluation
         }()
 
         let endpoint = NWEndpoint.hostPort(
@@ -240,6 +251,46 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     return sec_identity_create(raw as! SecIdentity)
 }
 
+// --- TLS verify verdict (issue #81 / #173) ---
+// A single published, closed outcome of the client's certificate verification, consumed by Kotlin with
+// an exhaustive `when`. This replaces the former grab-bag of mutable out-param fields (a sentinel
+// `pinFailureReason` int + `pinComputedHashHex` + `pinMatchedLeafDer`), which allowed impossible
+// combinations and was read across the verify-queue→connect-coroutine boundary as several independent
+// fields. The verdict is created once, at the moment of decision, and carries exactly the data its case
+// needs — nothing more is representable.
+
+/// Base type for the four possible certificate-verification outcomes (see the subclasses). K/N imports
+/// this hierarchy so Kotlin can `is`-match each case exhaustively.
+@objc public class NWQuic26Verdict: NSObject {}
+
+/// The peer certificate was accepted. [leafDer] is the matched leaf's DER when acceptance came from a
+/// leaf-hash pin (so Kotlin can run the W3C leaf constraints post-handshake), otherwise nil (CA-anchor
+/// trust or verifyPeer=false — neither has follow-up leaf constraints).
+@objc public final class NWQuic26VerdictAccepted: NWQuic26Verdict {
+    @objc public let leafDer: NSData?
+    init(leafDer: NSData?) {
+        self.leafDer = leafDer
+        super.init()
+    }
+}
+
+/// A leaf certificate was presented and hashed, but its SHA-256 matched none of the pins.
+/// [computedHashHex] is the lowercase-hex digest of the leaf the server actually presented.
+@objc public final class NWQuic26VerdictHashMismatch: NWQuic26Verdict {
+    @objc public let computedHashHex: NSString
+    init(computedHashHex: NSString) {
+        self.computedHashHex = computedHashHex
+        super.init()
+    }
+}
+
+/// The peer presented no leaf certificate to match against the pins.
+@objc public final class NWQuic26VerdictNoPeerCertificate: NWQuic26Verdict {}
+
+/// Trust-chain evaluation rejected the peer: CA-anchor pinning failed, or RequireBoth chain validation
+/// failed. Maps to a connection-level QuicCloseException (parity with the legacy cancelled-group path).
+@objc public final class NWQuic26VerdictTrustRejected: NWQuic26Verdict {}
+
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, *)
 @objc public final class NWQuic26Conn: NSObject {
     private let datagramsEnabled: Bool
@@ -256,7 +307,11 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private var datagramsChannel: QUIC.Datagrams<QUICDatagram>?
     private let datagramsLock = NSLock()
 
+    private let stateHandlerLock = NSLock()
     private var stateHandler: ((Int32, Int32, NSString?) -> Void)?
+    // If the verify validator rejects the peer before Kotlin has wired [stateHandler], stash the synthetic
+    // terminal so the setter delivers it. See signalVerifyRejected for why we drive it ourselves.
+    private var pendingVerifyRejection = false
     private var datagramHandler: ((NSData) -> Void)?
     private var inboundStreamHandler: ((NWQuic26Stream, UInt64, Bool, Bool) -> Void)?
 
@@ -268,10 +323,18 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private let closeLock = NSLock()
     private var readyFired = false
 
-    // Pin diagnostics (read by Kotlin after a failed onReady), mirroring the C verify_block out-params.
-    @objc public private(set) var pinFailureReason: Int32 = 0 // 0 none, 1 mismatch, 2 no-peer-cert
-    @objc public private(set) var pinComputedHashHex: NSString?
-    @objc public private(set) var pinMatchedLeafDer: NSData?
+    // The single published TLS verify outcome (issue #81). nil means no custom verification ran, or it
+    // accepted generically (CA-anchor trust / verifyPeer=false / default system trust — none of which
+    // need a follow-up). Set exactly once by the verify validator below; read by Kotlin once
+    // establishment resolves. See NWQuic26Verdict and publishVerdict.
+    private let verdictLock = NSLock()
+    @objc public private(set) var verdict: NWQuic26Verdict?
+
+    private func publishVerdict(_ v: NWQuic26Verdict) {
+        verdictLock.lock()
+        defer { verdictLock.unlock() }
+        if verdict == nil { verdict = v }
+    }
 
     // Stable short tag for QUIC_NW_DIAG traces, e.g. "srv#3" / "cli#4".
     private let connSeq = nwDiagNextSeq()
@@ -335,7 +398,34 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     // --- lifecycle/state ---
 
     @objc public func onStateChanged(_ handler: @escaping (Int32, Int32, NSString?) -> Void) {
+        stateHandlerLock.lock()
         stateHandler = handler
+        let deliverPending = pendingVerifyRejection
+        pendingVerifyRejection = false
+        stateHandlerLock.unlock()
+        // A verify rejection that raced ahead of this wiring is delivered now (state 4 = failed).
+        if deliverPending { handler(4, 0, "certificate verification rejected" as NSString) }
+    }
+
+    /// The TLS verify validator rejected the peer. Network.framework does NOT report a client verify
+    /// rejection as a connection state change — the handshake just stalls (the same gotcha the legacy
+    /// nw_connection_group path cancels the group to work around). So drive a synthetic terminal (state
+    /// 4 = failed) to Kotlin, which reads the already-published [verdict] to throw the typed exception.
+    private func signalVerifyRejected() {
+        stateHandlerLock.lock()
+        let handler = stateHandler
+        if handler == nil { pendingVerifyRejection = true }
+        stateHandlerLock.unlock()
+        nwDiag("\(diagTag) signalVerifyRejected handler=\(handler != nil ? "set" : "nil(pending)")")
+        handler?(4, 0, "certificate verification rejected" as NSString)
+    }
+
+    /// Publish [v] as the (single) verify outcome and drive the synthetic terminal; returns false so the
+    /// validator closure rejects the handshake.
+    private func rejectWith(_ v: NWQuic26Verdict) -> Bool {
+        publishVerdict(v)
+        signalVerifyRejected()
+        return false
     }
 
     // --- datagrams ---
@@ -556,35 +646,64 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         return true
     }
 
-    // --- pin evaluation (approach C: hash leaf DER, compare in Swift) ---
+    // --- certificate verification (approach C: hash leaf DER / evaluate chain in Swift, publish a verdict) ---
 
-    func evaluatePin(trust: sec_trust_t, expectedHashes: [Data], requireChain: Bool) -> Bool {
+    /// Leaf-hash pinning. Publishes [NWQuic26VerdictAccepted] (carrying the matched leaf DER) on success,
+    /// or a typed rejection verdict on failure, and returns whether to accept the handshake.
+    func evaluatePin(trust: sec_trust_t, expectedHashes: [Data], requireChain: Bool, caAnchors: [Data]?) -> Bool {
+        nwDiag("\(diagTag) evaluatePin pins=\(expectedHashes.count) requireChain=\(requireChain)")
         let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
         guard let chain = SecTrustCopyCertificateChain(secTrust) as? [SecCertificate],
               let leaf = chain.first
         else {
-            pinFailureReason = 2 // no-peer-cert
-            return false
+            return rejectWith(NWQuic26VerdictNoPeerCertificate())
         }
         let der = SecCertificateCopyData(leaf) as Data
         let digest = Data(SHA256.hash(data: der))
-        let matched = expectedHashes.contains(digest)
-        if !matched {
-            pinFailureReason = 1 // mismatch
-            pinComputedHashHex = digest.map { String(format: "%02x", $0) }.joined() as NSString
-            pinMatchedLeafDer = nil
-            return false
+        if !expectedHashes.contains(digest) {
+            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            nwDiag("\(diagTag) evaluatePin HASH MISMATCH computed=\(hex.prefix(16))… -> reject")
+            return rejectWith(NWQuic26VerdictHashMismatch(computedHashHex: hex as NSString))
         }
-        pinMatchedLeafDer = der as NSData
         if requireChain {
-            // RequireBoth: the hash matched AND the chain must validate against system/anchor trust.
+            // RequireBoth defense in depth: the hash matched AND the chain must validate. Pin the supplied
+            // CA anchors as the sole anchors when present, else default system trust. A chain failure here
+            // is a generic trust rejection (NOT a hash mismatch) — mirrors quiche / the legacy verify_block.
+            if let caAnchors, !caAnchors.isEmpty { _ = applyAnchors(caAnchors, to: secTrust) }
             var err: CFError?
-            let chainOk = SecTrustEvaluateWithError(secTrust, &err)
-            if !chainOk {
-                pinFailureReason = 1
-                return false
+            if !SecTrustEvaluateWithError(secTrust, &err) {
+                return rejectWith(NWQuic26VerdictTrustRejected())
             }
         }
+        publishVerdict(NWQuic26VerdictAccepted(leafDer: der as NSData))
+        return true
+    }
+
+    /// CA-anchor pinning (issue #81 — the new-API analog of nw_quic_helpers.h's CA verify_block):
+    /// validate the peer's chain against [anchorDers] as the SOLE trust anchors (no network fetch).
+    /// Acceptance leaves [verdict] nil (no leaf-hash constraints follow); rejection publishes TrustRejected.
+    func evaluateCaAnchors(trust: sec_trust_t, anchorDers: [Data]) -> Bool {
+        let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
+        if !applyAnchors(anchorDers, to: secTrust) {
+            return rejectWith(NWQuic26VerdictTrustRejected())
+        }
+        var err: CFError?
+        if !SecTrustEvaluateWithError(secTrust, &err) {
+            return rejectWith(NWQuic26VerdictTrustRejected())
+        }
+        return true
+    }
+
+    /// Pin [ders] as the sole trust anchors on [secTrust], disabling network fetch. Returns false if none
+    /// parsed (so the caller fails closed). Shared by [evaluateCaAnchors] and the RequireBoth branch of
+    /// [evaluatePin].
+    @discardableResult
+    private func applyAnchors(_ ders: [Data], to secTrust: SecTrust) -> Bool {
+        let anchors = ders.compactMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+        if anchors.isEmpty { return false }
+        SecTrustSetAnchorCertificates(secTrust, anchors as CFArray)
+        SecTrustSetAnchorCertificatesOnly(secTrust, true)
+        SecTrustSetNetworkFetchAllowed(secTrust, false)
         return true
     }
 }
