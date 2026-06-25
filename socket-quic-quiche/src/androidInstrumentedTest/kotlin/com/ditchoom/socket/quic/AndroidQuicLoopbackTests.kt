@@ -122,6 +122,74 @@ class AndroidQuicLoopbackTests {
         }
 
     /**
+     * Regression guard for the JNI backend's peer connection-close code (the Android-critical half of
+     * the fix that added `nConnError` to `JniQuicheApi`). Android always uses the JNI quiche binding;
+     * before the fix it inherited the null-returning `connPeerError` default, so a peer's
+     * `closeWithError(code)` was silently reported as a clean `NoError` shutdown — defeating the
+     * typed-error feature exactly where it matters. Here the in-process server aborts the whole
+     * connection with an application code and the client must observe a connection-level
+     * [QuicCloseException] carrying [QuicError.ApplicationError]. Mirrors the shared
+     * `QuicServerTestSuite.connectionCloseWithErrorIsObservedByPeer` (Android reimplements rather than
+     * subclasses the suite).
+     */
+    @Test
+    fun peerConnectionCloseCodeIsObservedOverJni() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                withTimeout(20.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val serverReadFirst = CompletableDeferred<Unit>()
+                        val serverJob =
+                            launch(Dispatchers.IO) {
+                                connections {
+                                    val stream = acceptStream()
+                                    stream.read(5.seconds)
+                                    serverReadFirst.complete(Unit)
+                                    closeWithError(0xBEEFL)
+                                }
+                            }
+                        delay(100)
+
+                        val observed = CompletableDeferred<QuicError>()
+                        val clientJob =
+                            launch(Dispatchers.IO) {
+                                withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
+                                    val stream = openStream()
+                                    val hello = BufferFactory.Default.allocate(5)
+                                    hello.writeString("hello", Charset.UTF8)
+                                    hello.resetForRead()
+                                    stream.write(hello, 5.seconds)
+                                    serverReadFirst.await()
+                                    try {
+                                        repeat(50) {
+                                            val ping = BufferFactory.Default.allocate(4)
+                                            ping.writeString("ping", Charset.UTF8)
+                                            ping.resetForRead()
+                                            stream.write(ping, 5.seconds)
+                                            delay(100)
+                                        }
+                                    } catch (e: QuicCloseException) {
+                                        observed.complete(e.quicError)
+                                    }
+                                }
+                            }
+
+                        try {
+                            assertEquals(
+                                QuicError.ApplicationError(0xBEEFL),
+                                withTimeout(12.seconds) { observed.await() },
+                                "the JNI backend must surface the peer's CONNECTION_CLOSE application code",
+                            )
+                        } finally {
+                            clientJob.cancel()
+                            serverJob.cancel()
+                        }
+                    }
+                }
+            }
+        }
+
+    /**
      * Active migration (RFC 9000 §9) against an in-process server — mirrors
      * [QuicMigrationLoopbackTests.streamSurvivesActiveMigrationToLoopbackAlias] on Android. The
      * client connects on 127.0.0.1, [migrate]s its source to 127.0.0.2, and the stream must still
