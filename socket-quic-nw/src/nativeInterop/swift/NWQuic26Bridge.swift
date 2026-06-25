@@ -277,6 +277,11 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private let connSeq = nwDiagNextSeq()
     var diagTag: String { "\(isServer ? "srv" : "cli")#\(connSeq)" }
 
+    // Graceful-close drain window: how long a clean close() holds the connection alive so NW can flush
+    // stream bytes it has accepted but not yet put on the wire (see close()). Bounded so a wedged flush
+    // can't leak the connection; runs detached so close() still returns immediately.
+    private static let gracefulDrainNanos: UInt64 = 500_000_000
+
     init(datagramsEnabled: Bool, isServer: Bool, keepAliveMs: Int) {
         self.datagramsEnabled = datagramsEnabled
         self.isServer = isServer
@@ -489,19 +494,37 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         nwDiag("\(diagTag) close(appErrorCode=\(appErrorCode)) alreadyClosed=\(alreadyClosed)")
         if alreadyClosed { return }
 
-        // The new NetworkConnection has no cancel() — teardown is via ARC. Stamp the application close
-        // code (CONNECTION_CLOSE, RFC 9000 §19.19), cancel the serving Tasks (releasing their captures),
-        // and drop our reference so the connection deinits. On the SERVER side, resuming the run-closure
-        // (cont) returns it, which is what actually ends the accepted connection.
-        if appErrorCode != 0, let connection {
-            // reason MUST be non-nil: NW's nw_quic_set_application_error_reason calls strlen() on it, so a
-            // nil reason (the ApplicationError(code:) default) crashes with SIGSEGV (strlen(NULL)). Pass "".
-            connection.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
-        }
+        // The new NetworkConnection has no cancel() — teardown is via ARC. Cancel the (inbound) serving
+        // Tasks first; the OUTBOUND send queue is owned by NW, not these Tasks, so it keeps flushing as
+        // long as the connection object is alive. On the SERVER side, resuming the run-closure (cont)
+        // returns it, which is what actually ends the accepted connection.
         for t in serveTasks { t.cancel() }
         serveTasks.removeAll()
         datagramsTask?.cancel()
+
+        let conn = connection
         connection = nil
+        if let conn {
+            if appErrorCode != 0 {
+                // Application abort: stamp the application close code (CONNECTION_CLOSE, RFC 9000 §19.19)
+                // and drop now — the app asked to tear down immediately. reason MUST be non-nil: NW's
+                // nw_quic_set_application_error_reason calls strlen() on it, so a nil reason (the
+                // ApplicationError(code:) default) crashes with SIGSEGV (strlen(NULL)). Pass "".
+                conn.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
+            } else {
+                // Graceful close (code 0): a bare ARC drop here strands stream bytes NW has ACCEPTED
+                // (`stream.send` completed) but not yet put on the wire — the peer then observes ENOTCONN
+                // instead of the data, losing a just-written unidirectional stream (the PR #176 macos-26
+                // loopback race, where `webTransport_clientOpensUniStream_serverReceives` writes then
+                // immediately tears down). Hold the connection for a bounded drain so NW flushes the
+                // outstanding stream data + FINs, THEN release it. Detached, so close() still returns at
+                // once; the cap (gracefulDrainNanos) guarantees a wedged flush can't leak the connection.
+                Task {
+                    try? await Task.sleep(nanoseconds: NWQuic26Conn.gracefulDrainNanos)
+                    withExtendedLifetime(conn) {}
+                }
+            }
+        }
         cont?.resume()
     }
 
