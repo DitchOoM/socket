@@ -10,8 +10,6 @@ import org.junit.Assume.assumeTrue
  * rather than fail. Mirrors `:socket-quic`'s `JvmQuicServerTestSuite`.
  */
 class JvmHttp3LoopbackTest : Http3LoopbackTestSuite() {
-    override val timeScale: Double get() = parseTimeScale(System.getenv("QUIC_TEST_TIME_SCALE"))
-
     private fun certPath(name: String): String {
         val url =
             this::class.java.classLoader.getResource("certs/$name")

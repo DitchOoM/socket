@@ -173,13 +173,6 @@ jobs:
         run: echo "HARNESS_DISABLED=true" >> $GITHUB_ENV
 
       - name: Run Apple tests
-        # The macos-26 GitHub runner is virtualized and stalls the scheduler for seconds at a time,
-        # tripping the live HTTP/3 loopback suite's wall-clock timeouts (idle-close → QuicCloseException,
-        # or a withTimeout op-wait expiring) — a CI-only flake; bare-metal macOS 26 passes. The same
-        # QUIC_TEST_TIME_SCALE the rest of the QUIC suite honours scales every loopback timeout/idle
-        # budget by this factor (clamped 1..10), granting absolute headroom while preserving relations.
-        env:
-          QUIC_TEST_TIME_SCALE: "4"
         run: >-
           ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
           :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck

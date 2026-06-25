@@ -3,10 +3,8 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicTlsConfig
-import kotlinx.cinterop.toKString
 import platform.posix.F_OK
 import platform.posix.access
-import platform.posix.getenv
 
 /**
  * Apple subclass of [Http3LoopbackTestSuite] — the first comprehensive HTTP/3 exercise on
@@ -28,10 +26,6 @@ import platform.posix.getenv
  * unavailable; this suite runs on macOS 26 here.)
  */
 class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
-    // The virtualized macos-26 CI runner stalls the scheduler for seconds at a time, tripping the
-    // suite's loopback timeouts (a CI-only flake; bare-metal macOS 26 passes). Honour QUIC_TEST_TIME_SCALE.
-    override val timeScale: Double get() = parseTimeScale(getenv("QUIC_TEST_TIME_SCALE")?.toKString())
-
     private fun certPath(name: String): String {
         val candidates =
             listOf(
