@@ -1,0 +1,131 @@
+name: "Apple NW QUIC loopback diagnostic (PR #176)"
+
+# On-demand, fast iteration lane for the macos-26 CI-only NW↔NW HTTP/3 loopback race
+# (AppleHttp3LoopbackTest.serverPushWindowRollsViaReIssuedMaxPushId → ENOTCONN mid-session;
+# webTransport_clientOpensUniStream_serverReceives → inbound uni stream never arrives).
+#
+# It deliberately does the MINIMUM the two failing tests need: build the socket-http3 macosArm64
+# debug *test binary* (NW QUIC only — no quiche-from-source, no JVM, no iOS sim, no publish), then run
+# that .kexe directly in a loop with QUIC_NW_DIAG=1 so the env-gated lifecycle trace (NWQuic26Bridge
+# Swift + AppleQuicSwiftConnection Kotlin) lands in the log on both pass and fail. Looping reproduces
+# the intermittency the single PR run only sometimes hits. ~10 min vs the ~40-60 min build-apple job.
+#
+# Trigger from the Actions tab (workflow_dispatch); tune `iterations` / `filter` per run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "How many times to run each test (catches the intermittent failure)"
+        required: false
+        default: "10"
+        type: string
+      filter:
+        description: "ktest_filter glob for which tests to run"
+        required: false
+        default: "*serverPushWindowRollsViaReIssuedMaxPushId*:*webTransport_clientOpensUniStream_serverReceives*"
+        type: string
+
+concurrency:
+  group: apple-nw-diag-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diag:
+    name: "NW loopback trace"
+    # macos-26: the NWQuic26 Swift bridge compiles against the macOS-26 SDK and the OS-26
+    # NetworkConnection<QUIC> backend is @available(macOS 26, *) — the runtime must provide it.
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+
+      - name: Cache Konan
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-macos-
+
+      # Build ONLY the NW test binary + the PKCS#12 the loopback server presents. socket-http3's Apple
+      # target routes through :socket-quic-default → :socket-quic-nw (Network.framework) — no quiche
+      # dylib, so the whole quiche-from-source build the PR job pays is skipped here.
+      - name: Build socket-http3 macosArm64 test binary + p12
+        run: >-
+          ./gradlew
+          :socket-http3:linkDebugTestMacosArm64
+          :socket-http3:generateHttp3TestP12
+          --no-configuration-cache
+
+      # Run the .kexe directly (no Gradle) so each iteration is a fresh process and Gradle's
+      # up-to-date check can't skip a re-run. cwd = repo root so the test's certPath finds
+      # socket-http3/testcerts/cert.p12. QUIC_NW_DIAG=1 turns on the stderr lifecycle trace; we keep
+      # each iteration's full output and tally the failures.
+      - name: Run NW loopback tests in a loop with QUIC_NW_DIAG
+        id: loop
+        env:
+          QUIC_NW_DIAG: "1"
+        run: |
+          set -uo pipefail
+          KEXE=socket-http3/build/bin/macosArm64/debugTest/test.kexe
+          if [ ! -f "$KEXE" ]; then
+            echo "::error::Test binary not found at $KEXE — link task failed?"
+            exit 1
+          fi
+          mkdir -p /tmp/nw-diag
+          ITERS="${{ inputs.iterations }}"
+          FILTER='${{ inputs.filter }}'
+          # Split the colon-separated filter globs into individual tests so each runs in isolation
+          # (cleaner per-test logs; one hang doesn't mask the other).
+          IFS=':' read -ra GLOBS <<< "$FILTER"
+
+          FAILS=0
+          TOTAL=0
+          for g in "${GLOBS[@]}"; do
+            safe=$(echo "$g" | tr -c 'A-Za-z0-9_.-' '_')
+            for i in $(seq 1 "$ITERS"); do
+              TOTAL=$((TOTAL + 1))
+              LOG="/tmp/nw-diag/${safe}.iter${i}.log"
+              echo "=== iteration $i for filter $g ==="
+              # Timeout guards the inbound-uni-never-arrives hang so the loop makes progress.
+              if timeout 90 "$KEXE" --ktest_filter="$g" > "$LOG" 2>&1; then
+                echo "iter $i: PASS"
+              else
+                rc=$?
+                FAILS=$((FAILS + 1))
+                echo "iter $i: FAIL (rc=$rc) — diag tail:"
+                tail -40 "$LOG" || true
+              fi
+            done
+          done
+
+          echo "fails=$FAILS" >> "$GITHUB_OUTPUT"
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Apple NW loopback diagnostic"
+            echo ""
+            echo "Ran **$TOTAL** test invocations (QUIC_NW_DIAG on); **$FAILS** failed/hung."
+            echo ""
+            echo "Filter: \`$FILTER\` × $ITERS iterations each."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "RESULT: $FAILS/$TOTAL invocations failed"
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nw-diag-logs
+          path: /tmp/nw-diag/
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Do NOT fail the job on a reproduced test failure — reproducing it IS the goal, and a red X
+      # would obscure that the logs (the deliverable) uploaded fine. The step summary + RESULT line
+      # carry the pass/fail tally.
