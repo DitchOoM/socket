@@ -689,12 +689,16 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
             return
         }
         let payload = data as Data
+        let tag = diagTag
         Task {
             do {
                 let dg = try await datagramsTask.value
+                nwDiag("\(tag) sendDatagram: \(payload.count)B -> dg.send")
                 try await dg.send(payload)
+                nwDiag("\(tag) sendDatagram: \(payload.count)B SENT")
                 completion(0, nil)
             } catch {
+                nwDiag("\(tag) sendDatagram: \(payload.count)B FAILED: \(error)")
                 completion(-1, "datagram send failed: \(error)" as NSString)
             }
         }
@@ -704,16 +708,24 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     @objc public func onDatagram(_ handler: @escaping (NSData) -> Void) {
         ensureDatagramsTask()
         guard let datagramsTask = currentDatagramsTask() else { return }
-        // Capture `handler` + the task directly (not via self) so the serving Task holds no reference to
-        // this connection — it ends when the datagram channel closes, or when close() cancels it.
+        // Capture `handler` + `tag` + the task directly (not via self) so the serving Task holds no
+        // reference to this connection — it ends when the datagram channel closes, or close() cancels it.
+        let tag = diagTag
         let task = Task {
             do {
                 let dg = try await datagramsTask.value
+                // The moment the receive loop is actually pending on dg.receive(). Compared against the
+                // peer's `sendDatagram` timestamp this pins the setup-ordering race: a datagram that
+                // arrives before this point has no app-level NW backlog to land in and is dropped (the
+                // suspected macos-26 CI-only datagramRoundTrip flake — see issue notes). Logged once.
+                nwDiag("\(tag) datagram recv loop ARMED (awaiting dg.receive)")
                 while !Task.isCancelled {
                     let msg = try await dg.receive()
+                    nwDiag("\(tag) datagram RECEIVED \(msg.content.count)B")
                     handler(msg.content as NSData)
                 }
             } catch {
+                nwDiag("\(tag) datagram recv loop ENDED: \(error)")
                 // Connection gone / cancelled — end the loop; Kotlin observes close via onStateChanged.
             }
         }
