@@ -90,6 +90,13 @@ def do_decode(capacity, blocked, stream, encoder_stream, frame):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Speak HTTP/1.1 so persistent (keep-alive) connections are honored. The default HTTP/1.0
+    # closes the socket after every response; a pooling client (Java's HttpClient) then reuses a
+    # connection the server has already closed and races into a connection-reset IOException
+    # mid-run — which surfaced as a flaky differential failure under the 600-request loops. Every
+    # response already sends Content-Length, which HTTP/1.1 keep-alive requires for framing.
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, *args):
         pass  # quiet
 

@@ -9,6 +9,7 @@ import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.http3.Http3FuzzGenerators.SeededEntropy
 import com.ditchoom.socket.http3.Http3FuzzGenerators.headerFields
 import kotlinx.coroutines.runBlocking
+import java.io.IOException
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -92,15 +93,21 @@ class QpackDifferentialInteropTests {
         }
 
     private fun post(body: String): String {
+        val request =
+            HttpRequest
+                .newBuilder(URI("$base/qpack"))
+                .timeout(Duration.ofSeconds(10))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build()
+        // Retry once on a transport IOException: if a pooled keep-alive connection is reset between
+        // requests the resend opens a fresh one. A ref-side QPACK error is a non-200 response (handled
+        // by the check below), not an IOException, so this never masks a real differential signal.
         val resp =
-            http.send(
-                HttpRequest
-                    .newBuilder(URI("$base/qpack"))
-                    .timeout(Duration.ofSeconds(10))
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build(),
-                HttpResponse.BodyHandlers.ofString(),
-            )
+            try {
+                http.send(request, HttpResponse.BodyHandlers.ofString())
+            } catch (_: IOException) {
+                http.send(request, HttpResponse.BodyHandlers.ofString())
+            }
         check(resp.statusCode() == 200) { "qpack oracle returned ${resp.statusCode()}: ${resp.body().trim()}" }
         return resp.body()
     }
