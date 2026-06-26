@@ -5,7 +5,9 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -43,20 +45,24 @@ abstract class QuicDatagramTestSuite {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = dgramOptions) {
                     val echoed = CompletableDeferred<String>()
 
+                    // Server: keep echoing every datagram on the connection (not just one). The client may
+                    // resend (below), and each resend must be echoed so the round-trip completes.
                     val serverJob =
                         launch {
                             connections {
-                                when (val r = receiveDatagram()) {
-                                    is DatagramReceiveResult.Received -> {
-                                        val text = r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
-                                        r.buffer.freeIfNeeded()
-                                        val out = BufferFactory.deterministic().allocate(text.length)
-                                        out.writeString(text, Charset.UTF8)
-                                        out.resetForRead()
-                                        sendDatagram(out)
-                                        out.freeNativeMemory()
+                                while (true) {
+                                    when (val r = receiveDatagram()) {
+                                        is DatagramReceiveResult.Received -> {
+                                            val text = r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
+                                            r.buffer.freeIfNeeded()
+                                            val out = BufferFactory.deterministic().allocate(text.length)
+                                            out.writeString(text, Charset.UTF8)
+                                            out.resetForRead()
+                                            sendDatagram(out)
+                                            out.freeNativeMemory()
+                                        }
+                                        is DatagramReceiveResult.ConnectionClosed -> break
                                     }
-                                    is DatagramReceiveResult.ConnectionClosed -> {}
                                 }
                             }
                         }
@@ -66,18 +72,41 @@ abstract class QuicDatagramTestSuite {
                         launch {
                             withQuicConnection("localhost", port, dgramOptions, timeout = 10.seconds) {
                                 assertIs<MaxDatagramSize.Bytes>(maxDatagramSize(), "datagrams should be sendable")
-                                val sendBuf = BufferFactory.deterministic().allocate(11)
-                                sendBuf.writeString("hello dgram", Charset.UTF8)
-                                sendBuf.resetForRead()
-                                sendDatagram(sendBuf)
-                                sendBuf.freeNativeMemory()
-
-                                when (val r = receiveDatagram()) {
-                                    is DatagramReceiveResult.Received -> {
-                                        echoed.complete(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
-                                        r.buffer.freeIfNeeded()
+                                // RFC 9221 datagrams are UNRELIABLE and NW keeps no app-level pre-arm
+                                // backlog, so the very first datagram can be lost to a setup-ordering race:
+                                // the peer's datagram receive loop arms only a sub-millisecond margin before
+                                // this send, and on a jittery/virtualized runner the send can beat the arm —
+                                // the datagram is then dropped (proven via QUIC_NW_DIAG: server-ARM vs
+                                // client-SEND within ~0.1-0.4ms; the macos-26 datagramRoundTrip flake). The
+                                // robust pattern for an unreliable, no-backlog transport is resend-until-acked
+                                // — the echo IS the ack. On a reliable backend the first send is echoed at
+                                // once and the resender is cancelled after a single iteration, so this is a
+                                // no-op there; it never weakens the assertion (one echo must still arrive).
+                                coroutineScope {
+                                    val resender =
+                                        launch {
+                                            while (isActive && !echoed.isCompleted) {
+                                                val sendBuf = BufferFactory.deterministic().allocate(11)
+                                                sendBuf.writeString("hello dgram", Charset.UTF8)
+                                                sendBuf.resetForRead()
+                                                sendDatagram(sendBuf)
+                                                sendBuf.freeNativeMemory()
+                                                delay(250)
+                                            }
+                                        }
+                                    try {
+                                        while (!echoed.isCompleted) {
+                                            when (val r = receiveDatagram()) {
+                                                is DatagramReceiveResult.Received -> {
+                                                    echoed.complete(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                                    r.buffer.freeIfNeeded()
+                                                }
+                                                is DatagramReceiveResult.ConnectionClosed -> echoed.complete("connection_closed")
+                                            }
+                                        }
+                                    } finally {
+                                        resender.cancel()
                                     }
-                                    is DatagramReceiveResult.ConnectionClosed -> echoed.complete("connection_closed")
                                 }
                             }
                         }
