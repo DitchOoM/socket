@@ -525,8 +525,13 @@ jobs:
           else
             echo "No iPhone simulator available — QUIC harness will self-skip on the sim"
           fi
+          # --no-daemon: run the build in the client JVM this shell forks (which has the
+          # `ulimit -c unlimited` set above), instead of a long-lived daemon started by an earlier
+          # step under the default core limit of 0. The test.kexe inherits its launcher's rlimit, so
+          # without this a SIGSEGV leaves no core in /cores (exactly what happened on the run that
+          # reproduced the crash). Costs a cold build JVM for one step; worth it for a real post-mortem.
           ./gradlew :socket-quic-nw:macosArm64Test :socket-quic-nw:iosSimulatorArm64Test \
-            --no-configuration-cache --stacktrace --info \
+            --no-configuration-cache --no-daemon --stacktrace --info \
             -Pkotlin.native.debug.exceptions=true \
             $SIM_ARG \
             ${{ inputs.gradle-args }} 2>&1 \
