@@ -326,6 +326,10 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
           let first = arr.first,
           let raw = first[kSecImportItemIdentity as String]
     else { return nil }
+    // Verify the CF type before the cast: a malformed/empty p12 can yield an unexpected object under this
+    // key, and an unconditional `as! SecIdentity` would trap the process. Fail closed (nil → the caller
+    // reports an identity-import failure) instead of crashing.
+    guard CFGetTypeID(raw as CFTypeRef) == SecIdentityGetTypeID() else { return nil }
     return sec_identity_create(raw as! SecIdentity)
 }
 
@@ -375,7 +379,37 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private let isServer: Bool
     private let keepAliveMs: Int
 
+    // The underlying connection. Set once in attach(), nil'd in close(), and read from the setup paths
+    // (openStream / onInboundStream / ensureDatagramsTask / applyKeepAlive). Reading an optional class
+    // reference on one thread while close() writes nil on another races the ARC retain/release on the
+    // NetworkConnection object — a refcount corruption that can crash. Funnel get/set through
+    // connectionLock so the retain a reader takes is serialized against close()'s release.
+    private let connectionLock = NSLock()
     private var connection: NetworkConnection<QUIC>?
+
+    private func currentConnection() -> NetworkConnection<QUIC>? {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return connection
+    }
+
+    private func setConnection(_ c: NetworkConnection<QUIC>?) {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        connection = c
+    }
+
+    private func currentDatagramsTask() -> Task<QUIC.Datagrams<QUICDatagram>, Error>? {
+        datagramsLock.lock()
+        defer { datagramsLock.unlock() }
+        return datagramsTask
+    }
+
+    private func setDatagramsTask(_ t: Task<QUIC.Datagrams<QUICDatagram>, Error>?) {
+        datagramsLock.lock()
+        defer { datagramsLock.unlock() }
+        datagramsTask = t
+    }
 
     // Datagram channel resolved once (obtaining it drives the handshake). Both sendDatagram and the
     // receive loop await this Task's value. The resolved channel is also cached so the synchronous
@@ -398,7 +432,40 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private let stateLock = NSLock()
     private var stateDelivery: StateDelivery = .pending(verifyRejected: false)
 
+    // Peer-event serving Tasks (datagram receive loop + inbound-stream accept loop). Appended from the
+    // Kotlin setup coroutines (onDatagram/onInboundStream, on Dispatchers.Default — i.e. arbitrary
+    // threads) and snapshot+cleared by close() (another thread). A Swift Array is NOT thread-safe, so an
+    // append racing the close()-time removeAll() corrupts the array → an intermittent native crash
+    // (SIGSEGV/SIGABRT) that only the virtualized CI runner's timing surfaces. Funnel every access through
+    // serveTasksLock; serveTasksClosed makes a post-close append a no-op (the task is cancelled instead of
+    // leaked, since close() already drained).
+    private let serveTasksLock = NSLock()
     private var serveTasks: [Task<Void, Never>] = []
+    private var serveTasksClosed = false
+
+    /// Register a serving Task under the lock. If close() already drained, cancel the task instead of
+    /// appending it (the connection is gone — its loop would only fault).
+    private func addServeTask(_ task: Task<Void, Never>) {
+        serveTasksLock.lock()
+        if serveTasksClosed {
+            serveTasksLock.unlock()
+            task.cancel()
+            return
+        }
+        serveTasks.append(task)
+        serveTasksLock.unlock()
+    }
+
+    /// Snapshot + clear the serving Tasks and latch closed (so later addServeTask cancels rather than
+    /// appends). Called once by close().
+    private func drainServeTasks() -> [Task<Void, Never>] {
+        serveTasksLock.lock()
+        defer { serveTasksLock.unlock() }
+        serveTasksClosed = true
+        let snapshot = serveTasks
+        serveTasks.removeAll()
+        return snapshot
+    }
 
     // Locally-opened streams, retained for the connection's lifetime. The new `QUIC.Stream` emits
     // RESET_STREAM when its LAST reference deallocs (that's how reset() works), so without an owner here a
@@ -467,7 +534,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     /// Wire the underlying connection + fire `onReady` exactly once on the first terminal state.
     func attach(connection: NetworkConnection<QUIC>, onReady: @escaping (Int32, NSString?) -> Void) {
-        self.connection = connection
+        setConnection(connection)
         connection.onStateUpdate { [weak self] _, state in
             let (code, errCode, desc) = mapConnState(state)
             nwDiag("\(self?.diagTag ?? "?") state=\(code) (\(state)) errCode=\(errCode)")
@@ -508,7 +575,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     /// a sub-second interval is clamped up to 1s; keepAliveMs == 0 (disabled) is a no-op. Idempotent across
     /// repeated `.ready` deliveries. (Issue #130 keepalive parity.)
     private func applyKeepAlive() {
-        guard keepAliveMs > 0, let connection else { return }
+        guard keepAliveMs > 0, let connection = currentConnection() else { return }
         connection.keepalive = .seconds(max(1, keepAliveMs / 1000))
     }
 
@@ -570,9 +637,12 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     private func ensureDatagramsTask() {
         guard datagramsEnabled else { return }
+        // Snapshot the connection BEFORE taking datagramsLock — never nest connectionLock inside
+        // datagramsLock (close() takes them sequentially, so a reversed nesting here could deadlock).
+        let conn = currentConnection()
         datagramsLock.lock()
         defer { datagramsLock.unlock() }
-        if datagramsTask == nil, let connection {
+        if datagramsTask == nil, let connection = conn {
             nwDiag("\(diagTag) datagrams task: awaiting connection.datagrams")
             datagramsTask = Task { [weak self] in
                 do {
@@ -598,7 +668,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     /// negotiated usable size before the first send. completion errCode != 0 ⇒ datagrams unavailable.
     @objc public func ensureDatagramsReady(_ completion: @escaping (Int32, NSString?) -> Void) {
         ensureDatagramsTask()
-        guard let datagramsTask else {
+        guard let datagramsTask = currentDatagramsTask() else {
             completion(-1, "datagrams not enabled on this connection" as NSString)
             return
         }
@@ -614,7 +684,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     @objc public func sendDatagram(_ data: NSData, completion: @escaping (Int32, NSString?) -> Void) {
         ensureDatagramsTask()
-        guard let datagramsTask else {
+        guard let datagramsTask = currentDatagramsTask() else {
             completion(-1, "datagrams not enabled on this connection" as NSString)
             return
         }
@@ -633,7 +703,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     /// Register a push handler for inbound datagrams; spins the serving Task that loops `datagrams.receive()`.
     @objc public func onDatagram(_ handler: @escaping (NSData) -> Void) {
         ensureDatagramsTask()
-        guard let datagramsTask else { return }
+        guard let datagramsTask = currentDatagramsTask() else { return }
         // Capture `handler` + the task directly (not via self) so the serving Task holds no reference to
         // this connection — it ends when the datagram channel closes, or when close() cancels it.
         let task = Task {
@@ -647,7 +717,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 // Connection gone / cancelled — end the loop; Kotlin observes close via onStateChanged.
             }
         }
-        serveTasks.append(task)
+        addServeTask(task)
     }
 
     @objc public func maxDatagramSize() -> Int32 {
@@ -667,7 +737,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         uni: Bool,
         completion: @escaping (NWQuic26Stream?, UInt64, Int32, NSString?) -> Void
     ) {
-        guard let connection else {
+        guard let connection = currentConnection() else {
             completion(nil, 0, -1, "connection not established" as NSString)
             return
         }
@@ -689,7 +759,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     /// Register a push handler for peer-initiated streams (the new API's `inboundStreams { }` loop).
     @objc public func onInboundStream(_ handler: @escaping (NWQuic26Stream, UInt64, Bool, Bool) -> Void) {
-        guard let connection else { return }
+        guard let connection = currentConnection() else { return }
         // Capture `handler` + `tag` directly (not via self) so the serving Task — and the @Sendable
         // `inboundStreams` closure it nests — hold no reference to this connection.
         let tag = diagTag
@@ -713,7 +783,7 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 // Connection gone — end the accept loop.
             }
         }
-        serveTasks.append(task)
+        addServeTask(task)
     }
 
     // --- close ---
@@ -730,15 +800,17 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
         // The new NetworkConnection has no cancel() — teardown is via ARC. Snapshot the connection + its
         // serving Tasks; how/when we release them depends on whether this is a graceful close or an abort.
-        let conn = connection
-        let tasks = serveTasks
-        let dgTask = datagramsTask
+        // All three snapshot+clears go through the same locks their readers use (connectionLock /
+        // serveTasksLock / datagramsLock), so a setup path running concurrently with this teardown can't
+        // tear an array or race the connection's refcount.
+        let conn = currentConnection()
+        let tasks = drainServeTasks()
+        let dgTask = currentDatagramsTask()
         // Snapshot the retained opened streams: an abort releases them now (RESET); a graceful close holds
         // them through the drain so their buffered bytes flush before they dealloc.
         let streams = drainOpenedStreams()
-        serveTasks.removeAll()
-        connection = nil
-        datagramsTask = nil
+        setConnection(nil)
+        setDatagramsTask(nil)
 
         if let conn {
             if appErrorCode != 0 {
