@@ -87,7 +87,6 @@ import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.cstr
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
@@ -492,14 +491,10 @@ internal object CinteropQuicheApi : QuicheApi {
         title: String,
         desc: String,
     ): Boolean =
-        memScoped {
-            quiche_conn_set_qlog_path(
-                conn.handle.toCPointer()!!,
-                path.cstr.ptr,
-                title.cstr.ptr,
-                desc.cstr.ptr,
-            )
-        }
+        // cinterop maps quiche's `const char *` params to Kotlin `String?` (auto-converting the
+        // Kotlin String to a NUL-terminated C string), so pass the Strings straight through — no
+        // manual `.cstr`/memScoped marshaling.
+        quiche_conn_set_qlog_path(conn.handle.toCPointer()!!, path, title, desc)
 
     // --- Path migration ---
 
