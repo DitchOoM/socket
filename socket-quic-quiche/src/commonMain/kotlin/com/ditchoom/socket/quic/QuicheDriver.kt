@@ -253,11 +253,28 @@ class QuicheDriver(
     }
 
     /**
+     * Enable quiche qlog tracing for this connection when `QUIC_QLOG_DIR` is set (diagnostics only).
+     * Writes one `<dir>/quiche-<role>-<conn-handle-hex>.sqlog` per connection — `conn.handle` is the
+     * connection's native pointer, unique per live connection, so files never collide. Best-effort: a
+     * write/dir failure (or an older libquiche without qlog) just means no trace; it never disrupts the
+     * connection. Called once from [run] on the driver coroutine before any packet I/O, honouring quiche's
+     * single-threaded contract.
+     */
+    private fun maybeEnableQlog() {
+        val dir = qlogDir() ?: return
+        val role = if (isServer) "server" else "client"
+        val path = "$dir/quiche-$role-${conn.handle.toString(16)}.sqlog"
+        val enabled = api.connSetQlogPath(conn, path, "ditchoom-socket $role", "QUIC_QLOG_DIR trace")
+        if (enabled) println("[qlog] tracing $role connection to $path")
+    }
+
+    /**
      * The reactive driver loop. Suspends on command channel or quiche timeout — zero CPU when idle.
      * Timeout is integrated via [select]: no separate timeout coroutine, no polling.
      */
     private suspend fun run() {
         try {
+            maybeEnableQlog() // diagnostics: env-gated, on the driver coroutine before any packet I/O
             afterCommand() // initial flush (e.g., ClientHello or ServerHello response)
             // Reactive keepalive: time inactivity off a monotonic mark, reset on every command we
             // process. We wake at min(quiche's next timer, keepalive deadline); whichever is sooner

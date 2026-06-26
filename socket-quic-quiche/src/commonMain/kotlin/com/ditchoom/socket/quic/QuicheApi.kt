@@ -324,6 +324,24 @@ interface QuicheApi {
      */
     fun connLocalError(conn: QuicheConn): QuicError? = null
 
+    /**
+     * Enable qlog tracing on [conn], writing the connection's event log to [path]
+     * (`quiche_conn_set_qlog_path`); [title] and [desc] populate the qlog's `title`/`description`
+     * header fields. Returns `true` if qlog was enabled.
+     *
+     * Diagnostics only: [QuicheDriver] calls this once, env-gated on `QUIC_QLOG_DIR`, on the driver
+     * coroutine right after the connection is created (quiche is single-threaded — it must not be called
+     * concurrently with the driver loop). One `.sqlog` file per connection. The interface default is a
+     * no-op returning `false`, so test doubles need not implement it; every real backend (FFM, JNI/Android,
+     * cinterop) overrides it. Strings (not native addresses) so the JNI backend can `GetStringUTFChars`.
+     */
+    fun connSetQlogPath(
+        conn: QuicheConn,
+        path: String,
+        title: String,
+        desc: String,
+    ): Boolean = false
+
     // --- Path migration ---
 
     /**

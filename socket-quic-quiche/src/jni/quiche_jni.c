@@ -348,6 +348,27 @@ JNIEXPORT jint JNICALL JNI_FN(nConnClose)(
         (const uint8_t *)(uintptr_t)reason_addr, (size_t)reason_len);
 }
 
+/* Enable qlog tracing to a file (diagnostics only, env-gated by the driver). The three jstrings
+ * are read with GetStringUTFChars and released after the call; a NULL from GetStringUTFChars
+ * (OOM, with a pending exception) fails closed (returns false) after releasing what was acquired. */
+JNIEXPORT jboolean JNICALL JNI_FN(nConnSetQlogPath)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jstring path, jstring title, jstring desc) {
+    const char *c_path = (*env)->GetStringUTFChars(env, path, NULL);
+    const char *c_title = (*env)->GetStringUTFChars(env, title, NULL);
+    const char *c_desc = (*env)->GetStringUTFChars(env, desc, NULL);
+    jboolean result = JNI_FALSE;
+    if (c_path != NULL && c_title != NULL && c_desc != NULL) {
+        result = quiche_conn_set_qlog_path(
+            (quiche_conn *)(uintptr_t)conn, c_path, c_title, c_desc)
+            ? JNI_TRUE : JNI_FALSE;
+    }
+    if (c_desc != NULL) (*env)->ReleaseStringUTFChars(env, desc, c_desc);
+    if (c_title != NULL) (*env)->ReleaseStringUTFChars(env, title, c_title);
+    if (c_path != NULL) (*env)->ReleaseStringUTFChars(env, path, c_path);
+    return result;
+}
+
 /* --- Path migration --- */
 
 JNIEXPORT jint JNICALL JNI_FN(nConnProbePath)(

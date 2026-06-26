@@ -35,6 +35,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
@@ -86,6 +87,7 @@ import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.cstr
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
@@ -483,6 +485,21 @@ internal object CinteropQuicheApi : QuicheApi {
             null,
             0.convert(),
         ).toInt()
+
+    override fun connSetQlogPath(
+        conn: QuicheConn,
+        path: String,
+        title: String,
+        desc: String,
+    ): Boolean =
+        memScoped {
+            quiche_conn_set_qlog_path(
+                conn.handle.toCPointer()!!,
+                path.cstr.ptr,
+                title.cstr.ptr,
+                desc.cstr.ptr,
+            )
+        }
 
     // --- Path migration ---
 

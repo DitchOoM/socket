@@ -171,6 +171,13 @@ class FfmQuicheApi private constructor(
     private val hSendAckEliciting by lazy {
         downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
     }
+    private val hConnSetQlogPath by lazy {
+        downcall(
+            "quiche_conn_set_qlog_path",
+            FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS),
+        )
+    }
+
     private val hConnClose by lazy {
         downcall(
             "quiche_conn_close",
@@ -763,6 +770,21 @@ class FfmQuicheApi private constructor(
     private val hStreamIterFree by lazy {
         downcall("quiche_stream_iter_free", FunctionDescriptor.ofVoid(ADDRESS))
     }
+
+    override fun connSetQlogPath(
+        conn: QuicheConn,
+        path: String,
+        title: String,
+        desc: String,
+    ): Boolean =
+        Arena.ofConfined().use { arena ->
+            hConnSetQlogPath.invokeExact(
+                seg(conn.handle),
+                arena.allocateUtf8String(path),
+                arena.allocateUtf8String(title),
+                arena.allocateUtf8String(desc),
+            ) as Boolean
+        }
 
     override fun configLoadCertChainFromPemFile(
         config: QuicheConfig,

@@ -316,6 +316,13 @@ object JniQuicheApi : QuicheApi {
         error: QuicError,
     ): Int = nConnClose(conn.handle, error is QuicError.ApplicationError, error.code, 0L, 0)
 
+    override fun connSetQlogPath(
+        conn: QuicheConn,
+        path: String,
+        title: String,
+        desc: String,
+    ): Boolean = nConnSetQlogPath(conn.handle, path, title, desc)
+
     // --- Path migration ---
     override fun connProbePath(
         conn: QuicheConn,
@@ -742,6 +749,16 @@ object JniQuicheApi : QuicheApi {
         reasonAddr: Long,
         reasonLen: Int,
     ): Int
+
+    // Not @FastNative: GetStringUTFChars copies the strings and may interact with the JVM heap.
+    // Diagnostics one-shot (env-gated), never on the hot path.
+    @JvmStatic
+    private external fun nConnSetQlogPath(
+        conn: Long,
+        path: String,
+        title: String,
+        desc: String,
+    ): Boolean
 
     // --- Path migration JNI externals ---
     @JvmStatic private external fun nConnProbePath(

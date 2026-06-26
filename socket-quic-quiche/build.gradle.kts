@@ -95,7 +95,10 @@ fun downloadQuicheSource(
 fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
     val taskName = "buildQuicheStatic${arch.replaceFirstChar { it.uppercase() }}"
     val outputDir = projectDir.resolve("libs/quiche/linux-$arch")
-    val markerFile = outputDir.resolve("lib/.built-$quicheVersion")
+    // `-qlog` suffix: the qlog feature was added to the cargo build, so a lib built before it (a stale
+    // `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a rebuild
+    // with qlog on every host/CI runner that cached the old output.
+    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog")
 
     val cargoTarget =
         if (arch == "x64") "x86_64-unknown-linux-gnu" else "aarch64-unknown-linux-gnu"
@@ -138,7 +141,10 @@ fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
                     cargoTarget,
                     "--no-default-features",
                     "--features",
-                    if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi" else "ffi,boringssl-vendored",
+                    // qlog: env-gated diagnostics (QUIC_QLOG_DIR) need quiche_conn_set_qlog_path, which is
+                    // #[cfg(feature = "qlog")] — without it the symbol is absent and the JNI/cinterop
+                    // bindings don't link. Pulls serde_json/serde/qlog into the binary.
+                    if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi,qlog" else "ffi,boringssl-vendored,qlog",
                 )
 
             val process =
@@ -182,7 +188,10 @@ fun createBuildQuicheSharedTask(
 ): TaskProvider<Task> {
     val taskName = "buildQuicheShared${os.replaceFirstChar { it.uppercase() }}${arch.replaceFirstChar { it.uppercase() }}"
     val outputDir = projectDir.resolve("libs/quiche/$os-$arch")
-    val markerFile = outputDir.resolve("lib/.built-$quicheVersion")
+    // `-qlog` suffix: the qlog feature was added to the cargo build, so a lib built before it (a stale
+    // `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a rebuild
+    // with qlog on every host/CI runner that cached the old output.
+    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog")
 
     val cargoTarget =
         when ("$os-$arch") {
@@ -229,7 +238,8 @@ fun createBuildQuicheSharedTask(
                 env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
             }
 
-            val quicheFeatures = if (usesExternalBssl) "ffi" else "ffi,boringssl-vendored"
+            // qlog: see the static-lib task — required for the QUIC_QLOG_DIR diagnostics binding.
+            val quicheFeatures = if (usesExternalBssl) "ffi,qlog" else "ffi,boringssl-vendored,qlog"
 
             val process =
                 ProcessBuilder(
@@ -943,7 +953,8 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
                     "quiche",
                     "--no-default-features",
                     "--features",
-                    "ffi,boringssl-vendored",
+                    // qlog: see the static-lib task — required for the QUIC_QLOG_DIR diagnostics binding.
+                    "ffi,boringssl-vendored,qlog",
                 ).directory(sourceDir)
                     .also { pb -> pb.environment().putAll(env) }
                     .redirectErrorStream(true)
