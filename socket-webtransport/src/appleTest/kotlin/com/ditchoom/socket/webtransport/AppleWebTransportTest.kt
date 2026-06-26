@@ -9,6 +9,7 @@ import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.quic.shouldSkipQuicHarnessOnSimulator
 import platform.posix.F_OK
 import platform.posix.access
 import kotlin.time.Duration.Companion.seconds
@@ -22,8 +23,9 @@ import kotlin.time.Duration.Companion.seconds
  * the committed `cert.{crt,key}` and the Apple K/N test tasks depend on it.
  *
  * Cert paths are probed on the filesystem relative to the test's working directory, mirroring
- * [LinuxWebTransportTest]. Native targets keep the default pass-through [wrapTestBody] — the NW binding is
- * fixed at compile time, so there is no `UnsatisfiedLinkError` to translate into a skip.
+ * [LinuxWebTransportTest]. macOS K/N runs the full suite; iOS/tvOS/watchOS `--standalone` simulators can't
+ * reach the NW QUIC datapath (and lack the `testcerts/` cwd), so [wrapTestBody] skips there — the same gate
+ * the :socket-quic-nw Apple suites use (see [shouldSkipQuicHarnessOnSimulator]).
  *
  * This is the first automated exercise of the full HTTP/3 **server** stack on Apple/Network.framework:
  * [multiplexed_twoSessionsOverOneConnection_eachRoundTrip] is the v6 Phase-4 DONE bar.
@@ -53,6 +55,12 @@ class AppleWebTransportTest : WebTransportTestSuite() {
 
     override suspend fun openMultiplexed(url: String): MultiplexedWebTransport =
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig())
+
+    /** Skip on `--standalone` Apple simulators (see [shouldSkipQuicHarnessOnSimulator]). */
+    override suspend fun wrapTestBody(block: suspend () -> Unit) {
+        if (shouldSkipQuicHarnessOnSimulator()) return
+        block()
+    }
 }
 
 /**

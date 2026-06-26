@@ -82,6 +82,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun bidiStream_isDelivered_sanity(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val received = CompletableDeferred<String>()
                 serveOne(received) {
@@ -96,6 +97,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun uniStream_noFin_isDelivered(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val received = CompletableDeferred<String>()
                 serveOne(received) {
@@ -110,6 +112,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun uniStream_withFin_isDelivered(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val received = CompletableDeferred<String>()
                 serveOne(received) {
@@ -129,6 +132,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun uniStream_serverToClient_isDelivered(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val received = CompletableDeferred<String>()
                 withQuicServer(port = 0, tlsConfig = appleQuicTestTlsConfig(), quicOptions = opts) {
@@ -184,6 +188,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun multipleConcurrentInboundStreams_serverReceivesAndClassifiesAll(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val results = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
                 withQuicServer(port = 0, tlsConfig = appleQuicTestTlsConfig(), quicOptions = opts) {
@@ -249,6 +254,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun lateBidiStream_afterRoundTrip_isStillDelivered(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val received = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
                 withQuicServer(port = 0, tlsConfig = appleQuicTestTlsConfig(), quicOptions = opts) {
@@ -322,6 +328,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun bidiHalfClose_roundTrip_isDelivered(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val serverReceived = CompletableDeferred<String>()
                 withQuicServer(port = 0, tlsConfig = appleQuicTestTlsConfig(), quicOptions = opts) {
@@ -383,6 +390,7 @@ class AppleQuicUniStreamProbeTests {
     @Test
     fun uniStream_clientOpensThenAccepts(): TestResult =
         runTest(timeout = 40.seconds) {
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             withContext(Dispatchers.Default) {
                 val received = CompletableDeferred<String>()
                 withQuicServer(port = 0, tlsConfig = appleQuicTestTlsConfig(), quicOptions = opts) {

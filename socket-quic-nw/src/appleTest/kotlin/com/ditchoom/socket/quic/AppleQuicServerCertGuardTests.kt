@@ -20,7 +20,8 @@ import kotlin.time.Duration.Companion.seconds
  * turning a 10s timeout into an instant, actionable failure. A small EC P-256 leaf passes, and the
  * Apple-only [QuicOptions.appleAllowOversizedServerCert] escape hatch bypasses it.
  *
- * The bind is synchronous up to the guard, so these never touch the network — no simulator skip needed.
+ * The bind is synchronous up to the guard, so these never touch the network — but they still read the
+ * `testcerts/` leaf fixtures, absent from a `--standalone` simulator's cwd, so each skips there.
  */
 class AppleQuicServerCertGuardTests {
     private val opts =
@@ -34,6 +35,10 @@ class AppleQuicServerCertGuardTests {
     @Test
     fun rsaServerCertRejectedByGuard(): TestResult =
         runTest {
+            // The guard never touches the network, but it still reads the leaf from the `testcerts/`
+            // fixtures, which aren't on a `--standalone` simulator's cwd (see
+            // [shouldSkipQuicHarnessOnSimulator]).
+            if (shouldSkipQuicHarnessOnSimulator()) return@runTest
             val ex =
                 try {
                     withQuicServer(
