@@ -9,7 +9,11 @@ on:
 jobs:
   android-emulator:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 25, not 15: a passing run already takes ~14m58s (emulator boot + KVM-accelerated
+    # instrumented tests), so a 15-min cap tips a healthy run into a "cancelled" timeout on
+    # any normal runner-speed jitter. 25 leaves comfortable headroom while still bounding a
+    # genuine hang (e.g. an emulator that never boots).
+    timeout-minutes: 25
     env:
       # Force-kill emulator after 1 second instead of waiting 20 seconds for graceful shutdown
       ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
