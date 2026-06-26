@@ -539,14 +539,27 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     // NW's teardown work doesn't block a cooperative thread.
     private static let teardownQueue = DispatchQueue(label: "com.ditchoom.nwquic26.teardown")
 
-    /// Drop the last strong references to `conn` (and the streams held for its flush) on the shared serial
-    /// [teardownQueue], so this NWConnection's dealloc never overlaps another's (which SIGSEGVs inside NW
-    /// on the CI runner). The caller cancels the serving Tasks first; this governs only the ARC release
-    /// that triggers NW teardown. The queue closure holds the last reference, so the actual dealloc runs
-    /// on the serial queue regardless of which thread enqueued it.
-    private static func releaseSerially(_ conn: NetworkConnection<QUIC>?, streams: [NWQuic26Stream]) {
+    /// Drop the last strong references to `conn` (the streams held for its flush, AND the resolved datagram
+    /// channel) on the shared serial [teardownQueue], so this NWConnection's dealloc never overlaps
+    /// another's (which SIGSEGVs inside NW on the CI runner). The caller cancels the serving Tasks first;
+    /// this governs only the ARC release that triggers NW teardown. The queue closure holds the last
+    /// reference, so the actual dealloc runs on the serial queue regardless of which thread enqueued it.
+    ///
+    /// `datagrams` is load-bearing on the datagram-enabled path: the resolved `QUIC.Datagrams` channel
+    /// RETAINS its parent NWConnection (it's a member channel of that connection). Held only on
+    /// `self.datagramsChannel`, that reference outlived `withExtendedLifetime(conn)` — so `conn` was NOT
+    /// the last reference, and the NWConnection's actual dealloc ran later, when NWQuic26Conn itself
+    /// deallocced (Kotlin-GC-driven, OFF this queue), free to race another connection's teardown → the
+    /// macos-26 SIGSEGV that reproduced only on the datagram-enabled coexistence test. Funnelling the
+    /// channel's final release through the same queue closure makes that NWConnection dealloc serial too.
+    private static func releaseSerially(
+        _ conn: NetworkConnection<QUIC>?,
+        streams: [NWQuic26Stream],
+        datagrams: QUIC.Datagrams<QUICDatagram>?
+    ) {
         teardownQueue.async {
             withExtendedLifetime(streams) {}
+            withExtendedLifetime(datagrams) {}
             withExtendedLifetime(conn) {}
         }
     }
@@ -688,6 +701,20 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         datagramsLock.lock()
         defer { datagramsLock.unlock() }
         datagramsChannel = dg
+    }
+
+    /// Snapshot AND clear the resolved datagram channel under datagramsLock. close() calls this so the
+    /// channel's (and thus its parent NWConnection's) final release is handed to the serial teardownQueue
+    /// via releaseSerially, rather than left on `self.datagramsChannel` to dealloc off-queue when
+    /// NWQuic26Conn itself is GC'd (the macos-26 datagram-path SIGSEGV). Nil'ing it here also stops a
+    /// late storeDatagramsChannel from re-stranding the reference. Mirrors the connectionLock /
+    /// serveTasksLock snapshot-and-clear discipline; never nests another lock inside datagramsLock.
+    private func takeDatagramsChannel() -> QUIC.Datagrams<QUICDatagram>? {
+        datagramsLock.lock()
+        defer { datagramsLock.unlock() }
+        let dg = datagramsChannel
+        datagramsChannel = nil
+        return dg
     }
 
     /// Resolve the datagram channel (creating it if needed) so `maxDatagramSize()` reflects the
@@ -860,8 +887,12 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 for t in tasks { t.cancel() }
                 dgTask?.cancel()
                 // Abort wants the streams (RESET) + connection gone now — but still serialize the dealloc
-                // so it can't overlap another connection's teardown and SIGSEGV inside NW.
-                NWQuic26Conn.releaseSerially(conn, streams: streams)
+                // so it can't overlap another connection's teardown and SIGSEGV inside NW. Take the
+                // resolved datagram channel too: it retains the NWConnection, so without funnelling it
+                // through the queue the connection's real dealloc would run off-queue later (see
+                // releaseSerially / takeDatagramsChannel).
+                let dgChannel = takeDatagramsChannel()
+                NWQuic26Conn.releaseSerially(conn, streams: streams, datagrams: dgChannel)
             } else {
                 // Graceful close (code 0): a bare ARC drop here strands stream bytes NW has ACCEPTED
                 // (`stream.send` completed) but not yet put on the wire — the peer then observes ENOTCONN
@@ -890,11 +921,19 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                     // promptly (traces show "loop ENDED ... CancellationError"), so this can't wedge.
                     for t in tasks { _ = await t.value }
                     if let dgTask { _ = try? await dgTask.value }
-                    // The streams were held alive THROUGH the drain (releasing them at close() would
-                    // dealloc-then-RESET them and truncate the very flush this drain exists to complete);
-                    // now hand the final release of both the streams AND the connection to the serial
-                    // teardown queue, so this dealloc can't overlap another connection's and SIGSEGV.
-                    NWQuic26Conn.releaseSerially(conn, streams: streams)
+                    // Awaiting dgTask above guarantees its storeDatagramsChannel ran, so the resolved
+                    // datagram channel is now on self.datagramsChannel. Take it (clearing self's reference)
+                    // here, AFTER the await, so a still-resolving task can't re-strand it. self is captured
+                    // strongly by this drain Task, which keeps NWQuic26Conn alive through the drain — the
+                    // whole point: it stops self.deinit from releasing datagramsChannel (and thus the
+                    // NWConnection it retains) off-queue before this runs.
+                    let dgChannel = self.takeDatagramsChannel()
+                    // The streams + datagram channel were held alive THROUGH the drain (releasing the
+                    // streams at close() would dealloc-then-RESET them and truncate the very flush this
+                    // drain exists to complete); now hand the final release of the streams, the datagram
+                    // channel, AND the connection to the serial teardown queue, so this NWConnection's
+                    // dealloc can't overlap another connection's and SIGSEGV.
+                    NWQuic26Conn.releaseSerially(conn, streams: streams, datagrams: dgChannel)
                 }
             }
         } else {
