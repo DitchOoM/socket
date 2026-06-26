@@ -525,6 +525,32 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     // can't leak the connection; runs detached so close() still returns immediately.
     private static let gracefulDrainNanos: UInt64 = 500_000_000
 
+    // Serializes the FINAL ARC release of every NWConnection (and the streams held alive for its flush)
+    // across the whole process. The new Network.framework connection has no explicit cancel(): teardown
+    // runs when the last strong reference deallocs, which drives NW's internal dispatch teardown. On the
+    // virtualized macos-26 CI runner, two NWConnection deallocs running at once SIGSEGV inside that NW
+    // teardown — and they DO collide, because connSeq is process-global and an earlier connection's
+    // detached 500 ms graceful-drain Task routinely finishes releasing just as a later connection closes
+    // (proven in a QUIC_NW_DIAG trace: "cli#1/srv#2 graceful drain END — releasing" interleaved with a
+    // later "cli#15 close", then exitValue=139 / SIGSEGV). The e2d4c3a locks synchronized the lifecycle
+    // STATE snapshots but not the dealloc itself. Funnelling the release onto one serial queue makes the
+    // deallocs strictly one-at-a-time without changing their timing — each connection still drops at the
+    // moment its owner intended, just never overlapping another's. Off the Swift concurrency pool too, so
+    // NW's teardown work doesn't block a cooperative thread.
+    private static let teardownQueue = DispatchQueue(label: "com.ditchoom.nwquic26.teardown")
+
+    /// Drop the last strong references to `conn` (and the streams held for its flush) on the shared serial
+    /// [teardownQueue], so this NWConnection's dealloc never overlaps another's (which SIGSEGVs inside NW
+    /// on the CI runner). The caller cancels the serving Tasks first; this governs only the ARC release
+    /// that triggers NW teardown. The queue closure holds the last reference, so the actual dealloc runs
+    /// on the serial queue regardless of which thread enqueued it.
+    private static func releaseSerially(_ conn: NetworkConnection<QUIC>?, streams: [NWQuic26Stream]) {
+        teardownQueue.async {
+            withExtendedLifetime(streams) {}
+            withExtendedLifetime(conn) {}
+        }
+    }
+
     init(datagramsEnabled: Bool, isServer: Bool, keepAliveMs: Int) {
         self.datagramsEnabled = datagramsEnabled
         self.isServer = isServer
@@ -833,7 +859,9 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 conn.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
                 for t in tasks { t.cancel() }
                 dgTask?.cancel()
-                _ = streams // released as this scope exits — the abort wants the streams gone
+                // Abort wants the streams (RESET) + connection gone now — but still serialize the dealloc
+                // so it can't overlap another connection's teardown and SIGSEGV inside NW.
+                NWQuic26Conn.releaseSerially(conn, streams: streams)
             } else {
                 // Graceful close (code 0): a bare ARC drop here strands stream bytes NW has ACCEPTED
                 // (`stream.send` completed) but not yet put on the wire — the peer then observes ENOTCONN
@@ -852,10 +880,21 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                     nwDiag("\(tag) graceful drain END — releasing")
                     for t in tasks { t.cancel() }
                     dgTask?.cancel()
-                    // Hold the opened streams alive THROUGH the drain too — releasing them at close() would
-                    // dealloc-then-RESET them and truncate the very flush this drain exists to complete.
-                    withExtendedLifetime(streams) {}
-                    withExtendedLifetime(conn) {}
+                    // Await the serving loops' actual unwind before releasing the connection. Each serving
+                    // Task (the `inboundStreams` loop) captures the NW connection STRONGLY, and cancellation
+                    // is cooperative — the Task drops its ref only when it finishes unwinding, on a Swift
+                    // concurrency thread. If we released `conn` without waiting, that async drop could be the
+                    // LAST reference and run the dealloc off the serial teardown queue, racing another
+                    // connection's dealloc — the exact SIGSEGV we're fixing. Awaiting here makes the serial
+                    // queue's closure the guaranteed last-ref holder. Cancelled inboundStreams loops end
+                    // promptly (traces show "loop ENDED ... CancellationError"), so this can't wedge.
+                    for t in tasks { _ = await t.value }
+                    if let dgTask { _ = try? await dgTask.value }
+                    // The streams were held alive THROUGH the drain (releasing them at close() would
+                    // dealloc-then-RESET them and truncate the very flush this drain exists to complete);
+                    // now hand the final release of both the streams AND the connection to the serial
+                    // teardown queue, so this dealloc can't overlap another connection's and SIGSEGV.
+                    NWQuic26Conn.releaseSerially(conn, streams: streams)
                 }
             }
         } else {
