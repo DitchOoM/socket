@@ -23,13 +23,11 @@ import platform.Foundation.create
  * [nw-server-quiche-client-amplification-deadlock]). The guard estimates the leaf's TLS flight at bind
  * time and throws a clear error for an oversized leaf, turning a 10s timeout into an instant, actionable
  * failure. A small EC P-256 leaf passes; [QuicOptions.appleAllowOversizedServerCert] bypasses the guard.
- */
-
-/**
- * Throw [IllegalArgumentException] at bind time when the server's TLS leaf certificate (imported from
- * [p12Path]) would overflow Network.framework's anti-amplification budget. No-op when [allowOversized]
- * is set, or when the leaf cannot be inspected (fail open — the actual identity import for the listener
- * is handled by each backend separately, so the guard never blocks a valid-but-unassessable identity).
+ *
+ * Throws [IllegalArgumentException] at bind time when the server's TLS leaf certificate (imported from
+ * [p12Path]) would overflow that budget. No-op when [allowOversized] is set, or when the leaf cannot be
+ * inspected (fail open — the actual identity import for the listener is handled by each backend
+ * separately, so the guard never blocks a valid-but-unassessable identity).
  */
 internal fun guardAppleServerCertFlight(
     p12Path: String,
