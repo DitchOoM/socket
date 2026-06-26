@@ -35,7 +35,6 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
-import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
@@ -58,6 +57,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
