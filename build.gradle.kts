@@ -454,7 +454,29 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
     }
     js {
-        browser()
+        browser {
+            testTask {
+                // The base TCP socket has no raw-socket surface in a browser:
+                // Socket.kt's browser actuals throw UnsupportedOperationException
+                // ("Sockets are not supported in the browser"). These suites spin up
+                // real TCP echo servers and/or connect over TCP (and the Node-specific
+                // error-mapping suites exercise Node internals), so they can only run
+                // under Node. They stay green in jsNodeTest; the WebSocket/WebTransport
+                // surface is what the browser actually provides (networkCapabilities()).
+                listOf(
+                    "ClientCancellationTests",
+                    "DataIntegrityTests",
+                    "ErrorHandlingTests",
+                    "ExceptionIntegrationTests",
+                    "NodeBufferPoolTests",
+                    "PartialBufferWriteTests",
+                    "ResourceCleanupTests",
+                    "ServerCancellationTests",
+                    "SimpleSocketTests",
+                    "WrapNodeErrorTests",
+                ).forEach { filter.excludeTestsMatching("com.ditchoom.socket.$it") }
+            }
+        }
         nodejs {
             testTask {
                 useMocha {
