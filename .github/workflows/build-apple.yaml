@@ -64,8 +64,11 @@ jobs:
             socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche.dylib
             socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche.a
             socket-quic-quiche/libs/quiche/macos-x64/lib/.built-*
-          key: quiche-dylib-v1-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: quiche-dylib-v1-
+          # v2: the qlog cargo feature was added (the libquiche.a must export
+          # quiche_conn_set_qlog_path so the JNI shim links). A v1 cache holds a
+          # pre-qlog archive — bump BOTH key and restore-keys so it can't be restored.
+          key: quiche-dylib-v2-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: quiche-dylib-v2-
 
       # JNI shim (libquiche_jni.dylib + .jni-built-<ver> marker) — depends on quiche_jni.c AND the
       # quiche version. EXACT key only (no restore-keys): a shim is an opaque binary the build step
@@ -79,7 +82,7 @@ jobs:
             socket-quic-quiche/libs/quiche/macos-arm64/lib/.jni-built-*
             socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche_jni.dylib
             socket-quic-quiche/libs/quiche/macos-x64/lib/.jni-built-*
-          key: quiche-shim-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-shim-v2-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -103,14 +106,15 @@ jobs:
           echo "quiche version = $QV"
 
           # Decide per-arch whether the dylib cache already supplied a valid quiche build. A hit means
-          # libquiche.dylib + libquiche.a + the .built-<QV> marker are all present (the marker pins the
-          # version, so a restore-key match from another version correctly counts as a MISS). Only
-          # clone + cargo build when at least one arch needs it — the expensive part we want to skip.
+          # libquiche.dylib + libquiche.a + the .built-<QV>-qlog marker are all present (the marker pins
+          # version AND the qlog feature, so a pre-qlog lib or another version correctly counts as a MISS,
+          # and it matches the marker Gradle's createBuildJvmShared* writes so prepareQuicheNativeLib skips
+          # its own rebuild). Only clone + cargo build when an arch needs it — the expensive part we skip.
           NEED_CLONE=false
           for pair in "aarch64-apple-darwin macos-arm64" "x86_64-apple-darwin macos-x64"; do
             PLATFORM="${pair##* }"
             DEST="$QUICHE_LIBS/$PLATFORM/lib"
-            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV" ]; then
+            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV-qlog" ]; then
               echo "quiche dylib cache HIT for $PLATFORM ($QV) — will skip cargo"
             else
               echo "quiche dylib cache MISS for $PLATFORM ($QV) — cargo build required"
@@ -132,12 +136,16 @@ jobs:
             mkdir -p "$DEST"
 
             # --- quiche dylib/.a (expensive: cargo + vendored BoringSSL). Skip on a verified cache hit.
-            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV" ]; then
+            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV-qlog" ]; then
               echo "Reusing cached quiche dylib for $PLATFORM"
             else
               cd /tmp/quiche-src
+              # qlog: env-gated diagnostics (QUIC_QLOG_DIR) need quiche_conn_set_qlog_path, which is
+              # #[cfg(feature = "qlog")]. Without it the JNI shim's force_load link fails on macOS
+              # (ld64 errors on the undefined symbol; Linux's lazy -shared bind tolerates it, which is
+              # why build-linux didn't surface this). Matches the Gradle build's feature set.
               cargo build --release --package quiche --target $RUST_TARGET \
-                --no-default-features --features ffi,boringssl-vendored
+                --no-default-features --features ffi,boringssl-vendored,qlog
               cd ${{ github.workspace }}
               QUICHE_DYLIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.dylib"
               QUICHE_STATIC="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.a"
@@ -146,9 +154,9 @@ jobs:
                 strip -x "$DEST/libquiche.dylib"
                 cp "$QUICHE_STATIC" "$DEST/libquiche.a"
                 # Marker so prepareQuicheNativeLib treats these as authoritative and does NOT trigger a
-                # second from-source quiche build inside the 60-min job. Keyed on quiche version,
-                # matching the markers createBuildJvmShared*/createBuildJvmJniShimTask write.
-                echo "quiche $QV (CI macOS prebuilt)" > "$DEST/.built-$QV"
+                # second from-source quiche build inside the 60-min job. Keyed on quiche version + the
+                # qlog feature, matching the .built-<ver>-qlog marker createBuildJvmShared* now writes.
+                echo "quiche $QV (CI macOS prebuilt, qlog)" > "$DEST/.built-$QV-qlog"
               else
                 echo "WARN: libquiche.dylib not found at $QUICHE_DYLIB"
               fi
