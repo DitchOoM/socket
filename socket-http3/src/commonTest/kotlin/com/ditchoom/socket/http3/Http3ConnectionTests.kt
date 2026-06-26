@@ -14,6 +14,8 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CoroutineScope
@@ -319,6 +321,105 @@ class Http3ConnectionTests {
 
                 assertTrue(peerBidi.closed, "a peer bidirectional stream should be closed, not parsed")
             }
+        }
+
+    /** Encode one QPACK encoder-stream instruction (RFC 9204 §4.3) to its wire bytes. */
+    private fun encoderInstructionBytes(instruction: QpackEncoderInstruction): List<Int> {
+        val buf = BufferFactory.Default.allocate(64)
+        QpackEncoderInstructionCodec.encode(buf, instruction)
+        buf.resetForRead()
+        return (0 until buf.remaining()).map { buf.readByte().toInt() and 0xFF }
+    }
+
+    /**
+     * A decoder uni stream whose first write (bootstrap's QPACK_DECODER type prefix) succeeds, but every
+     * later write throws [QuicCloseException] — modelling the connection tearing down underneath an
+     * in-flight decoder-stream write.
+     */
+    private class ClosedAfterFirstWriteByteStream :
+        ByteStream,
+        com.ditchoom.buffer.flow.Resettable {
+        var writeAttempts = 0
+            private set
+        private var closed = false
+
+        override val isOpen: Boolean get() = !closed
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
+
+        override suspend fun read(deadline: Duration): ReadResult = ReadResult.End
+
+        override suspend fun write(
+            buffer: ReadBuffer,
+            deadline: Duration,
+        ): BytesWritten {
+            writeAttempts++
+            if (writeAttempts > 1) {
+                throw QuicCloseException(QuicError.NoError, "connection closed")
+            }
+            val n = buffer.remaining()
+            repeat(n) { buffer.readByte() }
+            return BytesWritten(n)
+        }
+
+        override suspend fun close() {
+            closed = true
+        }
+
+        override suspend fun reset(errorCode: Long) {
+            closed = true
+        }
+    }
+
+    @Test
+    fun decoderInstructionWrite_racingConnectionClose_isSwallowed_notPropagated() =
+        runTest {
+            // RFC 9204 §4.4.3: a peer encoder insert drives our decoder to emit an Insert Count Increment
+            // on our decoder stream. Here that decoder-stream write lands as the connection tears down, so
+            // the driver throws QuicCloseException. The ack/ICI is moot once the connection is gone, so
+            // writeDecoderInstruction must swallow it — it must NOT escape route() and cancel the router
+            // (the productionServerRole_dynamicQpackRoundTrip CI flake). The peer encoder stream first sets
+            // a non-zero table capacity, then inserts an entry that triggers the increment.
+            val encoderBytes =
+                encoderInstructionBytes(QpackEncoderInstruction.SetCapacity(4096)) +
+                    encoderInstructionBytes(QpackEncoderInstruction.InsertWithLiteralName("x-token", "v"))
+            val peerEncoder =
+                QuicByteStream(
+                    QuicStreamId(7), // server-initiated unidirectional
+                    RecordingByteStream(
+                        listOf(
+                            dataChunk(listOf(Http3StreamType.QPACK_ENCODER.toInt()) + encoderBytes),
+                            ReadResult.End,
+                        ),
+                    ),
+                )
+            val throwingDecoder = ClosedAfterFirstWriteByteStream()
+            val outgoing =
+                ArrayDeque(
+                    listOf(
+                        QuicByteStream(QuicStreamId(2), RecordingByteStream()),
+                        QuicByteStream(QuicStreamId(6), RecordingByteStream()),
+                        QuicByteStream(QuicStreamId(10), throwingDecoder),
+                    ),
+                )
+
+            // The whole connection lifecycle runs inside this scope; it joins the router (incoming is finite)
+            // before returning, so a QuicCloseException escaping route() would surface here as a test failure.
+            val connection =
+                coroutineScope {
+                    val scope =
+                        FakeQuicScope(
+                            this,
+                            outgoing,
+                            incoming = listOf(peerEncoder, peerControlStream(clientSettings())),
+                        )
+                    val conn = Http3Connection.bootstrap(scope, TransportConfig())
+                    withTimeout(5.seconds) { conn.peerSettings() }
+                    conn
+                }
+
+            assertTrue(throwingDecoder.writeAttempts >= 2, "the Insert Count Increment write must have been attempted")
+            assertNull(connection.connectionError, "a moot decoder ack racing close must not become a connection error")
         }
 
     // --- request/response (RFC 9114 §4) -------------------------------------

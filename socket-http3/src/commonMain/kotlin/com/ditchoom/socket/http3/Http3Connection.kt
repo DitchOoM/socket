@@ -13,6 +13,7 @@ import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
 import kotlinx.coroutines.CancellationException
@@ -580,13 +581,28 @@ class Http3Connection private constructor(
         }
     }
 
-    /** Encode and write one QPACK decoder-stream instruction (RFC 9204 §4.4) on our decoder uni stream. */
+    /**
+     * Encode and write one QPACK decoder-stream instruction (RFC 9204 §4.4) on our decoder uni stream.
+     *
+     * Decoder instructions (Section-Acknowledgement / Insert-Count-Increment) are pure side effects of
+     * decoding a peer header section: this fires from the [decoder]'s callback while we read a response
+     * (or, in the server role, a request). It races connection teardown — the decode that triggers the
+     * ack can complete just as `close()` tears the connection down, so the write lands on an
+     * already-closed connection and the driver throws [QuicCloseException]. A Section-Ack / ICI is moot
+     * once the connection is gone (there is no peer to receive it and nothing left to acknowledge), so
+     * that specific failure is swallowed. [QuicCloseException] *by definition* means the connection was
+     * already closed, so dropping it here can never mask a live-session decoder-stream fault — a genuine
+     * mid-session failure surfaces as a stream-level [QuicStreamException] (→ QPACK_DECODER_STREAM_ERROR),
+     * which still propagates.
+     */
     private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction) {
         val buffer = pool.allocate(16) // a single prefixed integer (≤ ~9 bytes)
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
             decoderStreamWriteMutex.withLock { qpackDecoderStream.write(buffer, config.writePolicy.toDeadline()) }
+        } catch (_: QuicCloseException) {
+            // Connection already closed — the ack/ICI is moot. See KDoc.
         } finally {
             buffer.freeIfNeeded()
         }
