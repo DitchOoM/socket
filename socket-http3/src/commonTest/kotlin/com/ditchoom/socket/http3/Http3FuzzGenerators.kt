@@ -140,6 +140,9 @@ object Http3FuzzGenerators {
         return out
     }
 
+    /** Lowercase hex of [this] — repro material for a [replay] failure (see [withDiffDebug]). */
+    private fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
+
     // ---- HTTP/3 frame round-trip --------------------------------------------------------------------
 
     // Modeled frame types: any of these as an Unknown.type would re-decode as the known variant, so the
@@ -303,21 +306,27 @@ object Http3FuzzGenerators {
      */
     suspend fun replay(data: ByteArray) {
         if (data.isEmpty()) return
-        val e = ByteEntropy(data)
-        if (e.bool()) {
-            assertFrameRoundTrips(frame(e))
-        } else {
-            val pool =
-                BufferPool(
-                    threadingMode = ThreadingMode.SingleThreaded,
-                    maxPoolSize = 8,
-                    defaultBufferSize = 256,
-                    factory = BufferFactory.Default,
-                )
-            // Vary the table regime from the input so the dynamic insert/evict accounting is reachable.
-            val capacity = longArrayOf(0L, 256L, 4096L)[e.int(3)]
-            val blocked = if (capacity == 0L) 0L else 16L
-            assertQpackRoundTrips(e, pool, capacity, blocked)
+        // On any failure, print the raw driver bytes — the only repro material for this case (the corpus
+        // replay test runs these on every platform; a Jazzer-recorded crasher prints the same hex). The
+        // seeded scale fuzzers that don't carry their own per-case label inherit this when they go through
+        // replay(). See [withDiffDebug].
+        withDiffDebug("roundTrip-replay", { "wire=${data.toHex()}" }) {
+            val e = ByteEntropy(data)
+            if (e.bool()) {
+                assertFrameRoundTrips(frame(e))
+            } else {
+                val pool =
+                    BufferPool(
+                        threadingMode = ThreadingMode.SingleThreaded,
+                        maxPoolSize = 8,
+                        defaultBufferSize = 256,
+                        factory = BufferFactory.Default,
+                    )
+                // Vary the table regime from the input so the dynamic insert/evict accounting is reachable.
+                val capacity = longArrayOf(0L, 256L, 4096L)[e.int(3)]
+                val blocked = if (capacity == 0L) 0L else 16L
+                assertQpackRoundTrips(e, pool, capacity, blocked)
+            }
         }
     }
 

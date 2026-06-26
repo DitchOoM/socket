@@ -163,14 +163,14 @@ class QpackDifferentialInteropTests {
                 append("encoder_stream=$esHex\n")
                 append("frame=$frHex\n")
             }
-        val refReply =
-            try {
-                post(body)
-            } catch (e: Exception) {
-                println("DIFF-DEBUG cap=$capacity blocked=$blocked stream=$streamId es=$esHex fr=$frHex fields=$fields")
-                throw e
-            }
-        assertEquals(fields, parseHeaders(refReply), "ours-encode -> ref-decode (cap=$capacity)")
+        // Capture the full repro (the wire bytes ls-qpack saw) on ANY failure — the oracle POST or the
+        // header-equality assertion — then rethrow. Covers both directions now via the shared helper.
+        withDiffDebug(
+            "ours-encode->ref-decode",
+            { "cap=$capacity blocked=$blocked stream=$streamId es=$esHex fr=$frHex fields=$fields" },
+        ) {
+            assertEquals(fields, parseHeaders(post(body)), "ours-encode -> ref-decode (cap=$capacity)")
+        }
     }
 
     /** ls-qpack's output (field section + encoder stream) must decode in OUR decoder to [fields]. */
@@ -190,13 +190,20 @@ class QpackDifferentialInteropTests {
         val encStream = hexToBytes(parseField(resp, "encoder_stream"))
         val frame = hexToBytes(parseField(resp, "frame"))
 
-        val decoder = QpackDecoder(capacity) { /* ignore decoder-stream acks for this one-shot decode */ }
-        if (encStream.isNotEmpty()) {
-            val buf = bufferOf(encStream)
-            while (buf.hasRemaining()) decoder.applyEncoderInstruction(QpackEncoderInstructionCodec.decode(buf, scratchPool = null))
+        // Capture the ls-qpack-produced wire (the bytes OUR decoder choked on) on any decode error or
+        // mismatch, then rethrow — the previously-uninstrumented direction now self-reports its repro too.
+        withDiffDebug(
+            "ref-encode->ours-decode",
+            { "cap=$capacity blocked=$blocked stream=$streamId es=${encStream.toHex()} fr=${frame.toHex()} fields=$fields" },
+        ) {
+            val decoder = QpackDecoder(capacity) { /* ignore decoder-stream acks for this one-shot decode */ }
+            if (encStream.isNotEmpty()) {
+                val buf = bufferOf(encStream)
+                while (buf.hasRemaining()) decoder.applyEncoderInstruction(QpackEncoderInstructionCodec.decode(buf, scratchPool = null))
+            }
+            val decoded = decoder.decodeSection(bufferOf(frame), streamId, scratchPool = null)
+            assertEquals(fields, decoded, "ref-encode -> ours-decode (cap=$capacity)")
         }
-        val decoded = decoder.decodeSection(bufferOf(frame), streamId, scratchPool = null)
-        assertEquals(fields, decoded, "ref-encode -> ours-decode (cap=$capacity)")
     }
 
     // ---- tests --------------------------------------------------------------------------------------

@@ -81,6 +81,26 @@ fun testTimeScale(): Double = timeScaleEnv()?.trim()?.toDoubleOrNull()?.coerceIn
 internal val Duration.scaled: Duration get() = this * testTimeScale()
 
 /**
+ * Run [block]; if it throws, print a one-line `DIFF-DEBUG` snapshot of the failing case ([label] +
+ * [context]) to stdout, then rethrow unchanged. The soak/concurrency analogue of the H3 fuzz suites'
+ * capture helper: a concurrency or soak failure (especially a load-induced timeout/hang surfacing as an
+ * exception) self-reports the test's tuning — the active [testTimeScale] and the stream/connection counts
+ * — so a CI flake is diagnosable from the log instead of just "timed out". `DIFF-DEBUG` is the shared grep
+ * marker. [context] is evaluated only on failure; `inline` so the lambda may suspend.
+ */
+internal inline fun <T> withDiffDebug(
+    label: String,
+    context: () -> String,
+    block: () -> T,
+): T =
+    try {
+        block()
+    } catch (t: Throwable) {
+        println("DIFF-DEBUG $label ${context()}")
+        throw t
+    }
+
+/**
  * Reactive replacement for `delay(N)` followed by an assertion: yields the dispatcher
  * until [predicate] holds, with [timeout] as a wall-clock backstop. Converges within
  * one scheduler tick once the awaited event fires — no fixed wait, no polling on

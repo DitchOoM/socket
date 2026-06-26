@@ -77,6 +77,41 @@ class AndroidQuicConcurrencySoakTests {
             }
         }
 
+    // Mirror of QuicConcurrencySoakTestSuite.manyConcurrentStreamsHighConcurrencyRoundTrip (the shared
+    // suite isn't visible from androidInstrumentedTest). ~3x the baseline stream fan-out on one connection.
+    @Test
+    fun manyConcurrentStreamsHighConcurrencyRoundTrip() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                withTimeout(30.seconds) {
+                    coroutineScope {
+                        withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = options) {
+                            val serverJob = launch(Dispatchers.IO) { connections { echoEveryStream() } }
+                            try {
+                                withQuicConnection("127.0.0.1", port, options, timeout = 20.seconds) {
+                                    val results =
+                                        (0 until HIGH_CONCURRENT_STREAMS)
+                                            .map { i ->
+                                                async(Dispatchers.IO) {
+                                                    val stream = openStream()
+                                                    val echoed = stream.echoExact("hi-stream-$i")
+                                                    stream.close()
+                                                    echoed
+                                                }
+                                            }.awaitAll()
+                                    results.forEachIndexed { i, echoed ->
+                                        assertEquals("hi-stream-$i", echoed, "stream $i did not round-trip at high concurrency")
+                                    }
+                                }
+                            } finally {
+                                serverJob.cancel()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
     @Test
     fun manyConnectionsConcurrentlyRoundTrip() =
         runBlocking(Dispatchers.IO) {
@@ -100,6 +135,41 @@ class AndroidQuicConcurrencySoakTests {
                                         }.awaitAll()
                                 results.forEachIndexed { i, echoed ->
                                     assertEquals("conn-$i", echoed, "connection $i did not round-trip under concurrency")
+                                }
+                            } finally {
+                                serverJob.cancel()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    // Mirror of QuicConcurrencySoakTestSuite.manyConnectionsHighConcurrencyRoundTrip. ~3x the baseline
+    // simultaneous-connection fan-out. Android (quiche) supports concurrent connections to one endpoint.
+    @Test
+    fun manyConnectionsHighConcurrencyRoundTrip() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                withTimeout(35.seconds) {
+                    coroutineScope {
+                        withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = options) {
+                            val serverJob = launch(Dispatchers.IO) { connections { echoEveryStream() } }
+                            try {
+                                val results =
+                                    (0 until HIGH_CONCURRENT_CONNECTIONS)
+                                        .map { i ->
+                                            async(Dispatchers.IO) {
+                                                withQuicConnection("127.0.0.1", port, options, timeout = 25.seconds) {
+                                                    val stream = openStream()
+                                                    val echoed = stream.echoExact("hi-conn-$i")
+                                                    stream.close()
+                                                    echoed
+                                                }
+                                            }
+                                        }.awaitAll()
+                                results.forEachIndexed { i, echoed ->
+                                    assertEquals("hi-conn-$i", echoed, "connection $i did not round-trip at high concurrency")
                                 }
                             } finally {
                                 serverJob.cancel()
@@ -208,6 +278,10 @@ class AndroidQuicConcurrencySoakTests {
     private companion object {
         private const val CONCURRENT_STREAMS = 20
         private const val CONCURRENT_CONNECTIONS = 8
+
+        // Higher-concurrency variants (~3x baseline); mirror the shared QuicConcurrencySoakTestSuite.
+        private const val HIGH_CONCURRENT_STREAMS = 64
+        private const val HIGH_CONCURRENT_CONNECTIONS = 24
         private const val SOAK_ROUNDS = 128
         private const val MAX_RESIDUAL_BUFFERS = 80
     }
