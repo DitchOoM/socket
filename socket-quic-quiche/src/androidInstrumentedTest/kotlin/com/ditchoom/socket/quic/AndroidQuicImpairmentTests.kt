@@ -17,6 +17,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
@@ -287,8 +288,18 @@ class AndroidQuicImpairmentTests {
                     }
                     is Action.ForwardAfter -> {
                         val copy = buf.toBytes(n)
-                        scheduler.schedule({ emitBytes(copy) }, action.delayMs, TimeUnit.MILLISECONDS)
-                        delayed.incrementAndGet()
+                        // The relay's selector thread can still deliver a packet while close() is tearing the
+                        // scheduler down (close() calls scheduler.shutdownNow() and the relay loop may process
+                        // one more datagram before it stops). Scheduling onto an already-shutdown executor
+                        // throws RejectedExecutionException, which would crash the relay thread and fail the
+                        // test on a teardown race (the macos/linux CI flake). A delayed packet mid-teardown is
+                        // moot — the connection is closing — so drop it instead.
+                        try {
+                            scheduler.schedule({ emitBytes(copy) }, action.delayMs, TimeUnit.MILLISECONDS)
+                            delayed.incrementAndGet()
+                        } catch (_: RejectedExecutionException) {
+                            dropped.incrementAndGet()
+                        }
                     }
                     Action.HoldUntilNext -> {
                         held = buf.toBytes(n)
