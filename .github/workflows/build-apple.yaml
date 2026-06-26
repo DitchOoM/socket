@@ -467,6 +467,12 @@ jobs:
 
       - name: Run socket-quic-nw Apple native tests (Network.framework)
         continue-on-error: true
+        env:
+          # Enable the NWQuic26Bridge timestamped state trace ([NWQ26 +Nms] ...) for THIS step too — it
+          # was only on for the socket-http3 step, so a crash here (e.g. the macos-26 datagram coexistence
+          # SIGSEGV) left no NW trace at the failure moment. The trace pinpoints which connection/state the
+          # bridge was in when it died.
+          QUIC_NW_DIAG: "1"
         # Tee Gradle's stdout to /tmp/socket-quic-apple.log so the audit
         # step below can grep `harness OK` / `harness SKIP` markers from
         # QuicHarnessIntegrationTests.withHarness without relying on the
@@ -684,12 +690,36 @@ jobs:
       # hs_err/replay crash logs: a native abort (quiche/JNI/FFM SIGABRT/SIGSEGV) shows
       # only as "exit value 134" with no failing JUnit case, so without the dump the
       # crash is undiagnosable — same instrumentation as build-linux.yaml.
+      # macOS native crash post-mortem. A K/N test SIGSEGV/SIGABRT (e.g. inside Network.framework / the
+      # NWQuic26 Swift bridge) is reported by Gradle only as "Test running process exited unexpectedly" —
+      # no stack. macOS's ReportCrash daemon writes a fully symbolicated backtrace to
+      # ~/Library/Logs/DiagnosticReports/<binary>-*.ips, which names the exact crashing frame. Collect
+      # them (and print the most recent inline) so the trace is in the job log AND uploaded.
+      - name: Collect macOS native crash reports
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p build/apple-crash-reports
+          shopt -s nullglob
+          reports=(~/Library/Logs/DiagnosticReports/*.ips ~/Library/Logs/DiagnosticReports/*.crash)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No macOS crash reports found (no native abort this run)."
+          else
+            cp "${reports[@]}" build/apple-crash-reports/ 2>/dev/null || true
+            echo "Collected ${#reports[@]} crash report(s):"
+            ls -lt build/apple-crash-reports/
+            newest=$(ls -t build/apple-crash-reports/* | head -1)
+            echo "::group::Most recent crash report ($newest)"
+            cat "$newest"
+            echo "::endgroup::"
+          fi
+
       - name: Upload test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-apple
           path: |
+            build/apple-crash-reports/
             build/reports/tests/
             build/test-results/
             build/reports/ktlint/
