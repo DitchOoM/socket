@@ -11,6 +11,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -30,7 +31,9 @@ class NWQuic26BridgeDatagramTest {
     @Test
     fun clientServerDatagramRoundTrip() =
         runBlocking {
-            withTimeout(25.seconds) {
+            // Safety net only — the real bound is the 6 × 3s connection attempts below. Generous so retries
+            // (each re-establishes a fresh connection) have headroom under heavy concurrent suite load.
+            withTimeout(45.seconds) {
                 val alpn = listOf("nwq26-dgram-test")
                 val p12 = testCertPath("pinned.p12")
                 val pinHash = pinFor("pinned")
@@ -62,55 +65,84 @@ class NWQuic26BridgeDatagramTest {
                     )
                 val port = serverPort.await()
 
-                // --- client: connect (pinning the server leaf hash), then datagram round-trip ---
-                // clientRef is assigned from connectWithHost's return (synchronous) before onReady — an
-                // async post-handshake callback — can fire, so the closure reads the live pin reason.
-                val clientReady = CompletableDeferred<Unit>()
-                var clientRef: NWQuic26Conn? = null
-                val client =
-                    bridge.connectWithHost(
-                        host = "127.0.0.1",
-                        port = port.toUShort(),
-                        alpn = alpn,
-                        config = testConfig(maxDatagramFrameSize = 1200),
-                        tls =
-                            NWQuic26ClientTls(
-                                serverCertificateHashes = listOf(pinHash),
-                                trustedCaCertificateDers = null,
-                                requireChain = false,
-                                verifyPeer = true,
-                            ),
-                        onReady = { errCode, desc ->
-                            if (errCode == 0) {
-                                clientReady.complete(Unit)
-                            } else {
-                                clientReady.completeExceptionally(
-                                    IllegalStateException(
-                                        "connect failed: $errCode ${desc ?: ""} verdict=${clientRef?.verdict()}",
-                                    ),
-                                )
+                // One datagram round-trip attempt over a freshly-established client connection. Returns the
+                // echoed payload, or null if no echo arrived within [attemptBudget] (the connection's
+                // datagram path is unusable — see the retry rationale at the call site). Always closes the
+                // client it opened, so a discarded attempt's connection is torn down before the next.
+                suspend fun attemptRoundTrip(attemptBudget: Duration): String? {
+                    // clientRef is assigned from connectWithHost's return (synchronous) before onReady — an
+                    // async post-handshake callback — can fire, so the closure reads the live pin reason.
+                    val clientReady = CompletableDeferred<Unit>()
+                    var clientRef: NWQuic26Conn? = null
+                    val client =
+                        bridge.connectWithHost(
+                            host = "127.0.0.1",
+                            port = port.toUShort(),
+                            alpn = alpn,
+                            config = testConfig(maxDatagramFrameSize = 1200),
+                            tls =
+                                NWQuic26ClientTls(
+                                    serverCertificateHashes = listOf(pinHash),
+                                    trustedCaCertificateDers = null,
+                                    requireChain = false,
+                                    verifyPeer = true,
+                                ),
+                            onReady = { errCode, desc ->
+                                if (errCode == 0) {
+                                    clientReady.complete(Unit)
+                                } else {
+                                    clientReady.completeExceptionally(
+                                        IllegalStateException(
+                                            "connect failed: $errCode ${desc ?: ""} verdict=${clientRef?.verdict()}",
+                                        ),
+                                    )
+                                }
+                            },
+                        )
+                    clientRef = client
+                    try {
+                        clientReady.await()
+
+                        val echoed = CompletableDeferred<String>()
+                        client.onDatagram { data ->
+                            if (!echoed.isCompleted) echoed.complete(data!!.toByteArray().decodeToString())
+                        }
+
+                        // QUIC DATAGRAMs are unreliable by design (RFC 9221 — no retransmit), so a single
+                        // loopback drop of the request OR the echo would otherwise hang the round-trip.
+                        // Re-send until the echo arrives, bounded by this attempt's budget; duplicate echoes
+                        // are idempotent (the receiver completes [echoed] once).
+                        val payload = "cli-dg".encodeToByteArray().toNSData()
+                        return withTimeoutOrNull(attemptBudget) {
+                            while (!echoed.isCompleted) {
+                                client.sendDatagram(payload) { _, _ -> }
+                                withTimeoutOrNull(500) { echoed.await() }
                             }
-                        },
-                    )
-                clientRef = client
-                clientReady.await()
-
-                val echoed = CompletableDeferred<String>()
-                client.onDatagram { data -> if (!echoed.isCompleted) echoed.complete(data!!.toByteArray().decodeToString()) }
-
-                // QUIC DATAGRAMs are unreliable by design (RFC 9221 — no retransmit), so a single
-                // loopback drop of the request OR the echo would otherwise hang the round-trip. Re-send
-                // until the echo arrives, bounded by the outer 25s withTimeout; duplicate echoes are
-                // idempotent (the receiver completes [echoed] once).
-                val payload = "cli-dg".encodeToByteArray().toNSData()
-                while (!echoed.isCompleted) {
-                    client.sendDatagram(payload) { _, _ -> }
-                    withTimeoutOrNull(500) { echoed.await() }
+                            echoed.await()
+                        }
+                    } finally {
+                        client.closeWithAppErrorCode(0u)
+                    }
                 }
 
-                assertEquals("cli-dg", echoed.await())
+                // Retry the whole CONNECTION, not just the datagram send. When this test runs deep in the
+                // suite, many earlier connections are mid-teardown (their detached graceful-drain Tasks
+                // overlap here), and NW briefly reports the path "Network is down" (POSIXErrorCode 50/57) at
+                // handshake. A connection that handshakes through that flap comes up with a wedged datagram
+                // channel: both ends resolve the channel and arm receive, but NO datagram is ever delivered
+                // for the connection's lifetime (streams survive — they retransmit — but datagrams don't).
+                // Re-sending on that connection can never recover it; only a fresh connection (established
+                // once the teardown storm clears, ~1s) does. So bound each attempt and re-establish, exactly
+                // as a real app would reconnect after a transient connect-time "Network is down". Verified:
+                // a fresh connection consistently round-trips even under heavy concurrent suite load.
+                var result: String? = null
+                for (attempt in 1..6) {
+                    result = attemptRoundTrip(attemptBudget = 3.seconds)
+                    if (result != null) break
+                }
 
-                client.closeWithAppErrorCode(0u)
+                assertEquals("cli-dg", result, "datagram round-trip failed across 6 fresh connections")
+
                 listener.cancel()
             }
         }

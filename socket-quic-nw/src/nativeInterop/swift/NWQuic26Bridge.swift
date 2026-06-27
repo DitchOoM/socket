@@ -904,6 +904,13 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 // delivered — keeping it engaged lets NW keep the path up and flush the outstanding stream
                 // data + FINs, THEN tear down. Detached, so close() still returns at once; the cap
                 // (gracefulDrainNanos) guarantees a wedged drain can't leak the connection.
+                //
+                // The hold is NOT only for flushing opened-stream bytes — it also keeps the NW path up long
+                // enough for the PEER to finalize (e.g. a server that closes right after the handshake; the
+                // client otherwise sees POSIX 57 "Socket is not connected" before it observes the verdict).
+                // So it runs for EVERY graceful close, even a stream-less one. (An earlier attempt to skip it
+                // when `streams` was empty broke AppleQuicCertificateHashPinningTests, which closes the server
+                // immediately after the pinned handshake with no streams open.)
                 let tag = diagTag
                 Task {
                     nwDiag("\(tag) graceful drain START (keeping loops engaged)")
