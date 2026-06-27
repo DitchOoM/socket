@@ -539,38 +539,46 @@ jobs:
 
       # lldb LIVE-RUN fallback for the macos-26 datagram/stream coexistence SIGSEGV. Post-mortem cores are
       # a confirmed DEAD END on the hardened runner (ReportCrash can't unwind deep NW dispatch; /cores often
-      # empty), so the ONLY reliable way to capture a symbolicated frame is running the deterministic
-      # test.kexe LIVE under lldb and letting it stop at the fault. Diagnostic-only: the binary is the same
-      # macosArm64 debug test.kexe the gradle step built, run here in isolation filtered to just the
-      # coexistence test. Never fails the build — the front "Enforce Apple native test results (hard gate)"
-      # is what reds the job; this only adds a backtrace to the log if the crash recurs.
+      # empty), so the ONLY reliable way to capture a symbolicated frame is running the test.kexe LIVE under
+      # lldb and letting it stop at the fault. Diagnostic-only: the binary is the same macosArm64 debug
+      # test.kexe the gradle step built. Never fails the build — the front "Enforce Apple native test results
+      # (hard gate)" reds the job; this only adds a backtrace to the log if the crash recurs.
+      #
+      # IMPORTANT: the SIGSEGV is in the NWConnection teardown ARC race and only fires AFTER the suite's
+      # cross-test drain storm has built up — running just `--ktest_filter='*datagramsCoexist*'` in isolation
+      # does NOT reproduce it (proven: 5/5 isolated runs exited cleanly). So run the FULL suite under lldb
+      # (no filter), from the module dir so the cwd-relative testcerts/ resolve exactly as the gradle run.
       - name: lldb live-run coexistence SIGSEGV (diagnostic)
         if: ${{ !cancelled() }}
         continue-on-error: true
+        working-directory: socket-quic-nw
+        env:
+          QUIC_NW_DIAG: "1"
         run: |
           set +e
-          KEXE=socket-quic-nw/build/bin/macosArm64/debugTest/test.kexe
+          KEXE=build/bin/macosArm64/debugTest/test.kexe
           if [ ! -x "$KEXE" ]; then
-            echo "No test.kexe at $KEXE (the macosArm64 test link never produced it) — skipping lldb live-run."
+            echo "No test.kexe at socket-quic-nw/$KEXE (the macosArm64 test link never produced it) — skipping lldb live-run."
             exit 0
           fi
           # Only worth running if the gradle test step actually saw a native crash (exitValue 139 / process
           # exited unexpectedly). If the suite passed, don't spend minutes re-running it under lldb.
           if [ -f /tmp/socket-quic-apple.log ] && \
              ! grep -qiE 'exit(ed)? (value )?13[0-9]|exited unexpectedly|SIGSEGV|SIGABRT' /tmp/socket-quic-apple.log; then
-            echo "No native crash marker in the gradle test log — coexistence test did not SIGSEGV; skipping lldb live-run."
+            echo "No native crash marker in the gradle test log — the suite did not SIGSEGV; skipping lldb live-run."
             exit 0
           fi
-          echo "Native crash detected in the gradle test log — re-running the coexistence test LIVE under lldb to capture a frame."
-          # Small retry loop: the crash is timing-dependent on the virtualized runner, so a single live run
-          # may pass. Stop the moment lldb captures a stop/crash, or after a few attempts.
-          for i in 1 2 3 4 5; do
-            echo "::group::lldb live-run attempt $i"
+          echo "Native crash detected in the gradle test log — re-running the FULL suite LIVE under lldb to capture a frame."
+          # Retry loop: the crash is timing-dependent (~2/3 of CI runs) and lldb perturbs timing, so a run may
+          # pass; stop the moment lldb captures a fault. Each full-suite pass is a few minutes — cap at 3.
+          for i in 1 2 3; do
+            echo "::group::lldb full-suite live-run attempt $i"
             OUT=$(lldb --batch \
               -o run \
               -o "thread backtrace all" \
+              -o "image list -b -o" \
               -o "quit" \
-              -- "$KEXE" --ktest_filter='*datagramsCoexist*' 2>&1)
+              -- "$KEXE" 2>&1)
             echo "$OUT"
             echo "::endgroup::"
             # lldb prints "stop reason = EXC_BAD_ACCESS" / "signal SIG..." when the process faulted under it.
@@ -578,7 +586,7 @@ jobs:
               echo "lldb captured a crash on attempt $i — backtrace above. Stopping the retry loop."
               break
             fi
-            echo "Attempt $i: coexistence test did not crash under lldb."
+            echo "Attempt $i: the suite did not crash under lldb."
           done
 
       - name: Stop quic-echo + capture log
