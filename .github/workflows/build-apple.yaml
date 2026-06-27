@@ -573,11 +573,17 @@ jobs:
           # pass; stop the moment lldb captures a fault. Each full-suite pass is a few minutes — cap at 3.
           for i in 1 2 3; do
             echo "::group::lldb full-suite live-run attempt $i"
+            # CRITICAL lldb --batch semantics: the post-run `-o` commands run ONLY if the inferior exits
+            # cleanly. When it CRASHES, lldb runs the `-k` (one-line-on-crash) commands instead — so the
+            # backtrace MUST be on `-k`, not `-o`, or we capture only the auto-displayed faulting frame #0
+            # (exactly what run 28301010459 did: frame #0 objc_retain, no deeper frames). `-k` fires on the
+            # EXC_BAD_ACCESS, dumping every thread's stack + the loaded-image list so the NW frames symbolicate.
             OUT=$(lldb --batch \
               -o run \
-              -o "thread backtrace all" \
-              -o "image list -b -o" \
-              -o "quit" \
+              -k "thread backtrace all" \
+              -k "image list -b -o" \
+              -k "register read" \
+              -k "quit" \
               -- "$KEXE" 2>&1)
             echo "$OUT"
             echo "::endgroup::"
