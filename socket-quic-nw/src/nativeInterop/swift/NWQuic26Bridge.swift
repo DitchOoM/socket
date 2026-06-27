@@ -300,7 +300,15 @@ private func nwErrorCode(_ error: NWError) -> Int {
                     wrapped.serveAsAccepted()
                     onConnection(wrapped)
                     await wrapped.awaitClosed()
+                    // Structured teardown INSIDE the run scope: drain + drop our extra refs while
+                    // `connection` (the closure parameter) is still strongly held, then fall out of the
+                    // closure so NetworkListener.run tears the connection down on NW's own context — no
+                    // out-of-band ARC release on a foreign queue (the macos-26 UAF path).
+                    await wrapped.serverStructuredTeardown()
                     nwDiag("\(wrapped.diagTag) run-closure returning (connection closed)")
+                    // Keep `connection` alive until the closure literally returns, so serverStructuredTeardown's
+                    // ref-dropping leaves the parameter the sole owner and `run` is what deallocs it.
+                    withExtendedLifetime(connection) {}
                 }
             }
             listenerBox.attach(runTask: runTask)
@@ -502,6 +510,17 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
     private var lifecycle: Lifecycle = .handshaking
     // Resumed by close(), unblocking the server run-closure (whose lifetime == connection lifetime).
     private var closedContinuation: CheckedContinuation<Void, Never>?
+    // The application close code close() was called with, stashed (under lifecycleLock, before the
+    // continuation resumes) so the server run-closure's serverStructuredTeardown() can read it: 0 = a
+    // graceful close (drain first), non-zero = an application abort (stamp the CONNECTION_CLOSE code, no
+    // drain).
+    private var closeAppErrorCode: UInt64 = 0
+
+    private func closedAppErrorCode() -> UInt64 {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return closeAppErrorCode
+    }
 
     // The single published TLS verify outcome (issue #81). nil means no custom verification ran, or it
     // accepted generically (CA-anchor trust / verifyPeer=false / default system trust — none of which
@@ -522,47 +541,28 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
 
     // Graceful-close drain window: how long a clean close() holds the connection alive so NW can flush
     // stream bytes it has accepted but not yet put on the wire (see close()). Bounded so a wedged flush
-    // can't leak the connection; runs detached so close() still returns immediately.
+    // can't leak the connection.
     private static let gracefulDrainNanos: UInt64 = 500_000_000
 
-    // Serializes the FINAL ARC release of every NWConnection (and the streams held alive for its flush)
-    // across the whole process. The new Network.framework connection has no explicit cancel(): teardown
-    // runs when the last strong reference deallocs, which drives NW's internal dispatch teardown. On the
-    // virtualized macos-26 CI runner, two NWConnection deallocs running at once SIGSEGV inside that NW
-    // teardown — and they DO collide, because connSeq is process-global and an earlier connection's
-    // detached 500 ms graceful-drain Task routinely finishes releasing just as a later connection closes
-    // (proven in a QUIC_NW_DIAG trace: "cli#1/srv#2 graceful drain END — releasing" interleaved with a
-    // later "cli#15 close", then exitValue=139 / SIGSEGV). The e2d4c3a locks synchronized the lifecycle
-    // STATE snapshots but not the dealloc itself. Funnelling the release onto one serial queue makes the
-    // deallocs strictly one-at-a-time without changing their timing — each connection still drops at the
-    // moment its owner intended, just never overlapping another's. Off the Swift concurrency pool too, so
-    // NW's teardown work doesn't block a cooperative thread.
-    private static let teardownQueue = DispatchQueue(label: "com.ditchoom.nwquic26.teardown")
-
-    /// Drop the last strong references to `conn` (the streams held for its flush, AND the resolved datagram
-    /// channel) on the shared serial [teardownQueue], so this NWConnection's dealloc never overlaps
-    /// another's (which SIGSEGVs inside NW on the CI runner). The caller cancels the serving Tasks first;
-    /// this governs only the ARC release that triggers NW teardown. The queue closure holds the last
-    /// reference, so the actual dealloc runs on the serial queue regardless of which thread enqueued it.
-    ///
-    /// `datagrams` is load-bearing on the datagram-enabled path: the resolved `QUIC.Datagrams` channel
-    /// RETAINS its parent NWConnection (it's a member channel of that connection). Held only on
-    /// `self.datagramsChannel`, that reference outlived `withExtendedLifetime(conn)` — so `conn` was NOT
-    /// the last reference, and the NWConnection's actual dealloc ran later, when NWQuic26Conn itself
-    /// deallocced (Kotlin-GC-driven, OFF this queue), free to race another connection's teardown → the
-    /// macos-26 SIGSEGV that reproduced only on the datagram-enabled coexistence test. Funnelling the
-    /// channel's final release through the same queue closure makes that NWConnection dealloc serial too.
-    private static func releaseSerially(
-        _ conn: NetworkConnection<QUIC>?,
-        streams: [NWQuic26Stream],
-        datagrams: QUIC.Datagrams<QUICDatagram>?
-    ) {
-        teardownQueue.async {
-            withExtendedLifetime(streams) {}
-            withExtendedLifetime(datagrams) {}
-            withExtendedLifetime(conn) {}
-        }
-    }
+    // SINGLE-OWNER TEARDOWN MODEL (UPDATE 15 structural fix). The new Network.framework
+    // `NetworkConnection<QUIC>` has no explicit cancel()/close(): teardown runs when the LAST strong
+    // reference deallocs, which drives NW's internal dispatch close (`quic_conn_close` on the
+    // `com.apple.network.connections` queue, which gathers final stats via
+    // `nw_protocol_instance_get_stats_region`). On the virtualized macos-26.5 CI runner that close block
+    // intermittently `objc_retain`s an already-freed object → EXC_BAD_ACCESS (UAF). Every earlier attempt
+    // to serialize the ARC release onto a custom foreign DispatchQueue (`teardownQueue`) only ordered OUR
+    // releases against each other; it could not order them against NW's own async close block, and the
+    // foreign queue is itself a context NW does not expect.
+    //
+    // So the connection now lives under exactly one owner and is torn down on a context NW expects:
+    //   • SERVER connections live entirely inside the `listener.run { connection in … }` structured scope.
+    //     close() merely signals; the run closure runs serverStructuredTeardown() (drain + drop our extra
+    //     refs) and then RETURNS, at which point NetworkListener.run performs NW's own structured teardown
+    //     of the connection on its own context — no out-of-band ARC release.
+    //   • CLIENT connections have no run scope, so close() owns the drain inside a single owning Task and
+    //     drops the last reference on THAT Task's Swift-concurrency context (not a foreign queue).
+    // There is no longer any out-of-band reference to release, so "release the connection while NW has a
+    // pending quic_conn_close block" is structurally harder to express.
 
     init(datagramsEnabled: Bool, isServer: Bool, keepAliveMs: Int) {
         self.datagramsEnabled = datagramsEnabled
@@ -857,17 +857,29 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         lifecycleLock.lock()
         let alreadyClosed = lifecycle == .closed
         lifecycle = .closed
+        closeAppErrorCode = appErrorCode
         let cont = closedContinuation
         closedContinuation = nil
         lifecycleLock.unlock()
-        nwDiag("\(diagTag) close(appErrorCode=\(appErrorCode)) alreadyClosed=\(alreadyClosed)")
+        nwDiag("\(diagTag) close(appErrorCode=\(appErrorCode)) alreadyClosed=\(alreadyClosed) server=\(isServer)")
         if alreadyClosed { return }
 
-        // The new NetworkConnection has no cancel() — teardown is via ARC. Snapshot the connection + its
-        // serving Tasks; how/when we release them depends on whether this is a graceful close or an abort.
-        // All three snapshot+clears go through the same locks their readers use (connectionLock /
-        // serveTasksLock / datagramsLock), so a setup path running concurrently with this teardown can't
-        // tear an array or race the connection's refcount.
+        if isServer {
+            // Server connections are owned by the listener.run { connection in … } structured scope. close()
+            // only SIGNALS: resuming awaitClosed() lets the run closure run serverStructuredTeardown()
+            // (drain + drop our extra refs) and then RETURN, at which point NetworkListener.run performs
+            // NW's own structured teardown of the connection on its own context. The close code was stashed
+            // above so serverStructuredTeardown() can pick graceful-drain vs abort. No ARC release here.
+            cont?.resume()
+            return
+        }
+
+        // Client path: no run scope owns the connection, so close() drives the teardown directly, inside a
+        // single owning Task, dropping the last reference on that Task's Swift-concurrency context.
+        //
+        // The snapshot+clears go through the same locks their readers use (connectionLock / serveTasksLock
+        // / datagramsLock), so a setup path running concurrently with this teardown can't tear an array or
+        // race the connection's refcount.
         let conn = currentConnection()
         let tasks = drainServeTasks()
         let dgTask = currentDatagramsTask()
@@ -877,78 +889,100 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         setConnection(nil)
         setDatagramsTask(nil)
 
-        if let conn {
-            if appErrorCode != 0 {
-                // Application abort: stamp the application close code (CONNECTION_CLOSE, RFC 9000 §19.19)
-                // and drop now — the app asked to tear down immediately. reason MUST be non-nil: NW's
-                // nw_quic_set_application_error_reason calls strlen() on it, so a nil reason (the
-                // ApplicationError(code:) default) crashes with SIGSEGV (strlen(NULL)). Pass "".
-                conn.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
-                for t in tasks { t.cancel() }
-                dgTask?.cancel()
-                // Abort wants the streams (RESET) + connection gone now — but still serialize the dealloc
-                // so it can't overlap another connection's teardown and SIGSEGV inside NW. Take the
-                // resolved datagram channel too: it retains the NWConnection, so without funnelling it
-                // through the queue the connection's real dealloc would run off-queue later (see
-                // releaseSerially / takeDatagramsChannel).
-                let dgChannel = takeDatagramsChannel()
-                NWQuic26Conn.releaseSerially(conn, streams: streams, datagrams: dgChannel)
-            } else {
-                // Graceful close (code 0): a bare ARC drop here strands stream bytes NW has ACCEPTED
-                // (`stream.send` completed) but not yet put on the wire — the peer then observes ENOTCONN
-                // instead of the data, losing a just-written unidirectional stream (the PR #176 macos-26
-                // loopback race, where `webTransport_clientOpensUniStream_serverReceives` writes then
-                // immediately tears down). Hold the connection AND keep its receive loops RUNNING for a
-                // bounded drain: on the flaky CI loopback a passively-held connection (no active I/O) has
-                // its path dropped, so the peer sees it vanish (POSIX 57) before the last stream is
-                // delivered — keeping it engaged lets NW keep the path up and flush the outstanding stream
-                // data + FINs, THEN tear down. Detached, so close() still returns at once; the cap
-                // (gracefulDrainNanos) guarantees a wedged drain can't leak the connection.
-                //
-                // The hold is NOT only for flushing opened-stream bytes — it also keeps the NW path up long
-                // enough for the PEER to finalize (e.g. a server that closes right after the handshake; the
-                // client otherwise sees POSIX 57 "Socket is not connected" before it observes the verdict).
-                // So it runs for EVERY graceful close, even a stream-less one. (An earlier attempt to skip it
-                // when `streams` was empty broke AppleQuicCertificateHashPinningTests, which closes the server
-                // immediately after the pinned handshake with no streams open.)
-                let tag = diagTag
-                Task {
-                    nwDiag("\(tag) graceful drain START (keeping loops engaged)")
-                    try? await Task.sleep(nanoseconds: NWQuic26Conn.gracefulDrainNanos)
-                    nwDiag("\(tag) graceful drain END — releasing")
-                    for t in tasks { t.cancel() }
-                    dgTask?.cancel()
-                    // Await the serving loops' actual unwind before releasing the connection. Each serving
-                    // Task (the `inboundStreams` loop) captures the NW connection STRONGLY, and cancellation
-                    // is cooperative — the Task drops its ref only when it finishes unwinding, on a Swift
-                    // concurrency thread. If we released `conn` without waiting, that async drop could be the
-                    // LAST reference and run the dealloc off the serial teardown queue, racing another
-                    // connection's dealloc — the exact SIGSEGV we're fixing. Awaiting here makes the serial
-                    // queue's closure the guaranteed last-ref holder. Cancelled inboundStreams loops end
-                    // promptly (traces show "loop ENDED ... CancellationError"), so this can't wedge.
-                    for t in tasks { _ = await t.value }
-                    if let dgTask { _ = try? await dgTask.value }
-                    // Awaiting dgTask above guarantees its storeDatagramsChannel ran, so the resolved
-                    // datagram channel is now on self.datagramsChannel. Take it (clearing self's reference)
-                    // here, AFTER the await, so a still-resolving task can't re-strand it. self is captured
-                    // strongly by this drain Task, which keeps NWQuic26Conn alive through the drain — the
-                    // whole point: it stops self.deinit from releasing datagramsChannel (and thus the
-                    // NWConnection it retains) off-queue before this runs.
-                    let dgChannel = self.takeDatagramsChannel()
-                    // The streams + datagram channel were held alive THROUGH the drain (releasing the
-                    // streams at close() would dealloc-then-RESET them and truncate the very flush this
-                    // drain exists to complete); now hand the final release of the streams, the datagram
-                    // channel, AND the connection to the serial teardown queue, so this NWConnection's
-                    // dealloc can't overlap another connection's and SIGSEGV.
-                    NWQuic26Conn.releaseSerially(conn, streams: streams, datagrams: dgChannel)
-                }
-            }
-        } else {
+        guard let conn else {
             for t in tasks { t.cancel() }
             dgTask?.cancel()
             _ = streams
+            cont?.resume()
+            return
+        }
+
+        if appErrorCode != 0 {
+            // Application abort: stamp the application close code (CONNECTION_CLOSE, RFC 9000 §19.19) and
+            // drop now — the app asked to tear down immediately. reason MUST be non-nil: NW's
+            // nw_quic_set_application_error_reason calls strlen() on it, so a nil reason (the
+            // ApplicationError(code:) default) crashes with SIGSEGV (strlen(NULL)). Pass "".
+            conn.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
+            for t in tasks { t.cancel() }
+            dgTask?.cancel()
+            // Take the resolved datagram channel (it retains the NWConnection) so it can't strand the
+            // connection's dealloc to NWQuic26Conn's later GC. `conn`, `streams`, and the channel drop when
+            // this method's locals fall out of scope and the cancelled serving Tasks unwind.
+            _ = takeDatagramsChannel()
+            _ = streams
+        } else {
+            // Graceful close (code 0): a bare ARC drop here strands stream bytes NW has ACCEPTED
+            // (`stream.send` completed) but not yet put on the wire — the peer then observes ENOTCONN
+            // instead of the data, losing a just-written unidirectional stream. Hold the connection AND keep
+            // its receive loops RUNNING for a bounded drain (keeping the NW path up so the outstanding
+            // stream data + FINs flush, and so the PEER can finalize — e.g. a server that closes right after
+            // the handshake; the client otherwise sees POSIX 57 before it observes the verdict). The cap
+            // (gracefulDrainNanos) guarantees a wedged drain can't leak the connection.
+            let tag = diagTag
+            Task {
+                nwDiag("\(tag) client graceful drain START (keeping loops engaged)")
+                try? await Task.sleep(nanoseconds: NWQuic26Conn.gracefulDrainNanos)
+                for t in tasks { t.cancel() }
+                dgTask?.cancel()
+                // Await the serving loops' actual unwind before releasing the connection. Each serving Task
+                // (the inboundStreams loop) captures the NW connection STRONGLY, and cancellation is
+                // cooperative — the Task drops its ref only when it finishes unwinding. Awaiting here makes
+                // THIS owning Task the guaranteed last-ref holder, so the connection's dealloc runs on this
+                // Task's Swift-concurrency context. Cancelled loops end promptly, so this can't wedge.
+                for t in tasks { _ = await t.value }
+                if let dgTask { _ = try? await dgTask.value }
+                // Awaiting dgTask guarantees storeDatagramsChannel ran; take the channel (clearing self's
+                // reference, AFTER the await so a still-resolving task can't re-strand it). self is captured
+                // strongly by this Task, keeping NWQuic26Conn alive through the drain so deinit can't release
+                // the channel (and thus the NWConnection it retains) before this runs.
+                let dgChannel = self.takeDatagramsChannel()
+                nwDiag("\(tag) client graceful drain END — releasing on owning Task")
+                // Drop the last references on THIS owning Task's context (not a foreign DispatchQueue): conn,
+                // the streams held through the drain, and the datagram channel all dealloc here.
+                withExtendedLifetime(conn) {}
+                withExtendedLifetime(streams) {}
+                withExtendedLifetime(dgChannel) {}
+            }
         }
         cont?.resume()
+    }
+
+    /// Server-only structured teardown, run INSIDE the `listener.run { connection in … }` closure after
+    /// awaitClosed() returns — while the run closure still holds `connection` strongly. Drains (graceful)
+    /// or stamps the abort code (no drain), cancels + awaits the serving Tasks, and drops EVERY extra
+    /// strong reference to the connection (stored ref, datagram channel, opened streams) so the run-closure
+    /// parameter becomes the SOLE remaining owner. When the closure then returns, NetworkListener.run
+    /// performs NW's own structured teardown of the connection on its own context — never an out-of-band
+    /// ARC release on a foreign queue (the macos-26 UAF reproduced under exactly that out-of-band release).
+    func serverStructuredTeardown() async {
+        let appErrorCode = closedAppErrorCode()
+        nwDiag("\(diagTag) serverStructuredTeardown START appErr=\(appErrorCode)")
+        if appErrorCode != 0 {
+            // Application abort: stamp the CONNECTION_CLOSE code (reason MUST be non-nil — strlen(NULL)
+            // SIGSEGVs), tear down immediately. The stamped code is carried by the structured teardown.
+            currentConnection()?.applicationError = NWProtocolQUIC.ApplicationError(code: appErrorCode, reason: "")
+        } else {
+            // Graceful drain: keep the loops engaged so NW flushes accepted-but-unsent stream bytes + FINs
+            // and keeps the path up for the peer to finalize, THEN tear down. Bounded by gracefulDrainNanos.
+            nwDiag("\(diagTag) serverStructuredTeardown graceful drain (keeping loops engaged)")
+            try? await Task.sleep(nanoseconds: NWQuic26Conn.gracefulDrainNanos)
+        }
+        let tasks = drainServeTasks()
+        let dgTask = currentDatagramsTask()
+        for t in tasks { t.cancel() }
+        dgTask?.cancel()
+        // Await the serving loops' actual unwind so they drop their strong `connection` ref before we
+        // surrender ours — otherwise a late async drop could be the last reference and dealloc the
+        // connection OUTSIDE the run scope (the out-of-band release we're eliminating).
+        for t in tasks { _ = await t.value }
+        if let dgTask { _ = try? await dgTask.value }
+        // Drop every extra strong ref to the connection (datagram channel retains its parent; opened
+        // streams may too; the stored ref) so the run-closure's `connection` parameter is the sole owner.
+        _ = takeDatagramsChannel()
+        _ = drainOpenedStreams()
+        setDatagramsTask(nil)
+        setConnection(nil)
+        nwDiag("\(diagTag) serverStructuredTeardown END (run closure tears down on NW's context)")
     }
 
     /// Suspend until close() — used by the server run-closure to hold the connection open.
