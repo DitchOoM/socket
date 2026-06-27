@@ -537,63 +537,71 @@ jobs:
             ${{ inputs.gradle-args }} 2>&1 \
             | tee /tmp/socket-quic-apple.log
 
-      # lldb LIVE-RUN fallback for the macos-26 datagram/stream coexistence SIGSEGV. Post-mortem cores are
-      # a confirmed DEAD END on the hardened runner (ReportCrash can't unwind deep NW dispatch; /cores often
-      # empty), so the ONLY reliable way to capture a symbolicated frame is running the test.kexe LIVE under
-      # lldb and letting it stop at the fault. Diagnostic-only: the binary is the same macosArm64 debug
+      # lldb LIVE-RUN fallback for the macos-26 NW in-process-loopback teardown SIGSEGV. Post-mortem cores
+      # are a confirmed DEAD END on the hardened runner (ReportCrash can't unwind deep NW dispatch; /cores
+      # often empty), so the ONLY reliable way to capture a symbolicated frame is running the test.kexe LIVE
+      # under lldb and letting it stop at the fault. Diagnostic-only: the binary is the same macosArm64 debug
       # test.kexe the gradle step built. Never fails the build — the front "Enforce Apple native test results
-      # (hard gate)" reds the job; this only adds a backtrace to the log if the crash recurs.
+      # (hard gate)" / a crashed gradle step reds the job; this only adds a backtrace to the log.
       #
-      # IMPORTANT: the SIGSEGV is in the NWConnection teardown ARC race and only fires AFTER the suite's
-      # cross-test drain storm has built up — running just `--ktest_filter='*datagramsCoexist*'` in isolation
-      # does NOT reproduce it (proven: 5/5 isolated runs exited cleanly). So run the FULL suite under lldb
-      # (no filter), from the module dir so the cwd-relative testcerts/ resolve exactly as the gradle run.
-      - name: lldb live-run coexistence SIGSEGV (diagnostic)
+      # IMPORTANT: the crash is a USE-AFTER-FREE (run 28301010459 captured frame #0: objc_retain →
+      # EXC_BAD_ACCESS on queue com.apple.network.connections, at "graceful drain END — releasing") and only
+      # fires AFTER a suite's cross-test drain storm has built up — `--ktest_filter` isolation does NOT
+      # reproduce it (proven: 5/5 isolated runs exited cleanly). So run the FULL suite under lldb (no filter),
+      # from the module dir so the cwd-relative testcerts/ resolve exactly as the gradle run.
+      #
+      # It is INTERMITTENT across modules: it has landed in socket-quic-nw (AppleQuicDatagramStreamCoexistence)
+      # AND in socket-http3 (AppleHttp3LoopbackTest) on different runs — each module is a separate test.kexe
+      # with its own drain storm. So probe BOTH gradle logs and lldb whichever module actually crashed.
+      - name: lldb live-run NW teardown SIGSEGV (diagnostic)
         if: ${{ !cancelled() }}
         continue-on-error: true
-        working-directory: socket-quic-nw
         env:
           QUIC_NW_DIAG: "1"
         run: |
           set +e
-          KEXE=build/bin/macosArm64/debugTest/test.kexe
-          if [ ! -x "$KEXE" ]; then
-            echo "No test.kexe at socket-quic-nw/$KEXE (the macosArm64 test link never produced it) — skipping lldb live-run."
-            exit 0
-          fi
-          # Only worth running if the gradle test step actually saw a native crash (exitValue 139 / process
-          # exited unexpectedly). If the suite passed, don't spend minutes re-running it under lldb.
-          if [ -f /tmp/socket-quic-apple.log ] && \
-             ! grep -qiE 'exit(ed)? (value )?13[0-9]|exited unexpectedly|SIGSEGV|SIGABRT' /tmp/socket-quic-apple.log; then
-            echo "No native crash marker in the gradle test log — the suite did not SIGSEGV; skipping lldb live-run."
-            exit 0
-          fi
-          echo "Native crash detected in the gradle test log — re-running the FULL suite LIVE under lldb to capture a frame."
-          # Retry loop: the crash is timing-dependent (~2/3 of CI runs) and lldb perturbs timing, so a run may
-          # pass; stop the moment lldb captures a fault. Each full-suite pass is a few minutes — cap at 3.
-          for i in 1 2 3; do
-            echo "::group::lldb full-suite live-run attempt $i"
-            # CRITICAL lldb --batch semantics: the post-run `-o` commands run ONLY if the inferior exits
-            # cleanly. When it CRASHES, lldb runs the `-k` (one-line-on-crash) commands instead — so the
-            # backtrace MUST be on `-k`, not `-o`, or we capture only the auto-displayed faulting frame #0
-            # (exactly what run 28301010459 did: frame #0 objc_retain, no deeper frames). `-k` fires on the
-            # EXC_BAD_ACCESS, dumping every thread's stack + the loaded-image list so the NW frames symbolicate.
-            OUT=$(lldb --batch \
-              -o run \
-              -k "thread backtrace all" \
-              -k "image list -b -o" \
-              -k "register read" \
-              -k "quit" \
-              -- "$KEXE" 2>&1)
-            echo "$OUT"
-            echo "::endgroup::"
-            # lldb prints "stop reason = EXC_BAD_ACCESS" / "signal SIG..." when the process faulted under it.
-            if echo "$OUT" | grep -qiE 'stop reason = (EXC_|signal SIG)|SIGSEGV|SIGABRT|EXC_BAD_ACCESS'; then
-              echo "lldb captured a crash on attempt $i — backtrace above. Stopping the retry loop."
-              break
+          # lldb the full suite of $1 (module dir) under $2 (gradle log) iff that log shows a native crash.
+          # CRITICAL lldb --batch semantics: the post-run `-o` commands run ONLY if the inferior exits cleanly.
+          # When it CRASHES, lldb runs the `-k` (one-line-on-crash) commands instead — so the backtrace MUST be
+          # on `-k`, not `-o`, or we capture only the auto-displayed faulting frame #0 (what run 28301010459
+          # did). `-k` fires on the EXC_BAD_ACCESS, dumping every thread's stack + the image list so the NW
+          # frames symbolicate.
+          lldb_capture() {
+            local module="$1" gradle_log="$2"
+            local kexe="$module/build/bin/macosArm64/debugTest/test.kexe"
+            if [ ! -x "$kexe" ]; then
+              echo "[$module] no test.kexe at $kexe — skipping."
+              return 0
             fi
-            echo "Attempt $i: the suite did not crash under lldb."
-          done
+            if [ ! -f "$gradle_log" ] || \
+               ! grep -qiE 'exit(ed)? (value )?13[0-9]|exited unexpectedly|SIGSEGV|SIGABRT' "$gradle_log"; then
+              echo "[$module] no native-crash marker in $gradle_log — suite did not SIGSEGV; skipping."
+              return 0
+            fi
+            echo "[$module] native crash detected in $gradle_log — re-running the FULL suite LIVE under lldb."
+            # Retry: the crash is timing-dependent and lldb perturbs timing, so a run may pass; stop the
+            # moment lldb captures a fault. Each full-suite pass is a few minutes — cap at 3.
+            for i in 1 2 3; do
+              echo "::group::[$module] lldb full-suite live-run attempt $i"
+              OUT=$( cd "$module" && lldb --batch \
+                -o run \
+                -k "thread backtrace all" \
+                -k "image list -b -o" \
+                -k "register read" \
+                -k "quit" \
+                -- "build/bin/macosArm64/debugTest/test.kexe" 2>&1 )
+              echo "$OUT"
+              echo "::endgroup::"
+              # lldb prints "stop reason = EXC_BAD_ACCESS" / "signal SIG..." when the process faulted under it.
+              if echo "$OUT" | grep -qiE 'stop reason = (EXC_|signal SIG)|SIGSEGV|SIGABRT|EXC_BAD_ACCESS'; then
+                echo "[$module] lldb captured a crash on attempt $i — backtrace above. Stopping."
+                return 0
+              fi
+              echo "[$module] attempt $i: the suite did not crash under lldb."
+            done
+          }
+          lldb_capture socket-quic-nw /tmp/socket-quic-apple.log
+          lldb_capture socket-http3 /tmp/apple-http3-diag.log
 
       - name: Stop quic-echo + capture log
         if: always() && steps.launch-quic-echo.outputs.ready == 'true'
