@@ -666,13 +666,32 @@ jobs:
           # not via a connection failure. Summary uses this to distinguish
           # "platform doesn't support QUIC harness yet" (ℹ️) from "QUIC
           # client silently regressed" (❌).
+          #
+          # applicable=false → the quiche QuicHarnessIntegrationTests does not run on
+          # this lane at all. It lives in socket-quic-quiche, which has NO Apple Kotlin
+          # target in v6 (Apple QUIC is the Network.framework backend in socket-quic-nw),
+          # so it can never emit a marker here — `OK=0,SKIP=0` is structural, not a crash.
+          # Apple's QUIC client IS validated, just not by this audit: the socket-quic-nw
+          # native suite (the hard gate above) + the cross-impl NW<->quiche interop lane.
+          # We mark the harness lane not-applicable ONLY when zero markers appeared, so a
+          # future real marker still audits normally; the summary then renders ℹ️ instead
+          # of a false ❌ "no markers despite launch".
+          APPLICABLE=true
+          if [ "$OK" = "0" ] && [ "$SKIP" = "0" ]; then
+            APPLICABLE=false
+          fi
           cat > /tmp/quic-audit/apple.txt <<EOF
           platform=apple
           launched=true
+          applicable=$APPLICABLE
           ok=$OK
           skip=$SKIP
           intentional_skip=$INTENTIONAL_SKIP
           EOF
+          if [ "$APPLICABLE" = "false" ]; then
+            echo 'reason=1 quiche QuicHarnessIntegrationTests has no Apple target in v6 (NW backend); Apple QUIC validated by the socket-quic-nw native suite + cross-impl NW<->quiche interop' \
+              >> /tmp/quic-audit/apple.txt
+          fi
           if [ -n "$SKIP_REASONS" ]; then
             while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
               >> /tmp/quic-audit/apple.txt

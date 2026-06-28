@@ -793,13 +793,28 @@ jobs:
           [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
 
           mkdir -p /tmp/quic-audit
+          # applicable=false → the quiche QuicHarnessIntegrationTests does not run on JS:
+          # it lives in socket-quic-quiche (no JS Kotlin target), and JS has no QUIC
+          # implementation at all (wasm/BoringSSL blocked). So `OK=0,SKIP=0` here is
+          # structural, not a regression. Mark the lane not-applicable ONLY when zero
+          # markers appeared (a future real marker still audits normally) so the interop
+          # summary renders a known ℹ️ gap rather than a false ❌ "no markers despite launch".
+          APPLICABLE=true
+          if [ "$OK" = "0" ] && [ "$SKIP" = "0" ]; then
+            APPLICABLE=false
+          fi
           cat > /tmp/quic-audit/js.txt <<EOF
           platform=js
           launched=true
+          applicable=$APPLICABLE
           ok=$OK
           skip=$SKIP
           intentional_skip=$INTENTIONAL
           EOF
+          if [ "$APPLICABLE" = "false" ]; then
+            echo 'reason=1 JS has no QUIC implementation (wasm/BoringSSL blocked) and the quiche QuicHarnessIntegrationTests has no JS target' \
+              >> /tmp/quic-audit/js.txt
+          fi
           if [ -n "$SKIP_REASONS" ]; then
             while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
               >> /tmp/quic-audit/js.txt
