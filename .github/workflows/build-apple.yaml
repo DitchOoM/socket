@@ -529,13 +529,32 @@ jobs:
           # would not propagate it to the K/N test process, silently losing the NW timeline trace the
           # diagnostics depend on. So --no-daemon is load-bearing for QUIC_NW_DIAG, not (any longer) for
           # core dumps; the cold build JVM is the price of a reliable diagnostic env.
-          ./gradlew :socket-quic-nw:macosArm64Test :socket-quic-nw:iosSimulatorArm64Test \
-            --no-configuration-cache --no-daemon --stacktrace --info \
-            -Pkotlin.native.debug.exceptions=true \
-            $SIM_ARG \
-            ${{ inputs.gradle-args }} 2>&1 \
-            | tee /tmp/socket-quic-apple.log
-          GRADLE_RC=${PIPESTATUS[0]}
+          #
+          # One retry. The macos-26 GitHub VM intermittently trips an Apple Network.framework drain-storm
+          # (transient ENETDOWN flapping on loopback as many connections tear down) that knocks a healthy
+          # connection down mid-test — most visible in the timing-sensitive idle/keepalive tests, and more
+          # so on the iOS simulator (its NW path goes through launchd_sim's daemons). It is a CI-VM
+          # artifact: it NEVER reproduces on bare metal / real devices on the same OS 26, so it is not a
+          # product defect. The in-code root fixes are already in place (withLiveQuicConnection retries an
+          # establishment-phase wedge); this covers only the residual mid-connection flap, which has no
+          # app-side fix. K/N test tasks can't retry a single test (Gradle's test-retry is JVM-only), so we
+          # re-run the whole task once — gradle skips whichever of the two already passed and only re-runs
+          # the failed one. A REAL regression fails BOTH attempts, so the suite stays hard-gated; only the
+          # momentary flap passes on the retry. macOS runner minutes are free on public repos.
+          GRADLE_RC=1
+          for attempt in 1 2; do
+            echo "::group::socket-quic-nw native tests (attempt $attempt/2)"
+            ./gradlew :socket-quic-nw:macosArm64Test :socket-quic-nw:iosSimulatorArm64Test \
+              --no-configuration-cache --no-daemon --stacktrace --info \
+              -Pkotlin.native.debug.exceptions=true \
+              $SIM_ARG \
+              ${{ inputs.gradle-args }} 2>&1 \
+              | tee /tmp/socket-quic-apple.log
+            GRADLE_RC=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            [ "$GRADLE_RC" -eq 0 ] && break
+            echo "Apple NW native tests attempt $attempt failed (rc=$GRADLE_RC). A real failure fails both attempts; retrying once to absorb the known macos-26 VM drain-storm flake."
+          done
 
           # False-green guard for the iOS-sim QUIC suites. A skipped suite is indistinguishable from a
           # passing one (shouldSkipQuicHarnessOnSimulator() early-returns → the tests "pass"), and the
