@@ -5,7 +5,6 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.test.Test
@@ -50,21 +49,32 @@ abstract class QuicIdleTimeoutTestSuite {
      */
     @Test
     fun idleConnectionTimesOutWithCleanEnd() =
-        runQuicTest {
+        // Budget covers several withLiveQuicConnection attempts: on the virtualized macos-26 CI loopback a
+        // connection can come up drain-storm-wedged (handshakes through a transient NW path flap, then
+        // passes no bytes), so a warmup probe retries a fresh connection before the real idle-out wait. The
+        // server echoes (so the warmup can round-trip), then goes idle once the client stops sending.
+        runQuicTest(timeout = 50.seconds) {
             wrapTestBody {
                 val opts = options(IDLE_TIMEOUT)
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
-                    val serverJob =
-                        launch {
-                            connections {
-                                acceptStream()
-                                awaitCancellation()
-                            }
-                        }
+                    val serverJob = launch { echoEveryStream() }
                     try {
-                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds.scaled) {
+                        withLiveQuicConnection(
+                            "127.0.0.1",
+                            port,
+                            opts,
+                            timeout = 10.seconds.scaled,
+                            reason = "idle-timeout connection never came up live",
+                        ) { confirmLive ->
                             val stream = openStream()
-                            stream.writeString("hi") // establish the stream on the server, then go idle
+                            // Warmup round-trip proves the connection isn't drain-storm-wedged. A wedge here
+                            // retries a FRESH connection; the real idle-out assertion can only surface after
+                            // confirmLive() and is never retried.
+                            if (stream.echoOnce("warmup") != "warmup") retryConnection()
+                            confirmLive()
+                            // Connection proven live — now go idle. With no traffic the idle timer fires and
+                            // the pending read returns End. If idle-timeout didn't fire, the read blocks to its
+                            // own (longer) timeout and throws — failing the test.
                             val result = stream.read(READ_TIMEOUT)
                             assertTrue(
                                 result is ReadResult.End,
