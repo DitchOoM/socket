@@ -32,6 +32,73 @@ private func nwDiagNextSeq() -> Int {
     return nwDiagSeq
 }
 
+// --- Phase-1 leak/early-release instrumentation (QUIC_NW_DIAG) ---
+// Counts NWQuic26Conn and NWQuic26Stream objects SIMULTANEOUSLY alive (allocated-but-not-yet-deinit'd)
+// plus cumulative create/free totals, to test the resource-leak hypothesis: does the live count stay
+// bounded across the suite, do allocs balance deallocs, and does NW ever report a connection reaching a
+// terminal state (.cancelled/.failed) before/after we drop our last reference? All maintained under one
+// lock and only LOGGED when QUIC_NW_DIAG is set (the increments are a couple of cheap int ops otherwise).
+private let nwLiveLock = NSLock()
+private var nwLiveConns = 0
+private var nwTotalConnsCreated = 0
+private var nwTotalConnsFreed = 0
+private var nwLiveStreams = 0
+private var nwTotalStreamsCreated = 0
+private var nwTotalStreamsFreed = 0
+// NW-reported terminal-state arrivals (state 4=.failed / 5=.cancelled), i.e. NW actually finishing a
+// connection's teardown. Compared against nwTotalConnsCreated: terminals << creates ⇒ NW never reaches
+// terminal before we free ⇒ early-release.
+private var nwTerminalStatesObserved = 0
+
+private func nwConnCreated(_ tag: @autoclosure () -> String) {
+    nwLiveLock.lock()
+    nwLiveConns += 1
+    nwTotalConnsCreated += 1
+    let live = nwLiveConns
+    let total = nwTotalConnsCreated
+    nwLiveLock.unlock()
+    nwDiag("\(tag()) LEAK conn CREATED liveConns=\(live) totalCreated=\(total)")
+}
+
+private func nwConnFreed(_ tag: @autoclosure () -> String) {
+    nwLiveLock.lock()
+    nwLiveConns -= 1
+    nwTotalConnsFreed += 1
+    let live = nwLiveConns
+    let total = nwTotalConnsFreed
+    nwLiveLock.unlock()
+    nwDiag("\(tag()) LEAK conn FREED liveConns=\(live) totalFreed=\(total)")
+}
+
+private func nwTerminalObserved(_ tag: @autoclosure () -> String, _ code: Int32) {
+    nwLiveLock.lock()
+    nwTerminalStatesObserved += 1
+    let n = nwTerminalStatesObserved
+    let created = nwTotalConnsCreated
+    nwLiveLock.unlock()
+    nwDiag("\(tag()) LEAK NW terminal(state=\(code)) observed total=\(n)/\(created) created")
+}
+
+private func nwStreamCreated() {
+    nwLiveLock.lock()
+    nwLiveStreams += 1
+    nwTotalStreamsCreated += 1
+    let live = nwLiveStreams
+    let total = nwTotalStreamsCreated
+    nwLiveLock.unlock()
+    nwDiag("LEAK stream CREATED liveStreams=\(live) totalCreated=\(total)")
+}
+
+private func nwStreamFreed() {
+    nwLiveLock.lock()
+    nwLiveStreams -= 1
+    nwTotalStreamsFreed += 1
+    let live = nwLiveStreams
+    let total = nwTotalStreamsFreed
+    nwLiveLock.unlock()
+    nwDiag("LEAK stream FREED liveStreams=\(live) totalFreed=\(total)")
+}
+
 private func nwDiag(_ message: @autoclosure () -> String) {
     guard nwDiagEnabled else { return }
     let ms = Double(DispatchTime.now().uptimeNanoseconds &- nwDiagStartNs) / 1_000_000.0
@@ -522,6 +589,92 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         return closeAppErrorCode
     }
 
+    // Terminal-state gate (Phase-2 wait-for-terminal teardown). onStateUpdate marks terminal on
+    // .failed/.cancelled; the graceful teardown paths await it. CANCELLATION-RESISTANT BY CONSTRUCTION:
+    // the suspension is a plain CheckedContinuation (it does NOT observe Task cancellation), woken either
+    // by markTerminalReached() — fired from onStateUpdate on NW's own com.apple.network.connections queue
+    // — or by a DispatchQueue timer ceiling (also independent of Swift-concurrency cancellation). This is
+    // the fix for the macos-26 UAF: the old graceful drain used `try? await Task.sleep`, which the
+    // ALREADY-CANCELLED listener.run scope skipped in ~0.2ms (measured: server drains median 0.2ms, 0/83
+    // reached the 500ms cap), so the run-closure returned and dropped the connection's last strong ref
+    // BEFORE NW finished its deferred quic_conn_close — whose stats-region collection then objc_retain'd a
+    // freed object (EXC_BAD_ACCESS). Holding the ref until NW reports terminal (or a bounded ceiling) keeps
+    // the object graph alive across that close block. Resuming EARLY on terminal also stops connections
+    // piling up for a fixed 500ms each (the self-induced ENETDOWN drain storm: concurrent-live peaked at 23
+    // and ENETDOWN events tracked that count).
+    // The gate's mutable state (latch + continuation) lives in a small reference type so the ceiling-timer
+    // closure can capture THE GATE — a Sendable box with its own lock — instead of the non-Sendable
+    // NWQuic26Conn (`self`). Exactly one of {terminal callback, ceiling timer} resumes the continuation:
+    // resume() take-and-nils it under the gate lock, so a race can't double-resume (CheckedContinuation
+    // would trap on a second resume).
+    private final class TerminalGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var reached = false
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        /// True once NW has reported terminal; lets a teardown wait short-circuit.
+        var isReached: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return reached
+        }
+
+        /// Latch terminal and wake a pending waiter (idempotent).
+        func markReached() {
+            lock.lock()
+            reached = true
+            let cont = continuation
+            continuation = nil
+            lock.unlock()
+            cont?.resume()
+        }
+
+        /// Park `cont` to be resumed by markReached() or the ceiling. Returns false if terminal already
+        /// latched (caller resumes immediately, no parking).
+        func park(_ cont: CheckedContinuation<Void, Never>) -> Bool {
+            lock.lock()
+            if reached { lock.unlock(); return false }
+            continuation = cont
+            lock.unlock()
+            return true
+        }
+
+        /// Ceiling fallback: wake a still-pending waiter (NW never reported terminal within the cap).
+        func resumeIfPending() {
+            lock.lock()
+            let cont = continuation
+            continuation = nil
+            lock.unlock()
+            cont?.resume()
+        }
+    }
+
+    private let terminalGate = TerminalGate()
+    // Exposed only for a diag log of which path resumed the drain.
+    private var terminalReached: Bool { terminalGate.isReached }
+
+    /// Mark the connection as having reached an NW terminal state (.failed/.cancelled) and wake any
+    /// teardown waiter.
+    private func markTerminalReached() {
+        terminalGate.markReached()
+    }
+
+    /// Suspend until NW reports the connection terminal, or until `ceilingNanos` elapses — whichever is
+    /// first. The ceiling uses a DispatchQueue timer (NOT Task.sleep) so a cancelled run scope can't skip
+    /// the wait (that skip was the macos-26 UAF: the server dropped its ref in ~0.2ms before NW's deferred
+    /// quic_conn_close ran). The timer closure captures the Sendable gate, not self.
+    private func awaitNwTerminal(ceilingNanos: UInt64) async {
+        let gate = terminalGate
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            if !gate.park(cont) {
+                cont.resume()
+                return
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(ceilingNanos))) {
+                gate.resumeIfPending()
+            }
+        }
+    }
+
     // The single published TLS verify outcome (issue #81). nil means no custom verification ran, or it
     // accepted generically (CA-anchor trust / verifyPeer=false / default system trust — none of which
     // need a follow-up). Set exactly once by the verify validator below; read by Kotlin once
@@ -569,6 +722,14 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         self.isServer = isServer
         self.keepAliveMs = keepAliveMs
         super.init()
+        nwConnCreated(diagTag)
+    }
+
+    deinit {
+        // Phase-1 leak instrumentation: NWQuic26Conn deallocating means Kotlin dropped its wrapper. Note
+        // this is the WRAPPER's dealloc, not necessarily the underlying NetworkConnection's — the server
+        // run-closure can outlive this object. Still the primary balance signal for the leak hypothesis.
+        nwConnFreed(diagTag)
     }
 
     /// Wire the underlying connection + fire `onReady` exactly once on the first terminal state.
@@ -582,6 +743,12 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
                 self?.applyKeepAlive()
                 if self?.claimSettled() == true { onReady(0, nil) }
             case .failed, .cancelled:
+                // Phase-1 early-release probe: NW reporting a terminal state means it actually finished
+                // (or aborted) the connection's own teardown. Tally it against connections created.
+                if let self { nwTerminalObserved(self.diagTag, code) }
+                // Phase-2: release the wait-for-terminal teardown gate — NW has finished, the deferred
+                // quic_conn_close has run while we held the ref, so it's safe to drop the connection now.
+                self?.markTerminalReached()
                 if self?.claimSettled() == true {
                     onReady(errCode == 0 ? -1 : errCode, (desc ?? "connection \(state)") as NSString)
                 }
@@ -920,8 +1087,14 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
             // (gracefulDrainNanos) guarantees a wedged drain can't leak the connection.
             let tag = diagTag
             Task {
-                nwDiag("\(tag) client graceful drain START (keeping loops engaged)")
-                try? await Task.sleep(nanoseconds: NWQuic26Conn.gracefulDrainNanos)
+                nwDiag("\(tag) client graceful drain START (awaiting NW terminal, ceiling)")
+                // Wait for NW to report terminal, capped at gracefulDrainNanos. When the peer is still
+                // alive (a graceful close with nothing failing), no terminal arrives and this holds the
+                // full ceiling — preserving the flush window. When the peer has already gone (terminal
+                // fires fast), release immediately instead of lingering 500ms, which is what piled
+                // connections up and tripped the ENETDOWN drain storm.
+                await self.awaitNwTerminal(ceilingNanos: NWQuic26Conn.gracefulDrainNanos)
+                nwDiag("\(tag) client drain resumed (terminalReached=\(self.terminalReached))")
                 for t in tasks { t.cancel() }
                 dgTask?.cancel()
                 // Await the serving loops' actual unwind before releasing the connection. Each serving Task
@@ -964,6 +1137,13 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         } else {
             // Graceful drain: keep the loops engaged so NW flushes accepted-but-unsent stream bytes + FINs
             // and keeps the path up for the peer to finalize, THEN tear down. Bounded by gracefulDrainNanos.
+            // NB: this runs inside the (often already-cancelled) listener.run scope, so the sleep typically
+            // returns early — the server tears down promptly. That FAST server teardown is load-bearing: it
+            // is what drives the CLIENT peer to a terminal state (POSIX 57), which the client's
+            // wait-for-terminal drain keys off to release early. Do NOT convert this to awaitNwTerminal —
+            // measured, that makes the server hold the full ceiling, which (a) never observes terminal for a
+            // clean close anyway and (b) starves the client's terminal signal, doubling concurrent-live and
+            // the ENETDOWN drain storm (peak 23 → 44).
             nwDiag("\(diagTag) serverStructuredTeardown graceful drain (keeping loops engaged)")
             try? await Task.sleep(nanoseconds: NWQuic26Conn.gracefulDrainNanos)
         }
@@ -1079,6 +1259,13 @@ private func loadIdentity(path: String, password: String) -> sec_identity_t? {
         self.stream = stream
         self.cachedStreamId = stream.streamID
         super.init()
+        nwStreamCreated()
+    }
+
+    deinit {
+        // Phase-1 leak instrumentation: stream wrapper dealloc. The new QUIC.Stream emits RESET_STREAM on
+        // last-ref-drop, so a balanced create/free count here also tells us streams aren't being stranded.
+        nwStreamFreed()
     }
 
     /// `completion(errCode, streamResetCode, desc)`: on failure, `streamResetCode` carries the peer's
