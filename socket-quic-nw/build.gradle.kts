@@ -616,6 +616,17 @@ providers.gradleProperty("iosSimulatorDevice").orNull?.takeIf { it.isNotBlank() 
             standalone.set(false)
             device.set(simDevice)
             environment("SIMCTL_CHILD_QUIC_SIM_BOOTED", "1")
+            // The booted sim spawns the test with a cwd that is NOT the module dir, so the suites'
+            // cwd-relative `testcerts/` lookups fail. Hand them this module's absolute testcerts/ path
+            // (read back via QUIC_TESTCERTS_DIR in appleTestCertPath); the sim-spawned binary runs on the
+            // host and can read it. The dir is produced by generateTestP12/generatePinnedW3cCerts, which
+            // these test tasks already dependOn.
+            environment(
+                "SIMCTL_CHILD_QUIC_TESTCERTS_DIR",
+                layout.projectDirectory
+                    .dir("testcerts")
+                    .asFile.absolutePath,
+            )
             logger.lifecycle(
                 "iOS-sim QUIC harness: booted-mode wiring enabled for $name " +
                     "(device=$simDevice, standalone=false, QUIC_SIM_BOOTED=1)",
