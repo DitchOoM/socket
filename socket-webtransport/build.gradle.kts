@@ -45,6 +45,11 @@ kotlin {
     jvm()
     js {
         browser {
+            // The non-gated surface smoke (src/browserSmoke) is node-only — exclude it from the browser
+            // task so jsBrowserTest stays Chrome-free (the interop test below is the browser path).
+            testTask {
+                filter.excludeTestsMatching("com.ditchoom.socket.webtransport.WebTransportSurfaceSmokeTest")
+            }
             // The browser WebTransport interop test runs in real headless Chrome via Karma. Opt-in only
             // (`-PwtBrowserInterop`) so a default `jsBrowserTest` / CI `check` never requires Chrome.
             if (project.hasProperty("wtBrowserInterop")) {
@@ -64,6 +69,11 @@ kotlin {
             optIn.add("kotlin.js.ExperimentalWasmJsInterop")
         }
         browser {
+            // The non-gated surface smoke (src/browserSmoke) is node-only — exclude it from the browser
+            // task so wasmJsBrowserTest stays Chrome-free (the interop test below is the browser path).
+            testTask {
+                filter.excludeTestsMatching("com.ditchoom.socket.webtransport.WebTransportSurfaceSmokeTest")
+            }
             // Same opt-in as js: run the wasmJs browser WebTransport interop test in real headless Chrome
             // via Karma under `-PwtBrowserInterop`, so the wasmJs reset → neutral-exception mapping is
             // Chrome-verified rather than merely compile-checked. A default `wasmJsBrowserTest` / CI `check`
@@ -373,6 +383,16 @@ if (isMacOS) {
 // Real headless Chrome (via Karma) drives the production browserMain WebTransport wrapper against an
 // externally-launched withHttp3Server (the BrowserInteropServer harness, JVM/quiche) presenting the
 // `pinned` EC P-256 leaf — the only self-signed path a browser accepts (W3C serverCertificateHashes).
+// Non-gated public-API surface smoke (src/browserSmoke/kotlin), shared by jsTest + wasmJsTest. Unlike the
+// interop test it needs no server and no Chrome, so it ships in every default build — but it's excluded
+// from the browser test tasks (see the js/wasmJs `browser { testTask { filter… } }` above) so it runs on
+// the node tasks only and the browser tasks stay Chrome-free.
+for (smokeTestSourceSet in listOf("jsTest", "wasmJsTest")) {
+    kotlin.sourceSets.named(smokeTestSourceSet) {
+        kotlin.srcDir("src/browserSmoke/kotlin")
+    }
+}
+
 // The harness binds an ephemeral port and writes build/wt-interop/config.properties (url + leaf hash);
 // `generateBrowserInteropConfig` bakes that into BrowserInteropConfig.kt so the js/wasmJs tests compile
 // against the actual port (no fixed ports, no runtime Karma fetch). The interop test source set
