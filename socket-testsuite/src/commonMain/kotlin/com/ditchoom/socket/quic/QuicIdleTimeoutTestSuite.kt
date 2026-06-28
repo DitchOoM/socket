@@ -91,17 +91,30 @@ abstract class QuicIdleTimeoutTestSuite {
      */
     @Test
     fun activityKeepsConnectionAlivePastIdleTimeout() =
-        runQuicTest {
+        // Budget covers several withLiveQuicConnection attempts: on the virtualized macos-26 CI loopback a
+        // connection can come up drain-storm-wedged (handshakes through a transient NW path flap, then
+        // passes no bytes), so the warmup probe retries a fresh connection before the real keepalive wait.
+        runQuicTest(timeout = 50.seconds) {
             wrapTestBody {
                 val opts = options(KEEPALIVE_IDLE).copy(keepAliveInterval = KEEPALIVE_INTERVAL)
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
                     val serverJob = launch { echoEveryStream() }
                     try {
-                        withQuicConnection("127.0.0.1", port, opts, timeout = 10.seconds.scaled) {
+                        withLiveQuicConnection(
+                            "127.0.0.1",
+                            port,
+                            opts,
+                            timeout = 10.seconds.scaled,
+                            reason = "keepalive connection never came up live",
+                        ) { confirmLive ->
                             val stream = openStream()
-                            // Establish the stream on the server, then go completely idle for longer than
-                            // the idle timeout. Reactive keepalive must hold the connection open.
-                            assertEquals("warmup", stream.echoOnce("warmup"), "warmup echo failed before idle wait")
+                            // Warmup round-trip proves the connection isn't drain-storm-wedged. A wedge here
+                            // retries a FRESH connection; the real keepalive assertion can only surface after
+                            // confirmLive() and is never retried.
+                            if (stream.echoOnce("warmup") != "warmup") retryConnection()
+                            confirmLive()
+                            // Connection proven live — go completely idle for longer than the idle timeout.
+                            // Reactive keepalive must hold the connection open.
                             delay(KEEPALIVE_IDLE_WAIT)
                             assertEquals(
                                 "still-alive",

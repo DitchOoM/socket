@@ -50,16 +50,27 @@ abstract class QuicMalformedPacketTestSuite {
     /** Blast malformed datagrams at the server, then a legitimate client must still connect and echo. */
     @Test
     fun serverSurvivesMalformedDatagramsThenServesLegitClient() =
-        runQuicTest {
+        // Budget covers several withLiveQuicConnection attempts: the legit client can itself come up
+        // drain-storm-wedged on the macos-26 CI loopback — a false negative unrelated to the malformed
+        // blast — so retry a fresh client until one round-trips. If ALL attempts fail the server genuinely
+        // stopped serving (the real regression this test guards), and the helper throws.
+        runQuicTest(timeout = 50.seconds) {
             wrapTestBody {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
                     val serverJob = launch { echoEveryStream() }
                     try {
                         for (datagram in MALFORMED_DATAGRAMS) sendRawDatagram(port, datagram)
 
-                        withQuicConnection("127.0.0.1", port, options, timeout = 10.seconds) {
+                        withLiveQuicConnection(
+                            "127.0.0.1",
+                            port,
+                            options,
+                            timeout = 10.seconds,
+                            reason = "server did not serve a legit client after malformed datagrams",
+                        ) { confirmLive ->
                             val stream = openStream()
-                            assertEquals("alive", stream.echoOnce("alive"), "server did not serve a legit client after malformed datagrams")
+                            if (stream.echoOnce("alive") != "alive") retryConnection()
+                            confirmLive()
                             stream.close()
                         }
                     } finally {

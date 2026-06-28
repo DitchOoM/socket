@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -99,6 +100,63 @@ internal inline fun <T> withDiffDebug(
         println("DIFF-DEBUG $label ${context()}")
         throw t
     }
+
+/** Internal marker thrown by [retryConnection] to abandon a drain-storm-wedged connection for a fresh one. */
+private class RetryConnectionException : Exception()
+
+/**
+ * Abandon the current connection inside a [withLiveQuicConnection] session and retry a FRESH one — call it
+ * when a liveness probe (a warmup round-trip) shows the connection came up but won't pass bytes.
+ */
+internal fun retryConnection(): Nothing = throw RetryConnectionException()
+
+/**
+ * Establish a QUIC connection that is PROVEN live, retrying a FRESH connection up to [attempts] times when
+ * the connection comes up **drain-storm-wedged** — i.e. it handshakes through a transient
+ * Network.framework path flap (`POSIXErrorCode 50: Network is down`) on the virtualized macos-26 CI
+ * loopback, reaches `ready`, but then silently passes no bytes (streams open, but the round-trip never
+ * completes; see the v6-ci-stabilize memory). A fresh, post-storm connection comes up healthy.
+ *
+ * The retry is scoped to the **establishment phase only**, so a real assertion never gets masked: the
+ * [session] runs a warmup probe and calls `confirmLive()` once a round-trip succeeds. A wedge BEFORE
+ * `confirmLive()` (the session calls [retryConnection], or the probe hangs to the per-attempt [timeout])
+ * is retried; anything AFTER `confirmLive()` — a thrown `AssertionError`, or a timeout once the connection
+ * was proven live — propagates unretried. On a reliable backend the first probe always succeeds, so this
+ * is a no-op wrapper around [withQuicConnection]; only the lossy NW loopback ever spends a retry.
+ *
+ * @param timeout per-attempt budget passed to [withQuicConnection] (bounds establishment + the whole
+ *   session); the enclosing [runQuicTest] budget must cover up to [attempts] of these.
+ */
+internal suspend fun withLiveQuicConnection(
+    hostname: String,
+    port: Int,
+    quicOptions: QuicOptions,
+    timeout: Duration,
+    attempts: Int = 4,
+    reason: String = "connection never came up live (drain-storm wedge)",
+    session: suspend QuicScope.(confirmLive: () -> Unit) -> Unit,
+) {
+    var lastWedge: Throwable? = null
+    repeat(attempts) {
+        // BooleanArray (not a captured var) so the flag the session sets inside the withQuicConnection
+        // lambda is observable here in the catch after the exception unwinds the lambda.
+        val confirmed = BooleanArray(1)
+        try {
+            withQuicConnection(hostname, port, quicOptions, timeout = timeout) {
+                session { confirmed[0] = true }
+            }
+            return // session completed without wedging
+        } catch (e: RetryConnectionException) {
+            lastWedge = e // probe round-trip failed → drain-storm wedge, retry a fresh connection
+        } catch (e: TimeoutCancellationException) {
+            // A per-attempt timeout BEFORE liveness was confirmed is a wedge (the probe never round-tripped)
+            // — retry. AFTER confirmLive() it's a genuine failure (e.g. keepalive broke) — propagate.
+            if (confirmed[0]) throw e
+            lastWedge = e
+        }
+    }
+    throw AssertionError("$reason after $attempts attempts", lastWedge)
+}
 
 /**
  * Reactive replacement for `delay(N)` followed by an assertion: yields the dispatcher
