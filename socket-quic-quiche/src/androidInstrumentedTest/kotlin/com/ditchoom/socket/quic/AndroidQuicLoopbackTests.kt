@@ -20,14 +20,21 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * In-process **server-role** QUIC coverage on the Android/JNI runtime — the Android counterpart of
- * the JVM [QuicMigrationLoopbackTests] / K-N [LinuxQuicMigrationLoopbackTests]. Issue #72 Task 2.
+ * In-process **server-role** active-migration coverage on the Android/JNI runtime — the Android
+ * counterpart of the JVM [QuicMigrationLoopbackTests] / K-N [LinuxQuicMigrationLoopbackTests].
+ * Issue #72 Task 2.
  *
- * Until now the Android instrumented suite was client-only ([AndroidQuicConnectivityTests] +
- * [AndroidQuicMigrationTests] both talk to the external docker `quic-echo`). These tests run BOTH
- * ends in one process via [withQuicServer] over loopback — no docker, no root, no [NetworkControl] —
- * so they exercise the Android server path (`JvmQuicServer` on the `commonJvmMain` runtime) for the
- * first time. The server needs a real TLS cert chain + key on disk, supplied by [AndroidTestCerts]
+ * The general server-role suite (bind/echo/reset/close-code/pinning/half-close/…) is now inherited
+ * directly from the shared suites via [AndroidQuicServerTests] / [AndroidQuicServerLifecycleTests],
+ * so the previously hand-reimplemented `inProcessServerEchoesStream` and
+ * `peerConnectionCloseCodeIsObservedOverJni` here were removed (superseded by the inherited
+ * `echoSingleStream` / `connectionCloseWithErrorIsObservedByPeer`). What remains is the one piece the
+ * shared server suite does **not** cover: active connection migration (RFC 9000 §9), which has no
+ * cross-backend suite and stays a per-platform loopback test.
+ *
+ * This runs BOTH ends in one process via [withQuicServer] over loopback — no docker, no root, no
+ * [NetworkControl] — exercising the Android server path (`JvmQuicServer` on the `commonJvmMain`
+ * runtime). The server needs a real TLS cert chain + key on disk, supplied by [AndroidTestCerts]
  * (bundled certs extracted to the instrumentation cache dir).
  */
 @RunWith(AndroidJUnit4::class)
@@ -68,126 +75,6 @@ class AndroidQuicLoopbackTests {
             assumeTrue("Loopback alias 127.0.0.2 not bindable: ${e.message}", false)
         }
     }
-
-    /**
-     * Core server-role proof: an in-process [withQuicServer] echoes a stream back to an in-process
-     * client over loopback. No external server. If this round-trips, the Android server path works.
-     */
-    @Test
-    fun inProcessServerEchoesStream() =
-        runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
-                withTimeout(20.seconds) {
-                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val serverJob =
-                            launch(Dispatchers.IO) {
-                                connections {
-                                    val stream = acceptStream()
-                                    while (true) {
-                                        val data = stream.read(8.seconds)
-                                        if (data is ReadResult.Data) {
-                                            stream.write(data.buffer, 5.seconds)
-                                        } else {
-                                            break
-                                        }
-                                    }
-                                    stream.close()
-                                }
-                            }
-                        delay(100)
-
-                        val echo = CompletableDeferred<String>()
-                        val clientJob =
-                            launch(Dispatchers.IO) {
-                                withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
-                                    val stream = openStream()
-                                    echo.complete(stream.echoOnce("hello-android-server"))
-                                    stream.close()
-                                }
-                            }
-
-                        try {
-                            assertEquals(
-                                "hello-android-server",
-                                withTimeout(12.seconds) { echo.await() },
-                                "in-process server did not echo the stream",
-                            )
-                        } finally {
-                            clientJob.cancel()
-                            serverJob.cancel()
-                        }
-                    }
-                }
-            }
-        }
-
-    /**
-     * Regression guard for the JNI backend's peer connection-close code (the Android-critical half of
-     * the fix that added `nConnError` to `JniQuicheApi`). Android always uses the JNI quiche binding;
-     * before the fix it inherited the null-returning `connPeerError` default, so a peer's
-     * `closeWithError(code)` was silently reported as a clean `NoError` shutdown — defeating the
-     * typed-error feature exactly where it matters. Here the in-process server aborts the whole
-     * connection with an application code and the client must observe a connection-level
-     * [QuicCloseException] carrying [QuicError.ApplicationError]. Mirrors the shared
-     * `QuicServerTestSuite.connectionCloseWithErrorIsObservedByPeer` (Android reimplements rather than
-     * subclasses the suite).
-     */
-    @Test
-    fun peerConnectionCloseCodeIsObservedOverJni() =
-        runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
-                withTimeout(20.seconds) {
-                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
-                        val serverReadFirst = CompletableDeferred<Unit>()
-                        val serverJob =
-                            launch(Dispatchers.IO) {
-                                connections {
-                                    val stream = acceptStream()
-                                    stream.read(5.seconds)
-                                    serverReadFirst.complete(Unit)
-                                    closeWithError(0xBEEFL)
-                                }
-                            }
-                        delay(100)
-
-                        val observed = CompletableDeferred<QuicError>()
-                        val clientJob =
-                            launch(Dispatchers.IO) {
-                                withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
-                                    val stream = openStream()
-                                    val hello = BufferFactory.Default.allocate(5)
-                                    hello.writeString("hello", Charset.UTF8)
-                                    hello.resetForRead()
-                                    stream.write(hello, 5.seconds)
-                                    serverReadFirst.await()
-                                    try {
-                                        repeat(50) {
-                                            val ping = BufferFactory.Default.allocate(4)
-                                            ping.writeString("ping", Charset.UTF8)
-                                            ping.resetForRead()
-                                            stream.write(ping, 5.seconds)
-                                            delay(100)
-                                        }
-                                    } catch (e: QuicCloseException) {
-                                        observed.complete(e.quicError)
-                                    }
-                                }
-                            }
-
-                        try {
-                            assertEquals(
-                                QuicError.ApplicationError(0xBEEFL),
-                                withTimeout(12.seconds) { observed.await() },
-                                "the JNI backend must surface the peer's CONNECTION_CLOSE application code",
-                            )
-                        } finally {
-                            clientJob.cancel()
-                            serverJob.cancel()
-                        }
-                    }
-                }
-            }
-        }
 
     /**
      * Active migration (RFC 9000 §9) against an in-process server — mirrors
