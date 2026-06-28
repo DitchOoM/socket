@@ -17,6 +17,13 @@ actual fun isAppleKNative(): Boolean = true
 actual fun shouldSkipQuicHarnessOnSimulator(): Boolean {
     if (kotlin.native.Platform.osFamily == kotlin.native.OsFamily.MACOSX) return false
     val booted = getenv("QUIC_SIM_BOOTED")?.toKString() == "1"
+    // Human-debug aid for the iOS-sim QUIC harness: a self-skipping suite is indistinguishable from a
+    // passing one (the tests early-return → "pass"), so surface the booted state to show whether the
+    // booted-mode wiring reached the test process (booted-mode=true) vs ran under KGP's default
+    // --standalone (booted-mode=false → skip). The CI gate keys off the gradle-side "booted-mode wiring
+    // enabled" marker instead (K/N test stdout capture is less certain); this just makes a sim run
+    // self-explanatory in the log. See :socket-quic-nw build.gradle.kts (iosSimulatorDevice wiring).
+    println("[QUIC-SIM-HARNESS] simulator booted-mode=$booted")
     return !booted
 }
 

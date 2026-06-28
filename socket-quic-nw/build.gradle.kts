@@ -590,3 +590,35 @@ val generateTestP12 =
 tasks
     .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
     .configureEach { dependsOn(generateTestP12) }
+
+// iOS-simulator QUIC harness (issue #81). KGP's default `simctl spawn --standalone` runs the test
+// binary OUTSIDE launchd_sim's network services, where Network.framework's QUIC datapath can't reach
+// nehelper/nw and a connection hangs in `preparing` forever (raw-socket TCP is unaffected, which
+// masked this for a long time). So the Apple QUIC suites self-skip on a `--standalone` simulator via
+// `shouldSkipQuicHarnessOnSimulator()`.
+//
+// When CI supplies a booted device via `-PiosSimulatorDevice=<udid>` (after `xcrun simctl boot`), run
+// iosSimulatorArm64Test INSIDE that booted simulator (standalone=false) and forward QUIC_SIM_BOOTED so
+// the suites un-skip. `simctl spawn` only passes env vars carrying the SIMCTL_CHILD_ prefix (which it
+// strips), so the test process sees a bare QUIC_SIM_BOOTED=1. Without the property KGP's auto-boot +
+// `--standalone` default is unchanged, so a local `./gradlew check` still works and the harness
+// self-skips on the simulator. tvOS/watchOS are intentionally left as-is.
+//
+// This is the v6 home of the wiring originally added in c055ee0 — it lived in the old monolithic
+// socket-quic/build.gradle.kts and was dropped during the Phase 2b.2 backend extraction (6cd6de7),
+// leaving only an orphaned comment; the Apple QUIC suites now live in this module's appleTest, so the
+// task to configure is this module's iosSimulatorArm64Test.
+providers.gradleProperty("iosSimulatorDevice").orNull?.takeIf { it.isNotBlank() }?.let { simDevice ->
+    tasks
+        .withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest>()
+        .matching { it.name == "iosSimulatorArm64Test" }
+        .configureEach {
+            standalone.set(false)
+            device.set(simDevice)
+            environment("SIMCTL_CHILD_QUIC_SIM_BOOTED", "1")
+            logger.lifecycle(
+                "iOS-sim QUIC harness: booted-mode wiring enabled for $name " +
+                    "(device=$simDevice, standalone=false, QUIC_SIM_BOOTED=1)",
+            )
+        }
+}

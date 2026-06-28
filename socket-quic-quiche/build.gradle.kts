@@ -1899,15 +1899,8 @@ ktlint {
     }
 }
 
-// iOS-simulator QUIC harness (issue #81). KGP's default `simctl spawn --standalone`
-// runs tests outside launchd_sim's network services, which breaks Network.framework
-// QUIC (raw-socket TCP is unaffected). When CI supplies a booted device via
-// `-PiosSimulatorDevice=<udid>` (after `xcrun simctl boot`), run the iOS simulator
-// test task inside that booted simulator (standalone=false) and export
-// QUIC_SIM_BOOTED so QuicHarnessIntegrationTests un-skips there. Without the
-// property, KGP's auto-boot + `--standalone` behavior is unchanged, so
-// `./gradlew check` still works locally with no manual boot (the QUIC harness then
-// self-skips on the simulator). tvOS/watchOS are intentionally left as-is for now.
+// (The iOS-simulator QUIC harness booted-mode wiring — issue #81 — lives in :socket-quic-nw, the
+// module whose appleTest runs the Apple QUIC suites. This module has no Apple target.)
 
 // --- Self-signed `localhost` test identity, GENERATED at build time (issues #112 / #99) ---
 // The QUIC CA-pinning tests (QuicServerTestSuite.pinnedCorrectCaAnchor.../pinnedWrongCaAnchor...)

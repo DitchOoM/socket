@@ -536,6 +536,28 @@ jobs:
             $SIM_ARG \
             ${{ inputs.gradle-args }} 2>&1 \
             | tee /tmp/socket-quic-apple.log
+          GRADLE_RC=${PIPESTATUS[0]}
+
+          # False-green guard for the iOS-sim QUIC suites. A skipped suite is indistinguishable from a
+          # passing one (shouldSkipQuicHarnessOnSimulator() early-returns → the tests "pass"), and the
+          # booted-mode wiring was already silently lost once (dropped in the Phase 2b.2 extraction, so
+          # -PiosSimulatorDevice became a no-op and the whole sim suite skipped). So when we actually
+          # booted a sim and passed the property, REQUIRE proof the wiring applied: the
+          # :socket-quic-nw build emits "booted-mode wiring enabled" via logger.lifecycle (always in the
+          # tee'd gradle log) only when the property is honored and the iosSimulatorArm64Test task is
+          # configured standalone=false. Its absence = the wiring regressed again → real iOS coverage
+          # lost. (The Apple actual also prints "[QUIC-SIM-HARNESS] simulator booted-mode=..." from
+          # inside the test process for human debugging, but K/N test stdout capture is less certain
+          # than gradle's own log, so the gate keys off the gradle-side marker.)
+          if [ -n "$SIM_UDID" ]; then
+            if grep -q 'booted-mode wiring enabled' /tmp/socket-quic-apple.log; then
+              echo "iOS-sim QUIC harness: booted-mode wiring confirmed applied (suites run, not self-skipped)."
+            else
+              echo "::error::Booted iOS sim $SIM_UDID and passed -PiosSimulatorDevice, but the ':socket-quic-nw' booted-mode wiring marker never appeared — the QUIC suites self-skipped on the simulator (iosSimulatorDevice wiring regressed). This is a false green; failing the step."
+              exit 1
+            fi
+          fi
+          exit "${GRADLE_RC:-0}"
 
       # lldb LIVE-RUN fallback for the macos-26 NW in-process-loopback teardown SIGSEGV. Post-mortem cores
       # are a confirmed DEAD END on the hardened runner (ReportCrash can't unwind deep NW dispatch; /cores
