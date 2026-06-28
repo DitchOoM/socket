@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -40,13 +41,17 @@ abstract class QuicDatagramTestSuite {
 
     @Test
     fun datagramRoundTrip() =
-        runQuicTest {
+        // Budget covers several withLiveQuicConnection attempts: on the virtualized macos-26 CI loopback a
+        // connection can come up datagram-WEDGED (handshakes through a transient `Network is down` flap,
+        // reaches ready, but its datagram channel silently passes no bytes for the connection's whole life).
+        // The resend loop below cannot recover a wedged connection — only a FRESH, post-storm one can — so
+        // the round-trip itself is the liveness probe and a wedge retries a new connection.
+        runQuicTest(timeout = 50.seconds) {
             wrapTestBody {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = dgramOptions) {
-                    val echoed = CompletableDeferred<String>()
-
-                    // Server: keep echoing every datagram on the connection (not just one). The client may
-                    // resend (below), and each resend must be echoed so the round-trip completes.
+                    // Server: keep echoing every datagram on EACH accepted connection (a retry below opens a
+                    // fresh one). The client may resend, and each resend must be echoed so the round-trip
+                    // completes.
                     val serverJob =
                         launch {
                             connections {
@@ -68,20 +73,26 @@ abstract class QuicDatagramTestSuite {
                         }
                     delay(100)
 
-                    val clientJob =
-                        launch {
-                            withQuicConnection("localhost", port, dgramOptions, timeout = 10.seconds) {
-                                assertIs<MaxDatagramSize.Bytes>(maxDatagramSize(), "datagrams should be sendable")
-                                // RFC 9221 datagrams are UNRELIABLE and NW keeps no app-level pre-arm
-                                // backlog, so the very first datagram can be lost to a setup-ordering race:
-                                // the peer's datagram receive loop arms only a sub-millisecond margin before
-                                // this send, and on a jittery/virtualized runner the send can beat the arm —
-                                // the datagram is then dropped (proven via QUIC_NW_DIAG: server-ARM vs
-                                // client-SEND within ~0.1-0.4ms; the macos-26 datagramRoundTrip flake). The
-                                // robust pattern for an unreliable, no-backlog transport is resend-until-acked
-                                // — the echo IS the ack. On a reliable backend the first send is echoed at
-                                // once and the resender is cancelled after a single iteration, so this is a
-                                // no-op there; it never weakens the assertion (one echo must still arrive).
+                    var roundTripped: String? = null
+                    try {
+                        withLiveQuicConnection(
+                            "localhost",
+                            port,
+                            dgramOptions,
+                            timeout = 10.seconds,
+                            reason = "datagram round-trip never completed (connection came up datagram-wedged)",
+                        ) { confirmLive ->
+                            assertIs<MaxDatagramSize.Bytes>(maxDatagramSize(), "datagrams should be sendable")
+                            // RFC 9221 datagrams are UNRELIABLE and NW keeps no app-level pre-arm backlog, so
+                            // the very first datagram can be lost to a setup-ordering race (peer's recv loop
+                            // arms a sub-ms margin before this send; on a jittery runner the send beats the arm
+                            // → dropped). The robust pattern is resend-until-acked — the echo IS the ack. We
+                            // bound the wait: a HEALTHY connection echoes within a resend or two; a WEDGED one
+                            // never echoes, so on timeout we abandon it and retry a fresh connection (the resend
+                            // loop alone can't escape a wedge). On a reliable backend the first send is echoed
+                            // at once, so this is a single-iteration no-op that never weakens the assertion.
+                            val echoed = CompletableDeferred<String>()
+                            val gotEcho =
                                 coroutineScope {
                                     val resender =
                                         launch {
@@ -95,26 +106,31 @@ abstract class QuicDatagramTestSuite {
                                             }
                                         }
                                     try {
-                                        while (!echoed.isCompleted) {
-                                            when (val r = receiveDatagram()) {
-                                                is DatagramReceiveResult.Received -> {
-                                                    echoed.complete(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
-                                                    r.buffer.freeIfNeeded()
+                                        withTimeout(4.seconds.scaled) {
+                                            while (!echoed.isCompleted) {
+                                                when (val r = receiveDatagram()) {
+                                                    is DatagramReceiveResult.Received -> {
+                                                        echoed.complete(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                                        r.buffer.freeIfNeeded()
+                                                    }
+                                                    is DatagramReceiveResult.ConnectionClosed ->
+                                                        return@withTimeout
                                                 }
-                                                is DatagramReceiveResult.ConnectionClosed -> echoed.complete("connection_closed")
                                             }
                                         }
+                                        echoed.isCompleted
+                                    } catch (e: TimeoutCancellationException) {
+                                        false // no echo within the budget — datagram-wedged connection
                                     } finally {
                                         resender.cancel()
                                     }
                                 }
-                            }
+                            if (!gotEcho) retryConnection()
+                            confirmLive()
+                            roundTripped = echoed.getCompleted()
                         }
-
-                    try {
-                        assertEquals("hello dgram", withTimeout(10.seconds) { echoed.await() })
+                        assertEquals("hello dgram", roundTripped)
                     } finally {
-                        clientJob.cancel()
                         serverJob.cancel()
                     }
                 }
