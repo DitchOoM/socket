@@ -126,9 +126,28 @@ abstract class QuicIdleTimeoutTestSuite {
                             // Connection proven live — go completely idle for longer than the idle timeout.
                             // Reactive keepalive must hold the connection open.
                             delay(KEEPALIVE_IDLE_WAIT)
+                            // The connection can DIE during this idle wait from a macos-26 CI drain-storm
+                            // ENETDOWN flap (POSIXErrorCode 50, a virtualized-runner artifact) — a death
+                            // AFTER confirmLive() that withLiveQuicConnection's establishment-only retry
+                            // can't catch. Retry a FRESH connection when the post-idle echo shows the
+                            // connection died (a thrown close/stream exception, or no echo came back). This
+                            // does NOT mask a real keepalive regression: a broken keepalive idle-closes
+                            // DETERMINISTICALLY at KEEPALIVE_IDLE on EVERY attempt, so it exhausts all
+                            // retries and still fails (as the withLiveQuicConnection AssertionError); only an
+                            // intermittent flap clears on a fresh connection. A wrong (non-empty) echo value
+                            // is a real corruption bug and still fails the assertEquals below, unretried.
+                            val echo =
+                                try {
+                                    stream.echoOnce("still-alive")
+                                } catch (e: QuicCloseException) {
+                                    retryConnection()
+                                } catch (e: QuicStreamException) {
+                                    retryConnection()
+                                }
+                            if (echo == "no_data") retryConnection()
                             assertEquals(
                                 "still-alive",
-                                stream.echoOnce("still-alive"),
+                                echo,
                                 "connection idle-closed despite keepalive — the reactive PING did not reset the idle timer",
                             )
                             stream.close()
