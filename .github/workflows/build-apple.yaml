@@ -505,15 +505,14 @@ jobs:
         # self-skipping. If no sim is available it falls back to a clean skip.
         run: |
           set -o pipefail
-          # Leave a core dump if the K/N test.kexe takes a SIGSEGV/SIGABRT inside
-          # Network.framework / the NWQuic26 Swift bridge. ReportCrash sometimes loses the
-          # race (writes the .ips async, after the collect step runs) OR never fires when the
-          # fault is deep in NW dispatch where K/N's signal handler can't unwind — in both
-          # cases a core in /cores is the only post-mortem. `ulimit -c unlimited` is inherited
-          # by the gradle-launched test process. (macOS writes cores to /cores when it is
-          # writable; the GitHub runner's admin user can write there.)
-          ulimit -c unlimited || true
-          echo "core_pattern: $(sysctl -n kern.corefile 2>/dev/null || echo '?')  ulimit -c: $(ulimit -c)"
+          # NOTE on crash capture (macos-26 NW teardown UAF, now fixed structurally in 680fc6b): the
+          # bug was diagnosed via the LIVE lldb run below, NOT post-mortem cores. Post-mortem cores are a
+          # confirmed DEAD END on GitHub's hardened macOS runner — it won't write a core for a K/N
+          # test.kexe and ReportCrash never fired for the deep-NW-dispatch fault (proven across runs
+          # 28251317422 / 28301010459 / 28303056538). So the `ulimit -c unlimited` line and the separate
+          # ~30s "Collect macOS native crash reports" / .ips-poll step were removed as dead cost. The
+          # crash-gated lldb live-run is the only capture mechanism kept (free when green, fires only on
+          # a native-crash marker — dormant insurance should this Apple beta-OS bug recur on an SDK bump).
           SIM_UDID=$(xcrun simctl list devices available --json \
             | python3 -c "import json,sys; d=json.load(sys.stdin); c=[x for rt,l in d['devices'].items() if 'iOS' in rt for x in l if 'iPhone' in x['name']]; print(c[-1]['udid'] if c else '')")
           SIM_ARG=""
@@ -525,11 +524,11 @@ jobs:
           else
             echo "No iPhone simulator available — QUIC harness will self-skip on the sim"
           fi
-          # --no-daemon: run the build in the client JVM this shell forks (which has the
-          # `ulimit -c unlimited` set above), instead of a long-lived daemon started by an earlier
-          # step under the default core limit of 0. The test.kexe inherits its launcher's rlimit, so
-          # without this a SIGSEGV leaves no core in /cores (exactly what happened on the run that
-          # reproduced the crash). Costs a cold build JVM for one step; worth it for a real post-mortem.
+          # --no-daemon: this step sets QUIC_NW_DIAG=1 as a step-level env, and only a gradle JVM forked
+          # from THIS shell inherits it — a daemon reused from an earlier step (started without the var)
+          # would not propagate it to the K/N test process, silently losing the NW timeline trace the
+          # diagnostics depend on. So --no-daemon is load-bearing for QUIC_NW_DIAG, not (any longer) for
+          # core dumps; the cold build JVM is the price of a reliable diagnostic env.
           ./gradlew :socket-quic-nw:macosArm64Test :socket-quic-nw:iosSimulatorArm64Test \
             --no-configuration-cache --no-daemon --stacktrace --info \
             -Pkotlin.native.debug.exceptions=true \
@@ -819,94 +818,12 @@ jobs:
       # hs_err/replay crash logs: a native abort (quiche/JNI/FFM SIGABRT/SIGSEGV) shows
       # only as "exit value 134" with no failing JUnit case, so without the dump the
       # crash is undiagnosable — same instrumentation as build-linux.yaml.
-      # macOS native crash post-mortem. A K/N test SIGSEGV/SIGABRT (e.g. inside Network.framework / the
-      # NWQuic26 Swift bridge) is reported by Gradle only as "Test running process exited unexpectedly" —
-      # no stack. Two complementary post-mortem sources:
-      #   1. macOS's ReportCrash daemon writes a fully symbolicated .ips to a DiagnosticReports dir. It
-      #      writes ASYNC, so the naive single-shot glob below used to run BEFORE the .ips appeared and
-      #      print "No macOS crash reports found". Now we poll for up to ~30s, and check BOTH the per-user
-      #      (~/Library/Logs/DiagnosticReports) AND the system (/Library/Logs/DiagnosticReports) paths —
-      #      ReportCrash routes to either depending on the faulting process's user/session.
-      #   2. A core dump in /cores (enabled via `ulimit -c unlimited` in the test step). When the fault is
-      #      deep in NW dispatch, ReportCrash can fail to fire at all — the core is then the only record.
-      #      lldb gives a symbolicated `thread backtrace all` against the crashing test.kexe.
-      # Diagnostic-only (`!cancelled()`); nothing here can fail the build.
-      - name: Collect macOS native crash reports
-        if: ${{ !cancelled() }}
-        run: |
-          mkdir -p build/apple-crash-reports
-          shopt -s nullglob
-
-          # (1) Poll the DiagnosticReports dirs — ReportCrash writes the .ips asynchronously, so a
-          # one-shot glob races it. Wait until at least one report lands or ~30s elapses.
-          report_dirs=(~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports)
-          collect_reports() {
-            local out=()
-            local d
-            for d in "${report_dirs[@]}"; do
-              out+=("$d"/*.ips "$d"/*.crash)
-            done
-            printf '%s\n' "${out[@]}"
-          }
-          reports=($(collect_reports))
-          tries=0
-          while [ ${#reports[@]} -eq 0 ] && [ $tries -lt 15 ]; do
-            sleep 2
-            tries=$((tries + 1))
-            reports=($(collect_reports))
-          done
-          if [ ${#reports[@]} -eq 0 ]; then
-            echo "No macOS crash reports found after ~30s wait (no native abort, or ReportCrash never fired)."
-          else
-            cp "${reports[@]}" build/apple-crash-reports/ 2>/dev/null || true
-            echo "Collected ${#reports[@]} crash report(s) after $((tries * 2))s:"
-            ls -lt build/apple-crash-reports/
-            newest=$(ls -t build/apple-crash-reports/* | head -1)
-            echo "::group::Most recent crash report ($newest)"
-            cat "$newest"
-            echo "::endgroup::"
-          fi
-
-          # (2) Symbolicate any core dump with lldb. The test binary is the macosArm64 debug test.kexe;
-          # there may be more than one (socket-quic-nw, socket-http3) — match each core against every
-          # candidate kexe and let lldb pick up the one with matching UUID.
-          cores=(/cores/core.* /cores/*.core)
-          if [ ${#cores[@]} -eq 0 ]; then
-            echo "No core dumps in /cores."
-          else
-            echo "Found ${#cores[@]} core dump(s) in /cores:"
-            ls -lh /cores/ || true
-            kexes=($(find . -path '*/build/bin/macosArm64/*/test.kexe' -type f 2>/dev/null))
-            echo "Candidate test.kexe binaries: ${kexes[*]:-<none>}"
-            for core in "${cores[@]}"; do
-              [ -f "$core" ] || continue
-              cp "$core" build/apple-crash-reports/ 2>/dev/null || true
-              dumped=0
-              for kexe in "${kexes[@]}"; do
-                echo "::group::lldb thread backtrace all ($core vs $kexe)"
-                lldb --batch \
-                  -o "target create --core \"$core\" \"$kexe\"" \
-                  -o "thread backtrace all" \
-                  -o "quit" 2>&1 | tee "build/apple-crash-reports/lldb-$(basename "$core")-$(basename "$(dirname "$kexe")").txt"
-                echo "::endgroup::"
-                dumped=1
-              done
-              if [ $dumped -eq 0 ]; then
-                echo "::group::lldb thread backtrace all ($core, no kexe — unsymbolicated)"
-                lldb --batch -o "target create --core \"$core\"" -o "thread backtrace all" -o "quit" 2>&1 \
-                  | tee "build/apple-crash-reports/lldb-$(basename "$core").txt"
-                echo "::endgroup::"
-              fi
-            done
-          fi
-
       - name: Upload test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-apple
           path: |
-            build/apple-crash-reports/
             build/reports/tests/
             build/test-results/
             build/reports/ktlint/
