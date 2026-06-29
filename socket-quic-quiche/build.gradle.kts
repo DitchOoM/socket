@@ -852,6 +852,15 @@ afterEvaluate {
             environment("MALLOC_CHECK_", "3")
             environment("MALLOC_PERTURB_", "165")
             environment("GLIBC_TUNABLES", "glibc.malloc.check=3")
+            // macOS has no glibc, so the vars above are no-ops on Darwin (where local
+            // repros run). Apple's libmalloc gives us the same class of guard: scribble
+            // poisons freed memory (0x55) so a UAF read trips, pre-scribble (0xaa) catches
+            // read-before-init, guard-edges traps overflow, and a double-free aborts
+            // natively. Pair with MallocStackLogging + `malloc_history <pid> <addr>` to get
+            // the freeing stack for whatever the next recv_info UAF reads.
+            environment("MallocScribble", "1")
+            environment("MallocPreScribble", "1")
+            environment("MallocGuardEdges", "1")
         }
 
         // --- Native-crash diagnostics ------------------------------------------
@@ -865,6 +874,12 @@ afterEvaluate {
         // every jvmTest worker in the job gets this; local runs are unaffected.
         if (providers.gradleProperty("quicCrashDiag").isPresent) {
             jvmArgs("-XX:+ErrorFileToStderr")
+            // Same signal CI sets job-wide (ORG_GRADLE_PROJECT_quicCrashDiag=1) → turn on the
+            // recv_info lifecycle guard (RecvInfoLifecycleGuard) on every jvmTest worker. It
+            // intercepts the intermittent recv_info use-after-free at the connRecv use site and
+            // aborts with the captured *freeing* stack, so the next occurrence names the racing
+            // free path instead of an opaque native SIGSEGV with no other-thread context.
+            environment("QUIC_RECVINFO_GUARD", "1")
         }
 
         // --- Backend selector ---------------------------------------------------
