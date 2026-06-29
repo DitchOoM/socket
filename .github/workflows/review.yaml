@@ -24,6 +24,139 @@ jobs:
     with:
       version: ${{ needs.build-linux.outputs.version }}
 
+  # Consumer-smoke: drive the MERGED published artifacts as a real downstream consumer would.
+  # `validate` (above) RESOLVES the dependency graph and checks module-metadata shape; it never
+  # COMPILES consumer code against the API, LINKS a Kotlin/Native binary, or RUNS anything. This job
+  # closes that gap against the same `maven-local-merged` artifact:
+  #   • JVM behavioural smoke  — a real withHttp3Server↔withHttp3Connection loopback over QUIC
+  #     (gating): proves the published JVM artifacts load their native lib + round-trip HTTP/3,
+  #     the native-load / FFM-packaging class of bug source-built lanes never see.
+  #   • Bytecode-version guard — asserts the base jvm jars are Java 8 (v52) (gating): the toolchain
+  #     is JDK 21 on every lane, so without this a silent re-regression to v65 (which actually
+  #     shipped once) is invisible to CI.
+  #   • Linux Kotlin/Native LINK — `linuxX64TestBinaries` links a consumer test binary that reaches
+  #     the full QUIC stack, so an undistributed static lib surfaces as the link-time undefined-symbol
+  #     error it is. STAGED non-gating (continue-on-error) until libquiche.a is distributed to K/N
+  #     consumers; flip to gating in that change.
+  consumer-smoke:
+    name: "Consumer Smoke (JVM + Linux link)"
+    needs: [validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download merged maven-local
+        uses: actions/download-artifact@v8
+        with:
+          name: maven-local-merged
+          path: /tmp/maven-local-merged
+      # Derive the version from the artifacts actually built (race-proof; the workflow input can
+      # diverge if a release publishes mid-CI — the same reasoning validate-artifacts uses).
+      - name: Resolve built version
+        run: |
+          version=$(ls /tmp/maven-local-merged/com/ditchoom/socket/ 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          if [ -z "$version" ]; then
+            echo "::error::No socket version in the merged maven-local — validate didn't produce artifacts."
+            exit 1
+          fi
+          echo "RESOLVED_VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Smoke-testing version: ${version}"
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+      - name: JVM behavioural smoke (HTTP/3 loopback)
+        run: |
+          gradle -p .ci/consumer-smoke jvmTest \
+            -PsocketVersion="${RESOLVED_VERSION}" \
+            -PmavenRepoPath=/tmp/maven-local-merged \
+            --no-daemon
+      - name: Bytecode-version guard (base jvm jars must be Java 8 / v52)
+        run: |
+          version="${RESOLVED_VERSION}"
+          MERGED="/tmp/maven-local-merged/com/ditchoom"
+          FAIL=0
+          # socket-http3 / socket-webtransport are NOT listed yet: they ship v65 until their Java-8
+          # target lands (PR #183). Add them here once that merges so a future re-regression is caught.
+          assert_v52() {
+            local mod="$1"
+            local jar="$MERGED/${mod}-jvm/${version}/${mod}-jvm-${version}.jar"
+            if [ ! -f "$jar" ]; then
+              echo "::error::${mod}-jvm jar not found at $jar"; FAIL=1; return
+            fi
+            local tmp; tmp=$(mktemp -d); unzip -qo "$jar" -d "$tmp"
+            local bad=0
+            # Exclude META-INF/versions/* — multi-release overlays (socket-quic-quiche's FFM bindings)
+            # are deliberately higher; only the BASE classes must be v52.
+            while IFS= read -r c; do
+              local major; major=$(od -An -tu1 -j7 -N1 "$c" | tr -d ' ')
+              if [ "$major" != "52" ]; then echo "  non-v52 ($major): ${c#"$tmp"/}"; bad=1; fi
+            done < <(find "$tmp" -name '*.class' -not -path '*/META-INF/versions/*')
+            if [ "$bad" = 1 ]; then echo "::error::${mod} has non-Java-8 base classes"; FAIL=1; else echo "  OK v52: ${mod}"; fi
+            rm -rf "$tmp"
+          }
+          for mod in socket socket-quic socket-quic-quiche socket-quic-default; do
+            assert_v52 "$mod"
+          done
+          [ "$FAIL" = 0 ] || { echo "=== BYTECODE GUARD FAILED ==="; exit 1; }
+          echo "=== bytecode guard passed ==="
+      # STAGED — Gap A (libquiche.a distribution) flips this to gating. Today the published K/N
+      # artifacts don't carry the static archive, so this link fails with undefined quiche_* symbols;
+      # that IS the bug this gate is built to catch. Kept visible (non-gating) until the fix lands.
+      - name: Linux K/N link gate (Gap A — staged non-gating)
+        continue-on-error: true
+        run: |
+          gradle -p .ci/consumer-smoke linuxX64TestBinaries \
+            -PsocketVersion="${RESOLVED_VERSION}" \
+            -PmavenRepoPath=/tmp/maven-local-merged \
+            --no-daemon
+
+  # Apple Kotlin/Native LINK gate (Gap A catcher on macOS/iOS). Links — does not run — the consumer
+  # test binaries; on iOS that needs no simulator. STAGED non-gating for the same reason as the Linux
+  # link above; flip to gating when libquiche.a is distributed to K/N consumers.
+  consumer-smoke-apple:
+    name: "Consumer Smoke (Apple K/N link)"
+    needs: [validate]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download merged maven-local
+        uses: actions/download-artifact@v8
+        with:
+          name: maven-local-merged
+          path: /tmp/maven-local-merged
+      - name: Resolve built version
+        run: |
+          version=$(ls /tmp/maven-local-merged/com/ditchoom/socket/ 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1)
+          [ -n "$version" ] || { echo "::error::No socket version in merged maven-local"; exit 1; }
+          echo "RESOLVED_VERSION=${version}" >> "$GITHUB_ENV"
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      - name: Cache Konan
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+      - name: Apple K/N link gate (macosArm64 + iosSimulatorArm64)
+        run: |
+          gradle -p .ci/consumer-smoke macosArm64TestBinaries iosSimulatorArm64TestBinaries \
+            -PsocketVersion="${RESOLVED_VERSION}" \
+            -PmavenRepoPath=/tmp/maven-local-merged \
+            --no-daemon
+
   # Aggregates per-platform QUIC harness coverage into one markdown
   # matrix visible in the workflow run summary. Each platform's audit
   # step uploads a `quic-audit-<platform>` artifact with OK/SKIP counts;
