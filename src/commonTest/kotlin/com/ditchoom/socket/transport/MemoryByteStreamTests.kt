@@ -195,7 +195,7 @@ class MemoryByteStreamTests {
     fun transportConnectReturnsWorkingStream() =
         runTest {
             val transport = MemoryTransport()
-            val stream = transport.connect("localhost", 8080, com.ditchoom.socket.ConnectionOptions())
+            val stream = transport.connect("localhost", 8080, com.ditchoom.socket.TransportConfig())
             assertTrue(stream.isOpen)
             stream.close()
         }

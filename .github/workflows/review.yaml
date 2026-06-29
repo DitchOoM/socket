@@ -85,6 +85,7 @@ jobs:
           for f in "${FILES[@]}"; do
             platform=$(grep '^platform=' "$f" | cut -d= -f2)
             launched=$(grep '^launched=' "$f" | cut -d= -f2)
+            applicable=$(grep '^applicable=' "$f" | cut -d= -f2)
             ok=$(grep '^ok=' "$f" | cut -d= -f2)
             skip=$(grep '^skip=' "$f" | cut -d= -f2)
             intentional_skip=$(grep '^intentional_skip=' "$f" | cut -d= -f2)
@@ -93,12 +94,21 @@ jobs:
             # whenever a lane skipped, so "all skipped" explains itself.
             reasons=$(grep '^reason=' "$f" | cut -d= -f2-)
             launched=${launched:-unknown}
+            # applicable defaults true for older audit files that predate the field.
+            applicable=${applicable:-true}
             ok=${ok:-0}
             skip=${skip:-0}
             intentional_skip=${intentional_skip:-0}
 
             if [ "$ok" -gt 0 ]; then
               status="✅ exercised"
+            elif [ "$applicable" = "false" ]; then
+              # The quiche QuicHarnessIntegrationTests doesn't run on this lane at all in
+              # v6 (Apple = Network.framework backend with no quiche Kotlin target; JS has
+              # no QUIC implementation). `ok=0,skip=0` is structural, not a silently
+              # all-skipped regression — the platform's QUIC client (if any) is validated
+              # elsewhere (see the per-platform reason below). Render ℹ️, never fail.
+              status="ℹ️ platform gap (known)"
             elif [ "$skip" -gt 0 ] && [ "$intentional_skip" = "$skip" ]; then
               # Every SKIP came from a platform gate inside withHarness
               # (PR #54 iter 9: Apple K/N is the only one today). Not a
@@ -118,12 +128,17 @@ jobs:
             fi
 
             echo "| $platform | $ok | $skip | $status |" >> "$GITHUB_STEP_SUMMARY"
-            echo "platform=$platform launched=$launched ok=$ok skip=$skip intentional=$intentional_skip status=$status"
+            echo "platform=$platform launched=$launched applicable=$applicable ok=$ok skip=$skip intentional=$intentional_skip status=$status"
 
-            if [ "$skip" -gt 0 ] && [ -n "$reasons" ]; then
+            if [ -n "$reasons" ] && { [ "$skip" -gt 0 ] || [ "$applicable" = "false" ]; }; then
+              if [ "$applicable" = "false" ]; then
+                detail="$platform — not applicable (known gap)"
+              else
+                detail="$platform — skip reasons ($skip skipped)"
+              fi
               {
                 echo ""
-                echo "<details><summary>$platform — skip reasons ($skip skipped)</summary>"
+                echo "<details><summary>$detail</summary>"
                 echo ""
                 echo '```'
                 echo "$reasons"
@@ -156,7 +171,7 @@ jobs:
     # continue-on-error stays during Windows-peer bring-up: the MinGW-cross-
     # compiled DLL has not yet been proven to load on a bare windows-latest
     # (static-libgcc/stdc++ link is the intended fix; CI is the only place to
-    # verify it). Drop this once :socket-quic:jvmTest is green here ≥2 runs —
+    # verify it). Drop this once :socket-quic-quiche:jvmTest is green here ≥2 runs —
     # exit criterion per PLAN.md Phase 2 rule 4.
     continue-on-error: true
     steps:
@@ -172,7 +187,7 @@ jobs:
       # stageQuicheNativeResources expects it (libs/quiche/windows-x64/lib/)
       # so NativeLibLoader can extract quiche_jni.dll from the test classpath.
       #
-      # The cross-build is best-effort: editing socket-quic/src/jni/quiche_jni.c
+      # The cross-build is best-effort: editing socket-quic-quiche/src/jni/quiche_jni.c
       # cold-busts the quiche native cache (keyed on its hash), and the fragile
       # MinGW cross-build may then not emit the DLL → no artifact is uploaded
       # (if-no-files-found: ignore). download-artifact errors on a missing
@@ -186,19 +201,19 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: quiche-windows-natives
-          path: socket-quic/libs/quiche/windows-x64/lib
+          path: socket-quic-quiche/libs/quiche/windows-x64/lib
       - name: Check whether the Windows DLL is present
         id: dll
         shell: bash
         run: |
-          if [ -f socket-quic/libs/quiche/windows-x64/lib/quiche_jni.dll ]; then
+          if [ -f socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
             echo "quiche_jni.dll present — running Windows JVM tests."
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "::warning title=Windows DLL missing::The Linux MinGW cross-build did not produce quiche_jni.dll (likely a cold native cache after a quiche_jni.c edit). Skipping Windows JVM tests this run."
           fi
-      # :jvmTest is the root project's suite. :socket-quic:jvmTest is now
+      # :jvmTest is the root project's suite. :socket-quic-quiche:jvmTest is now
       # included (was excluded while no Windows native existed): the DLL above
       # plus the windows-x64 entry in nativeLibsByPlatform let it stage + load.
       # The leading colon scopes each task to its project; an unqualified
@@ -206,7 +221,7 @@ jobs:
       # is present (see above).
       - name: Run JVM tests
         if: steps.dll.outputs.present == 'true'
-        run: ./gradlew :jvmTest :socket-quic:jvmTest --no-configuration-cache
+        run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache
 
   docs:
     name: "Validate Docs Generation"

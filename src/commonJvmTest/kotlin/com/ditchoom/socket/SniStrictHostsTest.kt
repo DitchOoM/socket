@@ -1,5 +1,7 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.writeString
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -30,15 +32,14 @@ class SniStrictHostsTest {
                 ClientSocket.connect(
                     port = 443,
                     hostname = host,
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 15.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 15.seconds),
                 ) { socket ->
-                    assertTrue(socket.isOpen(), "TLS handshake should succeed against $host")
+                    assertTrue(socket.isOpen, "TLS handshake should succeed against $host")
                     socket.writeString("GET / HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n")
                     // Check the status line from raw bytes. The HTTP status line is
                     // ASCII, but decoding the full (UTF-8) body as a string is fragile
                     // when a multi-byte char straddles a TCP read boundary.
-                    val firstChunk = socket.read(10.seconds)
+                    val firstChunk = socket.readBuffer(10.seconds)
                     val statusPrefix =
                         buildString {
                             repeat(minOf(5, firstChunk.remaining())) {

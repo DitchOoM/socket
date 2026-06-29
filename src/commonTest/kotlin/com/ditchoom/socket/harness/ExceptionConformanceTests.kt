@@ -1,8 +1,11 @@
 package com.ditchoom.socket.harness
 
 import com.ditchoom.buffer.Charset
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.writeString
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.harnessHost
 import com.ditchoom.socket.isHarnessAvailable
@@ -80,12 +83,12 @@ class ExceptionConformanceTests {
                     ClientSocket.connect(
                         port = HarnessConfig.toxiproxyEchoPort,
                         hostname = harnessHost(),
-                        timeout = 5.seconds,
+                        config = TransportConfig(connectTimeout = 5.seconds),
                     )
                 try {
                     // Prime the connection so we know traffic flows before the toxic.
                     socket.writeString("hello", Charset.UTF8, 2.seconds)
-                    val echo = socket.read(2.seconds)
+                    val echo = socket.readBuffer(2.seconds)
                     echo.readString(echo.remaining(), Charset.UTF8)
 
                     Toxiproxy.addDownToxic(Toxiproxy.Proxy.ECHO)
@@ -143,11 +146,11 @@ class ExceptionConformanceTests {
                     ClientSocket.connect(
                         port = HarnessConfig.toxiproxyEchoPort,
                         hostname = harnessHost(),
-                        timeout = 5.seconds,
+                        config = TransportConfig(connectTimeout = 5.seconds),
                     )
                 try {
                     socket.writeString("hello", Charset.UTF8, 2.seconds)
-                    val echo = socket.read(2.seconds)
+                    val echo = socket.readBuffer(2.seconds)
                     echo.readString(echo.remaining(), Charset.UTF8)
 
                     Toxiproxy.addResetPeerToxic(Toxiproxy.Proxy.ECHO, timeoutMs = 0)
@@ -222,7 +225,7 @@ class ExceptionConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.rstPort,
                     hostname = harnessHost(),
-                    timeout = 5.seconds,
+                    config = TransportConfig(connectTimeout = 5.seconds),
                 )
             try {
                 coroutineScope {
@@ -235,7 +238,7 @@ class ExceptionConformanceTests {
                     val readResult =
                         async<Throwable?>(start = CoroutineStart.UNDISPATCHED) {
                             try {
-                                socket.read(5.seconds)
+                                socket.readBuffer(5.seconds)
                                 null
                             } catch (t: Throwable) {
                                 t

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MemoryTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,7 +45,7 @@ class MockQuicConnection(
         }
         val streamId = QuicStreamId(nextClientStreamId)
         nextClientStreamId += 4 // client bidi streams: 0, 4, 8, ...
-        val (client, server) = MemoryTransport.createPair(BufferFactory.Default)
+        val (client, server) = MemoryTransport.createPair(TransportConfig(bufferFactory = BufferFactory.Default))
         peerStreams[streamId] = server
         return QuicByteStream(streamId, client)
     }
@@ -67,7 +68,7 @@ class MockQuicConnection(
 
     /** Inject a peer-initiated stream into [acceptStream] / [streams]. */
     fun injectPeerStream(streamId: QuicStreamId): Pair<QuicByteStream, ByteStream> {
-        val (peerSide, localSide) = MemoryTransport.createPair(BufferFactory.Default)
+        val (peerSide, localSide) = MemoryTransport.createPair(TransportConfig(bufferFactory = BufferFactory.Default))
         val stream = QuicByteStream(streamId, localSide)
         incomingStreams.trySend(stream)
         return stream to peerSide

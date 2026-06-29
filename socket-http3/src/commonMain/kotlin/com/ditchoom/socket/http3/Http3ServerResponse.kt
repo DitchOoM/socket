@@ -4,7 +4,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 
 /**
@@ -16,7 +16,7 @@ import com.ditchoom.socket.quic.QuicByteStream
 class Http3ServerResponse internal constructor(
     private val stream: QuicByteStream,
     private val pool: BufferPool,
-    private val options: ConnectionOptions,
+    private val config: TransportConfig,
     private val streamId: Long,
     // Encodes a field section through the server's QPACK (dynamic when capacity > 0, else static).
     private val encodeSection: suspend (List<QpackHeaderField>, Long) -> ReadBuffer,
@@ -88,7 +88,7 @@ class Http3ServerResponse internal constructor(
         // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
         val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            stream.write(buffer, options.writeTimeout)
+            stream.write(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }

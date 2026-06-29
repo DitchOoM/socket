@@ -16,15 +16,6 @@ sealed interface CongestionControl {
     data object Bbr2 : CongestionControl
 }
 
-/** Maps sealed [CongestionControl] to quiche's C enum value. */
-internal val CongestionControl.quicheValue: Int
-    get() =
-        when (this) {
-            is CongestionControl.Reno -> 0
-            is CongestionControl.Cubic -> 1
-            is CongestionControl.Bbr2 -> 4
-        }
-
 /** Send pacing configuration. Exhaustive — `when` requires handling all cases. */
 sealed interface Pacing {
     /** Pacing disabled — packets sent as fast as the congestion window allows. */
@@ -97,6 +88,28 @@ data class DatagramOptions(
 }
 
 /**
+ * On the rare platform where a QUIC datagram flow and inbound (peer-initiated) streams cannot
+ * coexist on one connection, this decides which to keep. Today the only such platform is Apple's
+ * Network.framework: extracting the connection-group datagram flow makes NW deliver inbound *stream*
+ * bytes onto that flow, so inbound streams stop being delivered entirely. Everywhere else (quiche on
+ * JVM/Linux/Android, and the browser WebTransport object) the two coexist and this is ignored. It is
+ * also ignored when [QuicOptions.datagrams] is null.
+ *
+ * You almost never set this directly: it defaults to [PreferDatagrams] (preserving datagram-only
+ * connections), and the HTTP/3 / WebTransport stack forces [PreferStreams] internally because inbound
+ * streams are structurally required by HTTP/3 (control + QPACK encoder/decoder are peer-initiated
+ * unidirectional streams). It exists only for raw-QUIC callers that deliberately combine datagrams
+ * with inbound streams on Apple and must choose.
+ */
+enum class DatagramStreamConflictPolicy {
+    /** Keep the datagram flow; on Apple this suppresses inbound stream delivery. */
+    PreferDatagrams,
+
+    /** Keep inbound streams; on Apple the datagram flow is not extracted, so datagrams report unavailable. */
+    PreferStreams,
+}
+
+/**
  * QUIC-specific transport configuration.
  *
  * Uses sealed interfaces for [congestionControl] and [pacing] so `when` expressions
@@ -156,6 +169,31 @@ data class QuicOptions(
      * evaluation against the pinned anchors — not a bypass. (#99)
      */
     val trustedCaCertificatesPem: List<String> = emptyList(),
+    /**
+     * Pinned server **leaf**-certificate hashes (W3C WebTransport `serverCertificateHashes`). When
+     * non-empty, the peer's TLS leaf certificate is accepted iff the hash of its DER encoding matches one
+     * of these. Empty (the default) disables leaf-hash pinning. See [certificateHashVerification] for how
+     * this combines with chain validation.
+     *
+     * Unlike [trustedCaCertificatesPem] (CA-anchor pinning), this pins the leaf itself, so it can
+     * authenticate a self-signed or short-lived certificate with no CA — the canonical WebTransport use.
+     * By default ([certificateHashVerification] = [CertificateHashVerification.HashOnly]) the hash match
+     * is the sole trust check, matching the browser.
+     *
+     * Beyond the hash match, the W3C `serverCertificateHashes` certificate *constraints* (leaf validity
+     * <= 14 days, currently within the validity window, ECDSA P-256 key) are enforced on every platform
+     * with a native X.509 parser — JVM/Android (`java.security`), Linux (BoringSSL), macOS
+     * (Security.framework). iOS/tvOS/watchOS lack a public cert-validity API and so check the leaf hash
+     * only. Branch on [serverCertificateConstraintSupport] to see what the current platform enforces.
+     */
+    val serverCertificateHashes: List<CertificateHash> = emptyList(),
+    /**
+     * How [serverCertificateHashes] combines with ordinary chain validation. Ignored when
+     * [serverCertificateHashes] is empty. Defaults to [CertificateHashVerification.HashOnly] (browser
+     * parity — the leaf hash is the sole trust check); set [CertificateHashVerification.RequireBoth] to
+     * additionally require the chain to validate (native-only, defense in depth for CA-issued leaves).
+     */
+    val certificateHashVerification: CertificateHashVerification = CertificateHashVerification.HashOnly,
     /** Enable Path MTU Discovery. */
     val enablePmtuDiscovery: Boolean = false,
     /** Enable 0-RTT early data. */
@@ -168,6 +206,27 @@ data class QuicOptions(
      * [DatagramOptions] to advertise `max_datagram_frame_size` and enable the datagram queues.
      */
     val datagrams: DatagramOptions? = null,
+    /**
+     * Which to keep when a platform cannot carry a datagram flow and inbound streams on the same QUIC
+     * connection — see [DatagramStreamConflictPolicy]. Defaults to [DatagramStreamConflictPolicy.PreferDatagrams]
+     * and is ignored when [datagrams] is null or on platforms where both coexist. The HTTP/3 /
+     * WebTransport stack overrides this to [DatagramStreamConflictPolicy.PreferStreams] for you.
+     */
+    val datagramStreamConflictPolicy: DatagramStreamConflictPolicy = DatagramStreamConflictPolicy.PreferDatagrams,
+    /**
+     * Apple-only escape hatch for the Network.framework QUIC **server** anti-amplification guard.
+     *
+     * Apple's libquic under-credits a non-Apple client's first flight for the RFC 9000 §8.1
+     * anti-amplification limit, so an oversized server certificate flight (notably an RSA-2048 leaf)
+     * can never be delivered and the handshake deadlocks against quiche/Chrome. To fail loud instead of
+     * silently timing out, the Apple server [bind] estimates the leaf's TLS flight at bind time and
+     * throws when it exceeds NW's budget unless this is true. Default false (guard ON) — keep it and
+     * present a small EC (ECDSA P-256) leaf for out-of-the-box interop. Set true only when the server
+     * will serve **Apple clients exclusively** (Apple↔Apple is unaffected) or you have another reason to
+     * accept the deadlock risk. Ignored on every non-Apple target and for the client role (those don't
+     * have the bug). See the limitation note on `buildAppleQuicServer` / [QuicTlsConfig.pkcs12Path].
+     */
+    val appleAllowOversizedServerCert: Boolean = false,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

@@ -270,15 +270,15 @@ class QpackEncoder(
                 is QpackDecoderInstruction.InsertCountIncrement -> {
                     val updated = knownReceivedCount + instruction.increment
                     if (instruction.increment <= 0 || updated > table.insertCount) {
-                        throw decoderStreamError("Insert Count Increment ${instruction.increment} pushes Known Received Count past inserts")
+                        throw Http3StreamException(Http3Violation.QpackInsertCountIncrementPastInserts(instruction.increment))
                     }
                     knownReceivedCount = updated
                 }
                 is QpackDecoderInstruction.SectionAck -> {
                     val section =
                         outstandingSections[instruction.streamId]?.removeFirstOrNull()
-                            ?: throw decoderStreamError(
-                                "Section Acknowledgment for stream ${instruction.streamId} with no outstanding section",
+                            ?: throw Http3StreamException(
+                                Http3Violation.QpackSectionAckWithoutOutstanding(instruction.streamId),
                             )
                     for (absolute in section.referencedAbsolutes) releaseRef(absolute)
                     if (section.requiredInsertCount > knownReceivedCount) knownReceivedCount = section.requiredInsertCount
@@ -296,9 +296,6 @@ class QpackEncoder(
         val count = entryRefCount[absolute] ?: return
         if (count <= 1) entryRefCount.remove(absolute) else entryRefCount[absolute] = count - 1
     }
-
-    private fun decoderStreamError(message: String): Http3StreamException =
-        Http3StreamException("QPACK decoder stream: $message", Http3ErrorCode.QPACK_DECODER_STREAM_ERROR)
 
     // Prefix upper bound: RIC (≤ ~9 bytes for a 63-bit varint at an 8-bit prefix) + Base (≤ ~9).
     private val prefixUpperBound = 20

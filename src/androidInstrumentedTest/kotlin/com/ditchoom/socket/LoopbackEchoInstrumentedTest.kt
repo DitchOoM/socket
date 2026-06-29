@@ -1,8 +1,8 @@
 package com.ditchoom.socket
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -26,9 +26,8 @@ class LoopbackEchoInstrumentedTest {
                 val serverJob =
                     launch(Dispatchers.Default) {
                         acceptedClientFlow.collect { serverToClient ->
-                            val buffer = serverToClient.read(5.seconds)
-                            val received = buffer.readString(buffer.remaining(), Charset.UTF8)
-                            serverToClient.writeString(received, Charset.UTF8, 5.seconds)
+                            val received = serverToClient.readString(deadline = 5.seconds)
+                            serverToClient.writeString(received, deadline = 5.seconds)
                             serverToClient.close()
                             serverDone.unlock()
                             return@collect
@@ -40,10 +39,9 @@ class LoopbackEchoInstrumentedTest {
 
                 val text = "loopback-echo-android-instrumented"
                 val client = ClientSocket.allocate()
-                client.open(port, 5.seconds)
-                client.write(text.toReadBuffer(Charset.UTF8), 5.seconds)
-                val response = client.read(5.seconds)
-                val echoed = response.readString(response.remaining(), Charset.UTF8)
+                client.open(port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+                client.writeString(text, deadline = 5.seconds)
+                val echoed = client.readString(deadline = 5.seconds)
                 assertEquals(text, echoed)
 
                 client.close()

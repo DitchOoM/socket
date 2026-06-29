@@ -7,7 +7,9 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
@@ -18,6 +20,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 class Http3StreamReaderTests {
     private fun pool() =
@@ -68,12 +71,14 @@ class Http3StreamReaderTests {
     ) : ByteStream {
         private val queue = ArrayDeque(results)
         override val isOpen: Boolean get() = queue.isNotEmpty()
+        override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
+        override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
 
-        override suspend fun read(timeout: Duration): ReadResult = if (queue.isEmpty()) ReadResult.End else queue.removeFirst()
+        override suspend fun read(deadline: Duration): ReadResult = if (queue.isEmpty()) ReadResult.End else queue.removeFirst()
 
         override suspend fun write(
             buffer: ReadBuffer,
-            timeout: Duration,
+            deadline: Duration,
         ): BytesWritten = throw UnsupportedOperationException("read-only test stream")
 
         override suspend fun close() = Unit

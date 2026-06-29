@@ -1,5 +1,8 @@
 package com.ditchoom.socket
 
+import kotlin.time.Duration
+import kotlin.time.Instant
+
 /**
  * Sealed hierarchy for all socket errors.
  *
@@ -183,3 +186,107 @@ class SSLProtocolException(
     message: String,
     cause: Throwable? = null,
 ) : SSLSocketException(message, cause)
+
+/**
+ * Leaf-certificate hash pinning (W3C `serverCertificateHashes`) rejected the peer. Thrown identically by
+ * every backend — the quiche targets verify post-handshake, Apple/Network.framework inside the handshake
+ * `verify_block` — so callers handle one type with a structured [failure] instead of parsing a message
+ * string.
+ *
+ * A subtype of [SSLSocketException], so it is caught uniformly via `catch (e: SSLSocketException)` /
+ * `catch (e: SocketException)` / `catch (e: IOException)` (JVM/Android), while [failure] is a sealed type
+ * a `when` discriminates exhaustively — each case carrying its own detail.
+ */
+class CertificateHashPinningException(
+    val failure: CertificateHashPinningFailure,
+    cause: Throwable? = null,
+) : SSLSocketException(failure.description, cause)
+
+/**
+ * Why [CertificateHashPinningException] rejected the peer. Sealed so each case carries case-specific data
+ * and callers can branch exhaustively; new cases extend the hierarchy where they need to.
+ */
+sealed interface CertificateHashPinningFailure {
+    /** Human-readable summary; the exception's `message`. The structured fields are the API surface. */
+    val description: String
+
+    /** The peer presented no leaf certificate to verify against the pins. */
+    data object NoPeerCertificate : CertificateHashPinningFailure {
+        override val description get() = "Peer presented no leaf certificate to match against serverCertificateHashes"
+    }
+
+    /**
+     * A leaf certificate was presented and hashed, but its digest matched none of the [pinnedCount]
+     * pinned hashes. [computedLeafHash] is the algorithm-prefixed hex of the leaf the server actually
+     * presented (e.g. `"sha-256:3e7b…"`) — the value to add to `serverCertificateHashes` to accept it.
+     */
+    data class HashMismatch(
+        val pinnedCount: Int,
+        val computedLeafHash: String,
+    ) : CertificateHashPinningFailure {
+        override val description get() =
+            "Server leaf certificate ($computedLeafHash) matched none of the $pinnedCount pinned serverCertificateHashes"
+    }
+
+    /**
+     * The peer's leaf certificate DER ([sizeBytes]) exceeded the maximum the backend will read
+     * ([maxBytes]), so it could not be hashed. A fail-closed guard on the quiche backends; the Apple
+     * backend does not produce this (Network.framework imposes no such cap).
+     */
+    data class CertificateTooLarge(
+        val sizeBytes: Int,
+        val maxBytes: Int,
+    ) : CertificateHashPinningFailure {
+        override val description get() = "Peer leaf certificate ($sizeBytes bytes) exceeds the $maxBytes-byte limit for hash pinning"
+    }
+
+    // --- W3C serverCertificateHashes certificate constraints (checked once the hash matches) ---
+    // These mirror what a browser additionally requires of a `serverCertificateHashes` leaf, so native
+    // accepts exactly the certificates a browser would.
+
+    /**
+     * The pinned leaf's validity period ([validity], notAfter − notBefore) exceeds the W3C
+     * `serverCertificateHashes` maximum ([maxValidity], 14 days).
+     */
+    data class ValidityPeriodTooLong(
+        val validity: Duration,
+        val maxValidity: Duration,
+    ) : CertificateHashPinningFailure {
+        override val description get() =
+            "Pinned leaf certificate validity ($validity) exceeds the serverCertificateHashes maximum ($maxValidity)"
+    }
+
+    /**
+     * The current time [now] is outside the pinned leaf's validity window [notBefore]..[notAfter] — the
+     * certificate is expired or not yet valid.
+     */
+    data class NotTemporallyValid(
+        val notBefore: Instant,
+        val notAfter: Instant,
+        val now: Instant,
+    ) : CertificateHashPinningFailure {
+        override val description get() = "Pinned leaf certificate is not valid at $now (valid $notBefore .. $notAfter)"
+    }
+
+    /**
+     * The pinned leaf's public key is not the W3C-required ECDSA P-256 (secp256r1). [detail] describes
+     * what was found (e.g. the algorithm/curve OID).
+     */
+    data class UnsupportedPublicKey(
+        val detail: String,
+    ) : CertificateHashPinningFailure {
+        override val description get() = "Pinned leaf certificate public key is not ECDSA P-256: $detail"
+    }
+
+    /**
+     * The leaf certificate matched a pin but its DER could not be parsed to extract the W3C constraint
+     * fields (validity / public key) — so the constraints could not be checked. Should be unreachable
+     * (the leaf was already read and hashed), but the verifier fails closed rather than skip the
+     * constraints. [detail] describes the parse error.
+     */
+    data class CertificateParseFailed(
+        val detail: String,
+    ) : CertificateHashPinningFailure {
+        override val description get() = "Pinned leaf certificate matched a pin but could not be parsed to check W3C constraints: $detail"
+    }
+}

@@ -1,0 +1,193 @@
+package com.ditchoom.socket.webtransport
+
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ByteSink
+import com.ditchoom.buffer.flow.ByteSource
+import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.HalfCloseable
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
+import com.ditchoom.buffer.flow.WritePolicy
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.await
+import kotlinx.coroutines.withTimeout
+import org.khronos.webgl.Uint8Array
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * If [e] is a `WebTransportError` raised by a peer **stream** RESET_STREAM / STOP_SENDING, its
+ * `streamErrorCode` (the 32-bit WebTransport application code, W3C `unsigned long`); else null. A session/
+ * transport-level error has `source === "session"` and no stream code. This is the inbound counterpart to
+ * [webTransportResetReason] (which carries our code out): it maps the browser's error back onto the
+ * platform-neutral [ReadResult.Reset] (read side) / [WebTransportStreamException] (write side), so a peer
+ * abort surfaces identically to the native backend.
+ */
+private fun streamResetCode(e: Throwable): UInt? {
+    val dyn = e.asDynamic()
+    if (dyn == null || dyn.source != "stream" || dyn.streamErrorCode == null) return null
+    return (dyn.streamErrorCode.unsafeCast<Double>()).toLong().toUInt()
+}
+
+/**
+ * The browser WebTransport streams, bridging WHATWG `ReadableStream`/`WritableStream` onto the
+ * Phase-3a byte trichotomy. These implement **buffer-flow's** [Resettable]/[HalfCloseable] (the
+ * cross-platform capability interfaces), so common code reaches reset / half-close by the exact same
+ * `is`-smart-cast it would use on the native streams.
+ *
+ * Liveness is the QUIC idle-timeout (inside the browser), so reads default to [ReadPolicy.UntilClosed]
+ * like the native WebTransport streams; writes carry a [WritePolicy.Bounded] application deadline.
+ */
+private val DEFAULT_WRITE_POLICY = WritePolicy.Bounded(15.seconds)
+
+private suspend fun readChunk(
+    reader: ReadableStreamDefaultReaderJs,
+    deadline: Duration,
+): ReadResult {
+    val chunk =
+        try {
+            withTimeout(deadline) { reader.read().await() }
+        } catch (t: TimeoutCancellationException) {
+            throw t
+        } catch (e: Throwable) {
+            // A peer RESET_STREAM rejects the read with a WebTransportError → the neutral ReadResult.Reset
+            // (matching the native backend); any other rejection means the stream is done → End.
+            return if (streamResetCode(e) != null) ReadResult.Reset else ReadResult.End
+        }
+    if (chunk.done) return ReadResult.End
+    return ReadResult.Data((chunk.value.unsafeCast<Uint8Array>()).asReadBuffer())
+}
+
+private suspend fun writeChunk(
+    writer: WritableStreamDefaultWriterJs,
+    buffer: ReadBuffer,
+    deadline: Duration,
+): BytesWritten {
+    val n = buffer.remaining()
+    if (n == 0) return BytesWritten(0)
+    val chunk = buffer.asUint8Array(n)
+    try {
+        withTimeout(deadline) { writer.write(chunk).await() }
+    } catch (t: TimeoutCancellationException) {
+        throw t
+    } catch (e: Throwable) {
+        // A peer STOP_SENDING rejects the write with a WebTransportError carrying its code → raise the
+        // neutral stream-scoped exception (the native backend's QuicStreamException analog).
+        val code = streamResetCode(e)
+        if (code != null) throw WebTransportStreamException(code, "WebTransport stream reset by peer (code $code)", e)
+        throw e
+    }
+    buffer.position(buffer.position() + n)
+    return BytesWritten(n)
+}
+
+/**
+ * A WHATWG abort/cancel reason carrying the WebTransport application [code] as the stream error code.
+ * W3C WebTransport maps a `WebTransportError.streamErrorCode` onto RESET_STREAM / STOP_SENDING in the
+ * HTTP/3 error space, so aborting the writable (or cancelling the readable) with this reason carries the
+ * code to the peer. Returns `undefined` when the runtime lacks the `WebTransportError` constructor, so the
+ * caller falls back to a plain abort (RESET_STREAM with code 0). Untested in-repo (no headless WT harness);
+ * the fallback guarantees no regression versus a plain abort.
+ */
+private fun webTransportResetReason(code: Double): dynamic =
+    js("typeof WebTransportError === 'function' ? new WebTransportError('stream reset', { streamErrorCode: code }) : undefined")
+
+/** Clamp a WebTransport application error code to its 32-bit wire range, as a JS number. */
+private fun Long.toStreamErrorCode(): Double = (this and 0xFFFFFFFFL).toDouble()
+
+/** Outgoing unidirectional WebTransport stream (draft §4.1): a [ByteSink] + [Resettable]. */
+internal class BrowserSendStream(
+    private val writer: WritableStreamDefaultWriterJs,
+) : ByteSink,
+    Resettable {
+    private var open = true
+    override val isOpen: Boolean get() = open
+    override val writePolicy: WritePolicy get() = DEFAULT_WRITE_POLICY
+
+    override suspend fun write(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten = writeChunk(writer, buffer, deadline)
+
+    /** Abort the send side (`RESET_STREAM`) carrying [errorCode] via [webTransportResetReason]. */
+    override suspend fun reset(errorCode: Long) {
+        open = false
+        writer.abort(webTransportResetReason(errorCode.toStreamErrorCode())).await()
+    }
+
+    /** Finish the stream cleanly (FIN) — the [ByteSink.close] contract for a send-only stream. */
+    override suspend fun close() {
+        open = false
+        writer.close().await()
+    }
+}
+
+/** Incoming unidirectional WebTransport stream (draft §4.1): a [ByteSource] + [Resettable]. */
+internal class BrowserReceiveStream(
+    private val reader: ReadableStreamDefaultReaderJs,
+) : ByteSource,
+    Resettable {
+    private var open = true
+    override val isOpen: Boolean get() = open
+    override val readPolicy: ReadPolicy get() = ReadPolicy.UntilClosed
+
+    override suspend fun read(deadline: Duration): ReadResult {
+        if (!open) return ReadResult.End
+        val result = readChunk(reader, deadline)
+        if (result is ReadResult.End) open = false
+        return result
+    }
+
+    /** Cancel the receive side (`STOP_SENDING`) carrying [errorCode] — the [Resettable] contract for a receive-only stream. */
+    override suspend fun reset(errorCode: Long) {
+        open = false
+        reader.cancel(webTransportResetReason(errorCode.toStreamErrorCode())).await()
+    }
+}
+
+/** Bidirectional WebTransport stream (draft §4.2): a [ByteStream] that is also [HalfCloseable] + [Resettable]. */
+internal class BrowserBidiStream(
+    stream: WebTransportBidirectionalStreamJs,
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
+    private val reader = stream.readable.getReader()
+    private val writer = stream.writable.getWriter()
+    private var open = true
+
+    override val isOpen: Boolean get() = open
+    override val readPolicy: ReadPolicy get() = ReadPolicy.UntilClosed
+    override val writePolicy: WritePolicy get() = DEFAULT_WRITE_POLICY
+
+    override suspend fun read(deadline: Duration): ReadResult {
+        if (!open) return ReadResult.End
+        return readChunk(reader, deadline)
+    }
+
+    override suspend fun write(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten = writeChunk(writer, buffer, deadline)
+
+    /** Half-close the send side (FIN) while the read side stays open for the peer's response. */
+    override suspend fun shutdownSend() {
+        writer.close().await()
+    }
+
+    /** Abort both directions (`RESET_STREAM` + `STOP_SENDING`) carrying [errorCode]. */
+    override suspend fun reset(errorCode: Long) {
+        open = false
+        val reason = webTransportResetReason(errorCode.toStreamErrorCode())
+        writer.abort(reason).await()
+        reader.cancel(reason).await()
+    }
+
+    /** Graceful close: FIN the send side and release the read side. */
+    override suspend fun close() {
+        open = false
+        writer.close().await()
+        reader.cancel().await()
+    }
+}

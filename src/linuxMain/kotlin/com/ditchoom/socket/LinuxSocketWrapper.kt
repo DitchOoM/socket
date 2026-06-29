@@ -1,9 +1,10 @@
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
-import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.managedMemoryAccess
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.linux.*
@@ -20,8 +21,13 @@ import kotlin.time.Duration
  */
 @OptIn(ExperimentalForeignApi::class)
 open class LinuxSocketWrapper : ClientSocket {
-    /** Controls how internal read buffers are allocated. Set before first read. */
-    override var bufferFactory: BufferFactory = BufferFactory.deterministic()
+    /**
+     * The injected transport configuration. Server-accepted sockets inherit the default until
+     * a config is applied via [configure]; buffer allocation and read/write policy both read
+     * from here rather than from a mutable per-socket property.
+     */
+    protected var config: TransportConfig = TransportConfig()
+
     internal var sockfd: Int = -1
         set(value) {
             val wasOpen = field >= 0
@@ -38,30 +44,41 @@ open class LinuxSocketWrapper : ClientSocket {
     /**
      * Cached socket receive buffer size from SO_RCVBUF.
      * Queried once when socket fd is set and reused for all read operations.
-     * Can be overridden by PlatformSocketConfig.readBufferSize if configured.
+     * Can be overridden by [IoTuning.readBufferSize] if configured.
      */
     private var cachedReadBufferSize: Int = DEFAULT_READ_BUFFER_SIZE
 
-    override fun isOpen(): Boolean = sockfd >= 0
+    override val isOpen: Boolean get() = sockfd >= 0
+
+    override val readPolicy: ReadPolicy get() = config.readPolicy
+
+    override val writePolicy: WritePolicy get() = config.writePolicy
+
+    /** Apply a [TransportConfig] to a server-accepted socket. */
+    internal fun configure(config: TransportConfig) {
+        this.config = config
+    }
 
     override suspend fun localPort(): Int = getLocalPort(sockfd)
 
     override suspend fun remotePort(): Int = getRemotePort(sockfd)
 
-    override suspend fun read(timeout: Duration): ReadBuffer {
-        if (sockfd < 0) return EMPTY_BUFFER
+    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+
+    private suspend fun readRaw(deadline: Duration): ReadBuffer {
+        if (sockfd < 0) throw SocketClosedException.General("Socket is closed")
 
         // Allocate buffer with native memory for zero-copy io_uring read
-        // Use PlatformSocketConfig override if explicitly set, otherwise use cached SO_RCVBUF
+        // Use IoTuning override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
-        val buffer = bufferFactory.allocate(bufferSize)
+        val buffer = config.bufferFactory.allocate(bufferSize)
 
         try {
             // Get native memory pointer
             val nativeAccess = buffer.nativeMemoryAccess
             if (nativeAccess != null) {
                 val ptr = nativeAccess.nativeAddress.toCPointer<ByteVar>()!!
-                val bytesRead = readWithIoUring(ptr, bufferSize, timeout)
+                val bytesRead = readWithIoUring(ptr, bufferSize, deadline)
 
                 return when {
                     bytesRead > 0 -> {
@@ -85,7 +102,7 @@ open class LinuxSocketWrapper : ClientSocket {
                 val array = managedAccess.backingArray
                 val bytesRead =
                     array.usePinned { pinned ->
-                        readWithIoUring(pinned.addressOf(0), bufferSize, timeout)
+                        readWithIoUring(pinned.addressOf(0), bufferSize, deadline)
                     }
 
                 return when {
@@ -133,12 +150,12 @@ open class LinuxSocketWrapper : ClientSocket {
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): Int {
-        if (sockfd < 0) return -1
+        deadline: Duration,
+    ): BytesWritten {
+        if (sockfd < 0) return BytesWritten(-1)
 
         val remaining = buffer.remaining()
-        if (remaining == 0) return 0
+        if (remaining == 0) return BytesWritten(0)
 
         // Zero-copy path: check if buffer has native memory access
         val nativeAccess = buffer.nativeMemoryAccess
@@ -146,11 +163,11 @@ open class LinuxSocketWrapper : ClientSocket {
             val ptr =
                 (nativeAccess.nativeAddress + buffer.position())
                     .toCPointer<ByteVar>()!!
-            val bytesSent = writeWithIoUring(ptr, remaining, timeout)
+            val bytesSent = writeWithIoUring(ptr, remaining, deadline)
             return when {
                 bytesSent >= 0 -> {
                     buffer.position(buffer.position() + bytesSent)
-                    bytesSent
+                    BytesWritten(bytesSent)
                 }
                 else -> handleWriteError(-bytesSent)
             }
@@ -162,11 +179,11 @@ open class LinuxSocketWrapper : ClientSocket {
             val array = managedAccess.backingArray
             val offset = managedAccess.arrayOffset + buffer.position()
             return array.usePinned { pinned ->
-                val bytesSent = writeWithIoUring(pinned.addressOf(offset), remaining, timeout)
+                val bytesSent = writeWithIoUring(pinned.addressOf(offset), remaining, deadline)
                 when {
                     bytesSent >= 0 -> {
                         buffer.position(buffer.position() + bytesSent)
-                        bytesSent
+                        BytesWritten(bytesSent)
                     }
                     else -> handleWriteError(-bytesSent)
                 }
@@ -197,11 +214,11 @@ open class LinuxSocketWrapper : ClientSocket {
 
     /**
      * Get the effective read buffer size.
-     * Returns PlatformSocketConfig.readBufferSize if explicitly configured (non-default),
+     * Returns [IoTuning.readBufferSize] if explicitly configured (non-default),
      * otherwise returns the cached SO_RCVBUF value queried at accept time.
      */
     private fun getEffectiveReadBufferSize(): Int {
-        val configuredSize = PlatformSocketConfig.readBufferSize
+        val configuredSize = config.io.readBufferSize
         // If user explicitly configured a different buffer size, use that
         if (configuredSize != DEFAULT_READ_BUFFER_SIZE) {
             return configuredSize

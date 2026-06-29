@@ -8,6 +8,11 @@ on:
         required: false
         default: ""
         type: string
+      run-h3spec:
+        description: "Run the h3spec HTTP/3 conformance lane against withHttp3Server (staged-dormant; needs buffer on Central)."
+        required: false
+        default: false
+        type: boolean
     outputs:
       version:
         description: "Computed next version"
@@ -20,7 +25,7 @@ jobs:
     timeout-minutes: 60
     # Every jvmTest worker in this job mirrors its JVM fatal-error log (hs_err) to
     # stderr so a native crash (the intermittent JNI SIGABRT) is fully visible in
-    # the live job log, not just an opaque exit 134. See socket-quic/build.gradle.kts.
+    # the live job log, not just an opaque exit 134. See socket-quic-quiche/build.gradle.kts.
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     outputs:
@@ -31,7 +36,7 @@ jobs:
       # Install both 17 and 21. The build/toolchain runs on 21 (the last entry
       # becomes the default JAVA_HOME) — required to compile the FFM bindings —
       # while JDK 17 (exposed as JAVA_HOME_17_X64) lets the "JDK 17 / JNI" test
-      # step below run :socket-quic:jvmTest on a JDK < 21 launcher.
+      # step below run :socket-quic-quiche:jvmTest on a JDK < 21 launcher.
       - name: Set up JDKs (17 + 21)
         uses: actions/setup-java@v5
         with:
@@ -139,8 +144,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # Desktop cross targets + all four Android NDK targets. The Android targets
-      # are needed by :socket-quic:buildAndroidJni* (cargo-ndk), which Gradle
-      # transitively invokes from :socket-quic:linkDebugTestLinuxArm64 /
+      # are needed by :socket-quic-quiche:buildAndroidJni* (cargo-ndk), which Gradle
+      # transitively invokes from :socket-quic-quiche:linkDebugTestLinuxArm64 /
       # publishToMavenLocal even though this job runs on x64. Installing them
       # here (instead of leaving cargo-ndk to fail later inside the continue-
       # on-error \"Build quiche\" step) keeps the JNI build deterministic.
@@ -154,26 +159,26 @@ jobs:
         run: cargo install cargo-ndk --quiet
 
       # Combined quiche + JNI shim cache — shims now live under
-      # socket-quic/libs/quiche/<platform>/lib/ alongside libquiche.{so,a},
+      # socket-quic-quiche/libs/quiche/<platform>/lib/ alongside libquiche.{so,a},
       # matching the local-dev path (createBuildQuicheSharedTask +
       # buildJvmJniShim*), so a single platform dir covers both outputs.
       # Hash quiche_jni.c too so shim edits invalidate the cache.
       - name: Cache quiche Linux x64
         uses: actions/cache@v5
         with:
-          path: socket-quic/libs/quiche/linux-x64
-          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          path: socket-quic-quiche/libs/quiche/linux-x64
+          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v5
         with:
-          path: socket-quic/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          path: socket-quic-quiche/libs/quiche/linux-arm64
+          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
       # existing `Cache quiche Linux x64/arm64` entries above only preserve
-      # the FINAL JNI shim outputs under socket-quic/libs/quiche/<platform>/
+      # the FINAL JNI shim outputs under socket-quic-quiche/libs/quiche/<platform>/
       # lib/ — they don't cover cargo's intermediate target/<triple>/release/
       # where libquiche.a is built. Without this, even on full cache-hit the
       # "Build quiche native libs" shell step unconditionally invokes cargo
@@ -187,8 +192,8 @@ jobs:
       - name: Cache quiche cargo target/ (all triples)
         uses: actions/cache@v5
         with:
-          path: socket-quic/build/quiche
-          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic/src/jni/quiche_jni.c') }}
+          path: socket-quic-quiche/build/quiche
+          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
           restore-keys: quiche-cargo-target-v1-
 
       - name: Cache Cargo registry
@@ -212,19 +217,19 @@ jobs:
         run: |
           set -e
           WS="${{ github.workspace }}"
-          JNI_SRC="$WS/socket-quic/src/jni/quiche_jni.c"
-          QUICHE_H="$WS/socket-quic/libs/quiche/include"
+          JNI_SRC="$WS/socket-quic-quiche/src/jni/quiche_jni.c"
+          QUICHE_H="$WS/socket-quic-quiche/libs/quiche/include"
           # JNI shims go next to libquiche.{so,a} under libs/quiche/<platform>/lib/
           # so the Gradle classifier-JAR pipeline (jvmNativesJar*) and jvmTest
           # stager pick them up from the same place local dev writes them.
-          QUICHE_LIBS="$WS/socket-quic/libs/quiche"
-          ANDROID_JNI="$WS/socket-quic/src/androidMain/jniLibs"
+          QUICHE_LIBS="$WS/socket-quic-quiche/libs/quiche"
+          ANDROID_JNI="$WS/socket-quic-quiche/src/androidMain/jniLibs"
 
           # Build quiche static (Linux K/Native) + shared (Linux JVM)
-          ./gradlew :socket-quic:buildQuicheStaticX64 :socket-quic:buildQuicheStaticArm64 :socket-quic:buildQuicheSharedLinuxX64 --no-configuration-cache || true
+          ./gradlew :socket-quic-quiche:buildQuicheStaticX64 :socket-quic-quiche:buildQuicheStaticArm64 :socket-quic-quiche:buildQuicheSharedLinuxX64 --no-configuration-cache || true
 
           # Ensure quiche source exists for JNI builds (Gradle may skip download on cache hit)
-          QUICHE_DIR=$(find socket-quic/build/quiche -maxdepth 1 -name "quiche-*" -type d 2>/dev/null | head -1)
+          QUICHE_DIR=$(find socket-quic-quiche/build/quiche -maxdepth 1 -name "quiche-*" -type d 2>/dev/null | head -1)
           if [ -z "$QUICHE_DIR" ]; then
             QUICHE_DIR="/tmp/quiche-src"
             git clone --recursive --depth 1 --branch 0.28.0 \
@@ -264,7 +269,7 @@ jobs:
             --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
           # --strip-debug (NOT --strip-all): drop DWARF to keep the lib small but KEEP the .symtab
           # function names, so a native crash backtrace reads `...(Java_..._nConnRecv+0x..)` instead of
-          # a bare `libquiche_jni.so+0xNNNN`. Matches socket-quic/build.gradle.kts.
+          # a bare `libquiche_jni.so+0xNNNN`. Matches socket-quic-quiche/build.gradle.kts.
           build_jni "x86_64-unknown-linux-gnu" "gcc" "strip --strip-debug" "$QUICHE_LIBS/linux-x64/lib" "libquiche_jni.so" "" "$BSSL"
 
           # Linux arm64 JNI shim
@@ -325,9 +330,9 @@ jobs:
       - name: Verify JNI shims exist
         run: |
           echo "=== JVM native libs ==="
-          find socket-quic/libs/quiche -name "libquiche_jni.*" -o -name "quiche_jni.dll" 2>/dev/null || echo "WARN: no JNI shims found"
+          find socket-quic-quiche/libs/quiche -name "libquiche_jni.*" -o -name "quiche_jni.dll" 2>/dev/null || echo "WARN: no JNI shims found"
           echo "=== Android native libs ==="
-          find socket-quic/src/androidMain/jniLibs -type f 2>/dev/null || echo "No Android JNI (expected on Linux)"
+          find socket-quic-quiche/src/androidMain/jniLibs -type f 2>/dev/null || echo "No Android JNI (expected on Linux)"
 
       # Harness-backed tests use the in-repo Docker stack (`docker compose up`
       # is wired via Gradle's harnessUp/harnessDown tasks). The TLS server
@@ -365,7 +370,7 @@ jobs:
       # that this job already has installed for the K/Native ARM64 chain.
       - name: Build multi-arch quic-echo fat jar
         run: >-
-          ./gradlew :socket-quic:quicEchoJar -PquicEchoAllArches=true
+          ./gradlew :socket-quic-quiche:quicEchoJar -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # NOTE: :jsTest above is the ROOT project's JS suite. :socket-quic:jsNodeTest
@@ -373,8 +378,12 @@ jobs:
       # tests, running on Node) that was never wired in — so Node QUIC went
       # entirely unvalidated in CI (#74 Task 2). It needs no native quiche (the
       # JS impls are documented placeholders that throw), so it just rides the
-      # Node already on this runner. Browser/wasmJs stay out (no raw UDP / lower
-      # priority per #74).
+      # Node already on this runner. wasmJsNodeTest is now wired alongside
+      # jsNodeTest (same Node runtime, no raw UDP needed — the JS/Wasm QUIC impls
+      # are documented placeholders): the wasmJs target shipped real common tests
+      # that had NEVER run in CI on any module. Validated green locally (root +
+      # socket-quic + socket-http3). Browser (jsBrowserTest/wasmJsBrowserTest)
+      # still stays out — it needs a headless Chrome the Linux runner lacks.
       # :socket-http3 is a pure-Kotlin HTTP/3 layer on :socket-quic. Its deterministic
       # codec/connection suite + the in-process loopback run on jvm, jsNode, and linuxX64
       # (the live interop GET self-skips when the endpoint is unreachable). Wiring these
@@ -392,19 +401,46 @@ jobs:
       - name: Start HTTP/3 + WebTransport interop server (aioquic)
         run: socket-http3/docker-interop/run-server.sh start
 
+      # Start the ls-qpack (pylsqpack) DIFFERENTIAL oracle on 127.0.0.1:4434 so
+      # QpackDifferentialInteropTests (bundled in :socket-http3:jvmTest below) RUNS
+      # instead of self-skipping. It cross-checks our hand-rolled QPACK encoder
+      # against an independent implementation — our only differential QPACK check
+      # (the in-process round-trip would hide a bug symmetric across our own
+      # encode+decode). `start` is detached and blocks until the oracle logs ready,
+      # so the test has a provably-up peer; a build/start failure fails the job on
+      # purpose, same as the aioquic server above (a silent skip is the gap this
+      # closes). Validated live previously vs pylsqpack 0.3.24 (1200 round-trips).
+      - name: Start QPACK differential oracle (ls-qpack)
+        run: socket-http3/qpack-diff/run-qpack-diff.sh start
+
       - name: Run checks and tests
         run: >-
-          ./gradlew :jvmTest :jsTest :linuxX64Test :testDebugUnitTest :ktlintCheck
-          :socket-quic:jsNodeTest
-          :socket-quic:jvmProcessResources :socket-quic:ktlintCheck
-          :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:linuxX64Test
+          ./gradlew :jvmTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck
+          :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest
+          :socket-quic-quiche:jvmProcessResources
+          :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck
+          :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test
           :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck
+          :socket-webtransport:jvmTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Stop HTTP/3 QPACK interop server
         if: always()
         run: socket-http3/docker-interop/run-server.sh stop
+
+      - name: Stop QPACK differential oracle
+        if: always()
+        run: socket-http3/qpack-diff/run-qpack-diff.sh stop
+
+      # HTTP/3 error-path conformance (Phase 2 STEP 2): probe the PRODUCTION withHttp3Server with the
+      # external h3spec client (socket-http3/h3spec) to externally prove the typed Http3Violation error
+      # codes the deterministic Http3ServerConnectionTests assert in-process. STAGED-BUT-DORMANT: gated
+      # off by default (run-h3spec=false) and the branch is buffer-blocked; flip run-h3spec=true to enable
+      # this lane once it's proven. See socket-http3/h3spec/README.md.
+      - name: HTTP/3 conformance (h3spec vs withHttp3Server) [staged-dormant]
+        if: ${{ inputs.run-h3spec }}
+        run: socket-http3/h3spec/run-h3spec.sh
 
       # The quiche_conn_recv SIGABRT that previously required continue-on-error
       # was a JVM-side sockaddr lifetime bug (DirectByteBuffer Cleaner freeing
@@ -431,7 +467,7 @@ jobs:
       # the Test classpath). QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of
       # QuicMigrationLoopbackTests into a hard failure here, where the native is
       # built fresh and 127.0.0.2 is bindable, so a broken native can't pass as green.
-      - name: Run socket-quic JVM tests
+      - name: Run socket-quic-quiche JVM tests
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
@@ -443,7 +479,7 @@ jobs:
           ulimit -c unlimited
           sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
           echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
-          ./gradlew :socket-quic:jvmTest --continue --no-daemon \
+          ./gradlew :socket-quic-quiche:jvmTest --continue --no-daemon \
             --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Same suite on the FFM backend. -PquicheJvmBackend=ffm prepends the java21
@@ -456,13 +492,13 @@ jobs:
       # crashed: the two backends are independent and a native abort in one must
       # not blind us to the other. Without it, an intermittent JNI SIGABRT skips
       # the entire FFM run, so we never learn whether the crash is JNI-only.
-      - name: Run socket-quic JVM tests (FFM backend)
+      - name: Run socket-quic-quiche JVM tests (FFM backend)
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
         run: >-
-          ./gradlew :socket-quic:jvmTest -PquicheJvmBackend=ffm --continue
+          ./gradlew :socket-quic-quiche:jvmTest -PquicheJvmBackend=ffm --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # JNI backend on a JDK 17 launcher (the runtime Android / legacy-JVM
@@ -474,18 +510,18 @@ jobs:
       #
       # `if: !cancelled()` for the same reason as the FFM step: independent of an
       # earlier backend's crash, so all three backend runs always report.
-      - name: Run socket-quic JVM tests (JDK 17 / JNI)
+      - name: Run socket-quic-quiche JVM tests (JDK 17 / JNI)
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
         run: >-
-          ./gradlew :socket-quic:jvmTest -PjvmTestLauncher=17 --continue
+          ./gradlew :socket-quic-quiche:jvmTest -PjvmTestLauncher=17 --continue
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Snapshot the JVM QuicHarnessIntegrationTests OK/SKIP markers BEFORE the
-      # malloc-check step below re-runs :socket-quic:jvmTest with only a handful
+      # malloc-check step below re-runs :socket-quic-quiche:jvmTest with only a handful
       # of classes — that rerun OVERWRITES test-results/jvmTest, erasing the
       # harness markers the audit needs (this is what made the audit read ok=0
       # and falsely report "all skipped"). Snapshot the jvmTest dir ONLY, so the
@@ -497,7 +533,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           grep -rhoE 'harness (OK|SKIP: [^<&]+)' \
-            socket-quic/build/test-results/jvmTest 2>/dev/null \
+            socket-quic-quiche/build/test-results/jvmTest 2>/dev/null \
             > /tmp/quic-harness-jvm.log || true
           echo "snapshotted $(wc -l < /tmp/quic-harness-jvm.log 2>/dev/null || echo 0) JVM harness markers"
 
@@ -506,7 +542,7 @@ jobs:
       # reproduces under glibc's malloc consistency checks — NOT ASAN, because
       # libquiche.a is non-instrumented. `-PquicMallocCheck` sets MALLOC_CHECK_=3
       # + MALLOC_PERTURB_ + glibc.malloc.check=3 on the forked test worker (see
-      # socket-quic/build.gradle.kts). We re-run only the recv-path robustness +
+      # socket-quic-quiche/build.gradle.kts). We re-run only the recv-path robustness +
       # concurrency-soak suites (the allocation-heavy native paths) so a
       # regression aborts the JVM with a diagnostic instead of silently
       # corrupting state. `if: !cancelled()` so a crash in an earlier backend
@@ -518,7 +554,7 @@ jobs:
       # connectionsByDcid cleanup + health-check connections timing out). Running
       # it here means the next recurrence aborts under malloc-check with a
       # corrupted-block diagnostic, instead of an opaque low-rate exit 134.
-      - name: Run socket-quic recv-path + soak + teardown suites under glibc malloc check
+      - name: Run socket-quic-quiche recv-path + soak + teardown suites under glibc malloc check
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         env:
@@ -532,7 +568,7 @@ jobs:
           ulimit -c unlimited
           sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
           echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
-          ./gradlew :socket-quic:jvmTest -PquicMallocCheck --continue --no-daemon \
+          ./gradlew :socket-quic-quiche:jvmTest -PquicMallocCheck --continue --no-daemon \
             --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests" \
             --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests" \
             --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
@@ -543,13 +579,30 @@ jobs:
       # gating signal, not an open-ended job: libFuzzer's signal handlers turn a
       # native SIGSEGV/SIGABRT into a `crash-*` repro under build/fuzz, which the
       # upload step below captures. A find fails the job. The committed seed
-      # corpus (socket-quic/fuzz/corpus) starts it warm. `if: !cancelled()` for
+      # corpus (socket-quic-quiche/fuzz/corpus) starts it warm. `if: !cancelled()` for
       # the same independence reason as the malloc-check step.
       - name: Fuzz quiche_header_info (Jazzer, time-boxed)
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         run: >-
-          ./gradlew :socket-quic:quicHeaderFuzz -PquicFuzzSeconds=180
+          ./gradlew :socket-quic-quiche:quicHeaderFuzz -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Coverage-guided Jazzer fuzzing of the HAND-ROLLED HTTP/3 + QPACK codec —
+      # the module's real RFC-9114/9204 risk surface (quiche/NW own the transport;
+      # this is OUR parser/encoder). http3CodecFuzz hunts untyped decoder crashes;
+      # http3RoundTripFuzz hunts encode→decode bijection breaks. Pure-JVM Jazzer
+      # (no native toolchain), time-boxed and gating exactly like the quiche header
+      # lane above: a crash-*/oom-*/timeout-* repro fails the job and is uploaded
+      # below; committed seed corpora (socket-http3/fuzz/corpus/*) start them warm.
+      # Validated green locally (303k / 405k runs, 0 crashes). `if: !cancelled()`
+      # for the same independence reason as the quiche fuzz lanes.
+      - name: Fuzz HTTP/3 + QPACK codec (Jazzer, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 9
+        run: >-
+          ./gradlew :socket-http3:http3CodecFuzz :socket-http3:http3RoundTripFuzz
+          -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Native ASAN + coverage-guided lane: cargo-fuzz builds quiche with
@@ -569,7 +622,7 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: >-
-          ./gradlew :socket-quic:quicHeaderFuzzNative -PquicFuzzSeconds=180
+          ./gradlew :socket-quic-quiche:quicHeaderFuzzNative -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Deeper target: the full server packet-recv state machine (accept + Connection::recv),
@@ -580,7 +633,7 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: >-
-          ./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzSeconds=180
+          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Prove the BoringSSL-C ASAN path (-PquicFuzzBoringSslAsan) actually instruments BoringSSL, not
@@ -603,15 +656,15 @@ jobs:
           set -euo pipefail
           # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served from a
           # prior uninstrumented cache) — otherwise the proof below could read a stale archive.
-          rm -rf socket-quic/fuzz/native/target
+          rm -rf socket-quic-quiche/fuzz/native/target
           # Build + run conn_recv with BoringSSL ASAN on. A clang/Rust ASAN-runtime mismatch would fail
           # at link or first execution here, so a clean run already proves the instrumented binary works.
-          ./gradlew :socket-quic:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
+          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
             --no-configuration-cache ${{ inputs.gradle-args }}
           # Now prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
           # interceptors. An uninstrumented BoringSSL has zero __asan_ symbols, so no match => the CFLAGS
           # never reached the C build (ASAN would cover only quiche's Rust) and we fail loudly.
-          bssl=$(find socket-quic/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
+          bssl=$(find socket-quic-quiche/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
           if [ -z "$bssl" ]; then echo "::error::no BoringSSL archive found under the fuzz target dir"; exit 1; fi
           echo "Inspecting $bssl"
           if nm "$bssl" 2>/dev/null | grep -q '__asan_'; then
@@ -627,10 +680,16 @@ jobs:
         with:
           name: quic-header-fuzz-crashes
           path: |
-            socket-quic/build/fuzz/header-info/crash-*
-            socket-quic/build/fuzz/header-info/oom-*
-            socket-quic/build/fuzz/header-info/timeout-*
-            socket-quic/fuzz/native/artifacts/**
+            socket-quic-quiche/build/fuzz/header-info/crash-*
+            socket-quic-quiche/build/fuzz/header-info/oom-*
+            socket-quic-quiche/build/fuzz/header-info/timeout-*
+            socket-quic-quiche/fuzz/native/artifacts/**
+            socket-http3/build/fuzz/http3-codec/crash-*
+            socket-http3/build/fuzz/http3-codec/oom-*
+            socket-http3/build/fuzz/http3-codec/timeout-*
+            socket-http3/build/fuzz/http3-roundtrip/crash-*
+            socket-http3/build/fuzz/http3-roundtrip/oom-*
+            socket-http3/build/fuzz/http3-roundtrip/timeout-*
           if-no-files-found: ignore
 
       # Audit step: mirror the macOS + Linux ARM64 audits — count
@@ -734,13 +793,28 @@ jobs:
           [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
 
           mkdir -p /tmp/quic-audit
+          # applicable=false → the quiche QuicHarnessIntegrationTests does not run on JS:
+          # it lives in socket-quic-quiche (no JS Kotlin target), and JS has no QUIC
+          # implementation at all (wasm/BoringSSL blocked). So `OK=0,SKIP=0` here is
+          # structural, not a regression. Mark the lane not-applicable ONLY when zero
+          # markers appeared (a future real marker still audits normally) so the interop
+          # summary renders a known ℹ️ gap rather than a false ❌ "no markers despite launch".
+          APPLICABLE=true
+          if [ "$OK" = "0" ] && [ "$SKIP" = "0" ]; then
+            APPLICABLE=false
+          fi
           cat > /tmp/quic-audit/js.txt <<EOF
           platform=js
           launched=true
+          applicable=$APPLICABLE
           ok=$OK
           skip=$SKIP
           intentional_skip=$INTENTIONAL
           EOF
+          if [ "$APPLICABLE" = "false" ]; then
+            echo 'reason=1 JS has no QUIC implementation (wasm/BoringSSL blocked) and the quiche QuicHarnessIntegrationTests has no JS target' \
+              >> /tmp/quic-audit/js.txt
+          fi
           if [ -n "$SKIP_REASONS" ]; then
             while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
               >> /tmp/quic-audit/js.txt
@@ -772,22 +846,22 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
 
-      - name: Run socket-quic native tests (quiche cinterop)
+      - name: Run socket-quic-quiche native tests (quiche cinterop)
         run: >-
-          ./gradlew :socket-quic:linuxX64Test
+          ./gradlew :socket-quic-quiche:linuxX64Test
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Build ARM64 test binaries
         run: >-
           ./gradlew linkDebugTestLinuxArm64
-          :socket-quic:linkDebugTestLinuxArm64
+          :socket-quic-quiche:linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Native-crash post-mortem: if the test worker dumped a core (the malloc-check
       # lane raises ulimit + core_pattern), load it in gdb and print every thread's
       # backtrace into the live log AND a file. With the JNI shim now built
       # frame-pointer-preserving and only `--strip-debug`'d (function symbols kept,
-      # see socket-quic/build.gradle.kts), these stacks NAME the quiche_jni frames —
+      # see socket-quic-quiche/build.gradle.kts), these stacks NAME the quiche_jni frames —
       # turning the intermittent SIGABRT from "exit 134" into a real native stack.
       - name: Native crash post-mortem (gdb backtrace from core)
         if: failure()
@@ -816,7 +890,7 @@ jobs:
       # Also collect JVM fatal-error logs from a native crash (SIGABRT/SIGSEGV in quiche/JNI/FFM):
       # the test process writes hs_err_pid*/replay_pid* to its cwd, which the JUnit XML never
       # captures — without these a native abort is an invisible "exit 134". This is what lets us
-      # diagnose the intermittent :socket-quic:jvmTest SIGABRT instead of guessing. The core dumps +
+      # diagnose the intermittent :socket-quic-quiche:jvmTest SIGABRT instead of guessing. The core dumps +
       # gdb backtraces + the symbol-bearing JNI shim let us reconstruct the crash fully offline.
       - name: Upload test reports (on failure)
         if: failure()
@@ -826,13 +900,13 @@ jobs:
           path: |
             build/reports/tests/
             build/test-results/
-            socket-quic/build/reports/tests/
-            socket-quic/build/test-results/
+            socket-quic-quiche/build/reports/tests/
+            socket-quic-quiche/build/test-results/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
             /tmp/cores/bt/*.txt
-            socket-quic/libs/quiche/linux-x64/lib/libquiche_jni.so
+            socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
           retention-days: 7
           if-no-files-found: ignore
 
@@ -842,7 +916,7 @@ jobs:
         with:
           name: android-native-libs
           path: |
-            socket-quic/src/androidMain/jniLibs/
+            socket-quic-quiche/src/androidMain/jniLibs/
           retention-days: 1
           if-no-files-found: ignore
 
@@ -855,21 +929,21 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: quiche-linux-natives
-          path: socket-quic/libs/quiche/linux-*/lib/
+          path: socket-quic-quiche/libs/quiche/linux-*/lib/
           retention-days: 1
           if-no-files-found: ignore
 
       # The Windows x64 JNI shim is cross-compiled above (MinGW) but the
       # conformance suite runs on a separate windows-latest job (review.yaml's
       # build-windows). Hand the DLL across via this artifact so that job can
-      # stage it and run :socket-quic:jvmTest. if-no-files-found: ignore keeps
+      # stage it and run :socket-quic-quiche:jvmTest. if-no-files-found: ignore keeps
       # the Linux job green if the cross-compile didn't produce the DLL.
       - name: Upload quiche Windows native lib
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: quiche-windows-natives
-          path: socket-quic/libs/quiche/windows-x64/lib/quiche_jni.dll
+          path: socket-quic-quiche/libs/quiche/windows-x64/lib/quiche_jni.dll
           retention-days: 1
           if-no-files-found: ignore
 
@@ -879,7 +953,7 @@ jobs:
           name: linux-arm64-test-binary
           path: |
             build/bin/linuxArm64/debugTest/test.kexe
-            socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+            socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe
           retention-days: 1
 
       # Upload the multi-arch quic-echo Docker context (jar + Dockerfile +
@@ -974,14 +1048,14 @@ jobs:
           chmod +x build/bin/linuxArm64/debugTest/test.kexe
           ./build/bin/linuxArm64/debugTest/test.kexe
 
-      - name: Run ARM64 tests (socket-quic)
+      - name: Run ARM64 tests (socket-quic-quiche)
         run: |
-          if [ -f socket-quic/build/bin/linuxArm64/debugTest/test.kexe ]; then
-            chmod +x socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+          if [ -f socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe ]; then
+            chmod +x socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe
             # tee stdout into /tmp/socket-quic-arm64.log so the audit
             # step below can grep harness OK/SKIP markers from
             # QuicHarnessIntegrationTests.withHarness without re-running.
-            ./socket-quic/build/bin/linuxArm64/debugTest/test.kexe 2>&1 | tee /tmp/socket-quic-arm64.log
+            ./socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe 2>&1 | tee /tmp/socket-quic-arm64.log
           else
             echo "socket-quic ARM64 binary not found — skipping"
           fi

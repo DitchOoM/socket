@@ -3,7 +3,10 @@ package com.ditchoom.socket
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeout
 import kotlin.test.assertEquals
@@ -43,41 +46,33 @@ class MockClientToServerSocket : ClientToServerSocket {
         readQueue.trySend(Result.failure(SocketClosedException.General("Mock disconnect")))
     }
 
+    private var config: TransportConfig = TransportConfig()
+
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
-        socketOptions: SocketOptions,
+        config: TransportConfig,
     ) {
+        this.config = config
         open = true
         openCalled = true
     }
 
-    override fun isOpen() = open
+    override val isOpen: Boolean get() = open
 
-    override suspend fun read(timeout: Duration): ReadBuffer {
-        if (!open) throw SocketClosedException.General("Mock socket is closed")
-        val result =
-            withTimeout(timeout) {
-                readQueue.receive()
-            }
-        return result.getOrThrow()
-    }
+    override val readPolicy: ReadPolicy get() = config.readPolicy
+    override val writePolicy: WritePolicy get() = config.writePolicy
 
-    override suspend fun read(
-        buffer: WriteBuffer,
-        timeout: Duration,
-    ): Int {
-        val readBuffer = read(timeout)
-        val bytesRead = readBuffer.remaining()
-        buffer.write(readBuffer)
-        return bytesRead
-    }
+    override suspend fun read(deadline: Duration): ReadResult =
+        translateRead {
+            if (!open) throw SocketClosedException.General("Mock socket is closed")
+            withTimeout(deadline) { readQueue.receive() }.getOrThrow()
+        }
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): Int {
+        deadline: Duration,
+    ): BytesWritten {
         if (!open) throw SocketClosedException.General("Mock socket is closed")
         val bytes = buffer.remaining()
         // Copy the buffer content so the original can be reused
@@ -85,7 +80,7 @@ class MockClientToServerSocket : ClientToServerSocket {
         copy.write(buffer)
         copy.resetForRead()
         writtenBuffers.add(copy)
-        return bytes
+        return BytesWritten(bytes)
     }
 
     override suspend fun close() {

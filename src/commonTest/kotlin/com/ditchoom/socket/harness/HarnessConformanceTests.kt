@@ -2,7 +2,10 @@ package com.ditchoom.socket.harness
 
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.writeString
 import com.ditchoom.socket.ClientSocket
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.harnessHost
 import com.ditchoom.socket.isHarnessAvailable
@@ -37,10 +40,10 @@ class HarnessConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.echoPort,
                     hostname = harnessHost(),
-                    timeout = 5.seconds,
+                    config = TransportConfig(connectTimeout = 5.seconds),
                 ) { socket ->
                     socket.writeString(payload, Charset.UTF8, 2.seconds)
-                    val buf = socket.read(2.seconds)
+                    val buf = socket.readBuffer(2.seconds)
                     buf.readString(buf.remaining(), Charset.UTF8)
                 }
             assertTrue(
@@ -64,13 +67,13 @@ class HarnessConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.httpPort,
                     hostname = harnessHost(),
-                    timeout = 5.seconds,
+                    config = TransportConfig(connectTimeout = 5.seconds),
                 ) { socket ->
                     val request =
                         "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n"
                             .toReadBuffer(Charset.UTF8)
                     socket.write(request, 2.seconds)
-                    val firstChunk = socket.read(5.seconds)
+                    val firstChunk = socket.readBuffer(5.seconds)
                     buildString {
                         repeat(minOf(5, firstChunk.remaining())) {
                             append(firstChunk.readByte().toInt().toChar())

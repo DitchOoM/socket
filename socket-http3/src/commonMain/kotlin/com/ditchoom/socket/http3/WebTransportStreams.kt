@@ -1,34 +1,42 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ByteSink
+import com.ditchoom.buffer.flow.ByteSource
+import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.HalfCloseable
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.quic.HalfCloseableByteStream
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicStreamException
-import com.ditchoom.socket.quic.ResettableByteStream
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A WebTransport stream was aborted by the peer (draft-ietf-webtrans-http3 §4.3): [errorCode] is the
- * peer's WebTransport application error code, **decoded** back out of the HTTP/3 error-code space (or
- * null when the backend can't resolve the code — e.g. the JNI quiche binding). Wraps the underlying
- * [QuicStreamException].
+ * peer's WebTransport application error code, **decoded** back out of the HTTP/3 error-code space. It is
+ * a **32-bit unsigned** value (draft §4.3), hence [UInt], and non-null — the underlying
+ * [QuicStreamException] always carries the peer's QUIC application error code on a real abort (every
+ * quiche binding surfaces `out_error_code`; Apple surfaces `nw_quic_get_stream_application_error`). Wraps
+ * the underlying [QuicStreamException].
  */
 class WebTransportStreamException internal constructor(
-    val errorCode: Long?,
+    val errorCode: UInt,
     message: String,
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
 /**
  * Translate a QUIC stream abort into a WebTransport one, decoding the peer's application error code from
- * the HTTP/3 error-code space (draft-ietf-webtrans-http3 §4.3). The shared reset-observation seam for
- * the WebTransport stream wrappers below.
+ * the HTTP/3 error-code space (draft-ietf-webtrans-http3 §4.3) down to its 32-bit WebTransport value. The
+ * shared reset-observation seam for the WebTransport stream wrappers below.
  */
 internal fun QuicStreamException.toWebTransport(): WebTransportStreamException {
-    val wtCode = abort.applicationErrorCode?.let { WebTransportWire.toWebTransportErrorCode(it) }
+    val wtCode = WebTransportWire.toWebTransportErrorCode(abort.applicationErrorCode).toUInt()
     return WebTransportStreamException(wtCode, "WebTransport stream $streamId aborted by peer: ${abort::class.simpleName}", this)
 }
 
@@ -48,28 +56,33 @@ class WebTransportStream internal constructor(
     // Bytes buffered after the WT header when this stream was demultiplexed (peer-opened streams only);
     // returned by the first read(s) before the underlying QUIC stream is read directly. Null when none.
     private var pending: ReadBuffer?,
-) : HalfCloseableByteStream,
-    ResettableByteStream {
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
     /** The underlying QUIC stream id (RFC 9000 §2.1). */
     val streamId: Long get() = stream.streamId.id
 
     override val isOpen: Boolean get() = stream.isOpen
 
     /**
+     * WebTransport streams are persistent and often idle for long stretches, so the read side delegates
+     * liveness to the transport's QUIC idle-timeout rather than imposing a per-read deadline: the no-arg
+     * [read] consults [ReadPolicy.UntilClosed]. Pass an explicit bound to [read] when a caller wants one.
+     */
+    override val readPolicy: ReadPolicy get() = ReadPolicy.UntilClosed
+
+    /** Writes are bounded by an application deadline (the connection's idle-timeout remains the liveness authority). */
+    override val writePolicy: WritePolicy get() = WritePolicy.Bounded(15.seconds)
+
+    /**
      * Read the next chunk of stream data; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset.
      *
-     * As a [ByteStream] override this carries the interface's default [timeout] — the no-arg form is bounded,
-     * not unbounded (Kotlin won't let an override change an inherited default, so it can't be widened here).
-     * That bound is an *application* deadline, not a liveness timer: the connection's QUIC idle-timeout +
-     * keepalive are the liveness authority, and a timeout here neither closes the stream nor drops the
-     * connection — it just unblocks the caller, who may read again.
-     *
-     * WebTransport streams are persistent and often idle for long stretches, so the natural call is
-     * `read(Duration.INFINITE)` — let the transport's idle-timeout decide liveness rather than imposing an
-     * arbitrary per-read cap (which would also surface a spurious timeout during a slow path migration).
-     * Pass [Duration.INFINITE] (or your own bound) explicitly when you want to wait past the [ByteStream] default.
+     * The [deadline] is an *application* deadline, not a liveness timer: the connection's QUIC idle-timeout +
+     * keepalive are the liveness authority, and a deadline here neither closes the stream nor drops the
+     * connection — it just unblocks the caller, who may read again. The no-arg [read] uses [readPolicy]
+     * ([ReadPolicy.UntilClosed]); pass [Duration.INFINITE] (or your own bound) explicitly otherwise.
      */
-    override suspend fun read(timeout: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
+    override suspend fun read(deadline: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, deadline)
 
     /**
      * Write [buffer]'s remaining bytes to the stream (zero-copy; the caller retains ownership). Throws
@@ -77,10 +90,10 @@ class WebTransportStream internal constructor(
      */
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten =
         try {
-            stream.write(buffer, timeout)
+            stream.write(buffer, deadline)
         } catch (e: QuicStreamException) {
             throw e.toWebTransport()
         }
@@ -88,10 +101,10 @@ class WebTransportStream internal constructor(
     /** Gather-write [buffers] in one operation (zero-copy; the caller retains ownership). */
     override suspend fun writeGathered(
         buffers: List<ReadBuffer>,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten =
         try {
-            stream.writeGathered(buffers, timeout)
+            stream.writeGathered(buffers, deadline)
         } catch (e: QuicStreamException) {
             throw e.toWebTransport()
         }
@@ -115,58 +128,95 @@ class WebTransportStream internal constructor(
 
 /**
  * The send half of a unidirectional WebTransport stream (draft-ietf-webtrans-http3 §4.1) we opened —
- * a QUIC unidirectional stream prefixed with the `0x54` type + Session ID. Write-only; obtained from
+ * a QUIC unidirectional stream prefixed with the `0x54` type + Session ID. Obtained from
  * [WebTransportSession.openUniStream].
+ *
+ * Typed as a [ByteSink] + [Resettable]: the honest shape for a send-only stream (no fake [read]). The
+ * no-arg [write] consults [writePolicy]; [reset] aborts with a WebTransport application error code and
+ * [close] finishes the stream cleanly (FIN).
  */
 class WebTransportSendStream internal constructor(
     val sessionId: Long,
     private val stream: QuicByteStream,
-    private val writeTimeout: Duration,
-) {
+) : ByteSink,
+    Resettable {
+    /** The underlying QUIC stream id (RFC 9000 §2.1). */
     val streamId: Long get() = stream.streamId.id
 
+    override val isOpen: Boolean get() = stream.isOpen
+
+    /** Writes are bounded by an application deadline (the connection's idle-timeout remains the liveness authority). */
+    override val writePolicy: WritePolicy get() = WritePolicy.Bounded(15.seconds)
+
     /**
-     * Write [buffer]'s remaining bytes. Throws [WebTransportStreamException] if the peer sent
-     * STOP_SENDING (its WebTransport code decoded from the HTTP/3 error-code space, draft §4.3).
+     * Write [buffer]'s remaining bytes (zero-copy; the caller retains ownership). Throws
+     * [WebTransportStreamException] if the peer sent STOP_SENDING (its WebTransport code decoded from
+     * the HTTP/3 error-code space, draft §4.3). The no-arg [write] uses [writePolicy].
      */
-    suspend fun write(
+    override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration = writeTimeout,
+        deadline: Duration,
     ): BytesWritten =
         try {
-            stream.write(buffer, timeout)
+            stream.write(buffer, deadline)
         } catch (e: QuicStreamException) {
             throw e.toWebTransport()
         }
 
-    /** Finish the stream cleanly (FIN). */
-    suspend fun close() = stream.close()
+    /** Gather-write [buffers] in one operation (zero-copy; the caller retains ownership). */
+    override suspend fun writeGathered(
+        buffers: List<ReadBuffer>,
+        deadline: Duration,
+    ): BytesWritten =
+        try {
+            stream.writeGathered(buffers, deadline)
+        } catch (e: QuicStreamException) {
+            throw e.toWebTransport()
+        }
 
     /** Abort the stream with the WebTransport application [errorCode] (RESET_STREAM), mapped per draft §4.3. */
-    suspend fun reset(errorCode: Long = 0) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
+    override suspend fun reset(errorCode: Long) = stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))
+
+    /** Finish the stream cleanly (FIN) — the [ByteSink.close] contract for a send-only stream. */
+    override suspend fun close() = stream.close()
 }
 
 /**
  * The receive half of a peer-opened unidirectional WebTransport stream
- * (draft-ietf-webtrans-http3 §4.1). Read-only; obtained from [WebTransportSession.incomingUniStreams].
- * The `0x54` type + Session ID header was stripped by the router; [read] returns any bytes buffered
+ * (draft-ietf-webtrans-http3 §4.1). Obtained from [WebTransportSession.incomingUniStreams]. The
+ * `0x54` type + Session ID header was stripped by the router; [read] returns any bytes buffered
  * alongside the header before reading the underlying QUIC stream directly.
+ *
+ * Typed as a [ByteSource] + [Resettable]: the honest shape for a receive-only stream (no fake
+ * [write]). Like the bidi stream it delegates liveness to the QUIC idle-timeout — the no-arg [read]
+ * consults [ReadPolicy.UntilClosed]. [reset] is the cancel: STOP_SENDING with a WebTransport code.
  */
 class WebTransportReceiveStream internal constructor(
     val sessionId: Long,
     private val stream: QuicByteStream,
     private var pending: ReadBuffer?,
-    private val readTimeout: Duration,
-) {
+) : ByteSource,
+    Resettable {
+    /** The underlying QUIC stream id (RFC 9000 §2.1). */
     val streamId: Long get() = stream.streamId.id
 
-    suspend fun read(timeout: Duration = readTimeout): ReadResult = readWithPending(stream, { pending }, { pending = it }, timeout)
+    override val isOpen: Boolean get() = stream.isOpen
+
+    /** Persistent like the bidi stream: liveness is the QUIC idle-timeout, so reads default to [ReadPolicy.UntilClosed]. */
+    override val readPolicy: ReadPolicy get() = ReadPolicy.UntilClosed
 
     /**
-     * Ask the peer to stop sending (STOP_SENDING with the WebTransport application [errorCode], mapped
-     * into the HTTP/3 error-code space per draft §4.3) and release any buffered prefix.
+     * Read the next chunk; [ReadResult.End] at the peer's FIN, [ReadResult.Reset] on reset. The no-arg
+     * [read] uses [readPolicy] ([ReadPolicy.UntilClosed]); pass an explicit bound to override.
      */
-    suspend fun cancel(errorCode: Long = 0) {
+    override suspend fun read(deadline: Duration): ReadResult = readWithPending(stream, { pending }, { pending = it }, deadline)
+
+    /**
+     * Cancel the stream: ask the peer to stop sending (STOP_SENDING with the WebTransport application
+     * [errorCode], mapped into the HTTP/3 error-code space per draft §4.3) and release any buffered
+     * prefix. The [Resettable] contract — cancel is the reset of a receive-only stream.
+     */
+    override suspend fun reset(errorCode: Long) {
         pending?.freeIfNeeded()
         pending = null
         stream.reset(WebTransportWire.toHttp3ErrorCode(errorCode))

@@ -65,4 +65,5 @@ fun generateScid(factory: BufferFactory): PlatformBuffer {
     return buf
 }
 
-internal const val QUIC_MAX_CONN_ID_LEN = 20
+/** QUIC connection-ID max length (RFC 9000 §17.2 — 20 bytes). Read by engine backends. */
+const val QUIC_MAX_CONN_ID_LEN = 20

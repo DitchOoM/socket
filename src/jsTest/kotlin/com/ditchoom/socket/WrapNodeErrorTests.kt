@@ -2,6 +2,9 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -21,11 +24,15 @@ class WrapNodeErrorTests {
     @Test
     fun dnsFailure_producesSocketUnknownHostException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = 80, timeout = 5.seconds, hostname = "this.host.does.not.exist.invalid")
+                    socket.open(
+                        port = 80,
+                        hostname = "this.host.does.not.exist.invalid",
+                        config = TransportConfig(connectTimeout = 5.seconds),
+                    )
                     socket.close()
                     fail("Should have thrown for invalid hostname")
                 } catch (e: SocketUnknownHostException) {
@@ -38,12 +45,12 @@ class WrapNodeErrorTests {
     @Test
     fun connectionRefused_producesSocketConnectionRefused() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             val port = 59200 + kotlin.random.Random.nextInt(799)
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = port, timeout = 2.seconds, hostname = "127.0.0.1")
+                    socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
                     socket.close()
                     fail("Should have thrown for connection refused")
                 } catch (e: SocketConnectionException.Refused) {
@@ -55,7 +62,7 @@ class WrapNodeErrorTests {
     @Test
     fun readFromClosedSocket_producesSocketClosedException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
@@ -71,15 +78,15 @@ class WrapNodeErrorTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             serverReady.lockWithTimeout()
 
-            val data = client.readString(timeout = 2.seconds)
+            val data = client.readString(deadline = 2.seconds)
             assertTrue(data == "hi")
 
             val ex =
                 try {
-                    client.read(2.seconds)
+                    client.readBuffer(2.seconds)
                     fail("Should have thrown")
                 } catch (e: SocketClosedException) {
                     e
@@ -94,7 +101,7 @@ class WrapNodeErrorTests {
     @Test
     fun writeToClosedSocket_producesSocketClosedException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
 
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
@@ -109,7 +116,7 @@ class WrapNodeErrorTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), 5.seconds, "127.0.0.1")
+            client.open(server.port(), "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             clientConnected.lockWithTimeout()
             kotlinx.coroutines.delay(200)
 
@@ -136,11 +143,11 @@ class WrapNodeErrorTests {
     @Test
     fun connectionTimeout_producesSocketTimeoutException() =
         runTestNoTimeSkipping {
-            if (getNetworkCapabilities() == NetworkCapabilities.WEBSOCKETS_ONLY) return@runTestNoTimeSkipping
+            if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             val ex =
                 try {
                     val socket = ClientSocket.allocate()
-                    socket.open(port = 80, timeout = 1.seconds, hostname = "10.255.255.1")
+                    socket.open(port = 80, hostname = "10.255.255.1", config = TransportConfig(connectTimeout = 1.seconds))
                     socket.close()
                     fail("Should have thrown")
                 } catch (e: SocketTimeoutException) {

@@ -127,7 +127,7 @@ internal object WebTransportWire {
         buffer: ReadBuffer,
         valueLength: Int,
     ): WebTransportCloseInfo {
-        if (valueLength < 4) throw Http3StreamException("WT_CLOSE_SESSION capsule shorter than its 4-byte error code")
+        if (valueLength < 4) throw Http3StreamException(Http3Violation.WebTransportCloseCapsuleTooShort)
         val code =
             ((buffer.readByte().toInt() and 0xFF) shl 24) or
                 ((buffer.readByte().toInt() and 0xFF) shl 16) or

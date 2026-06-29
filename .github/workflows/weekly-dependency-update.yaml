@@ -135,7 +135,7 @@ jobs:
                  ./gradlew jvmTest
                If you bumped `quiche` and/or `liburing`, ALSO build the native libs from source and run
                the QUIC host tests (this is the real validation that quiche/BoringSSL/liburing compile):
-                 ./gradlew :socket-quic:jvmTest
+                 ./gradlew :socket-quic-quiche:jvmTest
                Apple, Windows, Android and Kotlin/Native-Linux targets cannot be fully validated on this
                runner — that is expected; the PR's normal CI covers them. Do not treat their absence here
                as a failure.

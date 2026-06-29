@@ -13,9 +13,9 @@ mavenPublish = "0.36.0"
 dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 kotlinWrappers = "2026.6.0"
-# 5.6.0: varint @FramedBy/@ForwardCompatible + ViewCodec + framed-body truncation
-# guard (DitchOoM/buffer#186) and pooled-buffer use {} fix (#187).
-buffer = "5.6.0"
+# v6 byte-layer reshape (ByteSource/ByteSink/ByteStream + Read/WritePolicy), released to Central
+# from buffer PR #213 (merge 51fed90).
+buffer = "6.0.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
@@ -27,6 +27,7 @@ buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
 buffer-flow = { module = "com.ditchoom:buffer-flow", version.ref = "buffer" }
 buffer-codec = { module = "com.ditchoom:buffer-codec", version.ref = "buffer" }
 buffer-codec-processor = { module = "com.ditchoom:buffer-codec-processor", version.ref = "buffer" }
+buffer-crypto = { module = "com.ditchoom:buffer-crypto", version.ref = "buffer" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-debug", version.ref = "kotlinxCoroutines" }

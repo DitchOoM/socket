@@ -2,6 +2,9 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -31,7 +34,7 @@ class DataIntegrityTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        val buffer = client.read(5.seconds)
+                        val buffer = client.readBuffer(5.seconds)
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
                         client.close()
@@ -39,7 +42,7 @@ class DataIntegrityTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
 
             val sendBuffer = BufferFactory.Default.allocate(binaryData.size)
             sendBuffer.writeBytes(binaryData)
@@ -91,7 +94,7 @@ class DataIntegrityTests {
                     // Read until we have all the data
                     while (receivedBytes.size < size) {
                         try {
-                            val buffer = client.read(10.seconds)
+                            val buffer = client.readBuffer(10.seconds)
                             val chunk = buffer.readByteArray(buffer.remaining())
                             receivedBytes.addAll(chunk.toList())
                         } catch (e: SocketException) {
@@ -112,7 +115,7 @@ class DataIntegrityTests {
             }
 
         val client = ClientSocket.allocate()
-        client.open(server.port(), timeout = 10.seconds, hostname = "127.0.0.1")
+        client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 10.seconds))
 
         // Send data in chunks
         var offset = 0
@@ -125,7 +128,7 @@ class DataIntegrityTests {
 
             var written = 0
             while (written < remaining) {
-                val w = client.write(chunk, 10.seconds)
+                val w = client.write(chunk, 10.seconds).count
                 if (w <= 0) break
                 written += w
             }
@@ -157,7 +160,7 @@ class DataIntegrityTests {
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
                         // Read from client
-                        val received = client.readString(timeout = 5.seconds)
+                        val received = client.readString(deadline = 5.seconds)
                         serverReceivedCorrect = (received == clientToServerData)
 
                         // Send to client
@@ -168,13 +171,13 @@ class DataIntegrityTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
 
             // Send to server
             client.writeString(clientToServerData)
 
             // Read from server
-            val received = client.readString(timeout = 5.seconds)
+            val received = client.readString(deadline = 5.seconds)
             clientReceivedCorrect = (received == serverToClientData)
 
             client.close()
@@ -213,7 +216,7 @@ class DataIntegrityTests {
                         // TCP may coalesce multiple writes into single reads
                         while (sb.length < expectedString.length) {
                             try {
-                                val chunk = client.readString(timeout = 1.seconds)
+                                val chunk = client.readString(deadline = 1.seconds)
                                 sb.append(chunk)
                             } catch (e: SocketClosedException) {
                                 // Connection closed, we have all the data
@@ -227,7 +230,7 @@ class DataIntegrityTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
 
             // Send many small messages
             repeat(messageCount) { i ->
@@ -265,14 +268,14 @@ class DataIntegrityTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             clientConnected.lockWithTimeout()
 
             // Read all data - may come in chunks
             val allData = StringBuilder()
             while (true) {
                 try {
-                    val chunk = client.readString(timeout = 1.seconds)
+                    val chunk = client.readString(deadline = 1.seconds)
                     allData.append(chunk)
                     if (allData.toString() == "PART1PART2PART3") break
                 } catch (e: SocketClosedException) {
@@ -301,7 +304,7 @@ class DataIntegrityTests {
             val serverJob =
                 launch(Dispatchers.Default) {
                     serverFlow.collect { client ->
-                        val buffer = client.read(5.seconds)
+                        val buffer = client.readBuffer(5.seconds)
                         receivedData = buffer.readByteArray(buffer.remaining())
                         dataReceived.unlock()
                         client.close()
@@ -309,7 +312,7 @@ class DataIntegrityTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
 
             val sendBuffer = BufferFactory.Default.allocate(dataWithNulls.size)
             sendBuffer.writeBytes(dataWithNulls)

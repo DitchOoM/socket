@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import kotlinx.coroutines.CancellationException
 import kotlin.time.Duration
 
 /**
@@ -19,7 +20,7 @@ import kotlin.time.Duration
 class QpackInstructionReader<T> private constructor(
     private val stream: ByteStream,
     private val processor: StreamProcessor,
-    private val errorCode: Long,
+    private val qpackStream: QpackStream,
     private val peek: (StreamProcessor) -> PeekResult,
     private val decode: (ReadBuffer) -> T,
 ) {
@@ -28,15 +29,37 @@ class QpackInstructionReader<T> private constructor(
     /** The next complete instruction, or null once the stream cleanly ends with no buffered bytes. */
     suspend fun next(timeout: Duration = Duration.INFINITE): T? {
         while (true) {
-            val peeked = peek(processor)
+            // peek discovers the next instruction's length off the unframed stream; a malformed
+            // instruction can make it read a bogus (e.g. overflowed) length and under-read — that is a
+            // critical-stream error of this [qpackStream], not an untyped buffer failure.
+            val peeked =
+                try {
+                    peek(processor)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    throw Http3StreamException(Http3Violation.MalformedQpackInstruction(qpackStream, e))
+                }
             if (peeked is PeekResult.Complete && processor.available() >= peeked.bytes) {
                 // Scoped: instructions decode into owned values (Strings/Longs — never buffer
                 // views), so the wire bytes recycle to the pool as soon as decode returns.
-                return processor.readBufferScoped(peeked.bytes) { decode(this) }
+                // A malformed instruction body (bad prefixed integer, a string literal or varint that
+                // reads past its bytes, a non-UTF-8 string octet) throws the buffer layer's
+                // DecodeException or a platform-specific buffer/decoding error; an instruction stream is
+                // critical (RFC 9204 §4.2), so retype ANY such wire-driven Throwable to this reader's
+                // QPACK stream error (QPACK_ENCODER_STREAM_ERROR / QPACK_DECODER_STREAM_ERROR) for the
+                // connection. Only CancellationException propagates unchanged.
+                return try {
+                    processor.readBufferScoped(peeked.bytes) { decode(this) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    throw Http3StreamException(Http3Violation.MalformedQpackInstruction(qpackStream, e))
+                }
             }
             if (ended) {
                 if (processor.available() == 0) return null
-                throw Http3StreamException("QPACK stream ended mid-instruction", errorCode)
+                throw Http3StreamException(Http3Violation.QpackInstructionTruncated(qpackStream))
             }
             when (val result = stream.read(timeout)) {
                 is ReadResult.Data -> processor.append(result.buffer)
@@ -44,7 +67,7 @@ class QpackInstructionReader<T> private constructor(
                 // A QPACK encoder/decoder stream is critical; the peer resetting it is fatal (§4.2).
                 ReadResult.Reset -> {
                     ended = true
-                    throw Http3StreamException("QPACK stream was reset by the peer", Http3ErrorCode.CLOSED_CRITICAL_STREAM)
+                    throw Http3StreamException(Http3Violation.QpackStreamReset)
                 }
             }
         }
@@ -66,7 +89,7 @@ class QpackInstructionReader<T> private constructor(
             QpackInstructionReader(
                 stream,
                 processor,
-                Http3ErrorCode.QPACK_ENCODER_STREAM_ERROR,
+                QpackStream.ENCODER,
                 { QpackEncoderInstructionCodec.peekLength(it, 0) },
                 { QpackEncoderInstructionCodec.decode(it, scratchPool) },
             )
@@ -79,7 +102,7 @@ class QpackInstructionReader<T> private constructor(
             QpackInstructionReader(
                 stream,
                 processor,
-                Http3ErrorCode.QPACK_DECODER_STREAM_ERROR,
+                QpackStream.DECODER,
                 { QpackDecoderInstructionCodec.peekLength(it, 0) },
                 { QpackDecoderInstructionCodec.decode(it) },
             )

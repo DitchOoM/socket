@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -48,7 +49,7 @@ class QpackDecoder(
                 when (instruction) {
                     is QpackEncoderInstruction.SetCapacity -> {
                         if (!table.setCapacity(instruction.capacity)) {
-                            throw encoderStreamError("Set Dynamic Table Capacity ${instruction.capacity} exceeds the advertised maximum")
+                            throw Http3StreamException(Http3Violation.QpackSetCapacityExceedsMax(instruction.capacity))
                         }
                         false // no insert
                     }
@@ -90,19 +91,37 @@ class QpackDecoder(
         streamId: Long,
         scratchPool: BufferPool?,
     ): List<QpackHeaderField> {
-        // Snapshot the insert count from the StateFlow (atomic) for the prefix reconstruction.
-        val prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, insertCount.value)
-        // Block until enough entries have been inserted to resolve this section (§2.2.1) — OUTSIDE the
-        // mutex, so the encoder-stream router can keep inserting (and unblock us). The
-        // QPACK_BLOCKED_STREAMS limit (how many sections may block at once) is the peer encoder's
-        // responsibility; here we simply wait for the inserts it promised via the Required Insert Count.
-        if (prefix.requiredInsertCount > insertCount.value) {
-            insertCount.first { it >= prefix.requiredInsertCount }
-        }
-        val fields =
-            mutex.withLock {
-                buildList { while (buffer.hasRemaining()) add(decodeFieldLine(buffer, prefix.base, scratchPool)) }
+        // Any failure to decode a field section — a bad prefix, an out-of-range static/dynamic index,
+        // a malformed prefixed integer, invalid Huffman, a string literal or varint that reads past the
+        // (bounded) section buffer, or a non-UTF-8 string octet (which the buffer's readString rejects
+        // on some platforms) — is a *connection* error of type QPACK_DECOMPRESSION_FAILED (RFC 9204
+        // §2.2): the dynamic-table state desynchronizes irrecoverably. The leaf codecs raise the buffer
+        // layer's DecodeException or a platform-specific buffer-underflow / decoding error; translate ANY
+        // such wire-driven Throwable to the typed HTTP/3 error here so callers see one error currency.
+        // Only CancellationException (the blocking await) propagates unchanged. The Section
+        // Acknowledgment (stream I/O) is emitted only after a successful decode, OUTSIDE this catch, so a
+        // write failure is never mistyped.
+        val prefix: QpackPrefix
+        val fields: List<QpackHeaderField>
+        try {
+            // Snapshot the insert count from the StateFlow (atomic) for the prefix reconstruction.
+            prefix = QpackFieldSectionPrefix.decode(buffer, table.maxEntries, insertCount.value)
+            // Block until enough entries have been inserted to resolve this section (§2.2.1) — OUTSIDE the
+            // mutex, so the encoder-stream router can keep inserting (and unblock us). The
+            // QPACK_BLOCKED_STREAMS limit (how many sections may block at once) is the peer encoder's
+            // responsibility; here we simply wait for the inserts it promised via the Required Insert Count.
+            if (prefix.requiredInsertCount > insertCount.value) {
+                insertCount.first { it >= prefix.requiredInsertCount }
             }
+            fields =
+                mutex.withLock {
+                    buildList { while (buffer.hasRemaining()) add(decodeFieldLine(buffer, prefix.base, scratchPool)) }
+                }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            throw Http3StreamException(Http3Violation.QpackDecompressionFailed(e))
+        }
         if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
         return fields
     }
@@ -207,11 +226,11 @@ class QpackDecoder(
     /** Resolve an encoder-stream relative index (RFC 9204 §3.2.5): absolute = insertCount - 1 - index. */
     private fun relativeEntry(relativeIndex: Long): QpackDynamicTable.Entry =
         table.getByAbsolute(table.insertCount - 1 - relativeIndex)
-            ?: throw encoderStreamError("encoder-stream relative index $relativeIndex references a missing entry")
+            ?: throw Http3StreamException(Http3Violation.QpackEncoderRelativeIndexMissing(relativeIndex))
 
     private fun staticName(index: Long): String {
         if (index < 0 || index >= QpackStaticTable.size) {
-            throw encoderStreamError("static name index $index out of range")
+            throw Http3StreamException(Http3Violation.QpackStaticNameIndexOutOfRange(index))
         }
         return QpackStaticTable.entry(index.toInt()).name
     }
@@ -221,10 +240,9 @@ class QpackDecoder(
         value: String,
     ) {
         if (table.insert(name, value) == null) {
-            throw encoderStreamError("inserted entry (size ${qpackEntrySize(name, value)}) exceeds table capacity ${table.capacity}")
+            throw Http3StreamException(
+                Http3Violation.QpackInsertExceedsCapacity(qpackEntrySize(name, value), table.capacity),
+            )
         }
     }
-
-    private fun encoderStreamError(message: String): Http3StreamException =
-        Http3StreamException("QPACK encoder stream: $message", Http3ErrorCode.QPACK_ENCODER_STREAM_ERROR)
 }

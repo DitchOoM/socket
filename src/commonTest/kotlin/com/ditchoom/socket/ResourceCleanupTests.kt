@@ -1,5 +1,8 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -47,14 +50,14 @@ class ResourceCleanupTests {
 
             var socketRef: ClientSocket? = null
 
-            ClientSocket.connect(server.port(), hostname = "127.0.0.1", timeout = 5.seconds) { socket ->
+            ClientSocket.connect(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds)) { socket ->
                 socketRef = socket
-                assertTrue(socket.isOpen(), "Socket should be open inside use block")
-                socket.readString(timeout = 1.seconds)
+                assertTrue(socket.isOpen, "Socket should be open inside use block")
+                socket.readString(deadline = 1.seconds)
             }
 
             // After the block, socket should be closed
-            assertFalse(socketRef?.isOpen() ?: true, "Socket should be closed after use block")
+            assertFalse(socketRef?.isOpen ?: true, "Socket should be closed after use block")
 
             server.close()
             serverJob.cancel()
@@ -79,7 +82,7 @@ class ResourceCleanupTests {
                     serverFlow.collect { client ->
                         // Just echo back data if received
                         try {
-                            val data = client.readString(timeout = 500.milliseconds)
+                            val data = client.readString(deadline = 500.milliseconds)
                             client.writeString(data)
                         } catch (_: Exception) {
                             // Client may close before sending
@@ -91,8 +94,12 @@ class ResourceCleanupTests {
             var socketWasOpen = false
 
             try {
-                ClientSocket.connect(server.port(), hostname = "127.0.0.1", timeout = 5.seconds) { socket ->
-                    socketWasOpen = socket.isOpen()
+                ClientSocket.connect(
+                    server.port(),
+                    hostname = "127.0.0.1",
+                    config = TransportConfig(connectTimeout = 5.seconds),
+                ) { socket ->
+                    socketWasOpen = socket.isOpen
                     throw RuntimeException("Test exception")
                 }
                 fail("Should have thrown")
@@ -154,15 +161,15 @@ class ResourceCleanupTests {
             // Repeatedly open and close connections
             repeat(10) { i ->
                 val client = ClientSocket.allocate()
-                client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-                assertTrue(client.isOpen(), "Client $i should be open")
+                client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+                assertTrue(client.isOpen, "Client $i should be open")
 
                 client.writeString("ping")
-                val response = client.readString(timeout = 1.seconds)
+                val response = client.readString(deadline = 1.seconds)
                 assertTrue(response == "pong", "Should receive response for client $i")
 
                 client.close()
-                assertFalse(client.isOpen(), "Client $i should be closed")
+                assertFalse(client.isOpen, "Client $i should be closed")
             }
 
             server.close()
@@ -193,12 +200,12 @@ class ResourceCleanupTests {
                 launch(Dispatchers.Default) {
                     val client = ClientSocket.allocate()
                     clientRef = client
-                    client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+                    client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
                     clientConnected.lockWithTimeout()
 
                     // This should block and be cancelled (5s keeps it inside the
                     // 30s test budget; the read is cancelled long before it fires).
-                    client.read(5.seconds)
+                    client.readBuffer(5.seconds)
                 }
 
             // Wait for connection
@@ -242,8 +249,8 @@ class ResourceCleanupTests {
                 }
 
             // Connect once
-            ClientSocket.connect(server.port(), hostname = "127.0.0.1", timeout = 5.seconds) { socket ->
-                socket.readString(timeout = 1.seconds)
+            ClientSocket.connect(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds)) { socket ->
+                socket.readString(deadline = 1.seconds)
             }
 
             delay(100)
@@ -271,18 +278,18 @@ class ResourceCleanupTests {
 
             repeat(3) {
                 val client = ClientSocket.allocate()
-                client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+                client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
 
                 try {
                     withTimeout(100.milliseconds) {
-                        client.read(100.milliseconds)
+                        client.readBuffer(100.milliseconds)
                     }
                 } catch (e: Exception) {
                     // Expected timeout
                 }
 
                 client.close()
-                assertFalse(client.isOpen(), "Client should be closed after timeout")
+                assertFalse(client.isOpen, "Client should be closed after timeout")
             }
 
             server.close()
@@ -304,18 +311,18 @@ class ResourceCleanupTests {
                 }
 
             val client = ClientSocket.allocate()
-            client.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
-            assertTrue(client.isOpen(), "Socket should be open")
+            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            assertTrue(client.isOpen, "Socket should be open")
 
             client.close()
-            assertFalse(client.isOpen(), "Socket should be closed")
+            assertFalse(client.isOpen, "Socket should be closed")
 
             assertFailsWith<SocketClosedException>("Write after close should throw") {
                 client.writeString("should fail")
             }
 
             assertFailsWith<SocketClosedException>("Read after close should throw") {
-                client.readString(timeout = 1.seconds)
+                client.readString(deadline = 1.seconds)
             }
 
             server.close()
@@ -336,7 +343,7 @@ class ResourceCleanupTests {
                             // Try to read - first client will send nothing
                             val data =
                                 withTimeout(2.seconds) {
-                                    client.readString(timeout = 2.seconds)
+                                    client.readString(deadline = 2.seconds)
                                 }
                             clientsProcessed++
                         } catch (e: Exception) {
@@ -349,14 +356,14 @@ class ResourceCleanupTests {
 
             // First client - connect and immediately close (server will get error)
             val client1 = ClientSocket.allocate()
-            client1.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client1.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             client1.close()
 
             delay(100)
 
             // Second client - send proper data
             val client2 = ClientSocket.allocate()
-            client2.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client2.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             client2.writeString("hello")
             client2.close()
 
@@ -364,7 +371,7 @@ class ResourceCleanupTests {
 
             // Third client - should also work
             val client3 = ClientSocket.allocate()
-            client3.open(server.port(), timeout = 5.seconds, hostname = "127.0.0.1")
+            client3.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
             client3.writeString("world")
             client3.close()
 

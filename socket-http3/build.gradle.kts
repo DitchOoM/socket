@@ -15,7 +15,6 @@ val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 repositories {
-    mavenLocal()
     google()
     mavenCentral()
 }
@@ -40,24 +39,63 @@ kotlin {
     jvm()
     js {
         browser()
-        nodejs()
+        nodejs {
+            // The seeded codec fuzzers (Http3DecoderCorpusFuzzTests etc.) run thousands of decode
+            // iterations and exceed Mocha's 2s default on Node; match the root module's 30s budget.
+            testTask {
+                useMocha {
+                    timeout = "30s"
+                }
+            }
+        }
     }
     wasmJs {
         // Pure-Kotlin codecs compile here; QUIC itself is unimplemented on wasmJs in
         // :socket-quic (gap-tested), so the live interop/loopback suites have no wasmJs
         // concrete subclass and don't run — only the deterministic codec tests do.
         browser()
-        nodejs()
+        nodejs {
+            testTask {
+                useMocha {
+                    timeout = "30s"
+                }
+            }
+        }
     }
 
     if (isMacOS) {
-        // No cinterop of its own — Apple QUIC (Network.framework) is provided transitively
-        // by :socket-quic. These targets just compile the pure-Kotlin H3 layer.
-        macosArm64()
-        macosX64()
-        iosArm64()
-        iosSimulatorArm64()
-        iosX64()
+        // Apple QUIC is now Cloudflare quiche (the quiche-on-Apple pivot), provided transitively via
+        // :socket-quic-default → :socket-quic-quiche. The live H3 loopback test opens a real QUIC
+        // connection (calls into quiche), so the macOS/iOS TEST binary must -force_load libquiche.a —
+        // exactly as the linux block below whole-archives it (without it the binary hits
+        // `undefined symbol: quiche_path_event_*` at link). binaries.all affects the test.kexe; the
+        // published klib links nothing. tvOS/watchOS have no quiche target (UnsupportedQuicEngine), so
+        // they link no quiche.
+        val linkQuiche: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.(String) -> Unit = { libSubdir ->
+            val a = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/$libSubdir/lib/libquiche.a")
+            if (a.exists()) {
+                binaries.all {
+                    linkerOpts(
+                        "-force_load",
+                        a.absolutePath,
+                        "-framework",
+                        "Security",
+                        "-framework",
+                        "CoreFoundation",
+                        "-framework",
+                        "Network",
+                        "-framework",
+                        "Foundation",
+                        "-lc++",
+                    )
+                }
+            }
+        }
+        macosArm64 { linkQuiche("macos-arm64") }
+        macosX64 { linkQuiche("macos-x64") }
+        iosArm64 { linkQuiche("ios-arm64") }
+        iosSimulatorArm64 { linkQuiche("ios-simulator-arm64") }
+        iosX64 { linkQuiche("ios-x64") }
         tvosArm64()
         tvosSimulatorArm64()
         tvosX64()
@@ -74,7 +112,7 @@ kotlin {
         // base :socket: cinterop's staticLibraries). Without it the binary hits
         // `undefined symbol: quiche_config_new` at runtime.
         linuxX64 {
-            val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-x64/lib")
+            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-x64/lib")
             if (quicheLibDir.resolve("libquiche.a").exists()) {
                 binaries.all {
                     linkerOpts(
@@ -95,7 +133,7 @@ kotlin {
             }
         }
         linuxArm64 {
-            val quicheLibDir = project(":socket-quic").projectDir.resolve("libs/quiche/linux-arm64/lib")
+            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-arm64/lib")
             if (quicheLibDir.resolve("libquiche.a").exists()) {
                 binaries.all {
                     linkerOpts(
@@ -121,15 +159,45 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":socket-quic"))
+            // v6 Phase 2b.5: the withQuicConnection/withQuicServer entrypoints that WithHttp3* call
+            // live in :socket-quic-default (which selects the per-platform engine: quiche on
+            // jvm/android/linux, Network.framework on Apple, Unsupported on js/wasm). It transitively
+            // contributes the quiche backend (+ root :socket BoringSSL) on jvm/linux. implementation,
+            // not api: withQuic* are called internally; no :socket-quic-default type is in http3's API.
+            implementation(project(":socket-quic-default"))
             api(libs.buffer)
             api(libs.buffer.flow)
             api(libs.buffer.codec)
             implementation(libs.kotlinx.coroutines.core)
         }
-        commonTest.dependencies {
-            implementation(kotlin("test"))
-            implementation(libs.kotlinx.coroutines.core)
-            implementation(libs.kotlinx.coroutines.test)
+        commonTest {
+            // The HTTP/3 loopback suite + its in-process server and hand-rolled frame codec live in a
+            // standalone srcDir (not plain src/commonTest) so the on-device androidInstrumentedTest set —
+            // which does NOT dependsOn commonTest — can compile the SAME abstract suite without dragging in
+            // the rest of commonTest (the fuzzers, codec unit tests, gated interop). Mirrors the
+            // browserInterop pattern in :socket-webtransport. The other commonTest files that use
+            // HandwrittenHttp3FrameCodec still see it here (same compilation).
+            kotlin.srcDir("src/loopbackShared/kotlin")
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
+            }
+        }
+        // Android instrumented (on-device) HTTP/3 loopback conformance — the 27-test parity gap vs
+        // JVM/Linux/Apple. Android runs the same quiche backing as the JVM; the quiche JNI `.so` merges
+        // into the test APK transitively from :socket-quic-quiche's androidMain/jniLibs (via
+        // :socket-quic-default). The shared suite compiles in through the srcDir; coroutines-test + the
+        // AndroidJUnit runner are explicit because androidInstrumentedTest does NOT dependsOn commonTest.
+        val androidInstrumentedTest by getting {
+            kotlin.srcDir("src/loopbackShared/kotlin")
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
+                implementation("androidx.test:runner:1.7.0")
+                implementation("androidx.test.ext:junit:1.3.0")
+            }
         }
     }
 }
@@ -160,13 +228,18 @@ android {
 // depend on its staging task. (Scripted unit tests don't need this — only the gated interop GET,
 // which otherwise skips with "no native lib could be loaded".)
 afterEvaluate {
-    val quicProject = project(":socket-quic")
+    val quicProject = project(":socket-quic-quiche")
     val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
     tasks.named<org.gradle.api.tasks.testing.Test>("jvmTest").configure {
         dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
         classpath += files(stagedNatives)
     }
 }
+
+// The Apple Http3 loopback suite now runs on the quiche backend (the quiche-on-Apple pivot), which loads
+// a loose PEM cert+key directly from the committed testcerts/cert.{crt,key} — exactly like JVM/Linux. The
+// old PKCS#12 export (an NW `sec_identity_t` requirement) is gone, so the Apple K/N test tasks need no
+// cert-generation dependency.
 
 // --- Publishing ---
 // Coordinates come from socket-http3/gradle.properties (artifactName=socket-http3); the rest of
@@ -291,3 +364,159 @@ tasks
     }.configureEach {
         dependsOn("kspCommonMainKotlinMetadata")
     }
+
+// --- Coverage-guided fuzzing (Jazzer) ----------------------------------------
+// `http3CodecFuzz` drives Http3CodecFuzzer (src/jvmTest) — the hand-rolled HTTP/3 + QPACK *decoder*,
+// the module's real RFC-9114/9204 risk surface — under Jazzer/libFuzzer. The code under test is pure
+// Kotlin, so unlike :socket-quic-quiche's native header-info fuzzer this gets REAL edge coverage of the
+// parser, not just crash signals. Jazzer is runtime-only: the target uses the `byte[]` entry-point form
+// so nothing in jvmTest compiles against Jazzer; the driver comes from the dedicated `jazzer`
+// configuration. The committed seed corpus (fuzz/corpus/http3-codec) starts every run warm with the
+// Phase-0 crafted vectors; new inputs and crash repros go under build/ (gitignored).
+//
+// NOTE: this task is staged-but-dormant in CI until buffer 5.13.2 publishes to Central (the whole
+// redesign branch is buffer-blocked); run it locally with -PquicFuzzSeconds=<n> (default 60).
+val http3JazzerConfig =
+    configurations.create("jazzer") {
+        isCanBeConsumed = false
+        isCanBeResolved = true
+    }
+dependencies { add("jazzer", libs.jazzer) }
+
+val http3FuzzCorpusDir = projectDir.resolve("fuzz/corpus/http3-codec")
+val http3FuzzWorkDir = layout.buildDirectory.dir("fuzz/http3-codec")
+
+tasks.register<JavaExec>("http3CodecFuzz") {
+    group = "verification"
+    description = "Coverage-guided Jazzer fuzzing of the HTTP/3 + QPACK decoder (Http3CodecFuzzer). " +
+        "Configure runtime with -PquicFuzzSeconds=<n> (default 60)."
+    dependsOn("jvmTestClasses")
+
+    // Build the classpath from the jvm test compilation (compiled main+test output + all runtime
+    // deps) WITHOUT referencing the jvmTest *task*, so launching the fuzzer doesn't first run the
+    // whole suite. The Jazzer driver itself comes from the dedicated `jazzer` configuration.
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath =
+        files(
+            jvmTestCompilation.output.allOutputs,
+            jvmTestCompilation.runtimeDependencyFiles,
+        ) + http3JazzerConfig
+
+    mainClass.set("com.code_intelligence.jazzer.Jazzer")
+
+    val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60")
+    val corpusDir = http3FuzzCorpusDir
+    val workDir = http3FuzzWorkDir
+
+    doFirst {
+        corpusDir.mkdirs()
+        workDir
+            .get()
+            .asFile
+            .resolve("corpus")
+            .mkdirs()
+    }
+
+    // libFuzzer writes crash-*/oom-*/timeout-* repro files to artifact_prefix, and new interesting
+    // inputs only to the FIRST positional corpus dir. We make that a gitignored build/ dir so the
+    // committed seed corpus (passed second) stays pristine across local runs.
+    argumentProviders.add {
+        val work = workDir.get().asFile
+        listOf(
+            "--target_class=com.ditchoom.socket.http3.fuzz.Http3CodecFuzzer",
+            "--instrumentation_includes=com.ditchoom.socket.http3.**",
+            "-print_final_stats=1",
+            "-artifact_prefix=${work.absolutePath}/",
+            "-max_total_time=${maxSeconds.get()}",
+            work.resolve("corpus").absolutePath,
+            corpusDir.absolutePath,
+        )
+    }
+}
+
+// `http3RoundTripFuzz` is the encoder-side twin: it drives Http3RoundTripFuzzer (src/jvmTest), which
+// feeds the same Jazzer byte[] into the shared Http3FuzzGenerators to build a STRUCTURALLY VALID frame /
+// QPACK header list, then asserts `encode → decode` returns it unchanged. Where http3CodecFuzz hunts
+// untyped decoder crashes, this hunts wire-format bijection breaks (encode/decode disagreement, lossy
+// round-trips). Same dormancy + corpus discipline as above; separate committed seed corpus.
+val http3RoundTripCorpusDir = projectDir.resolve("fuzz/corpus/http3-roundtrip")
+val http3RoundTripWorkDir = layout.buildDirectory.dir("fuzz/http3-roundtrip")
+
+tasks.register<JavaExec>("http3RoundTripFuzz") {
+    group = "verification"
+    description = "Coverage-guided Jazzer fuzzing of the HTTP/3 + QPACK encode→decode round-trip " +
+        "(Http3RoundTripFuzzer). Configure runtime with -PquicFuzzSeconds=<n> (default 60)."
+    dependsOn("jvmTestClasses")
+
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath =
+        files(
+            jvmTestCompilation.output.allOutputs,
+            jvmTestCompilation.runtimeDependencyFiles,
+        ) + http3JazzerConfig
+
+    mainClass.set("com.code_intelligence.jazzer.Jazzer")
+
+    val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60")
+    val corpusDir = http3RoundTripCorpusDir
+    val workDir = http3RoundTripWorkDir
+
+    doFirst {
+        corpusDir.mkdirs()
+        workDir
+            .get()
+            .asFile
+            .resolve("corpus")
+            .mkdirs()
+    }
+
+    argumentProviders.add {
+        val work = workDir.get().asFile
+        listOf(
+            "--target_class=com.ditchoom.socket.http3.fuzz.Http3RoundTripFuzzer",
+            "--instrumentation_includes=com.ditchoom.socket.http3.**",
+            "-print_final_stats=1",
+            "-artifact_prefix=${work.absolutePath}/",
+            "-max_total_time=${maxSeconds.get()}",
+            work.resolve("corpus").absolutePath,
+            corpusDir.absolutePath,
+        )
+    }
+}
+
+// --- h3spec conformance server (Phase 2 STEP 2) ------------------------------------------------
+// `h3specServer` runs the PRODUCTION withHttp3Server (H3SpecServerMain, src/jvmTest) so the external
+// h3spec client (github.com/kazu-yamamoto/h3spec) can probe it and externally prove the Phase-0/STEP-1
+// typed Http3Violation error codes — the inverse of the aioquic docker-interop, where WE are the client.
+// The QUIC transport needs :socket-quic-quiche's native lib on the classpath, so this stages it exactly
+// like the jvmTest task does (the afterEvaluate block above). Driven by socket-http3/h3spec/run-h3spec.sh.
+//
+// NOTE: this is staged-but-dormant — it is wired but not run by CI (the build-linux `run-h3spec` input
+// defaults false, and the whole redesign branch is buffer-blocked until buffer 5.13.2 publishes to
+// Central). Run it locally via socket-http3/h3spec/run-h3spec.sh once Docker + a built quiche native exist.
+afterEvaluate {
+    val quicProject = project(":socket-quic-quiche")
+    val stagedNatives = quicProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
+    tasks.register<JavaExec>("h3specServer") {
+        group = "verification"
+        description = "Run the production withHttp3Server (H3SpecServerMain) for the external h3spec " +
+            "conformance client. Configure via env H3SPEC_PORT/H3SPEC_CERT/H3SPEC_KEY/H3SPEC_QPACK_CAPACITY."
+        dependsOn("jvmTestClasses")
+        dependsOn(quicProject.tasks.named("stageQuicheNativeResources"))
+
+        // Reuse the jvm test compilation's output + runtime deps (which include withHttp3Server and the
+        // QuicTlsConfig types), plus the staged quiche native resources the FFM backend loads at runtime —
+        // mirroring how the jvmTest task is wired above. Built WITHOUT referencing the jvmTest *task*, so
+        // launching the server doesn't first run the whole suite.
+        val jvmTestCompilation = kotlin.jvm().compilations["test"]
+        classpath =
+            files(
+                jvmTestCompilation.output.allOutputs,
+                jvmTestCompilation.runtimeDependencyFiles,
+                stagedNatives,
+            )
+        mainClass.set("com.ditchoom.socket.http3.h3spec.H3SpecServerMain")
+        // Default cert paths (testcerts/cert.{crt,key}) resolve relative to the module dir.
+        workingDir = projectDir
+    }
+}

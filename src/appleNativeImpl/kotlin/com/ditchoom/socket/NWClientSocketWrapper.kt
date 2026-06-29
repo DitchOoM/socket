@@ -9,13 +9,12 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.Foundation.NSNumber
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.time.Duration
 
 /**
  * Client socket implementation using Apple's Network.framework.
  *
  * Supports both plain TCP and TLS connections with zero-copy data transfer.
- * TLS is derived from [SocketOptions.tls] in [open].
+ * TLS is derived from [TransportConfig.tls] in [open].
  */
 @OptIn(ExperimentalForeignApi::class)
 class NWClientSocketWrapper :
@@ -25,12 +24,12 @@ class NWClientSocketWrapper :
     // 0=invalid/setup, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
-        socketOptions: SocketOptions,
+        config: TransportConfig,
     ) {
+        this.config = config
         val host = hostname ?: "localhost"
-        val tlsConfig = socketOptions.tls
+        val tlsConfig = config.tls
         val useTls = tlsConfig != null
         val verifyCertificates = tlsConfig?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
 
@@ -40,7 +39,7 @@ class NWClientSocketWrapper :
                 port = port.toUShort(),
                 use_tls = NSNumber(bool = useTls),
                 verify_certs = NSNumber(bool = verifyCertificates),
-                timeout_seconds = timeout.inWholeSeconds.toInt(),
+                timeout_seconds = config.connectTimeout.inWholeSeconds.toInt(),
             ) ?: throw SocketIOException("Failed to create NW connection")
 
         this.connection = conn

@@ -1,0 +1,6 @@
+
+# Jazzer fuzz work dir (corpus growth + crash repros); committed seeds live under fuzz/corpus/
+build/fuzz/
+
+# Jazzer Java reproducer stubs (written to the module dir on a finding)
+Crash_*.java

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MemoryTransport
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -15,7 +16,7 @@ import kotlin.time.Duration.Companion.seconds
 
 class QuicByteStreamTests {
     private fun createStream(): Pair<QuicByteStream, com.ditchoom.buffer.flow.ByteStream> {
-        val (clientSide, serverSide) = MemoryTransport.createPair(BufferFactory.Default)
+        val (clientSide, serverSide) = MemoryTransport.createPair(TransportConfig(bufferFactory = BufferFactory.Default))
         val stream = QuicByteStream(QuicStreamId(0), clientSide)
         return stream to serverSide
     }

@@ -3,28 +3,15 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import kotlinx.coroutines.CancellationException
 import kotlin.time.Duration
-
-/**
- * Raised when an HTTP/3 stream can't be processed — a frame that can't be reassembled (truncated at
- * FIN, peer reset) or a protocol violation detected while routing/reading frames.
- *
- * [errorCode] is the RFC 9114 §8.1 / RFC 9204 §8.3 code the endpoint would use to abort the
- * connection or stream (see [Http3ErrorCode]); it defaults to
- * [Http3ErrorCode.GENERAL_PROTOCOL_ERROR] so existing throw sites and `catch`/`assertFailsWith`
- * callers keep working unchanged. Specific violations set a more precise code (e.g.
- * [Http3ErrorCode.FRAME_UNEXPECTED], [Http3ErrorCode.MISSING_SETTINGS]).
- */
-class Http3StreamException(
-    message: String,
-    val errorCode: Long = Http3ErrorCode.GENERAL_PROTOCOL_ERROR,
-) : Exception(message)
 
 /**
  * Reassembles a QUIC stream of RFC 9114 §7.1 frames into [Http3Frame]s. HTTP/3 packs
@@ -69,15 +56,48 @@ class Http3StreamReader(
         recyclePreviousFrame()
         while (true) {
             // A fully buffered frame is returned even after FIN, so trailing complete frames drain.
-            val peek = Http3FrameCodec.peekFrameSize(processor, 0)
+            // peekFrameSize reads the type+length varints to size the frame; a Length above Int.MAX
+            // (Http3LengthCodec) is rejected here, before decode — that is still H3_FRAME_ERROR (§7.1).
+            val peek =
+                try {
+                    Http3FrameCodec.peekFrameSize(processor, 0)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Http3StreamException) {
+                    throw e
+                } catch (e: Throwable) {
+                    throw Http3StreamException(Http3Violation.MalformedFrame(e))
+                }
+            // A frame whose *total* size (type + length varints + a Length up to Int.MAX) exceeds the
+            // Int-addressable range overflows peekFrameSize's byte count to negative. It can't be buffered
+            // in a single ReadBuffer, so it is H3_FRAME_ERROR — the same bound as a Length above Int.MAX,
+            // caught here before readBuffer(negative) would fault with an untyped error. (Fuzzer-found.)
+            if (peek is PeekResult.Complete && peek.bytes < 0) {
+                throw Http3StreamException(Http3Violation.FrameSizeExceedsAddressableRange)
+            }
             if (peek is PeekResult.Complete && processor.available() >= peek.bytes) {
                 val frameBuffer = processor.readBuffer(peek.bytes)
                 val frame =
                     try {
                         Http3FrameCodec.decode(frameBuffer, DecodeContext.Empty)
-                    } catch (t: Throwable) {
+                    } catch (e: DecodeException) {
+                        // A malformed frame — payload bytes past the framed length, or a Length above
+                        // Int.MAX (Http3LengthCodec) — is H3_FRAME_ERROR (RFC 9114 §7.1), not an
+                        // untyped codec failure. Surface it typed so the connection aborts with 0x0106.
                         frameBuffer.freeIfNeeded()
-                        throw t
+                        throw Http3StreamException(Http3Violation.MalformedFrame(e))
+                    } catch (e: CancellationException) {
+                        frameBuffer.freeIfNeeded()
+                        throw e
+                    } catch (e: Http3StreamException) {
+                        frameBuffer.freeIfNeeded()
+                        throw e
+                    } catch (e: Throwable) {
+                        // A structured-body frame that under-reads its own bounded length (a SETTINGS
+                        // frame ending mid-entry, a buffer-underflow or platform decoding error from the
+                        // codec) is equally malformed ⇒ H3_FRAME_ERROR. Only CancellationException propagates.
+                        frameBuffer.freeIfNeeded()
+                        throw Http3StreamException(Http3Violation.MalformedFrame(e))
                     }
                 val payload = frame.borrowedPayloadOrNull()
                 if (payload == null) {
@@ -93,17 +113,14 @@ class Http3StreamReader(
             if (ended) {
                 if (processor.available() == 0) return null // clean end
                 // Leftover bytes that don't form a whole frame (short header or short payload).
-                throw Http3StreamException(
-                    "stream ended mid-frame: ${processor.available()} trailing byte(s)",
-                    Http3ErrorCode.FRAME_ERROR,
-                )
+                throw Http3StreamException(Http3Violation.FrameTruncatedAtEnd(processor.available()))
             }
             when (val result = stream.read(timeout)) {
                 is ReadResult.Data -> processor.append(result.buffer)
                 ReadResult.End -> ended = true
                 ReadResult.Reset -> {
                     ended = true
-                    throw Http3StreamException("stream was reset by the peer")
+                    throw Http3StreamException(Http3Violation.StreamResetByPeer)
                 }
             }
         }
@@ -122,14 +139,14 @@ class Http3StreamReader(
                 return processor.readBufferScoped(peek.bytes) { VarIntCodec.decode(this, DecodeContext.Empty) }
             }
             if (ended) {
-                throw Http3StreamException("stream ended before a complete varint", Http3ErrorCode.FRAME_ERROR)
+                throw Http3StreamException(Http3Violation.VarIntTruncatedAtEnd)
             }
             when (val result = stream.read(timeout)) {
                 is ReadResult.Data -> processor.append(result.buffer)
                 ReadResult.End -> ended = true
                 ReadResult.Reset -> {
                     ended = true
-                    throw Http3StreamException("stream was reset by the peer")
+                    throw Http3StreamException(Http3Violation.StreamResetByPeer)
                 }
             }
         }
@@ -158,14 +175,14 @@ class Http3StreamReader(
             }
             if (ended) {
                 if (processor.available() == 0) return null
-                throw Http3StreamException("stream ended before a complete varint", Http3ErrorCode.FRAME_ERROR)
+                throw Http3StreamException(Http3Violation.VarIntTruncatedAtEnd)
             }
             when (val result = stream.read(timeout)) {
                 is ReadResult.Data -> processor.append(result.buffer)
                 ReadResult.End -> ended = true
                 ReadResult.Reset -> {
                     ended = true
-                    throw Http3StreamException("stream was reset by the peer")
+                    throw Http3StreamException(Http3Violation.StreamResetByPeer)
                 }
             }
         }

@@ -2,10 +2,12 @@ package com.ditchoom.socket.harness
 
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.data.readBuffer
 import com.ditchoom.socket.ClientSocket
+import com.ditchoom.socket.IoTuning
 import com.ditchoom.socket.SSLSocketException
-import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.TlsConfig
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.harnessHost
 import com.ditchoom.socket.isHarnessAvailable
@@ -71,10 +73,9 @@ class TlsConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsValidPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "TLS handshake against harness-valid should succeed")
+                assertTrue(socket.isOpen, "TLS handshake against harness-valid should succeed")
             }
         }
 
@@ -93,14 +94,13 @@ class TlsConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsValidPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { socket ->
                     val request =
                         "GET /get HTTP/1.1\r\nHost: ${harnessHost()}\r\nConnection: close\r\n\r\n"
                             .toReadBuffer(Charset.UTF8)
                     socket.write(request, 2.seconds)
-                    val firstChunk = socket.read(5.seconds)
+                    val firstChunk = socket.readBuffer(5.seconds)
                     buildString {
                         repeat(minOf(5, firstChunk.remaining())) {
                             append(firstChunk.readByte().toInt().toChar())
@@ -120,8 +120,7 @@ class TlsConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsSelfSignedPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { /* handshake must throw before lambda runs */ }
             }
         }
@@ -133,10 +132,9 @@ class TlsConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsSelfSignedPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsInsecure().copy(connectTimeout = 5.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "tlsInsecure() should accept the self-signed cert")
+                assertTrue(socket.isOpen, "tlsInsecure() should accept the self-signed cert")
             }
         }
 
@@ -150,8 +148,7 @@ class TlsConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsExpiredPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { /* handshake must throw before lambda runs */ }
             }
         }
@@ -163,10 +160,9 @@ class TlsConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsExpiredPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsInsecure().copy(connectTimeout = 5.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "tlsInsecure() should accept the expired cert")
+                assertTrue(socket.isOpen, "tlsInsecure() should accept the expired cert")
             }
         }
 
@@ -181,8 +177,7 @@ class TlsConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsWrongHostPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { /* handshake must throw before lambda runs */ }
             }
         }
@@ -198,10 +193,9 @@ class TlsConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsWrongHostPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions(tcpNoDelay = true, tls = TlsConfig.INSECURE),
-                timeout = 5.seconds,
+                config = TransportConfig(tls = TlsConfig.INSECURE, io = IoTuning(tcpNoDelay = true), connectTimeout = 5.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "tlsInsecure() should accept the wrong-host cert")
+                assertTrue(socket.isOpen, "tlsInsecure() should accept the wrong-host cert")
             }
         }
 
@@ -215,8 +209,7 @@ class TlsConformanceTests {
                 ClientSocket.connect(
                     port = HarnessConfig.tlsUntrustedPort,
                     hostname = harnessHost(),
-                    socketOptions = SocketOptions.tlsDefault(),
-                    timeout = 5.seconds,
+                    config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                 ) { /* handshake must throw before lambda runs */ }
             }
         }
@@ -228,10 +221,9 @@ class TlsConformanceTests {
             ClientSocket.connect(
                 port = HarnessConfig.tlsUntrustedPort,
                 hostname = harnessHost(),
-                socketOptions = SocketOptions.tlsInsecure(),
-                timeout = 5.seconds,
+                config = TransportConfig.tlsInsecure().copy(connectTimeout = 5.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "tlsInsecure() should accept the untrusted-root cert")
+                assertTrue(socket.isOpen, "tlsInsecure() should accept the untrusted-root cert")
             }
         }
 }

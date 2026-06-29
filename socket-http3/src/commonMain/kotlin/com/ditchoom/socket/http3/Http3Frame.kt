@@ -144,6 +144,18 @@ sealed interface Http3Frame {
 }
 
 /**
+ * Apply the unknown-frame rule (RFC 9114 §9 / §7.1) at a frame-consuming site: a GREASE or unknown
+ * extension type is ignored, but a reserved HTTP/2 frame type ([Http3FrameType.isReservedHttp2]) is a
+ * connection error of type H3_FRAME_UNEXPECTED. Call from each `is Http3Frame.Unknown ->` branch so the
+ * distinction is enforced consistently rather than every consumer silently ignoring every unknown type.
+ */
+internal fun Http3Frame.Unknown.rejectIfReservedHttp2Frame() {
+    if (Http3FrameType.isReservedHttp2(type)) {
+        throw Http3StreamException(Http3Violation.ReservedHttp2Frame(type))
+    }
+}
+
+/**
  * The HTTP/3 frame Type varint — the `@DispatchOn` discriminator of [Http3Frame].
  * The companion carries the type codes (RFC 9114 §11.2.1) the rest of the module
  * references as `Http3FrameType.DATA` etc.
@@ -178,6 +190,15 @@ value class Http3FrameType(
          * and carry no semantics.
          */
         fun isReserved(type: Long): Boolean = type >= 0x21 && (type - 0x21) % 0x1f == 0L
+
+        /**
+         * Frame types defined in HTTP/2 ([RFC 9113]) that have no HTTP/3 counterpart and are therefore
+         * *reserved* in HTTP/3 (RFC 9114 §11.2.1): PRIORITY (0x02), PING (0x06), WINDOW_UPDATE (0x08),
+         * CONTINUATION (0x09). Unlike GREASE ([isReserved]) / unknown extension types — which a receiver
+         * ignores (RFC 9114 §9) — these MUST NOT be sent, and their receipt MUST be treated as a
+         * connection error of type H3_FRAME_UNEXPECTED (RFC 9114 §7.1).
+         */
+        fun isReservedHttp2(type: Long): Boolean = type == 0x02L || type == 0x06L || type == 0x08L || type == 0x09L
     }
 }
 
@@ -216,6 +237,16 @@ object Http3SettingId {
      * [WEBTRANSPORT_MAX_SESSIONS] but advertised alongside it for interop with older peers.
      */
     const val ENABLE_WEBTRANSPORT: Long = 0x2b603742
+
+    /**
+     * Setting identifiers defined in HTTP/2 ([RFC 9113]) that have no HTTP/3 counterpart and are
+     * therefore *reserved* in HTTP/3 (RFC 9114 §11.2.2): `ENABLE_PUSH` (0x02), `MAX_CONCURRENT_STREAMS`
+     * (0x03), `INITIAL_WINDOW_SIZE` (0x04), `MAX_FRAME_SIZE` (0x05). They MUST NOT be sent on an HTTP/3
+     * SETTINGS frame, and a receiver MUST treat their presence as a connection error of type
+     * H3_SETTINGS_ERROR (RFC 9114 §7.2.4.1). (0x01/0x06/0x07 keep their HTTP/2 meanings in HTTP/3 and
+     * are not reserved.)
+     */
+    val RESERVED_HTTP2_IDS: Set<Long> = setOf(0x02, 0x03, 0x04, 0x05)
 }
 
 /**

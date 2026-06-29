@@ -1,6 +1,6 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicServer
 import com.ditchoom.socket.quic.QuicTlsConfig
@@ -39,7 +39,7 @@ suspend fun <R> withHttp3Server(
     tlsConfig: QuicTlsConfig,
     host: String? = null,
     quicOptions: QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN)),
-    connectionOptions: ConnectionOptions = ConnectionOptions(),
+    connectionOptions: TransportConfig = TransportConfig(),
     qpackCapacity: Long = 0,
     timeout: Duration = 15.seconds,
     webTransport: WebTransportOptions? = null,
@@ -47,7 +47,7 @@ suspend fun <R> withHttp3Server(
     onRequest: suspend Http3ServerExchange.() -> Unit,
     block: suspend Http3Server.() -> R,
 ): R =
-    withQuicServer(port, host, tlsConfig, quicOptions, timeout) {
+    withQuicServer(port, host, tlsConfig, quicOptions.forHttp3(), timeout) {
         val server = Http3Server(this)
         coroutineScope {
             val acceptJob =

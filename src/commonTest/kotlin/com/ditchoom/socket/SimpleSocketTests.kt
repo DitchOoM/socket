@@ -5,6 +5,10 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.toReadBuffer
+import com.ditchoom.data.readBuffer
+import com.ditchoom.data.readInto
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import com.ditchoom.socket.harness.HarnessConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,13 +57,13 @@ class SimpleSocketTests {
                 ClientSocket.connect(
                     port = HarnessConfig.netemBlackholePort,
                     hostname = HarnessConfig.netemBlackholeHost,
-                    timeout = 1.seconds,
+                    config = TransportConfig(connectTimeout = 1.seconds),
                 )
                 fail("should not have reached this")
             } catch (_: TimeoutCancellationException) {
             } catch (_: SocketException) {
             } catch (e: UnsupportedOperationException) {
-                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                if (networkCapabilities().transports.contains(TransportKind.TCP)) {
                     // only expected for browsers
                     throw e
                 }
@@ -71,7 +75,7 @@ class SimpleSocketTests {
         runTestNoTimeSkipping {
             try {
                 // Use .invalid TLD which is reserved per RFC 2606 and should never resolve
-                ClientSocket.connect(80, hostname = "nonexistent.invalid", timeout = 1.seconds)
+                ClientSocket.connect(80, hostname = "nonexistent.invalid", config = TransportConfig(connectTimeout = 1.seconds))
                 fail("should not have reached this")
             } catch (e: SocketException) {
                 // expected
@@ -95,7 +99,7 @@ class SimpleSocketTests {
                 ClientSocket.connect(
                     port = HarnessConfig.netemBlackholePort,
                     hostname = HarnessConfig.netemBlackholeHost,
-                    timeout = 1.seconds,
+                    config = TransportConfig(connectTimeout = 1.seconds),
                 )
                 fail("the connection should timeout, so this line should never hit")
             } catch (t: TimeoutCancellationException) {
@@ -103,7 +107,7 @@ class SimpleSocketTests {
             } catch (s: SocketException) {
                 // expected
             } catch (e: UnsupportedOperationException) {
-                if (getNetworkCapabilities() != NetworkCapabilities.WEBSOCKETS_ONLY) {
+                if (networkCapabilities().transports.contains(TransportKind.TCP)) {
                     // only expected for browsers
                     throw e
                 }
@@ -161,7 +165,7 @@ class SimpleSocketTests {
             launch(Dispatchers.Default) {
                 flow.collect { serverToClient ->
                     acceptedSocket = serverToClient
-                    val buffer = serverToClient.read(1.seconds)
+                    val buffer = serverToClient.readBuffer(1.seconds)
                     val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
                     assertEquals(text, dataReceivedFromClient)
                     serverToClientPort = serverToClient.localPort()
@@ -173,7 +177,7 @@ class SimpleSocketTests {
             val serverPort = server.port()
             assertTrue(serverPort > 0, "No port ($serverPort) number from server")
             val clientToServer = ClientSocket.allocate()
-            clientToServer.open(serverPort, 5.seconds)
+            clientToServer.open(serverPort, config = TransportConfig(connectTimeout = 5.seconds))
             clientToServer.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
             serverToClientMutex.lockWithTimeout()
             val clientToServerPort = clientToServer.localPort()
@@ -207,7 +211,7 @@ class SimpleSocketTests {
             val serverPort = server.port()
             assertTrue(serverPort > 0, "No port number from server")
             clientToServer.open(serverPort)
-            val buffer = clientToServer.read(5.seconds)
+            val buffer = clientToServer.readBuffer(5.seconds)
             val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
             serverToClientMutex.lockWithTimeout()
             assertEquals(text, dataReceivedFromServer)
@@ -278,9 +282,9 @@ class SimpleSocketTests {
         accepted: ClientSocket?,
         server: ServerSocket,
     ) {
-        assertFalse(client.isOpen(), "client socket reports open after close() — FD not released")
+        assertFalse(client.isOpen, "client socket reports open after close() — FD not released")
         assertNotNull(accepted, "server never accepted the client connection").let {
-            assertFalse(it.isOpen(), "accepted server-side socket reports open after close() — FD not released")
+            assertFalse(it.isOpen, "accepted server-side socket reports open after close() — FD not released")
         }
         assertFalse(server.isListening(), "server reports listening after close() — listener FD not released")
     }
@@ -422,7 +426,7 @@ class ClientCancellationTests {
                 launch(Dispatchers.Default) {
                     try {
                         // Long timeout - we'll cancel before this fires
-                        client.read(30.seconds)
+                        client.readBuffer(30.seconds)
                     } catch (_: kotlinx.coroutines.CancellationException) {
                         // Expected when cancelled
                     } catch (_: SocketClosedException) {
@@ -557,7 +561,7 @@ class ClientCancellationTests {
             val readJob =
                 launch(Dispatchers.Default) {
                     try {
-                        client.read(buffer, 30.seconds)
+                        client.readInto(buffer, 30.seconds)
                     } catch (_: kotlinx.coroutines.CancellationException) {
                         // Expected
                     } catch (_: SocketClosedException) {
@@ -612,7 +616,7 @@ class ClientCancellationTests {
                 val readJob =
                     launch(Dispatchers.Default) {
                         try {
-                            client.read(30.seconds)
+                            client.readBuffer(30.seconds)
                         } catch (_: Exception) {
                             // Ignore
                         }

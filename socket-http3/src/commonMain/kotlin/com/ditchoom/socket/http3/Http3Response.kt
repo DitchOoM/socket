@@ -73,21 +73,20 @@ class Http3Response internal constructor(
                         onPushPromise ?: run {
                             bodyDone = true
                             throw Http3StreamException(
-                                "PUSH_PROMISE in a push stream's response body",
-                                Http3ErrorCode.FRAME_UNEXPECTED,
+                                Http3Violation.UnexpectedFrame(Http3FrameType.PUSH_PROMISE, Http3FrameContext.PUSH_STREAM),
                             )
                         }
                     handler(frame)
                 }
-                // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
-                is Http3Frame.Unknown -> {}
+                // GREASE/unknown frame types are ignored (RFC 9114 §9); a reserved HTTP/2 type is
+                // FRAME_UNEXPECTED.
+                is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
                 // Only DATA and a trailing HEADERS section are valid in a response body; anything
                 // else (SETTINGS, GOAWAY, …) on a request stream is H3_FRAME_UNEXPECTED (§4.1).
                 else -> {
                     bodyDone = true
                     throw Http3StreamException(
-                        "unexpected ${frame::class.simpleName} in the response body",
-                        Http3ErrorCode.FRAME_UNEXPECTED,
+                        Http3Violation.UnexpectedFrame(frame.wireType, Http3FrameContext.RESPONSE_BODY),
                     )
                 }
             }

@@ -52,15 +52,18 @@ class Http3ServerRequest internal constructor(
                     bodyDone = true
                     return null
                 }
-                // Unknown/reserved frame types MUST be ignored (RFC 9114 §9).
-                is Http3Frame.Unknown -> {}
+                // GREASE/unknown extension frames MUST be ignored (RFC 9114 §9); a reserved HTTP/2 frame
+                // type (PRIORITY/PING/WINDOW_UPDATE/CONTINUATION) is H3_FRAME_UNEXPECTED (§7.1).
+                is Http3Frame.Unknown -> {
+                    if (Http3FrameType.isReservedHttp2(frame.type)) bodyDone = true
+                    frame.rejectIfReservedHttp2Frame()
+                }
                 // Only DATA and a trailing HEADERS section are valid in a request body; anything else
                 // (SETTINGS, GOAWAY, a second leading HEADERS, …) on a request stream is H3_FRAME_UNEXPECTED.
                 else -> {
                     bodyDone = true
                     throw Http3StreamException(
-                        "unexpected ${frame::class.simpleName} in the request body",
-                        Http3ErrorCode.FRAME_UNEXPECTED,
+                        Http3Violation.UnexpectedFrame(frame.wireType, Http3FrameContext.REQUEST_BODY),
                     )
                 }
             }

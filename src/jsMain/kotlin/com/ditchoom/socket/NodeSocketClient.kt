@@ -2,6 +2,10 @@ package com.ditchoom.socket
 
 import com.ditchoom.buffer.JsBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -93,16 +97,25 @@ open class NodeSocket : ClientSocket {
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
 
-    override fun isOpen(): Boolean {
-        val socket = netSocket ?: return false
-        return !isClosed || socket.remoteAddress != null
-    }
+    /** The injected-once configuration tree. Set at the top of `open(...)`. */
+    protected var config: TransportConfig = TransportConfig()
+
+    override val readPolicy: ReadPolicy get() = config.readPolicy
+    override val writePolicy: WritePolicy get() = config.writePolicy
+
+    override val isOpen: Boolean
+        get() {
+            val socket = netSocket ?: return false
+            return !isClosed || socket.remoteAddress != null
+        }
 
     override suspend fun localPort() = netSocket?.localPort ?: -1
 
     override suspend fun remotePort() = netSocket?.remotePort ?: -1
 
-    override suspend fun read(timeout: Duration): ReadBuffer {
+    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+
+    private suspend fun readRaw(timeout: Duration): ReadBuffer {
         val socket =
             netSocket
                 ?: throw SocketClosedException.General("Socket closed. transmissionError=$hadTransmissionError")
@@ -132,10 +145,10 @@ open class NodeSocket : ClientSocket {
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): Int {
+        deadline: Duration,
+    ): BytesWritten {
         val socket = netSocket
-        if (socket == null || !isOpen()) {
+        if (socket == null || !isOpen) {
             throw SocketClosedException.General("Socket is closed. transmissionError=$hadTransmissionError")
         }
         val bytesToWrite = buffer.remaining()
@@ -160,7 +173,7 @@ open class NodeSocket : ClientSocket {
             }
         writeMutex.withLock { socket.write(dataToWrite) }
         buffer.position(buffer.position() + bytesToWrite)
-        return bytesToWrite
+        return BytesWritten(bytesToWrite)
     }
 
     fun cleanSocket(socket: Socket) {
@@ -183,12 +196,13 @@ class NodeClientSocket :
     ClientToServerSocket {
     override suspend fun open(
         port: Int,
-        timeout: Duration,
         hostname: String?,
-        socketOptions: SocketOptions,
+        config: TransportConfig,
     ) {
-        val useTls = socketOptions.tls != null
-        val rejectUnauthorized = socketOptions.tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
+        this.config = config
+        val tls = config.tls
+        val useTls = tls != null
+        val rejectUnauthorized = tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true
         // Load system CAs when connecting with TLS and certificate verification is enabled
         val caCerts = if (useTls && rejectUnauthorized) systemCaCertificates else null
         // Set servername explicitly for SNI (Server Name Indication)
@@ -201,10 +215,10 @@ class NodeClientSocket :
                 servername = hostname,
                 ca = caCerts,
             )
-        val netSocket = connect(useTls, options, timeout)
+        val netSocket = connect(useTls, options, config.connectTimeout)
         isClosed = false
         this@NodeClientSocket.netSocket = netSocket
-        if (socketOptions.tcpNoDelay == true) {
+        if (config.io.tcpNoDelay == true) {
             netSocket.setNoDelay(true)
         }
         netSocket.on("data") { data ->

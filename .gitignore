@@ -33,6 +33,8 @@ libs/
 # Android JNI shims (built by buildAndroidNativeLibs task)
 socket-quic/src/androidMain/jniLibs/*/*.so
 socket-quic/src/androidMain/jniLibs/*/.built-*
+socket-quic-quiche/src/androidMain/jniLibs/*/*.so
+socket-quic-quiche/src/androidMain/jniLibs/*/.built-*
 
 # Docusaurus
 docs/node_modules/
@@ -41,18 +43,32 @@ docs/.docusaurus/
 docs/static/api/
 socket-quic/hs_err_pid*.log
 
-# Generated at build time by the :socket-quic `generateTestP12` task from the
-# committed PEM cert+key, for the Apple QUIC server tests (issue #112).
-socket-quic/testcerts/cert.p12
-socket-quic/testcerts/localhost.p12
+# Generated test identities produced by the :socket-quic-quiche module (quiche
+# test-cert pipeline) and the :socket-quic `generateTestP12` task (Apple).
+socket-quic-quiche/testcerts/cert.p12
+socket-quic-quiche/testcerts/localhost.p12
+socket-quic-quiche/testcerts/localhost.crt
+socket-quic-quiche/testcerts/localhost.key
+socket-quic-quiche/src/jvmTest/resources/certs/localhost.crt
+socket-quic-quiche/src/jvmTest/resources/certs/localhost.key
+socket-quic-quiche/src/androidInstrumentedTest/resources/certs/localhost.crt
+socket-quic-quiche/src/androidInstrumentedTest/resources/certs/localhost.key
 
-# The self-signed `localhost` identity is generated fresh each build by the
-# :socket-quic `generateLocalhostCert` task (Apple's 398-day SecTrust cap makes a
-# committed cert a guaranteed expiry flake — issue #99). Written to every dir a
-# test source set reads from; none are committed.
-socket-quic/testcerts/localhost.crt
-socket-quic/testcerts/localhost.key
-socket-quic/src/jvmTest/resources/certs/localhost.crt
-socket-quic/src/jvmTest/resources/certs/localhost.key
-socket-quic/src/androidInstrumentedTest/resources/certs/localhost.crt
-socket-quic/src/androidInstrumentedTest/resources/certs/localhost.key
+# W3C serverCertificateHashes constraint fixtures (compliant `pinned` + per-branch violators),
+# generated fresh each build by the `generatePinnedW3cCerts` tasks. Short-lived by design (EC P-256,
+# ≤14-day), so committing one would be a guaranteed expiry flake — like `localhost`, none are committed.
+# Covers *.crt / *.key / *.sha256 (the leaf-DER hash the K/N tests pin) and *.p12 (Apple identities).
+socket-quic-quiche/testcerts/pinned*
+socket-webtransport/testcerts/pinned*
+socket-quic-quiche/src/jvmTest/resources/certs/pinned*
+socket-quic-quiche/src/androidInstrumentedTest/resources/certs/pinned*
+
+# Generated at build time by the :socket-webtransport `generateWebTransportTestP12` task from the
+# committed PEM cert+key, so the Apple WebTransport conformance suite (AppleWebTransportTest) can
+# present a Network.framework `sec_identity_t`. JVM/Linux use the committed PEMs directly.
+socket-webtransport/testcerts/cert.p12
+
+# Generated at build time by the :socket-http3 `generateHttp3TestP12` task from the committed PEM
+# cert+key, so the Apple Http3 loopback suite (AppleHttp3LoopbackTest) can present a Network.framework
+# `sec_identity_t`. JVM/Linux use the committed PEMs directly.
+socket-http3/testcerts/cert.p12

@@ -27,7 +27,7 @@ import kotlinx.coroutines.flow.emptyFlow
 interface QuicScope : CoroutineScope {
     /**
      * The [BufferFactory] this connection allocates from — the one passed via
-     * [ConnectionOptions.bufferFactory][com.ditchoom.socket.ConnectionOptions.bufferFactory] (default
+     * [TransportConfig.bufferFactory][com.ditchoom.socket.TransportConfig.bufferFactory] (default
      * [BufferFactory.Default]). Allocate your send buffers and datagrams from here so they share the
      * connection's allocation strategy (e.g. a pooled or deterministic factory) instead of reaching
      * for a global. Pair the allocation with `use { }` so it's freed even if the write throws:

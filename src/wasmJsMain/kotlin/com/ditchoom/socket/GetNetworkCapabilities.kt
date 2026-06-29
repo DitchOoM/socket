@@ -1,3 +1,3 @@
 package com.ditchoom.socket
 
-actual fun getNetworkCapabilities(): NetworkCapabilities = NetworkCapabilities.WEBSOCKETS_ONLY
+actual fun networkCapabilities(): NetworkCapabilities = NetworkCapabilities(setOf(TransportKind.WEB_TRANSPORT, TransportKind.WEB_SOCKET))

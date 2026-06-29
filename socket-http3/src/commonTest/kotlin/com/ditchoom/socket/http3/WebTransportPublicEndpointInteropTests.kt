@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +49,7 @@ class WebTransportPublicEndpointInteropTests {
             idleTimeout = 10.seconds,
             datagrams = DatagramOptions(), // WebTransport requires H3 datagrams in the handshake
         )
-    private val connectionOptions = ConnectionOptions(bufferFactory = BufferFactory.deterministic())
+    private val connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic())
 
     @Test
     fun echoesOverPublicWebTransport_orSkips() =

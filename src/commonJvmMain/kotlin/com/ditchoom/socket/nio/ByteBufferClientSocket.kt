@@ -1,13 +1,14 @@
 package com.ditchoom.socket.nio
 
 import com.ditchoom.buffer.BaseJvmBuffer
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.ClientSocket
+import com.ditchoom.socket.IoTuning
 import com.ditchoom.socket.JvmTlsHandler
-import com.ditchoom.socket.SocketOptions
 import com.ditchoom.socket.TlsConfig
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.localAddressOrNull
 import java.net.InetSocketAddress
@@ -19,18 +20,22 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
     protected lateinit var socket: T
     internal var tlsHandler: JvmTlsHandler? = null
 
-    /** Controls how internal read buffers are allocated. Set before first read. */
-    override var bufferFactory: BufferFactory = BufferFactory.Default
+    /** The injected-once configuration tree. Set at the top of `open(...)`. */
+    protected var config: TransportConfig = TransportConfig()
+
+    override val readPolicy: ReadPolicy get() = config.readPolicy
+    override val writePolicy: WritePolicy get() = config.writePolicy
 
     protected val isSocketInitialized: Boolean
         get() = ::socket.isInitialized
 
-    override fun isOpen() =
-        try {
-            isSocketInitialized && socket.isOpen
-        } catch (e: Throwable) {
-            false
-        }
+    override val isOpen: Boolean
+        get() =
+            try {
+                isSocketInitialized && socket.isOpen
+            } catch (e: Throwable) {
+                false
+            }
 
     override suspend fun localPort(): Int = (socket.localAddressOrNull() as? InetSocketAddress)?.port ?: -1
 
@@ -61,12 +66,13 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
                 port = port,
                 rawRead = { buf, t -> this.read(buf, t) },
                 rawWrite = { buf, t -> this.rawSocketWrite(buf, t) },
+                bufferFactory = this.config.bufferFactory,
             )
         handler.handshake(timeout)
         this.tlsHandler = handler
     }
 
-    protected fun applySocketOptions(options: SocketOptions) {
+    protected fun applySocketOptions(options: IoTuning) {
         options.tcpNoDelay?.let { socket.setOption(StandardSocketOptions.TCP_NODELAY, it) }
         options.reuseAddress?.let { socket.setOption(StandardSocketOptions.SO_REUSEADDR, it) }
         options.keepAlive?.let { socket.setOption(StandardSocketOptions.SO_KEEPALIVE, it) }

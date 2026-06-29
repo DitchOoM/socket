@@ -3,13 +3,16 @@ package com.ditchoom.socket.quic
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Internal QUIC connection — extends [QuicScope] with lifecycle management.
+ * An established QUIC connection — extends [QuicScope] with lifecycle management. This is the
+ * SPI return type of [QuicEngine.connect]: a backend module (e.g. `socket-quic-quiche`)
+ * implements it, and the [withQuicConnection] wrapper consumes it.
  *
- * Not exposed to users directly. Users interact via [QuicScope] inside
- * [withQuicConnection] or [QuicServer.connections] blocks.
+ * Users normally never name this type — they interact via [QuicScope] inside [withQuicConnection]
+ * or [QuicServer.connections] blocks, which own [close]. It is public only so the engine SPI can
+ * cross the module boundary between an engine module and the default bundle.
  */
-internal interface QuicConnection : QuicScope {
-    /** Current connection state (internal — used by the withQuicConnection/withQuicServer wrappers for lifecycle management). */
+interface QuicConnection : QuicScope {
+    /** Current connection state (used by the withQuicConnection/withQuicServer wrappers for lifecycle management). */
     val state: StateFlow<QuicConnectionState>
 
     /** Close the connection with a QUIC error. Called by the scope when the block ends. */

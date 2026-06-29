@@ -1,0 +1,18 @@
+language = C
+package = com.ditchoom.socket.quic.bssl
+
+# SHA-256 for the W3C serverCertificateHashes leaf-cert pin on Apple. Binds BoringSSL's one-shot
+# `SHA256`, which is vendored into and exported (unprefixed) by the macOS libquiche.a that is
+# force-loaded into this binary — the same "reuse the already-linked crypto" approach the linux
+# actual takes (Sha256.linux.kt), and collision-free on Apple because quiche's BoringSSL is the
+# ONLY crypto library present (no buffer-crypto on the Apple path).
+#
+# Declared inline in the verbatim block with built-in C types ONLY (no #include): on this Apple
+# cinterop path clang resolved no system header — a `headers =`/`#include <CommonCrypto/...>` def
+# silently produced an EMPTY binding — so we avoid headers entirely. The symbol resolves at link
+# time via the -force_load of libquiche.a.
+#
+# CAVEAT (Phase-1/2): if quiche is ever built with BORINGSSL_PREFIX to avoid colliding with a
+# consuming app's own BoringSSL, this symbol becomes <PREFIX>_SHA256 and this prototype must follow.
+---
+extern unsigned char *SHA256(const unsigned char *data, unsigned long len, unsigned char *out);

@@ -4,6 +4,10 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.NSDataBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.ReadBuffer.Companion.EMPTY_BUFFER
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.nwhelpers.SocketErrorTypeDns
 import com.ditchoom.socket.nwhelpers.SocketErrorTypePosix
 import com.ditchoom.socket.nwhelpers.SocketErrorTypeTls
@@ -42,7 +46,13 @@ open class NWSocketWrapper : ClientSocket {
     @Volatile
     internal var connectionReady = false
 
-    override fun isOpen(): Boolean = !closedLocally && connectionReady
+    /** Injected-once configuration; set at the top of [NWClientSocketWrapper.open]. */
+    internal var config: TransportConfig = TransportConfig()
+
+    override val readPolicy: ReadPolicy get() = config.readPolicy
+    override val writePolicy: WritePolicy get() = config.writePolicy
+
+    override val isOpen: Boolean get() = !closedLocally && connectionReady
 
     override suspend fun localPort(): Int =
         connection?.let {
@@ -54,15 +64,17 @@ open class NWSocketWrapper : ClientSocket {
             nw_helper_remote_port(it).toInt()
         } ?: -1
 
+    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+
     /**
      * Zero-copy read operation.
      * Returns a buffer backed by NSData received from Network.framework.
      */
-    override suspend fun read(timeout: Duration): ReadBuffer {
+    private suspend fun readRaw(deadline: Duration): ReadBuffer {
         if (closedLocally) throw SocketClosedException.General("Socket is closed")
         val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         return readMutex.withLock {
-            withTimeout(timeout) {
+            withTimeout(deadline) {
                 suspendCancellableCoroutine { continuation ->
                     nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
                         when {
@@ -108,32 +120,34 @@ open class NWSocketWrapper : ClientSocket {
      */
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): Int {
+        deadline: Duration,
+    ): BytesWritten {
         if (closedLocally) throw SocketClosedException.General("Socket is closed")
         val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         val nsData = buffer.toNSData()
         val bytesToWrite = nsData.length.toInt()
 
-        return writeMutex.withLock {
-            withTimeout(timeout) {
-                suspendCancellableCoroutine { continuation ->
-                    nw_helper_send_tcp(conn, nsData) { errorDomain, _, errorDesc ->
-                        if (errorDomain != 0) {
-                            continuation.resumeWithException(
-                                mapSocketException(errorDomain, errorDesc),
-                            )
-                        } else {
-                            buffer.position(buffer.position() + bytesToWrite)
-                            continuation.resume(bytesToWrite)
+        return BytesWritten(
+            writeMutex.withLock {
+                withTimeout(deadline) {
+                    suspendCancellableCoroutine { continuation ->
+                        nw_helper_send_tcp(conn, nsData) { errorDomain, _, errorDesc ->
+                            if (errorDomain != 0) {
+                                continuation.resumeWithException(
+                                    mapSocketException(errorDomain, errorDesc),
+                                )
+                            } else {
+                                buffer.position(buffer.position() + bytesToWrite)
+                                continuation.resume(bytesToWrite)
+                            }
+                        }
+                        continuation.invokeOnCancellation {
+                            closeInternal()
                         }
                     }
-                    continuation.invokeOnCancellation {
-                        closeInternal()
-                    }
                 }
-            }
-        }
+            },
+        )
     }
 
     internal fun closeInternal() {

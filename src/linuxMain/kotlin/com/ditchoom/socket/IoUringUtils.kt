@@ -65,9 +65,8 @@ private const val EVENTFD_USER_DATA = 0L
 object IoUringManager {
     private val ringRef = AtomicReference<CPointer<io_uring>?>(null)
 
-    // Configuration is read from PlatformSocketConfig
-    private val queueDepth: Int
-        get() = PlatformSocketConfig.ioQueueDepth
+    // process-global io_uring ring depth; per-connection IoTuning.ioQueueDepth is not threaded to the shared ring (v6 TODO)
+    private val queueDepth: Int = 1024
 
     // Default max wait time when no operations have deadlines
     private val DEFAULT_POLL_TIMEOUT = 1.seconds
@@ -800,12 +799,12 @@ internal fun setReuseAddr(sockfd: Int) {
 }
 
 /**
- * Apply SocketOptions to a socket fd.
+ * Apply [IoTuning] TCP options to a socket fd.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal fun applySocketOptions(
     sockfd: Int,
-    options: SocketOptions,
+    options: IoTuning,
 ) {
     if (options.tcpNoDelay == true) setTcpNoDelay(sockfd)
     if (options.reuseAddress == true) setReuseAddr(sockfd)

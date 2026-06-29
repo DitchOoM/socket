@@ -2,7 +2,8 @@ package com.ditchoom.socket.nio2
 
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.SocketClosedException
@@ -10,6 +11,7 @@ import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
 import com.ditchoom.socket.nio2.util.assignedPort
+import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -24,13 +26,15 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
 
     override suspend fun remotePort() = socket.assignedPort(remote = true)
 
-    override suspend fun read(timeout: Duration): ReadBuffer {
-        if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return it.unwrap(timeout) }
+    override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
+
+    private suspend fun readRaw(deadline: Duration): ReadBuffer {
+        if (!isOpen) throw SocketClosedException.General("Socket is closed.")
+        tlsHandler?.let { return it.unwrap(deadline) }
         val receiveBuffer = socket.getOption(StandardSocketOptions.SO_RCVBUF)
-        val buffer = bufferFactory.allocate(receiveBuffer)
+        val buffer = config.bufferFactory.allocate(receiveBuffer)
         try {
-            read(buffer.unwrapFully() as BaseJvmBuffer, timeout)
+            read(buffer.unwrapFully() as BaseJvmBuffer, deadline)
             buffer.resetForRead()
             return buffer
         } catch (e: Exception) {
@@ -60,28 +64,13 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
         return bytesRead
     }
 
-    override suspend fun read(
-        buffer: WriteBuffer,
-        timeout: Duration,
-    ): Int {
-        tlsHandler?.let { tls ->
-            val decrypted = tls.unwrap(timeout)
-            val bytesAvailable = decrypted.remaining()
-            if (bytesAvailable > 0) {
-                buffer.write(decrypted)
-            }
-            return bytesAvailable
-        }
-        return read((buffer as ReadBuffer).unwrapFully() as BaseJvmBuffer, timeout)
-    }
-
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
-    ): Int {
-        if (!isOpen()) throw SocketClosedException.General("Socket is closed.")
-        tlsHandler?.let { return it.wrap(buffer.unwrapFully() as BaseJvmBuffer, timeout) }
-        return rawSocketWrite(buffer, timeout)
+        deadline: Duration,
+    ): BytesWritten {
+        if (!isOpen) throw SocketClosedException.General("Socket is closed.")
+        tlsHandler?.let { return BytesWritten(it.wrap(buffer.unwrapFully() as BaseJvmBuffer, deadline)) }
+        return BytesWritten(rawSocketWrite(buffer, deadline))
     }
 
     internal override suspend fun rawSocketWrite(

@@ -4,6 +4,9 @@ This root handoff is a pointer. The per-effort handoffs hold the live detail.
 
 ## Active work
 
+- **v6 release readiness (Phase 4 / `redesign/major-api-v6`)** — the canonical, current handoff is
+  **[`V6_PHASE4_HANDOFF.md`](V6_PHASE4_HANDOFF.md)**: buffer 6.0.0 release path + WebTransport
+  multiplexing validation gaps (Apple/Android/browser) + branch-sync/push risk. **Start here for v6.**
 - **HTTP/3 (`:socket-http3`)** — the canonical, current handoff is **[`socket-http3/HANDOFF.md`](socket-http3/HANDOFF.md)**.
   Client is complete + interop-proven (issue #86, landed in PR #123); publishing + full target matrix +
   server push (RFC 9114 §4.6) done on branch `feat/http3-gaps`. Remaining: full server role, WebTransport

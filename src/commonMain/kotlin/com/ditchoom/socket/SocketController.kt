@@ -1,16 +1,16 @@
 package com.ditchoom.socket
 
-import com.ditchoom.data.Reader
-import com.ditchoom.data.Writer
+import com.ditchoom.buffer.flow.ByteStream
 
-interface SocketController :
-    Reader,
-    Writer {
-    override fun isOpen(): Boolean
-
+/**
+ * A bidirectional socket as a [ByteStream] (read + write + the injected read/write policies +
+ * [close]), plus socket-level addressing.
+ *
+ * Replaces the old `SocketController : Reader, Writer` shape — `isOpen`, `read`, `write`,
+ * `writeGathered`, and `close` now come from the byte trichotomy in `buffer-flow`.
+ */
+interface SocketController : ByteStream {
     suspend fun localPort(): Int
 
     suspend fun remotePort(): Int
-
-    suspend fun close()
 }

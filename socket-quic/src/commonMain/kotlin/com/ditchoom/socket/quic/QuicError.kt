@@ -125,6 +125,23 @@ sealed interface QuicError {
         override val code: Long = -1
     }
 
+    /**
+     * The connection closed because the idle timeout elapsed (RFC 9000 §10.1). This is a *local* event —
+     * no CONNECTION_CLOSE frame is sent on the wire — so it has no transport [code] (-1). Surfaced as a
+     * distinct reason so an idle close (or a stalled handshake that idle-times-out, e.g. a cross-stack
+     * QUIC interop failure) reports meaningfully instead of masquerading as a clean [NoError] shutdown.
+     */
+    data object IdleTimeout : QuicError {
+        override val code: Long = -1
+    }
+
+    /**
+     * Human-readable one-line description including the numeric wire [code] in hex — for log/exception
+     * messages. The structured value stays the sealed type; this is only its rendering (e.g.
+     * `ProtocolViolation (0xa)`, `ApplicationError(applicationCode=256) (0x100)`).
+     */
+    fun describe(): String = "$this (0x${code.toString(16)})"
+
     companion object {
         fun fromTransportCode(code: Long): QuicError =
             when (code) {

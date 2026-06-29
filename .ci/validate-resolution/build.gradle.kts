@@ -50,9 +50,30 @@ kotlin {
             // socket-quic's root module shipped Linux-only variants (its Apple klibs
             // existed on Central but weren't referenced by the root .module); this
             // catches that.
+            //
+            // The v6 QUIC split publishes more modules with DIFFERENT target sets —
+            // only socket-quic-default ships all targets, so only it can be resolved
+            // from commonMain. socket-quic-quiche (jvm/linux/macos/ios) is pinned to
+            // its own source sets below; putting it in commonMain would fail to
+            // resolve on the targets it doesn't publish (js/wasm/tvos/watchos). Its
+            // apple klibs are also validated transitively via socket-quic-default's
+            // appleMain dependency on it.
             implementation("com.ditchoom:socket:$socketVersion")
             implementation("com.ditchoom:socket-quic:$socketVersion")
+            implementation("com.ditchoom:socket-quic-default:$socketVersion")
             implementation("com.ditchoom:socket-http3:$socketVersion")
+        }
+
+        // socket-quic-quiche publishes jvm + linuxX64 + linuxArm64 (+ android, not
+        // a target here) — no js/apple/wasm. Resolve it only where it exists.
+        jvmMain.dependencies {
+            implementation("com.ditchoom:socket-quic-quiche:$socketVersion")
+        }
+        linuxX64Main.dependencies {
+            implementation("com.ditchoom:socket-quic-quiche:$socketVersion")
+        }
+        linuxArm64Main.dependencies {
+            implementation("com.ditchoom:socket-quic-quiche:$socketVersion")
         }
     }
 }

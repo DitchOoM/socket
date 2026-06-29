@@ -12,8 +12,8 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionOptions
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,12 +26,12 @@ import kotlin.time.TimeSource
 class CodecConnection<T>(
     val stream: ByteStream,
     val codec: Codec<T>,
-    private val options: ConnectionOptions = ConnectionOptions(),
+    private val config: TransportConfig = TransportConfig(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
     override val id: Long = 0L,
 ) : com.ditchoom.buffer.flow.Connection<T> {
-    private val bufferPool: BufferPool = BufferPool(factory = options.bufferFactory)
+    private val bufferPool: BufferPool = BufferPool(factory = config.bufferFactory)
     private val streamProcessor: StreamProcessor = StreamProcessor.create(bufferPool)
 
     @Volatile
@@ -95,7 +95,7 @@ class CodecConnection<T>(
         var capacity =
             when (val ws = codec.wireSize(message, encodeContext)) {
                 is WireSize.Exact -> ws.bytes
-                WireSize.BackPatch -> options.defaultBufferSize
+                WireSize.BackPatch -> config.io.defaultBufferSize
             }
         var attempts = 0
         while (true) {
@@ -103,7 +103,9 @@ class CodecConnection<T>(
             try {
                 codec.encode(buffer, message, encodeContext)
                 buffer.resetForRead()
-                stream.write(buffer, options.writeTimeout)
+                // Adapter rule: propagate, don't clobber. Call the leaf's no-arg write() so its
+                // injected writePolicy governs the deadline — never inject our own.
+                stream.write(buffer)
                 return
             } catch (e: BufferOverflowException) {
                 buffer.freeIfNeeded()
@@ -134,7 +136,10 @@ class CodecConnection<T>(
     }
 
     private suspend fun fillFromTransport(): Boolean =
-        when (val result = stream.read(options.readTimeout)) {
+        // Adapter rule: propagate, don't clobber. Call the leaf's no-arg read() so its injected
+        // readPolicy governs the deadline. A WebTransport stream's UntilClosed survives; an HTTP/3
+        // request stream's Bounded survives. Injecting a deadline here was the v5 footgun.
+        when (val result = stream.read()) {
             is ReadResult.Data -> {
                 _lastDataReceived.value = TimeSource.Monotonic.markNow()
                 streamProcessor.append(result.buffer)
@@ -161,12 +166,12 @@ class CodecConnection<T>(
             port: Int,
             codec: Codec<T>,
             transport: Transport = TcpTransport(),
-            options: ConnectionOptions = ConnectionOptions(),
+            config: TransportConfig = TransportConfig(),
             decodeContext: DecodeContext = DecodeContext.Empty,
             encodeContext: EncodeContext = EncodeContext.Empty,
         ): CodecConnection<T> {
-            val stream = transport.connect(hostname, port, options)
-            return CodecConnection(stream, codec, options, decodeContext, encodeContext)
+            val stream = transport.connect(hostname, port, config)
+            return CodecConnection(stream, codec, config, decodeContext, encodeContext)
         }
     }
 }

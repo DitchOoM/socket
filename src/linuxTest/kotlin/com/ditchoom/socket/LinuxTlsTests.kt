@@ -1,5 +1,7 @@
 package com.ditchoom.socket
 
+import com.ditchoom.data.readString
+import com.ditchoom.data.writeString
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -16,12 +18,11 @@ class LinuxTlsTests {
             ClientSocket.connect(
                 port = 443,
                 hostname = "www.google.com",
-                socketOptions = SocketOptions.tlsDefault(),
-                timeout = 10.seconds,
+                config = TransportConfig.tlsDefault().copy(connectTimeout = 10.seconds),
             ) { socket ->
-                assertTrue(socket.isOpen(), "TLS socket should be open")
+                assertTrue(socket.isOpen, "TLS socket should be open")
                 socket.writeString("GET / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n")
-                val response = socket.readString(timeout = 5.seconds)
+                val response = socket.readString(deadline = 5.seconds)
                 assertTrue(response.startsWith("HTTP/"), "Should receive HTTP response over TLS")
             }
         }

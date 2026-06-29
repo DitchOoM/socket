@@ -3,33 +3,19 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.HalfCloseable
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
+import com.ditchoom.buffer.flow.WritePolicy
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 
-/**
- * A [ByteStream] that can finish its **send** side independently of its read side.
- *
- * [shutdownSend] sends a QUIC stream FIN (so the peer sees end-of-request) while leaving
- * the read side open to receive the response — the half-close HTTP/3 request/response needs
- * (RFC 9114 §4: the client FINs the request stream, then reads the response). After
- * [shutdownSend], [read] still works; [write] throws.
- */
-interface HalfCloseableByteStream : ByteStream {
-    /** Send a send-side FIN. Idempotent; a no-op once the stream is fully [close]d. */
-    suspend fun shutdownSend()
-}
-
-/**
- * A [ByteStream] that can be abruptly **reset** with an application error code — RESET_STREAM on
- * the send side and STOP_SENDING on the receive side (RFC 9000 §19.4/§19.5) — rather than the
- * graceful FIN of [close]. Used by layered protocols to abort a single stream and tell the peer
- * *why* (e.g. an HTTP/3 error code, RFC 9114 §8.1: a cancelled request, a malformed message).
- */
-interface ResettableByteStream : ByteStream {
-    /** Abort the stream with [errorCode]. Idempotent; subsequent [read]/[write] fail like after [close]. */
-    suspend fun reset(errorCode: Long)
-}
+// Half-close and reset are buffer-flow's cross-platform capability markers
+// ([HalfCloseable] / [Resettable]) — reset is deliberately orthogonal (not a [ByteStream]) so it
+// mixes onto send-only / receive-only streams too. socket-quic no longer defines its own duplicates;
+// every QUIC/WebTransport stream speaks the one capability vocabulary, so an `is`-smart-cast to a
+// capability works uniformly across native and browser backings.
 
 /**
  * A single QUIC stream exposed as a [ByteStream].
@@ -50,8 +36,9 @@ interface ResettableByteStream : ByteStream {
 class QuicByteStream(
     val streamId: QuicStreamId,
     private val delegate: ByteStream,
-) : HalfCloseableByteStream,
-    ResettableByteStream {
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
     @Volatile
     private var closed = false
 
@@ -60,27 +47,31 @@ class QuicByteStream(
 
     override val isOpen: Boolean get() = !closed && delegate.isOpen
 
-    override suspend fun read(timeout: Duration): ReadResult {
+    override val readPolicy: ReadPolicy get() = delegate.readPolicy
+
+    override val writePolicy: WritePolicy get() = delegate.writePolicy
+
+    override suspend fun read(deadline: Duration): ReadResult {
         check(!closed) { "QuicByteStream($streamId) is closed" }
-        return delegate.read(timeout)
+        return delegate.read(deadline)
     }
 
     override suspend fun write(
         buffer: ReadBuffer,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten {
         check(!closed) { "QuicByteStream($streamId) is closed" }
         check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
-        return delegate.write(buffer, timeout)
+        return delegate.write(buffer, deadline)
     }
 
     override suspend fun writeGathered(
         buffers: List<ReadBuffer>,
-        timeout: Duration,
+        deadline: Duration,
     ): BytesWritten {
         check(!closed) { "QuicByteStream($streamId) is closed" }
         check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
-        return delegate.writeGathered(buffers, timeout)
+        return delegate.writeGathered(buffers, deadline)
     }
 
     override suspend fun shutdownSend() {
@@ -89,7 +80,7 @@ class QuicByteStream(
         // Delegate FINs the send side if it can; otherwise this is a best-effort no-op
         // (e.g. a scripted test stream that records writes). Production delegates
         // (QuicheStreamByteStream / NWQuicByteStream) implement the half-close.
-        (delegate as? HalfCloseableByteStream)?.shutdownSend()
+        (delegate as? HalfCloseable)?.shutdownSend()
     }
 
     override suspend fun close() {
@@ -103,6 +94,6 @@ class QuicByteStream(
         closed = true
         // Production delegates (QuicheStreamByteStream / NWQuicByteStream) send RESET_STREAM +
         // STOP_SENDING; a scripted test delegate that isn't resettable just gets a graceful close.
-        (delegate as? ResettableByteStream)?.reset(errorCode) ?: delegate.close()
+        (delegate as? Resettable)?.reset(errorCode) ?: delegate.close()
     }
 }

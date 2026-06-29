@@ -3,7 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -48,7 +48,7 @@ class Http3DockerInteropTests {
         )
 
     // Zero-copy stream I/O reads each buffer's native address ⇒ native-memory factory on K/N.
-    private val connectionOptions = ConnectionOptions(bufferFactory = BufferFactory.deterministic())
+    private val connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic())
 
     @Test
     fun evictingEncoderRoundTripsAgainstAioquic_orSkips() =

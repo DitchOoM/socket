@@ -8,7 +8,7 @@ import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.ConnectionOptions
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import kotlinx.coroutines.CancellationException
@@ -39,7 +39,7 @@ import kotlin.time.Duration
 internal class WebTransportMux(
     private val scope: QuicScope,
     private val pool: BufferPool,
-    private val options: ConnectionOptions,
+    private val config: TransportConfig,
 ) {
     private val sessions = mutableMapOf<Long, WebTransportSession>()
     private val mutex = Mutex()
@@ -94,7 +94,7 @@ internal class WebTransportMux(
     suspend fun openUni(sessionId: Long): WebTransportSendStream {
         val stream = scope.openUniStream()
         writeStreamHeader(stream, WebTransportWire.WT_UNI_STREAM_TYPE, sessionId)
-        return WebTransportSendStream(sessionId, stream, options.writeTimeout)
+        return WebTransportSendStream(sessionId, stream)
     }
 
     private suspend fun writeStreamHeader(
@@ -107,7 +107,9 @@ internal class WebTransportMux(
             VarIntCodec.encode(buffer, prefix, EncodeContext.Empty)
             VarIntCodec.encode(buffer, sessionId, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, options.writeTimeout)
+            // Adapter rule: no-arg write() consults the leaf stream's writePolicy rather than clobbering
+            // it with config — the stream owns the deadline policy for its direction.
+            stream.write(buffer)
         } finally {
             buffer.freeIfNeeded()
         }
@@ -126,8 +128,8 @@ internal class WebTransportMux(
         processor: StreamProcessor,
     ) {
         val reader = Http3StreamReader(stream, processor)
-        reader.nextVarInt(options.readTimeout) // the 0x41 signal (already peeked by the router)
-        val sessionId = reader.nextVarInt(options.readTimeout)
+        reader.nextVarInt(config.readPolicy.toDeadline()) // the 0x41 signal (already peeked by the router)
+        val sessionId = reader.nextVarInt(config.readPolicy.toDeadline())
         val session = session(sessionId)
         if (session == null || session.isClosed) {
             processor.release()
@@ -151,7 +153,7 @@ internal class WebTransportMux(
         processor: StreamProcessor,
     ) {
         val reader = Http3StreamReader(stream, processor)
-        val sessionId = reader.nextVarInt(options.readTimeout)
+        val sessionId = reader.nextVarInt(config.readPolicy.toDeadline())
         val session = session(sessionId)
         if (session == null || session.isClosed) {
             processor.release()
@@ -160,7 +162,7 @@ internal class WebTransportMux(
         }
         val pending = drainBuffered(processor)
         processor.release()
-        val wt = WebTransportReceiveStream(sessionId, stream, pending, Duration.INFINITE)
+        val wt = WebTransportReceiveStream(sessionId, stream, pending)
         session.deliverIncomingUni(wt)
     }
 
@@ -400,7 +402,8 @@ internal class WebTransportMux(
         // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
         val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
         try {
-            stream.write(buffer, options.writeTimeout)
+            // Adapter rule: no-arg write() consults the CONNECT stream's writePolicy, not config.
+            stream.write(buffer)
         } finally {
             buffer.freeIfNeeded()
         }
