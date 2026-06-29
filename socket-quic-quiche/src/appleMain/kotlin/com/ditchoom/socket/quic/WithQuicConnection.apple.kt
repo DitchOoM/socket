@@ -7,6 +7,12 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.quic.nwudp.nw_udp_cancel
+import com.ditchoom.socket.quic.nwudp.nw_udp_copy_local_sockaddr
+import com.ditchoom.socket.quic.nwudp.nw_udp_copy_remote_sockaddr
+import com.ditchoom.socket.quic.nwudp.nw_udp_create
+import com.ditchoom.socket.quic.nwudp.nw_udp_set_state_handler
+import com.ditchoom.socket.quic.nwudp.nw_udp_start
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_config_free
 import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_file
@@ -16,19 +22,15 @@ import com.ditchoom.socket.quic.quiche.quiche_connect
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.UByteVar
-import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.pointed
-import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
-import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,37 +42,73 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
-import platform.posix.AF_INET
-import platform.posix.SOCK_DGRAM
-import platform.posix.addrinfo
+import platform.Network.nw_connection_t
 import platform.posix.close
-import platform.posix.connect
 import platform.posix.fclose
 import platform.posix.fdopen
 import platform.posix.fputs
-import platform.posix.freeaddrinfo
-import platform.posix.getaddrinfo
-import platform.posix.getsockname
 import platform.posix.mkstemp
-import platform.posix.sockaddr
-import platform.posix.sockaddr_in
-import platform.posix.socket
+import platform.posix.sockaddr_storage
 import platform.posix.unlink
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.random.Random
 import kotlin.time.Duration
 
 private const val MAX_CONN_ID_LEN = 20
 
 /**
- * Build + establish an Apple quiche-backed [AppleQuicConnection] over a POSIX UDP datapath, returning it ready
- * to use. The returned connection owns its teardown via [AppleQuicConnection.close] (driver destroy
- * closes the fd; the `onRelease` lambda cancels the per-call parent scope). Shared by
- * [QuicheEngine.connect]; the [withQuicConnection] wrapper runs the block and calls `close()`.
+ * Suspend until the NWConnection [conn] reaches `ready` (state 3), or throw on a terminal failure
+ * (failed=4 / cancelled=5). UDP "waiting" (state 1) is left non-terminal — on a viable path it
+ * transitions to ready promptly; if it never does, the caller's [timeout] fires. Starts the
+ * connection (so the local endpoint gets assigned) and cancels it if the awaiting coroutine is.
+ */
+private suspend fun awaitNwUdpReady(
+    conn: nw_connection_t,
+    host: String,
+    port: Int,
+    timeout: Duration,
+) {
+    withTimeout(timeout) {
+        suspendCancellableCoroutine { continuation ->
+            var resumed = false
+            nw_udp_set_state_handler(conn) { state, _, _, desc ->
+                if (resumed) return@nw_udp_set_state_handler
+                when (state) {
+                    3 -> {
+                        resumed = true
+                        continuation.resume(Unit)
+                    }
+                    4, 5 -> {
+                        resumed = true
+                        continuation.resumeWithException(
+                            SocketConnectionException.Refused(
+                                host,
+                                port,
+                                platformError = desc ?: "NW UDP connection ${if (state == 4) "failed" else "cancelled"}",
+                            ),
+                        )
+                    }
+                }
+            }
+            nw_udp_start(conn)
+            continuation.invokeOnCancellation { nw_udp_cancel(conn) }
+        }
+    }
+}
+
+/**
+ * Build + establish an Apple quiche-backed [AppleQuicConnection] over an NWConnection-UDP datapath,
+ * returning it ready to use. The returned connection owns its teardown via [AppleQuicConnection.close]
+ * (driver destroy cancels the NWConnection via [AppleNwUdpChannel.close]; the `onRelease` lambda cancels
+ * the per-call parent scope). Shared by [QuicheEngine.connect]; the [withQuicConnection] wrapper runs
+ * the block and calls `close()`.
  *
  * The quiche `config` is freed during the build (quiche copies what it needs), so the connection
  * does not carry it. `memScoped` frees its arena on return, but the connection/driver hold only the
- * heap sockaddr copies + the fd — nothing in the arena — so returning from inside it is safe.
+ * heap sockaddr copies + the NWConnection — nothing in the arena — so returning from inside it is safe.
  */
 internal suspend fun buildAppleQuicConnection(
     hostname: String,
@@ -114,40 +152,40 @@ internal suspend fun buildAppleQuicConnection(
                 }
             }
 
+            // Datapath: an NWConnection in UDP mode — the production Apple client path (NWPath migration
+            // awareness + deterministic cancel; quiche owns QUIC itself). Create it and wait until ready,
+            // at which point NW has assigned the local endpoint and resolved the peer, so quiche can read
+            // real sockaddrs for quiche_connect + recv_info/send_info.
+            val nwConn =
+                nw_udp_create(hostname, port.toString())
+                    ?: run {
+                        quiche_config_free(config)
+                        throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create NW UDP connection")
+                    }
+            try {
+                awaitNwUdpReady(nwConn, hostname, port, timeout)
+            } catch (t: Throwable) {
+                nw_udp_cancel(nwConn)
+                quiche_config_free(config)
+                throw t
+            }
+
             memScoped {
-                val fd = socket(AF_INET, SOCK_DGRAM, 0)
-                if (fd < 0) throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create UDP socket")
-
-                val hints = alloc<addrinfo>()
-                hints.ai_family = AF_INET
-                hints.ai_socktype = SOCK_DGRAM
-                val resultPtr = alloc<kotlinx.cinterop.CPointerVar<addrinfo>>()
-                if (getaddrinfo(hostname, port.toString(), hints.ptr, resultPtr.ptr) != 0) {
-                    close(fd)
+                // Pull the effective local + remote sockaddrs (BSD layout, sa_len set) from NW. A
+                // sockaddr_storage-sized scratch covers IPv4 (16B) and IPv6 (28B).
+                val addrCap = sizeOf<sockaddr_storage>().toInt()
+                val localTmp = allocArray<ByteVar>(addrCap)
+                val remoteTmp = allocArray<ByteVar>(addrCap)
+                val localSockLen = nw_udp_copy_local_sockaddr(nwConn, localTmp, addrCap)
+                val peerSockLen = nw_udp_copy_remote_sockaddr(nwConn, remoteTmp, addrCap)
+                if (localSockLen <= 0 || peerSockLen <= 0) {
+                    nw_udp_cancel(nwConn)
                     quiche_config_free(config)
-                    throw SocketConnectionException.Refused(hostname, port, platformError = "DNS resolution failed")
-                }
-                val addrInfo = resultPtr.value!!.pointed
-                val peerSockAddr: CPointer<sockaddr> = addrInfo.ai_addr!!
-                val peerSockAddrLen = addrInfo.ai_addrlen
-
-                if (connect(fd, peerSockAddr, peerSockAddrLen) < 0) {
-                    freeaddrinfo(resultPtr.value)
-                    close(fd)
-                    quiche_config_free(config)
-                    throw SocketConnectionException.Refused(hostname, port, platformError = "UDP connect failed")
-                }
-
-                // memScoped.alloc does not zero-init. If socket_getsockname fails silently,
-                // sin_family is garbage and quiche_connect SIGABRTs through std_addr_from_c.
-                val localAddr = alloc<sockaddr_in>()
-                platform.posix.memset(localAddr.ptr, 0, sizeOf<sockaddr_in>().convert())
-                val localAddrLen = alloc<kotlinx.cinterop.UIntVar>()
-                localAddrLen.value = sizeOf<sockaddr_in>().convert()
-                val gsRc = getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
-                check(gsRc == 0) { "socket_getsockname returned $gsRc" }
-                check(localAddr.sin_family.toInt() == AF_INET) {
-                    "socket_getsockname sin_family=${localAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
+                    throw SocketConnectionException.Refused(
+                        hostname,
+                        port,
+                        platformError = "NW endpoint sockaddrs unavailable (local=$localSockLen peer=$peerSockLen)",
+                    )
                 }
 
                 // SCID
@@ -163,46 +201,51 @@ internal suspend fun buildAppleQuicConnection(
                         hostname,
                         scidPtr,
                         MAX_CONN_ID_LEN.convert(),
-                        localAddr.ptr.reinterpret(),
-                        sizeOf<sockaddr_in>().convert(),
-                        peerSockAddr,
-                        peerSockAddrLen,
+                        localTmp.reinterpret(),
+                        localSockLen.convert(),
+                        remoteTmp.reinterpret(),
+                        peerSockLen.convert(),
                         config,
                     ) ?: run {
                         scidBuf.freeNativeMemory()
-                        freeaddrinfo(resultPtr.value)
-                        close(fd)
+                        nw_udp_cancel(nwConn)
                         quiche_config_free(config)
                         throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
                     }
 
                 scidBuf.freeNativeMemory()
 
-                // Copy sockaddrs to heap buffers (memScoped will free originals)
-                val peerAddrBuf = bufferFactory.allocate(peerSockAddrLen.toInt())
-                val peerAddrDst = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-                platform.posix.memcpy(peerAddrDst, peerSockAddr.reinterpret<ByteVar>(), peerSockAddrLen.convert())
+                // Pin the local + peer sockaddrs on the heap for recv_info/send_info (memScoped frees the
+                // stack scratch on return; the driver holds these via onCleanup).
+                val peerAddrBuf = bufferFactory.allocate(peerSockLen)
+                platform.posix.memcpy(
+                    peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!,
+                    remoteTmp,
+                    peerSockLen.convert(),
+                )
                 peerAddrBuf.resetForRead()
 
-                val localAddrBuf = bufferFactory.allocate(sizeOf<sockaddr_in>().toInt())
-                val localAddrDst = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-                platform.posix.memcpy(localAddrDst, localAddr.ptr, sizeOf<sockaddr_in>().convert())
+                val localAddrBuf = bufferFactory.allocate(localSockLen)
+                platform.posix.memcpy(
+                    localAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!,
+                    localTmp,
+                    localSockLen.convert(),
+                )
                 localAddrBuf.resetForRead()
 
-                freeaddrinfo(resultPtr.value)
                 quiche_config_free(config)
 
                 // Create recvInfo/sendInfo via the QuicheApi
                 val recvInfo =
                     api.recvInfoNew(
                         peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        peerSockAddrLen.toInt(),
+                        peerSockLen,
                         localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        sizeOf<sockaddr_in>().toInt(),
+                        localSockLen,
                     )
                 val sendInfo = api.sendInfoNew()
 
-                val udpChannel = AppleUdpChannel(fd)
+                val udpChannel = AppleNwUdpChannel(nwConn)
                 val driver =
                     QuicheDriver(
                         api = api,
@@ -214,19 +257,16 @@ internal suspend fun buildAppleQuicConnection(
                         clientMode = true,
                         isServer = false,
                         keepAliveInterval = quicOptions.keepAliveInterval,
-                        // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs
-                        // (kept pinned via onCleanup for the driver's life) and a factory that opens
-                        // additional io_uring path sockets to the same peer. Mirrors the JVM client.
+                        // Peer + primary local sockaddrs (pinned via onCleanup) for the initial path's
+                        // recv_info/send_info. No udpChannelFactory: explicit quiche path migration via a
+                        // second local socket does not map to NWConnection (NW owns path moves); the
+                        // NWPath-driven migration glue is a tracked follow-up, so migrate() reports
+                        // unsupported here (migrationEnabled gates on a non-null factory).
                         peerAddr = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        peerLen = peerSockAddrLen.toInt(),
+                        peerLen = peerSockLen,
                         primaryLocalAddr = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        primaryLocalLen = sizeOf<sockaddr_in>().toInt(),
-                        udpChannelFactory =
-                            AppleUdpChannelFactory(
-                                peerSockAddrAddress = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                                peerSockAddrLen = peerSockAddrLen.toInt(),
-                                bufferFactory = bufferFactory,
-                            ),
+                        primaryLocalLen = localSockLen,
+                        udpChannelFactory = null,
                         onCleanup = {
                             peerAddrBuf.freeNativeMemory()
                             localAddrBuf.freeNativeMemory()

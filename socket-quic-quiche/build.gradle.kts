@@ -428,7 +428,11 @@ fun createBuildQuicheAppleStaticTask(
             val rustupRustc =
                 runCatching {
                     val p = ProcessBuilder("rustup", "which", "rustc").redirectErrorStream(true).start()
-                    val out = p.inputStream.bufferedReader().readText().trim()
+                    val out =
+                        p.inputStream
+                            .bufferedReader()
+                            .readText()
+                            .trim()
                     if (p.waitFor() == 0 && out.isNotEmpty()) File(out).parentFile.absolutePath else null
                 }.getOrNull()
             val basePath = System.getenv("PATH") ?: ""
@@ -1748,6 +1752,13 @@ kotlin {
                 create("BoringSslSha256") {
                     defFile("src/nativeInterop/cinterop/BoringSslSha256.def")
                 }
+                // NWConnection-UDP datapath for the Apple QUIC *client* (production path: keeps NWPath
+                // migration awareness, deterministic cancel). Server datapath stays POSIX. See NwUdp.def
+                // / AppleNwUdpChannel.
+                create("NwUdp") {
+                    defFile("src/nativeInterop/cinterop/NwUdp.def")
+                    includeDirs("src/nativeInterop/cinterop")
+                }
             }
             val quicheStatic = projectDir.resolve("libs/quiche/$libSubdir/lib/libquiche.a")
             if (quicheStatic.exists()) {
@@ -1756,7 +1767,7 @@ kotlin {
                     // next to it), so no external crypto archives. Apple ld64 differs from GNU ld: use
                     // -force_load (not --whole-archive) to pull every quiche object. Link the libraries
                     // Rust std + BoringSSL reference on Darwin: Security/CoreFoundation frameworks plus
-                    // libc++ for BoringSSL's C++ TUs.
+                    // libc++ for BoringSSL's C++ TUs; Network/Foundation for the NWConnection-UDP datapath.
                     linkerOpts(
                         "-force_load",
                         quicheStatic.absolutePath,
@@ -1764,6 +1775,10 @@ kotlin {
                         "Security",
                         "-framework",
                         "CoreFoundation",
+                        "-framework",
+                        "Network",
+                        "-framework",
+                        "Foundation",
                         "-lc++",
                     )
                 }
