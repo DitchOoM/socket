@@ -329,6 +329,168 @@ fun createBuildQuicheSharedTask(
     }
 }
 
+/**
+ * Patch quiche 0.28's vendored-BoringSSL build.rs to handle the **arm64 iOS simulator**.
+ *
+ * Upstream `CMAKE_PARAMS_IOS` maps every `aarch64` iOS target to the `iphoneos` (device) SDK and only
+ * sets a `-target …-simulator` ASM cflag for `x86_64`. So an `aarch64-apple-ios-sim` build compiles
+ * BoringSSL's `.S` assembly with the DEVICE platform tag (`platform IOS`), and ld64 then rejects the
+ * archive into an `iOS-simulator` test binary: "building for 'iOS-simulator', but linking in object
+ * file built for 'iOS'". (The `.cc` TUs come out fine — only the hand-written asm is mis-tagged.)
+ *
+ * The fix keys off `CARGO_CFG_TARGET_ABI == "sim"` (set by rustc for `*-sim` triples) so the same
+ * build.rs is correct for ALL targets: device arm64 (abi≠sim) is unchanged, x86_64 sim keeps its
+ * existing handling, and arm64 sim now gets the `iphonesimulator` sysroot + simulator ASM target.
+ * Idempotent (guarded by a marker comment); inert for macOS/Linux/Android, which don't take this arm.
+ */
+fun patchQuicheBuildRsForIosSim(sourceDir: File) {
+    val buildRs = sourceDir.resolve("quiche/src/build.rs")
+    if (!buildRs.exists()) return
+    val text = buildRs.readText()
+    if (text.contains("arm64-apple-ios-simulator")) return // already patched
+
+    val original =
+        """
+        |            // Hack for Xcode 10.1.
+        |            let target_cflag = if arch == "x86_64" {
+        |                "-target x86_64-apple-ios-simulator"
+        |            } else {
+        |                ""
+        |            };
+        """.trimMargin()
+    val replacement =
+        """
+        |            // Hack for Xcode 10.1 + arm64 iOS simulator (patched by socket build.gradle.kts —
+        |            // see patchQuicheBuildRsForIosSim). Upstream only handles the x86_64 simulator.
+        |            let is_ios_sim = std::env::var("CARGO_CFG_TARGET_ABI").map(|a| a == "sim").unwrap_or(false);
+        |            if is_ios_sim && arch == "aarch64" {
+        |                boringssl_cmake.define("CMAKE_OSX_SYSROOT", "iphonesimulator");
+        |            }
+        |            let target_cflag = if arch == "x86_64" {
+        |                "-target x86_64-apple-ios-simulator"
+        |            } else if is_ios_sim && arch == "aarch64" {
+        |                "-target arm64-apple-ios-simulator"
+        |            } else {
+        |                ""
+        |            };
+        """.trimMargin()
+
+    if (!text.contains(original)) {
+        throw GradleException(
+            "Could not patch quiche build.rs for the arm64 iOS simulator — the expected upstream block " +
+                "was not found (quiche version changed?). Update patchQuicheBuildRsForIosSim.",
+        )
+    }
+    buildRs.writeText(text.replace(original, replacement))
+    logger.lifecycle("Patched quiche build.rs for arm64 iOS-simulator BoringSSL asm")
+}
+
+/**
+ * Build quiche as a STATIC library (libquiche.a only) for a K/Native Apple target — the
+ * quiche-on-Apple pivot's iOS datapath. macOS reuses [createBuildQuicheSharedTask] (it also copies the
+ * .a alongside the dylib); iOS has no dylib step because the `cdylib`/dylib *link* fails on iOS while
+ * K/N only needs the archive, so we use `cargo rustc --crate-type staticlib` (no dylib link attempted).
+ *
+ * Toolchain note (mirrors the SESSION-3 gotcha): a Homebrew `cargo` shadows rustup AND invokes the
+ * `rustc` it finds on PATH, so an installed iOS target still fails `E0463 can't find crate for core`.
+ * We resolve the rustup toolchain's bin dir via `rustup which rustc` and PREPEND it to the child PATH
+ * so `rustc`/`core`/`std` resolve there. On a CI runner whose `cargo` is already rustup-managed
+ * (dtolnay/rust-toolchain), `rustup which` simply confirms the same dir — harmless.
+ */
+fun createBuildQuicheAppleStaticTask(
+    libSubdir: String,
+    rustTarget: String,
+): TaskProvider<Task> {
+    val taskName = "buildQuicheStatic${libSubdir.split('-').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }}"
+    val outputDir = projectDir.resolve("libs/quiche/$libSubdir")
+    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog")
+
+    return tasks.register(taskName) {
+        group = "build"
+        description = "Build quiche static library (libquiche.a) for Apple $libSubdir ($rustTarget)"
+        inputs.property("quicheVersion", quicheVersion)
+        outputs.file(markerFile)
+        onlyIf { !markerFile.exists() }
+
+        doLast {
+            val buildDir = quicheBuildDir.get().asFile
+            val sourceDir = downloadQuicheSource(buildDir, quicheVersion, quicheSha256)
+            patchQuicheBuildRsForIosSim(sourceDir)
+
+            logger.lifecycle("Building quiche $quicheVersion (static, $libSubdir / $rustTarget)...")
+
+            val env = mutableMapOf<String, String>()
+            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+
+            // Resolve the rustup toolchain bin dir and prepend it so a Homebrew cargo can't shadow
+            // rustc out from under an installed Apple target (E0463). Best-effort: if rustup is absent
+            // (CI's rustup-managed cargo), keep the inherited PATH.
+            val rustupRustc =
+                runCatching {
+                    val p = ProcessBuilder("rustup", "which", "rustc").redirectErrorStream(true).start()
+                    val out = p.inputStream.bufferedReader().readText().trim()
+                    if (p.waitFor() == 0 && out.isNotEmpty()) File(out).parentFile.absolutePath else null
+                }.getOrNull()
+            val basePath = System.getenv("PATH") ?: ""
+            env["PATH"] = if (rustupRustc != null) "$rustupRustc${File.pathSeparator}$basePath" else basePath
+
+            // Ensure the target is installed (no-op if already present); harmless if rustup is absent.
+            runCatching {
+                ProcessBuilder("rustup", "target", "add", rustTarget)
+                    .also { pb -> pb.environment().putAll(env) }
+                    .redirectErrorStream(true)
+                    .start()
+                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
+                    .waitFor()
+            }
+
+            // `cargo rustc --crate-type staticlib`: build ONLY the .a. A plain `cargo build` would also
+            // try to link the dylib, which fails for iOS targets — and K/N never needs it.
+            val process =
+                ProcessBuilder(
+                    cargoBin,
+                    "rustc",
+                    "--release",
+                    "--package",
+                    "quiche",
+                    "--target",
+                    rustTarget,
+                    "--crate-type",
+                    "staticlib",
+                    "--no-default-features",
+                    "--features",
+                    "ffi,boringssl-vendored,qlog",
+                ).directory(sourceDir)
+                    .also { pb -> pb.environment().putAll(env) }
+                    .redirectErrorStream(true)
+                    .start()
+            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            val result = process.waitFor()
+            if (result != 0) throw GradleException("quiche cargo build failed for $libSubdir (exit $result)")
+
+            outputDir.resolve("lib").mkdirs()
+            outputDir.resolve("include").mkdirs()
+            sourceDir.resolve("target/$rustTarget/release/libquiche.a").copyTo(
+                outputDir.resolve("lib/libquiche.a"),
+                overwrite = true,
+            )
+            sourceDir.resolve("quiche/include/quiche.h").copyTo(
+                outputDir.resolve("include/quiche.h"),
+                overwrite = true,
+            )
+            // Keep the shared module-level header in sync for the cinterop includeDirs.
+            val headerDest = projectDir.resolve("libs/quiche/include/quiche.h")
+            if (!headerDest.exists()) {
+                headerDest.parentFile.mkdirs()
+                sourceDir.resolve("quiche/include/quiche.h").copyTo(headerDest, overwrite = true)
+            }
+
+            markerFile.writeText("quiche $quicheVersion built on ${System.currentTimeMillis()}")
+            logger.lifecycle("quiche $quicheVersion built successfully (static, $libSubdir)")
+        }
+    }
+}
+
 // Register build tasks for the current host
 val buildQuicheStaticX64 = if (isLinux) createBuildQuicheStaticTask("x64") else null
 val buildQuicheStaticArm64 = if (isLinux) createBuildQuicheStaticTask("arm64") else null
@@ -337,6 +499,13 @@ val buildQuicheSharedLinuxX64 = if (isLinux) createBuildQuicheSharedTask("linux"
 val buildQuicheSharedLinuxArm64 = if (isLinux) createBuildQuicheSharedTask("linux", "arm64") else null
 val buildQuicheSharedMacosX64 = if (isMacOS) createBuildQuicheSharedTask("macos", "x64") else null
 val buildQuicheSharedMacosArm64 = if (isMacOS) createBuildQuicheSharedTask("macos", "arm64") else null
+
+// iOS static libs for the quiche-on-Apple pivot (macOS .a comes from the shared tasks above). Device
+// (aarch64-apple-ios), simulator-arm64 (…-ios-sim), and simulator-x64 (x86_64-apple-ios).
+val buildQuicheStaticIosArm64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios-arm64", "aarch64-apple-ios") else null
+val buildQuicheStaticIosSimulatorArm64 =
+    if (isMacOS) createBuildQuicheAppleStaticTask("ios-simulator-arm64", "aarch64-apple-ios-sim") else null
+val buildQuicheStaticIosX64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios-x64", "x86_64-apple-ios") else null
 
 // Convenience task: build all quiche libraries for the current host
 tasks.register("buildQuicheAll") {
@@ -348,6 +517,19 @@ tasks.register("buildQuicheAll") {
     }
     if (isMacOS) {
         dependsOn(buildQuicheSharedMacosX64!!, buildQuicheSharedMacosArm64!!)
+        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!, buildQuicheStaticIosX64!!)
+    }
+}
+
+// Convenience task: build every Apple K/Native static lib (macOS .a from the shared tasks + the three
+// iOS static libs). Referenced by build-apple.yaml so a CI runner prepares all five before the K/N
+// link/test tasks (which gate their -force_load on the .a existing at configuration time).
+if (isMacOS) {
+    tasks.register("buildQuicheAppleStaticLibs") {
+        group = "build"
+        description = "Build all Apple K/Native quiche static libs (macOS + iOS)"
+        dependsOn(buildQuicheSharedMacosArm64!!, buildQuicheSharedMacosX64!!)
+        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!, buildQuicheStaticIosX64!!)
     }
 }
 
@@ -1546,12 +1728,14 @@ kotlin {
         }
     }
 
-    // Phase-0 quiche-on-Apple spike (macOS host only). NW stays the shipping Apple QUIC default; this
-    // target proves quiche's self-contained macOS libquiche.a links into a K/N binary alongside its
-    // vendored BoringSSL. Additive — nothing depends on quiche's apple target yet (the default engine's
-    // appleMain still resolves to :socket-quic-nw). See NW_QUIC / quiche-on-apple-pivot.
+    // quiche-on-Apple pivot: the Apple QUIC backend is Cloudflare quiche (K/N cinterop into a
+    // self-contained libquiche.a with vendored BoringSSL) over a POSIX UDP datapath — replacing the
+    // Network.framework system-QUIC backend (the deleted :socket-quic-nw). macOS .a comes from the
+    // shared cargo tasks; iOS .a from createBuildQuicheAppleStaticTask. See quiche-on-apple-pivot.
     if (isMacOS) {
-        macosArm64 {
+        // One configurator for every Apple target: the Quiche + BoringSslSha256 cinterops and the
+        // -force_load of that target's self-contained libquiche.a.
+        val configureQuicheApple: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.(String) -> Unit = { libSubdir ->
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile("src/nativeInterop/cinterop/Quiche.def")
@@ -1565,19 +1749,17 @@ kotlin {
                     defFile("src/nativeInterop/cinterop/BoringSslSha256.def")
                 }
             }
-            val quicheLibDirMac = projectDir.resolve("libs/quiche/macos-arm64/lib")
-            val quicheStaticMac = quicheLibDirMac.resolve("libquiche.a")
-            if (quicheStaticMac.exists()) {
+            val quicheStatic = projectDir.resolve("libs/quiche/$libSubdir/lib/libquiche.a")
+            if (quicheStatic.exists()) {
                 binaries.all {
                     // libquiche.a is self-contained (vendored BoringSSL — see the .bssl-vendored marker
                     // next to it), so no external crypto archives. Apple ld64 differs from GNU ld: use
-                    // -force_load (not --whole-archive) to pull every quiche object — a stronger link
-                    // test than lazy -lquiche resolution — and link the libraries Rust std + BoringSSL
-                    // reference on Darwin: Security/CoreFoundation frameworks plus libc++ for BoringSSL's
-                    // C++ TUs. Once Phase-0 proves out, this can narrow to plain -L/-lquiche dead-strip.
+                    // -force_load (not --whole-archive) to pull every quiche object. Link the libraries
+                    // Rust std + BoringSSL reference on Darwin: Security/CoreFoundation frameworks plus
+                    // libc++ for BoringSSL's C++ TUs.
                     linkerOpts(
                         "-force_load",
-                        quicheStaticMac.absolutePath,
+                        quicheStatic.absolutePath,
                         "-framework",
                         "Security",
                         "-framework",
@@ -1587,6 +1769,11 @@ kotlin {
                 }
             }
         }
+        macosArm64 { configureQuicheApple("macos-arm64") }
+        macosX64 { configureQuicheApple("macos-x64") }
+        iosArm64 { configureQuicheApple("ios-arm64") }
+        iosSimulatorArm64 { configureQuicheApple("ios-simulator-arm64") }
+        iosX64 { configureQuicheApple("ios-x64") }
     }
 
     applyDefaultHierarchyTemplate()
