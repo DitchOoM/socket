@@ -10,6 +10,7 @@ import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
@@ -36,13 +37,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import platform.posix.AF_INET
-import platform.posix.INADDR_ANY
+import platform.posix.AF_INET6
+import platform.posix.IPPROTO_IPV6
+import platform.posix.IPV6_V6ONLY
 import platform.posix.SOCK_DGRAM
 import platform.posix.bind
 import platform.posix.getsockname
 import platform.posix.memcpy
-import platform.posix.sockaddr_in
+import platform.posix.setsockopt
+import platform.posix.sockaddr_in6
 import platform.posix.sockaddr_storage
 import platform.posix.socket
 import kotlin.concurrent.AtomicInt
@@ -50,22 +53,13 @@ import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
-// Darwin Kotlin/Native does not expose htons/htonl/ntohs as functions (they are C macros in
-// <arpa/inet.h>, unlike Linux K/N which surfaces them in platform.posix). arm64/x86_64 macOS is
-// little-endian, so host↔network byte order is a fixed byte swap.
+// Darwin Kotlin/Native does not expose htons/ntohs as functions (they are C macros in <arpa/inet.h>,
+// unlike Linux K/N which surfaces them in platform.posix). arm64/x86_64 macOS is little-endian, so
+// host↔network byte order is a fixed byte swap. (The dual-stack bind uses in6addr_any = all zeros, so
+// no htonl is needed for the wildcard address.)
 private fun htons(v: UShort): UShort = (((v.toInt() and 0xFF) shl 8) or ((v.toInt() shr 8) and 0xFF)).toUShort()
 
 private fun ntohs(v: UShort): UShort = htons(v)
-
-private fun htonl(v: UInt): UInt {
-    val x = v.toLong() and 0xFFFFFFFFL
-    return (
-        ((x and 0xFF) shl 24) or
-            ((x and 0xFF00) shl 8) or
-            ((x shr 8) and 0xFF00) or
-            ((x shr 24) and 0xFF)
-    ).toUInt()
-}
 
 /**
  * Build + bind a Linux quiche-backed [AppleQuicServer] over io_uring, returning it ready to accept.
@@ -111,52 +105,64 @@ internal fun buildAppleQuicServer(
 
         applyQuicOptions(quicOptions, AppleQuicConfigCalls(config.handle.toCPointer()!!))
 
-        // Create & bind UDP socket
-        val fd = socket(AF_INET, SOCK_DGRAM, 0)
+        // Create & bind a DUAL-STACK IPv6 UDP socket. The Apple QUIC *client* is NWConnection-UDP, and NW
+        // resolves a name like "localhost" to IPv6 (::1) by preference on Darwin; an IPv4-only server
+        // would then never receive the client's packets (the handshake silently idle-times-out). Binding
+        // AF_INET6 with IPV6_V6ONLY=0 accepts BOTH ::1 and IPv4 (as ::ffff:127.0.0.1 v4-mapped), so a
+        // client reaching the server over either family is served. quiche reads whatever sockaddr the OS
+        // reports (the CinteropQuicheApi BSD decode already handles AF_INET6 = family 30).
+        val fd = socket(AF_INET6, SOCK_DGRAM, 0)
         check(fd >= 0) { "Failed to create UDP socket" }
 
         memScoped {
-            val addr = alloc<sockaddr_in>()
-            addr.sin_family = AF_INET.convert()
-            addr.sin_addr.s_addr = htonl(INADDR_ANY)
-            addr.sin_port = htons(port.toUShort())
-            val bindRc = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+            // IPV6_V6ONLY=0 → dual-stack (also receive IPv4 as v4-mapped). Best-effort: a failure here
+            // just leaves the OS default (already 0 on Darwin), so don't hard-fail on it.
+            val off = alloc<IntVar>()
+            off.value = 0
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, off.ptr, sizeOf<IntVar>().convert())
+
+            val addr = alloc<sockaddr_in6>()
+            platform.posix.memset(addr.ptr, 0, sizeOf<sockaddr_in6>().convert())
+            addr.sin6_family = AF_INET6.convert()
+            // sin6_addr left zeroed = in6addr_any (wildcard).
+            addr.sin6_port = htons(port.toUShort())
+            val bindRc = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in6>().convert())
             check(bindRc == 0) { "Failed to bind UDP socket to port $port" }
         }
 
         // Get assigned port. memScoped.alloc does not zero-init; we must check the
-        // getsockname return value — a silent failure leaves sin_family as garbage, which
+        // getsockname return value — a silent failure leaves sin6_family as garbage, which
         // SIGABRTs through Rust's std_addr_from_c panic when quiche_accept reads it.
         val boundPort =
             memScoped {
-                val boundAddr = alloc<sockaddr_in>()
-                platform.posix.memset(boundAddr.ptr, 0, sizeOf<sockaddr_in>().convert())
+                val boundAddr = alloc<sockaddr_in6>()
+                platform.posix.memset(boundAddr.ptr, 0, sizeOf<sockaddr_in6>().convert())
                 val boundLen = alloc<UIntVar>()
-                boundLen.value = sizeOf<sockaddr_in>().convert()
+                boundLen.value = sizeOf<sockaddr_in6>().convert()
                 val rc = getsockname(fd, boundAddr.ptr.reinterpret(), boundLen.ptr)
                 check(rc == 0) { "getsockname(boundPort) returned $rc" }
-                check(boundAddr.sin_family.toInt() == AF_INET) {
-                    "getsockname(boundPort) sin_family=${boundAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
+                check(boundAddr.sin6_family.toInt() == AF_INET6) {
+                    "getsockname(boundPort) sin6_family=${boundAddr.sin6_family.toInt()} (expected AF_INET6=$AF_INET6)"
                 }
-                ntohs(boundAddr.sin_port).toInt()
+                ntohs(boundAddr.sin6_port).toInt()
             }
 
         // Copy local address to heap buffer for recvInfo (outlives memScoped). Same
         // init/check discipline as above — this buffer is handed to quiche via api.accept
-        // and api.recvInfoNew, so a garbage sin_family here poisons every accepted connection.
-        val localAddrBuf = bufferFactory.allocate(sizeOf<sockaddr_in>().toInt())
+        // and api.recvInfoNew, so a garbage sin6_family here poisons every accepted connection.
+        val localAddrBuf = bufferFactory.allocate(sizeOf<sockaddr_in6>().toInt())
         memScoped {
-            val localAddr = alloc<sockaddr_in>()
-            platform.posix.memset(localAddr.ptr, 0, sizeOf<sockaddr_in>().convert())
+            val localAddr = alloc<sockaddr_in6>()
+            platform.posix.memset(localAddr.ptr, 0, sizeOf<sockaddr_in6>().convert())
             val localLen = alloc<UIntVar>()
-            localLen.value = sizeOf<sockaddr_in>().convert()
+            localLen.value = sizeOf<sockaddr_in6>().convert()
             val rc = getsockname(fd, localAddr.ptr.reinterpret(), localLen.ptr)
             check(rc == 0) { "getsockname(localAddr) returned $rc" }
-            check(localAddr.sin_family.toInt() == AF_INET) {
-                "getsockname(localAddr) sin_family=${localAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
+            check(localAddr.sin6_family.toInt() == AF_INET6) {
+                "getsockname(localAddr) sin6_family=${localAddr.sin6_family.toInt()} (expected AF_INET6=$AF_INET6)"
             }
             val dst = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-            memcpy(dst, localAddr.ptr, sizeOf<sockaddr_in>().convert())
+            memcpy(dst, localAddr.ptr, sizeOf<sockaddr_in6>().convert())
         }
 
         val server =
@@ -249,7 +255,7 @@ private class AppleQuicServer(
                 fromBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                 peerAddrLen,
                 localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                sizeOf<sockaddr_in>().toInt(),
+                sizeOf<sockaddr_in6>().toInt(),
             )
         val cached = CachedRecvInfo(info, fromBuf)
         peerRecvInfos[key] = cached
@@ -505,7 +511,7 @@ private class AppleQuicServer(
         val serverScidAddr = serverScid.nativeMemoryAccess!!.nativeAddress.toLong()
 
         val localAddr = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-        val localAddrLen = sizeOf<sockaddr_in>().toInt()
+        val localAddrLen = sizeOf<sockaddr_in6>().toInt()
 
         val peerAddr = recvResult.peerAddr.rawValue.toLong()
         val peerAddrLen = recvResult.peerAddrLen.toInt()

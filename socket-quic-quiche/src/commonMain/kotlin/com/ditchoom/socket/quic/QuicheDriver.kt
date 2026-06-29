@@ -587,13 +587,13 @@ class QuicheDriver(
                 if (received > 0) {
                     commands.send(QuicheCmd.RecvPacket(buf, received, entry.key))
                 } else {
+                    // received <= 0 is NOT necessarily terminal here: io_uring's recv returns a negative
+                    // errno on the routine 1-second submitAndWait timeout (and -ECANCELED/-EBADF on
+                    // re-arm), which the loop must retry — exiting on it would kill the reader after any
+                    // >1s quiet period (breaking keepalive/idle/migration). So free + keep looping. A
+                    // channel that is genuinely, permanently dead must instead suspend in receive() until
+                    // the driver cancels the reader (see AppleNwUdpChannel's terminal park).
                     buf.freeNativeMemory()
-                    // A negative result is the channel's terminal "closed/failed" sentinel (Apple NW
-                    // returns -1 on cancel/error; io_uring returns a negative errno on a dead fd). Stop
-                    // reading instead of immediately re-allocating + re-reading -1 forever (CPU busy-spin).
-                    // A zero-length datagram (received == 0) is benign — keep looping. NioUdpChannel never
-                    // returns negative (it throws), so this is a no-op there.
-                    if (received < 0) return
                 }
             }
         } catch (_: ClosedSendChannelException) {

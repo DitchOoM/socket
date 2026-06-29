@@ -94,11 +94,36 @@ kotlin {
     }
 
     if (isMacOS) {
-        macosArm64()
-        macosX64()
-        iosArm64()
-        iosSimulatorArm64()
-        iosX64()
+        // Apple QUIC is now quiche (the quiche-on-Apple pivot), provided transitively via
+        // :socket-http3 → :socket-quic-default → :socket-quic-quiche. The WebTransport conformance suite
+        // stands up a real in-process QUIC server+client (calls into quiche), so the macOS/iOS TEST binary
+        // must -force_load libquiche.a — exactly as the linux block below whole-archives it. binaries.all
+        // affects the test.kexe; the published klib links nothing. tvOS/watchOS have no quiche target.
+        val linkQuiche: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.(String) -> Unit = { libSubdir ->
+            val a = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/$libSubdir/lib/libquiche.a")
+            if (a.exists()) {
+                binaries.all {
+                    linkerOpts(
+                        "-force_load",
+                        a.absolutePath,
+                        "-framework",
+                        "Security",
+                        "-framework",
+                        "CoreFoundation",
+                        "-framework",
+                        "Network",
+                        "-framework",
+                        "Foundation",
+                        "-lc++",
+                    )
+                }
+            }
+        }
+        macosArm64 { linkQuiche("macos-arm64") }
+        macosX64 { linkQuiche("macos-x64") }
+        iosArm64 { linkQuiche("ios-arm64") }
+        iosSimulatorArm64 { linkQuiche("ios-simulator-arm64") }
+        iosX64 { linkQuiche("ios-x64") }
         tvosArm64()
         tvosSimulatorArm64()
         tvosX64()

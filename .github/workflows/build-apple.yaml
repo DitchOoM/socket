@@ -107,22 +107,25 @@ jobs:
       - name: Disable harness on macOS (no working Docker fixture)
         run: echo "HARNESS_DISABLED=true" >> $GITHUB_ENV
 
-      # Apple K/N tests across every module via the umbrella target tasks (each runs the subproject's
-      # macos/ios/tvos/watchos test). macOS arm64 + x64 run the full QUIC suites on quiche:
-      #   - :socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> POSIX server)
-      #   - :socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack, 28 tests — was the flaky macos-26
-      #     NW-loopback CI red, now green on quiche)
-      #   - :socket-webtransport AppleWebTransportTest (the WebTransport server stack)
-      # iosSimulatorArm64Test runs the quiche loopback for real (POSIX/NW datapath needs no Network.framework
-      # listener, so it works standalone); the H3/WebTransport suites self-skip on the standalone sim (no
-      # testcerts/ cwd). tvOS/watchOS have no quiche target → UnsupportedQuicEngine, so their QUIC suites
-      # skip cleanly. NOT continue-on-error: a real Apple test failure must stay red.
+      # Apple K/N tests across EVERY module. The task names are UNQUALIFIED (no leading colon) so Gradle
+      # runs them in every subproject that has them — a leading-colon `:macosArm64Test` would run only the
+      # ROOT project's test and silently skip socket-quic-quiche / socket-http3 / socket-webtransport (a
+      # false green). macOS arm64 + x64 run the full QUIC suites on quiche:
+      #   - socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> dual-stack
+      #     IPv6 POSIX server)
+      #   - socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack — was the flaky macos-26 NW-loopback CI
+      #     red, now green on quiche)
+      #   - socket-webtransport AppleWebTransportTest (the WebTransport server stack)
+      # iosSimulatorArm64Test runs the quiche loopback for real (POSIX/NW datapath needs no
+      # Network.framework listener, so it works standalone); the H3/WebTransport suites self-skip on the
+      # standalone sim (no testcerts/ cwd). tvOS/watchOS have no quiche target → UnsupportedQuicEngine, so
+      # their QUIC suites skip cleanly. NOT continue-on-error: a real Apple test failure must stay red.
       - name: Run Apple K/N tests (quiche)
         run: >-
           ./gradlew
-          :macosArm64Test :macosX64Test :iosSimulatorArm64Test
-          :tvosSimulatorArm64Test :watchosSimulatorArm64Test
-          :ktlintCheck
+          macosArm64Test macosX64Test iosSimulatorArm64Test
+          tvosSimulatorArm64Test watchosSimulatorArm64Test
+          ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # :socket-quic-quiche on the JVM — the only place FFM-on-macOS and the IS_BSD sockaddr decode run.

@@ -13,6 +13,7 @@ import kotlinx.cinterop.toCPointer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import platform.Network.nw_connection_t
@@ -37,6 +38,11 @@ import kotlin.coroutines.resume
 internal class AppleNwUdpChannel(
     private val conn: nw_connection_t,
 ) : UdpChannel {
+    // Completes when the NW connection has terminally failed/closed (a receive_message callback delivered
+    // nil content or an error). Thread-safe (set on the libdispatch callback thread, read on the reader
+    // coroutine). Used to PARK the reader rather than busy-return -1 forever — see [receive].
+    private val terminal = CompletableDeferred<Unit>()
+
     /**
      * Receive one datagram into [buffer]. The `nw_connection_receive_message` callback fires on a
      * libdispatch (foreign) thread and does the byte copy there, so the buffer's lifetime MUST be fenced
@@ -45,13 +51,18 @@ internal class AppleNwUdpChannel(
      * completes [done] exactly once (NW guarantees the handler runs once — on data, error, or cancel); we
      * only return after [done] resolves, so the copy is always finished before the buffer can be freed.
      *
-     * Returns the datagram length, or -1 when the connection is closed/cancelled/errored (no copy
-     * happened) — the driver's reader loop treats a negative result as a terminal close and exits.
+     * Returns the datagram length, or -1 the FIRST time the connection is found closed/cancelled/errored.
+     * After that the driver's reader loop (which retries on a non-positive read — io_uring legitimately
+     * returns negative errnos on its 1s recv timeout) would re-enter immediately, and NW would fire the
+     * callback again at once on a dead connection → CPU busy-spin. So once [terminal], we [awaitCancellation]
+     * instead, parking the reader with zero CPU until the driver tears it down (close / idle timeout).
      */
     override suspend fun receive(buffer: PlatformBuffer): Int {
+        if (terminal.isCompleted) awaitCancellation()
         val done = CompletableDeferred<Int>()
         nw_udp_receive(conn) { content, _, errorCode ->
             if (content == null || errorCode != 0) {
+                terminal.complete(Unit)
                 done.complete(-1)
             } else {
                 val available = content.length.toInt()

@@ -64,13 +64,38 @@ kotlin {
     }
 
     if (isMacOS) {
-        // No cinterop of its own — Apple QUIC (Network.framework) is provided transitively
-        // by :socket-quic. These targets just compile the pure-Kotlin H3 layer.
-        macosArm64()
-        macosX64()
-        iosArm64()
-        iosSimulatorArm64()
-        iosX64()
+        // Apple QUIC is now Cloudflare quiche (the quiche-on-Apple pivot), provided transitively via
+        // :socket-quic-default → :socket-quic-quiche. The live H3 loopback test opens a real QUIC
+        // connection (calls into quiche), so the macOS/iOS TEST binary must -force_load libquiche.a —
+        // exactly as the linux block below whole-archives it (without it the binary hits
+        // `undefined symbol: quiche_path_event_*` at link). binaries.all affects the test.kexe; the
+        // published klib links nothing. tvOS/watchOS have no quiche target (UnsupportedQuicEngine), so
+        // they link no quiche.
+        val linkQuiche: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.(String) -> Unit = { libSubdir ->
+            val a = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/$libSubdir/lib/libquiche.a")
+            if (a.exists()) {
+                binaries.all {
+                    linkerOpts(
+                        "-force_load",
+                        a.absolutePath,
+                        "-framework",
+                        "Security",
+                        "-framework",
+                        "CoreFoundation",
+                        "-framework",
+                        "Network",
+                        "-framework",
+                        "Foundation",
+                        "-lc++",
+                    )
+                }
+            }
+        }
+        macosArm64 { linkQuiche("macos-arm64") }
+        macosX64 { linkQuiche("macos-x64") }
+        iosArm64 { linkQuiche("ios-arm64") }
+        iosSimulatorArm64 { linkQuiche("ios-simulator-arm64") }
+        iosX64 { linkQuiche("ios-x64") }
         tvosArm64()
         tvosSimulatorArm64()
         tvosX64()
