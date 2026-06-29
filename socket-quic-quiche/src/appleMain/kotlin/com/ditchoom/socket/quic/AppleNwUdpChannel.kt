@@ -10,7 +10,11 @@ import com.ditchoom.socket.quic.nwudp.nw_udp_send
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.toCPointer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import platform.Network.nw_connection_t
 import platform.posix.memcpy
 import kotlin.coroutines.resume
@@ -24,8 +28,7 @@ import kotlin.coroutines.resume
  * The connection must already be `ready` before construction (the engine waits on the state handler,
  * then reads the effective local/remote sockaddrs for quiche). One [receive]/[send] is outstanding at
  * a time (the driver's single reader loop + serialized writer), so each maps to one
- * `nw_connection_receive_message` / `nw_connection_send`. A nil receive (peer/cancel) returns -1, which
- * the driver's reader loop treats as a closed channel and exits.
+ * `nw_connection_receive_message` / `nw_connection_send`.
  *
  * NW migration glue (feeding an NWPath change back to quiche as a path probe) is a tracked follow-up;
  * the baseline channel does send/receive/cancel. There is no POSIX fallback — the QUIC *server*
@@ -34,24 +37,44 @@ import kotlin.coroutines.resume
 internal class AppleNwUdpChannel(
     private val conn: nw_connection_t,
 ) : UdpChannel {
-    override suspend fun receive(buffer: PlatformBuffer): Int =
-        suspendCancellableCoroutine { continuation ->
-            nw_udp_receive(conn) { content, _, errorCode ->
-                if (content == null || errorCode != 0) {
-                    // nil content = connection closed/cancelled; any error = treat as channel down so
-                    // the driver's reader loop exits (quiche already retransmits transient losses).
-                    continuation.resume(-1)
-                } else {
-                    val available = content.length.toInt()
-                    val len = if (available > buffer.capacity) buffer.capacity else available
-                    if (len > 0) {
-                        val dst = buffer.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-                        memcpy(dst, content.bytes, len.convert())
-                    }
-                    continuation.resume(len)
+    /**
+     * Receive one datagram into [buffer]. The `nw_connection_receive_message` callback fires on a
+     * libdispatch (foreign) thread and does the byte copy there, so the buffer's lifetime MUST be fenced
+     * against it: the reader loop frees its buffer as soon as [receive] returns, and an outstanding
+     * callback writing into a freed pooled buffer would be a foreign-thread write-after-free. The callback
+     * completes [done] exactly once (NW guarantees the handler runs once — on data, error, or cancel); we
+     * only return after [done] resolves, so the copy is always finished before the buffer can be freed.
+     *
+     * Returns the datagram length, or -1 when the connection is closed/cancelled/errored (no copy
+     * happened) — the driver's reader loop treats a negative result as a terminal close and exits.
+     */
+    override suspend fun receive(buffer: PlatformBuffer): Int {
+        val done = CompletableDeferred<Int>()
+        nw_udp_receive(conn) { content, _, errorCode ->
+            if (content == null || errorCode != 0) {
+                done.complete(-1)
+            } else {
+                val available = content.length.toInt()
+                val len = if (available > buffer.capacity) buffer.capacity else available
+                if (len > 0) {
+                    val dst = buffer.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
+                    memcpy(dst, content.bytes, len.convert())
                 }
+                done.complete(len)
             }
         }
+        return try {
+            done.await()
+        } catch (e: CancellationException) {
+            // The reader loop was cancelled mid-receive. The pending callback WILL still fire — cancel the
+            // connection so it fires with nil content (no copy), then wait non-cancellably for it to
+            // complete before unwinding, so the caller never frees `buffer` while the callback could still
+            // write into it. nw_udp_cancel is idempotent, so [close] running concurrently is harmless.
+            nw_udp_cancel(conn)
+            withContext(NonCancellable) { done.await() }
+            throw e
+        }
+    }
 
     override suspend fun send(
         buffer: PlatformBuffer,
@@ -59,7 +82,9 @@ internal class AppleNwUdpChannel(
         dest: PathKey?,
     ) {
         // Connected NW UDP channel — always sends to the connected peer; server-egress [dest] routing
-        // (a migrated peer's new source) applies only to the POSIX server channel.
+        // (a migrated peer's new source) applies only to the POSIX server channel. nw_udp_send copies the
+        // bytes into a dispatch_data buffer synchronously (DISPATCH_DATA_DESTRUCTOR_DEFAULT), so the
+        // caller's buffer is safe to reuse/free the moment the call returns — only the completion is async.
         val ptr = buffer.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         suspendCancellableCoroutine<Unit> { continuation ->
             nw_udp_send(conn, ptr, len) { _, _ ->

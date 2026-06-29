@@ -588,6 +588,12 @@ class QuicheDriver(
                     commands.send(QuicheCmd.RecvPacket(buf, received, entry.key))
                 } else {
                     buf.freeNativeMemory()
+                    // A negative result is the channel's terminal "closed/failed" sentinel (Apple NW
+                    // returns -1 on cancel/error; io_uring returns a negative errno on a dead fd). Stop
+                    // reading instead of immediately re-allocating + re-reading -1 forever (CPU busy-spin).
+                    // A zero-length datagram (received == 0) is benign — keep looping. NioUdpChannel never
+                    // returns negative (it throws), so this is a no-op there.
+                    if (received < 0) return
                 }
             }
         } catch (_: ClosedSendChannelException) {

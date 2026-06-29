@@ -276,10 +276,23 @@ internal suspend fun buildAppleQuicConnection(
                 val connJob = SupervisorJob(parentScope.coroutineContext[Job])
                 val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
                 // Sockaddr buffers are freed by the driver's onCleanup (after quiche is done
-                // dereferencing recvInfo.from/to during destroy, in close()) — matches the JVM
-                // client. onRelease only cancels the per-call parent scope (the driver's destroy
-                // closes the io_uring fd), run once by close() after the block returns.
-                val quicConn = AppleQuicConnection(driver, bufferFactory, connScope, onRelease = { parentScope.cancel() })
+                // dereferencing recvInfo.from/to during destroy, in close()) — matches the JVM client.
+                // onRelease cancels the NWConnection (the driver's cleanup() deliberately skips the
+                // PRIMARY path, so the connection setup owns it — mirrors the JVM wrapper) and then the
+                // per-call parent scope; run once by close() after the block returns. Cancelling the NW
+                // connection releases its UDP socket + dispatch resources and completes any outstanding
+                // receive with nil (a started nw_connection_t is NOT freed by just dropping the ref —
+                // Network.framework requires nw_connection_cancel).
+                val quicConn =
+                    AppleQuicConnection(
+                        driver,
+                        bufferFactory,
+                        connScope,
+                        onRelease = {
+                            runCatching { udpChannel.close() }
+                            parentScope.cancel()
+                        },
+                    )
                 quicConn.start()
                 quicConn.awaitEstablished(timeout)
                 // Connection owns teardown via onRelease now — set established first so the failure
