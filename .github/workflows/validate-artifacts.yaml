@@ -91,7 +91,7 @@ jobs:
           # resolve them (the gap validate-resolution now guards against, having
           # previously only exercised `socket`). Per-module guard: a module missing
           # its Apple .module is simply left Linux-only (no worse than before).
-          for module in socket socket-quic socket-quic-quiche socket-quic-nw socket-quic-default socket-http3; do
+          for module in socket socket-quic socket-quic-quiche socket-quic-default socket-http3; do
             LINUX_MODULE="$LINUX_BASE/$module/$version/$module-$version.module"
             APPLE_MODULE="$APPLE_BASE/$module/$version/$module-$version.module"
             MERGED_MODULE="$MERGED/$module/$version/$module-$version.module"

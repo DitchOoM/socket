@@ -53,8 +53,8 @@ interface WebTransportSupport {
      * The native-only power variant: hold **one** HTTP/3 connection open and explicitly open many
      * sessions (each with its own streams/datagrams) over it, controlling its lifetime yourself.
      *
-     * Present on jvm/android/native — including Apple, whose QUIC runs on Network.framework
-     * (`NWProtocolQUIC`) under `socket-quic-nw`, so iOS/macOS are full HTTP/3 platforms here, not
+     * Present on jvm/android/native — including macOS/iOS, whose QUIC runs on Cloudflare quiche (over an
+     * NWConnection-UDP datapath) via `socket-quic-quiche`, so they are full HTTP/3 platforms here, not
      * browsers. Absent in the browser **not** because it can't multiplex (it multiplexes streams within
      * a session, and pools connections transparently via [WebTransportOptions.allowPooling]) but because
      * it exposes no connection handle to hold — see the browser actual.

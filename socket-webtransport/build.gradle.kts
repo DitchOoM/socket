@@ -286,104 +286,10 @@ afterEvaluate {
     }
 }
 
-// --- Apple QUIC server identity (PKCS#12) for the WebTransport conformance suite ---
-// Network.framework's QUIC listener needs a `sec_identity_t` it can only build from a PKCS#12 blob
-// (loose PEM cert+key won't do — see QuicTlsConfig.pkcs12Path). The committed testcerts/cert.{crt,key}
-// (a long-lived self-signed EC P-256 leaf, CN=localhost — EC deliberately: NW under-counts the client
-// Initial for RFC 9000 §8.1 anti-amplification, so an NW QUIC server must keep its cert flight small or
-// the handshake deadlocks a non-Apple client; see the limitation note on the Apple buildAppleQuicServer)
-// feed an openssl export into testcerts/cert.p12
-// (passphrase `testpass`, the same convention :socket-quic-nw uses). The p12 is gitignored and
-// regenerated on demand; the Apple K/N test tasks depend on it. JVM/Linux ignore it (PEM-only servers).
-if (isMacOS) {
-    val generateWebTransportTestP12 =
-        tasks.register("generateWebTransportTestP12") {
-            group = "verification"
-            description = "Generate testcerts/cert.p12 from the committed PEM cert+key for the Apple WebTransport tests."
-            val certDir = projectDir.resolve("testcerts")
-            val crt = certDir.resolve("cert.crt")
-            val key = certDir.resolve("cert.key")
-            inputs.files(crt, key)
-            outputs.file(certDir.resolve("cert.p12"))
-            doLast {
-                val process =
-                    ProcessBuilder(
-                        "openssl",
-                        "pkcs12",
-                        "-export",
-                        "-out",
-                        certDir.resolve("cert.p12").absolutePath,
-                        "-inkey",
-                        key.absolutePath,
-                        "-in",
-                        crt.absolutePath,
-                        "-passout",
-                        "pass:testpass",
-                    ).redirectErrorStream(true).start()
-                val output = process.inputStream.bufferedReader().readText()
-                if (process.waitFor() != 0) {
-                    throw GradleException("openssl pkcs12 export failed for cert.p12 (rc != 0):\n$output")
-                }
-            }
-        }
-
-    // Apple K/N test tasks read testcerts/cert.p12 at runtime.
-    tasks
-        .matching { it.name.matches(Regex("(macos|ios|tvos|watchos)\\w*Test")) }
-        .configureEach { dependsOn(generateWebTransportTestP12) }
-
-    // --- No-Gradle cross-impl interop jar (CI: NW K/N server/client ↔ quiche JVM server/client) ---
-    // A runnable fat jar of the JVM (quiche-backed) interop endpoints — QuicheInteropClient and
-    // BrowserInteropServer — so the cross-impl CI job can run them with a plain `java -cp interop.jar
-    // org.junit.runner.JUnitCore <Class>` (no Gradle, no daemon). Modeled on :socket-quic-quiche's
-    // quicEchoJar, but JNI-only: we deliberately DON'T set Multi-Release / bundle the java21 FFM
-    // bindings, so a JDK 21 run deterministically uses the base JNI backend (matching what this module's
-    // jvmTest does today). The macOS quiche dylibs are reused from :socket-quic-quiche's staged native
-    // resources (same dir its jvmTest classpath uses, dropped under META-INF/native/<os>-<arch>/). The
-    // .kexe (NW K/N) half needs no jar — it runs standalone (see scripts/ci-cross-impl-nogradle.sh).
-    val quicheProject = project(":socket-quic-quiche")
-    val stagedQuicheNatives = quicheProject.layout.buildDirectory.dir("generated-native-resources/jvmMain")
-    tasks.register<Jar>("webtransportInteropJar") {
-        group = "build"
-        description =
-            "Build a runnable fat jar of the quiche-backed WebTransport interop endpoints " +
-            "(QuicheInteropClient + BrowserInteropServer) for the no-Gradle cross-impl CI job. " +
-            "Output: build/libs/webtransport-interop.jar"
-        dependsOn(
-            "compileTestKotlinJvm",
-            "jvmTestProcessResources",
-            quicheProject.tasks.named("stageQuicheNativeResources"),
-        )
-
-        archiveBaseName.set("webtransport-interop")
-        archiveVersion.set("")
-
-        // No Main-Class: the CI runner invokes a specific endpoint via JUnit4's runner
-        // (`java -cp webtransport-interop.jar org.junit.runner.JUnitCore <Class>`), so no
-        // dispatcher main() is needed and the interop @Test classes stay unchanged.
-
-        val jvm = kotlin.jvm()
-        val testCompilation = jvm.compilations["test"]
-        val mainCompilation = jvm.compilations["main"]
-
-        // The interop endpoints live in jvmTest; main is for the production wrapper classes they touch.
-        from(testCompilation.output.allOutputs)
-        from(mainCompilation.output.allOutputs)
-        // Overlay the staged quiche natives (already prefixed META-INF/native/<os>-<arch>/) so
-        // NativeLibLoader extracts libquiche.dylib + libquiche_jni.dylib from the classpath at runtime.
-        from(stagedQuicheNatives)
-        // Unpack every runtime dep jar (kotlin stdlib, coroutines, buffer, the :socket-* module jars,
-        // JUnit4) so the result is `java -cp`-runnable with zero external classpath.
-        from({
-            testCompilation.runtimeDependencyFiles.files
-                .filter { it.isFile && it.name.endsWith(".jar") }
-                .map { zipTree(it) }
-        })
-
-        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/INDEX.LIST", "module-info.class")
-    }
-}
+// The Apple WebTransport conformance suite now runs on the quiche backend (the quiche-on-Apple pivot),
+// which loads a loose PEM cert+key directly from the committed testcerts/cert.{crt,key} — exactly like
+// JVM/Linux. The old PKCS#12 export (an NW `sec_identity_t` requirement) and the NW<->quiche cross-impl
+// interop jar are both gone (Apple IS quiche now, so there are no two implementations to cross-test).
 
 // --- Browser WebTransport interop (opt-in: `-PwtBrowserInterop`) ---
 // Real headless Chrome (via Karma) drives the production browserMain WebTransport wrapper against an

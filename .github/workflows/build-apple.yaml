@@ -16,10 +16,10 @@ on:
 jobs:
   build:
     name: "Apple Targets"
-    # macOS 26 image: the NWQuic26 Swift bridge (socket-quic-nw) references the
-    # macOS-26-SDK types NetworkListener<QUIC>/QUIC. @available gates them at runtime,
-    # but they must exist in the SDK to *compile* — macos-latest's default Xcode is
-    # older and fails swiftc with "cannot find type 'NetworkListener' in scope".
+    # The Apple QUIC backend is now Cloudflare quiche over an NWConnection-UDP datapath (the
+    # quiche-on-Apple pivot replaced the Network.framework system-QUIC backend / the deleted
+    # :socket-quic-nw, which deleted the macos-26 libquic teardown UAF). quiche needs no special SDK;
+    # macos-26 is kept for a recent Xcode + an iOS-26 simulator runtime for iosSimulatorArm64Test.
     runs-on: macos-26
     timeout-minutes: 60
     outputs:
@@ -45,44 +45,12 @@ jobs:
         id: version
         run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
 
+      # All five Apple Rust targets the quiche static libs are built for (macOS x2 + iOS device/sim-arm64/
+      # sim-x64). Pre-installing them here means the Gradle build step doesn't have to.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      # quiche dylib/.a (libquiche.dylib + libquiche.a + the .built-<ver> marker) — depends ONLY on
-      # the quiche version (libs.versions.toml), NOT on the JNI shim source. Split out from the shim
-      # cache so editing quiche_jni.c no longer busts the EXPENSIVE part: the from-source cargo build
-      # of quiche + vendored BoringSSL for both arches (~10-20 min). The build step below skips cargo
-      # entirely on a hit (gated on the .built-<ver> marker, so a restore-key match from a different
-      # version is correctly rebuilt). restore-keys lets a near-match seed the cache.
-      - name: Cache quiche dylibs (macOS)
-        uses: actions/cache@v5
         with:
-          path: |
-            socket-quic-quiche/libs/quiche/macos-arm64/lib/libquiche.dylib
-            socket-quic-quiche/libs/quiche/macos-arm64/lib/libquiche.a
-            socket-quic-quiche/libs/quiche/macos-arm64/lib/.built-*
-            socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche.dylib
-            socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche.a
-            socket-quic-quiche/libs/quiche/macos-x64/lib/.built-*
-          # v2: the qlog cargo feature was added (the libquiche.a must export
-          # quiche_conn_set_qlog_path so the JNI shim links). A v1 cache holds a
-          # pre-qlog archive — bump BOTH key and restore-keys so it can't be restored.
-          key: quiche-dylib-v2-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: quiche-dylib-v2-
-
-      # JNI shim (libquiche_jni.dylib + .jni-built-<ver> marker) — depends on quiche_jni.c AND the
-      # quiche version. EXACT key only (no restore-keys): a shim is an opaque binary the build step
-      # can't validate against the current source, so a miss must cleanly rebuild it — which is just
-      # one `cc` re-link (seconds, force-loading the cached libquiche.a), not the cargo build.
-      - name: Cache quiche JNI shim (macOS)
-        uses: actions/cache@v5
-        with:
-          path: |
-            socket-quic-quiche/libs/quiche/macos-arm64/lib/libquiche_jni.dylib
-            socket-quic-quiche/libs/quiche/macos-arm64/lib/.jni-built-*
-            socket-quic-quiche/libs/quiche/macos-x64/lib/libquiche_jni.dylib
-            socket-quic-quiche/libs/quiche/macos-x64/lib/.jni-built-*
-          key: quiche-shim-v2-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -93,197 +61,73 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Build quiche + JNI shim for macOS
-        continue-on-error: true
-        run: |
-          set -x
-          # Write into libs/quiche/<platform>/lib/ so local-dev + CI share paths
-          # and the Gradle classifier-JAR pipeline (jvmNativesJar*) picks up.
-          QUICHE_LIBS="socket-quic-quiche/libs/quiche"
-          # Derive the quiche version from the catalog so the clone branch + .built/.jni-built markers
-          # never drift from the pin (and so the cache-skip checks below match the cache keys' hash).
-          QV=$(grep -E '^quiche = ' gradle/libs.versions.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "quiche version = $QV"
+      # All built quiche native libs for every Apple target: the macOS dylib + JNI shim (for the JVM
+      # JNI/FFM tests) and the macOS + iOS static libs the K/N test binaries -force_load. The expensive
+      # part is the from-source cargo + vendored-BoringSSL build for five targets (~10-20 min), so cache
+      # it keyed on the quiche version + the JNI-shim source. A near-version restore-key seeds the cache;
+      # the Gradle tasks' .built-<ver> markers correctly force a rebuild on a version bump.
+      - name: Cache quiche Apple native libs
+        uses: actions/cache@v5
+        with:
+          path: |
+            socket-quic-quiche/libs/quiche/macos-arm64/lib
+            socket-quic-quiche/libs/quiche/macos-x64/lib
+            socket-quic-quiche/libs/quiche/ios-arm64/lib
+            socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
+            socket-quic-quiche/libs/quiche/ios-x64/lib
+          key: quiche-apple-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-apple-v1-
 
-          # Decide per-arch whether the dylib cache already supplied a valid quiche build. A hit means
-          # libquiche.dylib + libquiche.a + the .built-<QV>-qlog marker are all present (the marker pins
-          # version AND the qlog feature, so a pre-qlog lib or another version correctly counts as a MISS,
-          # and it matches the marker Gradle's createBuildJvmShared* writes so prepareQuicheNativeLib skips
-          # its own rebuild). Only clone + cargo build when an arch needs it — the expensive part we skip.
-          NEED_CLONE=false
-          for pair in "aarch64-apple-darwin macos-arm64" "x86_64-apple-darwin macos-x64"; do
-            PLATFORM="${pair##* }"
-            DEST="$QUICHE_LIBS/$PLATFORM/lib"
-            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV-qlog" ]; then
-              echo "quiche dylib cache HIT for $PLATFORM ($QV) — will skip cargo"
-            else
-              echo "quiche dylib cache MISS for $PLATFORM ($QV) — cargo build required"
-              NEED_CLONE=true
-            fi
-          done
+      # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (both
+      # arches) + the three iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS
+      # simulator); prepareQuicheNativeLib makes the host-arch JNI shim for the JVM tests. Both skip cargo
+      # on a marker/cache hit.
+      - name: Build quiche Apple native libs
+        run: >-
+          ./gradlew
+          :socket-quic-quiche:buildQuicheAppleStaticLibs
+          :socket-quic-quiche:prepareQuicheNativeLib
+          --no-configuration-cache ${{ inputs.gradle-args }}
 
-          if [ "$NEED_CLONE" = true ]; then
-            git clone --recursive --depth 1 --branch "$QV" \
-              https://github.com/cloudflare/quiche.git /tmp/quiche-src
-            # Add the cross-compile target (ARM64 runner needs x64 target and vice versa)
-            rustup target add x86_64-apple-darwin aarch64-apple-darwin
-          fi
-
-          for pair in "aarch64-apple-darwin macos-arm64" "x86_64-apple-darwin macos-x64"; do
-            RUST_TARGET="${pair%% *}"
-            PLATFORM="${pair##* }"
-            DEST="$QUICHE_LIBS/$PLATFORM/lib"
-            mkdir -p "$DEST"
-
-            # --- quiche dylib/.a (expensive: cargo + vendored BoringSSL). Skip on a verified cache hit.
-            if [ -f "$DEST/libquiche.dylib" ] && [ -f "$DEST/libquiche.a" ] && [ -f "$DEST/.built-$QV-qlog" ]; then
-              echo "Reusing cached quiche dylib for $PLATFORM"
-            else
-              cd /tmp/quiche-src
-              # qlog: env-gated diagnostics (QUIC_QLOG_DIR) need quiche_conn_set_qlog_path, which is
-              # #[cfg(feature = "qlog")]. Without it the JNI shim's force_load link fails on macOS
-              # (ld64 errors on the undefined symbol; Linux's lazy -shared bind tolerates it, which is
-              # why build-linux didn't surface this). Matches the Gradle build's feature set.
-              cargo build --release --package quiche --target $RUST_TARGET \
-                --no-default-features --features ffi,boringssl-vendored,qlog
-              cd ${{ github.workspace }}
-              QUICHE_DYLIB="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.dylib"
-              QUICHE_STATIC="/tmp/quiche-src/target/$RUST_TARGET/release/libquiche.a"
-              if [ -f "$QUICHE_DYLIB" ]; then
-                cp "$QUICHE_DYLIB" "$DEST/libquiche.dylib"
-                strip -x "$DEST/libquiche.dylib"
-                cp "$QUICHE_STATIC" "$DEST/libquiche.a"
-                # Marker so prepareQuicheNativeLib treats these as authoritative and does NOT trigger a
-                # second from-source quiche build inside the 60-min job. Keyed on quiche version + the
-                # qlog feature, matching the .built-<ver>-qlog marker createBuildJvmShared* now writes.
-                echo "quiche $QV (CI macOS prebuilt, qlog)" > "$DEST/.built-$QV-qlog"
-              else
-                echo "WARN: libquiche.dylib not found at $QUICHE_DYLIB"
-              fi
-            fi
-
-            # --- JNI shim (cheap: one `cc` force-loading libquiche.a). Skip on a verified cache hit.
-            if [ -f "$DEST/libquiche_jni.dylib" ] && [ -f "$DEST/.jni-built-$QV" ]; then
-              echo "Reusing cached JNI shim for $PLATFORM"
-            elif [ -f "$DEST/libquiche.a" ]; then
-              # Build a SELF-CONTAINED JNI shim: -force_load pulls every quiche
-              # (+ vendored BoringSSL) symbol from libquiche.a into the dylib, so
-              # it re-exports the full quiche C API. This is required by BOTH
-              # backends on JDK 21+:
-              #   - JNI: resolves Java_..._n* without a runtime dep on libquiche.dylib.
-              #   - FFM: SymbolLookup.libraryLookup() only finds symbols *defined*
-              #     by the dylib, not its dynamic deps, so a thin `-lquiche` shim
-              #     would let create() succeed then throw UnsatisfiedLinkError on the
-              #     first quiche_* downcall. Mirrors createBuildJvmJniShimTask (macOS).
-              cc -dynamiclib -O2 -Wall \
-                -o $DEST/libquiche_jni.dylib \
-                socket-quic-quiche/src/jni/quiche_jni.c \
-                -I${JAVA_HOME}/include -I${JAVA_HOME}/include/darwin \
-                -I socket-quic-quiche/libs/quiche/include \
-                -Wl,-force_load,"$DEST/libquiche.a" \
-                -Wl,-install_name,@rpath/libquiche_jni.dylib \
-                -target $(echo $RUST_TARGET | sed 's/aarch64/arm64/;s/x86_64/x86_64/') \
-                && strip -x $DEST/libquiche_jni.dylib \
-                && echo "Built $DEST/libquiche_jni.dylib ($(du -h $DEST/libquiche_jni.dylib | cut -f1))" \
-                && echo "quiche $QV JNI shim (CI macOS prebuilt)" > "$DEST/.jni-built-$QV"
-            else
-              echo "WARN: cannot build JNI shim for $PLATFORM — libquiche.a missing"
-            fi
-          done
-
-      # HARD check — the quiche build step above is continue-on-error, so a build
-      # failure (clone/cargo/cc) would otherwise sail past here and only surface
-      # downstream as a confusing UnsatisfiedLinkError. A missing shim is a
-      # should-have-built-but-didn't: fail now, with the right attribution.
-      - name: Verify macOS JNI shims exist
+      # HARD check — the K/N link gates -force_load on each libquiche.a existing at configuration time, so
+      # a build failure above would otherwise surface only as a confusing unresolved-symbol link error.
+      - name: Verify Apple quiche static libs exist
         run: |
           set -euo pipefail
-          found=$(find socket-quic-quiche/libs/quiche/macos-*/lib \
-            \( -name "libquiche_jni.dylib" -o -name "libquiche.dylib" \) 2>/dev/null || true)
-          if [ -z "$found" ]; then
-            echo "::error::No macOS quiche/JNI shims were built — the continue-on-error quiche build step failed."
-            exit 1
-          fi
-          echo "$found"
+          missing=0
+          for d in macos-arm64 macos-x64 ios-arm64 ios-simulator-arm64 ios-x64; do
+            f="socket-quic-quiche/libs/quiche/$d/lib/libquiche.a"
+            if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; else echo "ok: $f"; fi
+          done
+          [ "$missing" = 0 ] || { echo "::error::quiche Apple static libs missing — the build step failed."; exit 1; }
 
-      # macOS harness — disabled. Three fixture paths attempted on macos-latest;
-      # all failed (HANDOFF.md Q1 + TODO.md):
-      #   Path A (native homebrew socat + nginx)
-      #       → Apple Network.framework throws SSLProtocolException on every
-      #         TLS handshake against native nginx (12 tests).
-      #   Path B (Apple `container` CLI, 0.12.3)
-      #       → CLI surface incomplete: no `system start` subcommand
-      #         (exit 64 = usage error).
-      #   Path C (Colima with --vm-type=qemu)
-      #       → lima host agent crashes on macos-latest's image
-      #         ("host agent process has exited: exit status 2").
-      #
-      # HARNESS_DISABLED=true tells the Gradle harness lifecycle to no-op (see
-      # runHarnessCmd in build.gradle.kts), and isHarnessAvailable() returns
-      # false at runtime so every harness-backed test (TlsConformanceTests,
-      # ExceptionConformanceTests, etc.) skips cleanly via the existing guard.
-      # Apple K/N target unit tests, ktlint, and socket-quic-quiche:jvmTest still run
-      # — they don't depend on the harness. Cross-platform contracts are still
-      # validated on build-linux's JVM/K-Native/jsNode runs.
+      # The Docker-backed conformance harness has no working macOS fixture (HANDOFF.md Q1); the env var
+      # makes every harness-backed test self-skip cleanly. Apple K/N unit tests, the quiche loopback +
+      # H3 + WebTransport suites, ktlint, and the JVM quiche tests don't need it.
       - name: Disable harness on macOS (no working Docker fixture)
         run: echo "HARNESS_DISABLED=true" >> $GITHUB_ENV
 
-      - name: Run Apple tests
+      # Apple K/N tests across every module via the umbrella target tasks (each runs the subproject's
+      # macos/ios/tvos/watchos test). macOS arm64 + x64 run the full QUIC suites on quiche:
+      #   - :socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> POSIX server)
+      #   - :socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack, 28 tests — was the flaky macos-26
+      #     NW-loopback CI red, now green on quiche)
+      #   - :socket-webtransport AppleWebTransportTest (the WebTransport server stack)
+      # iosSimulatorArm64Test runs the quiche loopback for real (POSIX/NW datapath needs no Network.framework
+      # listener, so it works standalone); the H3/WebTransport suites self-skip on the standalone sim (no
+      # testcerts/ cwd). tvOS/watchOS have no quiche target → UnsupportedQuicEngine, so their QUIC suites
+      # skip cleanly. NOT continue-on-error: a real Apple test failure must stay red.
+      - name: Run Apple K/N tests (quiche)
         run: >-
-          ./gradlew :macosX64Test :macosArm64Test :iosSimulatorArm64Test
-          :tvosSimulatorArm64Test :watchosSimulatorArm64Test :ktlintCheck
-          :socket-quic-quiche:jvmProcessResources
-          :socket-quic-nw:ktlintCheck :socket-quic-default:ktlintCheck
-          :socket-http3:ktlintCheck
+          ./gradlew
+          :macosArm64Test :macosX64Test :iosSimulatorArm64Test
+          :tvosSimulatorArm64Test :watchosSimulatorArm64Test
+          :ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # socket-http3 Apple loopback tests run in their OWN step with QUIC_NW_DIAG=1 so the env-gated
-      # NW↔NW lifecycle trace (NWQuic26Bridge Swift + AppleQuicSwiftConnection Kotlin) is captured —
-      # this is the macos-26 CI-only blocker (PR #176: push test → ENOTCONN; uniStream → never
-      # arrives). --info surfaces the K/N test process stdout/stderr into the teed log (same pattern as
-      # the socket-quic-nw step below); the log uploads on every run so a PASSING trace can be diffed
-      # against a FAILING one (the defect is intermittent). NOT continue-on-error: a real test failure
-      # must stay red (it IS the tracked blocker) — `set -o pipefail` + tee writes the log first, and
-      # the upload below is if: always().
-      - name: Run socket-http3 Apple loopback tests (QUIC_NW_DIAG trace)
-        env:
-          QUIC_NW_DIAG: "1"
-        run: |
-          set -o pipefail
-          ./gradlew :socket-http3:macosArm64Test \
-            --no-configuration-cache --info \
-            -Pkotlin.native.debug.exceptions=true \
-            ${{ inputs.gradle-args }} 2>&1 | tee /tmp/apple-http3-diag.log
-
-      - name: Upload socket-http3 NW loopback trace
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: apple-http3-nw-diag
-          path: |
-            /tmp/apple-http3-diag.log
-            socket-http3/build/test-results/macosArm64Test/
-            socket-http3/build/reports/tests/macosArm64Test/
-          retention-days: 7
-          if-no-files-found: warn
-
-      # :socket-quic-quiche:jvmTest on macOS — re-enabled (issue #70). It was excluded
-      # because of the quiche-0.28 `quiche_conn_recv` panic (quiche/src/ffi.rs:2059
-      # "unsupported address type"); that was a dangling-sockaddr GC race fixed in
-      # 5e55a5f (commonJvmMain/commonMain, so it covers the macOS JNI path too).
-      # Verified locally on macos-arm64: 166/166 green on JNI and on FFM.
-      #
-      # This is the only place FFM-on-macOS runs, and the only place the IS_BSD
-      # sockaddr paths (sin_len byte 0, AF_INET6==30, sendInfoToAddr/decodePathKey
-      # during a real migration) execute — FFM is the deterministic JDK 21+ macOS
-      # backend, so these had never run in CI before.
-      #
-      # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test
-      # into a hard failure, so a broken native can't pass as green. The must-run
-      # case (streamSurvivesActiveMigrationToNewLocalPort) migrates to a fresh
-      # ephemeral source port on 127.0.0.1 — a distinct 4-tuple, fully validated by
-      # quiche — so it needs NO privileged loopback alias. The 127.0.0.2 variant
-      # (which would need `ifconfig lo0 alias`) stays a clean skip here.
+      # :socket-quic-quiche on the JVM — the only place FFM-on-macOS and the IS_BSD sockaddr decode run.
+      # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test into a hard failure so
+      # a broken native can't pass as green.
       - name: Run socket-quic-quiche JVM tests (JNI)
         timeout-minutes: 8
         env:
@@ -292,14 +136,8 @@ jobs:
           ./gradlew :socket-quic-quiche:jvmTest --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Same suite on the FFM backend. -PquicheJvmBackend=ffm prepends the java21
-      # (FFM) output so its loader shadows the base JNI one, then loads the
-      # self-contained shim via Panama. Exercises FfmQuicheApi's IS_BSD decode and
-      # the FFM migration flush path on BSD layout.
-      #
-      # `if: !cancelled()` so FFM runs even when the JNI step above crashed — the
-      # two backends are independent and a native abort in one must not blind us to
-      # the other (matches build-linux.yaml).
+      # Same suite on the FFM backend (-PquicheJvmBackend=ffm prepends the java21/Panama loader). `if:
+      # !cancelled()` so FFM runs even if the JNI step crashed — the two backends are independent.
       - name: Run socket-quic-quiche JVM tests (FFM backend)
         if: ${{ !cancelled() }}
         timeout-minutes: 8
@@ -309,534 +147,8 @@ jobs:
           ./gradlew :socket-quic-quiche:jvmTest -PquicheJvmBackend=ffm --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # QUIC harness on macOS — runs the JVM `QuicEchoTestServer` natively on
-      # the runner (no Docker; macos-latest's Colima/container-CLI fixtures
-      # all fail per HANDOFF.md Q1). The fat jar produced by
-      # `:socket-quic-quiche:quicEchoJar` includes the macOS quiche dylibs from the
-      # earlier build step, so it runs end-to-end with no extra runtime deps.
-      #
-      # The quiche-0.28 `quiche_conn_recv` panic that used to threaten this
-      # server is fixed (5e55a5f) and :socket-quic-quiche:jvmTest now runs green on
-      # macOS above, so this is no longer the hazard it was. The defensive
-      # `continue-on-error` + `timeout`/`kill` cleanup stay: the Apple QUIC
-      # tests still connect and silently skip on connection failure via
-      # QuicHarnessIntegrationTests.withHarness's catch, so a server-side
-      # hiccup never fails the whole job.
-      # QUIC peer TLS certs. Apple's Network.framework always evaluates the QUIC
-      # peer cert, but the Apple QuicHarnessIntegrationTests now PIN the harness
-      # CA directly via QuicOptions.trustedCaCertificatesPem (a verify_block on
-      # the QUIC sec_protocol_options — issue #81), so no System-keychain trust
-      # step is needed. We only generate the cert matrix here: the build embeds
-      # ca.crt into QuicHarnessConfig.caCertPem (codegen) for the test to pin,
-      # and the peer serves valid.crt (SAN DNS:localhost + IP 127.0.0.1); the
-      # Apple client connects via "localhost" so NW's hostname check passes.
-      # (The PR #54 verify_block SIGABRT was a wrong-accessor bug, not macOS
-      # hardening — see issue #81.) continue-on-error: a gen-certs hiccup must
-      # not fail the job — the QUIC tests skip via withHarness's catch instead.
-      - name: Generate harness certs for Apple QUIC peer
-        continue-on-error: true
-        run: |
-          set -x
-          bash test-harness/tls/gen-certs.sh
-
-      - name: Build quic-echo fat jar with macOS dylibs
-        continue-on-error: true
-        run: >-
-          ./gradlew :socket-quic-quiche:quicEchoJar
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Cross-impl interop artifacts for the no-Gradle `cross-impl-interop` job in review.yaml.
-      # Produces three self-contained pieces the downstream macOS job runs WITHOUT Gradle:
-      #   - the macosArm64 webtransport appleTest binary (NW K/N server+client, selected via
-      #     --ktest_filter; config flows through WT_INTEROP_* env vars),
-      #   - webtransport-interop.jar (quiche-JVM server+client + the macOS quiche dylibs baked under
-      #     META-INF/native/), and
-      #   - the testcerts (cert.crt/key + the generated cert.p12 the NW server presents).
-      # See socket-webtransport/scripts/ci-cross-impl-nogradle.sh.
-      - name: Build cross-impl interop artifacts (NW kexe + quiche jar + p12)
-        run: >-
-          ./gradlew
-          :socket-webtransport:linkDebugTestMacosArm64
-          :socket-webtransport:webtransportInteropJar
-          :socket-webtransport:generateWebTransportTestP12
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      - name: Upload cross-impl NW test binary
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: webtransport-macos-test-binary
-          path: socket-webtransport/build/bin/macosArm64/debugTest/test.kexe
-          retention-days: 1
-          if-no-files-found: warn
-
-      - name: Upload cross-impl quiche interop jar
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: webtransport-interop-jar
-          path: socket-webtransport/build/libs/webtransport-interop.jar
-          retention-days: 1
-          if-no-files-found: warn
-
-      - name: Upload cross-impl interop testcerts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: webtransport-interop-testcerts
-          path: |
-            socket-webtransport/testcerts/cert.crt
-            socket-webtransport/testcerts/cert.key
-            socket-webtransport/testcerts/cert.p12
-          retention-days: 1
-          if-no-files-found: warn
-
-      - name: Launch quic-echo on the macOS host
-        id: launch-quic-echo
-        continue-on-error: true
-        run: |
-          set -x
-          JAR=test-harness/quic-echo/quic-echo.jar
-          LOG=/tmp/quic-echo.log
-
-          if [ ! -f "$JAR" ]; then
-            echo "no quic-echo jar — skipping (likely missing macOS dylibs)"
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Serve the CA-signed harness cert (SAN DNS:localhost) so the Apple
-          # client validates against the harness CA it pins via
-          # QuicOptions.trustedCaCertificatesPem. Fall back to the bundled
-          # self-signed cert if gen-certs didn't run (the Apple QUIC tests then
-          # skip on the trust failure, as before).
-          CERT="$GITHUB_WORKSPACE/test-harness/tls/certs/valid.crt"
-          KEY="$GITHUB_WORKSPACE/test-harness/tls/certs/valid.key"
-          if [ ! -f "$CERT" ]; then CERT=testcerts/cert.crt; KEY=testcerts/cert.key; fi
-
-          # Mirror the Dockerfile's JVM flags — FFM access on, NIO
-          # reflective access opened for the buffer dependency's
-          # off-heap pinning. nohup + & detaches across step boundary;
-          # the cleanup step uses lsof on UDP 14433 to find and kill.
-          cd test-harness/quic-echo
-          nohup java \
-            --enable-native-access=ALL-UNNAMED \
-            --add-opens java.base/java.nio=ALL-UNNAMED \
-            -jar quic-echo.jar "$CERT" "$KEY" 14433 \
-            > "$LOG" 2>&1 &
-          ECHO_PID=$!
-          echo "$ECHO_PID" > /tmp/quic-echo.pid
-          disown $ECHO_PID
-          cd - > /dev/null
-
-          # Wait for the "READY port=14433" stdout line from
-          # QuicEchoTestServer.main, max 30s. If it doesn't appear, we
-          # surface the log and let the QUIC tests skip via their catch.
-          for i in $(seq 1 30); do
-            if grep -q "READY port=14433" "$LOG" 2>/dev/null; then
-              echo "quic-echo ready after ${i}s (pid=$ECHO_PID)"
-              echo "ready=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            # Also detect early exit — if PID is gone, server crashed.
-            if ! kill -0 "$ECHO_PID" 2>/dev/null; then
-              echo "quic-echo exited before ready — tail of log:"
-              tail -50 "$LOG" 2>/dev/null || echo "(no log)"
-              echo "ready=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            sleep 1
-          done
-
-          echo "quic-echo did NOT come up in 30s — tail of log:"
-          tail -50 "$LOG" 2>/dev/null || echo "(no log)"
-          echo "ready=false" >> "$GITHUB_OUTPUT"
-
-      # HARD compile gate — fail the job on a test-source compile break instead
-      # of letting the soft `continue-on-error` run step below swallow it. The
-      # run step is soft on purpose (a harness/peer-connection failure must skip,
-      # not fail — see its comment), but `continue-on-error` ALSO masks
-      # compilation errors: a missing override / type error compiles fine on
-      # JVM+Linux yet breaks Apple's test source set, the job stays green, and
-      # the only signal is the downstream "QUIC Interop Summary" reporting
-      # "no markers despite launch" — a confusing, misattributed failure (it
-      # reads as a harness-wireup problem, not a compile break). Compiling the
-      # Apple test binaries here, WITHOUT continue-on-error, turns that class of
-      # regression back into a direct, correctly-attributed build failure. This
-      # also primes the test step below (link tasks are then UP-TO-DATE).
-      - name: Compile socket-quic-nw Apple native tests (hard gate)
-        run: >-
-          ./gradlew
-          :socket-quic-nw:compileTestKotlinMacosArm64
-          :socket-quic-nw:compileTestKotlinIosSimulatorArm64
-          :socket-quic-nw:compileTestKotlinTvosSimulatorArm64
-          :socket-quic-nw:compileTestKotlinWatchosSimulatorArm64
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      - name: Run socket-quic-nw Apple native tests (Network.framework)
-        continue-on-error: true
-        env:
-          # Enable the NWQuic26Bridge timestamped state trace ([NWQ26 +Nms] ...) for THIS step too — it
-          # was only on for the socket-http3 step, so a crash here (e.g. the macos-26 datagram coexistence
-          # SIGSEGV) left no NW trace at the failure moment. The trace pinpoints which connection/state the
-          # bridge was in when it died.
-          QUIC_NW_DIAG: "1"
-        # Tee Gradle's stdout to /tmp/socket-quic-apple.log so the audit
-        # step below can grep `harness OK` / `harness SKIP` markers from
-        # QuicHarnessIntegrationTests.withHarness without relying on the
-        # K/N test framework writing them into JUnit XML's <system-out>
-        # block — which it doesn't, the way the JVM JUnit runner does.
-        # Same pattern the Linux ARM64 audit already uses.
-        #
-        # --stacktrace --info: K/N "Test running process exited unexpectedly"
-        # is a black box without these — the runtime SIGSEGV/SIGABRT leaves
-        # no stack in the default gradle output. --info plus -Pkotlin.native.
-        # debug.exceptions=true makes the K/N runtime surface the offending
-        # native stack instead of just dying.
-        #
-        # iOS-simulator QUIC harness (issue #81): KGP's default `simctl spawn
-        # --standalone` runs the test binary OUTSIDE launchd_sim's network
-        # services, where Network.framework QUIC can't connect (raw-socket TCP
-        # is unaffected, which masked this for a long time). Boot an available
-        # iPhone simulator and pass its UDID via -PiosSimulatorDevice — the
-        # socket-quic build then runs iosSimulatorArm64Test with standalone=false
-        # against that booted sim and exports QUIC_SIM_BOOTED=1, so the QUIC
-        # harness runs there (proven locally: 5/5 `harness OK`) instead of
-        # self-skipping. If no sim is available it falls back to a clean skip.
-        run: |
-          set -o pipefail
-          # NOTE on crash capture (macos-26 NW teardown UAF, now fixed structurally in 680fc6b): the
-          # bug was diagnosed via the LIVE lldb run below, NOT post-mortem cores. Post-mortem cores are a
-          # confirmed DEAD END on GitHub's hardened macOS runner — it won't write a core for a K/N
-          # test.kexe and ReportCrash never fired for the deep-NW-dispatch fault (proven across runs
-          # 28251317422 / 28301010459 / 28303056538). So the `ulimit -c unlimited` line and the separate
-          # ~30s "Collect macOS native crash reports" / .ips-poll step were removed as dead cost. The
-          # crash-gated lldb live-run is the only capture mechanism kept (free when green, fires only on
-          # a native-crash marker — dormant insurance should this Apple beta-OS bug recur on an SDK bump).
-          SIM_UDID=$(xcrun simctl list devices available --json \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); c=[x for rt,l in d['devices'].items() if 'iOS' in rt for x in l if 'iPhone' in x['name']]; print(c[-1]['udid'] if c else '')")
-          SIM_ARG=""
-          if [ -n "$SIM_UDID" ]; then
-            echo "Booting iOS simulator $SIM_UDID for the QUIC harness"
-            xcrun simctl boot "$SIM_UDID" || true
-            xcrun simctl bootstatus "$SIM_UDID" -b || true
-            SIM_ARG="-PiosSimulatorDevice=$SIM_UDID"
-          else
-            echo "No iPhone simulator available — QUIC harness will self-skip on the sim"
-          fi
-          # --no-daemon: this step sets QUIC_NW_DIAG=1 as a step-level env, and only a gradle JVM forked
-          # from THIS shell inherits it — a daemon reused from an earlier step (started without the var)
-          # would not propagate it to the K/N test process, silently losing the NW timeline trace the
-          # diagnostics depend on. So --no-daemon is load-bearing for QUIC_NW_DIAG, not (any longer) for
-          # core dumps; the cold build JVM is the price of a reliable diagnostic env.
-          #
-          # One retry. The macos-26 GitHub VM intermittently trips an Apple Network.framework drain-storm
-          # (transient ENETDOWN flapping on loopback as many connections tear down) that knocks a healthy
-          # connection down mid-test — most visible in the timing-sensitive idle/keepalive tests, and more
-          # so on the iOS simulator (its NW path goes through launchd_sim's daemons). It is a CI-VM
-          # artifact: it NEVER reproduces on bare metal / real devices on the same OS 26, so it is not a
-          # product defect. The in-code root fixes are already in place (withLiveQuicConnection retries an
-          # establishment-phase wedge); this covers only the residual mid-connection flap, which has no
-          # app-side fix. K/N test tasks can't retry a single test (Gradle's test-retry is JVM-only), so we
-          # re-run the whole task once — gradle skips whichever of the two already passed and only re-runs
-          # the failed one. A REAL regression fails BOTH attempts, so the suite stays hard-gated; only the
-          # momentary flap passes on the retry. macOS runner minutes are free on public repos.
-          GRADLE_RC=1
-          for attempt in 1 2; do
-            echo "::group::socket-quic-nw native tests (attempt $attempt/2)"
-            ./gradlew :socket-quic-nw:macosArm64Test :socket-quic-nw:iosSimulatorArm64Test \
-              --no-configuration-cache --no-daemon --stacktrace --info \
-              -Pkotlin.native.debug.exceptions=true \
-              $SIM_ARG \
-              ${{ inputs.gradle-args }} 2>&1 \
-              | tee /tmp/socket-quic-apple.log
-            GRADLE_RC=${PIPESTATUS[0]}
-            echo "::endgroup::"
-            [ "$GRADLE_RC" -eq 0 ] && break
-            echo "Apple NW native tests attempt $attempt failed (rc=$GRADLE_RC). A real failure fails both attempts; retrying once to absorb the known macos-26 VM drain-storm flake."
-          done
-
-          # False-green guard for the iOS-sim QUIC suites. A skipped suite is indistinguishable from a
-          # passing one (shouldSkipQuicHarnessOnSimulator() early-returns → the tests "pass"), and the
-          # booted-mode wiring was already silently lost once (dropped in the Phase 2b.2 extraction, so
-          # -PiosSimulatorDevice became a no-op and the whole sim suite skipped). So when we actually
-          # booted a sim and passed the property, REQUIRE proof the wiring applied: the
-          # :socket-quic-nw build emits "booted-mode wiring enabled" via logger.lifecycle (always in the
-          # tee'd gradle log) only when the property is honored and the iosSimulatorArm64Test task is
-          # configured standalone=false. Its absence = the wiring regressed again → real iOS coverage
-          # lost. (The Apple actual also prints "[QUIC-SIM-HARNESS] simulator booted-mode=..." from
-          # inside the test process for human debugging, but K/N test stdout capture is less certain
-          # than gradle's own log, so the gate keys off the gradle-side marker.)
-          if [ -n "$SIM_UDID" ]; then
-            if grep -q 'booted-mode wiring enabled' /tmp/socket-quic-apple.log; then
-              echo "iOS-sim QUIC harness: booted-mode wiring confirmed applied (suites run, not self-skipped)."
-            else
-              echo "::error::Booted iOS sim $SIM_UDID and passed -PiosSimulatorDevice, but the ':socket-quic-nw' booted-mode wiring marker never appeared — the QUIC suites self-skipped on the simulator (iosSimulatorDevice wiring regressed). This is a false green; failing the step."
-              exit 1
-            fi
-          fi
-          exit "${GRADLE_RC:-0}"
-
-      # lldb LIVE-RUN fallback for the macos-26 NW in-process-loopback teardown SIGSEGV. Post-mortem cores
-      # are a confirmed DEAD END on the hardened runner (ReportCrash can't unwind deep NW dispatch; /cores
-      # often empty), so the ONLY reliable way to capture a symbolicated frame is running the test.kexe LIVE
-      # under lldb and letting it stop at the fault. Diagnostic-only: the binary is the same macosArm64 debug
-      # test.kexe the gradle step built. Never fails the build — the front "Enforce Apple native test results
-      # (hard gate)" / a crashed gradle step reds the job; this only adds a backtrace to the log.
-      #
-      # IMPORTANT: the crash is a USE-AFTER-FREE (run 28301010459 captured frame #0: objc_retain →
-      # EXC_BAD_ACCESS on queue com.apple.network.connections, at "graceful drain END — releasing") and only
-      # fires AFTER a suite's cross-test drain storm has built up — `--ktest_filter` isolation does NOT
-      # reproduce it (proven: 5/5 isolated runs exited cleanly). So run the FULL suite under lldb (no filter),
-      # from the module dir so the cwd-relative testcerts/ resolve exactly as the gradle run.
-      #
-      # It is INTERMITTENT across modules: it has landed in socket-quic-nw (AppleQuicDatagramStreamCoexistence)
-      # AND in socket-http3 (AppleHttp3LoopbackTest) on different runs — each module is a separate test.kexe
-      # with its own drain storm. So probe BOTH gradle logs and lldb whichever module actually crashed.
-      - name: lldb live-run NW teardown SIGSEGV (diagnostic)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        env:
-          QUIC_NW_DIAG: "1"
-        run: |
-          set +e
-          # lldb the full suite of $1 (module dir) under $2 (gradle log) iff that log shows a native crash.
-          # CRITICAL lldb --batch semantics: the post-run `-o` commands run ONLY if the inferior exits cleanly.
-          # When it CRASHES, lldb runs the `-k` (one-line-on-crash) commands instead — so the backtrace MUST be
-          # on `-k`, not `-o`, or we capture only the auto-displayed faulting frame #0 (what run 28301010459
-          # did). `-k` fires on the EXC_BAD_ACCESS, dumping every thread's stack + the image list so the NW
-          # frames symbolicate.
-          lldb_capture() {
-            local module="$1" gradle_log="$2"
-            local kexe="$module/build/bin/macosArm64/debugTest/test.kexe"
-            if [ ! -x "$kexe" ]; then
-              echo "[$module] no test.kexe at $kexe — skipping."
-              return 0
-            fi
-            if [ ! -f "$gradle_log" ] || \
-               ! grep -qiE 'exit(ed)? (value )?13[0-9]|exited unexpectedly|SIGSEGV|SIGABRT' "$gradle_log"; then
-              echo "[$module] no native-crash marker in $gradle_log — suite did not SIGSEGV; skipping."
-              return 0
-            fi
-            echo "[$module] native crash detected in $gradle_log — re-running the FULL suite LIVE under lldb."
-            # Retry: the crash is timing-dependent and lldb perturbs timing, so a run may pass; stop the
-            # moment lldb captures a fault. Each full-suite pass is a few minutes — cap at 3.
-            for i in 1 2 3; do
-              echo "::group::[$module] lldb full-suite live-run attempt $i"
-              OUT=$( cd "$module" && lldb --batch \
-                -o run \
-                -k "thread backtrace all" \
-                -k "image list -b -o" \
-                -k "register read" \
-                -k "quit" \
-                -- "build/bin/macosArm64/debugTest/test.kexe" 2>&1 )
-              echo "$OUT"
-              echo "::endgroup::"
-              # lldb prints "stop reason = EXC_BAD_ACCESS" / "signal SIG..." when the process faulted under it.
-              if echo "$OUT" | grep -qiE 'stop reason = (EXC_|signal SIG)|SIGSEGV|SIGABRT|EXC_BAD_ACCESS'; then
-                echo "[$module] lldb captured a crash on attempt $i — backtrace above. Stopping."
-                return 0
-              fi
-              echo "[$module] attempt $i: the suite did not crash under lldb."
-            done
-          }
-          lldb_capture socket-quic-nw /tmp/socket-quic-apple.log
-          lldb_capture socket-http3 /tmp/apple-http3-diag.log
-
-      - name: Stop quic-echo + capture log
-        if: always() && steps.launch-quic-echo.outputs.ready == 'true'
-        run: |
-          # The launched java process is detached; kill anything still
-          # holding 14433/udp. `lsof` is the cleanest cross-platform probe
-          # on macOS runners.
-          if command -v lsof >/dev/null; then
-            for pid in $(lsof -ti udp:14433 2>/dev/null); do
-              echo "killing pid=$pid (udp:14433)"
-              kill "$pid" 2>/dev/null || true
-            done
-          fi
-          pkill -f 'quic-echo.jar' 2>/dev/null || true
-          echo "--- quic-echo log tail ---"
-          tail -100 /tmp/quic-echo.log 2>/dev/null || echo "(no log)"
-
-      # Audit step: count how many QuicHarnessIntegrationTests actually
-      # exercised the harness vs silently skipped. Each test prints
-      # `harness OK` on success or `harness SKIP: <reason>` on connection
-      # failure via QuicHarnessIntegrationTests.withHarness. Source the
-      # counts from /tmp/socket-quic-apple.log (gradle stdout teed by
-      # the test step above) — the K/N test framework on Apple doesn't
-      # route println into the JUnit XML's <system-out> block the way
-      # the JVM runner does, so the previous version of this step (which
-      # grep'd socket-quic-quiche/build/test-results/*.xml) reported 0/0 every
-      # time. Surfaces in the CI log AND in the per-job step summary
-      # AND as a `quic-audit-apple` artifact for the cross-platform
-      # interop-matrix job to consume.
-      - name: Audit QUIC harness coverage on macOS
-        if: always() && steps.launch-quic-echo.outputs.ready == 'true'
-        continue-on-error: true
-        run: |
-          LOG=/tmp/socket-quic-apple.log
-          OK=0
-          SKIP=0
-          INTENTIONAL_SKIP=0
-          SKIP_REASONS=""
-          if [ -f "$LOG" ]; then
-            OK=$(grep -c 'harness OK' "$LOG" || true)
-            SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
-            # Distinct skip reasons (dedup + count). The intentional Apple
-            # simulator gate shows up here too, which is fine — it's the
-            # self-documenting line that explains a known ℹ️ gap.
-            SKIP_REASONS=$(grep -hoE 'harness SKIP: .+' "$LOG" 2>/dev/null \
-              | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
-            # macOS K/N runs the harness for real now (CA-pinning verify_block —
-            # issue #81), so we expect OK>0 there. The iOS/tvOS/watchOS *simulator*
-            # has no usable QUIC/UDP path on the CI host (public-endpoint interop
-            # times out there too), so those tests skip intentionally with an
-            # "Apple simulator" marker. Count those as intentional so the matrix
-            # renders the simulator as a known gap (ℹ️), not a regression (❌). Any
-            # other SKIP means a real macOS connection failure (peer down).
-            INTENTIONAL_SKIP=$(grep -c 'harness SKIP: Apple simulator' "$LOG" || true)
-          fi
-          echo "QuicHarnessIntegrationTests on macOS: OK=$OK, SKIP=$SKIP, INTENTIONAL=$INTENTIONAL_SKIP"
-
-          mkdir -p /tmp/quic-audit
-          # launched=true → audit step only runs when launch-quic-echo
-          # reported ready, so the harness is known-up.
-          # intentional_skip=N → tests that skipped via the platform gate,
-          # not via a connection failure. Summary uses this to distinguish
-          # "platform doesn't support QUIC harness yet" (ℹ️) from "QUIC
-          # client silently regressed" (❌).
-          #
-          # applicable=false → the quiche QuicHarnessIntegrationTests does not run on
-          # this lane at all. It lives in socket-quic-quiche, which has NO Apple Kotlin
-          # target in v6 (Apple QUIC is the Network.framework backend in socket-quic-nw),
-          # so it can never emit a marker here — `OK=0,SKIP=0` is structural, not a crash.
-          # Apple's QUIC client IS validated, just not by this audit: the socket-quic-nw
-          # native suite (the hard gate above) + the cross-impl NW<->quiche interop lane.
-          # We mark the harness lane not-applicable ONLY when zero markers appeared, so a
-          # future real marker still audits normally; the summary then renders ℹ️ instead
-          # of a false ❌ "no markers despite launch".
-          APPLICABLE=true
-          if [ "$OK" = "0" ] && [ "$SKIP" = "0" ]; then
-            APPLICABLE=false
-          fi
-          cat > /tmp/quic-audit/apple.txt <<EOF
-          platform=apple
-          launched=true
-          applicable=$APPLICABLE
-          ok=$OK
-          skip=$SKIP
-          intentional_skip=$INTENTIONAL_SKIP
-          EOF
-          if [ "$APPLICABLE" = "false" ]; then
-            echo 'reason=1 quiche QuicHarnessIntegrationTests has no Apple target in v6 (NW backend); Apple QUIC validated by the socket-quic-nw native suite + cross-impl NW<->quiche interop' \
-              >> /tmp/quic-audit/apple.txt
-          fi
-          if [ -n "$SKIP_REASONS" ]; then
-            while IFS= read -r line; do printf 'reason=%s\n' "$line"; done <<< "$SKIP_REASONS" \
-              >> /tmp/quic-audit/apple.txt
-          fi
-
-          {
-            echo "## QUIC harness — Apple (macOS host)"
-            echo ""
-            echo "| OK | SKIP |"
-            echo "|---|---|"
-            echo "| $OK | $SKIP |"
-            if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
-              echo ""
-              echo "⚠️ Every QuicHarnessIntegrationTest skipped — Apple QUIC client not actually validated."
-            fi
-            if [ -n "$SKIP_REASONS" ]; then
-              echo ""
-              echo "<details><summary>Skip reasons (macOS)</summary>"
-              echo ""
-              echo '```'
-              echo "$SKIP_REASONS"
-              echo '```'
-              echo "</details>"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
-            echo "::warning::Every QuicHarnessIntegrationTest skipped on macOS — Apple QUIC client not actually validated"
-          fi
-
-      # HARD gate (no continue-on-error) — closes the false-green the soft
-      # "Run socket-quic-nw Apple native tests" step opens. That step keeps
-      # continue-on-error on purpose (a harness/peer-connection failure must
-      # skip, not fail) but continue-on-error ALSO swallows REAL test failures:
-      # a regression in any of the 59 NW tests reads green, with no signal.
-      # withHarness turns a peer-connection failure into a clean *skip* (a pass
-      # in JUnit XML), so any <failure>/<error> in these result sets is a genuine
-      # regression — fail on it. Part B additionally fails when the macOS QUIC
-      # harness ran 0 tests for real while the peer was confirmed up (launched
-      # =true) yet a test skipped for a non-intentional reason — a
-      # should-have-run-but-didn't (the audit step only ::warning::s that today).
-      - name: Enforce Apple native test results (hard gate)
-        if: always()
-        run: |
-          set -uo pipefail
-          FAIL=0
-
-          # Part A: real JUnit failures/errors in the soft-run Apple test sets.
-          RESULT_DIRS=(
-            socket-quic-nw/build/test-results/macosArm64Test
-            socket-quic-nw/build/test-results/iosSimulatorArm64Test
-          )
-          TOTAL_FAIL=0
-          for dir in "${RESULT_DIRS[@]}"; do
-            [ -d "$dir" ] || continue
-            for xml in "$dir"/*.xml; do
-              [ -f "$xml" ] || continue
-              n=$(grep -oE '(failures|errors)="[0-9]+"' "$xml" \
-                | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
-              if [ "${n:-0}" -gt 0 ]; then
-                TOTAL_FAIL=$((TOTAL_FAIL + n))
-                echo "::error::Apple test failure(s) in $(basename "$xml"): $n"
-                grep -oE 'testcase name="[^"]+"[^>]*' "$xml" | head -50 || true
-              fi
-            done
-          done
-          if [ "$TOTAL_FAIL" -gt 0 ]; then
-            echo "Apple native tests reported $TOTAL_FAIL failure(s)/error(s) — continue-on-error must not mask these."
-            FAIL=1
-          fi
-
-          # Part B: macOS harness silently skipped everything despite the peer up.
-          AUDIT=/tmp/quic-audit/apple.txt
-          if [ -f "$AUDIT" ]; then
-            launched=$(sed -n 's/^launched=//p' "$AUDIT")
-            ok=$(sed -n 's/^ok=//p' "$AUDIT")
-            skip=$(sed -n 's/^skip=//p' "$AUDIT")
-            intentional=$(sed -n 's/^intentional_skip=//p' "$AUDIT")
-            : "${launched:=false}"; : "${ok:=0}"; : "${skip:=0}"; : "${intentional:=0}"
-            non_intentional=$((skip - intentional))
-            if [ "$launched" = "true" ] && [ "$ok" -eq 0 ] && [ "$non_intentional" -gt 0 ]; then
-              echo "::error::macOS QUIC harness ran 0 tests for real (ok=0) but $non_intentional skipped for a non-intentional reason while the peer was up — a should-have-run regression."
-              FAIL=1
-            fi
-          fi
-
-          if [ "$FAIL" -ne 0 ]; then
-            echo "Apple hard gate: FAIL"
-            exit 1
-          fi
-          echo "Apple hard gate: OK (no masked failures)"
-
-      - name: Upload Apple QUIC audit artifact
-        if: always() && steps.launch-quic-echo.outputs.ready == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: quic-audit-apple
-          path: /tmp/quic-audit/apple.txt
-          retention-days: 1
-          if-no-files-found: warn
-
-      # Test reports on failure — see build-linux.yaml for the why. Includes the JVM
-      # hs_err/replay crash logs: a native abort (quiche/JNI/FFM SIGABRT/SIGSEGV) shows
-      # only as "exit value 134" with no failing JUnit case, so without the dump the
-      # crash is undiagnosable — same instrumentation as build-linux.yaml.
+      # Test reports on failure — includes the JVM hs_err/replay crash logs: a native abort (quiche/JNI/
+      # FFM SIGABRT/SIGSEGV) shows only as "exit value 134" with no failing JUnit case otherwise.
       - name: Upload test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -848,8 +160,6 @@ jobs:
             build/reports/ktlint/
             socket-quic-quiche/build/reports/tests/
             socket-quic-quiche/build/test-results/
-            socket-quic-nw/build/reports/tests/
-            socket-quic-nw/build/test-results/
             socket-http3/build/reports/tests/
             socket-http3/build/test-results/
             socket-webtransport/build/reports/tests/
@@ -859,6 +169,8 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # macOS dylibs consumed by validate-artifacts.yaml (it injects them into the published klibs to
+      # smoke-test resolution); the artifact name + macos-* path are load-bearing for that job.
       - name: Upload macOS quiche native libs
         if: always()
         uses: actions/upload-artifact@v7
