@@ -1546,6 +1546,49 @@ kotlin {
         }
     }
 
+    // Phase-0 quiche-on-Apple spike (macOS host only). NW stays the shipping Apple QUIC default; this
+    // target proves quiche's self-contained macOS libquiche.a links into a K/N binary alongside its
+    // vendored BoringSSL. Additive — nothing depends on quiche's apple target yet (the default engine's
+    // appleMain still resolves to :socket-quic-nw). See NW_QUIC / quiche-on-apple-pivot.
+    if (isMacOS) {
+        macosArm64 {
+            compilations["main"].cinterops {
+                create("Quiche") {
+                    defFile("src/nativeInterop/cinterop/Quiche.def")
+                    includeDirs("libs/quiche/include")
+                }
+                // SHA-256 for the W3C serverCertificateHashes leaf-cert pin. Binds BoringSSL's SHA256
+                // already vendored into (and force-loaded from) libquiche.a — collision-free on Apple
+                // since quiche's BoringSSL is the only crypto lib present. Inline C prototype, no header
+                // (the Apple cinterop path resolved no system include). See BoringSslSha256.def.
+                create("BoringSslSha256") {
+                    defFile("src/nativeInterop/cinterop/BoringSslSha256.def")
+                }
+            }
+            val quicheLibDirMac = projectDir.resolve("libs/quiche/macos-arm64/lib")
+            val quicheStaticMac = quicheLibDirMac.resolve("libquiche.a")
+            if (quicheStaticMac.exists()) {
+                binaries.all {
+                    // libquiche.a is self-contained (vendored BoringSSL — see the .bssl-vendored marker
+                    // next to it), so no external crypto archives. Apple ld64 differs from GNU ld: use
+                    // -force_load (not --whole-archive) to pull every quiche object — a stronger link
+                    // test than lazy -lquiche resolution — and link the libraries Rust std + BoringSSL
+                    // reference on Darwin: Security/CoreFoundation frameworks plus libc++ for BoringSSL's
+                    // C++ TUs. Once Phase-0 proves out, this can narrow to plain -L/-lquiche dead-strip.
+                    linkerOpts(
+                        "-force_load",
+                        quicheStaticMac.absolutePath,
+                        "-framework",
+                        "Security",
+                        "-framework",
+                        "CoreFoundation",
+                        "-lc++",
+                    )
+                }
+            }
+        }
+    }
+
     applyDefaultHierarchyTemplate()
     sourceSets {
         commonMain.dependencies {
