@@ -48,7 +48,19 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
         publishLibraryVariants("release")
     }
-    jvm()
+    jvm {
+        // Java 8 bytecode (v52) to match the base :socket / :socket-quic-quiche modules. The WebTransport
+        // layer is pure-Kotlin commonMain + http3Main (the latter also compiles to native), so there is
+        // no java.* API; targeting 21 (the toolchain default) needlessly threw UnsupportedClassVersionError
+        // for JDK<21 consumers. The android variant keeps JVM_17 above (dexed, unaffected).
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        // -Xjdk-release=8 gates the API surface to Java 8 (the toolchain is 21), turning a future post-8
+        // java.* call into a compile error rather than a runtime NoSuchMethodError on JDK 8/11. Scoped to
+        // the SHIPPED main compilation; jvmTest runs on JDK 21 and is not published. See :socket-http3.
+        compilations.named("main").configure {
+            compileTaskProvider.configure { compilerOptions.freeCompilerArgs.add("-Xjdk-release=8") }
+        }
+    }
     js {
         browser {
             // The non-gated surface smoke (src/browserSmoke) is node-only — exclude it from the browser
