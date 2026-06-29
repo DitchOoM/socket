@@ -97,6 +97,20 @@ jobs:
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-linux-
 
+      # Persist the local Gradle build cache (~/.gradle/caches/build-cache-1) across runs so
+      # compiled Kotlin/Native klibs, cinterop klibs, and KSP/codegen outputs are reused instead
+      # of rebuilt cold every run. setup-java's `cache: gradle` only restores the dependency
+      # caches (modules-2), NOT build-cache-1, so without this every PR recompiles all klibs even
+      # though org.gradle.caching=true. Keyed on the build definition (version catalog, build
+      # scripts, wrapper); restore-keys fall back to the most recent partial match. (mirrors buffer #232)
+      - name: Cache Gradle build outputs
+        uses: actions/cache@v5
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
       - name: Cache BoringSSL x64
         uses: actions/cache@v5
         with:

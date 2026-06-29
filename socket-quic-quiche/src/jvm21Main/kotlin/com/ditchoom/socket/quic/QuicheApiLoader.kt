@@ -37,7 +37,7 @@ fun loadQuicheApi(): QuicheApi {
         }
         stream.close()
         try {
-            return FfmQuicheApi.create(extractToTemp(resourcePath))
+            return maybeGuardRecvInfo(FfmQuicheApi.create(extractToTemp(resourcePath)))
         } catch (t: Throwable) {
             failures += "$resourcePath (${t.message})"
         }
