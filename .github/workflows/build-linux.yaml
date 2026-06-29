@@ -588,124 +588,6 @@ jobs:
             --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
             --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Coverage-guided fuzzing of quiche_header_info (the parse on every
-      # received datagram, before any connection state). Time-boxed so it's a
-      # gating signal, not an open-ended job: libFuzzer's signal handlers turn a
-      # native SIGSEGV/SIGABRT into a `crash-*` repro under build/fuzz, which the
-      # upload step below captures. A find fails the job. The committed seed
-      # corpus (socket-quic-quiche/fuzz/corpus) starts it warm. `if: !cancelled()` for
-      # the same independence reason as the malloc-check step.
-      - name: Fuzz quiche_header_info (Jazzer, time-boxed)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 6
-        run: >-
-          ./gradlew :socket-quic-quiche:quicHeaderFuzz -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Coverage-guided Jazzer fuzzing of the HAND-ROLLED HTTP/3 + QPACK codec —
-      # the module's real RFC-9114/9204 risk surface (quiche/NW own the transport;
-      # this is OUR parser/encoder). http3CodecFuzz hunts untyped decoder crashes;
-      # http3RoundTripFuzz hunts encode→decode bijection breaks. Pure-JVM Jazzer
-      # (no native toolchain), time-boxed and gating exactly like the quiche header
-      # lane above: a crash-*/oom-*/timeout-* repro fails the job and is uploaded
-      # below; committed seed corpora (socket-http3/fuzz/corpus/*) start them warm.
-      # Validated green locally (303k / 405k runs, 0 crashes). `if: !cancelled()`
-      # for the same independence reason as the quiche fuzz lanes.
-      - name: Fuzz HTTP/3 + QPACK codec (Jazzer, time-boxed)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 9
-        run: >-
-          ./gradlew :socket-http3:http3CodecFuzz :socket-http3:http3RoundTripFuzz
-          -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Native ASAN + coverage-guided lane: cargo-fuzz builds quiche with
-      # SanitizerCoverage + AddressSanitizer, so libFuzzer gets REAL edge
-      # coverage of the parser (the JVM lane above plateaus — it can't
-      # instrument native quiche) and ASAN catches the heap-overflow / UAF
-      # class. nightly + cargo-fuzz are installed here only (opt-in locally).
-      # Time-boxed and gating like the Jazzer lane; an ASAN fault / crash fails
-      # the job and its repro is uploaded below. `if: !cancelled()` for the
-      # same independence reason.
-      - name: Install nightly Rust + cargo-fuzz
-        if: ${{ !cancelled() }}
-        run: |
-          rustup toolchain install nightly --profile minimal
-          cargo install cargo-fuzz --locked
-      - name: Fuzz quiche::Header::from_slice (cargo-fuzz ASAN, time-boxed)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 8
-        run: >-
-          ./gradlew :socket-quic-quiche:quicHeaderFuzzNative -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Deeper target: the full server packet-recv state machine (accept + Connection::recv),
-      # not just the public-header parse — ~5x the edge coverage locally (cov 835 vs 162). Same
-      # ASAN/gating model. This lane runs Rust-ASAN only; the BoringSSL-C ASAN path is proven in
-      # the separate, non-gating step below before it's promoted onto this gating lane.
-      - name: Fuzz quiche server recv path (cargo-fuzz ASAN, time-boxed)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 8
-        run: >-
-          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Prove the BoringSSL-C ASAN path (-PquicFuzzBoringSslAsan) actually instruments BoringSSL, not
-      # just quiche's Rust. clang is required: its LLVM ASAN runtime must match cargo-fuzz's; gcc's
-      # libasan can't coexist with it in one binary. The author added the wiring without a clang host
-      # to verify it, so this step IS the verification.
-      #
-      # continue-on-error during bring-up (same convention as the build-windows job): the clang/Rust
-      # ASAN-runtime match is unproven, so a red here must not block PRs. Drop continue-on-error once
-      # green >=2 runs, then move -PquicFuzzBoringSslAsan onto the conn_recv lane above.
-      - name: Install clang (for BoringSSL ASAN)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: sudo apt-get update && sudo apt-get install -y clang
-      - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served from a
-          # prior uninstrumented cache) — otherwise the proof below could read a stale archive.
-          rm -rf socket-quic-quiche/fuzz/native/target
-          # Build + run conn_recv with BoringSSL ASAN on. A clang/Rust ASAN-runtime mismatch would fail
-          # at link or first execution here, so a clean run already proves the instrumented binary works.
-          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
-            --no-configuration-cache ${{ inputs.gradle-args }}
-          # Now prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
-          # interceptors. An uninstrumented BoringSSL has zero __asan_ symbols, so no match => the CFLAGS
-          # never reached the C build (ASAN would cover only quiche's Rust) and we fail loudly.
-          bssl=$(find socket-quic-quiche/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
-          if [ -z "$bssl" ]; then echo "::error::no BoringSSL archive found under the fuzz target dir"; exit 1; fi
-          echo "Inspecting $bssl"
-          if nm "$bssl" 2>/dev/null | grep -q '__asan_'; then
-            echo "PROVEN: BoringSSL is ASAN-instrumented (__asan_ symbols present in $bssl)"
-          else
-            echo "::error::BoringSSL archive has NO __asan_ symbols — CFLAGS did not propagate to the C build; ASAN covers quiche's Rust only"
-            exit 1
-          fi
-
-      - name: Upload fuzzing crash repros
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: quic-header-fuzz-crashes
-          path: |
-            socket-quic-quiche/build/fuzz/header-info/crash-*
-            socket-quic-quiche/build/fuzz/header-info/oom-*
-            socket-quic-quiche/build/fuzz/header-info/timeout-*
-            socket-quic-quiche/fuzz/native/artifacts/**
-            socket-http3/build/fuzz/http3-codec/crash-*
-            socket-http3/build/fuzz/http3-codec/oom-*
-            socket-http3/build/fuzz/http3-codec/timeout-*
-            socket-http3/build/fuzz/http3-roundtrip/crash-*
-            socket-http3/build/fuzz/http3-roundtrip/oom-*
-            socket-http3/build/fuzz/http3-roundtrip/timeout-*
-          if-no-files-found: ignore
-
       # Audit step: mirror the macOS + Linux ARM64 audits — count
       # `harness OK` / `harness SKIP` markers in the JUnit XML's
       # <system-out> blocks and surface in step summary + artifact.
@@ -860,14 +742,19 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
 
-      - name: Run socket-quic-quiche native tests (quiche cinterop)
+      # Link (don't run) the native test binaries the Integration Tests jobs consume.
+      # The socket-quic-quiche linuxX64Test RUN moved OUT of this job into
+      # integration-linux-x64, which runs the prebuilt .kexe against the Docker harness
+      # — mirroring how the integration-linux-arm64 job already consumes the arm64
+      # binary linked here. The root / socket-http3 / socket-webtransport linuxX64Test
+      # still RUN in "Run checks and tests" above; only socket-quic-quiche's native run
+      # relocated (it's the allocation-heavy quiche cinterop suite, grouped with the
+      # fuzz/ASAN lanes in the integration job).
+      - name: Link native test binaries (x64 + arm64) for integration jobs
         run: >-
-          ./gradlew :socket-quic-quiche:linuxX64Test
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      - name: Build ARM64 test binaries
-        run: >-
-          ./gradlew linkDebugTestLinuxArm64
+          ./gradlew
+          :socket-quic-quiche:linkDebugTestLinuxX64
+          linkDebugTestLinuxArm64
           :socket-quic-quiche:linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
@@ -970,6 +857,17 @@ jobs:
             socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe
           retention-days: 1
 
+      # Hand the x64 socket-quic-quiche test .kexe to integration-linux-x64, which runs
+      # it against the Docker harness (the native cinterop run that used to live in this
+      # job). Only this one module's binary moves — root/http3/webtransport linuxX64Test
+      # still run inline above — so a single-file path, not the multi-binary arm64 glob.
+      - name: Upload x64 test binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x64-test-binary
+          path: socket-quic-quiche/build/bin/linuxX64/debugTest/test.kexe
+          retention-days: 1
+
       # Upload the multi-arch quic-echo Docker context (jar + Dockerfile +
       # testcerts) so the Linux ARM64 (native) job can pull it down and
       # `docker compose up quic-echo` instead of skipping. The jar built
@@ -997,8 +895,290 @@ jobs:
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
 
-  test-arm64:
-    name: "Linux ARM64 (native)"
+  # Heavy x64 lanes split out of `build` so the core compile + JVM/JS/Android test
+  # signal goes green/red fast and isn't gated behind ~30 min of fuzzing. Two
+  # responsibilities, both relocated from the old monolithic `build` job:
+  #   1. The socket-quic-quiche linuxX64Test NATIVE (quiche cinterop) suite — run from
+  #      the prebuilt .kexe (linked in `build`, uploaded as linux-x64-test-binary)
+  #      against the Docker harness, exactly like integration-linux-arm64 already does.
+  #   2. The Jazzer + cargo-fuzz(ASAN) lanes — these SELF-BUILD here (the Jazzer
+  #      quicHeaderFuzz needs prepareQuicheNativeLib; the cargo-fuzz lanes compile an
+  #      ASAN-instrumented quiche). The build outputs are reused from `build`'s warm
+  #      caches (same keys: gradle build-cache, BoringSSL, quiche, cargo target/), so
+  #      after the first cache-populating run this is near-instant, not a cold rebuild.
+  integration-linux-x64:
+    name: "Integration Tests (Linux x64)"
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # quicCrashDiag mirrors any JVM fatal-error log (hs_err) to stderr and arms the
+    # recv_info UAF lifecycle guard on the JVM Jazzer lane (quicHeaderFuzz drives quiche
+    # over JNI) — same as the `build` job. No effect on the K/N native .kexe run.
+    env:
+      ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+
+      # Same cache keys as `build` — `build` (needs:) finishes and saves these before
+      # this job starts, so we restore them warm: the Jazzer lane's prepareQuicheNativeLib
+      # and the cargo-fuzz quiche compile reuse the already-built klibs / BoringSSL /
+      # quiche / cargo target/ trees instead of rebuilding from scratch.
+      - name: Cache Gradle build outputs
+        uses: actions/cache@v5
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      - name: Cache BoringSSL x64
+        uses: actions/cache@v5
+        with:
+          path: libs/boringssl/linux-x64
+          key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      # The JVM Jazzer lane (quicHeaderFuzz) pulls the host JNI-shim build, whose Gradle
+      # graph also reaches the root :buildBoringsslArm64 + the arm64 quiche/shim tasks
+      # (the multi-arch native staging wiring). Restore the SAME arm64 caches `build` saved
+      # so those tasks are UP-TO-DATE and skip — exactly as the x64 cache already makes the
+      # x64 chain skip. Without these the arm64 BoringSSL cmake runs and dies for lack of an
+      # aarch64 cross-compiler (the original failure on this job).
+      - name: Cache BoringSSL ARM64
+        uses: actions/cache@v5
+        with:
+          path: libs/boringssl/linux-arm64
+          key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache quiche Linux x64
+        uses: actions/cache@v5
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-x64
+          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
+      - name: Cache quiche Linux ARM64
+        uses: actions/cache@v5
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-arm64
+          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
+      - name: Cache quiche cargo target/ (all triples)
+        uses: actions/cache@v5
+        with:
+          path: socket-quic-quiche/build/quiche
+          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-cargo-target-v1-
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # Host build deps + the aarch64 cross-compiler: insurance for an arm64 cache MISS
+      # (eviction / key change), so the root :buildBoringsslArm64 + arm64 quiche tasks can
+      # actually build rather than die at cmake configure. On the normal warm-cache path
+      # those tasks are up-to-date and this cross-compiler goes unused.
+      - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl pkg-config cmake nasm
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # arm64 Rust target so a cache-miss arm64 quiche build (above) can cross-compile.
+      - name: Add Rust aarch64 target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      # ---- Part 1: native cinterop (quiche) suite from the prebuilt .kexe -------------
+      # Mirrors integration-linux-arm64: download the binary, bring the Docker harness up
+      # at the YAML level (Gradle's harnessUp never fires for a raw .kexe), run, audit.
+      - name: Download x64 test binary
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-x64-test-binary
+
+      - name: Download quic-echo Docker context
+        uses: actions/download-artifact@v8
+        with:
+          name: quic-echo-docker-context
+          path: test-harness/quic-echo/
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      # BoringSSL inside the .kexe reads /etc/ssl/certs at runtime; trust the harness CA.
+      - name: Trust harness CA (Linux)
+        run: |
+          sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
+          sudo update-ca-certificates
+
+      - name: Bring up test harness (with quic-echo)
+        run: bash test-harness/compose-up-retry.sh echo http tls toxiproxy netem-blackhole rst quic-echo
+
+      - name: Run socket-quic-quiche native tests (quiche cinterop)
+        run: |
+          # download-artifact flattens a single-file artifact to its basename at the
+          # download root, so locate the binary rather than hardcoding the module path.
+          BIN=$(find . -name test.kexe -type f | head -1)
+          if [ -z "$BIN" ]; then echo "::error::no x64 test.kexe downloaded (linkDebugTestLinuxX64 upload)"; exit 1; fi
+          echo "Running $BIN"
+          chmod +x "$BIN"
+          # cwd = repo root (harness reached over the network; CA trusted via /etc/ssl/certs).
+          # tee stdout so the audit step below can grep harness OK/SKIP markers without re-running.
+          "$BIN" 2>&1 | tee /tmp/socket-quic-x64.log
+
+      # Audit step: mirror integration-linux-arm64 / the JVM audit — count
+      # QuicHarnessIntegrationTests OK vs SKIP from the captured stdout, surfacing a
+      # regression that silently skips the whole suite (suite stays green) as a warning.
+      - name: Audit QUIC harness coverage on Linux x64 (native)
+        if: always()
+        continue-on-error: true
+        run: |
+          LOG=/tmp/socket-quic-x64.log
+          OK=0; SKIP=0; SKIP_REASONS=""
+          if [ -f "$LOG" ]; then
+            OK=$(grep -c 'harness OK' "$LOG" || true)
+            SKIP=$(grep -c 'harness SKIP' "$LOG" || true)
+            SKIP_REASONS=$(grep -hoE 'harness SKIP: .+' "$LOG" 2>/dev/null \
+              | sed -E 's/^harness SKIP: //' | sort | uniq -c | sed -E 's/^ *//' | sort -rn)
+          fi
+          echo "QuicHarnessIntegrationTests on linuxX64 (native): OK=$OK, SKIP=$SKIP"
+          [ -n "$SKIP_REASONS" ] && echo "Skip reasons:" && echo "$SKIP_REASONS"
+          {
+            echo "## QUIC harness — Linux x64 (native)"
+            echo ""
+            echo "| OK | SKIP |"
+            echo "|---|---|"
+            echo "| $OK | $SKIP |"
+            if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
+              echo ""
+              echo "⚠️ Every QuicHarnessIntegrationTest skipped — Linux x64 native client not actually validated."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
+            echo "::warning::Every QuicHarnessIntegrationTest skipped on linuxX64 (native)"
+          fi
+
+      - name: Bring down test harness
+        if: always()
+        run: cd test-harness && docker compose down -v
+
+      # ---- Part 2: coverage-guided fuzzing (Jazzer + cargo-fuzz ASAN) -----------------
+      # Each lane is `if: ${{ !cancelled() }}` so an earlier lane's crash doesn't blind us
+      # to the others, and time-boxed so a hang is a gating signal, not an open-ended job.
+
+      # Coverage-guided fuzzing of quiche_header_info (the parse on every received
+      # datagram, before any connection state). A find produces a `crash-*` repro under
+      # build/fuzz, captured by the upload step below. Self-builds via prepareQuicheNativeLib
+      # (warm from `build`'s caches). Committed seed corpus starts it warm.
+      - name: Fuzz quiche_header_info (Jazzer, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic-quiche:quicHeaderFuzz -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Coverage-guided Jazzer fuzzing of the HAND-ROLLED HTTP/3 + QPACK codec — the
+      # module's real RFC-9114/9204 risk surface (quiche/NW own the transport; this is OUR
+      # parser/encoder). http3CodecFuzz hunts untyped decoder crashes; http3RoundTripFuzz
+      # hunts encode→decode bijection breaks. Pure-JVM Jazzer (no native toolchain).
+      - name: Fuzz HTTP/3 + QPACK codec (Jazzer, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 9
+        run: >-
+          ./gradlew :socket-http3:http3CodecFuzz :socket-http3:http3RoundTripFuzz
+          -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Native ASAN + coverage-guided lane: cargo-fuzz builds quiche with SanitizerCoverage
+      # + AddressSanitizer, so libFuzzer gets REAL edge coverage of the parser (the JVM lane
+      # plateaus — it can't instrument native quiche) and ASAN catches the heap-overflow /
+      # UAF class. nightly + cargo-fuzz are installed here only.
+      - name: Install nightly Rust + cargo-fuzz
+        if: ${{ !cancelled() }}
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz quiche::Header::from_slice (cargo-fuzz ASAN, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic-quiche:quicHeaderFuzzNative -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Deeper target: the full server packet-recv state machine (accept + Connection::recv),
+      # not just the public-header parse — ~5x the edge coverage locally. Same ASAN/gating
+      # model. Rust-ASAN only; the BoringSSL-C ASAN path is proven in the non-gating step below.
+      - name: Fuzz quiche server recv path (cargo-fuzz ASAN, time-boxed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: >-
+          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzSeconds=180
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Prove the BoringSSL-C ASAN path (-PquicFuzzBoringSslAsan) actually instruments
+      # BoringSSL, not just quiche's Rust. clang is required: its LLVM ASAN runtime must
+      # match cargo-fuzz's. continue-on-error during bring-up (same convention as before the
+      # split): the clang/Rust ASAN-runtime match is unproven, so a red here must not block.
+      - name: Install clang (for BoringSSL ASAN)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served
+          # from a prior uninstrumented cache) — otherwise the proof below could read a stale archive.
+          rm -rf socket-quic-quiche/fuzz/native/target
+          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
+            --no-configuration-cache ${{ inputs.gradle-args }}
+          # Prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
+          # interceptors. Zero __asan_ symbols => the CFLAGS never reached the C build, fail loudly.
+          bssl=$(find socket-quic-quiche/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
+          if [ -z "$bssl" ]; then echo "::error::no BoringSSL archive found under the fuzz target dir"; exit 1; fi
+          echo "Inspecting $bssl"
+          if nm "$bssl" 2>/dev/null | grep -q '__asan_'; then
+            echo "PROVEN: BoringSSL is ASAN-instrumented (__asan_ symbols present in $bssl)"
+          else
+            echo "::error::BoringSSL archive has NO __asan_ symbols — CFLAGS did not propagate to the C build; ASAN covers quiche's Rust only"
+            exit 1
+          fi
+
+      - name: Upload fuzzing crash repros
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quic-header-fuzz-crashes
+          path: |
+            socket-quic-quiche/build/fuzz/header-info/crash-*
+            socket-quic-quiche/build/fuzz/header-info/oom-*
+            socket-quic-quiche/build/fuzz/header-info/timeout-*
+            socket-quic-quiche/fuzz/native/artifacts/**
+            socket-http3/build/fuzz/http3-codec/crash-*
+            socket-http3/build/fuzz/http3-codec/oom-*
+            socket-http3/build/fuzz/http3-codec/timeout-*
+            socket-http3/build/fuzz/http3-roundtrip/crash-*
+            socket-http3/build/fuzz/http3-roundtrip/oom-*
+            socket-http3/build/fuzz/http3-roundtrip/timeout-*
+          if-no-files-found: ignore
+
+  integration-linux-arm64:
+    name: "Integration Tests (Linux ARM64)"
     needs: build
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
