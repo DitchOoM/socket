@@ -944,11 +944,29 @@ jobs:
           path: libs/boringssl/linux-x64
           key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
+      # The JVM Jazzer lane (quicHeaderFuzz) pulls the host JNI-shim build, whose Gradle
+      # graph also reaches the root :buildBoringsslArm64 + the arm64 quiche/shim tasks
+      # (the multi-arch native staging wiring). Restore the SAME arm64 caches `build` saved
+      # so those tasks are UP-TO-DATE and skip — exactly as the x64 cache already makes the
+      # x64 chain skip. Without these the arm64 BoringSSL cmake runs and dies for lack of an
+      # aarch64 cross-compiler (the original failure on this job).
+      - name: Cache BoringSSL ARM64
+        uses: actions/cache@v5
+        with:
+          path: libs/boringssl/linux-arm64
+          key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
       - name: Cache quiche Linux x64
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
           key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
+      - name: Cache quiche Linux ARM64
+        uses: actions/cache@v5
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-arm64
+          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche cargo target/ (all triples)
         uses: actions/cache@v5
@@ -966,13 +984,22 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Install build toolchain (BoringSSL/quiche)
+      # Host build deps + the aarch64 cross-compiler: insurance for an arm64 cache MISS
+      # (eviction / key change), so the root :buildBoringsslArm64 + arm64 quiche tasks can
+      # actually build rather than die at cmake configure. On the normal warm-cache path
+      # those tasks are up-to-date and this cross-compiler goes unused.
+      - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential perl pkg-config cmake nasm
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # arm64 Rust target so a cache-miss arm64 quiche build (above) can cross-compile.
+      - name: Add Rust aarch64 target
+        run: rustup target add aarch64-unknown-linux-gnu
 
       # ---- Part 1: native cinterop (quiche) suite from the prebuilt .kexe -------------
       # Mirrors integration-linux-arm64: download the binary, bring the Docker harness up
