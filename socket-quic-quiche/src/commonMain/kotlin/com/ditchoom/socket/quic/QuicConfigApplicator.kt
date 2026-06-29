@@ -60,6 +60,31 @@ internal interface QuicConfigCalls {
 }
 
 /**
+ * Resolve whether quiche's chain verifier (`verify_peer`) ends up ON for these [options].
+ *
+ * Single source of truth shared by [applyQuicOptions] and the platform connect paths — the
+ * latter use it to decide whether platform-default CA anchors must be loaded when the caller
+ * pinned none of their own (otherwise a `verify_peer = true` handshake has no trust store and
+ * every real server is rejected with TLS `certificate_unknown` (alert 48)).
+ *
+ * - serverCertificateHashes pinning is enforced post-handshake against quiche_conn_peer_cert() by
+ *   the connect path, NOT by quiche's chain verifier. Under the default HashOnly (browser parity:
+ *   the leaf hash is the sole trust check) we turn quiche's verify_peer OFF, so the handshake
+ *   completes against a self-signed / ephemeral leaf with no CA. RequireBoth additionally demands
+ *   the chain validate, so verify_peer stays ON (a self-signed leaf is then rejected even on a hash
+ *   match — the browser cannot express this mode).
+ * - With no pinned hashes: verify unless explicitly disabled, and always verify when CA anchors are
+ *   pinned (trustedCaCertificatesPem implies verification against those anchors regardless of
+ *   verifyPeer — mirrors the Apple verify_block; anchors are loaded by the platform connect path). (#99)
+ */
+internal fun resolveVerifyPeer(options: QuicOptions): Boolean =
+    if (options.serverCertificateHashes.isNotEmpty()) {
+        options.certificateHashVerification == CertificateHashVerification.RequireBoth
+    } else {
+        options.verifyPeer || options.trustedCaCertificatesPem.isNotEmpty()
+    }
+
+/**
  * Apply all [QuicOptions] to a quiche config via platform-specific [calls].
  *
  * This is the single source of truth for config sequencing — JVM and Linux
@@ -87,24 +112,8 @@ internal fun applyQuicOptions(
 
     calls.setDisableActiveMigration(options.disableActiveMigration)
     calls.setActiveConnectionIdLimit(options.activeConnectionIdLimit)
-    // Peer verification policy.
-    // - serverCertificateHashes pinning is enforced post-handshake against quiche_conn_peer_cert() by
-    //   the connect path, NOT by quiche's chain verifier. Under the default HashOnly (browser parity:
-    //   the leaf hash is the sole trust check) we turn quiche's verify_peer OFF, so the handshake
-    //   completes against a self-signed / ephemeral leaf with no CA. RequireBoth additionally demands
-    //   the chain validate, so verify_peer stays ON (a self-signed leaf is then rejected even on a hash
-    //   match — the browser cannot express this mode).
-    // - With no pinned hashes, the prior rule applies: verify unless explicitly disabled, and always
-    //   verify when CA anchors are pinned (trustedCaCertificatesPem implies verification against those
-    //   anchors regardless of verifyPeer — mirrors the Apple verify_block; anchors are loaded by the
-    //   platform connect path). (#99)
-    val verifyPeer =
-        if (options.serverCertificateHashes.isNotEmpty()) {
-            options.certificateHashVerification == CertificateHashVerification.RequireBoth
-        } else {
-            options.verifyPeer || options.trustedCaCertificatesPem.isNotEmpty()
-        }
-    calls.verifyPeer(verifyPeer)
+    // Peer verification policy — see [resolveVerifyPeer].
+    calls.verifyPeer(resolveVerifyPeer(options))
 
     // Congestion control
     calls.setCcAlgorithm(options.congestionControl.quicheValue)

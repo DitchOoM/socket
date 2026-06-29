@@ -74,13 +74,25 @@ internal suspend fun buildJvmQuicConnection(
 
         applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
 
-        // Pinned CA trust anchors (#99): load the PEM bundle as the verification
-        // anchors so non-Apple targets enforce the same private-CA trust as Apple.
-        // quiche only loads anchors from a file, so the bundle goes to a temp file
-        // whose path is handed to the native call (verifyPeer is forced on in
-        // applyQuicOptions whenever anchors are present).
-        if (quicOptions.trustedCaCertificatesPem.isNotEmpty()) {
-            val caBundlePath = writeCaBundleToTempFile(quicOptions.trustedCaCertificatesPem)
+        // CA trust anchors. Two sources, in priority order:
+        //  1. Caller-pinned anchors (#99): load exactly the supplied PEM bundle so non-Apple targets
+        //     enforce the same private-CA trust as Apple.
+        //  2. Platform defaults: when verify_peer ends up ON but the caller pinned nothing, fall back to
+        //     the JVM/Android default trust store. quiche bundles its own BoringSSL with NO built-in
+        //     default verify paths, so without this every real-server handshake fails with TLS
+        //     certificate_unknown (alert 48) — the Android CA-trust bug. On a desktop JVM the default
+        //     store is cacerts; on Android it is the system AndroidCAStore.
+        // quiche only loads anchors from a file, so the bundle goes to a temp file whose path is handed
+        // to the native call; verifyPeer is forced on in applyQuicOptions whenever explicit anchors are
+        // present, and resolveVerifyPeer mirrors that decision here.
+        val caPems =
+            when {
+                quicOptions.trustedCaCertificatesPem.isNotEmpty() -> quicOptions.trustedCaCertificatesPem
+                resolveVerifyPeer(quicOptions) -> loadPlatformDefaultCaCertificatesPem()
+                else -> emptyList()
+            }
+        if (caPems.isNotEmpty()) {
+            val caBundlePath = writeCaBundleToTempFile(caPems)
             try {
                 writeNullTerminatedString(caBundlePath, bufferFactory).use { caBuf ->
                     val rc = api.configLoadVerifyLocationsFromFile(config, caBuf.nativeMemoryAccess!!.nativeAddress.toLong())
@@ -291,4 +303,48 @@ private fun writeCaBundleToTempFile(pems: List<String>): String {
     file.deleteOnExit()
     file.writeText(pems.joinToString("\n"))
     return file.absolutePath
+}
+
+/**
+ * Load the platform's default CA trust anchors as PEM blocks (the Android CA-trust fix).
+ *
+ * quiche's bundled BoringSSL has no default verify paths, so a `verify_peer = true` handshake with no
+ * caller-pinned anchors would have an empty trust store and reject every real server. We materialise
+ * the platform default store ourselves: [TrustManagerFactory] with a null key store yields the JDK
+ * `cacerts` on a desktop JVM and the system `AndroidCAStore` on Android, and we PEM-encode each
+ * trusted root for [writeCaBundleToTempFile] → `load_verify_locations`.
+ *
+ * Returns an empty list if no default trust manager / no anchors are available, in which case the
+ * caller loads nothing and the handshake behaves as before (BoringSSL default paths, if any).
+ */
+private fun loadPlatformDefaultCaCertificatesPem(): List<String> =
+    runCatching {
+        val tmf =
+            javax.net.ssl.TrustManagerFactory
+                .getInstance(
+                    javax.net.ssl.TrustManagerFactory
+                        .getDefaultAlgorithm(),
+                )
+        tmf.init(null as java.security.KeyStore?)
+        tmf.trustManagers
+            .filterIsInstance<javax.net.ssl.X509TrustManager>()
+            .flatMap { it.acceptedIssuers.asList() }
+            .distinct()
+            .map { encodeCertificateToPem(it) }
+    }.getOrDefault(emptyList())
+
+/**
+ * PEM-encode a single X.509 certificate (`-----BEGIN CERTIFICATE-----` … base64 DER … `-----END…`).
+ *
+ * The DER `ByteArray` here is the certificate's own encoding crossing the `java.security` ↔ Base64
+ * boundary, not a hot-path buffer — it never touches socket I/O.
+ */
+private fun encodeCertificateToPem(cert: java.security.cert.X509Certificate): String {
+    @Suppress("NoByteArrayInProd") // java.security.cert API surface: getEncoded() returns DER bytes
+    val der = cert.encoded
+    val base64 =
+        java.util.Base64
+            .getMimeEncoder(64, byteArrayOf('\n'.code.toByte()))
+            .encodeToString(der)
+    return "-----BEGIN CERTIFICATE-----\n$base64\n-----END CERTIFICATE-----"
 }
