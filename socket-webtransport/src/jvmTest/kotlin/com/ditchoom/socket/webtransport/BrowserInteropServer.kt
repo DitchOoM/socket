@@ -172,20 +172,18 @@ class BrowserInteropServer {
     }
 
     private fun resolveCert(name: String): File {
-        // jvmTest's working dir is the module dir (socket-webtransport/). The `pinned` fixture is generated
-        // (gitignored) under socket-quic-nw/testcerts (:socket-quic-nw:generatePinnedW3cCerts); the
-        // long-lived `cert` PEM lives under this module's own testcerts. Probe both.
+        // jvmTest's working dir is the module dir (socket-webtransport/). Both the short-lived `pinned`
+        // W3C fixture (generated, gitignored, by :socket-webtransport:generateWebTransportPinnedCert) and
+        // the long-lived `cert` PEM live under this module's own testcerts/.
         val candidates =
             listOf(
-                File("../socket-quic-nw/testcerts/$name"),
-                File("socket-quic-nw/testcerts/$name"),
                 File("testcerts/$name"),
                 File("socket-webtransport/testcerts/$name"),
             )
         return candidates.firstOrNull { it.exists() }
             ?: error(
                 "cert fixture '$name' not found (tried ${candidates.map { it.absolutePath }}). " +
-                    "Run ':socket-quic-nw:generatePinnedW3cCerts' (pinned) or ensure testcerts/cert.* exists.",
+                    "Run ':socket-webtransport:generateWebTransportPinnedCert' (pinned) or ensure testcerts/cert.* exists.",
             )
     }
 

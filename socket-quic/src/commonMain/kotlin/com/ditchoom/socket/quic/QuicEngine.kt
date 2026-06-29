@@ -7,10 +7,10 @@ import kotlin.time.Duration
  * Pluggable QUIC backend (the Ktor `HttpClient(engine)` model, at the QUIC layer).
  *
  * An engine knows how to [connect] a client and [bind] a server; it owns nothing about the
- * scope/lifecycle. The two backends are `QuicheEngine` (Cloudflare quiche — jvm/android/linux)
- * in `socket-quic-quiche` and `NetworkEngine` (Apple Network.framework) in `socket-quic-nw`.
- * The platform default is resolved via `defaultQuicEngine` (in `socket-quic-default`); a consumer
- * overrides it by passing an explicit engine — e.g. an Apple app opting into quiche.
+ * scope/lifecycle. The backend is `QuicheEngine` (Cloudflare quiche) in `socket-quic-quiche`, used on
+ * jvm/android/linux and — over an NWConnection-UDP datapath — macOS/iOS. The platform default is
+ * resolved via `defaultQuicEngine` (in `socket-quic-default`); a consumer overrides it by passing an
+ * explicit engine.
  *
  * **Lifecycle contract — the engine is a constructor, not a factory you babysit.** [connect] /
  * [bind] return a [QuicConnection] / [QuicServer] that has already completed its handshake / bind.

@@ -1,4 +1,10 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
+import java.util.Base64
 import java.util.Properties
 
 plugins {
@@ -382,6 +388,102 @@ if (isMacOS) {
 // --- Browser WebTransport interop (opt-in: `-PwtBrowserInterop`) ---
 // Real headless Chrome (via Karma) drives the production browserMain WebTransport wrapper against an
 // externally-launched withHttp3Server (the BrowserInteropServer harness, JVM/quiche) presenting the
+// W3C serverCertificateHashes `pinned` fixture for the local browser-interop lane (real Chrome ↔ the
+// quiche JVM BrowserInteropServer). Chrome accepts a self-signed leaf only via serverCertificateHashes,
+// which requires an EC P-256 leaf with ≤14-day validity — so it's generated fresh (a committed one is a
+// guaranteed expiry flake) into this module's gitignored testcerts/. Relocated here from the deleted
+// :socket-quic-nw (which produced it for the now-removed NW cross-impl cells); the browser lane operator
+// runs `:socket-webtransport:generateWebTransportPinnedCert` before launching BrowserInteropServer.
+val generateWebTransportPinnedCert =
+    tasks.register("generateWebTransportPinnedCert") {
+        group = "verification"
+        description = "Generate the W3C serverCertificateHashes `pinned` EC P-256 fixture (pinned.{crt,key,sha256})."
+        val certDir = projectDir.resolve("testcerts")
+        val exts = listOf("crt", "key", "sha256")
+        outputs.files(exts.map { certDir.resolve("pinned.$it") })
+        // Up-to-date only while the existing leaf still has >3 days left (short-lived by design).
+        outputs.upToDateWhen {
+            if (!exts.all { certDir.resolve("pinned.$it").exists() }) {
+                false
+            } else {
+                try {
+                    val cert =
+                        certDir.resolve("pinned.crt").inputStream().use {
+                            CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate
+                        }
+                    cert.notAfter.time - System.currentTimeMillis() > 3L * 24 * 60 * 60 * 1000
+                } catch (_: Exception) {
+                    false
+                }
+            }
+        }
+        doLast {
+            val javaHome = File(System.getProperty("java.home"))
+            val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+            val keytool = javaHome.resolve(if (isWindows) "bin/keytool.exe" else "bin/keytool").absolutePath
+            certDir.mkdirs()
+            val tmpP12 = temporaryDir.resolve("pinned.p12").also { it.delete() }
+            val gen =
+                ProcessBuilder(
+                    keytool,
+                    "-genkeypair",
+                    "-alias",
+                    "pinned",
+                    "-keyalg",
+                    "EC",
+                    "-groupname",
+                    "secp256r1",
+                    "-sigalg",
+                    "SHA256withECDSA",
+                    "-validity",
+                    "13",
+                    "-dname",
+                    "CN=localhost",
+                    "-ext",
+                    "san=dns:localhost,ip:127.0.0.1",
+                    "-ext",
+                    "eku=serverAuth",
+                    "-keystore",
+                    tmpP12.absolutePath,
+                    "-storetype",
+                    "PKCS12",
+                    "-storepass",
+                    "testpass",
+                    "-keypass",
+                    "testpass",
+                ).redirectErrorStream(false).start()
+            val genErr = gen.errorStream.bufferedReader().readText()
+            if (gen.waitFor() != 0) throw GradleException("keytool -genkeypair failed for pinned:\n$genErr")
+
+            val exp =
+                ProcessBuilder(
+                    keytool,
+                    "-exportcert",
+                    "-rfc",
+                    "-alias",
+                    "pinned",
+                    "-keystore",
+                    tmpP12.absolutePath,
+                    "-storepass",
+                    "testpass",
+                ).start()
+            val certPem = exp.inputStream.bufferedReader().readText()
+            val expErr = exp.errorStream.bufferedReader().readText()
+            if (exp.waitFor() != 0) throw GradleException("keytool -exportcert failed for pinned:\n$expErr")
+
+            val ks = KeyStore.getInstance("PKCS12")
+            tmpP12.inputStream().use { ks.load(it, "testpass".toCharArray()) }
+            val key = ks.getKey("pinned", "testpass".toCharArray()) as PrivateKey
+            val b64 = Base64.getMimeEncoder(64, "\n".toByteArray()).encodeToString(key.encoded)
+            val keyPem = "-----BEGIN PRIVATE KEY-----\n$b64\n-----END PRIVATE KEY-----\n"
+            val x509 = CertificateFactory.getInstance("X.509").generateCertificate(certPem.byteInputStream()) as X509Certificate
+            val sha256Hex = MessageDigest.getInstance("SHA-256").digest(x509.encoded).joinToString("") { "%02x".format(it) }
+            certDir.resolve("pinned.crt").writeText(certPem)
+            certDir.resolve("pinned.key").writeText(keyPem)
+            certDir.resolve("pinned.sha256").writeText(sha256Hex)
+        }
+    }
+
 // `pinned` EC P-256 leaf — the only self-signed path a browser accepts (W3C serverCertificateHashes).
 // Non-gated public-API surface smoke (src/browserSmoke/kotlin), shared by jsTest + wasmJsTest. Unlike the
 // interop test it needs no server and no Chrome, so it ships in every default build — but it's excluded

@@ -15,20 +15,17 @@ import platform.posix.access
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Apple subclass of [WebTransportTestSuite]. The in-process QUIC server here is Network.framework's
- * listener (provided transitively through socket-http3 → socket-quic-default → :socket-quic-nw), so —
- * unlike Linux's `withHttp3Server`, which talks quiche — the server identity must be a PKCS#12 bundle
- * NW can import into a `sec_identity_t` (loose PEM cert+key cannot build one; see [QuicTlsConfig.pkcs12Path]).
- * The `generateWebTransportTestP12` Gradle task exports `testcerts/cert.p12` (passphrase `testpass`) from
- * the committed `cert.{crt,key}` and the Apple K/N test tasks depend on it.
+ * Apple subclass of [WebTransportTestSuite]. The in-process QUIC server here is the Apple **quiche**
+ * backend (provided transitively through socket-http3 → socket-quic-default → :socket-quic-quiche), so —
+ * exactly like Linux's `withHttp3Server` — the server loads a loose PEM cert+key (no PKCS#12; that was an
+ * NW `sec_identity_t` requirement, gone with the Network.framework backend in the quiche-on-Apple pivot).
  *
  * Cert paths are probed on the filesystem relative to the test's working directory, mirroring
- * [LinuxWebTransportTest]. macOS K/N runs the full suite; iOS/tvOS/watchOS `--standalone` simulators can't
- * reach the NW QUIC datapath (and lack the `testcerts/` cwd), so [wrapTestBody] skips there — the same gate
- * the :socket-quic-nw Apple suites use (see [shouldSkipQuicHarnessOnSimulator]).
+ * [LinuxWebTransportTest]. macOS K/N runs the full suite; iOS/tvOS/watchOS `--standalone` simulators lack
+ * the `testcerts/` cwd, so [wrapTestBody] skips there (see [shouldSkipQuicHarnessOnSimulator]).
  *
- * This is the first automated exercise of the full HTTP/3 **server** stack on Apple/Network.framework:
- * [multiplexed_twoSessionsOverOneConnection_eachRoundTrip] is the v6 Phase-4 DONE bar.
+ * [multiplexed_twoSessionsOverOneConnection_eachRoundTrip] exercises the full HTTP/3 **server** stack on
+ * the Apple quiche backend.
  */
 class AppleWebTransportTest : WebTransportTestSuite() {
     private fun certPath(name: String): String {
@@ -38,17 +35,13 @@ class AppleWebTransportTest : WebTransportTestSuite() {
                 "socket-webtransport/testcerts/$name",
             )
         return candidates.firstOrNull { access(it, F_OK) == 0 }
-            ?: error("Test cert not found: $name (tried $candidates — did generateWebTransportTestP12 run?)")
+            ?: error("Test cert not found: $name (tried $candidates)")
     }
 
     override fun testTlsConfig() =
         QuicTlsConfig(
             certChainPath = certPath("cert.crt"),
             privKeyPath = certPath("cert.key"),
-            // Network.framework's QUIC listener imports its identity from this PKCS#12 blob; the PEM
-            // paths above are ignored by the Apple server (kept for cross-platform config symmetry).
-            pkcs12Path = certPath("cert.p12"),
-            pkcs12Password = "testpass",
         )
 
     override suspend fun openSingleSession(url: String): WebTransportSession = webTransportSupport().connect(url, loopbackClientConfig())

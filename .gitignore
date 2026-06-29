@@ -43,20 +43,8 @@ docs/.docusaurus/
 docs/static/api/
 socket-quic/hs_err_pid*.log
 
-# Generated at build time by the :socket-quic-nw `generateTestP12` task from the
-# committed PEM cert+key, for the Apple QUIC server tests (issue #112).
-# (Apple cert pipeline moved from :socket-quic to :socket-quic-nw in v6 Phase 2b.3.)
-socket-quic-nw/testcerts/cert.p12
-socket-quic-nw/testcerts/localhost.p12
-
-# The self-signed `localhost` identity is generated fresh each build by the
-# :socket-quic-nw `generateLocalhostCert` task (Apple's 398-day SecTrust cap makes a
-# committed cert a guaranteed expiry flake — issue #99). None are committed.
-socket-quic-nw/testcerts/localhost.crt
-socket-quic-nw/testcerts/localhost.key
-
-# Same generated test identities, now produced by the :socket-quic-quiche module
-# (quiche test-cert pipeline) and the :socket-quic `generateTestP12` task (Apple).
+# Generated test identities produced by the :socket-quic-quiche module (quiche
+# test-cert pipeline) and the :socket-quic `generateTestP12` task (Apple).
 socket-quic-quiche/testcerts/cert.p12
 socket-quic-quiche/testcerts/localhost.p12
 socket-quic-quiche/testcerts/localhost.crt
@@ -70,8 +58,8 @@ socket-quic-quiche/src/androidInstrumentedTest/resources/certs/localhost.key
 # generated fresh each build by the `generatePinnedW3cCerts` tasks. Short-lived by design (EC P-256,
 # ≤14-day), so committing one would be a guaranteed expiry flake — like `localhost`, none are committed.
 # Covers *.crt / *.key / *.sha256 (the leaf-DER hash the K/N tests pin) and *.p12 (Apple identities).
-socket-quic-nw/testcerts/pinned*
 socket-quic-quiche/testcerts/pinned*
+socket-webtransport/testcerts/pinned*
 socket-quic-quiche/src/jvmTest/resources/certs/pinned*
 socket-quic-quiche/src/androidInstrumentedTest/resources/certs/pinned*
 
