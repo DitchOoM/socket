@@ -1651,11 +1651,51 @@ kotlin {
     }
 
     if (isLinux) {
+        // Embed libquiche.a into the Quiche cinterop klib so a downstream K/N consumer that links the
+        // published klib gets the archive (Gap A's fix), exactly like the base :socket: module's
+        // generateLinuxSocketsDef embeds libssl/libcrypto/liburing. We REPLACE the base def's
+        // `linkerOpts.linux` line (rather than append a duplicate key) with libraryPaths/staticLibraries
+        // + the linker flags the consumer's final link needs: -lstdc++ for quiche's BoringSSL C++ TUs;
+        // --allow-multiple-definition + --unresolved-symbols=ignore-in-object-files to tolerate overlap
+        // with / deferral to the base :socket: module's BoringSSL archives (the linux libquiche.a links
+        // against EXTERNAL BoringSSL, contributed transitively by that module's cinterop). Both flags
+        // already ride every linux K/N link via that base manifest; carrying them here keeps the Quiche
+        // klib self-describing. The old repo-absolute `-L … --whole-archive -lquiche` in binaries.all
+        // only reached the producer's own test binaries and never propagated to consumers (Gap A).
+        val genLinuxQuicheDef: (java.io.File, java.io.File, String) -> TaskProvider<Task> = { quicheLibDir, generatedDef, taskSuffix ->
+            val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
+            val embedStatic = quicheLibDir.resolve("libquiche.a").exists()
+            tasks.register("generateQuicheEmbedDef$taskSuffix") {
+                inputs.file(baseQuicheDef)
+                outputs.file(generatedDef)
+                doLast {
+                    val base = baseQuicheDef.readText()
+                    val content =
+                        if (embedStatic) {
+                            base.replace(
+                                "linkerOpts.linux = -lpthread -ldl -lm",
+                                "libraryPaths.linux = ${quicheLibDir.absolutePath}\n" +
+                                    "staticLibraries.linux = libquiche.a\n" +
+                                    "linkerOpts.linux = -lpthread -ldl -lm -lstdc++ " +
+                                    "--allow-multiple-definition --unresolved-symbols=ignore-in-object-files",
+                            )
+                        } else {
+                            base
+                        }
+                    generatedDef.parentFile.mkdirs()
+                    generatedDef.writeText(content)
+                }
+            }
+        }
         linuxX64 {
+            val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
+            val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
+            val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxX64")
             compilations["main"].cinterops {
                 create("Quiche") {
-                    defFile("src/nativeInterop/cinterop/Quiche.def")
+                    defFile(generatedDef)
                     includeDirs("libs/quiche/include")
+                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
                 }
                 // BoringSSL X.509 bindings for the W3C serverCertificateHashes cert-constraint parser
                 // (PinnedLeafFields.linux.kt). Headers come from the base :socket: module's BoringSSL
@@ -1673,41 +1713,16 @@ kotlin {
                     }
                 }
             }
-            // Link against quiche — prefer static if no OpenSSL conflict, else shared
-            val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
-            val quicheShared = quicheLibDir.resolve("libquiche_jni.so") // self-contained, no OpenSSL conflict
-            val quicheStatic = quicheLibDir.resolve("libquiche.a")
-            if (quicheStatic.exists()) {
-                binaries.all {
-                    // -Bstatic around -lquiche forces ld.lld to pick libquiche.a, not the sibling
-                    // libquiche.so (which has unresolved SSL_* refs and fails --no-allow-shlib-undefined).
-                    // whole-archive pulls in all quiche symbols. BSSL archives are transitively
-                    // contributed by the base :socket: module's cinterop (staticLibraries.linux =
-                    // libssl.a libcrypto.a in LinuxSockets.def); we don't link them again here to
-                    // avoid duplicate work. allow-multiple-definition covers any residual overlap.
-                    linkerOpts(
-                        "-L${quicheLibDir.absolutePath}",
-                        "-Wl,-Bstatic",
-                        "-Wl,--whole-archive",
-                        "-lquiche",
-                        "-Wl,--no-whole-archive",
-                        "-Wl,-Bdynamic",
-                        "-lpthread",
-                        "-ldl",
-                        "-lm",
-                        "-lstdc++",
-                        "--unresolved-symbols=ignore-in-object-files",
-                        "--allow-multiple-definition",
-                        "-Wl,--defsym=QUICHE_BSSL=1", // marker to indicate quiche BoringSSL is linked
-                    )
-                }
-            }
         }
         linuxArm64 {
+            val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
+            val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
+            val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxArm64")
             compilations["main"].cinterops {
                 create("Quiche") {
-                    defFile("src/nativeInterop/cinterop/Quiche.def")
+                    defFile(generatedDef)
                     includeDirs("libs/quiche/include")
+                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
                 }
                 // See linuxX64: BoringSSL X.509 bindings for the cert-constraint parser. Symbols are
                 // contributed transitively by the base :socket: module's arm64 cinterop.
@@ -1723,27 +1738,6 @@ kotlin {
                     }
                 }
             }
-            val quicheLibArm64 = projectDir.resolve("libs/quiche/linux-arm64/lib/libquiche.a")
-            if (quicheLibArm64.exists()) {
-                binaries.all {
-                    // Mirror linuxX64: -Bstatic forces static quiche; BSSL comes from the base
-                    // :socket: module's cinterop (staticLibraries.linux = libssl.a libcrypto.a).
-                    linkerOpts(
-                        "-L${quicheLibArm64.parentFile.absolutePath}",
-                        "-Wl,-Bstatic",
-                        "-Wl,--whole-archive",
-                        "-lquiche",
-                        "-Wl,--no-whole-archive",
-                        "-Wl,-Bdynamic",
-                        "-lpthread",
-                        "-ldl",
-                        "-lm",
-                        "-lstdc++",
-                        "--unresolved-symbols=ignore-in-object-files",
-                        "--allow-multiple-definition",
-                    )
-                }
-            }
         }
     }
 
@@ -1752,18 +1746,64 @@ kotlin {
     // Network.framework system-QUIC backend (the deleted :socket-quic-nw). macOS .a comes from the
     // shared cargo tasks; iOS .a from createBuildQuicheAppleStaticTask. See quiche-on-apple-pivot.
     if (isMacOS) {
-        // One configurator for every Apple target: the Quiche + BoringSslSha256 cinterops and the
-        // -force_load of that target's self-contained libquiche.a.
+        // One configurator for every Apple target. Each target's self-contained libquiche.a (vendored
+        // BoringSSL — see the .bssl-vendored marker next to it) is EMBEDDED into the Quiche cinterop
+        // klib via staticLibraries/libraryPaths def directives, so the published klib is self-contained:
+        // a downstream K/N consumer that links it gets the archive (copied into the klib's included/)
+        // and the Apple frameworks (carried in the def's linkerOpts, which K/N replays at the consumer's
+        // final binary link) WITHOUT any repo-local path. This is Gap A's fix and mirrors the base
+        // :socket: module's generateLinuxSocketsDef, which embeds libssl/libcrypto/liburing the same way.
+        // The old repo-absolute `-force_load` lived only in binaries.all → it reached the producer's own
+        // test binaries but never propagated to consumers (Gap A). ld64 demand-links the archive members
+        // quiche references (force_load's pull-everything is not needed — validated by a full
+        // real-handshake suite + a direct quiche_version() call on macosArm64, 0 undefined symbols).
         val configureQuicheApple: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.(String) -> Unit = { libSubdir ->
+            val quicheLibDir = projectDir.resolve("libs/quiche/$libSubdir/lib")
+            val quicheStatic = quicheLibDir.resolve("libquiche.a")
+            // K/N def target suffix = the konan target name (underscores), e.g. macos-arm64 → macos_arm64,
+            // ios-simulator-arm64 → ios_simulator_arm64. The embedding directives are per-target-keyed.
+            val konanSuffix = libSubdir.replace('-', '_')
+            val libCamel = libSubdir.split('-').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
+            val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
+            val generatedQuicheDef = projectDir.resolve("build/generated/cinterop/Quiche-$libSubdir.def")
+            // Generate the embedding def (base Quiche.def + this target's directives). Gating the
+            // embedding on the archive existing at configuration time mirrors how the old -force_load
+            // gated on quicheStatic.exists() — CI's buildQuicheAppleStaticLibs prepares all five archives
+            // before any K/N task runs. When absent, fall back to the path-free base def (no embedding),
+            // matching the prior "no force_load when the .a is absent" behaviour.
+            val embedStatic = quicheStatic.exists()
+            val genDefTask =
+                tasks.register("generateQuicheEmbedDef$libCamel") {
+                    inputs.file(baseQuicheDef)
+                    outputs.file(generatedQuicheDef)
+                    doLast {
+                        val embed =
+                            if (embedStatic) {
+                                // libraryPaths/staticLibraries copy libquiche.a INTO the klib; linkerOpts
+                                // carry the frameworks Rust std + BoringSSL reference on Darwin (Security/
+                                // CoreFoundation), libc++ for BoringSSL's C++ TUs, and Network/Foundation
+                                // for the NWConnection-UDP datapath — all replayed at the consumer's link.
+                                "\nlibraryPaths.$konanSuffix = ${quicheLibDir.absolutePath}\n" +
+                                    "staticLibraries.$konanSuffix = libquiche.a\n" +
+                                    "linkerOpts.$konanSuffix = -framework Security -framework CoreFoundation " +
+                                    "-framework Network -framework Foundation -lc++\n"
+                            } else {
+                                ""
+                            }
+                        generatedQuicheDef.parentFile.mkdirs()
+                        generatedQuicheDef.writeText(baseQuicheDef.readText() + embed)
+                    }
+                }
             compilations["main"].cinterops {
                 create("Quiche") {
-                    defFile("src/nativeInterop/cinterop/Quiche.def")
+                    defFile(generatedQuicheDef)
                     includeDirs("libs/quiche/include")
+                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
                 }
                 // SHA-256 for the W3C serverCertificateHashes leaf-cert pin. Binds BoringSSL's SHA256
-                // already vendored into (and force-loaded from) libquiche.a — collision-free on Apple
-                // since quiche's BoringSSL is the only crypto lib present. Inline C prototype, no header
-                // (the Apple cinterop path resolved no system include). See BoringSslSha256.def.
+                // now embedded in (not force-loaded from) the Quiche klib's libquiche.a — collision-free
+                // on Apple since quiche's BoringSSL is the only crypto lib present. Inline C prototype, no
+                // header (the Apple cinterop path resolved no system include). See BoringSslSha256.def.
                 create("BoringSslSha256") {
                     defFile("src/nativeInterop/cinterop/BoringSslSha256.def")
                 }
@@ -1773,29 +1813,6 @@ kotlin {
                 create("NwUdp") {
                     defFile("src/nativeInterop/cinterop/NwUdp.def")
                     includeDirs("src/nativeInterop/cinterop")
-                }
-            }
-            val quicheStatic = projectDir.resolve("libs/quiche/$libSubdir/lib/libquiche.a")
-            if (quicheStatic.exists()) {
-                binaries.all {
-                    // libquiche.a is self-contained (vendored BoringSSL — see the .bssl-vendored marker
-                    // next to it), so no external crypto archives. Apple ld64 differs from GNU ld: use
-                    // -force_load (not --whole-archive) to pull every quiche object. Link the libraries
-                    // Rust std + BoringSSL reference on Darwin: Security/CoreFoundation frameworks plus
-                    // libc++ for BoringSSL's C++ TUs; Network/Foundation for the NWConnection-UDP datapath.
-                    linkerOpts(
-                        "-force_load",
-                        quicheStatic.absolutePath,
-                        "-framework",
-                        "Security",
-                        "-framework",
-                        "CoreFoundation",
-                        "-framework",
-                        "Network",
-                        "-framework",
-                        "Foundation",
-                        "-lc++",
-                    )
                 }
             }
         }

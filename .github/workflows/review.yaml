@@ -34,10 +34,10 @@ jobs:
   #   • Bytecode-version guard — asserts the base jvm jars are Java 8 (v52) (gating): the toolchain
   #     is JDK 21 on every lane, so without this a silent re-regression to v65 (which actually
   #     shipped once) is invisible to CI.
-  #   • Linux Kotlin/Native LINK — `linuxX64TestBinaries` links a consumer test binary that reaches
-  #     the full QUIC stack, so an undistributed static lib surfaces as the link-time undefined-symbol
-  #     error it is. STAGED non-gating (continue-on-error) until libquiche.a is distributed to K/N
-  #     consumers; flip to gating in that change.
+  #   • Linux Kotlin/Native LINK — `linuxX64TestBinaries` links a consumer test binary that reaches the
+  #     full QUIC stack from the published klib (Gap A embeds libquiche.a into the Quiche cinterop klib).
+  #     GATING. Weak vs undefined symbols (the base klib manifest ignores them at link — see the step's
+  #     note); the Apple link gate below + the linuxX64Test handshake suite are the strong Gap-A catchers.
   consumer-smoke:
     name: "Consumer Smoke (JVM + Linux link)"
     needs: [validate]
@@ -104,26 +104,30 @@ jobs:
           done
           [ "$FAIL" = 0 ] || { echo "=== BYTECODE GUARD FAILED ==="; exit 1; }
           echo "=== bytecode guard passed ==="
-      # STAGED — Gap A (libquiche.a distribution) flips this to gating. Today the published K/N
-      # artifacts don't carry the static archive, so this link fails with undefined quiche_* symbols;
-      # that IS the bug this gate is built to catch. Kept visible (non-gating) until the fix lands.
-      - name: Linux K/N link gate (Gap A — staged non-gating)
-        continue-on-error: true
+      # Gap A landed: the published K/N artifacts now embed libquiche.a in the Quiche cinterop klib, so
+      # this consumer test binary links the full QUIC stack from the published klib alone. GATING.
+      # NOTE: the base :socket: module's klib manifest carries --unresolved-symbols=ignore-in-object-files
+      # (it rides every linux K/N link), so an undefined quiche_* is deferred to runtime rather than
+      # failing here — treat this Linux link as a compile+resolve+link smoke. The strong Gap-A catchers
+      # are the Apple link gate below (ld64 has no such flag) and the linuxX64Test handshake suite (build-linux).
+      - name: Linux K/N link gate (Gap A)
         run: |
           gradle -p .ci/consumer-smoke linuxX64TestBinaries \
             -PsocketVersion="${RESOLVED_VERSION}" \
             -PmavenRepoPath=/tmp/maven-local-merged \
             --no-daemon
 
-  # Apple Kotlin/Native LINK gate (Gap A catcher on macOS/iOS). Links — does not run — the consumer
-  # test binaries; on iOS that needs no simulator. STAGED non-gating for the same reason as the Linux
-  # link above; flip to gating when libquiche.a is distributed to K/N consumers.
+  # Apple Kotlin/Native LINK gate — the strong Gap-A catcher. Links (does not run; iOS needs no
+  # simulator) the consumer test binaries against the published klib. ld64 fails hard on an undefined
+  # quiche_* symbol, so an undistributed/unembedded libquiche.a surfaces as the link error it is.
+  # GATING now that Gap A embeds the archive (+ the Apple frameworks, via klib manifest linkerOpts)
+  # into the Quiche cinterop klib — validated locally: external consumer test.kexe links macosArm64 +
+  # iosSimulatorArm64 with 0 undefined quiche/ssl symbols and Security/Network/CF/libc++ propagated.
   consumer-smoke-apple:
     name: "Consumer Smoke (Apple K/N link)"
     needs: [validate]
     runs-on: macos-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - name: Download merged maven-local
