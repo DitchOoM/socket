@@ -176,17 +176,28 @@ jobs:
           for f in "${FILES[@]}"; do
             platform=$(grep '^platform=' "$f" | cut -d= -f2)
             launched=$(grep '^launched=' "$f" | cut -d= -f2)
+            applicable=$(grep '^applicable=' "$f" | cut -d= -f2)
             ok=$(grep '^ok=' "$f" | cut -d= -f2)
             skip=$(grep '^skip=' "$f" | cut -d= -f2)
             intentional_skip=$(grep '^intentional_skip=' "$f" | cut -d= -f2)
             reasons=$(grep '^reason=' "$f" | cut -d= -f2-)
             launched=${launched:-unknown}
+            # applicable defaults true for older audit files that predate the field.
+            applicable=${applicable:-true}
             ok=${ok:-0}
             skip=${skip:-0}
             intentional_skip=${intentional_skip:-0}
 
             if [ "$ok" -gt 0 ]; then
               status="✅ exercised"
+            elif [ "$applicable" = "false" ]; then
+              # The quiche QuicHarnessIntegrationTests doesn't run on this lane at all
+              # (JS has no QUIC implementation; an Apple NW-only lane has no quiche target).
+              # `ok=0,skip=0` is structural, not a silently all-skipped regression — that
+              # platform's QUIC client (if any) is validated elsewhere. Render ℹ️, never fail.
+              # NOTE: this branch must mirror review.yaml's copy of the same job — the two
+              # had drifted (merged.yaml lacked it), reddening every release on the JS lane.
+              status="ℹ️ platform gap (known)"
             elif [ "$skip" -gt 0 ] && [ "$intentional_skip" = "$skip" ]; then
               status="ℹ️ platform gap (known)"
             elif [ "$skip" -gt 0 ]; then
@@ -200,12 +211,17 @@ jobs:
             fi
 
             echo "| $platform | $ok | $skip | $status |" >> "$GITHUB_STEP_SUMMARY"
-            echo "platform=$platform launched=$launched ok=$ok skip=$skip intentional=$intentional_skip status=$status"
+            echo "platform=$platform launched=$launched applicable=$applicable ok=$ok skip=$skip intentional=$intentional_skip status=$status"
 
-            if [ "$skip" -gt 0 ] && [ -n "$reasons" ]; then
+            if [ -n "$reasons" ] && { [ "$skip" -gt 0 ] || [ "$applicable" = "false" ]; }; then
+              if [ "$applicable" = "false" ]; then
+                detail="$platform — not applicable (known gap)"
+              else
+                detail="$platform — skip reasons ($skip skipped)"
+              fi
               {
                 echo ""
-                echo "<details><summary>$platform — skip reasons ($skip skipped)</summary>"
+                echo "<details><summary>$detail</summary>"
                 echo ""
                 echo '```'
                 echo "$reasons"
