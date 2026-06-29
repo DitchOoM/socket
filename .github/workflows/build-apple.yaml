@@ -122,14 +122,16 @@ jobs:
         run: echo "HARNESS_DISABLED=true" >> $GITHUB_ENV
 
       # Apple K/N tests across EVERY module. The task names are UNQUALIFIED (no leading colon) so Gradle
-      # runs them in every subproject that has them — a leading-colon `:macosArm64Test` would run only the
+      # runs them in every subproject that has them — a leading-colon `:macosX64Test` would run only the
       # ROOT project's test and silently skip socket-quic-quiche / socket-http3 / socket-webtransport (a
-      # false green). macOS arm64 + x64 run the full QUIC suites on quiche:
+      # false green). The full QUIC suites on quiche are:
       #   - socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> dual-stack
       #     IPv6 POSIX server)
       #   - socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack — was the flaky macos-26 NW-loopback CI
       #     red, now green on quiche)
       #   - socket-webtransport AppleWebTransportTest (the WebTransport server stack)
+      # macosArm64Test is NOT run here — it moved to the integration-macos-arm64 job, which runs the
+      # prebuilt .kexe standalone (linked + uploaded below). macOS x64 still runs the full suites inline.
       # iosSimulatorArm64Test runs the quiche loopback for real (POSIX/NW datapath needs no
       # Network.framework listener, so it works standalone); the H3/WebTransport suites self-skip on the
       # standalone sim (no testcerts/ cwd). tvOS/watchOS have no quiche target → UnsupportedQuicEngine, so
@@ -137,10 +139,31 @@ jobs:
       - name: Run Apple K/N tests (quiche)
         run: >-
           ./gradlew
-          macosArm64Test macosX64Test iosSimulatorArm64Test
+          macosX64Test iosSimulatorArm64Test
           tvosSimulatorArm64Test watchosSimulatorArm64Test
           ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Link (don't run) the macosArm64 test binaries for the integration-macos-arm64 job. UNQUALIFIED so
+      # every module with a macosArm64 test target is linked — socket-quic-quiche / socket-http3 /
+      # socket-webtransport carry the real Apple QUIC/H3/WebTransport loopback suites. The K/N link
+      # -force_loads each libquiche.a, so the .kexe is self-contained: the integration job runs it with
+      # only a checkout (for the committed <module>/testcerts/), no quiche libs or Docker harness.
+      - name: Link macosArm64 test binaries for integration job
+        run: >-
+          ./gradlew linkDebugTestMacosArm64
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      - name: Upload macosArm64 test binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-test-binaries
+          # Glob across modules; upload-artifact strips the common ancestor (repo root, since the root
+          # module's path has no module prefix), so each file keeps its <module>/build/bin/... path and
+          # restores there on download — exactly where it must sit to find <module>/testcerts/.
+          path: '**/build/bin/macosArm64/debugTest/test.kexe'
+          retention-days: 1
+          if-no-files-found: error
 
       # :socket-quic-quiche on the JVM — the only place FFM-on-macOS and the IS_BSD sockaddr decode run.
       # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test into a hard failure so
@@ -219,3 +242,58 @@ jobs:
           name: maven-local-apple
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
+
+  # macosArm64 K/N tests split out of `build`, mirroring integration-linux-{x64,arm64}:
+  # `build` links the .kexe (self-contained, libquiche.a -force_loaded), this job runs it.
+  # The Apple QUIC/H3/WebTransport suites are in-process loopback — no Docker harness — and
+  # locate their TLS fixtures via a <module>/testcerts/ fallback, so a plain checkout (which
+  # carries the committed testcerts/) plus cwd=repo-root is all they need. macOS x64 + the
+  # iOS/tvOS/watchOS sim tests still run inline in `build`'s Gradle.
+  integration-macos-arm64:
+    name: "Integration Tests (macOS ARM64)"
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      # Checkout supplies the committed <module>/testcerts/ the loopback suites fall back to.
+      - uses: actions/checkout@v6
+
+      # Restores each module's test.kexe to its <module>/build/bin/macosArm64/debugTest/ path
+      # (the artifact preserved the repo-root-relative structure), so running from repo root
+      # resolves the per-module testcerts/ fallback.
+      - name: Download macosArm64 test binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-arm64-test-binaries
+
+      - name: Run macosArm64 tests (all modules)
+        run: |
+          set -uo pipefail
+          # find (not a `**` globstar) so this is portable to the macOS runner's bash 3.2.
+          # The download brought only macosArm64 binaries, so any test.kexe is one of ours —
+          # this matches both the structure-preserved paths and a flattened single file.
+          found=$(find . -name test.kexe -type f)
+          if [ -z "$found" ]; then
+            echo "::error::no macosArm64 test.kexe downloaded — check the linkDebugTestMacosArm64 upload in build"
+            exit 1
+          fi
+          rc=0
+          : > /tmp/macos-arm64.log
+          while IFS= read -r bin; do
+            echo "==================== $bin ===================="
+            chmod +x "$bin"
+            # cwd = repo root so each module's <module>/testcerts/cert.* fallback resolves.
+            "$bin" 2>&1 | tee -a /tmp/macos-arm64.log || rc=1
+          done <<< "$found"
+          exit $rc
+
+      # Standalone .kexe runs print results to stdout (no JUnit XML like a Gradle run), so on
+      # failure capture the combined log for diagnosis.
+      - name: Upload macosArm64 test log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-test-log
+          path: /tmp/macos-arm64.log
+          retention-days: 7
+          if-no-files-found: ignore
