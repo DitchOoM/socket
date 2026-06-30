@@ -1,4 +1,4 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlin.experimental.ExperimentalNativeApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -49,11 +49,14 @@ import platform.posix.close
 import platform.posix.fclose
 import platform.posix.fdopen
 import platform.posix.fputs
+import platform.posix.getenv
 import platform.posix.mkstemp
 import platform.posix.sockaddr_storage
 import platform.posix.unlink
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.native.OsFamily
+import kotlin.native.Platform
 import kotlin.random.Random
 import kotlin.time.Duration
 
@@ -150,6 +153,13 @@ internal suspend fun buildAppleQuicConnection(
                 } finally {
                     unlink(caBundlePath)
                 }
+            } else if (effectiveVerifyPeer(quicOptions)) {
+                // verifyPeer is on with no pinned anchors. On macOS quiche/BoringSSL's compiled-in
+                // default verify paths resolve the system store, but the iOS family ships no
+                // filesystem CA store, so the defaults find nothing and every public-CA handshake
+                // fails (tlsAlert 48). Load the embedded Mozilla roots there — the Apple companion to
+                // the Linux /etc/ssl probe (#185) and the JVM/Android default-anchor fix (#182).
+                loadAppleSystemCaTrust(config)
             }
 
             // Datapath: an NWConnection in UDP mode — the production Apple client path (NWPath migration
@@ -530,16 +540,56 @@ internal class AppleQuicConfigCalls(
 }
 
 /**
+ * Effective peer-verification decision, mirroring [applyQuicOptions]'s policy (and the Linux
+ * connect path's local copy): pinned hashes verify the chain only under RequireBoth; otherwise
+ * verify unless explicitly disabled, and always when CA anchors are pinned.
+ */
+private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
+    if (o.serverCertificateHashes.isNotEmpty()) {
+        o.certificateHashVerification == CertificateHashVerification.RequireBoth
+    } else {
+        o.verifyPeer || o.trustedCaCertificatesPem.isNotEmpty()
+    }
+
+/**
+ * Load the default trust anchors for [config] on Apple when verifyPeer is on but no anchors are
+ * pinned. macOS keeps BoringSSL's compiled-in default verify paths (they resolve `/etc/ssl/cert.pem`,
+ * which macOS ships) — a no-op here, unchanged behaviour. The iOS family (device + simulator) has no
+ * such filesystem store, so the embedded Mozilla root bundle ([MOZILLA_CA_ROOTS_PEM], generated from
+ * mozilla-ca/cacert.pem) is written to a temp file and loaded as the anchor set. BoringSSL then does
+ * full RFC 5280 chain validation internally against those roots during the handshake — we never need
+ * the peer chain ourselves (quiche only surfaces the leaf). Branching on [Platform.osFamily] rather
+ * than probing the filesystem keeps this deterministic on the simulator, which can otherwise see the
+ * host Mac's `/etc/ssl`. SecTrust/keychain delegation (honouring MDM-installed + OS-revoked roots) is
+ * the tracked follow-up to this bundled-roots interim (#186).
+ */
+private fun loadAppleSystemCaTrust(config: CPointer<cnames.structs.quiche_config>) {
+    if (Platform.osFamily == OsFamily.MACOSX) return
+    val caBundlePath = writeCaBundleToTempFile(listOf(MOZILLA_CA_ROOTS_PEM))
+    try {
+        val rc = quiche_config_load_verify_locations_from_file(config, caBundlePath)
+        check(rc == 0) { "Failed to load bundled Mozilla CA roots: $rc" }
+    } finally {
+        unlink(caBundlePath)
+    }
+}
+
+/**
  * Write the supplied CA PEM blocks to a single `mkstemp` bundle file and return its path (#99).
  *
  * quiche/BoringSSL only loads verification anchors from a file path, so the in-memory PEM
  * must land on disk; the caller `unlink`s it once `load_verify_locations` has read it. The
  * bundle is written via `fputs` of the PEM text (no embedded NULs) — no `ByteArray` in our code.
+ *
+ * The temp file goes in `$TMPDIR` (falling back to `/tmp`): iOS sandboxes processes so `/tmp` is not
+ * writable there — only the per-process `NSTemporaryDirectory()` (exposed as `TMPDIR`) is. macOS sets
+ * `TMPDIR` too, so this single path is correct on every Apple target.
  */
 private fun writeCaBundleToTempFile(pems: List<String>): String =
     memScoped {
         val bundle = pems.joinToString("\n")
-        val template = "/tmp/ditchoom-quic-ca-XXXXXX"
+        val dir = getenv("TMPDIR")?.toKString()?.trimEnd('/') ?: "/tmp"
+        val template = "$dir/ditchoom-quic-ca-XXXXXX"
         val path = allocArray<ByteVar>(template.length + 1)
         for (i in template.indices) path[i] = template[i].code.toByte()
         path[template.length] = 0
