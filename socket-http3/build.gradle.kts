@@ -78,38 +78,17 @@ kotlin {
     }
 
     if (isMacOS) {
-        // Apple QUIC is now Cloudflare quiche (the quiche-on-Apple pivot), provided transitively via
-        // :socket-quic-default → :socket-quic-quiche. The live H3 loopback test opens a real QUIC
-        // connection (calls into quiche), so the macOS/iOS TEST binary must -force_load libquiche.a —
-        // exactly as the linux block below whole-archives it (without it the binary hits
-        // `undefined symbol: quiche_path_event_*` at link). binaries.all affects the test.kexe; the
-        // published klib links nothing. tvOS/watchOS have no quiche target (UnsupportedQuicEngine), so
-        // they link no quiche.
-        val linkQuiche: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.(String) -> Unit = { libSubdir ->
-            val a = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/$libSubdir/lib/libquiche.a")
-            if (a.exists()) {
-                binaries.all {
-                    linkerOpts(
-                        "-force_load",
-                        a.absolutePath,
-                        "-framework",
-                        "Security",
-                        "-framework",
-                        "CoreFoundation",
-                        "-framework",
-                        "Network",
-                        "-framework",
-                        "Foundation",
-                        "-lc++",
-                    )
-                }
-            }
-        }
-        macosArm64 { linkQuiche("macos-arm64") }
-        macosX64 { linkQuiche("macos-x64") }
-        iosArm64 { linkQuiche("ios-arm64") }
-        iosSimulatorArm64 { linkQuiche("ios-simulator-arm64") }
-        iosX64 { linkQuiche("ios-x64") }
+        // Apple QUIC is Cloudflare quiche (the quiche-on-Apple pivot), provided transitively via
+        // :socket-quic-default → :socket-quic-quiche, whose Quiche cinterop klib now EMBEDS libquiche.a
+        // and carries the Apple frameworks in its manifest linkerOpts (Gap A's fix). The live H3
+        // loopback test.kexe therefore links quiche + frameworks straight from that klib — the old
+        // repo-absolute `-force_load` here (one per target) is redundant and removed. tvOS/watchOS have
+        // no quiche target (UnsupportedQuicEngine), so they link no quiche.
+        macosArm64()
+        macosX64()
+        iosArm64()
+        iosSimulatorArm64()
+        iosX64()
         tvosArm64()
         tvosSimulatorArm64()
         tvosX64()
@@ -119,54 +98,13 @@ kotlin {
     }
 
     if (isLinux) {
-        // linuxX64/linuxArm64: codecs are pure common Kotlin, so the full common suite runs
-        // here. The live interop GET also opens a real QUIC connection, which calls into
-        // quiche — so the test binary must link libquiche.a (whole-archive), exactly like
-        // :socket-quic's own native binaries do (BoringSSL is contributed transitively by the
-        // base :socket: cinterop's staticLibraries). Without it the binary hits
-        // `undefined symbol: quiche_config_new` at runtime.
-        linuxX64 {
-            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-x64/lib")
-            if (quicheLibDir.resolve("libquiche.a").exists()) {
-                binaries.all {
-                    linkerOpts(
-                        "-L${quicheLibDir.absolutePath}",
-                        "-Wl,-Bstatic",
-                        "-Wl,--whole-archive",
-                        "-lquiche",
-                        "-Wl,--no-whole-archive",
-                        "-Wl,-Bdynamic",
-                        "-lpthread",
-                        "-ldl",
-                        "-lm",
-                        "-lstdc++",
-                        "--unresolved-symbols=ignore-in-object-files",
-                        "--allow-multiple-definition",
-                    )
-                }
-            }
-        }
-        linuxArm64 {
-            val quicheLibDir = project(":socket-quic-quiche").projectDir.resolve("libs/quiche/linux-arm64/lib")
-            if (quicheLibDir.resolve("libquiche.a").exists()) {
-                binaries.all {
-                    linkerOpts(
-                        "-L${quicheLibDir.absolutePath}",
-                        "-Wl,-Bstatic",
-                        "-Wl,--whole-archive",
-                        "-lquiche",
-                        "-Wl,--no-whole-archive",
-                        "-Wl,-Bdynamic",
-                        "-lpthread",
-                        "-ldl",
-                        "-lm",
-                        "-lstdc++",
-                        "--unresolved-symbols=ignore-in-object-files",
-                        "--allow-multiple-definition",
-                    )
-                }
-            }
-        }
+        // linuxX64/linuxArm64: codecs are pure common Kotlin, so the full common suite runs here. The
+        // live interop GET opens a real QUIC connection (calls into quiche), now linked from the
+        // :socket-quic-quiche Quiche klib's embedded libquiche.a (Gap A) — the old repo-absolute
+        // whole-archive here is redundant and removed. BoringSSL is contributed transitively by the
+        // base :socket: cinterop's staticLibraries, as before.
+        linuxX64()
+        linuxArm64()
     }
 
     applyDefaultHierarchyTemplate()

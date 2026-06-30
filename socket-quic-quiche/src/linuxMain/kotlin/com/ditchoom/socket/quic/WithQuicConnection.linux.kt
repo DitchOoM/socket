@@ -10,6 +10,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.linux.socket_getsockname
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_config_free
+import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_directory
 import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_file
 import com.ditchoom.socket.quic.quiche.quiche_config_new
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
@@ -43,7 +44,9 @@ import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
+import platform.posix.F_OK
 import platform.posix.SOCK_DGRAM
+import platform.posix.access
 import platform.posix.addrinfo
 import platform.posix.close
 import platform.posix.connect
@@ -112,6 +115,14 @@ internal suspend fun buildLinuxQuicConnection(
                 } finally {
                     unlink(caBundlePath)
                 }
+            } else if (effectiveVerifyPeer(quicOptions)) {
+                // verifyPeer is on with no pinned anchors: quiche/BoringSSL's compiled-in default verify
+                // paths resolve the system CA store on a normal distro, but a bare K/N Linux container
+                // may keep its trust store outside those defaults. Probe the standard system bundle/dir
+                // and load the first present, so verifyPeer=true works without the caller pinning anchors
+                // — the K/N-Linux companion to the JVM/Android default-anchor fix (#182). Best-effort: if
+                // none exist we fall through to BoringSSL's built-in defaults (prior behaviour, unchanged).
+                loadSystemCaTrust(config)
             }
 
             memScoped {
@@ -472,6 +483,42 @@ internal class LinuxQuicConfigCalls(
         sendQueueLen: Long,
     ) = com.ditchoom.socket.quic.quiche
         .quiche_config_enable_dgram(cfg, true, recvQueueLen.convert(), sendQueueLen.convert())
+}
+
+/**
+ * Effective peer-verification decision, mirroring [applyQuicOptions]'s policy: pinned hashes verify the
+ * chain only under RequireBoth; otherwise verify unless explicitly disabled, and always when CA anchors
+ * are pinned. Kept local to the connect path deliberately — the shared `resolveVerifyPeer` helper lands
+ * with the JVM/Android default-anchor fix (#182); dedupe against it on rebase.
+ */
+private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
+    if (o.serverCertificateHashes.isNotEmpty()) {
+        o.certificateHashVerification == CertificateHashVerification.RequireBoth
+    } else {
+        o.verifyPeer || o.trustedCaCertificatesPem.isNotEmpty()
+    }
+
+/**
+ * Load the system CA trust store into [config] from the first standard location present. Tries the
+ * common distro CA bundle files (Debian/Ubuntu/Alpine, RHEL/Fedora, BusyBox), then the Debian-style
+ * hashed `/etc/ssl/certs` directory. No-op if none exist (BoringSSL's built-in defaults still apply).
+ */
+private fun loadSystemCaTrust(config: CPointer<cnames.structs.quiche_config>) {
+    val bundleFiles =
+        listOf(
+            "/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu/Alpine
+            "/etc/pki/tls/certs/ca-bundle.crt", // RHEL/Fedora/CentOS
+            "/etc/ssl/cert.pem", // Alpine/BusyBox/macOS-style
+        )
+    for (f in bundleFiles) {
+        if (access(f, F_OK) == 0) {
+            quiche_config_load_verify_locations_from_file(config, f)
+            return
+        }
+    }
+    if (access("/etc/ssl/certs", F_OK) == 0) {
+        quiche_config_load_verify_locations_from_directory(config, "/etc/ssl/certs")
+    }
 }
 
 /**

@@ -68,9 +68,17 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
         }
 
-        jvmTest.dependencies {
+        // kotlin.test + coroutines-test go in commonTest so EVERY test source set inherits them —
+        // notably nativeTest, whose ApiLinkTest is the Kotlin/Native LINK gate. With them only in
+        // jvmTest, compileTestKotlin{LinuxX64,MacosArm64,IosSimulatorArm64} failed with unresolved
+        // 'test'/'runTest' BEFORE reaching the linker, so the link gate never actually exercised the
+        // K/N link (it caught a missing-dep, not the undistributed-libquiche.a it is built to catch).
+        commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+        }
+
+        jvmTest.dependencies {
             // The macOS quiche natives ship as a per-host classifier jar (META-INF/native/<platform>/)
             // that CI's validate-artifacts step injects into the merged socket-quic-quiche-jvm jar. For
             // a LOCAL run the SNAPSHOT publication doesn't auto-attach it, so add the locally-built
