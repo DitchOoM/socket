@@ -1093,12 +1093,15 @@ jobs:
       # Coverage-guided Jazzer fuzzing of the HAND-ROLLED HTTP/3 + QPACK codec — the
       # module's real RFC-9114/9204 risk surface (quiche/NW own the transport; this is OUR
       # parser/encoder). http3CodecFuzz hunts untyped decoder crashes; http3RoundTripFuzz
-      # hunts encode→decode bijection breaks. Pure-JVM Jazzer (no native toolchain).
+      # hunts encode→decode bijection breaks; wtCapsuleFuzz hunts crashes in the WebTransport
+      # Capsule Protocol parser (RFC 9297, the peer's CONNECT-stream control channel).
+      # Pure-JVM Jazzer (no native toolchain).
       - name: Fuzz HTTP/3 + QPACK codec (Jazzer, time-boxed)
         if: ${{ !cancelled() }}
-        timeout-minutes: 9
+        timeout-minutes: 12
         run: >-
           ./gradlew :socket-http3:http3CodecFuzz :socket-http3:http3RoundTripFuzz
+          :socket-http3:wtCapsuleFuzz
           -PquicFuzzSeconds=180
           --no-configuration-cache ${{ inputs.gradle-args }}
 

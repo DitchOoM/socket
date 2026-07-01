@@ -386,6 +386,56 @@ tasks.register<JavaExec>("http3CodecFuzz") {
     }
 }
 
+// `wtCapsuleFuzz` drives WebTransportCapsuleFuzzer (src/jvmTest) — the WebTransport-over-HTTP/3 Capsule
+// Protocol parser (RFC 9297 / draft-ietf-webtrans-http3 §5–§6), the peer's CONNECT-stream control
+// channel. It was the last adversarial parser in the WebTransport stack without a dedicated fuzzer
+// (http3CodecFuzz covers DATA-frame reassembly but not the capsules carried inside). Same pure-Kotlin
+// real-coverage + byte[]-entry-point + corpus discipline as http3CodecFuzz above.
+val wtCapsuleFuzzCorpusDir = projectDir.resolve("fuzz/corpus/wt-capsule")
+val wtCapsuleFuzzWorkDir = layout.buildDirectory.dir("fuzz/wt-capsule")
+
+tasks.register<JavaExec>("wtCapsuleFuzz") {
+    group = "verification"
+    description = "Coverage-guided Jazzer fuzzing of the WebTransport Capsule Protocol parser " +
+        "(WebTransportCapsuleFuzzer). Configure runtime with -PquicFuzzSeconds=<n> (default 60)."
+    dependsOn("jvmTestClasses")
+
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath =
+        files(
+            jvmTestCompilation.output.allOutputs,
+            jvmTestCompilation.runtimeDependencyFiles,
+        ) + http3JazzerConfig
+
+    mainClass.set("com.code_intelligence.jazzer.Jazzer")
+
+    val maxSeconds = providers.gradleProperty("quicFuzzSeconds").orElse("60")
+    val corpusDir = wtCapsuleFuzzCorpusDir
+    val workDir = wtCapsuleFuzzWorkDir
+
+    doFirst {
+        corpusDir.mkdirs()
+        workDir
+            .get()
+            .asFile
+            .resolve("corpus")
+            .mkdirs()
+    }
+
+    argumentProviders.add {
+        val work = workDir.get().asFile
+        listOf(
+            "--target_class=com.ditchoom.socket.http3.fuzz.WebTransportCapsuleFuzzer",
+            "--instrumentation_includes=com.ditchoom.socket.http3.**",
+            "-print_final_stats=1",
+            "-artifact_prefix=${work.absolutePath}/",
+            "-max_total_time=${maxSeconds.get()}",
+            work.resolve("corpus").absolutePath,
+            corpusDir.absolutePath,
+        )
+    }
+}
+
 // `http3RoundTripFuzz` is the encoder-side twin: it drives Http3RoundTripFuzzer (src/jvmTest), which
 // feeds the same Jazzer byte[] into the shared Http3FuzzGenerators to build a STRUCTURALLY VALID frame /
 // QPACK header list, then asserts `encode → decode` returns it unchanged. Where http3CodecFuzz hunts

@@ -345,6 +345,19 @@ sealed interface Http3Violation {
 
         override fun describe() = "WT_CLOSE_SESSION capsule shorter than its 4-byte error code"
     }
+
+    /**
+     * A WebTransport CLOSE_SESSION capsule's Application Error Message was not valid UTF-8
+     * (draft §6 requires the reason be UTF-8). Without this typed rejection the strict decoder
+     * throws a raw `MalformedInputException` — an untyped parser crash.
+     */
+    data class WebTransportCloseReasonNotUtf8(
+        val cause: Throwable? = null,
+    ) : Http3Violation {
+        override val errorCode get() = Http3ErrorCode.GENERAL_PROTOCOL_ERROR
+
+        override fun describe() = "WT_CLOSE_SESSION reason was not valid UTF-8"
+    }
 }
 
 /**
@@ -407,6 +420,7 @@ private fun Http3Violation.causeOrNull(): Throwable? =
         is Http3Violation.MalformedFrame -> cause
         is Http3Violation.QpackDecompressionFailed -> cause
         is Http3Violation.MalformedQpackInstruction -> cause
+        is Http3Violation.WebTransportCloseReasonNotUtf8 -> cause
         is Http3Violation.ControlStreamError -> cause
         is Http3Violation.PushStreamError -> cause
         else -> null

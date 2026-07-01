@@ -296,58 +296,23 @@ internal class WebTransportMux(
         session: WebTransportSession,
     ): Boolean {
         while (true) {
-            if (capsules.available() < 1) return false
-            val typeFirst = capsules.peekByte(0).toInt() and 0xFF
-            val typeLen = VarIntCodec.lengthFromPrefix(typeFirst)
-            if (capsules.available() < typeLen + 1) return false
-            val lenFirst = capsules.peekByte(typeLen).toInt() and 0xFF
-            val lenLen = VarIntCodec.lengthFromPrefix(lenFirst)
-            if (capsules.available() < typeLen + lenLen) return false
-            val length = peekVarIntAt(capsules, typeLen).toInt()
-            val total = typeLen + lenLen + length
-            if (capsules.available() < total) return false
-
-            // Scoped: capsules decode into owned values (varints + a String reason), so the wire
-            // bytes recycle immediately; the suspend dispatch happens outside the scope.
-            val (type, closeInfo) =
-                capsules.readBufferScoped(total) {
-                    val type = VarIntCodec.decode(this, DecodeContext.Empty)
-                    VarIntCodec.decode(this, DecodeContext.Empty) // length (already known)
-                    type to
-                        if (type == WebTransportWire.WT_CLOSE_SESSION) {
-                            WebTransportWire.readCloseSessionValue(this, length)
-                        } else {
-                            null
-                        }
-                }
-            when (type) {
-                WebTransportWire.WT_CLOSE_SESSION -> {
-                    session.onPeerClosed(checkNotNull(closeInfo))
+            // Framing is the pure, fuzzable [WebTransportWire.nextCapsule]; the mux only owns the
+            // session dispatch, which suspends and so must stay outside the readBufferScoped window.
+            when (val capsule = WebTransportWire.nextCapsule(capsules)) {
+                CapsuleParse.NeedMore -> return false
+                is CapsuleParse.Close -> {
+                    session.onPeerClosed(capsule.info)
                     return true
                 }
-                WebTransportWire.WT_DRAIN_SESSION -> {
+                CapsuleParse.Drain -> {
                     // The peer is winding the session down (draft §5); surface it but keep the session
-                    // open so in-flight streams/datagrams finish. The value is empty (length honoured).
+                    // open so in-flight streams/datagrams finish.
                     session.onPeerDrain()
                 }
-                // Unknown capsule types: the value bytes were consumed inside the scope; continue.
-                else -> {}
+                // Unknown capsule types: the value bytes were consumed inside nextCapsule; continue.
+                CapsuleParse.Skipped -> {}
             }
         }
-    }
-
-    /** Decode the varint at byte [offset] in [processor] (assumes a full varint is buffered there). */
-    private fun peekVarIntAt(
-        processor: StreamProcessor,
-        offset: Int,
-    ): Long {
-        val first = processor.peekByte(offset).toInt() and 0xFF
-        val length = VarIntCodec.lengthFromPrefix(first)
-        var value = (first and 0x3F).toLong()
-        for (i in 1 until length) {
-            value = (value shl 8) or (processor.peekByte(offset + i).toLong() and 0xFF)
-        }
-        return value
     }
 
     /**
