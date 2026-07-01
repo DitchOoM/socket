@@ -452,6 +452,28 @@ kotlin {
     }
     jvm {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        // Java 21 compilation for the FFM-based reactive network monitor (routing sockets).
+        // Shipped under META-INF/versions/21 (multi-release JAR) so it only loads on JDK 21+;
+        // the Java-8 base compilation keeps the polling fallback (see JvmNetworkMonitorSelector.kt).
+        compilations.create("java21") {
+            compilerOptions.configure {
+                jvmTarget.set(JvmTarget.JVM_21)
+            }
+            defaultSourceSet {
+                kotlin.srcDir("src/jvm21Main/kotlin")
+                dependencies {
+                    // Reach the base compilation's output for NetworkMonitor, NetworkAvailability,
+                    // PollingNetworkMonitor (Windows fallback), etc.
+                    implementation(
+                        this@jvm
+                            .compilations
+                            .getByName("main")
+                            .output.classesDirs,
+                    )
+                    implementation(libs.kotlinx.coroutines.core)
+                }
+            }
+        }
     }
     js {
         browser {
@@ -604,6 +626,48 @@ kotlin {
 
         // Linux implementation uses standard KMP hierarchy:
         // src/linuxMain is automatically shared by linuxX64 and linuxArm64
+    }
+}
+
+// Put the java21 (FFM network-monitor) compilation output on the JVM test classpath so
+// NetlinkNetworkMonitorTest can reference NetlinkNetworkMonitor at both compile and runtime.
+// compileDependencyFiles lets the test resolve the class; the afterEvaluate below appends it
+// to the actual jvmTest runtime classpath (appended — the base polling selector still wins
+// for NetworkMonitor.default() in a normal run; the FFM classes are exercised via direct
+// instantiation). Appending to runtimeDependencyFiles alone did not reach the Test task.
+kotlin.jvm().compilations.getByName("test") {
+    compileDependencyFiles +=
+        kotlin
+            .jvm()
+            .compilations["java21"]
+            .output.classesDirs
+}
+afterEvaluate {
+    tasks.named<Test>("jvmTest") {
+        dependsOn("compileJava21KotlinJvm")
+        classpath +=
+            kotlin
+                .jvm()
+                .compilations["java21"]
+                .output.classesDirs
+    }
+}
+
+// Multi-release JAR: ship the JDK 21 FFM network-monitor bindings under META-INF/versions/21.
+// Wrapped in afterEvaluate (mirrors socket-quic-quiche) because jvmJar is created by the KMP plugin.
+afterEvaluate {
+    tasks.named<Jar>("jvmJar") {
+        manifest {
+            attributes("Multi-Release" to "true")
+        }
+        into("META-INF/versions/21") {
+            from(
+                kotlin
+                    .jvm()
+                    .compilations["java21"]
+                    .output.allOutputs,
+            )
+        }
     }
 }
 
