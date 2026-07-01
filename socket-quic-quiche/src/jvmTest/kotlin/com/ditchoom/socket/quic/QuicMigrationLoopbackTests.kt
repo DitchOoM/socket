@@ -13,8 +13,10 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assume.assumeTrue
 import java.net.InetSocketAddress
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -101,13 +103,35 @@ class QuicMigrationLoopbackTests {
         assumeTrue("Loopback alias 127.0.0.2 not bindable on this host (needs a privileged alias)", bindable)
     }
 
+    /**
+     * Writes [payload] and reads its echo back.
+     *
+     * A QUIC stream is an **unframed byte stream**: a single [read] may return a partial
+     * chunk (under-read) or — during an active migration, where extra path-validation
+     * packets churn the receive path — more bytes than were sent (over-read of a reused
+     * buffer). So we drain to *exactly* the expected UTF-8 length and decode only those
+     * bytes. This makes the round-trip assertion deterministic: a genuine data corruption
+     * surfaces as a clear `assertEquals` mismatch rather than a flaky
+     * `MalformedInputException` from decoding trailing garbage. Any bytes beyond the
+     * expected length are left in the stream (which is closed right after).
+     */
     private suspend fun QuicByteStream.echoOnce(payload: String): String {
-        val out = BufferFactory.Default.allocate(payload.length)
+        val expected = payload.encodeToByteArray()
+        val out = BufferFactory.Default.allocate(expected.size)
         out.writeString(payload, Charset.UTF8)
         out.resetForRead()
         write(out, 5.seconds)
-        val resp = read(5.seconds)
-        return if (resp is ReadResult.Data) resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8) else "no_data"
+
+        val acc = ByteArray(expected.size)
+        var got = 0
+        while (got < expected.size) {
+            val resp = read(5.seconds)
+            if (resp !is ReadResult.Data) return "no_data"
+            val take = minOf(resp.buffer.remaining(), expected.size - got)
+            for (j in 0 until take) acc[got + j] = resp.buffer.readByte()
+            got += take
+        }
+        return acc.decodeToString()
     }
 
     @Test
@@ -194,5 +218,83 @@ class QuicMigrationLoopbackTests {
                 }
             }
         }
+    }
+
+    /**
+     * Deterministic read-path guard (runs under whichever quiche backend CI selects —
+     * JNI and FFM). Echoes payloads across frame/packet-boundary sizes, filled with
+     * high bytes (0x80..0xFF), and asserts each round-trips **byte-exact**. Two ways a
+     * corrupt read is caught with no reliance on timing:
+     *  - [assertContentEquals] fails on any wrong/garbage byte, and
+     *  - [roundTripExact] fails if the read delivering the final expected byte still has
+     *    leftover bytes — i.e. an **over-read** (the class of defect the FFM migration
+     *    flake's `MalformedInputException` pointed at, but on the plain read path).
+     */
+    @Test
+    fun streamRoundTripsExactBytesAcrossSizesAndBytePatterns() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                withTimeout(30.seconds) {
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
+                        val serverJob =
+                            launch(Dispatchers.IO) {
+                                connections {
+                                    val stream = acceptStream()
+                                    while (true) {
+                                        val data = stream.read(8.seconds)
+                                        if (data is ReadResult.Data) {
+                                            stream.write(data.buffer, 5.seconds)
+                                        } else {
+                                            break
+                                        }
+                                    }
+                                    stream.close()
+                                }
+                            }
+
+                        val done = CompletableDeferred<Unit>()
+                        val clientJob =
+                            launch(Dispatchers.IO) {
+                                withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
+                                    val stream = openStream()
+                                    for (size in listOf(1, 5, 63, 64, 255, 1024, 4096)) {
+                                        stream.roundTripExact(ByteArray(size) { ((it * 31 + 0x80) and 0xFF).toByte() })
+                                    }
+                                    stream.close()
+                                    done.complete(Unit)
+                                }
+                            }
+
+                        try {
+                            withTimeout(28.seconds) { done.await() }
+                        } finally {
+                            clientJob.cancel()
+                            serverJob.cancel()
+                        }
+                    }
+                }
+            }
+        }
+
+    /** Writes [payload], drains exactly [payload].size bytes, and asserts a byte-exact echo. */
+    private suspend fun QuicByteStream.roundTripExact(payload: ByteArray) {
+        val out = BufferFactory.Default.allocate(payload.size)
+        for (b in payload) out.writeByte(b)
+        out.resetForRead()
+        write(out, 5.seconds)
+
+        val acc = ByteArray(payload.size)
+        var got = 0
+        while (got < payload.size) {
+            val resp = read(5.seconds)
+            assertTrue(resp is ReadResult.Data, "stream ended early after $got/${payload.size} bytes")
+            val take = minOf(resp.buffer.remaining(), payload.size - got)
+            for (j in 0 until take) acc[got + j] = resp.buffer.readByte()
+            got += take
+            if (got == payload.size && resp.buffer.remaining() > 0) {
+                fail("over-read: ${resp.buffer.remaining()} unexpected byte(s) past ${payload.size} in one read")
+            }
+        }
+        assertContentEquals(payload, acc, "echoed bytes differ from sent (size=${payload.size})")
     }
 }
