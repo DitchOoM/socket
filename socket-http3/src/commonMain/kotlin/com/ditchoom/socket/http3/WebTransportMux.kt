@@ -263,6 +263,10 @@ internal class WebTransportMux(
                 // Non-DATA frames on a CONNECT/Capsule stream are ignored (RFC 9297 treats the content as
                 // the capsule byte-stream; HTTP/3 reserved frames are skipped per RFC 9114 §9).
             }
+        } catch (e: CancellationException) {
+            // Scope cancelled — propagate so this loop's coroutine finalizes as cancelled rather than
+            // masking it as a clean peer close. The finally still runs the session cleanup below.
+            throw e
         } catch (_: Throwable) {
             // Stream error / reset / connection close — the session is gone.
         } finally {

@@ -116,6 +116,13 @@ class LinuxClientSocket : ClientToServerSocket {
                         // Connect succeeded — exit the fallback loop.
                         lastError = null
                         break
+                    } catch (e: CancellationException) {
+                        // A cancelled connect must propagate immediately — not be recorded as lastError
+                        // and retried against the next address (which would mask the cancellation, or
+                        // surface a bogus "all addresses unreachable" if the last socket() then fails).
+                        closeSocket(candidateFd)
+                        sockfd = -1
+                        throw e
                     } catch (e: Exception) {
                         lastError = e
                         closeSocket(candidateFd)

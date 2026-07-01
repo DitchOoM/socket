@@ -49,6 +49,7 @@ import platform.posix.sockaddr_in6
 import platform.posix.sockaddr_storage
 import platform.posix.socket
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
@@ -391,6 +392,9 @@ private class AppleQuicServer(
                 val recvResult =
                     try {
                         serverChannel.recvFrom(recvBuf)
+                    } catch (e: CancellationException) {
+                        recvBuf.freeNativeMemory()
+                        throw e
                     } catch (_: Exception) {
                         recvBuf.freeNativeMemory()
                         if (closed) return
