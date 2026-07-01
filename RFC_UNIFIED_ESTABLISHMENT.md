@@ -146,6 +146,44 @@ Transport.connect(host, port, config)                       // Layer 1 (agnostic
 The projection is the only new concept, and it is tiny. It is what makes "one byte pipe, don't care
 which transport" real.
 
+### 3.4 Layer 2b — `MultiplexingTransport` (the agnostic **multiplex** surface)
+
+The single-stream `Transport` is not the only agnostic surface, and it must **not** be positioned as a
+lowest-common-denominator that hides multiplexing. A library that genuinely needs *many* concurrent
+streams should also be able to write **once** and run over QUIC or WebTransport interchangeably — it
+just can't include TCP (TCP has no multiplexing; that's physics, not an API gap).
+
+buffer-flow already defines the neutral multiplex abstraction: **`StreamMux<T>`** — `openBidirectional()`/
+`openUnidirectional()`/`acceptBidirectional()`/`acceptUnidirectional()` returning the tightest typed
+`Connection<T>`/`Sender<T>`/`Receiver<T>` per direction. QUIC already adapts to it (`QuicStreamMux`);
+WebTransport did **not**, which is the gap this RFC closes with `WebTransportStreamMux`.
+
+The agnostic entry point mirrors `Transport`, one tier up:
+
+```kotlin
+interface MultiplexingTransport {
+    suspend fun <T, R> withMux(host, port, codec, config, block: suspend StreamMux<T>.() -> R): R
+}
+```
+
+- `QuicMultiplexingTransport(quicOptions)` and `WebTransportMultiplexingTransport(path)` implement it.
+- **Scoped, not held** — `StreamMux` explicitly does not own the connection lifecycle (the transport
+  scope does); `withMux { }` is the honest primitive (the connection lives for the block, all streams
+  force-close on exit), exactly like the pre-existing `withQuicMux { }`.
+- A library binds to `MultiplexingTransport` + `StreamMux<T>` and runs over QUIC **or** WebTransport
+  with no transport-specific code.
+
+**So there are two agnostic tiers, not one LCD:**
+
+| Tier | Surface | Transports | For |
+|---|---|---|---|
+| Single stream | `Transport.connect(): ByteStream` | TCP · QUIC · WebTransport | one reliable ordered byte pipe (MQTT, most framed protocols) |
+| Multiplexed | `MultiplexingTransport.withMux(): StreamMux<T>` | QUIC · WebTransport | many concurrent typed streams (+ uni streams) |
+
+A library picks the tier that matches its needs; both are transport-neutral. Transport-specific *power*
+beyond `StreamMux` (QUIC datagrams/migration, WebTransport session close codes) still lives on the
+per-transport session APIs, reached by `is`-check — capability-by-type, never a stub.
+
 ---
 
 ## 4. Addressing: host:port vs URL (the interface question)
@@ -333,10 +371,12 @@ Delivered on `feat/composable-transports`:
   `SocketTimeoutException`, `SSLSocketException` subtypes now carry `reason`. All four central mappers
   (`wrapJvmException`, `mapErrnoToException`, `mapSocketException`, `wrapNodeError`) enriched
   (SSL bad-cert vs handshake; `ENOMEM`/`OutOfMemoryError` → `OutOfMemory`).
-- **`SessionTransport<S>`** + `use { }` + **`SessionOwningByteStream`** (single-stream projection) — socket-core.
-- **`QuicTransport`** + **`QuicSessionTransport`** — socket-quic-default.
-- **`WebTransportTransport`** + **`WebTransportSessionTransport`** — socket-webtransport
-  (added `api(project(":"))` so it can implement the socket-core `Transport` SPI).
+- **`SessionTransport<S>`** + `use { }` + **`SessionOwningByteStream`** (single-stream projection) +
+  **`MultiplexingTransport`** (agnostic multiplex surface, §3.4) — socket-core.
+- **`QuicTransport`** + **`QuicSessionTransport`** + **`QuicMultiplexingTransport`** — socket-quic-default.
+- **`WebTransportTransport`** + **`WebTransportSessionTransport`** + **`WebTransportStreamMux`**
+  (the missing `StreamMux` adapter) + **`WebTransportMultiplexingTransport`** — socket-webtransport
+  (added `api(project(":"))` so it can implement the socket-core `Transport`/`MultiplexingTransport` SPIs).
 - Tests: `ConnectionFailureReasonTest` (common), `JvmExceptionReasonTests` (jvm), `QuicTransportTest`
   (jvm), `WebTransportTransportTest` (common). All green on JVM; common/native/JS/wasmJs compile clean.
 

@@ -4,10 +4,17 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.codec.Codec
+import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.codec.PeekResult
+import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteSink
 import com.ditchoom.buffer.flow.ByteSource
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.SSLHandshakeFailedException
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketConnectionException
@@ -91,6 +98,26 @@ class WebTransportTransportTest {
                         .let { stream.write(it) }
                 }
             assertTrue(e.cause is WebTransportStreamException)
+        }
+
+    @Test
+    fun multiplexingTransport_withMux_opensTypedBidiStream_andClosesSession() =
+        runTest {
+            val support = FakeWebTransportSupport()
+            val out =
+                WebTransportMultiplexingTransport(path = "/m", support = support).withMux("h", 443, MuxStringCodec) {
+                    // this: StreamMux<String> — the SAME agnostic surface QuicMultiplexingTransport exposes.
+                    val conn = openBidirectional()
+                    conn.send("ping")
+                    "sent"
+                }
+            assertEquals("sent", out)
+            // the framed message reached the peer side of the fake bidi stream
+            val server = support.lastSession!!.peerStream!!
+            val data = (server.read() as ReadResult.Data).buffer
+            val len = data.readShort().toInt() and 0xFFFF
+            assertEquals("ping", data.readString(len, Charset.UTF8))
+            assertTrue(support.lastSession!!.closed, "withMux must close the WebTransport session")
         }
 
     @Test
@@ -179,5 +206,40 @@ class WebTransportTransportTest {
         ) = throw WebTransportStreamException(code, "peer reset")
 
         override suspend fun close() {}
+    }
+}
+
+/** Length-prefixed UTF-8 string codec for the mux test (mirrors socket-quic's MuxStringCodec). */
+private object MuxStringCodec : Codec<String> {
+    override fun decode(
+        buffer: ReadBuffer,
+        context: DecodeContext,
+    ): String {
+        val length = buffer.readShort().toInt() and 0xFFFF
+        return buffer.readString(length)
+    }
+
+    override fun encode(
+        buffer: WriteBuffer,
+        value: String,
+        context: EncodeContext,
+    ) {
+        val bytes = value.encodeToByteArray()
+        buffer.writeShort(bytes.size.toShort())
+        buffer.writeBytes(bytes)
+    }
+
+    override fun wireSize(
+        value: String,
+        context: EncodeContext,
+    ): WireSize = WireSize.BackPatch
+
+    override fun peekFrameSize(
+        stream: StreamProcessor,
+        baseOffset: Int,
+    ): PeekResult {
+        if (stream.available() < baseOffset + 2) return PeekResult.NeedsMoreData
+        val length = stream.peekShort(baseOffset).toInt() and 0xFFFF
+        return PeekResult.Complete(2 + length)
     }
 }

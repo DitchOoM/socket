@@ -1,12 +1,16 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.ByteStream
+import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.transport.MultiplexingTransport
 import com.ditchoom.socket.transport.SessionOwningByteStream
 import com.ditchoom.socket.transport.SessionTransport
 import com.ditchoom.socket.transport.Transport
+import com.ditchoom.socket.transport.use
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
@@ -112,4 +116,32 @@ class QuicTransport(
                 else -> t
             }
     }
+}
+
+/**
+ * The transport-agnostic **multiplexing** QUIC transport (RFC_UNIFIED_ESTABLISHMENT.md §3.4): a
+ * [MultiplexingTransport] whose [withMux] runs a block with a typed [StreamMux] over a QUIC connection.
+ * Lets a library that needs many concurrent streams code against [StreamMux] and run over QUIC **or**
+ * WebTransport ([com.ditchoom.socket.webtransport.WebTransportMultiplexingTransport]) interchangeably.
+ *
+ * Thin wrapper over the existing [withQuicMux]; [quicOptions] carries the ALPN, [engine] defaults to
+ * [defaultQuicEngine].
+ */
+class QuicMultiplexingTransport(
+    quicOptions: QuicOptions,
+    engine: QuicEngine = defaultQuicEngine,
+) : MultiplexingTransport {
+    private val session = QuicSessionTransport(quicOptions, engine)
+
+    override suspend fun <T, R> withMux(
+        hostname: String,
+        port: Int,
+        codec: Codec<T>,
+        config: TransportConfig,
+        block: suspend StreamMux<T>.() -> R,
+    ): R =
+        // establish (timeout -> SocketTimeoutException) + close in finally; block runs with the mux.
+        session.use(hostname, port, config) { connection ->
+            QuicStreamMux(connection, codec, config).block()
+        }
 }

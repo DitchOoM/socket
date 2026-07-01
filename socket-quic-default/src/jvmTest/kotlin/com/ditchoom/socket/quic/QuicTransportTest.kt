@@ -4,11 +4,18 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.codec.Codec
+import com.ditchoom.buffer.codec.DecodeContext
+import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.codec.PeekResult
+import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MemoryTransport
@@ -70,6 +77,21 @@ class QuicTransportTest {
                 }
             assertTrue(e.cause is QuicStreamException, "must preserve the QuicStreamException as cause")
             stream.close()
+        }
+
+    @Test
+    fun multiplexingTransport_withMux_opensTypedBidiStream_andClosesConnection() =
+        runBlocking {
+            val engine = FakeQuicEngine()
+            val out =
+                QuicMultiplexingTransport(opts, engine).withMux("h", 443, MuxStringCodec) {
+                    // this: StreamMux<String> — agnostic multiplex surface, same code would run over WT.
+                    val conn = openBidirectional()
+                    conn.send("ping")
+                    "sent"
+                }
+            assertEquals("sent", out)
+            assertTrue(engine.connection!!.closed, "withMux must close the QUIC connection when the block ends")
         }
 
     @Test
@@ -157,5 +179,40 @@ class QuicTransportTest {
         ): BytesWritten = throw QuicStreamException(0, QuicStreamAbort.StopSending(42), "peer STOP_SENDING")
 
         override suspend fun close() {}
+    }
+}
+
+/** Length-prefixed UTF-8 string codec for the mux test (mirrors socket-quic's MuxStringCodec). */
+private object MuxStringCodec : Codec<String> {
+    override fun decode(
+        buffer: ReadBuffer,
+        context: DecodeContext,
+    ): String {
+        val length = buffer.readShort().toInt() and 0xFFFF
+        return buffer.readString(length)
+    }
+
+    override fun encode(
+        buffer: WriteBuffer,
+        value: String,
+        context: EncodeContext,
+    ) {
+        val bytes = value.encodeToByteArray()
+        buffer.writeShort(bytes.size.toShort())
+        buffer.writeBytes(bytes)
+    }
+
+    override fun wireSize(
+        value: String,
+        context: EncodeContext,
+    ): WireSize = WireSize.BackPatch
+
+    override fun peekFrameSize(
+        stream: StreamProcessor,
+        baseOffset: Int,
+    ): PeekResult {
+        if (stream.available() < baseOffset + 2) return PeekResult.NeedsMoreData
+        val length = stream.peekShort(baseOffset).toInt() and 0xFFFF
+        return PeekResult.Complete(2 + length)
     }
 }
