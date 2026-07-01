@@ -166,12 +166,31 @@ interface MultiplexingTransport {
 }
 ```
 
-- `QuicMultiplexingTransport(quicOptions)` and `WebTransportMultiplexingTransport(path)` implement it.
 - **Scoped, not held** — `StreamMux` explicitly does not own the connection lifecycle (the transport
   scope does); `withMux { }` is the honest primitive (the connection lives for the block, all streams
   force-close on exit), exactly like the pre-existing `withQuicMux { }`.
 - A library binds to `MultiplexingTransport` + `StreamMux<T>` and runs over QUIC **or** WebTransport
   with no transport-specific code.
+
+**One object implements both tiers (the "two-tier leak" fix).** `QuicTransport` and
+`WebTransportTransport` each implement **both** `Transport` *and* `MultiplexingTransport`; `TcpTransport`
+implements only `Transport`. So the capability difference is not a fork the app must pre-commit to — it
+is a **type-gated capability** the library discovers by `is`-check, exactly like the existing
+`WebTransportSupport.Multiplexed` smart-cast, with no stubbed method that throws:
+
+```kotlin
+// app injects ONE Transport; library adapts by capability
+class MyProtocol(private val transport: Transport) {
+    suspend fun run(host: String, port: Int) =
+        if (transport is MultiplexingTransport) transport.withMux(host, port, MyCodec) { /* many streams */ }
+        else CodecConnection.connect(host, port, MyCodec, transport)   // one stream (incl. TCP)
+}
+```
+
+This keeps the abstraction honest — you cannot conjure QUIC's independent streams over a single TCP
+connection, so TCP genuinely lacks the mux capability (physics, not an API gap) — while removing the
+"leak": the app hands over one object and the library branches type-safely instead of the app choosing
+a tier up front.
 
 **So there are two agnostic tiers, not one LCD:**
 
@@ -180,9 +199,17 @@ interface MultiplexingTransport {
 | Single stream | `Transport.connect(): ByteStream` | TCP · QUIC · WebTransport | one reliable ordered byte pipe (MQTT, most framed protocols) |
 | Multiplexed | `MultiplexingTransport.withMux(): StreamMux<T>` | QUIC · WebTransport | many concurrent typed streams (+ uni streams) |
 
-A library picks the tier that matches its needs; both are transport-neutral. Transport-specific *power*
-beyond `StreamMux` (QUIC datagrams/migration, WebTransport session close codes) still lives on the
-per-transport session APIs, reached by `is`-check — capability-by-type, never a stub.
+A library picks the tier that matches its needs (or holds a `Transport` and opportunistically uses the
+mux tier by `is`-check); both are transport-neutral. Transport-specific *power* beyond `StreamMux`
+(QUIC datagrams/migration, WebTransport session close codes) still lives on the per-transport session
+APIs, reached by `is`-check — capability-by-type, never a stub.
+
+> **Known refinement, sequenced as a follow-up (P1):** `StreamMux<T>` fixes one codec across every
+> stream — fine for homogeneous protocols, too rigid for heterogeneous muxes (HTTP/3's control vs QPACK
+> vs request streams). The planned fix is a raw `ByteStreamMux` primitive (open/accept *raw* streams;
+> `accept` returns bytes so you can peek the stream-type prefix before choosing a codec), with
+> `StreamMux<T>` becoming a typed view over it — mirroring how `CodecConnection<T>` layers on
+> `ByteStream`. That change lives in buffer-flow (cross-repo) and is deferred to its own PR.
 
 ---
 
@@ -373,10 +400,11 @@ Delivered on `feat/composable-transports`:
   (SSL bad-cert vs handshake; `ENOMEM`/`OutOfMemoryError` → `OutOfMemory`).
 - **`SessionTransport<S>`** + `use { }` + **`SessionOwningByteStream`** (single-stream projection) +
   **`MultiplexingTransport`** (agnostic multiplex surface, §3.4) — socket-core.
-- **`QuicTransport`** + **`QuicSessionTransport`** + **`QuicMultiplexingTransport`** — socket-quic-default.
-- **`WebTransportTransport`** + **`WebTransportSessionTransport`** + **`WebTransportStreamMux`**
-  (the missing `StreamMux` adapter) + **`WebTransportMultiplexingTransport`** — socket-webtransport
-  (added `api(project(":"))` so it can implement the socket-core `Transport`/`MultiplexingTransport` SPIs).
+- **`QuicTransport`** (implements **both** `Transport` + `MultiplexingTransport`) + **`QuicSessionTransport`**
+  — socket-quic-default.
+- **`WebTransportTransport`** (implements **both** `Transport` + `MultiplexingTransport`) +
+  **`WebTransportSessionTransport`** + **`WebTransportStreamMux`** (the missing `StreamMux` adapter) —
+  socket-webtransport (added `api(project(":"))` so it can implement the socket-core SPIs).
 - Tests: `ConnectionFailureReasonTest` (common), `JvmExceptionReasonTests` (jvm), `QuicTransportTest`
   (jvm), `WebTransportTransportTest` (common). All green on JVM; common/native/JS/wasmJs compile clean.
 

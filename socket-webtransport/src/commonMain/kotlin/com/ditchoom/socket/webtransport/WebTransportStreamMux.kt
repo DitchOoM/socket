@@ -13,14 +13,9 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.CodecReceiver
 import com.ditchoom.socket.transport.CodecSender
-import com.ditchoom.socket.transport.MultiplexingTransport
-import com.ditchoom.socket.transport.use
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 
 /**
@@ -76,39 +71,4 @@ class WebTransportStreamMux<T>(
         }
         return channel
     }
-}
-
-/**
- * The transport-agnostic **multiplexing** WebTransport transport (RFC_UNIFIED_ESTABLISHMENT.md §3.4):
- * a [MultiplexingTransport] whose [withMux] runs a block with a typed [StreamMux] over a WebTransport
- * session. Interchangeable with `QuicMultiplexingTransport` — a library binds to [MultiplexingTransport]
- * and runs over either.
- *
- * Addressing mirrors [WebTransportTransport]: host:port on [withMux] + [path] on the instance build the
- * `https://host:port$path` URL. Errors map onto the unified [com.ditchoom.socket.SocketException] family.
- */
-class WebTransportMultiplexingTransport(
-    path: String = "/",
-    options: WebTransportOptions = WebTransportOptions(),
-    support: WebTransportSupport = webTransportSupport(),
-) : MultiplexingTransport {
-    private val session = WebTransportSessionTransport(path, options, support)
-
-    override suspend fun <T, R> withMux(
-        hostname: String,
-        port: Int,
-        codec: Codec<T>,
-        config: TransportConfig,
-        block: suspend StreamMux<T>.() -> R,
-    ): R =
-        // establish (WebTransportException -> SocketException) + close the session in finally.
-        session.use(hostname, port, config) { wt ->
-            // A child scope for the lazy incoming-stream collectors; cancelled before the session closes.
-            val muxScope = CoroutineScope(currentCoroutineContext() + Job())
-            try {
-                WebTransportStreamMux(wt, codec, config, muxScope).block()
-            } finally {
-                muxScope.cancel()
-            }
-        }
 }

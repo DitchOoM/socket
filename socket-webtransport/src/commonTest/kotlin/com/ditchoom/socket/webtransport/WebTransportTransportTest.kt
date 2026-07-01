@@ -105,7 +105,7 @@ class WebTransportTransportTest {
         runTest {
             val support = FakeWebTransportSupport()
             val out =
-                WebTransportMultiplexingTransport(path = "/m", support = support).withMux("h", 443, MuxStringCodec) {
+                WebTransportTransport(path = "/m", support = support).withMux("h", 443, MuxStringCodec) {
                     // this: StreamMux<String> — the SAME agnostic surface QuicMultiplexingTransport exposes.
                     val conn = openBidirectional()
                     conn.send("ping")

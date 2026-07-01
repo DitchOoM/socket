@@ -19,6 +19,8 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.MemoryTransport
+import com.ditchoom.socket.transport.MultiplexingTransport
+import com.ditchoom.socket.transport.Transport
 import com.ditchoom.socket.transport.use
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -80,11 +82,19 @@ class QuicTransportTest {
         }
 
     @Test
+    fun quicTransport_isBothSingleStreamAndMultiplexing() {
+        val t = QuicTransport(opts, FakeQuicEngine())
+        // Dual-SPI front door: a library holds a Transport and reaches mux by is-check, no stub.
+        assertTrue(t is Transport)
+        assertTrue(t is MultiplexingTransport)
+    }
+
+    @Test
     fun multiplexingTransport_withMux_opensTypedBidiStream_andClosesConnection() =
         runBlocking {
             val engine = FakeQuicEngine()
             val out =
-                QuicMultiplexingTransport(opts, engine).withMux("h", 443, MuxStringCodec) {
+                QuicTransport(opts, engine).withMux("h", 443, MuxStringCodec) {
                     // this: StreamMux<String> — agnostic multiplex surface, same code would run over WT.
                     val conn = openBidirectional()
                     conn.send("ping")

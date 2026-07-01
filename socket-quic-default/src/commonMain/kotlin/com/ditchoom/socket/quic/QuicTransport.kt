@@ -58,21 +58,33 @@ class QuicSessionTransport(
 }
 
 /**
- * The transport-agnostic **single-stream projection** of QUIC (RFC_UNIFIED_ESTABLISHMENT.md §3.1/§3.3):
- * a [Transport] whose [connect] establishes a QUIC connection, opens one bidirectional stream, and
- * hands it back as a plain [ByteStream]. Closing that stream tears the whole connection down — so it
- * behaves exactly like a TCP [com.ditchoom.socket.transport.TcpTransport] from a protocol library's
- * point of view, letting `CodecConnection.connect(host, port, codec, QuicTransport(opts))` run any
- * `Codec<T>` over QUIC with no protocol-code change.
+ * The QUIC front-door transport — implements **both** agnostic tiers (RFC_UNIFIED_ESTABLISHMENT.md
+ * §3.1/§3.3/§3.4):
+ *  - [Transport.connect] → the **single-stream projection**: establish a QUIC connection, open one
+ *    bidirectional stream, hand it back as a plain [ByteStream] whose `close()` tears the connection
+ *    down — so it behaves like TCP ([com.ditchoom.socket.transport.TcpTransport]) and any `Codec<T>`
+ *    runs over it via `CodecConnection.connect(host, port, codec, QuicTransport(opts))`.
+ *  - [MultiplexingTransport.withMux] → the **multiplex** tier: run a block with a typed [StreamMux]
+ *    over the connection (many concurrent streams).
  *
- * For multiplexing (many streams / datagrams over one connection), use [QuicSessionTransport] instead.
+ * Implementing both on one object is the fix for the "two-tier leak": a library holds a single
+ * [Transport] and reaches multiplexing only where it exists, by `is`-check — the same type-gated
+ * capability pattern as `WebTransportSupport.Multiplexed` — with no stubbed capability:
+ *
+ * ```kotlin
+ * // app injects ONE object; library adapts by capability
+ * fun MyProto(t: Transport) = if (t is MultiplexingTransport) t.withMux(...) { … } else oneStream(t)
+ * ```
+ *
+ * TCP implements only [Transport], so the `is MultiplexingTransport` branch is correctly absent there.
+ * For raw connection-level power (datagrams / migration / hand-managed lifetime), use
+ * [QuicSessionTransport].
  *
  * Errors are unified onto the [com.ditchoom.socket.SocketException] family (RFC §6.1): a peer stream
- * reset ([QuicStreamException]) on the projected stream is surfaced as
+ * reset ([QuicStreamException]) on the projected single stream is surfaced as
  * [SocketClosedException.ConnectionReset] (with the original as `cause`), since for a single-stream
  * projection a stream abort *is* connection loss; QUIC connection-close already throws
- * [QuicCloseException], which is a [SocketClosedException]. Establishment timeouts become
- * [SocketTimeoutException].
+ * [QuicCloseException] (a [SocketClosedException]); establishment timeouts become [SocketTimeoutException].
  *
  * [quicOptions] carries the ALPN identifying the application protocol (required — QUIC has no default
  * ALPN); [engine] defaults to [defaultQuicEngine].
@@ -80,7 +92,8 @@ class QuicSessionTransport(
 class QuicTransport(
     quicOptions: QuicOptions,
     engine: QuicEngine = defaultQuicEngine,
-) : Transport {
+) : Transport,
+    MultiplexingTransport {
     private val session = QuicSessionTransport(quicOptions, engine)
 
     override suspend fun connect(
@@ -104,6 +117,18 @@ class QuicTransport(
         )
     }
 
+    override suspend fun <T, R> withMux(
+        hostname: String,
+        port: Int,
+        codec: Codec<T>,
+        config: TransportConfig,
+        block: suspend StreamMux<T>.() -> R,
+    ): R =
+        // establish (timeout -> SocketTimeoutException) + close in finally; block runs with the mux.
+        session.use(hostname, port, config) { connection ->
+            QuicStreamMux(connection, codec, config).block()
+        }
+
     private companion object {
         /** Map a QUIC stream-level abort to the unified connection-lost error for the single-stream surface. */
         fun mapStreamError(t: Throwable): Throwable =
@@ -116,32 +141,4 @@ class QuicTransport(
                 else -> t
             }
     }
-}
-
-/**
- * The transport-agnostic **multiplexing** QUIC transport (RFC_UNIFIED_ESTABLISHMENT.md §3.4): a
- * [MultiplexingTransport] whose [withMux] runs a block with a typed [StreamMux] over a QUIC connection.
- * Lets a library that needs many concurrent streams code against [StreamMux] and run over QUIC **or**
- * WebTransport ([com.ditchoom.socket.webtransport.WebTransportMultiplexingTransport]) interchangeably.
- *
- * Thin wrapper over the existing [withQuicMux]; [quicOptions] carries the ALPN, [engine] defaults to
- * [defaultQuicEngine].
- */
-class QuicMultiplexingTransport(
-    quicOptions: QuicOptions,
-    engine: QuicEngine = defaultQuicEngine,
-) : MultiplexingTransport {
-    private val session = QuicSessionTransport(quicOptions, engine)
-
-    override suspend fun <T, R> withMux(
-        hostname: String,
-        port: Int,
-        codec: Codec<T>,
-        config: TransportConfig,
-        block: suspend StreamMux<T>.() -> R,
-    ): R =
-        // establish (timeout -> SocketTimeoutException) + close in finally; block runs with the mux.
-        session.use(hostname, port, config) { connection ->
-            QuicStreamMux(connection, codec, config).block()
-        }
 }
