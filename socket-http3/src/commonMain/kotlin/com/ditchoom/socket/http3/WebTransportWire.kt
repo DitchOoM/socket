@@ -3,7 +3,30 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.stream.StreamProcessor
+
+/**
+ * The outcome of parsing one RFC 9297 capsule off the CONNECT/Capsule byte-stream — the pure,
+ * side-effect-free result [WebTransportWire.nextCapsule] returns so the framing is unit-testable and
+ * fuzzable independently of the session dispatch it drives (see `WebTransportCapsuleFuzzer`).
+ */
+internal sealed interface CapsuleParse {
+    /** Fewer than one whole capsule is buffered yet — the caller should read more stream bytes. */
+    object NeedMore : CapsuleParse
+
+    /** A WT_CLOSE_SESSION capsule: the peer's application close code + reason. */
+    data class Close(
+        val info: WebTransportCloseInfo,
+    ) : CapsuleParse
+
+    /** A WT_DRAIN_SESSION capsule (no value). */
+    object Drain : CapsuleParse
+
+    /** A whole capsule of some other/unknown type was consumed and skipped (its length honoured). */
+    object Skipped : CapsuleParse
+}
 
 /**
  * Wire constants and codecs for WebTransport over HTTP/3 (draft-ietf-webtrans-http3 §4 / §6,
@@ -134,7 +157,77 @@ internal object WebTransportWire {
                 ((buffer.readByte().toInt() and 0xFF) shl 8) or
                 (buffer.readByte().toInt() and 0xFF)
         val reasonBytes = valueLength - 4
-        val reason = if (reasonBytes > 0) buffer.readString(reasonBytes, Charset.UTF8) else ""
+        // draft §6: the reason is UTF-8. A strict decoder rejects invalid UTF-8 with a
+        // platform-specific charset exception (e.g. JVM MalformedInputException) — remap it to the
+        // typed protocol violation so the parser's "malformed input → Http3StreamException" contract
+        // holds instead of leaking an untyped crash. (Caught by WebTransportCapsuleFuzzer.)
+        val reason =
+            if (reasonBytes > 0) {
+                try {
+                    buffer.readString(reasonBytes, Charset.UTF8)
+                } catch (e: Http3StreamException) {
+                    throw e
+                } catch (e: Exception) {
+                    throw Http3StreamException(Http3Violation.WebTransportCloseReasonNotUtf8(e))
+                }
+            } else {
+                ""
+            }
         return WebTransportCloseInfo(code, reason)
+    }
+
+    /**
+     * Consume the next whole RFC 9297 capsule buffered in [capsules] — `Type (varint)`,
+     * `Length (varint)`, `Value[Length]` — and report what it was, WITHOUT any session side effects.
+     * Returns [CapsuleParse.NeedMore] (advancing nothing) when a whole capsule is not yet buffered, so
+     * the caller loops: parse-what's-complete, read more, repeat. Malformed *values* (e.g. a
+     * WT_CLOSE_SESSION shorter than its 4-byte code) throw a typed [Http3StreamException].
+     *
+     * The `Length` is a 62-bit QUIC varint and is kept in [Long] end-to-end: the pre-2.0 code narrowed
+     * it to [Int] before the bounds check, so a peer-declared length above `Int.MAX_VALUE` wrapped
+     * negative, slipped past `available() < total`, and fed a bad count into [ReadBuffer] reads. Holding
+     * the running `total` in [Long] and comparing against `available()` in [Long] closes that off; the
+     * narrowing to [Int] afterwards is provably safe because `total <= available()`, itself an [Int].
+     */
+    fun nextCapsule(capsules: StreamProcessor): CapsuleParse {
+        if (capsules.available() < 1) return CapsuleParse.NeedMore
+        val typeFirst = capsules.peekByte(0).toInt() and 0xFF
+        val typeLen = VarIntCodec.lengthFromPrefix(typeFirst)
+        if (capsules.available() < typeLen + 1) return CapsuleParse.NeedMore
+        val lenFirst = capsules.peekByte(typeLen).toInt() and 0xFF
+        val lenLen = VarIntCodec.lengthFromPrefix(lenFirst)
+        if (capsules.available() < typeLen + lenLen) return CapsuleParse.NeedMore
+        val length = peekVarIntAt(capsules, typeLen) // Long — do NOT narrow before the bounds check
+        val total = typeLen.toLong() + lenLen.toLong() + length
+        if (capsules.available().toLong() < total) return CapsuleParse.NeedMore
+        // total <= available() (an Int), so both narrowings below are safe.
+        val totalInt = total.toInt()
+        val valueLen = length.toInt()
+
+        // Scoped: capsules decode into owned values (varints + a String reason), so the wire bytes
+        // recycle immediately.
+        return capsules.readBufferScoped(totalInt) {
+            val type = VarIntCodec.decode(this, DecodeContext.Empty)
+            VarIntCodec.decode(this, DecodeContext.Empty) // length (already known)
+            when (type) {
+                WT_CLOSE_SESSION -> CapsuleParse.Close(readCloseSessionValue(this, valueLen))
+                WT_DRAIN_SESSION -> CapsuleParse.Drain
+                else -> CapsuleParse.Skipped
+            }
+        }
+    }
+
+    /** Decode the varint at byte [offset] in [processor] (assumes a full varint is buffered there). */
+    private fun peekVarIntAt(
+        processor: StreamProcessor,
+        offset: Int,
+    ): Long {
+        val first = processor.peekByte(offset).toInt() and 0xFF
+        val length = VarIntCodec.lengthFromPrefix(first)
+        var value = (first and 0x3F).toLong()
+        for (i in 1 until length) {
+            value = (value shl 8) or (processor.peekByte(offset + i).toLong() and 0xFF)
+        }
+        return value
     }
 }
