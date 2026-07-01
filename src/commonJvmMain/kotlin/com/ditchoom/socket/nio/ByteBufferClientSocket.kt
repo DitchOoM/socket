@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.IoTuning
 import com.ditchoom.socket.JvmTlsHandler
+import com.ditchoom.socket.ReadBufferSource
 import com.ditchoom.socket.TlsConfig
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.nio.util.aClose
@@ -22,6 +23,13 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
 
     /** The injected-once configuration tree. Set at the top of `open(...)`. */
     protected var config: TransportConfig = TransportConfig()
+
+    /**
+     * The single per-connection source of receive buffers — a pool over [config]'s buffer factory, so
+     * `readRaw` reuses buffers instead of allocating a fresh GC-reclaimed one per read (see
+     * [ReadBufferSource]). Lazy so it captures the [config] set at the top of `open(...)`.
+     */
+    protected val readBufferSource: ReadBufferSource by lazy { ReadBufferSource(config) }
 
     override val readPolicy: ReadPolicy get() = config.readPolicy
     override val writePolicy: WritePolicy get() = config.writePolicy

@@ -28,6 +28,13 @@ open class LinuxSocketWrapper : ClientSocket {
      */
     protected var config: TransportConfig = TransportConfig()
 
+    /**
+     * Single per-connection source of io_uring receive buffers — a pool over [config]'s buffer factory
+     * so `readRaw` reuses buffers instead of allocating a fresh GC-reclaimed one per read (see
+     * [ReadBufferSource]). Lazy so it captures the [config] applied at open/configure time.
+     */
+    protected val readBufferSource: ReadBufferSource by lazy { ReadBufferSource(config) }
+
     internal var sockfd: Int = -1
         set(value) {
             val wasOpen = field >= 0
@@ -71,7 +78,7 @@ open class LinuxSocketWrapper : ClientSocket {
         // Allocate buffer with native memory for zero-copy io_uring read
         // Use IoTuning override if explicitly set, otherwise use cached SO_RCVBUF
         val bufferSize = getEffectiveReadBufferSize()
-        val buffer = config.bufferFactory.allocate(bufferSize)
+        val buffer = readBufferSource.acquire(bufferSize)
 
         try {
             // Get native memory pointer
