@@ -23,6 +23,7 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.concurrent.Volatile
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -579,6 +580,9 @@ class QuicheDriver(
                 val received =
                     try {
                         entry.channel.receive(buf)
+                    } catch (e: CancellationException) {
+                        buf.freeNativeMemory()
+                        throw e
                     } catch (_: Exception) {
                         buf.freeNativeMemory()
                         if (commands.isClosedForSend) return

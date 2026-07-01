@@ -23,6 +23,7 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.value
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -391,6 +392,9 @@ private class AppleQuicServer(
                 val recvResult =
                     try {
                         serverChannel.recvFrom(recvBuf)
+                    } catch (e: CancellationException) {
+                        recvBuf.freeNativeMemory()
+                        throw e
                     } catch (_: Exception) {
                         recvBuf.freeNativeMemory()
                         if (closed) return
