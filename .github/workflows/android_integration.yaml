@@ -136,7 +136,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-x86_64-${{ matrix.api-level }}
+          key: avd-x86_64-${{ matrix.api-level }}-disk4096
 
       - name: create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -146,6 +146,15 @@ jobs:
           target: default
           arch: x86_64
           force-avd-creation: false
+          # The default API-29 userdata partition wants ~7.37 GB, which does not
+          # fit in the ~6.7 GB this job leaves free after the Rust/quiche/docker
+          # native-build steps — the emulator FATAL'd at launch with "Not enough
+          # space to create userdata partition" (device never registered → the
+          # boot poller then timed out with a misleading "emulator to boot"
+          # error). Cap it: this instrumented suite installs a couple of modest
+          # APKs, so 4 GB is ample and drops `need` well under available. Must
+          # match the run-tests step below (that step reuses this cached AVD).
+          disk-size: 4096M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
@@ -157,7 +166,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-x86_64-${{ matrix.api-level }}
+          key: avd-x86_64-${{ matrix.api-level }}-disk4096
 
       - name: run tests
         uses: reactivecircus/android-emulator-runner@v2
@@ -166,6 +175,8 @@ jobs:
           target: default
           arch: x86_64
           force-avd-creation: false
+          # Must match the create-AVD step above — this step reuses the cached AVD.
+          disk-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -writable-system -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
