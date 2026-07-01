@@ -76,7 +76,7 @@ class ReconnectingConnectionNetworkTests {
                     },
                     // Long backoff that would timeout the test if not reset
                     classifier = ReconnectionClassifier { ReconnectDecision.RetryAfter(60.seconds) },
-                    networkMonitor = monitor,
+                    monitorFactory = { monitor },
                 )
 
             val job =
@@ -115,7 +115,7 @@ class ReconnectingConnectionNetworkTests {
                         codec
                     },
                     classifier = ReconnectionClassifier { ReconnectDecision.RetryAfter(1.milliseconds) },
-                    // Default: AlwaysAvailable
+                    monitorFactory = { NetworkMonitor.AlwaysAvailable },
                 )
 
             val messages = conn.receive().toList()
@@ -209,7 +209,7 @@ class ReconnectingConnectionNetworkTests {
                         serverCodec.close()
                         codec
                     },
-                    networkMonitor = monitor,
+                    monitorFactory = { monitor },
                 )
 
             assertIs<ConnectionState.Initialized>(conn.state.value)
