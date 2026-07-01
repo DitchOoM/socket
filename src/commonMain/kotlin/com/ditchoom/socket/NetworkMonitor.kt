@@ -35,3 +35,22 @@ interface NetworkMonitor {
             }
     }
 }
+
+/**
+ * Returns the platform's best default [NetworkMonitor]: reactive and event-driven where a
+ * zero-argument construction is possible, and a polling or no-op ([NetworkMonitor.AlwaysAvailable])
+ * monitor otherwise.
+ *
+ * | Platform | Default |
+ * |----------|---------|
+ * | Apple (iOS/macOS/tvOS/watchOS) | `NWPathMonitor` (reactive) |
+ * | Linux native | netlink socket (reactive) |
+ * | Desktop JVM, JDK 21+ | FFM routing socket — netlink (Linux) / `PF_ROUTE` (macOS), reactive; polling on Windows |
+ * | Desktop JVM, JDK 8–20 | interface polling |
+ * | Node.js | interface polling — **browser JS**: `online`/`offline` (reactive) |
+ * | Android | [NetworkMonitor.AlwaysAvailable] — reactive monitoring needs a `Context` (use `NetworkMonitor.android(context)`) |
+ * | Wasm (browser) | [NetworkMonitor.AlwaysAvailable] |
+ *
+ * The returned monitor owns platform resources; call [NetworkMonitor.close] when finished.
+ */
+expect fun NetworkMonitor.Companion.default(): NetworkMonitor

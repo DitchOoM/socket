@@ -7,6 +7,7 @@ import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
+import com.ditchoom.socket.default
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -34,9 +35,14 @@ import kotlin.time.TimeSource
  * and return the ready-to-use connection. Protocol state that must survive reconnects
  * (persistence, subscriptions) should be captured in the [connect] closure.
  *
- * When a [networkMonitor] is provided, backoff is automatically reset whenever the
- * network becomes [NetworkAvailability.AVAILABLE], triggering an immediate reconnect
- * attempt instead of waiting for the current backoff delay.
+ * The [monitorFactory] produces a [NetworkMonitor] whose availability drives backoff resets:
+ * backoff is automatically reset whenever the network becomes [NetworkAvailability.AVAILABLE],
+ * triggering an immediate reconnect attempt instead of waiting for the current backoff delay.
+ * It defaults to [NetworkMonitor.default], the platform's best reactive monitor. The factory
+ * is invoked once per [receive] collection, and the produced monitor is owned by this
+ * connection: it is [closed][NetworkMonitor.close] when that collection terminates. No monitor
+ * socket is opened until [receive] is collected. Pass `{ NetworkMonitor.AlwaysAvailable }` to
+ * opt out of monitoring.
  *
  * ```kotlin
  * val conn = ReconnectingConnection(
@@ -48,7 +54,7 @@ import kotlin.time.TimeSource
  *         codec
  *     },
  *     classifier = DefaultReconnectionClassifier(),
- *     networkMonitor = NetworkMonitor.polling(), // platform-specific factory
+ *     // monitorFactory defaults to { NetworkMonitor.default() }
  * )
  *
  * conn.receive().collect { message -> handle(message) }
@@ -57,7 +63,7 @@ import kotlin.time.TimeSource
 class ReconnectingConnection<T>(
     private val connect: suspend () -> Connection<T>,
     private val classifier: ReconnectionClassifier = DefaultReconnectionClassifier(),
-    private val networkMonitor: NetworkMonitor = NetworkMonitor.AlwaysAvailable,
+    private val monitorFactory: () -> NetworkMonitor = { NetworkMonitor.default() },
 ) : Connection<T> {
     override val id: Long = 0L
 
@@ -84,8 +90,9 @@ class ReconnectingConnection<T>(
     /**
      * Resets the backoff delay so the next reconnect attempt happens immediately.
      *
-     * This is called automatically when [networkMonitor] reports [NetworkAvailability.AVAILABLE].
-     * You can also call it manually from other platform-specific callbacks.
+     * This is called automatically when the [monitorFactory] monitor reports
+     * [NetworkAvailability.AVAILABLE]. You can also call it manually from other
+     * platform-specific callbacks.
      */
     fun resetBackoff() {
         backoffReset = true
@@ -98,8 +105,10 @@ class ReconnectingConnection<T>(
             receiving = true
             var retryDelay = Duration.ZERO
 
-            // Auto-reset backoff when network becomes available
-            val monitorJob = launchNetworkMonitorJob()
+            // Auto-reset backoff when network becomes available. The monitor is created
+            // per-collection and owned here — closed in the finally below.
+            val monitor = monitorFactory()
+            val monitorJob = launchNetworkMonitorJob(monitor)
 
             try {
                 while (currentCoroutineContext().isActive) {
@@ -133,6 +142,7 @@ class ReconnectingConnection<T>(
             } finally {
                 receiving = false
                 monitorJob?.cancel()
+                monitor.close()
             }
         }
     }
@@ -181,11 +191,11 @@ class ReconnectingConnection<T>(
      * Launches a coroutine that resets backoff whenever the network becomes available.
      * Returns null if using [NetworkMonitor.AlwaysAvailable] (no monitoring needed).
      */
-    private suspend fun launchNetworkMonitorJob(): Job? {
-        if (networkMonitor === NetworkMonitor.AlwaysAvailable) return null
+    private suspend fun launchNetworkMonitorJob(monitor: NetworkMonitor): Job? {
+        if (monitor === NetworkMonitor.AlwaysAvailable) return null
         val scope = CoroutineScope(currentCoroutineContext())
         return scope.launch {
-            networkMonitor.availability
+            monitor.availability
                 .filter { it == NetworkAvailability.AVAILABLE }
                 .collect { resetBackoff() }
         }
