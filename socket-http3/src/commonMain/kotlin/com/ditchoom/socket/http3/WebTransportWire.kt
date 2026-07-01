@@ -158,16 +158,19 @@ internal object WebTransportWire {
                 (buffer.readByte().toInt() and 0xFF)
         val reasonBytes = valueLength - 4
         // draft §6: the reason is UTF-8. A strict decoder rejects invalid UTF-8 with a
-        // platform-specific charset exception (e.g. JVM MalformedInputException) — remap it to the
-        // typed protocol violation so the parser's "malformed input → Http3StreamException" contract
-        // holds instead of leaking an untyped crash. (Caught by WebTransportCapsuleFuzzer.)
+        // platform-specific charset error — remap it to the typed protocol violation so the parser's
+        // "malformed input → Http3StreamException" contract holds instead of leaking an untyped crash.
+        // (Caught by WebTransportCapsuleFuzzer.) It must be caught as Throwable, not Exception: the JVM
+        // throws a MalformedInputException (an Exception), but Kotlin/JS + wasmJs surface the strict
+        // TextDecoder failure as a raw JS TypeError, which is a Throwable that is NOT a Kotlin Exception —
+        // so `catch (Exception)` let it escape untyped on the JS/wasm targets.
         val reason =
             if (reasonBytes > 0) {
                 try {
                     buffer.readString(reasonBytes, Charset.UTF8)
                 } catch (e: Http3StreamException) {
                     throw e
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     throw Http3StreamException(Http3Violation.WebTransportCloseReasonNotUtf8(e))
                 }
             } else {
