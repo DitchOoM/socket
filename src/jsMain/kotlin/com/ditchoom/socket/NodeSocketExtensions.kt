@@ -139,9 +139,15 @@ internal fun wrapNodeError(
         // assert SSLSocketException specifically — map cert codes here so the
         // cross-platform contract holds on jsNode.
         code in tlsCertErrorCodes ->
-            SSLHandshakeFailedException("Certificate validation failed: $errorStr")
+            SSLHandshakeFailedException(
+                "Certificate validation failed: $errorStr",
+                reason = ConnectionFailureReason.TlsBadCertificate,
+            )
         code == "ERR_TLS_CERT_ALTNAME_INVALID" ->
-            SSLHandshakeFailedException("Hostname mismatch: $errorStr")
+            SSLHandshakeFailedException(
+                "Hostname mismatch: $errorStr",
+                reason = ConnectionFailureReason.TlsBadCertificate,
+            )
         errorStr.contains("ERR_TLS") || errorStr.contains("SSL") ->
             SSLProtocolException(errorStr)
         else ->

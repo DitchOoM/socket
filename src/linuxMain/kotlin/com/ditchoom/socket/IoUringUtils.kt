@@ -725,6 +725,9 @@ internal fun mapErrnoToException(
         EHOSTUNREACH -> SocketConnectionException.HostUnreachable(message)
         ETIMEDOUT, ETIME -> SocketTimeoutException("$operation timed out")
         EAGAIN, EWOULDBLOCK -> SocketTimeoutException("$operation timed out")
+        // The kernel could not allocate memory for the operation — a typed connect failure (issue #166)
+        // rather than an opaque I/O error, so callers can branch on ConnectionFailureReason.OutOfMemory.
+        ENOMEM -> SocketConnectionException.Other(ConnectionFailureReason.OutOfMemory, message)
         else -> SocketIOException(message)
     }
 }

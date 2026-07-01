@@ -15,17 +15,21 @@ import kotlin.time.Instant
  * │   ├── ConnectionResetException       — peer sent RST (ECONNRESET)
  * │   ├── BrokenPipeException            — wrote to closed peer (EPIPE)
  * │   └── EndOfStreamException           — clean EOF (bytesRead ≤ 0)
- * ├── SocketConnectionException          — failed to establish connection
- * │   ├── ConnectionRefusedException     — ECONNREFUSED
- * │   ├── NetworkUnreachableException    — ENETUNREACH
- * │   └── HostUnreachableException       — EHOSTUNREACH
- * ├── SocketUnknownHostException         — DNS resolution failed
- * ├── SocketTimeoutException             — connect / read / write timeout
+ * ├── SocketConnectionException          — failed to establish connection   (ConnectionFailure)
+ * │   ├── Refused                        — ECONNREFUSED
+ * │   ├── NetworkUnreachable             — ENETUNREACH
+ * │   ├── HostUnreachable                — EHOSTUNREACH
+ * │   └── Other(reason)                  — any other typed reason (e.g. OutOfMemory)
+ * ├── SocketUnknownHostException         — DNS resolution failed            (ConnectionFailure)
+ * ├── SocketTimeoutException             — connect / read / write timeout   (ConnectionFailure)
  * ├── SocketIOException                  — generic I/O error (catch-all)
- * └── sealed SSLSocketException          — TLS/SSL errors
+ * └── sealed SSLSocketException          — TLS/SSL errors                   (ConnectionFailure)
  *     ├── SSLHandshakeFailedException    — certificate / handshake failure
  *     └── SSLProtocolException           — other TLS protocol errors
  * ```
+ *
+ * Establishment/handshake failures additionally implement [ConnectionFailure], exposing an exhaustive,
+ * platform-neutral [ConnectionFailureReason] (`reason`) as the portable discriminator (issue #166).
  */
 sealed class SocketException(
     override val message: String,
@@ -89,8 +93,14 @@ abstract class SocketClosedException(
 sealed class SocketConnectionException(
     override val message: String,
     override val cause: Throwable? = null,
-) : SocketException(message, cause) {
-    /** The remote host actively refused the connection (ECONNREFUSED). */
+) : SocketException(message, cause),
+    ConnectionFailure {
+    /**
+     * The remote host actively refused the connection (ECONNREFUSED).
+     *
+     * [platformError] is retained as **non-discriminating diagnostic detail** only (issue #166) — it is
+     * the raw platform string, which varies per platform/version. Branch on [reason], never on it.
+     */
     class Refused(
         val host: String?,
         val port: Int,
@@ -99,16 +109,34 @@ sealed class SocketConnectionException(
     ) : SocketConnectionException(
             "Connection refused: $host:$port${if (platformError != null) " ($platformError)" else ""}",
             cause,
-        )
+        ) {
+        override val reason: ConnectionFailureReason get() = ConnectionFailureReason.Refused
+    }
 
     /** No route to the destination network (ENETUNREACH). */
     class NetworkUnreachable(
         message: String,
         cause: Throwable? = null,
-    ) : SocketConnectionException(message, cause)
+    ) : SocketConnectionException(message, cause) {
+        override val reason: ConnectionFailureReason get() = ConnectionFailureReason.NetworkUnreachable
+    }
 
     /** No route to the destination host (EHOSTUNREACH). */
     class HostUnreachable(
+        message: String,
+        cause: Throwable? = null,
+    ) : SocketConnectionException(message, cause) {
+        override val reason: ConnectionFailureReason get() = ConnectionFailureReason.HostUnreachable
+    }
+
+    /**
+     * A connection-establishment failure whose cause is [reason] but which has no dedicated named
+     * subtype — e.g. [ConnectionFailureReason.OutOfMemory]. The escape hatch that lets every platform
+     * mapper produce any exhaustive [ConnectionFailureReason] (issue #166) while keeping the common
+     * failures ([Refused] / [NetworkUnreachable] / [HostUnreachable]) as ergonomic named types.
+     */
+    class Other(
+        override val reason: ConnectionFailureReason,
         message: String,
         cause: Throwable? = null,
     ) : SocketConnectionException(message, cause)
@@ -128,7 +156,10 @@ class SocketUnknownHostException(
 ) : SocketException(
         "Failed to get a socket address for hostname: $hostname${if (extraMessage.isNotEmpty()) "\r\n$extraMessage" else ""}",
         cause,
-    )
+    ),
+    ConnectionFailure {
+    override val reason: ConnectionFailureReason get() = ConnectionFailureReason.UnknownHost
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // Timeout
@@ -142,7 +173,10 @@ class SocketTimeoutException(
     val host: String? = null,
     val port: Int = -1,
     override val cause: Throwable? = null,
-) : SocketException(message, cause)
+) : SocketException(message, cause),
+    ConnectionFailure {
+    override val reason: ConnectionFailureReason get() = ConnectionFailureReason.Timeout
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // Generic I/O
@@ -167,24 +201,30 @@ class SocketIOException(
 sealed class SSLSocketException(
     message: String,
     cause: Throwable? = null,
-) : SocketException(message, cause)
+) : SocketException(message, cause),
+    ConnectionFailure
 
 /**
  * The TLS handshake failed (certificate validation, protocol mismatch, etc.).
+ *
+ * [reason] defaults to [ConnectionFailureReason.TlsHandshake]; a mapper that can tell the failure was
+ * specifically a certificate rejection passes [ConnectionFailureReason.TlsBadCertificate] (issue #166).
  */
 class SSLHandshakeFailedException(
     message: String,
     cause: Throwable? = null,
+    override val reason: ConnectionFailureReason = ConnectionFailureReason.TlsHandshake,
 ) : SSLSocketException(message, cause) {
     constructor(source: Exception) : this(source.message ?: "Failed to complete SSL handshake", source)
 }
 
 /**
- * A TLS/SSL protocol error that is not a handshake failure.
+ * A TLS/SSL protocol error that is not a handshake failure (e.g. TLS attempted against a plaintext peer).
  */
 class SSLProtocolException(
     message: String,
     cause: Throwable? = null,
+    override val reason: ConnectionFailureReason = ConnectionFailureReason.TlsProtocolMismatch,
 ) : SSLSocketException(message, cause)
 
 /**
@@ -200,7 +240,9 @@ class SSLProtocolException(
 class CertificateHashPinningException(
     val failure: CertificateHashPinningFailure,
     cause: Throwable? = null,
-) : SSLSocketException(failure.description, cause)
+) : SSLSocketException(failure.description, cause) {
+    override val reason: ConnectionFailureReason get() = ConnectionFailureReason.TlsBadCertificate
+}
 
 /**
  * Why [CertificateHashPinningException] rejected the peer. Sealed so each case carries case-specific data

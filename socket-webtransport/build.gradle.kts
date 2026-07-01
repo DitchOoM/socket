@@ -141,6 +141,11 @@ kotlin {
             // No :socket-http3 / :socket-quic here — those would leak QUIC onto the browser classpath.
             api(libs.buffer)
             api(libs.buffer.flow)
+            // socket-core (Transport SPI + SocketException hierarchy) — NOT the QUIC stack. Needed so
+            // WebTransportTransport can implement the transport-agnostic Transport interface and map its
+            // failures onto the unified SocketException family (RFC_UNIFIED_ESTABLISHMENT.md). Lightweight
+            // pure-Kotlin base; safe on the browser classpath (its TCP entry points just throw there).
+            api(project(":"))
             implementation(libs.kotlinx.coroutines.core)
         }
         commonTest.dependencies {

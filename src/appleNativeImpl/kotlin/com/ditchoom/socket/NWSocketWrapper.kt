@@ -174,14 +174,16 @@ open class NWSocketWrapper : ClientSocket {
             return when (errorDomain) {
                 SocketErrorTypeDns -> SocketUnknownHostException(hostname, message)
                 SocketErrorTypeTls -> {
-                    if (msgLower.contains("handshake") ||
+                    when {
+                        // A certificate rejection is a distinct typed reason from a generic handshake
+                        // failure (issue #166) — pick TlsBadCertificate when the NW/Sec error names a cert.
                         msgLower.contains("certificate") ||
-                        msgLower.contains("cert") ||
-                        msgLower.contains("trust")
-                    ) {
-                        SSLHandshakeFailedException(message)
-                    } else {
-                        SSLProtocolException(message)
+                            msgLower.contains("cert") ||
+                            msgLower.contains("trust") ->
+                            SSLHandshakeFailedException(message, reason = ConnectionFailureReason.TlsBadCertificate)
+                        msgLower.contains("handshake") ->
+                            SSLHandshakeFailedException(message, reason = ConnectionFailureReason.TlsHandshake)
+                        else -> SSLProtocolException(message)
                     }
                 }
                 SocketErrorTypePosix -> {
@@ -193,6 +195,9 @@ open class NWSocketWrapper : ClientSocket {
                             msgLower.contains("name or service not known") ||
                             msgLower.contains("host not found") ->
                             SocketUnknownHostException(hostname, message)
+                        // ENOMEM during establishment — a typed connect failure (issue #166).
+                        msgLower.contains("cannot allocate memory") || msgLower.contains("out of memory") ->
+                            SocketConnectionException.Other(ConnectionFailureReason.OutOfMemory, message)
                         msgLower.contains("connection refused") || msgLower.contains("econnrefused") ->
                             SocketConnectionException.Refused(null, 0, platformError = message)
                         msgLower.contains("timed out") || msgLower.contains("timeout") ->
