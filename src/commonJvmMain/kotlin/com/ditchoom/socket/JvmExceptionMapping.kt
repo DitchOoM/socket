@@ -55,8 +55,21 @@ internal fun wrapJvmException(
             SocketClosedException.General("Socket closed during operation", ex)
         is ClosedChannelException ->
             SocketClosedException.General("Socket is closed", ex)
+        is OutOfMemoryError ->
+            SocketConnectionException.Other(
+                ConnectionFailureReason.OutOfMemory,
+                ex.message ?: "Out of memory establishing connection",
+                ex,
+            )
         is SSLHandshakeException ->
-            SSLHandshakeFailedException(ex.message ?: "TLS handshake failed", ex)
+            // Distinguish a certificate rejection from a generic handshake failure (issue #166): JSSE
+            // surfaces cert problems as an SSLHandshakeException whose cause chain holds a
+            // CertificateException / CertPathValidatorException, or whose message names the cert path.
+            SSLHandshakeFailedException(
+                ex.message ?: "TLS handshake failed",
+                ex,
+                reason = if (isCertificateFailure(ex)) ConnectionFailureReason.TlsBadCertificate else ConnectionFailureReason.TlsHandshake,
+            )
         is javax.net.ssl.SSLException ->
             SSLProtocolException(ex.message ?: "TLS error", ex)
         is java.io.IOException -> {
@@ -75,4 +88,31 @@ internal fun wrapJvmException(
         else ->
             SocketIOException(ex.message ?: "Socket error", ex)
     }
+}
+
+/**
+ * True if [ex]'s cause chain (or message) indicates a certificate-validation failure rather than a
+ * generic handshake failure — used to pick [ConnectionFailureReason.TlsBadCertificate] (issue #166).
+ */
+private fun isCertificateFailure(ex: Throwable): Boolean {
+    var cur: Throwable? = ex
+    var depth = 0
+    while (cur != null && depth < 10) {
+        val name = cur::class.qualifiedName ?: ""
+        if (name.contains("CertificateException", ignoreCase = true) ||
+            name.contains("CertPathValidatorException", ignoreCase = true) ||
+            name.contains("CertPathBuilderException", ignoreCase = true) ||
+            name.contains("CertificateExpiredException", ignoreCase = true) ||
+            name.contains("CertificateNotYetValidException", ignoreCase = true)
+        ) {
+            return true
+        }
+        cur = cur.cause
+        depth++
+    }
+    val msg = ex.message?.lowercase() ?: ""
+    return msg.contains("certification path") ||
+        msg.contains("certificate") ||
+        msg.contains("unable to find valid") ||
+        msg.contains("pkix")
 }
