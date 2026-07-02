@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.counting
-import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
@@ -49,13 +48,14 @@ class QuicReadPoolingTests {
     }
 
     // The native-memory leaf factories QUIC accepts on THIS platform (quicBufferFactory() rejects
-    // heap factories at setup): deterministic() is the network() default everywhere; Default is a
-    // valid GC-reclaimed override only where it allocates native buffers (JVM Arena, Apple
-    // NSMutableData) — on Linux it is a managed ByteArrayBuffer, so probe like requireNativeMemory().
+    // heap factories at setup): network() is the production default (what quicBufferFactory()
+    // resolves to when the caller doesn't override); Default is a valid GC-reclaimed override only
+    // where it allocates native buffers (JVM Arena, Apple NSMutableData) — on Linux it is a managed
+    // ByteArrayBuffer, so probe like requireNativeMemory().
     private val leafFactories: List<Pair<String, BufferFactory>>
         get() =
             buildList {
-                add("deterministic" to BufferFactory.deterministic())
+                add("network" to BufferFactory.network())
                 val probe = BufferFactory.Default.allocate(1)
                 if (probe.nativeMemoryAccess != null) add("default" to BufferFactory.Default)
                 probe.freeIfNeeded()
