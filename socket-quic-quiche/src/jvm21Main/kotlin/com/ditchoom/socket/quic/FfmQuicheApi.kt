@@ -1045,8 +1045,13 @@ class FfmQuicheApi private constructor(
         private const val SEND_INFO_FROM_LEN_OFFSET = 128 // after from sockaddr_storage(128)
 
         fun create(libraryPath: String): FfmQuicheApi {
-            val arena = Arena.ofAuto()
-            val lookup = SymbolLookup.libraryLookup(libraryPath, arena)
+            // Arena.global(), NEVER an unloadable arena: libquiche statically links BoringSSL,
+            // which registers pthread TLS destructors that glibc does not unregister on dlclose.
+            // An auto/confined arena lets the JVM dlclose the library once the api is unreachable,
+            // and any thread that ever called into it then jumps to unmapped memory when it exits
+            // (CI SIGSEGV SEGV_ACCERR, run 28609148354). BoringSSL is documented as not safely
+            // unloadable — the mapping must live for the whole process.
+            val lookup = SymbolLookup.libraryLookup(libraryPath, Arena.global())
             val linker = Linker.nativeLinker()
             return FfmQuicheApi(lookup, linker)
         }
