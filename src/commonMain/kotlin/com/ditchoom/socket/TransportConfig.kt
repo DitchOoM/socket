@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.transport.NetworkId
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -22,6 +23,14 @@ import kotlin.time.Duration.Companion.seconds
  * - [connectTimeout] — bound on the connect handshake itself.
  * - [tls] — the unified [TlsConfig]; `null` = plaintext.
  * - [io] — platform I/O + TCP knobs ([IoTuning]), injected rather than read from a process-global.
+ * - [networkId] — typed identity of the network path this connect happens over
+ *   ([com.ditchoom.socket.transport.NetworkId], sealed/exhaustive — never a bare string or null).
+ *   Consumed by the transport-selection layer's per-network
+ *   [com.ditchoom.socket.transport.CapabilityCache] scope: a demotion learned on one network
+ *   (e.g. "this path blocks UDP") is invalidated when [networkId] changes. Defaults to
+ *   [com.ditchoom.socket.transport.NetworkId.Unidentified] — the explicit "no cheap network identity"
+ *   state, in which the per-network scope is simply disabled (RFC_TRANSPORT_FALLBACK §12). Populated
+ *   by the platform `NetworkMonitor`.
  */
 data class TransportConfig(
     val bufferFactory: BufferFactory = BufferFactory.Default,
@@ -30,6 +39,7 @@ data class TransportConfig(
     val connectTimeout: Duration = 15.seconds,
     val tls: TlsConfig? = null,
     val io: IoTuning = IoTuning(),
+    val networkId: NetworkId = NetworkId.Unidentified,
 ) {
     companion object {
         /** Good defaults for interactive protocols (WebSocket, MQTT, HTTP): TCP_NODELAY on. */
