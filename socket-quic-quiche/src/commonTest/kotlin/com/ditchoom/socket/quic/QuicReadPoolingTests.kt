@@ -6,6 +6,7 @@ import com.ditchoom.buffer.counting
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -47,19 +48,24 @@ class QuicReadPoolingTests {
         return withTimeout(2.seconds) { deferred.await() }
     }
 
-    // Both native-memory leaf factories QUIC accepts (quicBufferFactory() rejects heap factories
-    // at setup): deterministic() is the network() default; Default is the GC-reclaimed override.
-    private val leafFactories =
-        listOf(
-            "deterministic" to { BufferFactory.deterministic() },
-            "default" to { BufferFactory.Default },
-        )
+    // The native-memory leaf factories QUIC accepts on THIS platform (quicBufferFactory() rejects
+    // heap factories at setup): deterministic() is the network() default everywhere; Default is a
+    // valid GC-reclaimed override only where it allocates native buffers (JVM Arena, Apple
+    // NSMutableData) — on Linux it is a managed ByteArrayBuffer, so probe like requireNativeMemory().
+    private val leafFactories: List<Pair<String, BufferFactory>>
+        get() =
+            buildList {
+                add("deterministic" to BufferFactory.deterministic())
+                val probe = BufferFactory.Default.allocate(1)
+                if (probe.nativeMemoryAccess != null) add("default" to BufferFactory.Default)
+                probe.freeIfNeeded()
+            }
 
     @Test
     fun streamReadBuffersAreRecycledNotAllocatedPerRead() =
         runQuicTest {
             for ((name, leaf) in leafFactories) {
-                val counting = leaf().counting()
+                val counting = leaf.counting()
                 val api = StubQuicheApi().apply { streamRecvResult = StreamRecvResult.Data(1024, false) }
                 val driver = driverWith(api, counting)
                 driver.start(this)
@@ -89,7 +95,7 @@ class QuicReadPoolingTests {
     fun datagramReceiveBuffersAreRecycledNotAllocatedPerReceive() =
         runQuicTest {
             for ((name, leaf) in leafFactories) {
-                val counting = leaf().counting()
+                val counting = leaf.counting()
                 val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(3, false) }
                 val driver = driverWith(api, counting)
                 val adapter = DriverDatagramAdapter(driver)
