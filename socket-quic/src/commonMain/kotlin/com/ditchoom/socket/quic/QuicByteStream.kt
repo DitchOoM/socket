@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.transport.MuxIdentified
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 
@@ -38,7 +39,10 @@ class QuicByteStream(
     private val delegate: ByteStream,
 ) : ByteStream,
     HalfCloseable,
-    Resettable {
+    Resettable,
+    MuxIdentified {
+    override val muxStreamId: Long get() = streamId.id
+
     @Volatile
     private var closed = false
 
