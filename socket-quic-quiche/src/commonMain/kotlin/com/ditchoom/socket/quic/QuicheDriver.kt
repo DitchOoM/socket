@@ -145,10 +145,11 @@ class QuicheDriver(
     private var driverJob: Job? = null
 
     /**
-     * Client-mode recv buffer pool — mirrors the server-side pool in
-     * CommonJvmWithQuicServer. Only allocated in [clientMode] because
-     * server-accepted drivers receive packets via commands.send() from the
-     * server's receive loop and never run [udpReaderLoop].
+     * Per-connection datagram recv buffer pool — mirrors the server-side pool in
+     * CommonJvmWithQuicServer. Two acquirers: the client-mode [udpReaderLoop]
+     * (server-accepted drivers receive packets via commands.send() from the
+     * server's receive loop and never run it), and [DriverDatagramAdapter.receiveDatagram]
+     * (both modes) for RFC 9221 application datagrams.
      *
      * MultiThreaded mode: [udpReaderLoop] acquires on its own Dispatchers.Default
      * coroutine; the driver's [run] loop releases (via [QuicheCmd.RecvPacket]'s
@@ -165,17 +166,41 @@ class QuicheDriver(
      * buffer, so the cap stops bounding RSS). Same shape as the server-side pool
      * in CommonJvmWithQuicServer.
      */
-    private val recvBufPool: BufferPool? =
-        if (clientMode) {
-            BufferPool(
-                threadingMode = ThreadingMode.MultiThreaded,
-                maxPoolSize = 64,
-                defaultBufferSize = MAX_DATAGRAM_SIZE,
-                factory = bufferFactory,
-            )
-        } else {
-            null
-        }
+    internal val recvBufPool: BufferPool =
+        BufferPool(
+            threadingMode = ThreadingMode.MultiThreaded,
+            maxPoolSize = 64,
+            defaultBufferSize = MAX_DATAGRAM_SIZE,
+            factory = bufferFactory,
+        )
+
+    /**
+     * Per-connection pool of stream-read buffers. Every [QuicheStreamByteStream] created for this
+     * connection (accepted here in [processReadableStreams], or opened by the platform facades) is
+     * handed this pool as its `bufferFactory`, so [DriverStreamAdapter.streamRead]'s per-read
+     * `allocate(bufferSize)` becomes a pool acquire and the consumer's `freeNativeMemory()` on the
+     * delivered buffer becomes a pool return — the exact recycling contract `streamRead` already
+     * documents ("a pool-return for pooled factories").
+     *
+     * Without this, each stream read allocated a fresh [STREAM_READ_BUFFER_SIZE] buffer from the
+     * leaf factory. Under the default GC-reclaimed factory those accumulate to the JVM's direct
+     * memory cap under high read throughput — the same failure `ReadBufferSource` fixes for the
+     * TCP read path — and under a `deterministic()` factory they churn malloc/free per read.
+     *
+     * MultiThreaded mode: stream readers acquire on their own coroutines; consumers release on
+     * theirs. maxPoolSize=16 → ≤1 MB cached (16 × 64 KB) per connection at steady state; misses
+     * beyond the cap fall through to the leaf factory and over-cap returns are freed, so the cap
+     * bounds cached RSS, not concurrency.
+     *
+     * Same leaf-factory-in, pool-built-here ownership invariant as [recvBufPool].
+     */
+    internal val streamReadPool: BufferPool =
+        BufferPool(
+            threadingMode = ThreadingMode.MultiThreaded,
+            maxPoolSize = 16,
+            defaultBufferSize = STREAM_READ_BUFFER_SIZE,
+            factory = bufferFactory,
+        )
 
     /**
      * One network path the connection can send/receive on. The connection always has
@@ -479,7 +504,7 @@ class QuicheDriver(
                     val slot = StreamSlot(streamId)
                     streams[streamId.id] = slot
                     val adapter = DriverStreamAdapter(this, slot)
-                    val byteStream = QuicheStreamByteStream(streamId, adapter, bufferFactory)
+                    val byteStream = QuicheStreamByteStream(streamId, adapter, streamReadPool)
                     incomingStreams.trySend(QuicByteStream(streamId, byteStream))
                     slot.dataSignal.trySend(Unit)
                 }
@@ -573,7 +598,7 @@ class QuicheDriver(
      * the driver feeds quiche the right recv_info during migration.
      */
     private suspend fun udpReaderLoop(entry: PathEntry) {
-        val pool = recvBufPool!!
+        val pool = recvBufPool
         try {
             while (coroutineContext[Job]?.isActive != false) {
                 val buf = pool.allocate(MAX_DATAGRAM_SIZE)
@@ -812,8 +837,11 @@ class QuicheDriver(
         // commands.tryReceive() drain above freed any pending RecvPackets
         // back to the pool. Late releases from an in-flight udpReaderLoop
         // iteration are benign — they repopulate the pool, which is GC'd
-        // with the driver.
-        recvBufPool?.clear()
+        // with the driver. Same for stream-read buffers still owned by
+        // consumers: their freeNativeMemory() after this clear repopulates
+        // a pool that dies with the driver.
+        recvBufPool.clear()
+        streamReadPool.clear()
         incomingStreams.close()
         // Released last — quiche may have dereferenced recvInfo.from/to inside
         // any of the api.*Free() calls above. Safe to release the underlying
@@ -856,6 +884,13 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /**
+         * Default per-read buffer size for QUIC stream reads — [QuicheStreamByteStream]'s default
+         * `bufferSize` and [streamReadPool]'s buffer size, kept equal so every default-sized read
+         * is a pool hit.
+         */
+        const val STREAM_READ_BUFFER_SIZE = 65536
 
         /** Size of a `sockaddr_storage` — the out-buffers quiche fills for path events. */
         const val SOCKADDR_STORAGE_SIZE = 128

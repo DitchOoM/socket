@@ -9,6 +9,8 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.bufferHashCode
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.pool.ThreadingMode
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.UIntVar
@@ -215,6 +217,22 @@ private class AppleQuicServer(
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
 
     /**
+     * Recv buffer pool — mirrors [JvmQuicServer]'s: each datagram is acquired here, ownership
+     * transfers to the connection's driver, and every existing free-path's `freeNativeMemory()`
+     * recycles the buffer back to this pool instead of malloc/freeing per packet.
+     *
+     * Ownership invariant: [bufferFactory] is a **leaf** factory — this pool is built *from* it;
+     * never pass an already-pooled factory (the `80575c1` double-wrap regression).
+     */
+    private val recvBufPool =
+        BufferPool(
+            threadingMode = ThreadingMode.MultiThreaded,
+            maxPoolSize = 64,
+            defaultBufferSize = MAX_DATAGRAM_SIZE,
+            factory = bufferFactory,
+        )
+
+    /**
      * Passive-migration support (mirrors [JvmQuicServer]): one server socket sees a client's
      * source change after it migrates (RFC 9000 §9). quiche needs the *actual* per-datagram
      * source as recv_info.from to recognise the new path, so cache one recv_info per distinct
@@ -357,6 +375,9 @@ private class AppleQuicServer(
         acceptedDrivers.close()
         scidRegistrationCh.close()
         serverChannel.freeBuffers()
+        // Late returns from drivers still tearing down are benign — they repopulate
+        // a pool that is GC'd with the server.
+        recvBufPool.clear()
         localAddrBuf.freeNativeMemory()
         // Cancel the per-call parent scope last (buildAppleQuicServer wires this); previously the
         // withQuicServer wrapper did it after server.close(). receiveJob/handlers are its children.
@@ -386,8 +407,9 @@ private class AppleQuicServer(
                 // Register spare SCIDs issued by drivers so a migrating peer's new DCID routes.
                 drainScidRegistrations()
 
-                // Allocate a fresh buffer per packet — ownership transfers to driver (zero-copy)
-                val recvBuf = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
+                // Acquire a buffer per packet — ownership transfers to driver (zero-copy).
+                // The driver's freeNativeMemory() recycles it back to recvBufPool.
+                val recvBuf = recvBufPool.allocate(MAX_DATAGRAM_SIZE)
 
                 val recvResult =
                     try {
@@ -679,7 +701,7 @@ private class AppleServerQuicConnection(
     CoroutineScope by connectionScope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
-    private val datagramAdapter = DriverDatagramAdapter(driver, bufferFactory)
+    private val datagramAdapter = DriverDatagramAdapter(driver)
 
     override suspend fun openStream(): QuicByteStream = open(unidirectional = false)
 
@@ -691,7 +713,7 @@ private class AppleServerQuicConnection(
             driver.commands.send(QuicheCmd.OpenStream(deferred, unidirectional))
             val slot = deferred.await()
             val adapter = DriverStreamAdapter(driver, slot)
-            return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, bufferFactory))
+            return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, driver.streamReadPool))
         } catch (_: ClosedSendChannelException) {
             throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
         }
