@@ -1,6 +1,6 @@
 # RFC — Composable transport selection & fallback
 
-**Status:** Draft / design
+**Status:** MVP implemented (`com.ditchoom.socket.transport` — `FallbackTransport`, `FallbackPolicy`, `CapabilityCache`, `NetworkId`, `TransportSet`/`defaultTransportChain`); §5 racing and the wired two-scope cache are v2
 **Builds on:** [`RFC_UNIFIED_ESTABLISHMENT.md`](./RFC_UNIFIED_ESTABLISHMENT.md) — this RFC is the *selection/composition* layer that sits on top of the `Transport` / `SessionTransport` model, the `SessionOwningByteStream` projection (§3.3), reconnection (§5), and the typed error vocabulary (§6) defined there.
 
 ## 1. Goal
@@ -160,8 +160,8 @@ The clean `Transport → ByteStream` boundary makes all of this testable without
 - **v2:** staggered family racing; two-scope `CapabilityCache` with TTL + re-probe.
 - **Later (only if measured):** Alt-Svc/proactive advertisement; slow N-strikes soft-demote for blackholed UDP.
 
-## 12. Open questions
+## 12. Open questions — resolved
 
-- Does `socket-webtransport` have a **JS actual** over the browser WebTransport API? If not, web is WebSocket-only today (no web fallback) and WebTransport is native-only for now — changes whether §2.1's web chain has two rungs or one.
-- Addressing: RFC_UNIFIED §4 (host:port vs URL). WebSocket/WebTransport need a path + headers; QUIC needs ALPN. Confirm `TransportConfig` carries (or is extended with) a per-transport capability bag vs. a typed union.
-- Is `networkId` (SSID/interface) cheaply observable on every platform (esp. iOS/Android/web)? If not, per-network scope degrades to a coarser signal (e.g. reset the network cache on any reconnect).
+- ~~Does `socket-webtransport` have a **JS actual** over the browser WebTransport API?~~ **Resolved: yes** — `socket-webtransport` has `browserMain`/`jsMain`/`wasmJsMain` actuals over the browser WebTransport API (validated against real Chrome on js + wasmJs). §2.1's web chain has **two rungs**: WebTransport → WebSocket.
+- ~~Addressing: capability bag vs. typed union?~~ **Resolved: neither — pre-addressed instances.** Each `Transport` carries its own per-transport addressing at construction (`WebSocketTransport(path, headers)` in the websocket repo, WebTransport URL path, QUIC ALPN); `connect(host, port, config)` stays uniform and socket never enumerates other modules' addressing needs. This gets the out-of-tree extensibility the bag was for with zero new API and no key registry. If per-connect addressing variation ever shows up, a typed-key extras bag on `TransportConfig` is the compatible follow-up.
+- ~~Is `networkId` cheaply observable on every platform?~~ **Resolved by making absence first-class**: `NetworkId` is a sealed model where "can't identify the network" is the explicit `Unidentified` case that simply disables the per-network scope (no entry recorded or read), and browsers get the coarse `KindOnly` case (`navigator.connection.type`) — still enough for the decisive Wi-Fi↔cellular transition. The reactive `NetworkMonitor` (desktop-JVM FFM, wired into `ReconnectingConnection`) is the intended population source; wiring it to `TransportConfig.networkId` is v2 work alongside the two-scope cache.
