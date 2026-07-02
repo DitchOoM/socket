@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.counting
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
@@ -46,55 +47,67 @@ class QuicReadPoolingTests {
         return withTimeout(2.seconds) { deferred.await() }
     }
 
+    // Both native-memory leaf factories QUIC accepts (quicBufferFactory() rejects heap factories
+    // at setup): deterministic() is the network() default; Default is the GC-reclaimed override.
+    private val leafFactories =
+        listOf(
+            "deterministic" to { BufferFactory.deterministic() },
+            "default" to { BufferFactory.Default },
+        )
+
     @Test
     fun streamReadBuffersAreRecycledNotAllocatedPerRead() =
         runQuicTest {
-            val counting = BufferFactory.deterministic().counting()
-            val api = StubQuicheApi().apply { streamRecvResult = StreamRecvResult.Data(1024, false) }
-            val driver = driverWith(api, counting)
-            driver.start(this)
-            try {
-                val slot = openStream(driver)
-                val stream = QuicheStreamByteStream(slot.id, DriverStreamAdapter(driver, slot), driver.streamReadPool)
-                repeat(300) {
-                    val result = withTimeout(2.seconds) { stream.read(2.seconds) }
-                    assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
-                    // The consumer hands ownership back after consuming — recycles to the pool.
-                    result.buffer.freeIfNeeded()
+            for ((name, leaf) in leafFactories) {
+                val counting = leaf().counting()
+                val api = StubQuicheApi().apply { streamRecvResult = StreamRecvResult.Data(1024, false) }
+                val driver = driverWith(api, counting)
+                driver.start(this)
+                try {
+                    val slot = openStream(driver)
+                    val stream = QuicheStreamByteStream(slot.id, DriverStreamAdapter(driver, slot), driver.streamReadPool)
+                    repeat(300) {
+                        val result = withTimeout(2.seconds) { stream.read(2.seconds) }
+                        assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
+                        // The consumer hands ownership back after consuming — recycles to the pool.
+                        result.buffer.freeIfNeeded()
+                    }
+                } finally {
+                    driver.destroy()
                 }
-            } finally {
-                driver.destroy()
+                val allocations = counting.allocationCount
+                // Pooling ⇒ the leaf factory is hit only for driver scratch buffers + pool misses,
+                // NOT once per read (pre-fix: 300+ allocations here).
+                assertTrue(
+                    allocations < 20,
+                    "[$name] stream read buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 reads",
+                )
             }
-            val allocations = counting.allocationCount
-            // Pooling ⇒ the leaf factory is hit only for driver scratch buffers + pool misses,
-            // NOT once per read (pre-fix: 300+ allocations here).
-            assertTrue(
-                allocations < 20,
-                "stream read buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 reads",
-            )
         }
 
     @Test
     fun datagramReceiveBuffersAreRecycledNotAllocatedPerReceive() =
         runQuicTest {
-            val counting = BufferFactory.deterministic().counting()
-            val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(3, false) }
-            val driver = driverWith(api, counting)
-            val adapter = DriverDatagramAdapter(driver)
-            driver.start(this)
-            try {
-                repeat(300) {
-                    val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
-                    assertIs<DatagramReceiveResult.Received>(result)
-                    result.buffer.freeIfNeeded()
+            for ((name, leaf) in leafFactories) {
+                val counting = leaf().counting()
+                val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(3, false) }
+                val driver = driverWith(api, counting)
+                val adapter = DriverDatagramAdapter(driver)
+                driver.start(this)
+                try {
+                    repeat(300) {
+                        val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
+                        assertIs<DatagramReceiveResult.Received>(result)
+                        result.buffer.freeIfNeeded()
+                    }
+                } finally {
+                    driver.destroy()
                 }
-            } finally {
-                driver.destroy()
+                val allocations = counting.allocationCount
+                assertTrue(
+                    allocations < 20,
+                    "[$name] datagram receive buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 receives",
+                )
             }
-            val allocations = counting.allocationCount
-            assertTrue(
-                allocations < 20,
-                "datagram receive buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 receives",
-            )
         }
 }
