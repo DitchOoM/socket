@@ -9,17 +9,17 @@ quiche = "0.28.0"
 quicheSha256 = "2adb185e8557b3057cee76ba73d8afb20c25e3143a6296a5891ddc9b1fd81192"
 androidGradlePlugin = "9.2.1"
 ktlint = "14.2.0"
-mavenPublish = "0.36.0"
+mavenPublish = "0.37.0"
 dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 kotlinWrappers = "2026.6.0"
 # 6.1.0 adds the raw ByteStreamMux primitive + BufferedByteSource.peek (buffer PR #239).
-buffer = "6.1.0"
+buffer = "6.2.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
-androidxCore = "1.18.0"
+androidxCore = "1.19.0"
 # Jazzer — coverage-guided fuzzing driver; runtime-only on the quicHeaderFuzz task, never a test dep
-jazzer = "0.24.0"
+jazzer = "0.30.0"
 
 [libraries]
 buffer = { module = "com.ditchoom:buffer", version.ref = "buffer" }
