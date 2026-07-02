@@ -17,7 +17,18 @@ package com.ditchoom.socket.quic
  * the base `commonJvmMain` loader this shadows — or when a test deliberately
  * selects it by keeping this FFM loader off the classpath (`-PquicheJvmBackend`).
  */
-fun loadQuicheApi(): QuicheApi {
+fun loadQuicheApi(): QuicheApi = ffmQuicheApi
+
+/**
+ * Process-wide singleton. `loadQuicheApi()` is called per connection/server; loading per call
+ * mapped a fresh ~5 MB libquiche copy each time AND made every copy GC-unloadable via its
+ * auto-arena — the root cause of the build-linux `:socket-http3:jvmTest` SIGSEGV (BoringSSL
+ * pthread TLS destructors outliving a dlclosed copy; see QuicheApiLifecycleTest). One extraction,
+ * one dlopen, held for the process lifetime.
+ */
+private val ffmQuicheApi: QuicheApi by lazy { loadFfmQuicheApi() }
+
+private fun loadFfmQuicheApi(): QuicheApi {
     val classLoader =
         QuicheApi::class.java.classLoader
             ?: error("Cannot load quiche FFM backend: no class loader for QuicheApi")
