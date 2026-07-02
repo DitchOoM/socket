@@ -4,7 +4,6 @@ import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.nio.ByteBufferClientSocket
@@ -32,13 +31,14 @@ abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocket
         if (!isOpen) throw SocketClosedException.General("Socket is closed.")
         tlsHandler?.let { return it.unwrap(deadline) }
         val receiveBuffer = socket.getOption(StandardSocketOptions.SO_RCVBUF)
-        val buffer = config.bufferFactory.allocate(receiveBuffer)
+        val buffer = readBufferSource.acquire(receiveBuffer)
         try {
             read(buffer.unwrapFully() as BaseJvmBuffer, deadline)
             buffer.resetForRead()
             return buffer
         } catch (e: Exception) {
-            buffer.freeIfNeeded()
+            // Return the pooled buffer instead of dropping it to the GC.
+            buffer.freeNativeMemory()
             throw e
         }
     }
