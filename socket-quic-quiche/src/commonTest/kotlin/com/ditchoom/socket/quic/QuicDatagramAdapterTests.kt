@@ -48,7 +48,7 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(5, false) }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver, bufferFactory)
+            val adapter = DriverDatagramAdapter(driver)
             driver.start(this)
             try {
                 val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
@@ -71,7 +71,7 @@ class QuicDatagramAdapterTests {
                     dgramRecvSequence.addAll(listOf(StreamRecvResult.Done, StreamRecvResult.Data(3, false)))
                 }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver, bufferFactory)
+            val adapter = DriverDatagramAdapter(driver)
             driver.start(this)
             try {
                 val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
@@ -89,7 +89,7 @@ class QuicDatagramAdapterTests {
             // Done + no readable signal → the receiver parks on dgramSignal; destroy() closes it.
             val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Done }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver, bufferFactory)
+            val adapter = DriverDatagramAdapter(driver)
             driver.start(this)
             val pending = async { adapter.receiveDatagram() }
             yield() // let it park
@@ -103,7 +103,7 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramMaxWritableLen = MaxDatagramSize.Unavailable }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver, bufferFactory)
+            val adapter = DriverDatagramAdapter(driver)
             driver.start(this)
             try {
                 val buf =
@@ -123,7 +123,7 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramMaxWritableLen = MaxDatagramSize.Bytes(1200) }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver, bufferFactory)
+            val adapter = DriverDatagramAdapter(driver)
             driver.start(this)
             try {
                 awaitMaxSizePublished(driver)
@@ -144,7 +144,7 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramMaxWritableLen = MaxDatagramSize.Bytes(4) }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver, bufferFactory)
+            val adapter = DriverDatagramAdapter(driver)
             driver.start(this)
             try {
                 awaitMaxSizePublished(driver)
@@ -163,12 +163,14 @@ class QuicDatagramAdapterTests {
     @Test
     fun receiveDatagram_transfersOwnership_noLeaks() =
         runQuicTest {
-            // TrackingBufferFactory verifies the adapter frees the recv buffer on the caller's release,
-            // and the driver frees its own scratch buffers on cleanup — nothing leaks.
+            // TrackingBufferFactory verifies the recv buffer's pool round-trip ends at the leaf:
+            // the caller's release returns it to the driver's recvBufPool, and destroy()'s
+            // pool.clear() (plus the driver's own scratch-buffer frees) releases every leaf
+            // allocation — nothing leaks.
             val factory = TrackingBufferFactory()
             val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(3, false) }
             val driver = driverWith(api, factory)
-            val adapter = DriverDatagramAdapter(driver, factory)
+            val adapter = DriverDatagramAdapter(driver)
             driver.start(this)
             try {
                 val result = withTimeout(2.seconds) { adapter.receiveDatagram() }

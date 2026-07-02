@@ -88,8 +88,11 @@ interface QuicheStreamAdapter {
 class QuicheStreamByteStream(
     val streamId: QuicStreamId,
     private val adapter: QuicheStreamAdapter,
+    // The driver and every platform facade pass QuicheDriver.streamReadPool here — a per-connection
+    // BufferPool over the leaf TransportConfig.bufferFactory — so reads recycle buffers instead of
+    // allocating one per read. Any plain BufferFactory also works; it just allocates fresh each read.
     private val bufferFactory: BufferFactory,
-    private val bufferSize: Int = 65536,
+    private val bufferSize: Int = QuicheDriver.STREAM_READ_BUFFER_SIZE,
 ) : ByteStream,
     HalfCloseable,
     Resettable {

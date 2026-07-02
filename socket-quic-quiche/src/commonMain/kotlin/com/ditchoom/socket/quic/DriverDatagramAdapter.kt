@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic
 
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
@@ -17,16 +16,16 @@ import kotlinx.coroutines.withContext
  * Shared by every quiche-backed platform connection (JVM/Android/Linux) so the buffer-ownership and
  * native-lifetime rules live in one place. The logic mirrors [DriverStreamAdapter] for streams:
  *
- * - **receive**: allocate from [bufferFactory] (pool-aware — `freeNativeMemory()` returns a pooled
- *   buffer to its pool), let quiche write into it, transfer ownership to the caller on success and
- *   free it otherwise. A [NonCancellable] join on the in-flight command guarantees quiche has finished
- *   writing `addr` before the buffer can be released (the read-after-free guard from [DriverStreamAdapter]).
+ * - **receive**: acquire from the driver's per-connection [QuicheDriver.recvBufPool] (the caller's
+ *   `freeNativeMemory()` recycles the buffer back to that pool), let quiche write into it, transfer
+ *   ownership to the caller on success and free it otherwise. A [NonCancellable] join on the in-flight
+ *   command guarantees quiche has finished writing `addr` before the buffer can be released (the
+ *   read-after-free guard from [DriverStreamAdapter]).
  * - **send**: the caller owns the buffer; the driver only reads its native address. The same in-flight
  *   join guarantees quiche finished reading before the caller frees/recycles it.
  */
 internal class DriverDatagramAdapter(
     private val driver: QuicheDriver,
-    private val bufferFactory: BufferFactory,
 ) {
     /** The structured close reason if the connection has closed, else [fallback]. */
     private fun closedReason(fallback: QuicError): QuicError = (driver.state.value as? QuicConnectionState.Closed)?.error ?: fallback
@@ -76,7 +75,7 @@ internal class DriverDatagramAdapter(
     }
 
     suspend fun receiveDatagram(): DatagramReceiveResult {
-        val buffer = bufferFactory.allocate(QuicheDriver.MAX_DATAGRAM_SIZE)
+        val buffer = driver.recvBufPool.allocate(QuicheDriver.MAX_DATAGRAM_SIZE)
         val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong()
 
         // See DriverStreamAdapter.streamRead: the driver may still be writing into `addr` inside

@@ -342,7 +342,7 @@ internal class AppleQuicConnection(
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
-    private val datagramAdapter = DriverDatagramAdapter(driver, bufferFactory)
+    private val datagramAdapter = DriverDatagramAdapter(driver)
 
     fun start() {
         driver.start(scope)
@@ -364,7 +364,7 @@ internal class AppleQuicConnection(
             driver.commands.send(QuicheCmd.OpenStream(deferred, unidirectional))
             val slot = deferred.await()
             val adapter = DriverStreamAdapter(driver, slot)
-            return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, bufferFactory))
+            return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, driver.streamReadPool))
         } catch (_: ClosedSendChannelException) {
             throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
         }
