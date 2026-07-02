@@ -180,7 +180,7 @@ class LinuxQuicSmokeTest {
                     quiche_connect(
                         // SNI string — quiche_connect doesn't resolve it. Was
                         // "cloudflare-quic.com" pre-Phase 4; now matches the harness
-                        // self-signed cert (CN=quic.tech, in socket-quic/testcerts/).
+                        // self-signed cert (CN=quic.tech, in socket-quic-quiche/testcerts/).
                         "quic.tech",
                         pinned.addressOf(0).reinterpret(),
                         QUIC_MAX_CONN_ID_LEN.convert(),
