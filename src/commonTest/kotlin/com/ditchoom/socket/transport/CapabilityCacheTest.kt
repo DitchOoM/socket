@@ -2,6 +2,10 @@ package com.ditchoom.socket.transport
 
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.socket.TransportConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.minutes
@@ -95,4 +99,29 @@ class CapabilityCacheTest {
             "both scopes demote; original order kept within the demoted group",
         )
     }
+
+    @Test
+    fun concurrentReadersAndWritersNeverCorruptTheCache() =
+        runTest {
+            // The cache is FallbackTransport's production default, so concurrent connects hammer it from
+            // real threads (JVM/native; single-threaded no-op on JS). Copy-on-write must survive without
+            // corruption and end in a consistent, healable state.
+            val cache = InMemoryCapabilityCache()
+            withContext(Dispatchers.Default) {
+                repeat(8) { worker ->
+                    launch {
+                        repeat(200) { i ->
+                            val host = "h${(worker + i) % 4}"
+                            cache.recordUnsupported(CacheScope.PerHost, host, wifi, quic)
+                            cache.recordUnsupported(CacheScope.PerNetwork, host, wifi, tcp)
+                            cache.order(host, wifi, chain)
+                            cache.recordSuccess(host, wifi, quic)
+                        }
+                    }
+                }
+            }
+            repeat(4) { cache.recordSuccess("h$it", wifi, tcp) }
+            repeat(4) { cache.recordSuccess("h$it", wifi, quic) }
+            repeat(4) { assertEquals(chain, cache.order("h$it", wifi, chain), "all demotions must heal cleanly") }
+        }
 }

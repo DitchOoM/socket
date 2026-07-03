@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -21,6 +22,23 @@ interface NetworkMonitor {
     /** Current network availability, updated as the platform detects changes. */
     val availability: StateFlow<NetworkAvailability>
 
+    /**
+     * Typed identity of the current primary network path ([NetworkId], sealed — never a string or
+     * null), updated on the same platform callbacks as [availability]. This is the producer for
+     * [com.ditchoom.socket.TransportConfig.networkId] and the transport-selection layer's
+     * per-network [com.ditchoom.socket.transport.CapabilityCache] scope: wire it as
+     * `FallbackTransport(chain, networkId = { monitor.networkId.value })`.
+     *
+     * Defaults to a constant [NetworkId.Unidentified] — the explicit "no cheap network identity"
+     * state (RFC_TRANSPORT_FALLBACK §12) — which is what monitors keep on platforms with no reliable
+     * link-kind API (desktop JVM, Linux native, Node.js, Wasm). Overridden with real identity by:
+     * - **Apple** — `NWPathMonitor` primary interface type + index → [NetworkId.Link]
+     * - **Android** — `ConnectivityManager` transports + `networkHandle` → [NetworkId.Link]
+     * - **Browser JS** — `navigator.connection.type` → [NetworkId.KindOnly] (Chromium-only;
+     *   [NetworkId.Unidentified] elsewhere)
+     */
+    val networkId: StateFlow<NetworkId> get() = UnidentifiedNetworkId
+
     /** Releases platform resources (unregisters callbacks, closes sockets, cancels polling). */
     fun close()
 
@@ -35,6 +53,9 @@ interface NetworkMonitor {
             }
     }
 }
+
+/** Shared constant flow for monitors that cannot identify the network (the [NetworkMonitor.networkId] default). */
+private val UnidentifiedNetworkId: StateFlow<NetworkId> = MutableStateFlow(NetworkId.Unidentified)
 
 /**
  * Returns the platform's best default [NetworkMonitor]: reactive and event-driven where a

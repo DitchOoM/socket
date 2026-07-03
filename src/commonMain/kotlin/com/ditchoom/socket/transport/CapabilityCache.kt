@@ -1,5 +1,7 @@
 package com.ditchoom.socket.transport
 
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeMark
@@ -40,8 +42,9 @@ interface CapabilityCache {
 }
 
 /**
- * MVP default (RFC §11 puts the learning cache in v2): no memory — every connect tries the full chain
- * in its declared order.
+ * The no-memory cache: every connect tries the full chain in its declared order. The v2 default is
+ * [InMemoryCapabilityCache]; pass this to opt out of learning entirely (e.g. for deterministic
+ * benchmarking or tests that script exact rung order).
  */
 object NoOpCapabilityCache : CapabilityCache {
     override fun order(
@@ -72,35 +75,57 @@ object NoOpCapabilityCache : CapabilityCache {
  *
  * [timeSource] is injected for deterministic TTL tests (`kotlin.time.TestTimeSource`).
  *
- * Thread-safety: entries are hints, so a race only costs one extra probe or one skipped demotion —
- * never correctness. Kept lock-free for the prototype; wrap in a `Mutex` if strict consistency is
- * ever wanted.
+ * Thread-safety: this is [FallbackTransport]'s production default, so concurrent connects (possibly
+ * on different threads) may hit it simultaneously. State is one immutable **flat list** of demotion
+ * entries swapped whole by CAS — reads never lock, and a racing write costs one retry, never
+ * corruption. A list, deliberately *not* copy-on-write maps: Kotlin's `HashMap` lazily creates and
+ * caches its `entries`/`keys` views on first read, so even "read-only" concurrent access to a shared
+ * map is a data race (it SIGSEGVs under load on Kotlin/Native's weak memory ordering) — `ArrayList`
+ * reads are genuinely pure. The set is tiny (bounded by chain length × recently-failed hosts/
+ * networks, pruned on write by TTL), so linear scans beat the maps anyway. Semantically the entries
+ * stay hints: a demotion lost to a concurrent success-heal is one extra probe, not an error.
  */
+@OptIn(ExperimentalAtomicApi::class)
 class InMemoryCapabilityCache(
     private val ttl: Duration = 10.minutes,
     private val timeSource: TimeSource = TimeSource.Monotonic,
 ) : CapabilityCache {
-    private val perHost = HashMap<String, HashMap<Transport, TimeMark>>()
-    private val perNetwork = HashMap<NetworkId, HashMap<Transport, TimeMark>>()
+    /** One demotion: keyed by exactly one of [host] (per-host scope) or [networkId] (per-network scope). */
+    private class Demotion(
+        val host: String?,
+        val networkId: NetworkId?,
+        val transport: Transport,
+        val mark: TimeMark,
+    )
+
+    private val state = AtomicReference(emptyList<Demotion>())
 
     override fun order(
         host: String,
         networkId: NetworkId,
         chain: List<Transport>,
     ): List<Transport> {
-        val demoted = demotedFor(host, networkId)
-        if (demoted.isEmpty()) return chain
-        val (down, up) = chain.partition { it in demoted } // partition is order-preserving in both lists
-        return up + down
+        var demoted: MutableSet<Transport>? = null
+        for (entry in state.load()) {
+            if (entry.mark.elapsedNow() >= ttl) continue // expired → not active (TTL → automatic re-probe)
+            if (entry.host == host || (entry.networkId != null && entry.networkId == networkId)) {
+                (demoted ?: HashSet<Transport>().also { demoted = it }) += entry.transport
+            }
+        }
+        val down = demoted ?: return chain
+        val (back, front) = chain.partition { it in down } // partition is order-preserving in both lists
+        return front + back
     }
 
     override fun recordSuccess(
         host: String,
         networkId: NetworkId,
         transport: Transport,
-    ) {
-        perHost[host]?.remove(transport)
-        perNetwork[networkId]?.remove(transport)
+    ) = update { entries ->
+        entries.filter { entry ->
+            entry.transport != transport ||
+                !(entry.host == host || (entry.networkId != null && entry.networkId == networkId))
+        }
     }
 
     override fun recordUnsupported(
@@ -109,40 +134,32 @@ class InMemoryCapabilityCache(
         networkId: NetworkId,
         transport: Transport,
     ) {
-        when (scope) {
-            CacheScope.PerHost ->
-                perHost.getOrPut(host) { HashMap() }[transport] = timeSource.markNow()
-            CacheScope.PerNetwork ->
-                when (networkId) {
-                    // No cheap network identity → the per-network scope is simply off (RFC §12).
-                    NetworkId.Unidentified -> Unit
-                    is NetworkId.KindOnly, is NetworkId.Link ->
-                        perNetwork.getOrPut(networkId) { HashMap() }[transport] = timeSource.markNow()
-                }
-            CacheScope.None -> Unit
+        val entry =
+            when (scope) {
+                CacheScope.PerHost -> Demotion(host, null, transport, timeSource.markNow())
+                CacheScope.PerNetwork ->
+                    when (networkId) {
+                        // No cheap network identity → the per-network scope is simply off (RFC §12).
+                        NetworkId.Unidentified -> return
+                        is NetworkId.KindOnly, is NetworkId.Link ->
+                            Demotion(null, networkId, transport, timeSource.markNow())
+                    }
+                CacheScope.None -> return
+            }
+        update { entries ->
+            // Writes are the pruning point (reads never mutate): drop expired entries and the stale
+            // version of this same demotion, then append the fresh mark.
+            entries.filter {
+                it.mark.elapsedNow() < ttl &&
+                    !(it.transport == transport && it.host == entry.host && it.networkId == entry.networkId)
+            } + entry
         }
     }
 
-    private fun demotedFor(
-        host: String,
-        networkId: NetworkId,
-    ): Set<Transport> {
-        val active = HashSet<Transport>()
-        collectActive(perHost[host], active)
-        if (networkId != NetworkId.Unidentified) collectActive(perNetwork[networkId], active)
-        return active
-    }
-
-    /** Collect still-live demotions; opportunistically drop expired ones (TTL → automatic re-probe). */
-    private fun collectActive(
-        entries: HashMap<Transport, TimeMark>?,
-        into: MutableSet<Transport>,
-    ) {
-        if (entries == null) return
-        val expired = ArrayList<Transport>()
-        for ((transport, mark) in entries) {
-            if (mark.elapsedNow() < ttl) into += transport else expired += transport
+    private inline fun update(transform: (List<Demotion>) -> List<Demotion>) {
+        while (true) {
+            val current = state.load()
+            if (state.compareAndSet(current, transform(current))) return
         }
-        expired.forEach { entries.remove(it) }
     }
 }
