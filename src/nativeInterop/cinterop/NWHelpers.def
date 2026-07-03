@@ -525,7 +525,21 @@ void nw_helper_path_monitor_set_update_handler(
     nw_helper_path_update_handler_t _Nonnull handler)
 {
     nw_path_monitor_set_update_handler(monitor, ^(nw_path_t _Nonnull path) {
-        handler((int32_t)nw_path_get_status(path));
+        __block int32_t ifType = -1;
+        __block uint32_t ifIndex = 0;
+        __block NSString *ifName = nil;
+        nw_path_enumerate_interfaces(path, ^bool(nw_interface_t _Nonnull interface) {
+            ifType = (int32_t)nw_interface_get_type(interface);
+            ifIndex = nw_interface_get_index(interface);
+            const char *name = nw_interface_get_name(interface);
+            ifName = name ? [NSString stringWithUTF8String:name] : nil;
+            return false; // primary (first-enumerated) interface only
+        });
+        int32_t uses = 0;
+        if (nw_path_uses_interface_type(path, nw_interface_type_wifi))     uses |= 1;
+        if (nw_path_uses_interface_type(path, nw_interface_type_cellular)) uses |= 2;
+        if (nw_path_uses_interface_type(path, nw_interface_type_wired))    uses |= 4;
+        handler((int32_t)nw_path_get_status(path), ifType, ifIndex, ifName, uses);
     });
 }
 

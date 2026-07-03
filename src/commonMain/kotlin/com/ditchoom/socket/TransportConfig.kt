@@ -30,7 +30,9 @@ import kotlin.time.Duration.Companion.seconds
  *   (e.g. "this path blocks UDP") is invalidated when [networkId] changes. Defaults to
  *   [com.ditchoom.socket.transport.NetworkId.Unidentified] — the explicit "no cheap network identity"
  *   state, in which the per-network scope is simply disabled (RFC_TRANSPORT_FALLBACK §12). Populated
- *   by the platform `NetworkMonitor`.
+ *   from the platform `NetworkMonitor.networkId` — either stamped per connect by
+ *   `FallbackTransport(networkId = { monitor.networkId.value })`, or set here explicitly (an explicit
+ *   value always wins over the producer).
  */
 data class TransportConfig(
     val bufferFactory: BufferFactory = BufferFactory.Default,

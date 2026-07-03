@@ -1,13 +1,11 @@
 package com.ditchoom.socket.transport
 
-import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.socket.ConnectionFailureReason
 import com.ditchoom.socket.SSLHandshakeFailedException
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.TransportsExhausted
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
@@ -15,45 +13,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-
-/**
- * A `Transport` fake that plays a scripted outcome per connect (RFC §10's `ScriptedTransport`), so the
- * whole fallback loop is exercised deterministically with no real network. Successes hand back a live
- * in-memory `ByteStream`; [Hang] suspends forever so a per-attempt timeout can fire.
- */
-private class ScriptedTransport(
-    private val name: String,
-    private vararg val outcomes: Outcome,
-) : Transport {
-    sealed interface Outcome {
-        data object Succeed : Outcome
-
-        data class Fail(
-            val error: Throwable,
-        ) : Outcome
-
-        data object Hang : Outcome
-    }
-
-    private val script = ArrayDeque(outcomes.toList())
-    var connectCount = 0
-        private set
-
-    override suspend fun connect(
-        hostname: String,
-        port: Int,
-        config: TransportConfig,
-    ): ByteStream {
-        connectCount++
-        return when (val outcome = script.removeFirstOrNull() ?: Outcome.Succeed) {
-            Outcome.Succeed -> MemoryTransport.createPair(config).first
-            is Outcome.Fail -> throw outcome.error
-            Outcome.Hang -> awaitCancellation()
-        }
-    }
-
-    override fun toString() = name
-}
 
 class FallbackTransportTest {
     private val config = TransportConfig()

@@ -16,8 +16,9 @@ import com.ditchoom.socket.SocketUnknownHostException
  *   RST / refused / protocol-or-ALPN mismatch / HTTP 404·426 on the endpoint). Keyed on host.
  * - [PerNetwork] — "*this network path* blocks this transport family" (e.g. the whole UDP/QUIC
  *   family timing out on a UDP-blocked Wi-Fi). Keyed on `networkId` and invalidated on network
- *   change. Emitted by the cache's family-level aggregation (RFC v2), **not** by the per-attempt
- *   [FallbackPolicy] — a single timeout is never enough to poison a network (see [DefaultFallbackPolicy]).
+ *   change. Emitted by [FallbackTransport]'s family-level contrast (every UDP rung timed out AND a
+ *   TCP rung then connected, in one connect), **not** by the per-attempt [FallbackPolicy] — a single
+ *   timeout is never enough to poison a network (see [DefaultFallbackPolicy]).
  */
 enum class CacheScope { None, PerHost, PerNetwork }
 

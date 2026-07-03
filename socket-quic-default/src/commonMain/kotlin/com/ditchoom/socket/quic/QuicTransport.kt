@@ -10,6 +10,7 @@ import com.ditchoom.socket.transport.MultiplexingTransport
 import com.ditchoom.socket.transport.SessionOwningByteStream
 import com.ditchoom.socket.transport.SessionTransport
 import com.ditchoom.socket.transport.Transport
+import com.ditchoom.socket.transport.TransportFamily
 import com.ditchoom.socket.transport.use
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -95,6 +96,8 @@ class QuicTransport(
 ) : Transport,
     MultiplexingTransport {
     private val session = QuicSessionTransport(quicOptions, engine)
+
+    override val family: TransportFamily get() = TransportFamily.Udp
 
     override suspend fun connect(
         hostname: String,

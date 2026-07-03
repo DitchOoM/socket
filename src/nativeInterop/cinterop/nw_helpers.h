@@ -197,9 +197,20 @@ NSNumber * _Nonnull nw_helper_is_port_available(int32_t port);
 // Network path monitor
 // ============================================================
 
-// Path update handler — receives nw_path_status_t as int32_t.
-// Status values: 0=invalid, 1=satisfied, 2=unsatisfied, 3=requiresConnection
-typedef void (^nw_helper_path_update_handler_t)(int32_t status);
+// Path update handler — receives nw_path_status_t plus the path's primary-interface identity.
+// status: 0=invalid, 1=satisfied, 2=unsatisfied, 3=requiresConnection
+// interface_type (nw_interface_type_t of the first/primary interface): 0=other, 1=wifi, 2=cellular,
+//   3=wired, 4=loopback; -1 when the path has no interface.
+// interface_index: OS interface index of the primary interface; 0 when the path has no interface.
+// interface_name: BSD name of the primary interface (e.g. "en0", "utun3"); nil when none.
+// uses_interface_types: bitmask of nw_path_uses_interface_type over the whole path —
+//   1=wifi, 2=cellular, 4=wired (identifies what a VPN tunnels over).
+typedef void (^nw_helper_path_update_handler_t)(
+    int32_t status,
+    int32_t interface_type,
+    uint32_t interface_index,
+    NSString * _Nullable interface_name,
+    int32_t uses_interface_types);
 
 nw_path_monitor_t _Nonnull nw_helper_create_path_monitor(void);
 
