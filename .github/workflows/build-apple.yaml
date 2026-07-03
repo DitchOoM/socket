@@ -194,16 +194,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-apple
+          # Report globs are module-agnostic on purpose: a hand-kept module list silently drops
+          # the one module that failed (test-reports-linux missed :socket-http3's XML this way).
           path: |
-            build/reports/tests/
-            build/test-results/
+            **/build/reports/tests/
+            **/build/test-results/
             build/reports/ktlint/
-            socket-quic-quiche/build/reports/tests/
-            socket-quic-quiche/build/test-results/
-            socket-http3/build/reports/tests/
-            socket-http3/build/test-results/
-            socket-webtransport/build/reports/tests/
-            socket-webtransport/build/test-results/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 7

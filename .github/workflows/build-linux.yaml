@@ -798,11 +798,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-linux
+          # Report globs are module-agnostic on purpose: a hand-kept module list silently drops
+          # the one module that failed (this artifact missed :socket-http3's XML this way when
+          # its jvmTest flaked on the 2026-07-02 release run).
           path: |
-            build/reports/tests/
-            build/test-results/
-            socket-quic-quiche/build/reports/tests/
-            socket-quic-quiche/build/test-results/
+            **/build/reports/tests/
+            **/build/test-results/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
