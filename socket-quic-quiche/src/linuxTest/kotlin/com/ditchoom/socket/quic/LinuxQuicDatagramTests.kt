@@ -11,7 +11,7 @@ class LinuxQuicDatagramTests : QuicDatagramTestSuite() {
         val candidates =
             listOf(
                 "testcerts/$name",
-                "socket-quic/testcerts/$name",
+                "socket-quic-quiche/testcerts/$name",
             )
         return candidates.firstOrNull { access(it, F_OK) == 0 }
             ?: error("Test cert not found: $name (tried $candidates)")
