@@ -602,8 +602,12 @@ class ReactiveDriverTests {
                         ex.abort.applicationErrorCode,
                         "the peer application error code from quiche's out_error_code must round-trip",
                     )
+                    // Widen to Any so this stays a real runtime guard: Kotlin 2.4.0 promotes a
+                    // statically-provable `is` check to a hard error, and QuicStreamException is not a
+                    // SocketClosedException subtype. The cast keeps the regression check that the two
+                    // hierarchies never merge without tripping the compile-time tautology error.
                     assertTrue(
-                        ex !is SocketClosedException,
+                        (ex as Any) !is SocketClosedException,
                         "a stopped/reset stream is not a closed connection — must not be a SocketClosedException",
                     )
 
