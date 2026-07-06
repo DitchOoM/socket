@@ -1238,15 +1238,17 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # JVM Jazzer fuzz lanes, one matrix leg per target so they run in parallel.
-  #   quiche-header — quiche_header_info, the parse on every received datagram before any
-  #     connection state; drives quiche over JNI (needs prepareQuicheNativeLib, warm from
-  #     the cache). http3-codec — the HAND-ROLLED HTTP/3 + QPACK codec (our RFC-9114/9204
-  #     risk surface: quiche/NW own the transport, this is OUR parser/encoder): http3CodecFuzz
-  #     hunts untyped-decoder crashes, http3RoundTripFuzz hunts encode→decode bijection breaks,
-  #     wtCapsuleFuzz hunts crashes in the WebTransport Capsule parser (RFC 9297). Pure-JVM.
-  # fail-fast:false so one lane's crash doesn't cancel the sibling; each is time-boxed so a
-  # hang is a gating signal, not an open-ended job.
+  # JVM Jazzer fuzz lanes — ONE matrix leg per target so every fuzzer runs on its own
+  # concurrent runner (the http3 trio used to share a single leg and ran sequentially):
+  #   quiche-header  — quiche_header_info, the parse on every received datagram before any
+  #                    connection state; drives quiche over JNI (needs prepareQuicheNativeLib,
+  #                    warm from the cache) → native=true so the composite installs the toolchain.
+  #   http3-codec    — the HAND-ROLLED HTTP/3 + QPACK decoder (untyped-decoder crashes).
+  #   http3-roundtrip— encode→decode bijection breaks in that codec.
+  #   wt-capsule     — the WebTransport Capsule parser (RFC 9297).
+  # The three http3 lanes are pure-JVM (quiche/NW own the transport; this is OUR parser/encoder),
+  # so native=false skips their native/Rust install. fail-fast:false so one lane's crash doesn't
+  # cancel a sibling; each is time-boxed so a hang is a gating signal, not an open-ended job.
   fuzz-jvm:
     name: "Fuzz JVM (${{ matrix.lane }})"
     needs: build
@@ -1257,45 +1259,95 @@ jobs:
       matrix:
         include:
           - lane: quiche-header
-            tasks: ":socket-quic-quiche:quicHeaderFuzz"
+            task: ":socket-quic-quiche:quicHeaderFuzz"
+            crash-dir: "socket-quic-quiche/build/fuzz/header-info"
+            native: "true"
           - lane: http3-codec
-            tasks: ":socket-http3:http3CodecFuzz :socket-http3:http3RoundTripFuzz :socket-http3:wtCapsuleFuzz"
+            task: ":socket-http3:http3CodecFuzz"
+            crash-dir: "socket-http3/build/fuzz/http3-codec"
+            native: "false"
+          - lane: http3-roundtrip
+            task: ":socket-http3:http3RoundTripFuzz"
+            crash-dir: "socket-http3/build/fuzz/http3-roundtrip"
+            native: "false"
+          - lane: wt-capsule
+            task: ":socket-http3:wtCapsuleFuzz"
+            crash-dir: "socket-http3/build/fuzz/wt-capsule"
+            native: "false"
     # quicCrashDiag arms the recv_info UAF guard on the quiche-header lane (JNI); harmless
-    # on the pure-JVM http3-codec lane.
+    # on the pure-JVM http3 lanes.
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-linux-fuzz
+        with:
+          native-toolchain: ${{ matrix.native }}
 
-      # A find produces a `crash-*`/`oom-*`/`timeout-*` repro under build/fuzz, captured by
-      # the upload step below. The committed seed corpora start each lane warm. 15-min lid:
-      # the fuzz itself is time-boxed to 180s, but Gradle config + prepareQuicheNativeLib on
-      # a cold-ish cache can eat several minutes; the step timeout only guards a genuine hang.
+      # A find produces a `crash-*`/`oom-*`/`timeout-*` repro under the lane's crash-dir — the
+      # DETERMINISTIC reproducer (download it and replay the one gradle fuzz task against it to
+      # reproduce the exact failure locally, regardless of the CI RNG). The committed seed corpus
+      # starts each lane warm. On the quiche-header lane, also arm core/hs_err capture: that lane
+      # drives quiche over JNI, and the documented intermittent SIGABRT (recv_info UAF teardown
+      # class) leaves NO fuzzer repro file — only a core + hs_err tell the story. 15-min lid: the
+      # fuzz is time-boxed to 180s but Gradle config + prepareQuicheNativeLib can add minutes; the
+      # step timeout only guards a genuine hang.
       - name: Fuzz ${{ matrix.lane }} (Jazzer, time-boxed)
         timeout-minutes: 15
-        run: >-
-          ./gradlew ${{ matrix.tasks }} -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          if [ "${{ matrix.native }}" = "true" ]; then
+            # Frame-pointer-preserving, symbol-bearing JNI shim (built in `build`) makes the gdb
+            # backtrace NAME the quiche_jni frames. Forked worker inherits this shell's ulimit,
+            # so raise it here and run --no-daemon; core_pattern is machine-wide.
+            ulimit -c unlimited
+            sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
+            echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
+            ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 --no-daemon \
+              --no-configuration-cache ${{ inputs.gradle-args }}
+          else
+            ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 \
+              --no-configuration-cache ${{ inputs.gradle-args }}
+          fi
 
-      - name: Upload fuzzing crash repros
+      # Native-crash post-mortem for the JNI lane: if the worker dumped a core, load it in gdb and
+      # print every thread's backtrace into the live log AND a file, so an intermittent SIGABRT
+      # that reproduces only under CI's load becomes a real named native stack instead of exit 134.
+      - name: Native crash post-mortem (gdb backtrace from core)
+        if: ${{ failure() && matrix.native == 'true' }}
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/cores/core.*)
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "No core dumps captured — the fuzzer failed with a repro (see the crash-* artifact), not a native abort."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+          mkdir -p /tmp/cores/bt
+          for core in "${cores[@]}"; do
+            echo "==================== $core ===================="
+            gdb --batch -q -ex 'thread apply all bt full' -ex 'info registers' -ex quit \
+              "$(command -v java)" "$core" 2>&1 | tee "/tmp/cores/bt/$(basename "$core").bt.txt"
+          done
+
+      # Upload the deterministic crash reproducer(s) for this lane + (JNI lane) the native crash
+      # context: hs_err/replay logs, the core dump + its gdb backtrace, and the exact symbol-bearing
+      # JNI shim the crash occurred in — everything needed to reproduce/triage offline. Lane in the
+      # artifact name so parallel legs don't collide.
+      - name: Upload fuzz crash + native-crash context
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes-jvm-${{ matrix.lane }}
           path: |
-            socket-quic-quiche/build/fuzz/header-info/crash-*
-            socket-quic-quiche/build/fuzz/header-info/oom-*
-            socket-quic-quiche/build/fuzz/header-info/timeout-*
-            socket-http3/build/fuzz/http3-codec/crash-*
-            socket-http3/build/fuzz/http3-codec/oom-*
-            socket-http3/build/fuzz/http3-codec/timeout-*
-            socket-http3/build/fuzz/http3-roundtrip/crash-*
-            socket-http3/build/fuzz/http3-roundtrip/oom-*
-            socket-http3/build/fuzz/http3-roundtrip/timeout-*
-            socket-http3/build/fuzz/wt-capsule/crash-*
-            socket-http3/build/fuzz/wt-capsule/oom-*
-            socket-http3/build/fuzz/wt-capsule/timeout-*
+            ${{ matrix.crash-dir }}/crash-*
+            ${{ matrix.crash-dir }}/oom-*
+            ${{ matrix.crash-dir }}/timeout-*
+            **/hs_err_pid*.log
+            **/replay_pid*.log
+            /tmp/cores/core.*
+            /tmp/cores/bt/*.txt
+            socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
+          retention-days: 7
           if-no-files-found: ignore
 
   # Native ASAN + coverage-guided lanes (cargo-fuzz builds quiche with SanitizerCoverage +
@@ -1326,19 +1378,32 @@ jobs:
         with:
           cargo-fuzz: "true"
 
+      # Tee the run to a file: on an ASAN find, the crashing input is written under
+      # fuzz/native/artifacts/ (the deterministic reproducer — replay the fuzz binary against it
+      # locally), but the ASAN REPORT itself (the offending stack, the allocation/free site, the
+      # shadow-memory summary) goes to stderr. Capturing it durably means triage doesn't depend on
+      # the ephemeral job log. set -o pipefail so the tee doesn't mask a failing gradle exit code.
       - name: Fuzz ${{ matrix.lane }} (cargo-fuzz ASAN, time-boxed)
         timeout-minutes: 12
-        run: >-
-          ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/fuzz-logs
+          ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 \
+            --no-configuration-cache ${{ inputs.gradle-args }} \
+            2>&1 | tee "/tmp/fuzz-logs/${{ matrix.lane }}-asan.log"
 
-      - name: Upload fuzzing crash repros
+      # Upload the deterministic reproducer input(s) AND the captured ASAN report together, so a
+      # heap-overflow/UAF find is reproducible + triageable offline. Lane in the name so the two
+      # native legs don't collide on upload.
+      - name: Upload fuzz crash repros + ASAN report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes-native-${{ matrix.lane }}
           path: |
             socket-quic-quiche/fuzz/native/artifacts/**
+            /tmp/fuzz-logs/${{ matrix.lane }}-asan.log
+          retention-days: 7
           if-no-files-found: ignore
 
   # BoringSSL-C ASAN proof — its own job because it's a clean rebuild (not a fuzz run) with a

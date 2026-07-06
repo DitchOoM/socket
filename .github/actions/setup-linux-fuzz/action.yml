@@ -8,6 +8,12 @@ description: >-
   file both need the working tree). The caller job must `needs: build` so these
   caches are populated before restore.
 inputs:
+  native-toolchain:
+    description: >-
+      Install the BoringSSL/quiche build toolchain + Rust stable + aarch64 cross target.
+      Set "false" for pure-JVM Jazzer lanes (http3 codec fuzzers) that touch no native code —
+      they skip the ~1-2 min apt/rust install. Implied true when cargo-fuzz is "true".
+    default: "true"
   cargo-fuzz:
     description: "Install nightly Rust + cargo-fuzz for the native (cargo-fuzz ASAN) lanes."
     default: "false"
@@ -85,6 +91,7 @@ runs:
     # (fuzz crate → boring-crate default), whose boring-sys build runs bindgen. On the
     # normal warm-cache path most of this goes unused.
     - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
+      if: inputs.native-toolchain == 'true' || inputs.cargo-fuzz == 'true'
       shell: bash
       run: |
         sudo apt-get update
@@ -93,10 +100,12 @@ runs:
         sudo apt-get install -y libclang-dev
 
     - name: Install Rust toolchain
+      if: inputs.native-toolchain == 'true' || inputs.cargo-fuzz == 'true'
       uses: dtolnay/rust-toolchain@stable
 
     # arm64 Rust target so a cache-miss arm64 quiche build can cross-compile.
     - name: Add Rust aarch64 target
+      if: inputs.native-toolchain == 'true' || inputs.cargo-fuzz == 'true'
       shell: bash
       run: rustup target add aarch64-unknown-linux-gnu
 
