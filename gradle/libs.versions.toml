@@ -25,9 +25,9 @@ dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 kotlinWrappers = "2026.6.0"
 # 6.1.0 adds the raw ByteStreamMux primitive + BufferedByteSource.peek (buffer PR #239).
-# 6.5.0→6.7.1: buffer-pool use-after-release fail-fast (#261), okio interop, codec-framed
+# 6.5.0→6.7.2: buffer-pool use-after-release fail-fast (#261), okio interop, codec-framed
 # streaming layer + typed pipe (#268), buffer-sqldelight module. Additive, drop-in.
-buffer = "6.7.1"
+buffer = "6.7.2"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
