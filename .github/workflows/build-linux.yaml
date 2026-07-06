@@ -1258,22 +1258,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `jni` marks the lane that drives quiche over JNI (quiche-header) — it alone arms
+          # native core/hs_err capture below. It does NOT gate the toolchain: EVERY lane needs
+          # it, because even the pure-Kotlin http3 fuzzers have a task graph that transitively
+          # reaches :buildBoringssl*/quiche cinterop via the KMP metadata chain, so the composite
+          # always installs it (skipping it for http3 broke this job — see the composite comment).
           - lane: quiche-header
             task: ":socket-quic-quiche:quicHeaderFuzz"
             crash-dir: "socket-quic-quiche/build/fuzz/header-info"
-            native: "true"
+            jni: "true"
           - lane: http3-codec
             task: ":socket-http3:http3CodecFuzz"
             crash-dir: "socket-http3/build/fuzz/http3-codec"
-            native: "false"
+            jni: "false"
           - lane: http3-roundtrip
             task: ":socket-http3:http3RoundTripFuzz"
             crash-dir: "socket-http3/build/fuzz/http3-roundtrip"
-            native: "false"
+            jni: "false"
           - lane: wt-capsule
             task: ":socket-http3:wtCapsuleFuzz"
             crash-dir: "socket-http3/build/fuzz/wt-capsule"
-            native: "false"
+            jni: "false"
     # quicCrashDiag arms the recv_info UAF guard on the quiche-header lane (JNI); harmless
     # on the pure-JVM http3 lanes.
     env:
@@ -1281,8 +1286,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-linux-fuzz
-        with:
-          native-toolchain: ${{ matrix.native }}
 
       # Persist the accumulated corpus across runs so coverage compounds instead of restarting
       # from the committed seed every time. The fuzzer writes newly-discovered, coverage-expanding
@@ -1309,7 +1312,7 @@ jobs:
       - name: Fuzz ${{ matrix.lane }} (Jazzer, time-boxed)
         timeout-minutes: 15
         run: |
-          if [ "${{ matrix.native }}" = "true" ]; then
+          if [ "${{ matrix.jni }}" = "true" ]; then
             # Frame-pointer-preserving, symbol-bearing JNI shim (built in `build`) makes the gdb
             # backtrace NAME the quiche_jni frames. Forked worker inherits this shell's ulimit,
             # so raise it here and run --no-daemon; core_pattern is machine-wide.
@@ -1327,7 +1330,7 @@ jobs:
       # print every thread's backtrace into the live log AND a file, so an intermittent SIGABRT
       # that reproduces only under CI's load becomes a real named native stack instead of exit 134.
       - name: Native crash post-mortem (gdb backtrace from core)
-        if: ${{ failure() && matrix.native == 'true' }}
+        if: ${{ failure() && matrix.jni == 'true' }}
         run: |
           shopt -s nullglob
           cores=(/tmp/cores/core.*)
