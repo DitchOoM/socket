@@ -9,11 +9,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withTimeout
+import java.net.BindException
 import java.net.InetSocketAddress
+import java.net.StandardSocketOptions
 import java.nio.channels.DatagramChannel
 import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
+
+/** Bounded retry budget for the Darwin ephemeral-port collision — see [openConnectedUdpChannel]. */
+private const val MAX_EPHEMERAL_BIND_ATTEMPTS = 8
 
 /**
  * Shared JVM/Android [withQuicConnection] test seam backed by quiche + [DatagramChannel].
@@ -103,17 +108,10 @@ internal suspend fun buildJvmQuicConnection(
             }
         }
 
-        // 2. Open UDP channel.
-        // Bind an ephemeral local port EXPLICITLY before connect(). On an unbound UDP socket
-        // connect() does an implicit source-port bind, and on BSD/Darwin that auto-selection is
-        // not atomic against other concurrent connect()s to the same peer — N clients racing to
-        // the same 127.0.0.1:port from the same loopback source can pick the same ephemeral port
-        // and the loser fails with EADDRINUSE ("Address already in use"). An explicit bind(0)
-        // reserves a unique port atomically, so the subsequent connect() only sets the peer.
-        val channel = DatagramChannel.open()
-        channel.configureBlocking(false)
-        channel.bind(InetSocketAddress(0))
-        channel.connect(InetSocketAddress(hostname, port))
+        // 2. Open UDP channel, bound to an ephemeral local port and connected to the peer.
+        // The bind(0)+connect is NOT atomic on Darwin — see [openConnectedUdpChannel] — so the
+        // helper retries the rare ephemeral-port collision instead of letting it surface as a flake.
+        val channel = openConnectedUdpChannel(hostname, port)
         val localAddr = channel.localAddress as InetSocketAddress
 
         // 3. Server name — null-terminated UTF-8 in buffer
@@ -241,6 +239,53 @@ internal suspend fun buildJvmQuicConnection(
             parentScope.cancel()
         }
     }
+}
+
+/**
+ * Open a non-blocking [DatagramChannel] bound to an ephemeral local port and connected to
+ * `hostname:port`, retrying the rare ephemeral-port collision.
+ *
+ * We bind(0) explicitly before connect() so the OS assigns the source port up front rather than
+ * leaving it to connect()'s implicit bind. On Linux that reservation is effectively atomic, but on
+ * BSD/Darwin it is NOT: two UDP sockets racing bind(0) on the loopback source can be handed the
+ * same ephemeral port, and because every client here connects to the same `127.0.0.1:port` peer,
+ * the second one forms a duplicate 4-tuple and connect() fails at `sun.nio.ch.Net.connect0` with
+ * `BindException: Address already in use` (EADDRINUSE). This is the rare high-concurrency soak flake
+ * (24 simultaneous connects) — reproduced deterministically at ~1 collision per few-thousand connects.
+ *
+ * The race is inherent to concurrent ephemeral-port assignment, not to our explicit bind: dropping
+ * bind(0) and letting connect() pick the source port collides at the same rate (measured). Neither
+ * does `SO_REUSEADDR` prevent the duplicate-4-tuple collision — it only lets a contended bind
+ * proceed — so the bounded retry is the load-bearing fix: on collision we discard the channel and
+ * try a fresh one (the OS almost always hands out a different port next time). Only [BindException]
+ * (EADDRINUSE) is retried — any other failure, or exhausting the attempts, rethrows.
+ *
+ * In practice this is a birthday-paradox collision in the ~16k-port ephemeral range: ~0.04% of
+ * connects need a 2nd attempt and none were ever observed needing a 3rd, so
+ * [MAX_EPHEMERAL_BIND_ATTEMPTS] is generous safety margin, not a hot path. Shared JVM/Android/
+ * macOS-FFM code with no Darwin-only fork: on Linux the collision never happens, so the retry loop
+ * simply succeeds on its first attempt.
+ */
+private fun openConnectedUdpChannel(
+    hostname: String,
+    port: Int,
+): DatagramChannel {
+    val peer = InetSocketAddress(hostname, port)
+    var lastFailure: BindException? = null
+    repeat(MAX_EPHEMERAL_BIND_ATTEMPTS) {
+        val channel = DatagramChannel.open()
+        try {
+            channel.configureBlocking(false)
+            channel.setOption(StandardSocketOptions.SO_REUSEADDR, true)
+            channel.bind(InetSocketAddress(0))
+            channel.connect(peer)
+            return channel
+        } catch (e: BindException) {
+            runCatching { channel.close() }
+            lastFailure = e
+        }
+    }
+    throw lastFailure ?: BindException("Failed to bind an ephemeral UDP port for $hostname:$port")
 }
 
 /** Adapts [QuicheApi] to the platform-neutral [QuicConfigCalls] interface. */
