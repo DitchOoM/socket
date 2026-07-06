@@ -44,13 +44,18 @@ void nw_helper_send(
 // Connection creation
 // ============================================================
 
-// Create a TCP connection (replaces Swift ClientSocketWrapper.init)
+// Create a TCP connection (replaces Swift ClientSocketWrapper.init).
+// no_delay maps to nw_tcp_options_set_no_delay (disables Nagle); pass false to keep
+// the platform default. Without it, sequential request/response messaging stalls on
+// Nagle + delayed-ACK (observed as ~12-35ms per WebSocket echo round-trip vs 1-8ms
+// on the Linux/JVM paths, which honor TransportConfig.io.tcpNoDelay).
 nw_connection_t _Nullable nw_helper_create_tcp_connection(
     const char * _Nonnull host,
     uint16_t port,
     NSNumber * _Nonnull use_tls,
     NSNumber * _Nonnull verify_certs,
-    int32_t timeout_seconds);
+    int32_t timeout_seconds,
+    NSNumber * _Nonnull no_delay);
 
 // Create a WebSocket connection using nw_endpoint_create_url
 nw_connection_t _Nullable nw_helper_create_ws_connection(

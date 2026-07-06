@@ -70,7 +70,7 @@ void nw_helper_send(
 // ============================================================
 
 static nw_parameters_t _Nonnull create_tcp_parameters(
-    bool use_tls, bool verify_certs, int32_t timeout_seconds)
+    bool use_tls, bool verify_certs, int32_t timeout_seconds, bool no_delay)
 {
     nw_parameters_t params;
     if (use_tls) {
@@ -121,12 +121,14 @@ static nw_parameters_t _Nonnull create_tcp_parameters(
             },
             ^(nw_protocol_options_t _Nonnull tcp_options) {
                 nw_tcp_options_set_connection_timeout(tcp_options, timeout_seconds);
+                nw_tcp_options_set_no_delay(tcp_options, no_delay);
             });
     } else {
         params = nw_parameters_create_secure_tcp(
             NW_PARAMETERS_DISABLE_PROTOCOL,
             ^(nw_protocol_options_t _Nonnull tcp_options) {
                 nw_tcp_options_set_connection_timeout(tcp_options, timeout_seconds);
+                nw_tcp_options_set_no_delay(tcp_options, no_delay);
             });
     }
     return params;
@@ -141,12 +143,13 @@ nw_connection_t _Nullable nw_helper_create_tcp_connection(
     uint16_t port,
     NSNumber * _Nonnull use_tls,
     NSNumber * _Nonnull verify_certs,
-    int32_t timeout_seconds)
+    int32_t timeout_seconds,
+    NSNumber * _Nonnull no_delay)
 {
     nw_endpoint_t endpoint = nw_endpoint_create_host(host,
         [[NSString stringWithFormat:@"%u", port] UTF8String]);
     nw_parameters_t params = create_tcp_parameters(
-        use_tls.boolValue, verify_certs.boolValue, timeout_seconds);
+        use_tls.boolValue, verify_certs.boolValue, timeout_seconds, no_delay.boolValue);
     return nw_connection_create(endpoint, params);
 }
 
@@ -161,8 +164,10 @@ nw_connection_t _Nullable nw_helper_create_ws_connection(
     nw_endpoint_t endpoint = nw_endpoint_create_url(url);
     if (endpoint == NULL) return NULL;
 
+    // no_delay=false: keep the platform default for the NW-managed WebSocket stack;
+    // framing/batching is the framework's concern on this path.
     nw_parameters_t params = create_tcp_parameters(
-        use_tls.boolValue, verify_certs.boolValue, timeout_seconds);
+        use_tls.boolValue, verify_certs.boolValue, timeout_seconds, false);
 
     // Add WebSocket protocol to the stack
     nw_protocol_options_t ws_options = nw_ws_create_options(nw_ws_version_13);
