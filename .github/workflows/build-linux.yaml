@@ -1284,6 +1284,20 @@ jobs:
         with:
           native-toolchain: ${{ matrix.native }}
 
+      # Persist the accumulated corpus across runs so coverage compounds instead of restarting
+      # from the committed seed every time. The fuzzer writes newly-discovered, coverage-expanding
+      # inputs to <crash-dir>/corpus (the gitignored FIRST positional corpus dir; the committed
+      # seed is passed read-only second). The run_id key never pre-exists, so actions/cache always
+      # SAVES a fresh snapshot at job end; restore-keys prefix-matches the most recent prior
+      # snapshot to warm-start this run. Each lane keys independently so parallel legs don't clash.
+      - name: Restore + persist fuzz corpus (${{ matrix.lane }})
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.crash-dir }}/corpus
+          key: fuzz-corpus-jvm-${{ matrix.lane }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-jvm-${{ matrix.lane }}-
+
       # A find produces a `crash-*`/`oom-*`/`timeout-*` repro under the lane's crash-dir — the
       # DETERMINISTIC reproducer (download it and replay the one gradle fuzz task against it to
       # reproduce the exact failure locally, regardless of the CI RNG). The committed seed corpus
@@ -1370,13 +1384,28 @@ jobs:
         include:
           - lane: header-slice
             task: ":socket-quic-quiche:quicHeaderFuzzNative"
+            corpus-dir: "socket-quic-quiche/build/fuzz-native/header-info-corpus"
           - lane: conn-recv
             task: ":socket-quic-quiche:quicConnRecvFuzzNative"
+            corpus-dir: "socket-quic-quiche/build/fuzz-native/conn-recv-corpus"
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-linux-fuzz
         with:
           cargo-fuzz: "true"
+
+      # Persist the accumulated corpus across runs so ASAN coverage compounds. cargo-fuzz writes
+      # newly-discovered inputs to build/fuzz-native/<lane>-corpus (the gitignored FIRST positional
+      # corpus dir; the committed seed is read-only second). run_id key → always save a fresh
+      # snapshot; restore-keys warm-starts from the latest prior one. Per-lane keys, so the two
+      # native legs don't clash.
+      - name: Restore + persist fuzz corpus (${{ matrix.lane }})
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.corpus-dir }}
+          key: fuzz-corpus-native-${{ matrix.lane }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-native-${{ matrix.lane }}-
 
       # Tee the run to a file: on an ASAN find, the crashing input is written under
       # fuzz/native/artifacts/ (the deterministic reproducer — replay the fuzz binary against it
