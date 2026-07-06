@@ -5,7 +5,7 @@
 # coverage counter plateaus immediately and it only catches crashes. cargo-fuzz builds quiche itself
 # with SanitizerCoverage + AddressSanitizer, so libFuzzer gets real edge coverage of the Rust parser
 # AND ASAN catches the heap-overflow / use-after-free class the glibc malloc-check lane only partially
-# sees. Same quiche version (0.28.0) as the shipped library (gradle/libs.versions.toml).
+# sees. Same quiche version (0.29.2) as the shipped library (gradle/libs.versions.toml).
 [package]
 name = "quiche-native-fuzz"
 version = "0.0.0"
@@ -17,9 +17,11 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-# Pinned to the same version the library ships. boringssl-vendored (a quiche default feature) lets the
-# fuzz crate build standalone; the `ffi` C API isn't needed since we fuzz the Rust API directly.
-quiche = "0.28.0"
+# Pinned to the same version the library ships. quiche 0.29's default feature is now
+# `boringssl-boring-crate` (it dropped `boringssl-vendored`), so default-features pulls a
+# self-contained BoringSSL via boring-sys — the CI fuzz job installs libclang for its bindgen.
+# The `ffi` C API isn't needed since we fuzz the Rust API directly.
+quiche = "0.29.2"
 
 # Release-with-debug so ASAN/libFuzzer reports carry symbolized stacks while still optimizing the parser.
 [profile.release]

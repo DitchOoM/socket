@@ -2,11 +2,22 @@
 [versions]
 kotlin = "2.4.0"
 # liburing version for Linux io_uring async I/O - built automatically by Gradle
-liburing = "2.14"
-liburingSha256 = "5f80964108981c6ad979c735f0b4877d5f49914c2a062f8e88282f26bf61de0c"
-# quiche (Cloudflare QUIC) for socket-quic module - built from source via Cargo
-quiche = "0.28.0"
-quicheSha256 = "2adb185e8557b3057cee76ba73d8afb20c25e3143a6296a5891ddc9b1fd81192"
+liburing = "2.15"
+liburingSha256 = "8d052f2622dcb3678cbaee5ff582a87572672a6c0a56533cdda5b65cb636120a"
+# quiche (Cloudflare QUIC) for socket-quic module - built from source via Cargo.
+# NOTE: the quiche build git-clones by tag (--recursive), so quicheSha256 is currently
+# ADVISORY (downloadQuicheSource suppresses it) — it pins the SHA256 of
+# https://github.com/cloudflare/quiche/archive/refs/tags/<quiche>.tar.gz as documentation.
+# liburingSha256 IS enforced (liburing uses a tarball download).
+quiche = "0.29.2"
+quicheSha256 = "d52870b97d4e61922be5138f20fd1cc82adb01e83893d763e51b3548a9e10dd6"
+# BoringSSL for the base :socket Linux K/N TLS (LinuxSockets.def) AND the Linux quiche
+# `ffi,qlog` external path. quiche 0.29 removed its vendored deps/boringssl submodule
+# (see #210), so :buildBoringssl* now clones google/boringssl directly at this commit.
+# Pinned to the exact BoringSSL quiche 0.28 shipped (its last vendored submodule commit),
+# a known-ABI-good baseline for quiche's C FFI. Windows/Android/Apple/fuzz instead build a
+# self-contained libquiche via `boringssl-boring-crate` (boring-sys bundles its own BoringSSL).
+boringssl = "f1c75347daa2ea81a941e953f2263e0a4d970c8d"
 androidGradlePlugin = "9.2.1"
 ktlint = "14.2.0"
 mavenPublish = "0.36.0"

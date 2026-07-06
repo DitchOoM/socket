@@ -58,34 +58,82 @@ fun downloadQuicheSource(
 ): File {
     val sourceDir = File(buildDir, "quiche-$version")
 
-    if (sourceDir.exists()) return sourceDir
+    if (!sourceDir.exists()) {
+        buildDir.mkdirs()
 
-    buildDir.mkdirs()
+        // git clone with --recursive to include BoringSSL submodule
+        // (GitHub tarballs don't include submodules)
+        logger.lifecycle("Cloning quiche $version (with BoringSSL submodule)...")
+        val result =
+            ProcessBuilder(
+                "git",
+                "clone",
+                "--recursive",
+                "--depth",
+                "1",
+                "--branch",
+                version,
+                "https://github.com/cloudflare/quiche.git",
+                sourceDir.name,
+            ).directory(buildDir)
+                .inheritIO()
+                .start()
+                .waitFor()
 
-    // git clone with --recursive to include BoringSSL submodule
-    // (GitHub tarballs don't include submodules)
-    logger.lifecycle("Cloning quiche $version (with BoringSSL submodule)...")
-    val result =
-        ProcessBuilder(
-            "git",
-            "clone",
-            "--recursive",
-            "--depth",
-            "1",
-            "--branch",
-            version,
-            "https://github.com/cloudflare/quiche.git",
-            sourceDir.name,
-        ).directory(buildDir)
-            .inheritIO()
-            .start()
-            .waitFor()
-
-    if (result != 0) {
-        throw GradleException("Failed to clone quiche $version")
+        if (result != 0) {
+            throw GradleException("Failed to clone quiche $version")
+        }
     }
 
+    // Applied to every consumer of this clone (idempotent). Only affects the boringssl-boring-crate
+    // code path; external `ffi,qlog` builds are untouched.
+    patchQuicheBuildRsForBoringCrate(sourceDir)
+
     return sourceDir
+}
+
+/**
+ * Patch quiche 0.29+'s build.rs so a `boringssl-boring-crate` **staticlib** doesn't double-bundle
+ * BoringSSL.
+ *
+ * quiche's `build.rs` emits `cargo:rustc-link-lib=static=ssl` + `=crypto` under
+ * `boringssl-boring-crate`, and `boring-sys` ALSO emits those directives (it built the archives).
+ * For a `staticlib` output rustc bundles each named static lib into libquiche.a — so BoringSSL lands
+ * TWICE (every symbol has two definitions). A cdylib/bin link dedups the `-l` flags so it's fine, but
+ * our JNI shim (`--whole-archive libquiche.a`) and the Apple K/N link (`-force_load`) force every
+ * member in → "duplicate symbol" (ChaCha20_ctr32, TLS_server_method, bssl::CERT::~CERT()…).
+ *
+ * Neutralize quiche's redundant emission (boring-sys' is sufficient) so libquiche.a carries BoringSSL
+ * exactly once. Idempotent (guarded by a marker comment); a no-op if the block isn't present (≤0.28,
+ * or the external `ffi,qlog` path where the feature is off).
+ */
+fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
+    val buildRs = sourceDir.resolve("quiche/src/build.rs")
+    if (!buildRs.exists()) return
+    val text = buildRs.readText()
+    if (text.contains("socket-dedup-boringssl")) return // already patched
+
+    val original =
+        """
+        |    if cfg!(feature = "boringssl-boring-crate") {
+        |        println!("cargo:rustc-link-lib=static=ssl");
+        |        println!("cargo:rustc-link-lib=static=crypto");
+        |    }
+        """.trimMargin()
+    if (!text.contains(original)) return // ≤0.28 (no boring-crate block) or upstream changed — nothing to dedup
+
+    val replacement =
+        """
+        |    // socket-dedup-boringssl: boring-sys already emits these; quiche re-emitting them
+        |    // double-bundles BoringSSL into the staticlib (duplicate symbols under --whole-archive /
+        |    // -force_load). Neutralized so libquiche.a carries BoringSSL exactly once.
+        |    if false && cfg!(feature = "boringssl-boring-crate") {
+        |        println!("cargo:rustc-link-lib=static=ssl");
+        |        println!("cargo:rustc-link-lib=static=crypto");
+        |    }
+        """.trimMargin()
+    buildRs.writeText(text.replace(original, replacement))
+    logger.lifecycle("Patched quiche build.rs: de-duplicated boring-crate BoringSSL static link")
 }
 
 /**
@@ -144,7 +192,10 @@ fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
                     // qlog: env-gated diagnostics (QUIC_QLOG_DIR) need quiche_conn_set_qlog_path, which is
                     // #[cfg(feature = "qlog")] — without it the symbol is absent and the JNI/cinterop
                     // bindings don't link. Pulls serde_json/serde/qlog into the binary.
-                    if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi,qlog" else "ffi,boringssl-vendored,qlog",
+                    // quiche 0.29 removed the `boringssl-vendored` feature; `boringssl-boring-crate`
+                    // (the new default) is the self-contained fallback (boring-sys builds BoringSSL +
+                    // runs bindgen → needs libclang). External path (ffi,qlog) stays the CI norm.
+                    if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi,qlog" else "ffi,boringssl-boring-crate,qlog",
                 )
 
             val process =
@@ -191,7 +242,11 @@ fun createBuildQuicheSharedTask(
     // `-qlog` suffix: the qlog feature was added to the cargo build, so a lib built before it (a stale
     // `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a rebuild
     // with qlog on every host/CI runner that cached the old output.
-    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog")
+    // `-jvm` suffix: on Linux this task and the K/Native `buildQuicheStatic<arch>` BOTH target
+    // libs/quiche/linux-<arch>/lib. They used to share one marker, so on a cache-miss build (e.g. a
+    // version bump) whichever ran first made the other SKIP — leaving libquiche.so (this task's only
+    // artifact) stale while the FFM lane loaded it. Distinct markers let both run and both refresh.
+    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog-jvm")
 
     val cargoTarget =
         when ("$os-$arch") {
@@ -239,7 +294,9 @@ fun createBuildQuicheSharedTask(
             }
 
             // qlog: see the static-lib task — required for the QUIC_QLOG_DIR diagnostics binding.
-            val quicheFeatures = if (usesExternalBssl) "ffi,qlog" else "ffi,boringssl-vendored,qlog"
+            // See the static-lib task: quiche 0.29 dropped `boringssl-vendored`; the self-contained
+            // fallback is now `boringssl-boring-crate` (needs libclang for boring-sys' bindgen).
+            val quicheFeatures = if (usesExternalBssl) "ffi,qlog" else "ffi,boringssl-boring-crate,qlog"
 
             val process =
                 ProcessBuilder(
@@ -330,18 +387,22 @@ fun createBuildQuicheSharedTask(
 }
 
 /**
- * Patch quiche 0.28's vendored-BoringSSL build.rs to handle the **arm64 iOS simulator**.
+ * Patch quiche's vendored-BoringSSL build.rs to handle the **arm64 iOS simulator** — ONLY relevant
+ * to quiche ≤ 0.28, which built BoringSSL itself from a bundled cmake config.
  *
- * Upstream `CMAKE_PARAMS_IOS` maps every `aarch64` iOS target to the `iphoneos` (device) SDK and only
- * sets a `-target …-simulator` ASM cflag for `x86_64`. So an `aarch64-apple-ios-sim` build compiles
- * BoringSSL's `.S` assembly with the DEVICE platform tag (`platform IOS`), and ld64 then rejects the
- * archive into an `iOS-simulator` test binary: "building for 'iOS-simulator', but linking in object
- * file built for 'iOS'". (The `.cc` TUs come out fine — only the hand-written asm is mis-tagged.)
+ * On ≤0.28 upstream `CMAKE_PARAMS_IOS` maps every `aarch64` iOS target to the `iphoneos` (device) SDK
+ * and only sets a `-target …-simulator` ASM cflag for `x86_64`. So an `aarch64-apple-ios-sim` build
+ * compiled BoringSSL's `.S` assembly with the DEVICE platform tag (`platform IOS`), and ld64 then
+ * rejected the archive into an `iOS-simulator` test binary: "building for 'iOS-simulator', but linking
+ * in object file built for 'iOS'". (Only the hand-written asm is mis-tagged; the `.cc` TUs are fine.)
+ * The patch keyed off `CARGO_CFG_TARGET_ABI == "sim"` to give arm64-sim the `iphonesimulator` sysroot.
  *
- * The fix keys off `CARGO_CFG_TARGET_ABI == "sim"` (set by rustc for `*-sim` triples) so the same
- * build.rs is correct for ALL targets: device arm64 (abi≠sim) is unchanged, x86_64 sim keeps its
- * existing handling, and arm64 sim now gets the `iphonesimulator` sysroot + simulator ASM target.
- * Idempotent (guarded by a marker comment); inert for macOS/Linux/Android, which don't take this arm.
+ * quiche 0.29 REMOVED the `boringssl-vendored` feature and its whole cmake/`CMAKE_PARAMS_IOS` build.rs
+ * machinery — BoringSSL is now built by the `boring-sys` crate (`boringssl-boring-crate`). The block
+ * this function patched no longer exists, so on 0.29+ this is an intentional no-op: boring-sys owns
+ * the simulator asm target-tagging. If the build-apple iosSimulatorArm64 lane regresses with the same
+ * "built for 'iOS'" ld64 error, the fix belongs in boring-sys' cmake args, not here. Idempotent; inert
+ * for macOS/Linux/Android.
  */
 fun patchQuicheBuildRsForIosSim(sourceDir: File) {
     val buildRs = sourceDir.resolve("quiche/src/build.rs")
@@ -376,10 +437,13 @@ fun patchQuicheBuildRsForIosSim(sourceDir: File) {
         """.trimMargin()
 
     if (!text.contains(original)) {
-        throw GradleException(
-            "Could not patch quiche build.rs for the arm64 iOS simulator — the expected upstream block " +
-                "was not found (quiche version changed?). Update patchQuicheBuildRsForIosSim.",
+        // quiche 0.29+ ships no vendored-BoringSSL build.rs block to patch (boring-sys builds it now).
+        // Skip rather than fail the Apple build; see the KDoc for where the fix lives if sim asm regresses.
+        logger.lifecycle(
+            "quiche build.rs has no vendored-BoringSSL iOS block (0.29+ boring-sys path) — " +
+                "skipping arm64 iOS-simulator patch.",
         )
+        return
     }
     buildRs.writeText(text.replace(original, replacement))
     logger.lifecycle("Patched quiche build.rs for arm64 iOS-simulator BoringSSL asm")
@@ -463,7 +527,10 @@ fun createBuildQuicheAppleStaticTask(
                     "staticlib",
                     "--no-default-features",
                     "--features",
-                    "ffi,boringssl-vendored,qlog",
+                    // Apple has no external prebuilt BoringSSL, so it needs a self-contained libquiche.
+                    // quiche 0.29 removed `boringssl-vendored`; boring-sys (via boringssl-boring-crate)
+                    // now builds BoringSSL and runs bindgen (macOS Xcode toolchain supplies libclang).
+                    "ffi,boringssl-boring-crate,qlog",
                 ).directory(sourceDir)
                     .also { pb -> pb.environment().putAll(env) }
                     .redirectErrorStream(true)
@@ -618,8 +685,9 @@ fun createBuildJvmJniShimTask(
                 // quiche-build time, and recorded in `.bssl-external` next to libquiche.a (see the
                 // shared-build task). Read THAT marker — never re-probe the live `libs/boringssl`
                 // dir, which a concurrent :buildBoringssl* can populate after the cargo build chose
-                // boringssl-vendored, causing the external libcrypto.a to be linked on top of the
-                // already-vendored objects (duplicate-symbol ld failure: v3_utl.c.o, a2i_IPADDRESS…).
+                // the self-contained backend (boringssl-boring-crate on 0.29+; was boringssl-vendored
+                // ≤0.28), causing the external libcrypto.a to be linked on top of the already-vendored
+                // objects (duplicate-symbol ld failure: v3_utl.c.o, a2i_IPADDRESS…).
                 val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch/lib")
                 // Primary signal: the marker the shared build wrote next to this libquiche.a.
                 // Fallback (legacy artifact predating the marker, or a partial cache): ask the
@@ -769,7 +837,7 @@ val nativeLibsByPlatform =
         "macos-x64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
         "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
         // Windows ships only the JNI shim: quiche is statically linked into
-        // quiche_jni.dll (boringssl-vendored + --whole-archive libquiche.a in
+        // quiche_jni.dll (boringssl-boring-crate + --whole-archive libquiche.a in
         // build-linux.yaml's MinGW cross-compile), so there is no separate
         // quiche.dll to extract — matching NativeLibLoader, which loads only
         // quiche_jni.dll on Windows. Staged into the jvmTest classpath only;
@@ -1155,7 +1223,10 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
                     "--no-default-features",
                     "--features",
                     // qlog: see the static-lib task — required for the QUIC_QLOG_DIR diagnostics binding.
-                    "ffi,boringssl-vendored,qlog",
+                    // Android has no external prebuilt BoringSSL: quiche 0.29 removed `boringssl-vendored`,
+                    // so boring-sys (boringssl-boring-crate) builds BoringSSL + runs bindgen — the host
+                    // needs libclang (the CI job installs libclang-dev; NDK clang covers the target).
+                    "ffi,boringssl-boring-crate,qlog",
                 ).directory(sourceDir)
                     .also { pb -> pb.environment().putAll(env) }
                     .redirectErrorStream(true)
