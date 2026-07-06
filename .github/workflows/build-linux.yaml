@@ -543,16 +543,15 @@ jobs:
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Snapshot the JVM QuicHarnessIntegrationTests OK/SKIP markers BEFORE the
-      # malloc-check step below re-runs :socket-quic-quiche:jvmTest with only a handful
-      # of classes — that rerun OVERWRITES test-results/jvmTest, erasing the
-      # harness markers the audit needs (this is what made the audit read ok=0
-      # and falsely report "all skipped"). Snapshot the jvmTest dir ONLY, so the
-      # Node/JS "platform unsupported" skips written earlier by :jsNodeTest can't
-      # be miscounted into the JVM lane. Captures the JDK17 backend run (the last
-      # full jvmTest); all three JVM backends hit the same live harness, so its
-      # outcome represents the JVM client. `!cancelled()` mirrors the test steps.
-      - name: Snapshot JVM QUIC harness markers (pre-malloc-check)
+      # Snapshot the JVM QuicHarnessIntegrationTests OK/SKIP markers into a jvmTest-scoped
+      # log the audit step reads. Snapshot the jvmTest dir ONLY, so the Node/JS "platform
+      # unsupported" skips written earlier by :jsNodeTest can't be miscounted into the JVM
+      # lane. Captures the JDK17 backend run (the last full jvmTest); all three JVM backends
+      # hit the same live harness, so its outcome represents the JVM client. (The glibc
+      # malloc-check rerun that used to overwrite test-results/jvmTest here moved to the
+      # separate `malloc-check` job under #209, but the jvmTest-only scoping is still what
+      # keeps the Node skips out of the count.) `!cancelled()` mirrors the test steps.
+      - name: Snapshot JVM QUIC harness markers
         if: ${{ !cancelled() }}
         run: |
           grep -rhoE 'harness (OK|SKIP: [^<&]+)' \
@@ -560,42 +559,11 @@ jobs:
             > /tmp/quic-harness-jvm.log || true
           echo "snapshotted $(wc -l < /tmp/quic-harness-jvm.log 2>/dev/null || echo 0) JVM harness markers"
 
-      # Heap-corruption / UAF guard. The worst QUIC bug class (the 3.2.12 JNI
-      # stream-command use-after-free that corrupted the glibc free-list) only
-      # reproduces under glibc's malloc consistency checks — NOT ASAN, because
-      # libquiche.a is non-instrumented. `-PquicMallocCheck` sets MALLOC_CHECK_=3
-      # + MALLOC_PERTURB_ + glibc.malloc.check=3 on the forked test worker (see
-      # socket-quic-quiche/build.gradle.kts). We re-run only the recv-path robustness +
-      # concurrency-soak suites (the allocation-heavy native paths) so a
-      # regression aborts the JVM with a diagnostic instead of silently
-      # corrupting state. `if: !cancelled()` so a crash in an earlier backend
-      # step doesn't skip this independent check.
-      #
-      # StaleConnectionDiagnosticTests is included because the still-open
-      # intermittent JNI SIGABRT (exit 134, no failing JUnit case) was last seen
-      # *near* it — a connection-teardown-heavy suite (server driver destroy +
-      # connectionsByDcid cleanup + health-check connections timing out). Running
-      # it here means the next recurrence aborts under malloc-check with a
-      # corrupted-block diagnostic, instead of an opaque low-rate exit 134.
-      - name: Run socket-quic-quiche recv-path + soak + teardown suites under glibc malloc check
-        if: ${{ !cancelled() }}
-        timeout-minutes: 8
-        env:
-          QUIC_MIGRATION_REQUIRE_RUN: "1"
-        run: |
-          # Capture a full core dump if a native UAF aborts the test worker, so the
-          # next JNI SIGABRT can be post-mortem'd in gdb instead of guessed. The
-          # forked worker inherits THIS shell's core ulimit, so raise it here and run
-          # --no-daemon (a daemon reused from an earlier step would carry core size 0).
-          # core_pattern is machine-wide; the post-mortem step below reads /tmp/cores.
-          ulimit -c unlimited
-          sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
-          echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
-          ./gradlew :socket-quic-quiche:jvmTest -PquicMallocCheck --continue --no-daemon \
-            --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests" \
-            --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests" \
-            --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
-            --no-configuration-cache ${{ inputs.gradle-args }}
+      # NOTE: the glibc-malloc-check recv-path + soak + teardown suite (the
+      # heap-corruption / UAF guard) used to run here. It is a slow, native-abort-prone
+      # lane, so #209 relocated it to the parallel `malloc-check` job (needs: build) — this
+      # `build` job now gives fast compile + unit + JVM/JS/Android green/red without waiting
+      # on it. See the `malloc-check` + `fuzz-*` jobs below for the moved lanes + rationale.
 
       # Audit step: mirror the macOS + Linux ARM64 audits — count
       # `harness OK` / `harness SKIP` markers in the JUnit XML's
@@ -916,118 +884,30 @@ jobs:
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
 
-  # Heavy x64 lanes split out of `build` so the core compile + JVM/JS/Android test
-  # signal goes green/red fast and isn't gated behind ~30 min of fuzzing. Two
-  # responsibilities, both relocated from the old monolithic `build` job:
-  #   1. The socket-quic-quiche linuxX64Test NATIVE (quiche cinterop) suite — run from
-  #      the prebuilt .kexe (linked in `build`, uploaded as linux-x64-test-binary)
-  #      against the Docker harness, exactly like integration-linux-arm64 already does.
-  #   2. The Jazzer + cargo-fuzz(ASAN) lanes — these SELF-BUILD here (the Jazzer
-  #      quicHeaderFuzz needs prepareQuicheNativeLib; the cargo-fuzz lanes compile an
-  #      ASAN-instrumented quiche). The build outputs are reused from `build`'s warm
-  #      caches (same keys: gradle build-cache, BoringSSL, quiche, cargo target/), so
-  #      after the first cache-populating run this is near-instant, not a cold rebuild.
+  # The socket-quic-quiche linuxX64Test NATIVE (quiche cinterop) suite, split out of `build`
+  # so the core compile + JVM/JS/Android test signal goes green/red fast and isn't gated
+  # behind it. Run from the prebuilt .kexe (linked in `build`, uploaded as
+  # linux-x64-test-binary) against the Docker harness, exactly like integration-linux-arm64
+  # already does. The slow, native-abort-prone lanes (glibc malloc-check + Jazzer/cargo-fuzz)
+  # live in the separate `malloc-check` + `fuzz-*` jobs (#209) so a fuzz hang can't gate this
+  # integration signal and vice-versa. This lane is a pure K/N .kexe run — no JVM, so no
+  # quicCrashDiag env (that's on the JVM lanes: `build` + `malloc-check` + `fuzz-jvm`).
   integration-linux-x64:
     name: "Integration Tests (Linux x64)"
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    # quicCrashDiag mirrors any JVM fatal-error log (hs_err) to stderr and arms the
-    # recv_info UAF lifecycle guard on the JVM Jazzer lane (quicHeaderFuzz drives quiche
-    # over JNI) — same as the `build` job. No effect on the K/N native .kexe run.
-    env:
-      ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+    # 30 like integration-linux-arm64 now that the fuzz self-builds (which needed the old
+    # 45-min lid) moved to the `fuzz-*` jobs — this is just the prebuilt .kexe vs the harness.
+    timeout-minutes: 30
     steps:
+      # This job runs the prebuilt K/Native .kexe directly — no Gradle, no JVM — so it
+      # needs no JDK, no build caches, and no Rust/BoringSSL toolchain (all of that lived
+      # here only to self-build the fuzz lanes, which moved to the `fuzz-*` jobs under #209).
+      # It now mirrors integration-linux-arm64: checkout for the harness scripts, download
+      # the binary linked in `build`, bring the Docker harness up at the YAML level
+      # (Gradle's harnessUp never fires for a raw .kexe), run, audit.
       - uses: actions/checkout@v6
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v5
-        with:
-          distribution: 'zulu'
-          java-version: '21'
-          cache: gradle
-
-      # Same cache keys as `build` — `build` (needs:) finishes and saves these before
-      # this job starts, so we restore them warm: the Jazzer lane's prepareQuicheNativeLib
-      # and the cargo-fuzz quiche compile reuse the already-built klibs / BoringSSL /
-      # quiche / cargo target/ trees instead of rebuilding from scratch.
-      - name: Cache Gradle build outputs
-        uses: actions/cache@v5
-        with:
-          path: ~/.gradle/caches
-          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-linux-
-
-      - name: Cache BoringSSL x64
-        uses: actions/cache@v5
-        with:
-          path: libs/boringssl/linux-x64
-          key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      # The JVM Jazzer lane (quicHeaderFuzz) pulls the host JNI-shim build, whose Gradle
-      # graph also reaches the root :buildBoringsslArm64 + the arm64 quiche/shim tasks
-      # (the multi-arch native staging wiring). Restore the SAME arm64 caches `build` saved
-      # so those tasks are UP-TO-DATE and skip — exactly as the x64 cache already makes the
-      # x64 chain skip. Without these the arm64 BoringSSL cmake runs and dies for lack of an
-      # aarch64 cross-compiler (the original failure on this job).
-      - name: Cache BoringSSL ARM64
-        uses: actions/cache@v5
-        with:
-          path: libs/boringssl/linux-arm64
-          key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      - name: Cache quiche Linux x64
-        uses: actions/cache@v5
-        with:
-          path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-
-      - name: Cache quiche Linux ARM64
-        uses: actions/cache@v5
-        with:
-          path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-
-      - name: Cache quiche cargo target/ (all triples)
-        uses: actions/cache@v5
-        with:
-          path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-          restore-keys: quiche-cargo-target-v1-
-
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: cargo-${{ runner.os }}-
-
-      # Host build deps + the aarch64 cross-compiler: insurance for an arm64 cache MISS
-      # (eviction / key change), so the root :buildBoringsslArm64 + arm64 quiche tasks can
-      # actually build rather than die at cmake configure. On the normal warm-cache path
-      # those tasks are up-to-date and this cross-compiler goes unused.
-      - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential perl pkg-config cmake nasm
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          # cargo-fuzz native lanes compile quiche 0.29 (fuzz crate → boring-crate default),
-          # whose boring-sys build runs bindgen → needs libclang on the host.
-          sudo apt-get install -y libclang-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      # arm64 Rust target so a cache-miss arm64 quiche build (above) can cross-compile.
-      - name: Add Rust aarch64 target
-        run: rustup target add aarch64-unknown-linux-gnu
-
-      # ---- Part 1: native cinterop (quiche) suite from the prebuilt .kexe -------------
-      # Mirrors integration-linux-arm64: download the binary, bring the Docker harness up
-      # at the YAML level (Gradle's harnessUp never fires for a raw .kexe), run, audit.
       - name: Download x64 test binary
         uses: actions/download-artifact@v8
         with:
@@ -1102,115 +982,6 @@ jobs:
       - name: Bring down test harness
         if: always()
         run: cd test-harness && docker compose down -v
-
-      # ---- Part 2: coverage-guided fuzzing (Jazzer + cargo-fuzz ASAN) -----------------
-      # Each lane is `if: ${{ !cancelled() }}` so an earlier lane's crash doesn't blind us
-      # to the others, and time-boxed so a hang is a gating signal, not an open-ended job.
-
-      # Coverage-guided fuzzing of quiche_header_info (the parse on every received
-      # datagram, before any connection state). A find produces a `crash-*` repro under
-      # build/fuzz, captured by the upload step below. Self-builds via prepareQuicheNativeLib
-      # (warm from `build`'s caches). Committed seed corpus starts it warm.
-      - name: Fuzz quiche_header_info (Jazzer, time-boxed)
-        if: ${{ !cancelled() }}
-        # 15 not 8: the fuzz itself is time-boxed to 180s, but Gradle configuration +
-        # prepareQuicheNativeLib on a cold-ish cache can eat several minutes on a slow
-        # runner — an 8-minute lid turned that into a job-failing timeout (2026-07-02
-        # release rerun). The step timeout only guards against a genuine hang.
-        timeout-minutes: 15
-        run: >-
-          ./gradlew :socket-quic-quiche:quicHeaderFuzz -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Coverage-guided Jazzer fuzzing of the HAND-ROLLED HTTP/3 + QPACK codec — the
-      # module's real RFC-9114/9204 risk surface (quiche/NW own the transport; this is OUR
-      # parser/encoder). http3CodecFuzz hunts untyped decoder crashes; http3RoundTripFuzz
-      # hunts encode→decode bijection breaks; wtCapsuleFuzz hunts crashes in the WebTransport
-      # Capsule Protocol parser (RFC 9297, the peer's CONNECT-stream control channel).
-      # Pure-JVM Jazzer (no native toolchain).
-      - name: Fuzz HTTP/3 + QPACK codec (Jazzer, time-boxed)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 12
-        run: >-
-          ./gradlew :socket-http3:http3CodecFuzz :socket-http3:http3RoundTripFuzz
-          :socket-http3:wtCapsuleFuzz
-          -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Native ASAN + coverage-guided lane: cargo-fuzz builds quiche with SanitizerCoverage
-      # + AddressSanitizer, so libFuzzer gets REAL edge coverage of the parser (the JVM lane
-      # plateaus — it can't instrument native quiche) and ASAN catches the heap-overflow /
-      # UAF class. nightly + cargo-fuzz are installed here only.
-      - name: Install nightly Rust + cargo-fuzz
-        if: ${{ !cancelled() }}
-        run: |
-          rustup toolchain install nightly --profile minimal
-          cargo install cargo-fuzz --locked
-      - name: Fuzz quiche::Header::from_slice (cargo-fuzz ASAN, time-boxed)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 8
-        run: >-
-          ./gradlew :socket-quic-quiche:quicHeaderFuzzNative -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Deeper target: the full server packet-recv state machine (accept + Connection::recv),
-      # not just the public-header parse — ~5x the edge coverage locally. Same ASAN/gating
-      # model. Rust-ASAN only; the BoringSSL-C ASAN path is proven in the non-gating step below.
-      - name: Fuzz quiche server recv path (cargo-fuzz ASAN, time-boxed)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 8
-        run: >-
-          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzSeconds=180
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Prove the BoringSSL-C ASAN path (-PquicFuzzBoringSslAsan) actually instruments
-      # BoringSSL, not just quiche's Rust. clang is required: its LLVM ASAN runtime must
-      # match cargo-fuzz's. continue-on-error during bring-up (same convention as before the
-      # split): the clang/Rust ASAN-runtime match is unproven, so a red here must not block.
-      - name: Install clang (for BoringSSL ASAN)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        run: sudo apt-get update && sudo apt-get install -y clang
-      - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served
-          # from a prior uninstrumented cache) — otherwise the proof below could read a stale archive.
-          rm -rf socket-quic-quiche/fuzz/native/target
-          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
-            --no-configuration-cache ${{ inputs.gradle-args }}
-          # Prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
-          # interceptors. Zero __asan_ symbols => the CFLAGS never reached the C build, fail loudly.
-          bssl=$(find socket-quic-quiche/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
-          if [ -z "$bssl" ]; then echo "::error::no BoringSSL archive found under the fuzz target dir"; exit 1; fi
-          echo "Inspecting $bssl"
-          if nm "$bssl" 2>/dev/null | grep -q '__asan_'; then
-            echo "PROVEN: BoringSSL is ASAN-instrumented (__asan_ symbols present in $bssl)"
-          else
-            echo "::error::BoringSSL archive has NO __asan_ symbols — CFLAGS did not propagate to the C build; ASAN covers quiche's Rust only"
-            exit 1
-          fi
-
-      - name: Upload fuzzing crash repros
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: quic-header-fuzz-crashes
-          path: |
-            socket-quic-quiche/build/fuzz/header-info/crash-*
-            socket-quic-quiche/build/fuzz/header-info/oom-*
-            socket-quic-quiche/build/fuzz/header-info/timeout-*
-            socket-quic-quiche/fuzz/native/artifacts/**
-            socket-http3/build/fuzz/http3-codec/crash-*
-            socket-http3/build/fuzz/http3-codec/oom-*
-            socket-http3/build/fuzz/http3-codec/timeout-*
-            socket-http3/build/fuzz/http3-roundtrip/crash-*
-            socket-http3/build/fuzz/http3-roundtrip/oom-*
-            socket-http3/build/fuzz/http3-roundtrip/timeout-*
-          if-no-files-found: ignore
 
   integration-linux-arm64:
     name: "Integration Tests (Linux ARM64)"
@@ -1367,3 +1138,345 @@ jobs:
       - name: Bring down test harness
         if: always()
         run: cd test-harness && docker compose down -v
+
+  # ---------------------------------------------------------------------------
+  # Slow, native-abort-prone lanes split out of `build` + `integration-linux-x64`
+  # (#209) and then fanned out (#213 follow-up) into independent `needs: build`
+  # jobs so they run CONCURRENTLY instead of as sequential steps in one job — the
+  # fuzz sweep no longer serializes behind itself, and a hang/abort in one lane
+  # can't gate or blind the others. All four share the warm caches `build` saved
+  # via the .github/actions/setup-linux-fuzz composite (same keys), so each is a
+  # warm restore, not a cold rebuild. Per-lane crash artifacts carry the lane in
+  # their name so parallel uploads don't collide.
+
+  # Timer lane: the glibc-malloc-check recv-path + soak + teardown jvmTest rerun.
+  # Heap-corruption / UAF guard, relocated from `build` (#209). The worst QUIC bug
+  # class (the 3.2.12 JNI stream-command use-after-free that corrupted the glibc
+  # free-list) only reproduces under glibc's malloc consistency checks — NOT ASAN,
+  # because libquiche.a is non-instrumented. `-PquicMallocCheck` sets MALLOC_CHECK_=3
+  # + MALLOC_PERTURB_ + glibc.malloc.check=3 on the forked test worker. We re-run
+  # only the recv-path robustness + concurrency-soak suites (the allocation-heavy
+  # native paths) so a regression aborts the JVM with a diagnostic instead of
+  # silently corrupting state. These three suites are in-process (client+server +
+  # classpath certs), so `jvmTest`'s best-effort harnessUp bring-up is incidental —
+  # the tests themselves need no Docker peer. StaleConnectionDiagnosticTests is
+  # included because the still-open intermittent JNI SIGABRT (exit 134, no failing
+  # JUnit case) was last seen *near* it — a teardown-heavy suite.
+  malloc-check:
+    name: "QUIC malloc-check (Linux x64)"
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # quicCrashDiag mirrors any JVM fatal-error log (hs_err) to stderr and arms the
+    # recv_info UAF lifecycle guard on the forked jvmTest worker.
+    env:
+      ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-linux-fuzz
+
+      - name: Run socket-quic-quiche recv-path + soak + teardown suites under glibc malloc check
+        timeout-minutes: 8
+        env:
+          QUIC_MIGRATION_REQUIRE_RUN: "1"
+        run: |
+          # Capture a full core dump if a native UAF aborts the test worker, so the next
+          # JNI SIGABRT can be post-mortem'd in gdb instead of guessed. The forked worker
+          # inherits THIS shell's core ulimit, so raise it here and run --no-daemon (a
+          # daemon reused from an earlier step would carry core size 0). core_pattern is
+          # machine-wide; the post-mortem step below reads /tmp/cores.
+          ulimit -c unlimited
+          sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
+          echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
+          ./gradlew :socket-quic-quiche:jvmTest -PquicMallocCheck --continue --no-daemon \
+            --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests" \
+            --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests" \
+            --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
+            --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # Native-crash post-mortem: if the worker dumped a core, load it in gdb and print
+      # every thread's backtrace into the live log AND a file. With the JNI shim built
+      # frame-pointer-preserving and only `--strip-debug`'d (function symbols kept), these
+      # stacks NAME the quiche_jni frames — turning a SIGABRT from "exit 134" into a real
+      # native stack.
+      - name: Native crash post-mortem (gdb backtrace from core)
+        if: failure()
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/cores/core.*)
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "No core dumps captured — the run failed without a native abort (or core_pattern was overridden)."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+          mkdir -p /tmp/cores/bt
+          for core in "${cores[@]}"; do
+            echo "==================== $core ===================="
+            gdb --batch -q \
+              -ex 'thread apply all bt full' \
+              -ex 'info registers' \
+              -ex quit \
+              "$(command -v java)" "$core" 2>&1 | tee "/tmp/cores/bt/$(basename "$core").bt.txt"
+          done
+
+      # Full assertion/stack + any JVM fatal-error log (hs_err) + core/gdb backtrace from a
+      # malloc-check native abort. Distinct artifact name so it never collides with build's
+      # `test-reports-linux` or the fuzz jobs' crash uploads.
+      - name: Upload malloc-check reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-malloc-check
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+            **/hs_err_pid*.log
+            **/replay_pid*.log
+            /tmp/cores/core.*
+            /tmp/cores/bt/*.txt
+            socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # JVM Jazzer fuzz lanes — ONE matrix leg per target so every fuzzer runs on its own
+  # concurrent runner (the http3 trio used to share a single leg and ran sequentially):
+  #   quiche-header  — quiche_header_info, the parse on every received datagram before any
+  #                    connection state; drives quiche over JNI (needs prepareQuicheNativeLib,
+  #                    warm from the cache) → native=true so the composite installs the toolchain.
+  #   http3-codec    — the HAND-ROLLED HTTP/3 + QPACK decoder (untyped-decoder crashes).
+  #   http3-roundtrip— encode→decode bijection breaks in that codec.
+  #   wt-capsule     — the WebTransport Capsule parser (RFC 9297).
+  # The three http3 lanes are pure-JVM (quiche/NW own the transport; this is OUR parser/encoder),
+  # so native=false skips their native/Rust install. fail-fast:false so one lane's crash doesn't
+  # cancel a sibling; each is time-boxed so a hang is a gating signal, not an open-ended job.
+  fuzz-jvm:
+    name: "Fuzz JVM (${{ matrix.lane }})"
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `jni` marks the lane that drives quiche over JNI (quiche-header) — it alone arms
+          # native core/hs_err capture below. It does NOT gate the toolchain: EVERY lane needs
+          # it, because even the pure-Kotlin http3 fuzzers have a task graph that transitively
+          # reaches :buildBoringssl*/quiche cinterop via the KMP metadata chain, so the composite
+          # always installs it (skipping it for http3 broke this job — see the composite comment).
+          - lane: quiche-header
+            task: ":socket-quic-quiche:quicHeaderFuzz"
+            crash-dir: "socket-quic-quiche/build/fuzz/header-info"
+            jni: "true"
+          - lane: http3-codec
+            task: ":socket-http3:http3CodecFuzz"
+            crash-dir: "socket-http3/build/fuzz/http3-codec"
+            jni: "false"
+          - lane: http3-roundtrip
+            task: ":socket-http3:http3RoundTripFuzz"
+            crash-dir: "socket-http3/build/fuzz/http3-roundtrip"
+            jni: "false"
+          - lane: wt-capsule
+            task: ":socket-http3:wtCapsuleFuzz"
+            crash-dir: "socket-http3/build/fuzz/wt-capsule"
+            jni: "false"
+    # quicCrashDiag arms the recv_info UAF guard on the quiche-header lane (JNI); harmless
+    # on the pure-JVM http3 lanes.
+    env:
+      ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-linux-fuzz
+
+      # Persist the accumulated corpus across runs so coverage compounds instead of restarting
+      # from the committed seed every time. The fuzzer writes newly-discovered, coverage-expanding
+      # inputs to <crash-dir>/corpus (the gitignored FIRST positional corpus dir; the committed
+      # seed is passed read-only second). The run_id key never pre-exists, so actions/cache always
+      # SAVES a fresh snapshot at job end; restore-keys prefix-matches the most recent prior
+      # snapshot to warm-start this run. Each lane keys independently so parallel legs don't clash.
+      - name: Restore + persist fuzz corpus (${{ matrix.lane }})
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.crash-dir }}/corpus
+          key: fuzz-corpus-jvm-${{ matrix.lane }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-jvm-${{ matrix.lane }}-
+
+      # A find produces a `crash-*`/`oom-*`/`timeout-*` repro under the lane's crash-dir — the
+      # DETERMINISTIC reproducer (download it and replay the one gradle fuzz task against it to
+      # reproduce the exact failure locally, regardless of the CI RNG). The committed seed corpus
+      # starts each lane warm. On the quiche-header lane, also arm core/hs_err capture: that lane
+      # drives quiche over JNI, and the documented intermittent SIGABRT (recv_info UAF teardown
+      # class) leaves NO fuzzer repro file — only a core + hs_err tell the story. 15-min lid: the
+      # fuzz is time-boxed to 180s but Gradle config + prepareQuicheNativeLib can add minutes; the
+      # step timeout only guards a genuine hang.
+      - name: Fuzz ${{ matrix.lane }} (Jazzer, time-boxed)
+        timeout-minutes: 15
+        run: |
+          if [ "${{ matrix.jni }}" = "true" ]; then
+            # Frame-pointer-preserving, symbol-bearing JNI shim (built in `build`) makes the gdb
+            # backtrace NAME the quiche_jni frames. Forked worker inherits this shell's ulimit,
+            # so raise it here and run --no-daemon; core_pattern is machine-wide.
+            ulimit -c unlimited
+            sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
+            echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern >/dev/null
+            ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 --no-daemon \
+              --no-configuration-cache ${{ inputs.gradle-args }}
+          else
+            ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 \
+              --no-configuration-cache ${{ inputs.gradle-args }}
+          fi
+
+      # Native-crash post-mortem for the JNI lane: if the worker dumped a core, load it in gdb and
+      # print every thread's backtrace into the live log AND a file, so an intermittent SIGABRT
+      # that reproduces only under CI's load becomes a real named native stack instead of exit 134.
+      - name: Native crash post-mortem (gdb backtrace from core)
+        if: ${{ failure() && matrix.jni == 'true' }}
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/cores/core.*)
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "No core dumps captured — the fuzzer failed with a repro (see the crash-* artifact), not a native abort."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+          mkdir -p /tmp/cores/bt
+          for core in "${cores[@]}"; do
+            echo "==================== $core ===================="
+            gdb --batch -q -ex 'thread apply all bt full' -ex 'info registers' -ex quit \
+              "$(command -v java)" "$core" 2>&1 | tee "/tmp/cores/bt/$(basename "$core").bt.txt"
+          done
+
+      # Upload the deterministic crash reproducer(s) for this lane + (JNI lane) the native crash
+      # context: hs_err/replay logs, the core dump + its gdb backtrace, and the exact symbol-bearing
+      # JNI shim the crash occurred in — everything needed to reproduce/triage offline. Lane in the
+      # artifact name so parallel legs don't collide.
+      - name: Upload fuzz crash + native-crash context
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashes-jvm-${{ matrix.lane }}
+          path: |
+            ${{ matrix.crash-dir }}/crash-*
+            ${{ matrix.crash-dir }}/oom-*
+            ${{ matrix.crash-dir }}/timeout-*
+            **/hs_err_pid*.log
+            **/replay_pid*.log
+            /tmp/cores/core.*
+            /tmp/cores/bt/*.txt
+            socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Native ASAN + coverage-guided lanes (cargo-fuzz builds quiche with SanitizerCoverage +
+  # AddressSanitizer, so libFuzzer gets REAL edge coverage the JVM Jazzer lane can't get on
+  # non-instrumented quiche, and ASAN catches the heap-overflow / UAF class), one matrix leg
+  # per target so they run in parallel:
+  #   header-slice — quiche::Header::from_slice (the public-header parse).
+  #   conn-recv     — the full server packet-recv state machine (accept + Connection::recv),
+  #                   ~5x the edge coverage of the header parse alone.
+  # Both install nightly + cargo-fuzz via the composite (cargo-fuzz binary is cached, so the
+  # per-leg install is a near-instant restore, not a repeated ~3-5 min compile).
+  fuzz-native:
+    name: "Fuzz native ASAN (${{ matrix.lane }})"
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: header-slice
+            task: ":socket-quic-quiche:quicHeaderFuzzNative"
+            corpus-dir: "socket-quic-quiche/build/fuzz-native/header-info-corpus"
+          - lane: conn-recv
+            task: ":socket-quic-quiche:quicConnRecvFuzzNative"
+            corpus-dir: "socket-quic-quiche/build/fuzz-native/conn-recv-corpus"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-linux-fuzz
+        with:
+          cargo-fuzz: "true"
+
+      # Persist the accumulated corpus across runs so ASAN coverage compounds. cargo-fuzz writes
+      # newly-discovered inputs to build/fuzz-native/<lane>-corpus (the gitignored FIRST positional
+      # corpus dir; the committed seed is read-only second). run_id key → always save a fresh
+      # snapshot; restore-keys warm-starts from the latest prior one. Per-lane keys, so the two
+      # native legs don't clash.
+      - name: Restore + persist fuzz corpus (${{ matrix.lane }})
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.corpus-dir }}
+          key: fuzz-corpus-native-${{ matrix.lane }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-native-${{ matrix.lane }}-
+
+      # Tee the run to a file: on an ASAN find, the crashing input is written under
+      # fuzz/native/artifacts/ (the deterministic reproducer — replay the fuzz binary against it
+      # locally), but the ASAN REPORT itself (the offending stack, the allocation/free site, the
+      # shadow-memory summary) goes to stderr. Capturing it durably means triage doesn't depend on
+      # the ephemeral job log. set -o pipefail so the tee doesn't mask a failing gradle exit code.
+      - name: Fuzz ${{ matrix.lane }} (cargo-fuzz ASAN, time-boxed)
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/fuzz-logs
+          ./gradlew ${{ matrix.task }} -PquicFuzzSeconds=180 \
+            --no-configuration-cache ${{ inputs.gradle-args }} \
+            2>&1 | tee "/tmp/fuzz-logs/${{ matrix.lane }}-asan.log"
+
+      # Upload the deterministic reproducer input(s) AND the captured ASAN report together, so a
+      # heap-overflow/UAF find is reproducible + triageable offline. Lane in the name so the two
+      # native legs don't collide on upload.
+      - name: Upload fuzz crash repros + ASAN report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashes-native-${{ matrix.lane }}
+          path: |
+            socket-quic-quiche/fuzz/native/artifacts/**
+            /tmp/fuzz-logs/${{ matrix.lane }}-asan.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # BoringSSL-C ASAN proof — its own job because it's a clean rebuild (not a fuzz run) with a
+  # different shape from the cargo-fuzz lanes. Proves the -PquicFuzzBoringSslAsan path actually
+  # instruments BoringSSL itself (not just quiche's Rust). continue-on-error during bring-up
+  # (same convention as before the split): the clang/Rust ASAN-runtime match is unproven, so a
+  # red here must not block. Runs in parallel with the other fuzz lanes.
+  fuzz-boringssl-asan:
+    name: "Fuzz BoringSSL-C ASAN proof (Linux x64)"
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-linux-fuzz
+        with:
+          cargo-fuzz: "true"
+
+      # clang is required: its LLVM ASAN runtime must match cargo-fuzz's.
+      - name: Install clang (for BoringSSL ASAN)
+        continue-on-error: true
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          # Force a clean fuzz build so BoringSSL is recompiled with the ASAN CFLAGS (not served
+          # from a prior uninstrumented cache) — otherwise the proof below could read a stale archive.
+          rm -rf socket-quic-quiche/fuzz/native/target
+          ./gradlew :socket-quic-quiche:quicConnRecvFuzzNative -PquicFuzzBoringSslAsan -PquicFuzzSeconds=90 \
+            --no-configuration-cache ${{ inputs.gradle-args }}
+          # Prove BoringSSL ITSELF is ASAN-instrumented: its compiled archive must reference ASAN
+          # interceptors. Zero __asan_ symbols => the CFLAGS never reached the C build, fail loudly.
+          bssl=$(find socket-quic-quiche/fuzz/native/target \( -name 'libcrypto.a' -o -name 'libssl.a' \) | head -1)
+          if [ -z "$bssl" ]; then echo "::error::no BoringSSL archive found under the fuzz target dir"; exit 1; fi
+          echo "Inspecting $bssl"
+          if nm "$bssl" 2>/dev/null | grep -q '__asan_'; then
+            echo "PROVEN: BoringSSL is ASAN-instrumented (__asan_ symbols present in $bssl)"
+          else
+            echo "::error::BoringSSL archive has NO __asan_ symbols — CFLAGS did not propagate to the C build; ASAN covers quiche's Rust only"
+            exit 1
+          fi
