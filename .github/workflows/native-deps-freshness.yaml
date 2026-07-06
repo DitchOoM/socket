@@ -1,0 +1,271 @@
+name: "Native Deps Freshness + Cache Warm"
+
+# ---------------------------------------------------------------------------
+# Two DAILY responsibilities, both about the from-source native deps that the
+# rest of the automation does NOT cover:
+#
+#   1. Upstream freshness check (job: freshness)
+#      Compare the pinned `quiche` (cloudflare/quiche) and `liburing`
+#      (axboe/liburing) versions in gradle/libs.versions.toml against the
+#      latest upstream releases. If either is behind, open — or UPDATE — a
+#      single stable tracking issue. It never auto-bumps; it just surfaces the
+#      signal. Idempotent: it finds the existing open issue by a fixed title +
+#      the `dependencies` label and edits it, so it will not spam a new issue
+#      every day. When everything is current it closes any stale tracking issue.
+#
+#   2. Native cache-warm (job: cache-warm)
+#      Build the from-source native artifacts (BoringSSL, quiche, liburing) for
+#      the Linux triples and SAVE them into the exact same actions/cache entries
+#      (identical `path:` + `key:`) that the PR build (build-linux.yaml) later
+#      restores. That turns the first PR of the day into a warm-cache hit
+#      instead of a ~10-15 min cold from-source rebuild.
+#
+# This COMPLEMENTS weekly-dependency-update.yaml (#114), which owns the Gradle/
+# Maven side: the coupled Kotlin/KSP/AGP/wrappers toolchain + the Gradle wrapper,
+# AND the actual coordinated *bump* + validated PR for quiche/liburing. This
+# workflow is the lightweight daily radar (surface-only, no PR) plus the cache
+# priming — deliberately NOT a second bump path, so the two never race to open
+# competing PRs against the same version catalog.
+# ---------------------------------------------------------------------------
+
+on:
+  schedule:
+    # 09:17 UTC every day. Off-peak by design:
+    #   - Not on the top of the hour (GitHub's cron queues are most congested
+    #     at :00, and Actions explicitly warns high-load slots get delayed).
+    #   - 09:17 UTC == ~01:17 US-Pacific / ~04:17 US-Eastern — the Americas are
+    #     asleep, so hosted-runner contention is low.
+    #   - Clear of weekly-dependency-update.yaml's Sunday 03:15 UTC slot, so the
+    #     two never contend for the shared native caches / runner pool on Sundays.
+    - cron: "17 9 * * *"
+  workflow_dispatch: {}
+
+# Minimal footprint: read the repo to parse the pinned versions + build natives;
+# write issues to raise/close the freshness tracker. No contents:write (never
+# commits) and no pull-requests scope (never opens a PR — that's #114's job).
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: native-deps-freshness
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Upstream freshness — surface (don't bump) newer quiche / liburing.
+  # -------------------------------------------------------------------------
+  freshness:
+    name: "Upstream freshness (quiche + liburing)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # gh CLI is preinstalled on ubuntu-latest runners; it reads GH_TOKEN for
+      # auth. GITHUB_TOKEN carries the issues:write granted above.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Stable identity of the tracking issue — the ONLY thing that makes this
+      # idempotent. Do not change the title without migrating the open issue.
+      ISSUE_TITLE: "Native dep freshness: upstream updates available"
+      ISSUE_LABEL: "dependencies"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check upstream vs pinned and raise/update tracking issue
+        run: |
+          set -euo pipefail
+          CATALOG="gradle/libs.versions.toml"
+
+          # --- Parse the currently pinned versions out of the version catalog.
+          # Match `quiche = "X.Y.Z"` / `liburing = "X.Y"` exactly (anchored key,
+          # so `quicheSha256`/`liburingSha256` can't be mismatched).
+          pinned_quiche=$(grep -E '^quiche[[:space:]]*=' "$CATALOG"   | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          pinned_liburing=$(grep -E '^liburing[[:space:]]*=' "$CATALOG" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Pinned:   quiche=$pinned_quiche  liburing=$pinned_liburing"
+
+          # --- Latest upstream. quiche release tags are bare (e.g. 0.29.2).
+          latest_quiche=$(gh api repos/cloudflare/quiche/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+          # liburing release tags are prefixed `liburing-X.Y` — strip the prefix
+          # so it compares against the bare `2.15` in the catalog.
+          latest_liburing_tag=$(gh api repos/axboe/liburing/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+          latest_liburing=${latest_liburing_tag#liburing-}
+          echo "Upstream: quiche=$latest_quiche  liburing=$latest_liburing"
+
+          # newer <current> <candidate> -> true (exit 0) iff candidate is a
+          # strictly-higher version than current, using version-aware sort.
+          newer() {
+            [ -n "$2" ] && [ "$1" != "$2" ] && \
+              [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$2" ]
+          }
+
+          findings=""
+          if newer "$pinned_quiche" "$latest_quiche"; then
+            findings="${findings}- \`quiche\`: pinned **${pinned_quiche}** → upstream **${latest_quiche}** (https://github.com/cloudflare/quiche/releases/tag/${latest_quiche})"$'\n'
+          fi
+          if newer "$pinned_liburing" "$latest_liburing"; then
+            findings="${findings}- \`liburing\`: pinned **${pinned_liburing}** → upstream **${latest_liburing}** (https://github.com/axboe/liburing/releases/tag/${latest_liburing_tag})"$'\n'
+          fi
+
+          # Ensure the label exists so `--label` never fails the run (idempotent).
+          gh label create "$ISSUE_LABEL" --color 0366d6 \
+            --description "Dependency updates" 2>/dev/null || true
+
+          # Find an existing OPEN tracking issue by exact title (stable identity).
+          existing=$(gh issue list --state open --label "$ISSUE_LABEL" \
+            --search "in:title \"$ISSUE_TITLE\"" \
+            --json number,title \
+            --jq "map(select(.title == \"$ISSUE_TITLE\")) | .[0].number // empty")
+
+          if [ -z "$findings" ]; then
+            echo "Both native deps are current."
+            if [ -n "$existing" ]; then
+              # Everything caught up since the last raise — close the tracker so
+              # it doesn't linger as a false-positive.
+              gh issue close "$existing" \
+                --comment "All pinned native deps (quiche, liburing) are now current with upstream. Auto-closing the freshness tracker; it will reopen if a newer release appears." \
+                --reason completed
+              echo "Closed stale tracking issue #$existing."
+            fi
+            exit 0
+          fi
+
+          # Assemble the (stable-shaped) issue body.
+          body=$(cat <<EOF
+          Automated daily upstream freshness check (native-deps-freshness.yaml).
+
+          The following from-source native dependencies pinned in \`gradle/libs.versions.toml\` are behind their latest upstream release:
+
+          ${findings}
+          These are surfaced, not auto-bumped. The coordinated bump + validated PR is handled by \`weekly-dependency-update.yaml\` (#114) — remember \`liburing\` is SHA256-verified so its \`liburingSha256\` must be recomputed on bump.
+
+          _Last checked: $(date -u '+%Y-%m-%d %H:%M UTC'). This issue is updated in place daily while updates remain available, and auto-closes once both deps are current._
+          EOF
+          )
+
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body "$body"
+            echo "Updated tracking issue #$existing."
+          else
+            gh issue create --title "$ISSUE_TITLE" --label "$ISSUE_LABEL" --body "$body"
+            echo "Opened new tracking issue."
+          fi
+
+  # -------------------------------------------------------------------------
+  # 2. Native cache-warm — build BoringSSL / quiche / liburing into the SAME
+  #    actions/cache entries build-linux.yaml restores, so PRs get a warm hit.
+  #    Uses actions/cache (not restore-only) so a fresh build is SAVED at
+  #    post-job. Keys/paths below are byte-for-byte identical to build-linux.yaml
+  #    (all hashFiles('gradle/libs.versions.toml')-keyed) — if they drift, the
+  #    warmed entry stops hitting on PR runs.
+  # -------------------------------------------------------------------------
+  cache-warm:
+    name: "Warm native build caches (Linux x64 + arm64)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+
+      # ---- Cache entries mirrored EXACTLY from build-linux.yaml ----
+      - name: Cache BoringSSL x64
+        uses: actions/cache@v5
+        with:
+          path: libs/boringssl/linux-x64
+          key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache BoringSSL ARM64
+        uses: actions/cache@v5
+        with:
+          path: libs/boringssl/linux-arm64
+          key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache liburing x64
+        uses: actions/cache@v5
+        with:
+          path: libs/liburing/linux-x64
+          key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache liburing ARM64
+        uses: actions/cache@v5
+        with:
+          path: libs/liburing/linux-arm64
+          key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Cache quiche Linux x64
+        uses: actions/cache@v5
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-x64
+          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
+      - name: Cache quiche Linux ARM64
+        uses: actions/cache@v5
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-arm64
+          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
+      # Intermediate cargo target/ tree + cloned quiche source — the same entry
+      # build-linux.yaml keeps so a quiche rebuild is incremental, not from zero.
+      - name: Cache quiche cargo target/ (all triples)
+        uses: actions/cache@v5
+        with:
+          path: socket-quic-quiche/build/quiche
+          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-cargo-target-v1-
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # ---- Toolchain the native builds need (mirrors build-linux.yaml) ----
+      - name: Install cross-compilation toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential perl pkg-config cmake nasm
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust cross-compile targets
+        run: rustup target add aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
+
+      # ---- Build the natives (same Gradle tasks build-linux.yaml runs) ----
+      # continue-on-error so a broken native build never blocks the daily
+      # freshness signal above, and so a partial warm still gets SAVED. Any
+      # entry that hits on restore already skips its build (Gradle up-to-date).
+      - name: Warm BoringSSL cache (x64 + arm64)
+        continue-on-error: true
+        run: ./gradlew :buildBoringsslX64 :buildBoringsslArm64 --no-configuration-cache
+
+      - name: Warm liburing cache (x64 + arm64)
+        continue-on-error: true
+        run: ./gradlew :buildLiburingX64 :buildLiburingArm64 --no-configuration-cache
+
+      - name: Warm quiche cache (static x64/arm64 + shared x64)
+        continue-on-error: true
+        run: >-
+          ./gradlew
+          :socket-quic-quiche:buildQuicheStaticX64
+          :socket-quic-quiche:buildQuicheStaticArm64
+          :socket-quic-quiche:buildQuicheSharedLinuxX64
+          --no-configuration-cache
+
+      - name: Report warmed artifacts
+        if: always()
+        run: |
+          echo "## Native cache-warm summary" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          find libs/boringssl libs/liburing socket-quic-quiche/libs/quiche \
+            -type f \( -name '*.a' -o -name '*.so' \) 2>/dev/null \
+            | sort >> "$GITHUB_STEP_SUMMARY" || echo "(no artifacts produced)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

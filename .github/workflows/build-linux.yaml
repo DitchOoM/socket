@@ -153,6 +153,11 @@ jobs:
           sudo apt-get install -y build-essential perl pkg-config cmake nasm
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+          # quiche 0.29 dropped `boringssl-vendored`; the self-contained Windows/Android
+          # builds now use `boringssl-boring-crate`, whose boring-sys build runs bindgen
+          # and needs libclang on the host. (Linux x64/arm64 use external BoringSSL + `ffi`,
+          # which needs no libclang.)
+          sudo apt-get install -y libclang-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -231,6 +236,10 @@ jobs:
         run: |
           set -e
           WS="${{ github.workspace }}"
+          # Track the pinned quiche version from the catalog so the fallback clone below
+          # never drifts from gradle/libs.versions.toml (was a hardcoded 0.28.0).
+          QUICHE_VER=$(grep -E '^quiche[[:space:]]*=' gradle/libs.versions.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Pinned quiche version: $QUICHE_VER"
           JNI_SRC="$WS/socket-quic-quiche/src/jni/quiche_jni.c"
           QUICHE_H="$WS/socket-quic-quiche/libs/quiche/include"
           # JNI shims go next to libquiche.{so,a} under libs/quiche/<platform>/lib/
@@ -246,7 +255,7 @@ jobs:
           QUICHE_DIR=$(find socket-quic-quiche/build/quiche -maxdepth 1 -name "quiche-*" -type d 2>/dev/null | head -1)
           if [ -z "$QUICHE_DIR" ]; then
             QUICHE_DIR="/tmp/quiche-src"
-            git clone --recursive --depth 1 --branch 0.28.0 \
+            git clone --recursive --depth 1 --branch "$QUICHE_VER" \
               https://github.com/cloudflare/quiche.git "$QUICHE_DIR"
           fi
 
@@ -299,7 +308,7 @@ jobs:
           echo "=== Windows x64 JNI ==="
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
             cargo build --release --package quiche \
-            --target x86_64-pc-windows-gnu --no-default-features --features ffi,boringssl-vendored \
+            --target x86_64-pc-windows-gnu --no-default-features --features ffi,boringssl-boring-crate \
             --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
           WIN_LIB=$(find "$QUICHE_DIR/target/x86_64-pc-windows-gnu/release" -name "libquiche.a" 2>/dev/null | head -1)
           if [ -n "$WIN_LIB" ]; then
@@ -320,7 +329,7 @@ jobs:
           echo "=== Android arm64 JNI ==="
           if command -v cargo-ndk &>/dev/null && [ -d "$ANDROID_NDK_HOME" ]; then
             cargo ndk --target arm64-v8a --platform 24 -- build --release --package quiche \
-              --no-default-features --features ffi,boringssl-vendored \
+              --no-default-features --features ffi,boringssl-boring-crate \
               --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
             NDK_CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
             NDK_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
@@ -1005,6 +1014,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential perl pkg-config cmake nasm
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          # cargo-fuzz native lanes compile quiche 0.29 (fuzz crate → boring-crate default),
+          # whose boring-sys build runs bindgen → needs libclang on the host.
+          sudo apt-get install -y libclang-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

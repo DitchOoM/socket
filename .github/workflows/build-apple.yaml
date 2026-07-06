@@ -77,7 +77,8 @@ jobs:
 
       # All built quiche native libs for every Apple target: the macOS dylib + JNI shim (for the JVM
       # JNI/FFM tests) and the macOS + iOS static libs the K/N test binaries -force_load. The expensive
-      # part is the from-source cargo + vendored-BoringSSL build for five targets (~10-20 min), so cache
+      # part is the from-source cargo + boring-crate BoringSSL build for five targets (~10-20 min; quiche
+      # 0.29 dropped vendored-BoringSSL, so boring-sys builds it — Xcode supplies libclang for bindgen), so cache
       # it keyed on the quiche version + the JNI-shim source. A near-version restore-key seeds the cache;
       # the Gradle tasks' .built-<ver> markers correctly force a rebuild on a version bump.
       - name: Cache quiche Apple native libs

@@ -42,8 +42,11 @@ jobs:
       # the root build.gradle.kts comment already prescribes). NOTE: building the
       # linuxArm64 lib in an x86_64 emulator job is wasteful — de-scoping that task
       # from the Android test graph is a follow-up.
-      - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64)
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64) + libclang
+        # libclang: quiche 0.29 dropped `boringssl-vendored`; the Android build now uses
+        # `boringssl-boring-crate`, whose boring-sys build runs bindgen and needs libclang
+        # on the host (the NDK clang covers the target compile).
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libclang-dev
 
       - name: Install Rust + cargo-ndk
         uses: dtolnay/rust-toolchain@stable
@@ -61,15 +64,17 @@ jobs:
       - name: Build Android QUIC native libs
         continue-on-error: true
         run: |
-          # Clone quiche source
+          # Clone quiche source (version tracks the catalog — was a hardcoded 0.28.0)
+          QUICHE_VER=$(grep -E '^quiche[[:space:]]*=' gradle/libs.versions.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Pinned quiche version: $QUICHE_VER"
           mkdir -p socket-quic-quiche/build/quiche
-          git clone --recursive --depth 1 --branch 0.28.0 \
+          git clone --recursive --depth 1 --branch "$QUICHE_VER" \
             https://github.com/cloudflare/quiche.git socket-quic-quiche/build/quiche/quiche-src
 
           # Build for x86_64 (emulator)
           cd socket-quic-quiche/build/quiche/quiche-src
           cargo ndk --target x86_64 --platform 24 -- build --release --package quiche \
-            --no-default-features --features ffi,boringssl-vendored
+            --no-default-features --features ffi,boringssl-boring-crate
           cd ${{ github.workspace }}
 
           # Build JNI shim
