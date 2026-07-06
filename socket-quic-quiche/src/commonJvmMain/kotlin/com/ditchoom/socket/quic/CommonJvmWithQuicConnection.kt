@@ -103,9 +103,16 @@ internal suspend fun buildJvmQuicConnection(
             }
         }
 
-        // 2. Open UDP channel
+        // 2. Open UDP channel.
+        // Bind an ephemeral local port EXPLICITLY before connect(). On an unbound UDP socket
+        // connect() does an implicit source-port bind, and on BSD/Darwin that auto-selection is
+        // not atomic against other concurrent connect()s to the same peer — N clients racing to
+        // the same 127.0.0.1:port from the same loopback source can pick the same ephemeral port
+        // and the loser fails with EADDRINUSE ("Address already in use"). An explicit bind(0)
+        // reserves a unique port atomically, so the subsequent connect() only sets the peer.
         val channel = DatagramChannel.open()
         channel.configureBlocking(false)
+        channel.bind(InetSocketAddress(0))
         channel.connect(InetSocketAddress(hostname, port))
         val localAddr = channel.localAddress as InetSocketAddress
 
