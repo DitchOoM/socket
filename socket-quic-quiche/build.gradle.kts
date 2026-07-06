@@ -58,34 +58,82 @@ fun downloadQuicheSource(
 ): File {
     val sourceDir = File(buildDir, "quiche-$version")
 
-    if (sourceDir.exists()) return sourceDir
+    if (!sourceDir.exists()) {
+        buildDir.mkdirs()
 
-    buildDir.mkdirs()
+        // git clone with --recursive to include BoringSSL submodule
+        // (GitHub tarballs don't include submodules)
+        logger.lifecycle("Cloning quiche $version (with BoringSSL submodule)...")
+        val result =
+            ProcessBuilder(
+                "git",
+                "clone",
+                "--recursive",
+                "--depth",
+                "1",
+                "--branch",
+                version,
+                "https://github.com/cloudflare/quiche.git",
+                sourceDir.name,
+            ).directory(buildDir)
+                .inheritIO()
+                .start()
+                .waitFor()
 
-    // git clone with --recursive to include BoringSSL submodule
-    // (GitHub tarballs don't include submodules)
-    logger.lifecycle("Cloning quiche $version (with BoringSSL submodule)...")
-    val result =
-        ProcessBuilder(
-            "git",
-            "clone",
-            "--recursive",
-            "--depth",
-            "1",
-            "--branch",
-            version,
-            "https://github.com/cloudflare/quiche.git",
-            sourceDir.name,
-        ).directory(buildDir)
-            .inheritIO()
-            .start()
-            .waitFor()
-
-    if (result != 0) {
-        throw GradleException("Failed to clone quiche $version")
+        if (result != 0) {
+            throw GradleException("Failed to clone quiche $version")
+        }
     }
 
+    // Applied to every consumer of this clone (idempotent). Only affects the boringssl-boring-crate
+    // code path; external `ffi,qlog` builds are untouched.
+    patchQuicheBuildRsForBoringCrate(sourceDir)
+
     return sourceDir
+}
+
+/**
+ * Patch quiche 0.29+'s build.rs so a `boringssl-boring-crate` **staticlib** doesn't double-bundle
+ * BoringSSL.
+ *
+ * quiche's `build.rs` emits `cargo:rustc-link-lib=static=ssl` + `=crypto` under
+ * `boringssl-boring-crate`, and `boring-sys` ALSO emits those directives (it built the archives).
+ * For a `staticlib` output rustc bundles each named static lib into libquiche.a — so BoringSSL lands
+ * TWICE (every symbol has two definitions). A cdylib/bin link dedups the `-l` flags so it's fine, but
+ * our JNI shim (`--whole-archive libquiche.a`) and the Apple K/N link (`-force_load`) force every
+ * member in → "duplicate symbol" (ChaCha20_ctr32, TLS_server_method, bssl::CERT::~CERT()…).
+ *
+ * Neutralize quiche's redundant emission (boring-sys' is sufficient) so libquiche.a carries BoringSSL
+ * exactly once. Idempotent (guarded by a marker comment); a no-op if the block isn't present (≤0.28,
+ * or the external `ffi,qlog` path where the feature is off).
+ */
+fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
+    val buildRs = sourceDir.resolve("quiche/src/build.rs")
+    if (!buildRs.exists()) return
+    val text = buildRs.readText()
+    if (text.contains("socket-dedup-boringssl")) return // already patched
+
+    val original =
+        """
+        |    if cfg!(feature = "boringssl-boring-crate") {
+        |        println!("cargo:rustc-link-lib=static=ssl");
+        |        println!("cargo:rustc-link-lib=static=crypto");
+        |    }
+        """.trimMargin()
+    if (!text.contains(original)) return // ≤0.28 (no boring-crate block) or upstream changed — nothing to dedup
+
+    val replacement =
+        """
+        |    // socket-dedup-boringssl: boring-sys already emits these; quiche re-emitting them
+        |    // double-bundles BoringSSL into the staticlib (duplicate symbols under --whole-archive /
+        |    // -force_load). Neutralized so libquiche.a carries BoringSSL exactly once.
+        |    if false && cfg!(feature = "boringssl-boring-crate") {
+        |        println!("cargo:rustc-link-lib=static=ssl");
+        |        println!("cargo:rustc-link-lib=static=crypto");
+        |    }
+        """.trimMargin()
+    buildRs.writeText(text.replace(original, replacement))
+    logger.lifecycle("Patched quiche build.rs: de-duplicated boring-crate BoringSSL static link")
 }
 
 /**
