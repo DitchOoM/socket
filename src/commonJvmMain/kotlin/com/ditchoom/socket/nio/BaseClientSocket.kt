@@ -35,7 +35,7 @@ abstract class BaseClientSocket(
     private suspend fun readRaw(deadline: Duration): ReadBuffer {
         if (!isOpen) throw SocketClosedException.General("Socket is closed.")
         tlsHandler?.let { return it.unwrap(deadline) }
-        val buffer = readBufferSource.acquire(socket.socket().receiveBufferSize)
+        val buffer = readBufferSource.acquire(effectiveReadBufferSize(socket.socket().receiveBufferSize))
         try {
             read(buffer.unwrapFully() as BaseJvmBuffer, deadline)
             buffer.resetForRead()

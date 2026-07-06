@@ -80,6 +80,20 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
         this.tlsHandler = handler
     }
 
+    /**
+     * Effective receive-buffer sizing, mirroring the Linux path's `getEffectiveReadBufferSize`:
+     * an explicitly-configured [IoTuning.readBufferSize] (any value other than the default) wins;
+     * otherwise fall back to the socket's SO_RCVBUF ([soRcvBuf]).
+     *
+     * Without this the JVM NIO/NIO2 read path always sized the pooled receive buffer to SO_RCVBUF
+     * (~512 KiB on some emulators) and silently ignored the [IoTuning.readBufferSize] override,
+     * contradicting its own contract and pinning oversized pool buffers under sustained reads.
+     */
+    protected fun effectiveReadBufferSize(soRcvBuf: Int): Int {
+        val configured = config.io.readBufferSize
+        return if (configured != DEFAULT_READ_BUFFER_SIZE) configured else soRcvBuf
+    }
+
     protected fun applySocketOptions(options: IoTuning) {
         options.tcpNoDelay?.let { socket.setOption(StandardSocketOptions.TCP_NODELAY, it) }
         options.reuseAddress?.let { socket.setOption(StandardSocketOptions.SO_REUSEADDR, it) }
@@ -98,5 +112,14 @@ abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
         if (isSocketInitialized) {
             socket.aClose()
         }
+    }
+
+    private companion object {
+        /**
+         * Sentinel matching [IoTuning.readBufferSize]'s default (and linuxMain's
+         * `DEFAULT_READ_BUFFER_SIZE`). Any other value means the caller explicitly
+         * overrode receive-buffer sizing, so it takes precedence over SO_RCVBUF.
+         */
+        const val DEFAULT_READ_BUFFER_SIZE = 65536
     }
 }
