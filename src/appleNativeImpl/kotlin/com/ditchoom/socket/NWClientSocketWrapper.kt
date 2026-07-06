@@ -40,6 +40,9 @@ class NWClientSocketWrapper :
                 use_tls = NSNumber(bool = useTls),
                 verify_certs = NSNumber(bool = verifyCertificates),
                 timeout_seconds = config.connectTimeout.inWholeSeconds.toInt(),
+                // Honor TransportConfig.io.tcpNoDelay like the JVM/Node/Linux paths do.
+                // null (unset) keeps the platform default (Nagle on).
+                no_delay = NSNumber(bool = config.io.tcpNoDelay == true),
             ) ?: throw SocketIOException("Failed to create NW connection")
 
         this.connection = conn
