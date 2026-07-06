@@ -35,7 +35,6 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 repositories {
     google()
     mavenCentral()
-    maven { setUrl("https://maven.pkg.jetbrains.space/kotlin/p/kotlin/kotlin-js-wrappers/") }
 }
 
 // Configure cinterop for NW helpers (C bridge for dispatch_data_t → NSData, connection creation, WS support)

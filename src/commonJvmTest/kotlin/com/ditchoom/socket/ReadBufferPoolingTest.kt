@@ -7,9 +7,11 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.runBlocking
 import java.net.ServerSocket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -94,6 +96,91 @@ class ReadBufferPoolingTest {
         assertTrue(
             allocations < 20,
             "receive buffers should be pooled/recycled: expected < 20 allocations, got $allocations over $totalReads reads",
+        )
+    }
+
+    /** Records the size of every allocation, delegating to the platform-default factory. */
+    private class SizeRecordingBufferFactory(
+        private val delegate: BufferFactory = BufferFactory.Default,
+    ) : BufferFactory by delegate {
+        val sizes: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+
+        override fun allocate(
+            size: Int,
+            byteOrder: ByteOrder,
+        ): PlatformBuffer {
+            sizes.add(size)
+            return delegate.allocate(size, byteOrder)
+        }
+    }
+
+    /**
+     * An explicit [IoTuning.readBufferSize] must size the JVM receive buffer, not the socket's
+     * SO_RCVBUF — parity with the Linux path's `getEffectiveReadBufferSize`. Before the fix the
+     * NIO/NIO2 read path always sized to SO_RCVBUF and silently ignored the override.
+     */
+    @Test
+    fun readBufferSizeOverrideDrivesReceiveBufferAllocation() {
+        // Small SO_RCVBUF, large override: their size-class roundings can't collide, so the
+        // recorded allocation size unambiguously reflects which one the read path used.
+        val soRcvBuf = 64 * 1024
+        val overrideSize = 500_000
+        val expectedRounded = 512 * 1024 // BufferSizeClass.roundUp(500_000) = next power of two
+
+        val server = ServerSocket(0)
+        val port = server.localPort
+        thread(isDaemon = true, name = "tcp-echo-override") {
+            try {
+                val c = server.accept()
+                val inp = c.getInputStream()
+                val out = c.getOutputStream()
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = inp.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    out.flush()
+                }
+            } catch (_: Exception) {
+                // echo ends when the client disconnects
+            }
+        }
+
+        val recorder = SizeRecordingBufferFactory()
+        val msgSize = 128 * 1024
+        val payload = BufferFactory.Default.allocate(msgSize).apply { writeBytes(ByteArray(msgSize) { 0x41 }) }
+
+        runBlocking {
+            val config =
+                TransportConfig(
+                    bufferFactory = recorder,
+                    io = IoTuning(receiveBuffer = soRcvBuf, readBufferSize = overrideSize),
+                )
+            val socket = ClientSocket.connect(port, "localhost", config)
+            try {
+                repeat(5) {
+                    payload.resetForRead()
+                    socket.write(payload, 10.seconds)
+                    var got = 0
+                    while (got < msgSize) {
+                        val r = socket.read(10.seconds)
+                        assertTrue(r is ReadResult.Data, "unexpected non-data read: $r")
+                        got += r.buffer.remaining()
+                        (r.buffer as PlatformBuffer).freeNativeMemory()
+                    }
+                }
+            } finally {
+                socket.close()
+            }
+        }
+        server.close()
+
+        // Every receive-buffer allocation is sized to the override (rounded), never SO_RCVBUF.
+        assertTrue(recorder.sizes.isNotEmpty(), "sanity: expected at least one receive-buffer allocation")
+        assertEquals(
+            setOf(expectedRounded),
+            recorder.sizes,
+            "receive buffers must be sized by the readBufferSize override, got sizes=${recorder.sizes}",
         )
     }
 }
