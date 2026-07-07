@@ -10,6 +10,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
 import java.security.NoSuchAlgorithmException
 import java.security.cert.X509Certificate
 import javax.net.ssl.SNIHostName
@@ -157,7 +158,7 @@ internal class JvmTlsHandler(
                         return slicePlainText(plainTextReadBuffer)
                     }
                     SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
-                        encryptedReadBuffer.byteBuffer.compact()
+                        encryptedReadBuffer.byteBuffer.compactCompat()
                         rawRead(encryptedReadBuffer, timeout)
                         encryptedReadBuffer.resetForRead()
                         overflowEncryptedReadBuffer = encryptedReadBuffer
@@ -214,7 +215,7 @@ internal class JvmTlsHandler(
                     when (checkNotNull(result.status)) {
                         SSLEngineResult.Status.BUFFER_UNDERFLOW -> {
                             cachedBuffer ?: continue
-                            cachedBuffer.byteBuffer.compact()
+                            cachedBuffer.byteBuffer.compactCompat()
                             rawRead(cachedBuffer, timeout)
                             cachedBuffer.resetForRead()
                         }
@@ -261,4 +262,36 @@ internal class JvmTlsHandler(
 
         override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
     }
+}
+
+/**
+ * In-place compaction equivalent to [java.nio.ByteBuffer.compact], implemented so it never routes
+ * through the platform's `DirectByteBuffer.compact()`.
+ *
+ * The TLS handshake/unwrap buffers come from the caller's BufferFactory. The library default is
+ * `BufferFactory.deterministic()`, which on Android has no `Unsafe.invokeCleaner` and so falls back
+ * to `Unsafe.allocateMemory`, handing back an **array-less** native `DirectByteBuffer` (`hb == null`).
+ * Android's libcore `DirectByteBuffer.compact()` reaches a `System.arraycopy` against that null
+ * heap-backing array and throws `NullPointerException: src == null`. (Plain `allocateDirect` buffers
+ * are array-backed on ART and compact fine — only the deterministic/unsafe path trips; on HotSpot
+ * every direct buffer compacts via native `Unsafe.copyMemory`, so the JVM never sees this.) Because
+ * TLS records routinely span multiple socket reads, the SSLEngine returns BUFFER_UNDERFLOW and we
+ * compact — so the stock call crashes every WSS handshake/read on Android while working on the JVM.
+ *
+ * The move is a single bulk `put(duplicate())`: the duplicate is a view over the unread region
+ * `[position, limit)` and `clear()` repositions the receiver at the front, so `put` copies the
+ * remaining bytes down to `[0, remaining)` via the buffer's native-address path (`memmove` on
+ * direct buffers), never the heap-array `System.arraycopy`. The destination region strictly
+ * precedes the source region, so even a plain forward copy can never clobber an unread byte.
+ */
+internal fun ByteBuffer.compactCompat() {
+    val rem = remaining()
+    if (position() > 0) {
+        val src = duplicate() // shares memory; its [position, limit) is the unread region
+        clear() // position = 0, limit = capacity
+        put(src) // copies rem bytes into [0, rem); advances position to rem
+    } else {
+        position(rem)
+    }
+    limit(capacity())
 }
