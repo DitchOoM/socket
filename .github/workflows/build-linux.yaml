@@ -31,7 +31,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Install both 17 and 21. The build/toolchain runs on 21 (the last entry
       # becomes the default JAVA_HOME) — required to compile the FFM bindings —
@@ -91,7 +91,7 @@ jobs:
           exit 1
 
       - name: Cache Konan
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.konan
           key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
@@ -104,7 +104,7 @@ jobs:
       # though org.gradle.caching=true. Keyed on the build definition (version catalog, build
       # scripts, wrapper); restore-keys fall back to the most recent partial match. (mirrors buffer #232)
       - name: Cache Gradle build outputs
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.gradle/caches
           key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -112,37 +112,37 @@ jobs:
             gradle-linux-
 
       - name: Cache BoringSSL x64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/boringssl/linux-x64
           key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache BoringSSL ARM64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/boringssl/linux-arm64
           key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache OpenSSL x64 (legacy fallback)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/openssl/linux-x64
           key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache OpenSSL ARM64 (legacy fallback)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/openssl/linux-arm64
           key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache liburing x64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/liburing/linux-x64
           key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache liburing ARM64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
@@ -183,13 +183,13 @@ jobs:
       # buildJvmJniShim*), so a single platform dir covers both outputs.
       # Hash quiche_jni.c too so shim edits invalidate the cache.
       - name: Cache quiche Linux x64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
           key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
           key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
@@ -209,14 +209,14 @@ jobs:
       # restore-keys gives a partial-hit on version bumps so cargo incremental
       # recompile picks up from the previous build instead of from zero.
       - name: Cache quiche cargo target/ (all triples)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: socket-quic-quiche/build/quiche
           key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
           restore-keys: quiche-cargo-target-v1-
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -906,7 +906,7 @@ jobs:
       # It now mirrors integration-linux-arm64: checkout for the harness scripts, download
       # the binary linked in `build`, bring the Docker harness up at the YAML level
       # (Gradle's harnessUp never fires for a raw .kexe), run, audit.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download x64 test binary
         uses: actions/download-artifact@v8
@@ -993,7 +993,7 @@ jobs:
       # This job runs raw K/Native .kexe binaries and bypasses Gradle, so the
       # harnessUp/harnessDown Gradle tasks never fire. We bring the harness
       # up/down at the YAML level instead.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download ARM64 test binary
         uses: actions/download-artifact@v8
@@ -1172,7 +1172,7 @@ jobs:
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-linux-fuzz
 
       - name: Run socket-quic-quiche recv-path + soak + teardown suites under glibc malloc check
@@ -1284,7 +1284,7 @@ jobs:
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-linux-fuzz
 
       # Persist the accumulated corpus across runs so coverage compounds instead of restarting
@@ -1294,7 +1294,7 @@ jobs:
       # SAVES a fresh snapshot at job end; restore-keys prefix-matches the most recent prior
       # snapshot to warm-start this run. Each lane keys independently so parallel legs don't clash.
       - name: Restore + persist fuzz corpus (${{ matrix.lane }})
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ matrix.crash-dir }}/corpus
           key: fuzz-corpus-jvm-${{ matrix.lane }}-${{ github.run_id }}
@@ -1392,7 +1392,7 @@ jobs:
             task: ":socket-quic-quiche:quicConnRecvFuzzNative"
             corpus-dir: "socket-quic-quiche/build/fuzz-native/conn-recv-corpus"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-linux-fuzz
         with:
           cargo-fuzz: "true"
@@ -1403,7 +1403,7 @@ jobs:
       # snapshot; restore-keys warm-starts from the latest prior one. Per-lane keys, so the two
       # native legs don't clash.
       - name: Restore + persist fuzz corpus (${{ matrix.lane }})
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ matrix.corpus-dir }}
           key: fuzz-corpus-native-${{ matrix.lane }}-${{ github.run_id }}
@@ -1449,7 +1449,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-linux-fuzz
         with:
           cargo-fuzz: "true"
