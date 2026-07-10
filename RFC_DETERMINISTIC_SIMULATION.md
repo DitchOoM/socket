@@ -1,6 +1,6 @@
 # RFC — Deterministic network simulation, trace replay & the consumer test harness
 
-**Status:** Draft — implementation in progress on `feat/deterministic-sim-harness`.
+**Status:** Implemented (waves W1–W7, one PR). §4's virtual-time envelope and §6's invariants reflect measured behavior, not aspiration.
 **Builds on:** [`RFC_UNIFIED_ESTABLISHMENT.md`](./RFC_UNIFIED_ESTABLISHMENT.md) (Transport/SessionTransport model, typed error vocabulary) and [`RFC_TRANSPORT_FALLBACK.md`](./RFC_TRANSPORT_FALLBACK.md) (NetworkMonitor/networkId, injected-clock precedent). Extends the existing deterministic seams: `StubQuicheApi`/`StubUdpChannel`/`ManualDriverClock` (quiche driver), `ScriptedTransport` + virtual-time racing tests (fallback layer), the `Liveness` seam (#222), and the committed-corpus replay discipline from `socket-http3`.
 
 ## 1. Goal
