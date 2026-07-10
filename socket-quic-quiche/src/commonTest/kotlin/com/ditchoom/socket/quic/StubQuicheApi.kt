@@ -175,12 +175,22 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connFree(conn: QuicheConn) {}
 
+    /**
+     * Sim/trace hook invoked on every [connRecv] with the packet length — lets the W2 simulation
+     * harness stamp inbound packets the driver fed to quiche into its [SimTrace] with a virtual
+     * timestamp. Additive: null (the default) keeps the stub byte-identical for existing tests.
+     */
+    @Volatile var onConnRecv: ((Int) -> Unit)? = null
+
     override fun connRecv(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
-    ) = 0
+    ): Int {
+        onConnRecv?.invoke(bufLen)
+        return 0
+    }
 
     override fun connSend(
         conn: QuicheConn,
@@ -339,8 +349,16 @@ internal class StubQuicheApi : QuicheApi {
     var ackElicitingCount = 0
         private set
 
+    /**
+     * Sim/trace hook invoked on every [connSendAckEliciting] — lets the W2 simulation harness stamp
+     * keepalive PINGs into its [SimTrace] with a virtual timestamp. Additive: null (the default)
+     * keeps the stub byte-identical for existing tests.
+     */
+    @Volatile var onAckEliciting: (() -> Unit)? = null
+
     override fun connSendAckEliciting(conn: QuicheConn): Int {
         ackElicitingCount++
+        onAckEliciting?.invoke()
         return 0
     }
 
