@@ -369,7 +369,25 @@ class QuicheDriver(
                 afterCommand()
             }
         } finally {
-            cleanup()
+            withContext(NonCancellable) {
+                // Readers FIRST: cancel and await every reader loop (primary included) before
+                // cleanup() clears the recv pool. A reader parked in receive() holds a pool
+                // buffer; if it freed that buffer after clear(), the release would re-pool it
+                // into a dead pool (BufferPool has no closed state) and the leaf allocation
+                // would never be freed — a real native leak per connection under the
+                // explicit-free (deterministic/network()) factories QUIC always uses. Found by
+                // the W5 timeline fuzzer (empty-timeline idle close, see SimFuzzSmokeTests).
+                // Awaiting here also stops a self-closed connection's reader from lingering
+                // until the connection scope dies. Bounded: cancellation unblocks receive() on
+                // every UdpChannel (worst case one io_uring submitAndWait tick on Linux).
+                for (entry in paths.values.toList()) {
+                    entry.readerJob?.cancel()
+                }
+                for (entry in paths.values.toList()) {
+                    entry.readerJob?.join()
+                }
+                cleanup()
+            }
         }
     }
 
@@ -629,7 +647,17 @@ class QuicheDriver(
                         continue
                     }
                 if (received > 0) {
-                    commands.send(QuicheCmd.RecvPacket(buf, received, entry.key))
+                    try {
+                        commands.send(QuicheCmd.RecvPacket(buf, received, entry.key))
+                    } catch (e: ClosedSendChannelException) {
+                        // The driver closed between our receive() and this enqueue (an idle-timeout
+                        // or error close racing an inbound datagram). The packet can never be
+                        // processed and cleanup()'s drain never sees it — free it here or the
+                        // buffer leaks at the leaf. Found by the W5 timeline fuzzer
+                        // (datagram-after-close, see ReaderLoopCloseRaceRegressionTests).
+                        buf.freeNativeMemory()
+                        throw e
+                    }
                 } else {
                     // received <= 0 is NOT necessarily terminal here: io_uring's recv returns a negative
                     // errno on the routine 1-second submitAndWait timeout (and -ECANCELED/-EBADF on
