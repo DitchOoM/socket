@@ -88,7 +88,13 @@ The repo already contains most of the engine's parts; audit of the existing test
 
 **Tier A — driver replay (`StubQuicheApi`).** Byte-exact; tests *our* driver/lifecycle/reconnect code. This is the only correct home for field fixtures: encrypted field traffic cannot be re-decrypted by a fresh quiche instance (new keys), so recorded ciphertext replays against the stub, which reproduces the driver-visible behavior exactly.
 
-**Tier B — semantic simulation (real quiche).** Real quiche client ↔ real quiche server over an in-memory pipe with seeded impairment (loss / reorder / duplication / delay) under virtual time. quiche's timeout API is caller-clocked (`quiche_conn_timeout_as_millis` / `on_timeout` — the caller supplies "now"), so the real C library is virtual-time-drivable. Deterministic per seed; exercises real protocol behavior (handshakes, recovery, migration) rather than scripted responses. This is the substrate the fuzzer (§6) explores.
+**Tier B — semantic simulation (real quiche).** Real quiche client ↔ real quiche server over an in-memory pipe with seeded impairment (loss / reorder / duplication / delay).
+
+*Virtual-time reality check (W4 implementation finding):* the original premise that quiche is caller-clocked is **wrong for the C FFI we bind** — `quiche_conn_timeout_as_nanos`/`quiche_conn_on_timeout` take no `now`; quiche stamps packets and computes deadlines against Rust's internal `Instant::now()`. Consequently:
+- **Under virtual time:** pure event cascades work — a full real-quiche handshake completes under `runTest` with zero wall-clock (proven by `lossless_handshake_completes_under_virtual_time`).
+- **Not under virtual time:** anything depending on quiche's internal timers (PTO loss recovery, idle timeout). Those scenarios run on real dispatchers with scaled-down timers, bounded by the wall-clock test runner. The unlock would be a `now`-taking quiche FFI surface (upstream patch); until then, timer-dependent timelines are Tier A territory.
+
+*Determinism per seed (measured):* the impairment decision sequence and scenario outcome are strictly stable (asserted as trace-prefix equality); exact per-side datagram counts drift ±1 (BoringSSL's own RNG shapes TLS key shares → packet coalescing shifts; quiche's real-time delayed-ACK/PTO races arrivals). Tests assert the strong invariant strictly and bound the drift explicitly.
 
 ## 5. Capture — `TraceRecorder`
 
