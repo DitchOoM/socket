@@ -57,7 +57,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.native.OsFamily
 import kotlin.native.Platform
-import kotlin.random.Random
 import kotlin.time.Duration
 
 private const val MAX_CONN_ID_LEN = 20
@@ -119,6 +118,9 @@ internal suspend fun buildAppleQuicConnection(
     quicOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
+    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ): AppleQuicConnection {
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
@@ -198,12 +200,8 @@ internal suspend fun buildAppleQuicConnection(
                     )
                 }
 
-                // SCID
-                val scidBuf = bufferFactory.allocate(MAX_CONN_ID_LEN)
-                for (i in 0 until MAX_CONN_ID_LEN) {
-                    scidBuf.writeByte(Random.nextInt(256).toByte())
-                }
-                scidBuf.resetForRead()
+                // SCID — shared generator (20 random bytes, reset for read), seeded via the tuning.
+                val scidBuf = generateScid(bufferFactory, tuning.random)
                 val scidPtr = scidBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
 
                 val conn =
@@ -267,6 +265,9 @@ internal suspend fun buildAppleQuicConnection(
                         clientMode = true,
                         isServer = false,
                         keepAliveInterval = quicOptions.keepAliveInterval,
+                        clock = tuning.clock,
+                        driverContext = tuning.driverContext,
+                        random = tuning.random,
                         // Peer + primary local sockaddrs (pinned via onCleanup) for the initial path's
                         // recv_info/send_info. No udpChannelFactory: explicit quiche path migration via a
                         // second local socket does not map to NWConnection (NW owns path moves); the
@@ -318,6 +319,7 @@ internal suspend fun buildAppleQuicConnection(
                     // runs but the P-256/validity constraint enforcement is skipped. The H3 loopback
                     // suites pin no hashes, so this is a no-op there; a real Apple parser is a follow-up.
                     parseLeafFields = null,
+                    now = tuning.wallClock(),
                 )
                 quicConn
             }

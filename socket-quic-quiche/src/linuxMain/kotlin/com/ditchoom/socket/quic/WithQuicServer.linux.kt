@@ -67,6 +67,9 @@ internal fun buildLinuxQuicServer(
     @Suppress("UNUSED_PARAMETER") host: String?,
     tlsConfig: QuicTlsConfig,
     quicOptions: QuicOptions,
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
+    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ): QuicServer {
     // Linux bind path defaults to INADDR_ANY; `host` is accepted for API parity
     // with the JVM/Android impl but not yet wired through to inet_pton / bind.
@@ -161,6 +164,7 @@ internal fun buildLinuxQuicServer(
                 // server.close() frees config + drivers; the per-call parent scope is the server's
                 // to cancel last, so the withQuicServer wrapper stays a plain block + close().
                 onClose = { parentScope.cancel() },
+                tuning = tuning,
             )
         bound = true
         return server
@@ -190,6 +194,8 @@ private class LinuxQuicServer(
     // Per-call lifecycle teardown wired by buildLinuxQuicServer (cancel the parent scope). Invoked
     // last by close(); null for any direct-construction test that owns the scope externally.
     private val onClose: (() -> Unit)? = null,
+    // Determinism seams forwarded to every accepted connection's driver (RFC_DETERMINISTIC_SIMULATION.md §3.1).
+    private val tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ) : QuicServer {
     override val port: Int get() = boundPort
 
@@ -513,7 +519,7 @@ private class LinuxQuicServer(
     ): Pair<QuicheDriver, ConnectionIdKey>? {
         val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
-        val serverScid = generateScid(bufferFactory)
+        val serverScid = generateScid(bufferFactory, tuning.random)
         val serverScidAddr = serverScid.nativeMemoryAccess!!.nativeAddress.toLong()
 
         val localAddr = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong()
@@ -586,6 +592,9 @@ private class LinuxQuicServer(
                 clientMode = false,
                 isServer = true,
                 keepAliveInterval = keepAliveInterval,
+                clock = tuning.clock,
+                driverContext = tuning.driverContext,
+                random = tuning.random,
                 onScidIssued = { scid, len ->
                     // Snapshot the CID (scid is freed right after this returns) and hand the
                     // registration to the receive loop, which owns connectionsByDcid.

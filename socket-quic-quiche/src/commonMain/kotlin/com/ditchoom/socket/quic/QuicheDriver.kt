@@ -23,6 +23,7 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.concurrent.Volatile
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
@@ -63,6 +64,20 @@ class QuicheDriver(
      * behaviour; tests inject a manual clock to make the keepalive/idle timing deterministic.
      */
     private val clock: DriverClock = RealDriverClock,
+    /**
+     * Context the driver's control loop and per-path UDP reader loops are launched in. Defaults to
+     * [Dispatchers.Default] — the pre-seam hardwired dispatcher, so production behaviour is
+     * byte-identical. A test passes [kotlin.coroutines.EmptyCoroutineContext] so both loops inherit
+     * the caller's (virtual-time) dispatcher and [clock] wakes run on the kotlinx-coroutines-test
+     * scheduler. See RFC_DETERMINISTIC_SIMULATION.md §3.1.
+     */
+    private val driverContext: CoroutineContext = Dispatchers.Default,
+    /**
+     * Entropy for the stateless-reset tokens minted by [issueSpareCids]. Defaults to
+     * [Random.Default]; the simulation harness injects a seeded instance so every token (and, via
+     * [generateScid]'s matching parameter, every connection ID) is reproducible per seed.
+     */
+    private val random: Random = Random.Default,
     /**
      * Connection-migration wiring (slice 3). All default to "disabled" so server-accepted
      * drivers, unit-test fakes, and the no-migration platforms keep their single-path
@@ -266,7 +281,7 @@ class QuicheDriver(
 
     fun start(scope: CoroutineScope) {
         driverScope = scope
-        driverJob = scope.launch(Dispatchers.Default) { run() }
+        driverJob = scope.launch(driverContext) { run() }
 
         if (clientMode) {
             startReaderLoop(primary)
@@ -275,7 +290,7 @@ class QuicheDriver(
 
     private fun startReaderLoop(entry: PathEntry) {
         val scope = driverScope ?: return
-        entry.readerJob = scope.launch(Dispatchers.Default) { udpReaderLoop(entry) }
+        entry.readerJob = scope.launch(driverContext) { udpReaderLoop(entry) }
     }
 
     /**
@@ -767,9 +782,9 @@ class QuicheDriver(
         spareCidsIssued = true
         var count = 0
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
-            val scid = generateScid(bufferFactory) // 20 random bytes, reset for read
+            val scid = generateScid(bufferFactory, random) // 20 random bytes, reset for read
             val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
-            repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(Random.nextInt(256).toByte()) }
+            repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(random.nextInt(256).toByte()) }
             token.resetForRead()
             val rc =
                 api.connNewScid(

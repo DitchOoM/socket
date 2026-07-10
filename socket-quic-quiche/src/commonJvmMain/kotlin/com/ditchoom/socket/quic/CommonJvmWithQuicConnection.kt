@@ -35,10 +35,11 @@ internal suspend fun <R> commonJvmWithQuicConnection(
     connectionOptions: TransportConfig,
     timeout: Duration,
     api: QuicheApi = loadQuicheApi(),
+    tuning: QuicheDriverTuning = QuicheDriverTuning(),
     block: suspend QuicScope.() -> R,
 ): R =
     withTimeout(timeout) {
-        val connection = buildJvmQuicConnection(hostname, port, quicOptions, connectionOptions, timeout, api)
+        val connection = buildJvmQuicConnection(hostname, port, quicOptions, connectionOptions, timeout, api, tuning)
         try {
             connection.block()
         } finally {
@@ -62,6 +63,9 @@ internal suspend fun buildJvmQuicConnection(
     connectionOptions: TransportConfig,
     timeout: Duration,
     api: QuicheApi,
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
+    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ): JvmQuicConnection {
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
@@ -122,7 +126,7 @@ internal suspend fun buildJvmQuicConnection(
         val serverNameAddr = serverNameBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
         // 4. SCID — bulk random writes (2 longs + 1 int = 20 bytes in 3 ops)
-        val scidBuf = generateScid(bufferFactory)
+        val scidBuf = generateScid(bufferFactory, tuning.random)
         val scidAddr = scidBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
         // 5. Sockaddr structs via buffer factory
@@ -181,6 +185,9 @@ internal suspend fun buildJvmQuicConnection(
                 clientMode = true,
                 isServer = false,
                 keepAliveInterval = quicOptions.keepAliveInterval,
+                clock = tuning.clock,
+                driverContext = tuning.driverContext,
+                random = tuning.random,
                 // Connection-migration wiring (slice 3): the peer + primary local sockaddrs
                 // (kept pinned by onCleanup for the driver's life) and a factory for opening
                 // additional path sockets to the same peer.
@@ -229,6 +236,7 @@ internal suspend fun buildJvmQuicConnection(
             // JVM/Android extract the W3C constraint fields via java.security (Linux wires its BoringSSL
             // parser separately; until then it passes no parser and enforces hash-only).
             parseLeafFields = ::parsePinnedLeafFieldsJvm,
+            now = tuning.wallClock(),
         )
         return quicConnection
     } finally {
