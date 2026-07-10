@@ -44,13 +44,24 @@ internal suspend fun TestScope.runQuicSim(
     fixture: SimFixture,
     keepAliveInterval: Duration? = null,
     clientMode: Boolean = false,
+    bufferFactory: BufferFactory = BufferFactory.deterministic(),
     configureApi: StubQuicheApi.() -> Unit = {},
 ): QuicSimRun {
     val t0 = testScheduler.currentTime
     val trace = SimTrace { (testScheduler.currentTime - t0).milliseconds }
     val api = StubQuicheApi().apply(configureApi)
-    api.onAckEliciting = { trace.record(Observed.KeepAlivePing(trace.now())) }
-    api.onConnRecv = { len -> trace.record(Observed.DatagramFed(trace.now(), len)) }
+    // Chain — don't overwrite — hooks a configureApi installed (the W5 fuzz harness uses them to
+    // model recv→ACK / PING→datagram send pressure); the trace stamp always records first.
+    val configuredAckHook = api.onAckEliciting
+    val configuredRecvHook = api.onConnRecv
+    api.onAckEliciting = {
+        trace.record(Observed.KeepAlivePing(trace.now()))
+        configuredAckHook?.invoke()
+    }
+    api.onConnRecv = { len ->
+        trace.record(Observed.DatagramFed(trace.now(), len))
+        configuredRecvHook?.invoke(len)
+    }
     val udp = TimelineUdpChannel(trace)
     val monitor = SimNetworkMonitor(initial = NetworkAvailability.AVAILABLE)
     val liveness = SimLiveness(trace)
@@ -59,7 +70,7 @@ internal suspend fun TestScope.runQuicSim(
         QuicheDriver(
             api = api,
             conn = QuicheConn(1L),
-            bufferFactory = BufferFactory.deterministic(),
+            bufferFactory = bufferFactory,
             recvInfo = QuicheRecvInfo(1L),
             sendInfo = QuicheSendInfo(1L),
             udpChannel = udp,
