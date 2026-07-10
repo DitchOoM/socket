@@ -18,7 +18,7 @@ package com.ditchoom.socket.testsuite.harness
  *     "tls-wrong-host":  {"host":"127.0.0.1","port":14473},
  *     "tls-untrusted":   {"host":"127.0.0.1","port":14483},
  *     "tls13-only":      {"host":"127.0.0.1","port":14493},
- *     "toxiproxy":       {"api":8474,"echo":15000,"http":15080,"tls":15443},
+ *     "toxiproxy":       {"api":8474,"echo":15900,"http":15080,"tls":15443},
  *     "rst":             {"host":"127.0.0.1","port":14998},
  *     "blackhole":       {"host":"172.30.0.99","port":14999},
  *     "quic-echo":       {"host":"127.0.0.1","port":14433}

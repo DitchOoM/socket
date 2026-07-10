@@ -67,8 +67,11 @@ object HarnessController {
             append(""""tls-untrusted":${ep("TLS_UNTRUSTED_PORT", 14483)},""")
             append(""""tls13-only":${ep("TLS_TLS13_PORT", 14493)},""")
             append(
+                // `echo` is the SUITE port (15900), not the root module's 15000: the
+                // manifest feeds NetworkHarness's `suite-echo` proxy, which must stay
+                // isolated from the root tests' proxy table (parallel test tasks).
                 """"toxiproxy":{"api":${env("TOXIPROXY_API_PORT", "8474")},""" +
-                    """"echo":${env("TOXIPROXY_ECHO_PORT", "15000")},""" +
+                    """"echo":${env("TOXIPROXY_SUITE_ECHO_PORT", "15900")},""" +
                     """"http":${env("TOXIPROXY_HTTP_PORT", "15080")},""" +
                     """"tls":${env("TOXIPROXY_TLS_PORT", "15443")}},""",
             )

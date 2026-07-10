@@ -28,8 +28,9 @@ import kotlin.time.measureTime
  *    fast-forwarding) because these tests do real network I/O;
  *  - deadlines are [scaled] by `QUIC_TEST_TIME_SCALE`, assertions are not.
  *
- * Abstract so each platform's test source set opts in explicitly (JVM subclass in
- * `jvmTest`); nothing runs on targets that haven't subscribed.
+ * Published in `commonMain` (like the other suites in this module) so consumers can
+ * subclass it from their own `commonTest` to validate their harness deployment.
+ * In-repo it is materialized on every target by `NetworkHarnessTests` in `commonTest`.
  */
 abstract class NetworkHarnessTestSuite {
     private suspend fun echoRoundTrip(

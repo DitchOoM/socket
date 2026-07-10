@@ -177,6 +177,9 @@ services:
       - "127.0.0.1:15000:15000"   # proxy → echo:14000
       - "127.0.0.1:15080:15080"   # proxy → http:80
       - "127.0.0.1:15443:15443"   # proxy → tls:443 (valid-cert vhost)
+      - "127.0.0.1:15900:15900"   # suite-echo proxy → echo:14000 (:socket-testsuite's
+                                  # withNetworkHarness — isolated from the root tests'
+                                  # proxies above, which run in parallel test tasks)
     healthcheck:
       # Distroless image — no shell, so use the exec form of CMD with
       # toxiproxy-cli (which calls the local 8474 API and exits non-zero

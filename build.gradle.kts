@@ -1018,7 +1018,11 @@ val harnessUp by tasks.registering {
     // test-harness/controller/Dockerfile and RFC_DETERMINISTIC_SIMULATION §7).
     dependsOn(project(":socket-testsuite").tasks.named("controllerJar"))
     doLast {
-        val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait"))
+        // --build: `up` alone never rebuilds an existing image, so a changed
+        // controllerJar/quicEchoJar would silently keep serving a stale build on
+        // dev machines (CI runners start imageless, so they build regardless).
+        // The compose build cache makes this a no-op when the inputs are unchanged.
+        val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait", "--build"))
         if (rc != 0) {
             logger.lifecycle(
                 "harness: `docker compose up` returned $rc — tests will skip harness scenarios " +
@@ -1061,6 +1065,21 @@ listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->
     // exercise the controller + toxiproxy; give them the same lifecycle. With
     // the harness unavailable they skip cleanly via withNetworkHarness's
     // skip-on-unreachable, so this stays green everywhere.
+    project(":socket-testsuite").tasks.matching { it.name == name }.configureEach {
+        dependsOn(harnessUp)
+        finalizedBy(harnessDown)
+    }
+}
+
+// :socket-testsuite ONLY: also give the macOS-native lanes the harness window, so
+// NetworkHarnessTests runs its live scenarios on developer Macs (Docker Desktop)
+// instead of racing whichever other task holds the stack. Deliberately NOT extended
+// to the root/:socket-quic-quiche macos tasks: their TLS harness tests require the
+// harness CA in the macOS keychain (never injected on dev machines — only Linux CI
+// injects it), so a guaranteed-live harness would turn their skip into a guaranteed
+// -9808 trust failure. withNetworkHarness scenarios have no such precondition.
+// On CI macOS runners docker is absent and harnessUp is a documented no-op.
+listOf("macosArm64Test", "macosX64Test").forEach { name ->
     project(":socket-testsuite").tasks.matching { it.name == name }.configureEach {
         dependsOn(harnessUp)
         finalizedBy(harnessDown)

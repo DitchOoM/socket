@@ -12,7 +12,7 @@ See `../TESTING_STRATEGY.md` for the full design. This directory is
 | `echo`  | `14000` | socat-backed TCP echo. Used by raw-socket tests and as the cheapest availability probe. |
 | `http`  | `14080` | nginx. Routes: `/` (HTML), `/get` (plain-text `ok`), `/json`, `/large` (>1 KB). CORS-permissive. |
 | `tls`   | `14443`–`14493` | nginx cert matrix — one vhost per scenario (valid / self-signed / expired / wrong-host / untrusted-root / TLS 1.3-only). |
-| `toxiproxy` | `8474` (API), `15000/15080/15443` (proxies) | L4 fault injection in front of echo/http/tls. |
+| `toxiproxy` | `8474` (API), `15000/15080/15443` (root-test proxies), `15900` (`suite-echo`, withNetworkHarness) | L4 fault injection in front of echo/http/tls. The testsuite's `suite-echo` proxy is name- and port-isolated from the root module's proxies because their test tasks run in parallel. |
 | `netem-blackhole` | `172.30.0.99:14999` (bridge IP, not published) | Accepts SYNs, drops all egress — deterministic connect-timeout. |
 | `rst`   | `14998` | Deterministic peer-close sidecar (SO_LINGER=0 + close after 1 byte). |
 | `quic-echo` | `14433/udp` | JVM QUIC echo server (quiche). |
@@ -56,7 +56,7 @@ compose `env_file`) as a JSON manifest, so consumers never read that file:
     "tls-wrong-host":  {"host":"127.0.0.1","port":14473},
     "tls-untrusted":   {"host":"127.0.0.1","port":14483},
     "tls13-only":      {"host":"127.0.0.1","port":14493},
-    "toxiproxy":       {"api":8474,"echo":15000,"http":15080,"tls":15443},
+    "toxiproxy":       {"api":8474,"echo":15900,"http":15080,"tls":15443},
     "rst":             {"host":"127.0.0.1","port":14998},
     "blackhole":       {"host":"172.30.0.99","port":14999},
     "quic-echo":       {"host":"127.0.0.1","port":14433}

@@ -15,9 +15,9 @@ plugins {
 // PUBLISHED to Maven Central since W7 (RFC_DETERMINISTIC_SIMULATION §8) so consumers can drive the
 // container harness via `withNetworkHarness` from their own `commonTest` — consumers depend on it as
 // `testImplementation` only (test-support library; never a main-code dependency). Two families today:
-//   - QUIC backend conformance (the `Quic*TestSuite`s): extended by the quiche backend
-//     (:socket-quic-quiche, jvm/android/linux) and the Network.framework backend (:socket-quic-nw,
-//     apple). These drive only the public default-engine entrypoints (withQuicConnection/Server).
+//   - QUIC backend conformance (the `Quic*TestSuite`s): extended by :socket-quic-quiche's test
+//     source sets on every platform (quiche is the sole QUIC backend — jvm/android/linux/apple).
+//     These drive only the public default-engine entrypoints (withQuicConnection/Server).
 //   - WebTransport conformance (`WebTransportTestSuite`): extended by :socket-webtransport's native
 //     test source sets. Drives the PUBLIC h3 server (withHttp3Server) + the PUBLIC neutral client
 //     (webTransportSupport()) — never any socket-http3 codec internals, so socket-http3's white-box

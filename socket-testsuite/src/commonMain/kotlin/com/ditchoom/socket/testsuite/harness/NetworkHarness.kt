@@ -168,8 +168,14 @@ class NetworkHarnessScope internal constructor(
     }
 
     private companion object {
-        /** Proxy name shared with the root module's Toxiproxy helper — same proxy table. */
-        const val ECHO_PROXY = "echo"
+        /**
+         * Deliberately NOT the root module's `"echo"` proxy: the root tests and this
+         * suite run in parallel Gradle test tasks against one toxiproxy, and toxics /
+         * enable-disable on a shared proxy would bleed between them. Own name + own
+         * listen port (`manifest.toxiproxy.echo`, pinned by `TOXIPROXY_SUITE_ECHO_PORT`)
+         * → fully isolated proxy state.
+         */
+        const val ECHO_PROXY = "suite-echo"
 
         /** Compose-internal address of the echo upstream (toxiproxy resolves it in-network). */
         const val ECHO_UPSTREAM = "echo:14000"
