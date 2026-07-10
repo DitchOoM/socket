@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,18 @@ class QuicheDriver(
      * [generateScid]'s matching parameter, every connection ID) is reproducible per seed.
      */
     private val random: Random = Random.Default,
+    /**
+     * Opt-in trace capture (RFC_DETERMINISTIC_SIMULATION.md §5, W3). When non-null the driver:
+     *  - wraps every path's [UdpChannel] in the recorder's decorator (DGRAM_OUT/DGRAM_IN + typed
+     *    IO ERRORs at the single platform-neutral choke point),
+     *  - mirrors [state]/[pathState] transitions into the trace (STATE/PATH_STATE, typed close
+     *    reasons as ERROR),
+     *  - polls quiche path-stats on its existing timer wake and once at teardown (STATS) — no new
+     *    timers, zero cost when null.
+     * Timestamps come from the recorder's own clock, which callers must construct from the same
+     * [clock] seam (one clock per RFC §5; `QuicheDriverTuning` threads both together).
+     */
+    private val recorder: QuicTraceRecorder? = null,
     /**
      * Connection-migration wiring (slice 3). All default to "disabled" so server-accepted
      * drivers, unit-test fakes, and the no-migration platforms keep their single-path
@@ -235,10 +248,18 @@ class QuicheDriver(
         var readerJob: Job? = null
     }
 
+    /** Wrap [channel] in the recording decorator when tracing is on; identity otherwise. */
+    private fun tapChannel(
+        channel: UdpChannel,
+        key: PathKey,
+    ): UdpChannel = recorder?.wrap(channel, key.takeIf { it.family != 0 }) ?: channel
+
+    private val primaryKey = if (primaryLocalAddr != 0L) api.decodePathKey(primaryLocalAddr) else PathKey(0, 0, 0L, 0L)
+
     private val primary =
         PathEntry(
-            key = if (primaryLocalAddr != 0L) api.decodePathKey(primaryLocalAddr) else PathKey(0, 0, 0L, 0L),
-            channel = udpChannel,
+            key = primaryKey,
+            channel = tapChannel(udpChannel, primaryKey),
             recvInfo = recvInfo,
             localAddr = primaryLocalAddr,
             localLen = primaryLocalLen,
@@ -281,6 +302,20 @@ class QuicheDriver(
 
     fun start(scope: CoroutineScope) {
         driverScope = scope
+        // Trace capture (RFC §5.1 item 4): mirror the lifecycle StateFlows into the trace. The
+        // collectors live on the same context as the driver loop, so under a virtual-time test
+        // dispatcher they interleave deterministically; they end when the caller's scope does.
+        recorder?.let { r ->
+            scope.launch(driverContext) {
+                state.collect { s ->
+                    r.connectionState(s)
+                    if (s is QuicConnectionState.Closed) s.error?.let { r.closeError(it) }
+                }
+            }
+            scope.launch(driverContext) {
+                pathState.collect { r.pathState(it) }
+            }
+        }
         driverJob = scope.launch(driverContext) { run() }
 
         if (clientMode) {
@@ -366,6 +401,11 @@ class QuicheDriver(
                     }
                     else -> api.connOnTimeout(conn)
                 }
+                // Trace capture: a timer wake is the periodic-stats sampling point (RFC §5.1 item
+                // 5) — the driver already woke, so this adds no timer and costs nothing when off.
+                if (cmd == null) {
+                    recorder?.let { r -> api.connPathStats(conn, 0L)?.let { r.stats(it) } }
+                }
                 afterCommand()
             }
         } finally {
@@ -437,6 +477,10 @@ class QuicheDriver(
                 } catch (t: Throwable) {
                     cmd.result.completeExceptionally(t)
                 }
+            }
+
+            is QuicheCmd.Stats -> {
+                cmd.result.complete(QuicStatsSnapshot(api.connStats(conn), api.connPathStats(conn, 0L)))
             }
 
             is QuicheCmd.Close -> {
@@ -679,7 +723,7 @@ class QuicheDriver(
         val entry =
             PathEntry(
                 key = key,
-                channel = newPath.channel,
+                channel = tapChannel(newPath.channel, key),
                 recvInfo = pathRecvInfo,
                 localAddr = newPath.localSockAddrAddress,
                 localLen = newPath.localSockAddrLength,
@@ -827,6 +871,10 @@ class QuicheDriver(
         // them to ConnectionClosed / QuicCloseException (see DriverDatagramAdapter).
         dgramSignal.close()
         dgramWritableSignal.close()
+        // Trace capture: one final stats snapshot while the conn handle is still alive, so every
+        // recorded session ends with the terminal loss/RTT/byte counters (STATS) even if no timer
+        // wake happened (e.g. a pure event-cascade virtual-time run).
+        recorder?.let { r -> api.connPathStats(conn, 0L)?.let { r.stats(it) } }
         api.connFree(conn)
         // Tear down any non-primary migration paths: cancel reader, close socket, free
         // recv_info before its sockaddr. Iterate a copy — teardown logic mutates `paths`.
@@ -887,10 +935,26 @@ class QuicheDriver(
             // Connection gone before the cert could be read — report "no certificate" (0); the verifier
             // turns that into a handshake failure, which is the right outcome for a torn-down connection.
             is QuicheCmd.PeerCert -> cmd.result.complete(0)
+            // Connection gone — no quiche handles to read; an all-null snapshot is the typed "no stats".
+            is QuicheCmd.Stats -> cmd.result.complete(QuicStatsSnapshot(null, null))
             is QuicheCmd.Close -> cmd.result.complete(Unit)
             is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Failed("connection closed"))
         }
     }
+
+    /**
+     * Read a [QuicStatsSnapshot] on the driver loop (quiche is single-threaded — never off-loop).
+     * Members are `null` on backends without the stats FFI bound, and the whole snapshot is
+     * all-null once the connection is torn down. Suspends until the driver processes the command.
+     */
+    suspend fun stats(): QuicStatsSnapshot =
+        try {
+            val deferred = CompletableDeferred<QuicStatsSnapshot>()
+            commands.send(QuicheCmd.Stats(deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            QuicStatsSnapshot(null, null)
+        }
 
     suspend fun destroy() {
         commands.close()

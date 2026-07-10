@@ -280,6 +280,71 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnError)(
     return JNI_TRUE;
 }
 
+/*
+ * Stats bindings (RFC_DETERMINISTIC_SIMULATION.md §5.1 item 5), same out-array pattern as
+ * nConnError. Slot layouts are a contract with JniQuicheApi.connStats/connPathStats — keep both
+ * sides in sync.
+ *
+ * nConnStats slots (13): recv, sent, lost, spurious_lost, retrans, sent_bytes, recv_bytes,
+ * acked_bytes, lost_bytes, stream_retrans_bytes, dgram_recv, dgram_sent, paths_count.
+ */
+JNIEXPORT void JNICALL JNI_FN(nConnStats)(
+    JNIEnv *env, jclass cls, jlong conn, jlongArray out) {
+    quiche_stats stats;
+    memset(&stats, 0, sizeof(stats));
+    quiche_conn_stats((const quiche_conn *)(uintptr_t)conn, &stats);
+    jlong vals[13];
+    vals[0]  = (jlong)stats.recv;
+    vals[1]  = (jlong)stats.sent;
+    vals[2]  = (jlong)stats.lost;
+    vals[3]  = (jlong)stats.spurious_lost;
+    vals[4]  = (jlong)stats.retrans;
+    vals[5]  = (jlong)stats.sent_bytes;
+    vals[6]  = (jlong)stats.recv_bytes;
+    vals[7]  = (jlong)stats.acked_bytes;
+    vals[8]  = (jlong)stats.lost_bytes;
+    vals[9]  = (jlong)stats.stream_retrans_bytes;
+    vals[10] = (jlong)stats.dgram_recv;
+    vals[11] = (jlong)stats.dgram_sent;
+    vals[12] = (jlong)stats.paths_count;
+    (*env)->SetLongArrayRegion(env, out, 0, 13, vals);
+}
+
+/*
+ * nConnPathStats slots (18): validation_state, active(0/1), recv, sent, lost, retrans,
+ * total_pto_count, rtt, min_rtt, max_rtt, rttvar, cwnd, sent_bytes, recv_bytes, lost_bytes,
+ * stream_retrans_bytes, pmtu, delivery_rate. Returns 0 on success or the negative quiche error
+ * (QUICHE_ERR_DONE when no path exists at path_idx) with the array untouched.
+ */
+JNIEXPORT jint JNICALL JNI_FN(nConnPathStats)(
+    JNIEnv *env, jclass cls, jlong conn, jlong path_idx, jlongArray out) {
+    quiche_path_stats stats;
+    memset(&stats, 0, sizeof(stats));
+    int rc = quiche_conn_path_stats((const quiche_conn *)(uintptr_t)conn, (size_t)path_idx, &stats);
+    if (rc < 0) return (jint)rc;
+    jlong vals[18];
+    vals[0]  = (jlong)stats.validation_state;
+    vals[1]  = (jlong)(stats.active ? 1 : 0);
+    vals[2]  = (jlong)stats.recv;
+    vals[3]  = (jlong)stats.sent;
+    vals[4]  = (jlong)stats.lost;
+    vals[5]  = (jlong)stats.retrans;
+    vals[6]  = (jlong)stats.total_pto_count;
+    vals[7]  = (jlong)stats.rtt;
+    vals[8]  = (jlong)stats.min_rtt;
+    vals[9]  = (jlong)stats.max_rtt;
+    vals[10] = (jlong)stats.rttvar;
+    vals[11] = (jlong)stats.cwnd;
+    vals[12] = (jlong)stats.sent_bytes;
+    vals[13] = (jlong)stats.recv_bytes;
+    vals[14] = (jlong)stats.lost_bytes;
+    vals[15] = (jlong)stats.stream_retrans_bytes;
+    vals[16] = (jlong)stats.pmtu;
+    vals[17] = (jlong)stats.delivery_rate;
+    (*env)->SetLongArrayRegion(env, out, 0, 18, vals);
+    return 0;
+}
+
 /* --- Unreliable datagrams (RFC 9221) --- */
 
 JNIEXPORT void JNICALL JNI_FN(nConfigEnableDgram)(

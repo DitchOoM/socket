@@ -95,6 +95,9 @@ internal suspend fun <R> withSemanticSim(
     impairment: ImpairmentConfig,
     quicOptions: QuicOptions = semanticSimOptions(),
     establishTimeout: Duration = 10.seconds,
+    // W3 trace tap: attached to the CLIENT driver (channel decorator + state mirror + stats poll),
+    // mirroring how a consumer records its client-side connection in the field (RFC §5).
+    clientRecorder: com.ditchoom.socket.quic.trace.QuicTraceRecorder? = null,
     block: suspend SemanticSimScope.() -> R,
 ): R {
     val api = loadQuicheApi()
@@ -209,6 +212,7 @@ internal suspend fun <R> withSemanticSim(
                 clock = RealDriverClock,
                 driverContext = EmptyCoroutineContext,
                 random = clientRandom,
+                recorder = clientRecorder,
                 onCleanup = {
                     clientPeerSock.free()
                     clientLocalSock.free()

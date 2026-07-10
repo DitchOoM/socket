@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlin.coroutines.CoroutineContext
 import kotlin.random.Random
@@ -28,10 +29,16 @@ import kotlin.time.Instant
  *  - [wallClock] — "now" for the W3C `serverCertificateHashes` validity-window check
  *    ([verifyServerCertificateHashes]/[checkServerCertificatePinConstraints]). Default
  *    `Clock.System.now()`; a fixture replay pins it to the recorded capture time.
+ *  - [recorder] — the W3 opt-in trace tap (RFC §5). Default `null` (zero cost). When set, every
+ *    [QuicheDriver] built from this tuning wraps its `UdpChannel`s in the recording decorator,
+ *    mirrors state/pathState/close-error transitions into the trace, and polls path-stats on its
+ *    timer wake. Construct the recorder with THIS tuning's [clock] so all timestamps share one
+ *    time source (RFC §5 "one clock").
  */
 internal class QuicheDriverTuning(
     val driverContext: CoroutineContext = Dispatchers.Default,
     val clock: DriverClock = RealDriverClock,
     val random: Random = Random.Default,
     val wallClock: () -> Instant = { Clock.System.now() },
+    val recorder: QuicTraceRecorder? = null,
 )

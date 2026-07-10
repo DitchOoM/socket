@@ -109,6 +109,16 @@ sealed interface QuicheCmd {
         val result: CompletableDeferred<Int>,
     ) : QuicheCmd
 
+    /**
+     * Read a [QuicStatsSnapshot] (conn-level + active-path quiche stats) on the driver loop —
+     * the only place quiche may be touched. [result] carries `null` members on backends that have
+     * not bound the stats FFI, and completes with an all-null snapshot if the connection is
+     * already torn down (failCommand). Used by [QuicheDriver.stats].
+     */
+    class Stats(
+        val result: CompletableDeferred<QuicStatsSnapshot>,
+    ) : QuicheCmd
+
     /** Gracefully close the connection. */
     class Close(
         val error: QuicError,

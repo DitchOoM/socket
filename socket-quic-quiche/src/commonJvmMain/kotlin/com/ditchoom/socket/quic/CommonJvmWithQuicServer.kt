@@ -628,6 +628,7 @@ internal class JvmQuicServer(
                 clock = tuning.clock,
                 driverContext = tuning.driverContext,
                 random = tuning.random,
+                recorder = tuning.recorder,
                 onCleanup = {
                     peerSockAddr.free()
                     localSockAddr.free()

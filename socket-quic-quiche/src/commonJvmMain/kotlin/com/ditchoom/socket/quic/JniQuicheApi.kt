@@ -301,6 +301,56 @@ object JniQuicheApi : QuicheApi {
         return if (out[0] != 0L) QuicError.ApplicationError(code) else QuicError.fromTransportCode(code)
     }
 
+    override fun connStats(conn: QuicheConn): QuicConnStats? {
+        // 13-slot layout contract with quiche_jni.c nConnStats — see the shim comment there.
+        val out = LongArray(13)
+        nConnStats(conn.handle, out)
+        return QuicConnStats(
+            recv = out[0],
+            sent = out[1],
+            lost = out[2],
+            spuriousLost = out[3],
+            retrans = out[4],
+            sentBytes = out[5],
+            recvBytes = out[6],
+            ackedBytes = out[7],
+            lostBytes = out[8],
+            streamRetransBytes = out[9],
+            dgramRecv = out[10],
+            dgramSent = out[11],
+            pathsCount = out[12],
+        )
+    }
+
+    override fun connPathStats(
+        conn: QuicheConn,
+        pathIdx: Long,
+    ): QuicPathStats? {
+        // 18-slot layout contract with quiche_jni.c nConnPathStats — see the shim comment there.
+        val out = LongArray(18)
+        if (nConnPathStats(conn.handle, pathIdx, out) < 0) return null
+        return QuicPathStats(
+            validationState = out[0],
+            active = out[1] != 0L,
+            recv = out[2],
+            sent = out[3],
+            lost = out[4],
+            retrans = out[5],
+            totalPtoCount = out[6],
+            rtt = out[7].nanoseconds,
+            minRtt = out[8].nanoseconds,
+            maxRtt = out[9].nanoseconds,
+            rttvar = out[10].nanoseconds,
+            cwnd = out[11],
+            sentBytes = out[12],
+            recvBytes = out[13],
+            lostBytes = out[14],
+            streamRetransBytes = out[15],
+            pmtu = out[16],
+            deliveryRate = out[17],
+        )
+    }
+
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = nConnTimeoutAsNanos(conn.handle)
         // JNI casts uint64_t to jlong: UINT64_MAX becomes -1L (or any negative)
@@ -695,6 +745,21 @@ object JniQuicheApi : QuicheApi {
         peer: Boolean,
         out: LongArray,
     ): Boolean
+
+    // Not @FastNative: writes the result through a JNI array region (SetLongArrayRegion).
+    @JvmStatic
+    private external fun nConnStats(
+        conn: Long,
+        out: LongArray,
+    )
+
+    // Not @FastNative: writes the result through a JNI array region (SetLongArrayRegion).
+    @JvmStatic
+    private external fun nConnPathStats(
+        conn: Long,
+        pathIdx: Long,
+        out: LongArray,
+    ): Int
 
     @JvmStatic
     private external fun nConfigEnableDgram(

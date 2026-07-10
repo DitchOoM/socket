@@ -190,6 +190,14 @@ class FfmQuicheApi private constructor(
         downcall("quiche_conn_peer_cert", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
     }
 
+    private val hConnStats by lazy {
+        // void quiche_conn_stats(const quiche_conn *conn, quiche_stats *out)
+        downcall("quiche_conn_stats", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS))
+    }
+    private val hConnPathStats by lazy {
+        // int quiche_conn_path_stats(const quiche_conn *conn, size_t idx, quiche_path_stats *out)
+        downcall("quiche_conn_path_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS))
+    }
     private val hConnPeerError by lazy {
         // bool quiche_conn_peer_error(conn, bool *is_app, uint64 *code, const uint8 **reason, size_t *reason_len)
         downcall("quiche_conn_peer_error", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
@@ -528,6 +536,76 @@ class FfmQuicheApi private constructor(
                 MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
             }
             len
+        }
+
+    // quiche_stats layout (64-bit; size_t == uint64_t == 8 bytes, so it is 25 consecutive 8-byte
+    // fields then a trailing bool — same hand-offset discipline as the send_info constants below):
+    //   [0]   recv                [8]   sent                [16]  lost
+    //   [24]  spurious_lost       [32]  retrans             [40]  sent_bytes
+    //   [48]  recv_bytes          [56]  acked_bytes         [64]  lost_bytes
+    //   [72]  stream_retrans_bytes[80]  dgram_recv          [88]  dgram_sent
+    //   [96]  paths_count         [104..192] reset/stopped/blocked counters (unbound — see
+    //   QuicConnStats KDoc)      [200] tx_buffered_inconsistent (bool) → total 208
+    override fun connStats(conn: QuicheConn): QuicConnStats? =
+        Arena.ofConfined().use { arena ->
+            val out = arena.allocate(CONN_STATS_SIZE, 8)
+            hConnStats.invokeExact(seg(conn.handle), out)
+            QuicConnStats(
+                recv = out.get(JAVA_LONG, 0),
+                sent = out.get(JAVA_LONG, 8),
+                lost = out.get(JAVA_LONG, 16),
+                spuriousLost = out.get(JAVA_LONG, 24),
+                retrans = out.get(JAVA_LONG, 32),
+                sentBytes = out.get(JAVA_LONG, 40),
+                recvBytes = out.get(JAVA_LONG, 48),
+                ackedBytes = out.get(JAVA_LONG, 56),
+                lostBytes = out.get(JAVA_LONG, 64),
+                streamRetransBytes = out.get(JAVA_LONG, 72),
+                dgramRecv = out.get(JAVA_LONG, 80),
+                dgramSent = out.get(JAVA_LONG, 88),
+                pathsCount = out.get(JAVA_LONG, 96),
+            )
+        }
+
+    // quiche_path_stats layout (64-bit; sockaddr_storage is 128 bytes/8-aligned — exactly the
+    // quiche_send_info layout discipline: from@0, from_len@128, pad to 8):
+    //   [0]   local_addr (128)    [128] local_addr_len (4) + pad
+    //   [136] peer_addr (128)     [264] peer_addr_len (4) + pad
+    //   [272] validation_state    [280] active (bool) + pad
+    //   [288] recv   [296] sent   [304] lost   [312] retrans   [320] total_pto_count
+    //   [328] dgram_recv (unbound) [336] dgram_sent (unbound)
+    //   [344] rtt    [352] min_rtt [360] max_rtt [368] rttvar
+    //   [376] cwnd   [384] sent_bytes [392] recv_bytes [400] lost_bytes
+    //   [408] stream_retrans_bytes [416] pmtu [424] delivery_rate
+    //   [432] max_bandwidth (unbound) [440] startup_exit_cwnd (unbound) → total 448
+    override fun connPathStats(
+        conn: QuicheConn,
+        pathIdx: Long,
+    ): QuicPathStats? =
+        Arena.ofConfined().use { arena ->
+            val out = arena.allocate(PATH_STATS_SIZE, 8)
+            val rc = hConnPathStats.invokeExact(seg(conn.handle), pathIdx, out) as Int
+            if (rc < 0) return@use null
+            QuicPathStats(
+                validationState = out.get(JAVA_LONG, 272),
+                active = out.get(JAVA_BOOLEAN, 280),
+                recv = out.get(JAVA_LONG, 288),
+                sent = out.get(JAVA_LONG, 296),
+                lost = out.get(JAVA_LONG, 304),
+                retrans = out.get(JAVA_LONG, 312),
+                totalPtoCount = out.get(JAVA_LONG, 320),
+                rtt = out.get(JAVA_LONG, 344).nanoseconds,
+                minRtt = out.get(JAVA_LONG, 352).nanoseconds,
+                maxRtt = out.get(JAVA_LONG, 360).nanoseconds,
+                rttvar = out.get(JAVA_LONG, 368).nanoseconds,
+                cwnd = out.get(JAVA_LONG, 376),
+                sentBytes = out.get(JAVA_LONG, 384),
+                recvBytes = out.get(JAVA_LONG, 392),
+                lostBytes = out.get(JAVA_LONG, 400),
+                streamRetransBytes = out.get(JAVA_LONG, 408),
+                pmtu = out.get(JAVA_LONG, 416),
+                deliveryRate = out.get(JAVA_LONG, 424),
+            )
         }
 
     override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(hConnPeerError, conn)
@@ -1038,6 +1116,8 @@ class FfmQuicheApi private constructor(
             }
 
         private const val QUICHE_ERR_DONE = -1L
+        private const val CONN_STATS_SIZE = 208L // quiche_stats: 25×8-byte fields + trailing bool, 8-aligned
+        private const val PATH_STATS_SIZE = 448L // quiche_path_stats: 2×sockaddr_storage blocks + 22×8-byte fields
         private const val RECV_INFO_SIZE = 32
         private const val SEND_INFO_SIZE = 288
         private const val SEND_INFO_TO_OFFSET = 136 // after sockaddr_storage(128) + socklen_t(4) + pad(4)
