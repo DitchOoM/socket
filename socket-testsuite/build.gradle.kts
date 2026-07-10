@@ -112,3 +112,52 @@ android {
     }
     namespace = "com.ditchoom.socket.quic.testsuite"
 }
+
+// ─── controllerJar ────────────────────────────────────────────────────
+// Runnable fat jar of the W6 harness control-plane controller (jvmMain
+// `HarnessController` — RFC_DETERMINISTIC_SIMULATION §7), modeled on
+// :socket-quic-quiche's quicEchoJar. Output:
+// test-harness/controller/harness-controller.jar, where the controller
+// service's Dockerfile COPYs it. Wired as a dependsOn of the root
+// `harnessUp` so `docker compose up` always sees a jar that matches the
+// current source.
+//
+// Why a fat jar and not a thin jar + classpath script: Docker runs a single
+// `java -jar` with zero host knowledge (same rationale as quicEchoJar).
+tasks.register<Jar>("controllerJar") {
+    group = "build"
+    description =
+        "Build a runnable fat jar of the harness controller for test-harness/controller. " +
+        "Output: test-harness/controller/harness-controller.jar"
+
+    val mainCompilation = kotlin.jvm().compilations.getByName("main")
+    dependsOn(mainCompilation.compileTaskProvider)
+    // runtimeDependencyFiles carries the buildable project-dependency jars;
+    // depending on the FileCollection itself makes Gradle build them first.
+    dependsOn(mainCompilation.runtimeDependencyFiles)
+
+    archiveBaseName.set("harness-controller")
+    archiveVersion.set("")
+    destinationDirectory.set(rootProject.projectDir.resolve("test-harness/controller"))
+
+    manifest {
+        attributes(
+            "Main-Class" to "com.ditchoom.socket.testsuite.controller.HarnessControllerKt",
+            // Dep jars (e.g. socket-quic-quiche) are multi-release; preserve that.
+            "Multi-Release" to "true",
+        )
+    }
+
+    from(mainCompilation.output.allOutputs)
+    // Unpack every runtime dep jar so the result is `java -jar`-able. Duplicate
+    // META-INF entries would break the jar; EXCLUDE keeps the first occurrence.
+    from({
+        mainCompilation.runtimeDependencyFiles.files
+            .filter { it.isFile && it.name.endsWith(".jar") }
+            .map { zipTree(it) }
+    })
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // Drop signing metadata from upstream jars — fat-jar invalidates signatures.
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/INDEX.LIST", "module-info.class")
+}
