@@ -32,7 +32,7 @@ Find the latest version on [Maven Central](https://central.sonatype.com/search?q
 |----------|---------|-------|
 | JVM / Android | [quiche](https://github.com/cloudflare/quiche) | FFM on JDK 21+, JNI on JDK ≤20 |
 | Linux (x64/arm64) | quiche cinterop | Static `libquiche.a`, io_uring UDP |
-| Apple (iOS/macOS/…) | [Network.framework](https://developer.apple.com/documentation/network) | Native `NWConnection` QUIC |
+| Apple (iOS/macOS/…) | quiche cinterop | Client UDP over `NWConnection` (path-migration aware), server on a dual-stack POSIX UDP socket |
 | JS / wasmJs | — | Throws `UnsupportedOperationException` (no raw UDP) |
 
 ## The Shape of the API

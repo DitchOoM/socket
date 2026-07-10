@@ -65,7 +65,7 @@ withQuicServer(port = 4433, tlsConfig = QuicTlsConfig(certChainPath, privKeyPath
 }
 ```
 
-Backed by quiche on JVM/Android (JNI on JDK ≤20, FFM on JDK 21+), quiche cinterop on Linux native, and Network.framework on Apple. JS/wasmJs throw `UnsupportedOperationException` (no raw UDP).
+Backed by quiche on every platform: JVM/Android (JNI on JDK ≤20, FFM on JDK 21+), quiche cinterop on Linux native, and quiche cinterop on Apple (client UDP rides `NWConnection` for path-migration awareness; the server uses a dual-stack POSIX UDP socket). JS/wasmJs throw `UnsupportedOperationException` (no raw UDP).
 
 Each `QuicByteStream` has independent send/receive sides: `write()`/`read()` for bytes, `shutdownSend()` to half-close the send side (FIN) for request/response, and `reset(errorCode)` to abort both directions. `read()` returns a `ReadResult` — `Data` (a buffer), `End` (peer FIN), or `Reset` (peer abort). Unreliable datagrams (RFC 9221) are available via `sendDatagram()`/`receiveDatagram()` when `QuicOptions.datagrams` is set.
 

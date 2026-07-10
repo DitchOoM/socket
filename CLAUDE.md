@@ -76,6 +76,8 @@ The library uses Kotlin's `expect`/`actual` mechanism for platform-specific sock
 | Apple | `NWConnection` via C helpers in `nw_helpers.h` | `appleNativeImpl` |
 | Node.js | `net.Socket` API | `jsMain` |
 
+The table above covers TCP in the root module. QUIC (`:socket-quic-quiche`) is Cloudflare quiche on **every** platform — including Apple, where the client's UDP datagrams ride `NWConnection` (for path-migration awareness) and the server uses a dual-stack POSIX UDP socket. There is no Network.framework-native QUIC backend (the former `:socket-quic-nw` module was deleted in June 2026).
+
 ### Source Set Hierarchy
 
 ```
