@@ -76,6 +76,13 @@ kotlin {
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+            // W7: the published test-support artifact, consumed exactly as a downstream project
+            // would — testImplementation-scope from the merged repo under validation. In commonTest
+            // (not jvmTest) on purpose: the K/N TestBinaries link gates then also compile/link
+            // against the published socket-testsuite klibs (jvm/linux/apple), which is what catches
+            // a socket-testsuite left out of the validate-artifacts merge loop (the #188 class of
+            // bug) at link time. The behavioural harness smoke itself runs in jvmTest.
+            implementation("com.ditchoom:socket-testsuite:$socketVersion")
         }
 
         jvmTest.dependencies {

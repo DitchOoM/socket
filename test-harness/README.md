@@ -70,9 +70,35 @@ A scenario missing from the manifest is unavailable on that harness runtime
 
 ### Consumer quickstart
 
-Add `com.ditchoom:socket-testsuite` to your `commonTest` dependencies and
-write plain multiplatform test code (JVM/Android/Linux/Apple today; browser
-targets are future work):
+The harness runs from a single downloadable compose file — no repo checkout.
+Every release publishes multi-arch (`linux/amd64` + `linux/arm64`) images to
+GHCR (`ghcr.io/ditchoom/socket-test-harness-{echo,rst,quic-echo,controller}`,
+tagged `<version>` + `latest`); `harness-consumer.yml` wires them together
+with the stock nginx/toxiproxy images on the same pinned ports:
+
+```bash
+curl -LO https://raw.githubusercontent.com/DitchOoM/socket/main/test-harness/harness-consumer.yml
+docker compose -f harness-consumer.yml up -d --wait
+# … run your tests …
+docker compose -f harness-consumer.yml down -v
+```
+
+(Compose >= 2.23.1. The TLS cert-matrix service is repo-only — its certs are
+generated locally by `tls/gen-certs.sh` — so `tls(...)` scenarios need the
+in-repo stack; everything else, including toxiproxy impairment, works from
+the standalone file. Pin the image tags to your socket version for
+reproducible CI.)
+
+Then add `com.ditchoom:socket-testsuite` (published to Maven Central with
+the rest of the stack) to your `commonTest` dependencies and write plain
+multiplatform test code (JVM/Android/Linux/Apple today; browser targets are
+future work):
+
+```kotlin
+kotlin.sourceSets.commonTest.dependencies {
+    implementation("com.ditchoom:socket-testsuite:<version>")
+}
+```
 
 ```kotlin
 import com.ditchoom.socket.testsuite.harness.*
@@ -102,7 +128,8 @@ never break a consumer's suite.
 test-harness/
 ├── harness.env             # source of truth for ports — generates HarnessConfig.kt,
 │                           #   and is env_file-injected into the controller
-├── docker-compose.yml      # the stack
+├── docker-compose.yml      # the stack (in-repo dev/CI: build: contexts)
+├── harness-consumer.yml    # W7 standalone consumer stack (GHCR images, no checkout)
 ├── echo/Dockerfile         # alpine + socat
 ├── http/conf.d/default.conf# nginx routes
 ├── tls/                    # cert matrix (gen-certs.sh; certs gitignored)
@@ -111,6 +138,12 @@ test-harness/
 └── controller/             # W6 control plane (jar from :socket-testsuite:controllerJar)
 ```
 
+The four services with local build contexts (echo, rst, quic-echo,
+controller) are published to GHCR by the release flow (`merged.yaml` →
+`publish-harness-images`, multi-arch via buildx/qemu) as
+`ghcr.io/ditchoom/socket-test-harness-<name>:{<version>,latest}` —
+`harness-consumer.yml` consumes those.
+
 Add a port to `harness.env`, run `./gradlew generateHarnessConfig`, and
 the generated `HarnessConfig` object exposes it to every test source set.
 No `expect/actual` to maintain. The controller picks the same value up from
@@ -118,7 +151,12 @@ its environment, so the `/describe` manifest stays in lockstep.
 
 ## Future phases
 
-- **W7 (RFC_DETERMINISTIC_SIMULATION §8)** — publish multi-arch harness
-  images to GHCR + `socket-testsuite` to Central; consumer-smoke project.
 - `POST /capture/start|stop` on the controller (tcpdump/qlog bundles, §5).
 - Browser (`fetch`-based) control transport for `withNetworkHarness`.
+- A `tls` path for the standalone consumer stack (certs are generated
+  locally today, so the cert-matrix scenarios remain repo-only).
+
+W7 (RFC_DETERMINISTIC_SIMULATION §8) shipped: GHCR harness images on every
+release, `socket-testsuite` published to Central + wired into the
+`validate-artifacts.yaml` loop, and a `withNetworkHarness` consumer smoke in
+`.ci/consumer-smoke`.
