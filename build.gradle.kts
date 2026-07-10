@@ -1013,6 +1013,10 @@ val harnessUp by tasks.registering {
     // in `tasks.named` so the dependency edge is resolved lazily — keeps the
     // root build script orderable against the subproject's afterEvaluate.
     dependsOn(project(":socket-quic-quiche").tasks.named("quicEchoJar"))
+    // W6 — same treatment for the harness controller image's input artefact
+    // (a fat jar of :socket-testsuite's jvmMain HarnessController; see
+    // test-harness/controller/Dockerfile and RFC_DETERMINISTIC_SIMULATION §7).
+    dependsOn(project(":socket-testsuite").tasks.named("controllerJar"))
     doLast {
         val rc = runHarnessCmd(listOf("docker", "compose", "up", "-d", "--wait"))
         if (rc != 0) {
@@ -1050,6 +1054,14 @@ listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->
         finalizedBy(harnessDown)
     }
     project(":socket-quic-quiche").tasks.matching { it.name == name }.configureEach {
+        dependsOn(harnessUp)
+        finalizedBy(harnessDown)
+    }
+    // W6 — :socket-testsuite's own validation tests (NetworkHarnessTestSuite)
+    // exercise the controller + toxiproxy; give them the same lifecycle. With
+    // the harness unavailable they skip cleanly via withNetworkHarness's
+    // skip-on-unreachable, so this stays green everywhere.
+    project(":socket-testsuite").tasks.matching { it.name == name }.configureEach {
         dependsOn(harnessUp)
         finalizedBy(harnessDown)
     }
