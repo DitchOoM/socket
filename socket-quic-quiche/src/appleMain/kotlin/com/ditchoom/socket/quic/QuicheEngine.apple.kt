@@ -27,7 +27,15 @@ object QuicheEngine : QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection = buildAppleQuicConnection(hostname, port, quicOptions, transport, timeout)
+    ): QuicConnection {
+        // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
+        // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
+        val recorder = traceRecorderFor(quicOptions)
+        val connection =
+            buildAppleQuicConnection(hostname, port, quicOptions, transport, timeout, QuicheDriverTuning(recorder = recorder))
+        wireClientConnectivityTap(quicOptions, recorder, connection)
+        return connection
+    }
 
     override suspend fun bind(
         port: Int,
@@ -35,5 +43,5 @@ object QuicheEngine : QuicEngine {
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
-    ): QuicServer = buildAppleQuicServer(port, host, tlsConfig, quicOptions)
+    ): QuicServer = buildAppleQuicServer(port, host, tlsConfig, quicOptions, QuicheDriverTuning(recorder = traceRecorderFor(quicOptions)))
 }

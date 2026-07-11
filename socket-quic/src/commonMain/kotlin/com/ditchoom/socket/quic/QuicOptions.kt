@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import kotlin.jvm.JvmInline
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -227,6 +228,16 @@ data class QuicOptions(
      * have the bug). See the limitation note on `buildAppleQuicServer` / [QuicTlsConfig.pkcs12Path].
      */
     val appleAllowOversizedServerCert: Boolean = false,
+    /**
+     * Opt-in deterministic-replay trace capture (RFC_DETERMINISTIC_SIMULATION.md §5). Null (the
+     * default) disables capture and is byte-identical to the pre-capture path. Set a
+     * [QuicTraceCapture] to record this connection's (or server's) QUIC traffic — and, with a
+     * [QuicTraceCapture.networkMonitor], the client's connectivity state — onto the supplied
+     * [com.ditchoom.socket.quic.trace.TraceSink] for later replay through the sim harness. Capture
+     * errors stay typed: the recorder emits the throwable/`QuicError` class name, never a bare
+     * string (see `QuicTraceRecorder`).
+     */
+    val trace: QuicTraceCapture? = null,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }
