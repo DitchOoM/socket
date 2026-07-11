@@ -251,6 +251,90 @@ jobs:
       MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
       MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
 
+  # ── W7 (RFC_DETERMINISTIC_SIMULATION §8): publish the test-harness images ──
+  # Multi-arch (linux/amd64 + linux/arm64) images for every harness service that has
+  # a local build context — echo, rst, quic-echo, controller — pushed to GHCR as
+  #   ghcr.io/<owner>/socket-test-harness-<name>:{<version>,latest}
+  # so consumers can run test-harness/harness-consumer.yml with zero repo checkout
+  # (the remaining services — nginx http, toxiproxy, netem — use stock images there).
+  #
+  # Release-flow ONLY, never PRs: gated on the same publish-success condition the git
+  # tag in `finalize` uses, and versioned with the same build-linux `version` output,
+  # so image tags always match the Maven Central release they shipped alongside.
+  # `draft`/`dry-run` flows never push images (a dropped draft must not leave public
+  # `latest` images pointing at an unreleased version).
+  #
+  # The quic-echo jar is NOT rebuilt here: build-linux already produced the multi-arch
+  # fat jar (-PquicEchoAllArches=true → linux-x64 AND linux-arm64 quiche natives in one
+  # jar, precisely so the same artifact runs under both manifests of the
+  # eclipse-temurin base image) and uploaded the whole Docker context as an artifact.
+  # Rebuilding would drag the entire Rust/BoringSSL toolchain into this job. The
+  # controller jar IS built here — it is pure-JVM (no natives), a cheap compile.
+  publish-harness-images:
+    name: Publish harness images (GHCR)
+    needs: [check-release, build-linux, publish]
+    if: needs.check-release.outputs.flow == 'release' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Job-level override of the workflow's `contents: write`: this job only reads the
+    # repo but must push packages (GHCR).
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download quic-echo Docker context
+        uses: actions/download-artifact@v8
+        with:
+          name: quic-echo-docker-context
+          path: test-harness/quic-echo/
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+
+      - name: Build harness controller jar
+        run: ./gradlew :socket-testsuite:controllerJar --no-configuration-cache
+
+      # qemu gives buildx the arm64 emulation it needs for the linux/arm64 halves.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push harness images (multi-arch)
+        run: |
+          set -euo pipefail
+          version="${{ needs.build-linux.outputs.version }}"
+          if [ -z "$version" ]; then
+            echo "::error::build-linux produced no version output — refusing to tag images"
+            exit 1
+          fi
+          # GHCR namespaces are lowercase; github.repository_owner is "DitchOoM".
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          for name in echo rst quic-echo controller; do
+            image="ghcr.io/${owner}/socket-test-harness-${name}"
+            echo "=== ${image}:${version} + :latest (linux/amd64,linux/arm64) ==="
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --tag "${image}:${version}" \
+              --tag "${image}:latest" \
+              --push \
+              "test-harness/${name}"
+          done
+
   finalize:
     name: Finalize Release
     needs: [check-release, build-linux, publish]

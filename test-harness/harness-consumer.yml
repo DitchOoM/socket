@@ -1,0 +1,230 @@
+# socket-test-harness — standalone CONSUMER compose file (W7, RFC_DETERMINISTIC_SIMULATION §8).
+#
+# Download this single file and run the harness with NO repo checkout:
+#
+#   docker compose -f harness-consumer.yml up -d --wait
+#   # … run your tests (withNetworkHarness from com.ditchoom:socket-testsuite) …
+#   docker compose -f harness-consumer.yml down -v
+#
+# It mirrors test-harness/docker-compose.yml (same pinned ports, same 127.0.0.1-only
+# bindings, same healthchecks) but with every `build:` context replaced by the
+# GHCR images published on each socket release:
+#
+#   ghcr.io/ditchoom/socket-test-harness-{echo,rst,quic-echo,controller}:<version>
+#
+# `latest` tracks the newest release; pin the tag to your socket dependency's version
+# for reproducible CI (e.g. `socket-test-harness-echo:3.9.0`).
+#
+# Requires Docker Compose >= 2.23.1 (the inline `configs.content` used for nginx).
+#
+# Differences from the in-repo stack — both deliberate:
+#   - NO `tls` service (the cert-matrix scenarios). Its certs are generated locally by
+#     test-harness/tls/gen-certs.sh and volume-mounted; they cannot ship in a
+#     standalone file. The controller still ADVERTISES the tls-* scenarios (it
+#     reflects the pinned port table), so TLS-matrix tests will fail to connect
+#     rather than skip — use the in-repo stack (`./gradlew harnessUp`) for those.
+#   - The `http` service is the stock nginx image with the route table inlined below
+#     instead of a mounted conf.d/ (routes match: /, /get, /json, /large).
+
+name: socket-test-harness
+
+networks:
+  socketnet:
+    driver: bridge
+    # Pinned subnet so netem-blackhole is reachable at a stable bridge IP from the
+    # host (docker-proxy on 127.0.0.1 would complete the connect handshake locally
+    # and defeat the "SYN never acknowledged" semantics).
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+configs:
+  # Inline copy of test-harness/http/conf.d/default.conf (kept in lockstep by hand —
+  # the routes are load-bearing for the harness-availability probe and /large).
+  nginx-default-conf:
+    content: |
+      server {
+          listen 80 default_server;
+          server_name _;
+          root /usr/share/nginx/html;
+
+          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+          add_header Access-Control-Allow-Headers "*" always;
+
+          location / {
+              index index.html;
+          }
+
+          # GET /get — trivial 200 "ok" (healthcheck + availability probe).
+          location = /get {
+              default_type text/plain;
+              return 200 "ok\n";
+          }
+
+          location = /json {
+              default_type application/json;
+              return 200 '{"ok":true}';
+          }
+
+          # GET /large — >= 8 KB deterministic body, generated at container start
+          # (nginx `return` caps single-parameter length at ~4 KB).
+          location = /large {
+              default_type text/plain;
+              alias /usr/share/nginx/html/large;
+          }
+      }
+
+services:
+  # L0 — plain TCP echo (socat EXEC:cat). The cheapest availability probe.
+  echo:
+    image: ghcr.io/ditchoom/socket-test-harness-echo:latest
+    networks: [socketnet]
+    ports:
+      - "127.0.0.1:14000:14000"
+    healthcheck:
+      test: ["CMD-SHELL", "echo PING | socat -T 2 - TCP:127.0.0.1:14000 | grep -q PING"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped
+
+  # L0 — HTTP/1.1 (stock nginx + inline route table; see `configs:` above).
+  # The startup shell generates the 8256-byte /large body (64 lines x 129 bytes)
+  # and a minimal index.html, then execs nginx.
+  http:
+    image: nginx:1.27-alpine
+    networks: [socketnet]
+    configs:
+      - source: nginx-default-conf
+        target: /etc/nginx/conf.d/default.conf
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        i=0; : > /usr/share/nginx/html/large
+        while [ $$i -lt 64 ]; do printf '%0128d\n' $$i >> /usr/share/nginx/html/large; i=$$((i+1)); done
+        printf '<html><body>socket-test-harness</body></html>\n' > /usr/share/nginx/html/index.html
+        exec nginx -g 'daemon off;'
+    ports:
+      - "127.0.0.1:14080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/get | grep -q ok"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped
+
+  # L3 — netem blackhole: SYN accepted, all egress dropped → deterministic
+  # connect-timeout. Reach it at the pinned bridge IP (172.30.0.99:14999), never a
+  # published 127.0.0.1 port (docker-proxy would complete the handshake locally).
+  netem-blackhole:
+    image: alpine:3.20
+    networks:
+      socketnet:
+        ipv4_address: 172.30.0.99
+    cap_add:
+      - NET_ADMIN
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        apk add --no-cache iproute2 socat >/dev/null
+        tc qdisc add dev eth0 root netem loss 100%
+        exec socat -d TCP-LISTEN:14999,reuseaddr,fork EXEC:/bin/true
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep socat >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    restart: unless-stopped
+
+  # L4 — toxiproxy: the impairment plane behind withNetworkHarness's
+  # impaired()/peerReset(). Proxies are provisioned at test time via the 8474 API.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    networks: [socketnet]
+    depends_on:
+      echo:
+        condition: service_healthy
+      http:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8474:8474"     # control API
+      - "127.0.0.1:15080:15080"   # proxy → http:80
+      - "127.0.0.1:15443:15443"   # proxy → tls:443 (no tls service here; unused)
+      - "127.0.0.1:15900:15900"   # suite-echo proxy → echo:14000 (withNetworkHarness)
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped
+
+  # L4 — deterministic peer-close (RST) sidecar: SO_LINGER=0 + close after exactly
+  # one byte from the client. host networking on purpose — see the in-repo compose
+  # for the bridge/docker-proxy rationale.
+  rst:
+    image: ghcr.io/ditchoom/socket-test-harness-rst:latest
+    network_mode: host
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c 'import socket,sys;s=socket.socket();s.settimeout(2);s.connect((\"127.0.0.1\",14998));s.close()' || exit 1"
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+    restart: unless-stopped
+
+  # L7 — QUIC echo server (UDP, quiche-backed JVM). Jar + self-signed cert are baked
+  # into the image; both linux-x64 and linux-arm64 natives ship in the one jar.
+  quic-echo:
+    image: ghcr.io/ditchoom/socket-test-harness-quic-echo:latest
+    networks: [socketnet]
+    ports:
+      - "127.0.0.1:14433:14433/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x java >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 30        # JVM cold-start + quiche JNI extract is slow
+      start_period: 5s
+    restart: unless-stopped
+
+  # L8 — harness controller: GET /describe (scenario manifest) + GET /health.
+  # The in-repo stack feeds it harness.env via env_file; here the same pinned-port
+  # table is inlined so this file stays standalone. Keep in lockstep with
+  # test-harness/harness.env.
+  controller:
+    image: ghcr.io/ditchoom/socket-test-harness-controller:latest
+    networks: [socketnet]
+    environment:
+      CONTROLLER_BIND: 0.0.0.0     # docker-proxy reaches the container via its bridge IP
+      HARNESS_HOST: 127.0.0.1
+      ECHO_PORT: 14000
+      HTTP_PORT: 14080
+      TOXIPROXY_API_PORT: 8474
+      TOXIPROXY_SUITE_ECHO_PORT: 15900
+      TOXIPROXY_HTTP_PORT: 15080
+      TOXIPROXY_TLS_PORT: 15443
+      NETEM_BLACKHOLE_HOST: 172.30.0.99
+      NETEM_BLACKHOLE_PORT: 14999
+      RST_PORT: 14998
+      QUIC_ECHO_PORT: 14433
+      CONTROLLER_PORT: 14100
+    ports:
+      - "127.0.0.1:14100:14100"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/14100 && printf \"GET /health HTTP/1.1\\r\\nHost: controller\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q ok <&3'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30        # JVM cold-start
+      start_period: 3s
+    restart: unless-stopped

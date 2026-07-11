@@ -7,6 +7,7 @@ import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.annotations.LengthPrefix
 import com.ditchoom.buffer.codec.annotations.LengthPrefixed
 import com.ditchoom.buffer.codec.annotations.ProtocolMessage
+import kotlin.random.Random
 
 /**
  * ALPN protocol in wire format (RFC 7301).
@@ -55,12 +56,19 @@ fun encodeAlpnList(
  * 20 bytes = 2 longs (16 bytes) + 1 int (4 bytes) — 3 write ops instead of 20.
  *
  * Allocated from [factory] for pooling. Caller must free.
+ *
+ * [random] defaults to the platform default source (unchanged production behaviour); the
+ * deterministic simulation harness passes a seeded instance so connection IDs are reproducible
+ * per seed (RFC_DETERMINISTIC_SIMULATION.md §3.1).
  */
-fun generateScid(factory: BufferFactory): PlatformBuffer {
+fun generateScid(
+    factory: BufferFactory,
+    random: Random = Random.Default,
+): PlatformBuffer {
     val buf = factory.allocate(QUIC_MAX_CONN_ID_LEN)
-    buf.writeLong(kotlin.random.Random.nextLong())
-    buf.writeLong(kotlin.random.Random.nextLong())
-    buf.writeInt(kotlin.random.Random.nextInt())
+    buf.writeLong(random.nextLong())
+    buf.writeLong(random.nextLong())
+    buf.writeInt(random.nextInt())
     buf.resetForRead()
     return buf
 }

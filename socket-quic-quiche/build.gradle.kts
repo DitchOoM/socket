@@ -950,6 +950,16 @@ afterEvaluate {
             environment("QUIC_RECVINFO_GUARD", "1")
         }
 
+        // --- Deep-fuzz iteration forwarding ---------------------------------------
+        // SimFuzzDeepRunTests reads SIM_FUZZ_ITERATIONS via System.getenv in the TEST
+        // worker, which inherits the DAEMON's environment — a step-level `env:` in CI
+        // is invisible to a daemon started by an earlier step. Read the CLIENT env via
+        // the provider API (config-cache aware) and forward it into the worker
+        // explicitly so the CI deep lane (build-linux) reliably gets its 2000 seeds.
+        providers.environmentVariable("SIM_FUZZ_ITERATIONS").orNull?.let {
+            environment("SIM_FUZZ_ITERATIONS", it)
+        }
+
         // --- Backend selector ---------------------------------------------------
         // By default this task resolves `loadQuicheApi()` to the base commonJvmMain
         // JNI loader: the java21/FFM compilation output is deliberately NOT on the

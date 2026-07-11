@@ -60,7 +60,6 @@ import platform.posix.sockaddr
 import platform.posix.sockaddr_in
 import platform.posix.socket
 import platform.posix.unlink
-import kotlin.random.Random
 import kotlin.time.Duration
 
 private const val MAX_CONN_ID_LEN = 20
@@ -81,6 +80,9 @@ internal suspend fun buildLinuxQuicConnection(
     quicOptions: QuicOptions,
     connectionOptions: TransportConfig,
     timeout: Duration,
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
+    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ): LinuxQuicConnection {
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
@@ -161,12 +163,8 @@ internal suspend fun buildLinuxQuicConnection(
                     "socket_getsockname sin_family=${localAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
                 }
 
-                // SCID
-                val scidBuf = bufferFactory.allocate(MAX_CONN_ID_LEN)
-                for (i in 0 until MAX_CONN_ID_LEN) {
-                    scidBuf.writeByte(Random.nextInt(256).toByte())
-                }
-                scidBuf.resetForRead()
+                // SCID — shared generator (20 random bytes, reset for read), seeded via the tuning.
+                val scidBuf = generateScid(bufferFactory, tuning.random)
                 val scidPtr = scidBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
 
                 val conn =
@@ -225,6 +223,10 @@ internal suspend fun buildLinuxQuicConnection(
                         clientMode = true,
                         isServer = false,
                         keepAliveInterval = quicOptions.keepAliveInterval,
+                        clock = tuning.clock,
+                        driverContext = tuning.driverContext,
+                        random = tuning.random,
+                        recorder = tuning.recorder,
                         // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs
                         // (kept pinned via onCleanup for the driver's life) and a factory that opens
                         // additional io_uring path sockets to the same peer. Mirrors the JVM client.
@@ -264,6 +266,7 @@ internal suspend fun buildLinuxQuicConnection(
                     // Linux extracts the W3C constraint fields via BoringSSL's X.509 parser (the same
                     // ASN.1 decoder quiche links), then the shared policy enforces validity/P-256.
                     parseLeafFields = ::parsePinnedLeafFieldsLinux,
+                    now = tuning.wallClock(),
                 )
                 quicConn
             }

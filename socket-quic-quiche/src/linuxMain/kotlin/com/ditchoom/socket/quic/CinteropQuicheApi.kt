@@ -49,6 +49,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
 import com.ditchoom.socket.quic.quiche.quiche_conn_new_scid
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
+import com.ditchoom.socket.quic.quiche.quiche_conn_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
@@ -58,6 +59,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
@@ -73,8 +75,10 @@ import com.ditchoom.socket.quic.quiche.quiche_path_event_new
 import com.ditchoom.socket.quic.quiche.quiche_path_event_peer_migrated
 import com.ditchoom.socket.quic.quiche.quiche_path_event_type
 import com.ditchoom.socket.quic.quiche.quiche_path_event_validated
+import com.ditchoom.socket.quic.quiche.quiche_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_recv_info
 import com.ditchoom.socket.quic.quiche.quiche_send_info
+import com.ditchoom.socket.quic.quiche.quiche_stats
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_next
 import kotlinx.cinterop.BooleanVar
@@ -417,6 +421,59 @@ internal object CinteropQuicheApi : QuicheApi {
             } else {
                 QuicError.fromTransportCode(code.value.toLong())
             }
+        }
+
+    // --- Stats (RFC_DETERMINISTIC_SIMULATION.md §5.1 item 5) ---
+
+    override fun connStats(conn: QuicheConn): QuicConnStats? =
+        memScoped {
+            val out = alloc<quiche_stats>()
+            quiche_conn_stats(conn.handle.toCPointer()!!, out.ptr)
+            QuicConnStats(
+                recv = out.recv.toLong(),
+                sent = out.sent.toLong(),
+                lost = out.lost.toLong(),
+                spuriousLost = out.spurious_lost.toLong(),
+                retrans = out.retrans.toLong(),
+                sentBytes = out.sent_bytes.toLong(),
+                recvBytes = out.recv_bytes.toLong(),
+                ackedBytes = out.acked_bytes.toLong(),
+                lostBytes = out.lost_bytes.toLong(),
+                streamRetransBytes = out.stream_retrans_bytes.toLong(),
+                dgramRecv = out.dgram_recv.toLong(),
+                dgramSent = out.dgram_sent.toLong(),
+                pathsCount = out.paths_count.toLong(),
+            )
+        }
+
+    override fun connPathStats(
+        conn: QuicheConn,
+        pathIdx: Long,
+    ): QuicPathStats? =
+        memScoped {
+            val out = alloc<quiche_path_stats>()
+            val rc = quiche_conn_path_stats(conn.handle.toCPointer()!!, pathIdx.convert(), out.ptr)
+            if (rc < 0) return@memScoped null
+            QuicPathStats(
+                validationState = out.validation_state.toLong(),
+                active = out.active,
+                recv = out.recv.toLong(),
+                sent = out.sent.toLong(),
+                lost = out.lost.toLong(),
+                retrans = out.retrans.toLong(),
+                totalPtoCount = out.total_pto_count.toLong(),
+                rtt = out.rtt.toLong().nanoseconds,
+                minRtt = out.min_rtt.toLong().nanoseconds,
+                maxRtt = out.max_rtt.toLong().nanoseconds,
+                rttvar = out.rttvar.toLong().nanoseconds,
+                cwnd = out.cwnd.toLong(),
+                sentBytes = out.sent_bytes.toLong(),
+                recvBytes = out.recv_bytes.toLong(),
+                lostBytes = out.lost_bytes.toLong(),
+                streamRetransBytes = out.stream_retrans_bytes.toLong(),
+                pmtu = out.pmtu.toLong(),
+                deliveryRate = out.delivery_rate.toLong(),
+            )
         }
 
     // --- Unreliable datagrams (RFC 9221) ---

@@ -325,6 +325,26 @@ interface QuicheApi {
     fun connLocalError(conn: QuicheConn): QuicError? = null
 
     /**
+     * Connection-level statistics (`quiche_conn_stats`) as a typed [QuicConnStats], or `null` on a
+     * backend that has not bound the stats FFI (the interface default — test doubles and not-yet-wired
+     * backends are automatically fine, per RFC_DETERMINISTIC_SIMULATION.md §5.1 item 5). Bound on FFM,
+     * JNI/Android, and cinterop (apple + linux). quiche is single-threaded — call only from the driver
+     * loop (drivers route through [QuicheCmd.Stats] / the recorder's timer-wake poll).
+     */
+    fun connStats(conn: QuicheConn): QuicConnStats? = null
+
+    /**
+     * Per-path statistics (`quiche_conn_path_stats`) for the path at [pathIdx]
+     * (`0 until` [QuicConnStats.pathsCount]) as a typed [QuicPathStats], or `null` when the backend
+     * has not bound the stats FFI **or** quiche reports no path at [pathIdx] (negative return —
+     * `QUICHE_ERR_DONE`). Same default/threading contract as [connStats].
+     */
+    fun connPathStats(
+        conn: QuicheConn,
+        pathIdx: Long,
+    ): QuicPathStats? = null
+
+    /**
      * Enable qlog tracing on [conn], writing the connection's event log to [path]
      * (`quiche_conn_set_qlog_path`); [title] and [desc] populate the qlog's `title`/`description`
      * header fields. Returns `true` if qlog was enabled.

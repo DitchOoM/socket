@@ -177,6 +177,9 @@ services:
       - "127.0.0.1:15000:15000"   # proxy → echo:14000
       - "127.0.0.1:15080:15080"   # proxy → http:80
       - "127.0.0.1:15443:15443"   # proxy → tls:443 (valid-cert vhost)
+      - "127.0.0.1:15900:15900"   # suite-echo proxy → echo:14000 (:socket-testsuite's
+                                  # withNetworkHarness — isolated from the root tests'
+                                  # proxies above, which run in parallel test tasks)
     healthcheck:
       # Distroless image — no shell, so use the exec form of CMD with
       # toxiproxy-cli (which calls the local 8474 API and exits non-zero
@@ -262,4 +265,38 @@ services:
       timeout: 3s
       retries: 30        # JVM cold-start + quiche JNI extract is slow
       start_period: 5s
+    restart: unless-stopped
+
+  # L8 — W6 harness controller (RFC_DETERMINISTIC_SIMULATION §7). Serves the
+  # scenario manifest (`GET /describe`) + `GET /health` so consumer test code
+  # (`withNetworkHarness` in :socket-testsuite) discovers endpoints
+  # programmatically instead of reading harness.env. Every response carries
+  # `Access-Control-Allow-Origin: *` so future browser targets can fetch it.
+  #
+  # The jar is produced by `:socket-testsuite:controllerJar` (a dependsOn of
+  # the root `harnessUp` task — run it before a manual `docker compose up`).
+  #
+  # `env_file: harness.env` hands the whole pinned-port table to the
+  # container, which is how the manifest mirrors it: the controller never
+  # invents values, it reflects harness.env from its environment.
+  controller:
+    build: ./controller
+    networks: [socketnet]
+    env_file: ./harness.env
+    environment:
+      # Bind the wildcard interface INSIDE the container — docker-proxy
+      # reaches the container via its bridge IP, not loopback. (The library's
+      # ServerSocket binds loopback when no host is given.)
+      CONTROLLER_BIND: 0.0.0.0
+    ports:
+      - "127.0.0.1:14100:14100"
+    healthcheck:
+      # Real HTTP probe of /health via bash's /dev/tcp — the temurin-noble
+      # base ships bash but neither curl nor wget (and /bin/sh is dash,
+      # which lacks /dev/tcp, hence the explicit bash -c).
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/14100 && printf \"GET /health HTTP/1.1\\r\\nHost: controller\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q ok <&3'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30        # JVM cold-start
+      start_period: 3s
     restart: unless-stopped

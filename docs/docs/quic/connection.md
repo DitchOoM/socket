@@ -144,7 +144,7 @@ Closing a stream is about *promptness* — the connection scope reclaims it on e
 by the scope. Allocate it inside `use { }`, and free the `ReadBuffer` you get back from `read()`.
 
 Allocate from the scope's `bufferFactory`, not a global. Every QUIC backend hands buffer addresses
-straight to native code — quiche over FFM/JNI, quiche cinterop on Linux, Network.framework on Apple —
+straight to native code — quiche over FFM/JNI on JVM/Android, quiche cinterop on Linux and Apple —
 so QUIC buffers must be **native memory**. `bufferFactory` defaults to `BufferFactory.network()`, the
 factory that guarantees this on every platform:
 

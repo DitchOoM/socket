@@ -46,6 +46,9 @@ internal fun buildJvmQuicServer(
     host: String?,
     tlsConfig: QuicTlsConfig,
     quicOptions: QuicOptions,
+    // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
+    // byte-identical to the pre-seam behaviour; the sim harness injects its own.
+    tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ): JvmQuicServer {
     val api: QuicheApi = loadQuicheApi()
     val parentJob = SupervisorJob()
@@ -92,6 +95,7 @@ internal fun buildJvmQuicServer(
                 // server.close() frees config + drivers; the per-call parent scope is the server's
                 // to cancel last, so the withQuicServer wrapper stays a plain block + close().
                 onClose = { parentScope.cancel() },
+                tuning = tuning,
             )
         bound = true
         return server
@@ -145,6 +149,8 @@ internal class JvmQuicServer(
     // Per-call lifecycle teardown wired by buildJvmQuicServer (cancel the parent scope). Null for
     // any direct-construction test that owns the scope externally. Invoked last by close().
     private val onClose: (() -> Unit)? = null,
+    // Determinism seams forwarded to every accepted connection's driver (RFC_DETERMINISTIC_SIMULATION.md §3.1).
+    private val tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ) : QuicServer {
     override val port: Int get() = localAddr.port
 
@@ -551,7 +557,7 @@ internal class JvmQuicServer(
     ): Pair<QuicheDriver, ConnectionIdKey>? {
         val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
-        val serverScid = generateScid(bufferFactory)
+        val serverScid = generateScid(bufferFactory, tuning.random)
         val serverScidAddr = serverScid.nativeMemoryAccess!!.nativeAddress.toLong()
 
         val peerSockAddr = peerAddr.toNativeSockAddr(bufferFactory)
@@ -619,6 +625,10 @@ internal class JvmQuicServer(
                 clientMode = false,
                 isServer = true,
                 keepAliveInterval = keepAliveInterval,
+                clock = tuning.clock,
+                driverContext = tuning.driverContext,
+                random = tuning.random,
+                recorder = tuning.recorder,
                 onCleanup = {
                     peerSockAddr.free()
                     localSockAddr.free()
