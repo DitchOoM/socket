@@ -494,6 +494,11 @@ jobs:
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
+          # W5 deep-fuzz lane: 2000 Tier-A seeds through SimFuzzDeepRunTests (~1-2s;
+          # virtual time). Without this the deep lane never runs anywhere and only the
+          # 25-seed commonTest smoke guards the fuzzer. Forwarded into the test worker
+          # by the quiche build script (daemon env is not step env).
+          SIM_FUZZ_ITERATIONS: "2000"
         run: |
           # This is the lane where the intermittent JNI SIGSEGV (recv_info UAF) was first caught, so
           # capture a core here too — not just on the malloc-check lane. The forked worker inherits this
@@ -520,6 +525,7 @@ jobs:
         timeout-minutes: 8
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
+          SIM_FUZZ_ITERATIONS: "2000"
         run: >-
           ./gradlew :socket-quic-quiche:jvmTest -PquicheJvmBackend=ffm --continue
           --no-configuration-cache ${{ inputs.gradle-args }}

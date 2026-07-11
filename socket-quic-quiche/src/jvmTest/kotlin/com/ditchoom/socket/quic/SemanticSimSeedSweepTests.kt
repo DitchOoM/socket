@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -34,7 +35,7 @@ class SemanticSimSeedSweepTests {
     private val grid =
         listOf(
             Cell("loss-8pct/seed-101", ImpairmentConfig(seed = 101L, loss = 0.08)),
-            Cell("loss-8pct/seed-202", ImpairmentConfig(seed = 202L, loss = 0.08)),
+            Cell("loss-8pct/seed-203", ImpairmentConfig(seed = 203L, loss = 0.08)),
             Cell(
                 "reorder-5/seed-303",
                 ImpairmentConfig(seed = 303L, reorderWindow = 5, latency = 2.milliseconds, jitter = 3.milliseconds),
@@ -69,10 +70,57 @@ class SemanticSimSeedSweepTests {
                         )
                         assertTrue(pipe.clientStats.sent > 0, "client sent nothing in cell ${cell.name}")
                         assertTrue(pipe.serverStats.sent > 0, "server sent nothing in cell ${cell.name}")
+
+                        // W3↔W4 cross-check: the stats bindings must report REAL traffic on a real
+                        // impaired connection — on every backend this sweep runs under (JNI + FFM,
+                        // both of which bind the stats FFI, so null here is a binding regression).
+                        val client = assertNotNull(clientDriver.stats().connStats, "client connStats null in ${cell.name}")
+                        val server = assertNotNull(serverDriver.stats().connStats, "server connStats null in ${cell.name}")
+                        assertTrue(
+                            client.sent > 0 && client.recv > 0,
+                            "client stats() reports no traffic in cell ${cell.name}: $client",
+                        )
+                        assertTrue(
+                            server.sent > 0 && server.recv > 0,
+                            "server stats() reports no traffic in cell ${cell.name}: $server",
+                        )
+
+                        // Loss cells must not pass vacuously: the pipe must have actually dropped
+                        // datagrams, and quiche must have NOTICED — a handshake that established
+                        // through drops did so by retransmitting, so lost+retrans reaches nonzero.
+                        // A tail drop can take one PTO to be *declared* lost, so poll briefly
+                        // instead of snapshotting the instant establishment completes.
+                        if (cell.config.loss > 0.0) {
+                            val dropped = pipe.clientStats.dropped + pipe.serverStats.dropped
+                            assertTrue(
+                                dropped > 0,
+                                "cell ${cell.name} configured loss=${cell.config.loss} but the pipe " +
+                                    "dropped nothing — the impairment is not exercising anything",
+                            )
+                            var noticed = quicheNoticedLoss()
+                            val deadline = System.nanoTime() + 5_000_000_000L
+                            while (!noticed && System.nanoTime() < deadline) {
+                                kotlinx.coroutines.delay(100.milliseconds)
+                                noticed = quicheNoticedLoss()
+                            }
+                            assertTrue(
+                                noticed,
+                                "cell ${cell.name}: pipe dropped $dropped datagrams but neither " +
+                                    "side's quiche stats show lost/retrans > 0 within 5s — stats " +
+                                    "bindings and impairment are disconnected",
+                            )
+                        }
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
                 assumeTrue("Native lib not available: ${e.message}", false)
             }
         }
+
+    /** True when either side's quiche loss detection has registered the pipe's drops. */
+    private suspend fun SemanticSimScope.quicheNoticedLoss(): Boolean {
+        val c = clientDriver.stats().connStats
+        val s = serverDriver.stats().connStats
+        return (c != null && c.lost + c.retrans > 0) || (s != null && s.lost + s.retrans > 0)
+    }
 }
