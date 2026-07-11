@@ -16,7 +16,7 @@ import kotlinx.coroutines.CoroutineScope
  * recorder defaults its clock to [RealDriverClock] — the same singleton [QuicheDriverTuning.clock]
  * defaults to — so trace timestamps and driver timers share one clock (RFC §5 "one clock").
  */
-internal fun traceRecorderFor(quicOptions: QuicOptions): QuicTraceRecorder? = quicOptions.trace?.let { QuicTraceRecorder(it.sink) }
+internal fun traceRecorderFor(quicOptions: QuicOptions): QuicTraceRecorder? = quicOptions.trace?.let { QuicTraceRecorder(it.sinkFor()) }
 
 /**
  * Client-side connectivity tap (RFC §5.1): when the capture opt-in supplied a
