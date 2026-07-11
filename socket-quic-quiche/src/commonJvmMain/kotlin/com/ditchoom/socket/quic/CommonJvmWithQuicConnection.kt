@@ -188,7 +188,7 @@ internal suspend fun buildJvmQuicConnection(
                 clock = tuning.clock,
                 driverContext = tuning.driverContext,
                 random = tuning.random,
-                recorder = tuning.recorder,
+                recorder = tuning.recorderFactory(),
                 // Connection-migration wiring (slice 3): the peer + primary local sockaddrs
                 // (kept pinned by onCleanup for the driver's life) and a factory for opening
                 // additional path sockets to the same peer.

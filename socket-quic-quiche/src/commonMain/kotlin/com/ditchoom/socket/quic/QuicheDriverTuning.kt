@@ -29,16 +29,21 @@ import kotlin.time.Instant
  *  - [wallClock] — "now" for the W3C `serverCertificateHashes` validity-window check
  *    ([verifyServerCertificateHashes]/[checkServerCertificatePinConstraints]). Default
  *    `Clock.System.now()`; a fixture replay pins it to the recorded capture time.
- *  - [recorder] — the W3 opt-in trace tap (RFC §5). Default `null` (zero cost). When set, every
- *    [QuicheDriver] built from this tuning wraps its `UdpChannel`s in the recording decorator,
- *    mirrors state/pathState/close-error transitions into the trace, and polls path-stats on its
- *    timer wake. Construct the recorder with THIS tuning's [clock] so all timestamps share one
- *    time source (RFC §5 "one clock").
+ *  - [recorderFactory] — the W3 opt-in trace tap (RFC §5), **invoked once per [QuicheDriver]
+ *    construction**. Default `{ null }` (zero cost). When it returns a recorder, that driver wraps
+ *    its `UdpChannel`s in the recording decorator, mirrors state/pathState/close-error transitions
+ *    into the trace, and polls path-stats on its timer wake. It is a *factory* (not one shared
+ *    recorder) so a server [bind][com.ditchoom.socket.quic.QuicEngine.bind] mints a **fresh**
+ *    recorder — and therefore a fresh `TraceSink` — for each accepted connection: one connection per
+ *    sink, so each accepted connection's trace stays independently replayable (the v1 grammar carries
+ *    no connection id). A client `connect` builds exactly one driver, so its factory returns the one
+ *    recorder the connectivity tap also observes. Construct each recorder with THIS tuning's [clock]
+ *    so all timestamps share one time source (RFC §5 "one clock").
  */
 internal class QuicheDriverTuning(
     val driverContext: CoroutineContext = Dispatchers.Default,
     val clock: DriverClock = RealDriverClock,
     val random: Random = Random.Default,
     val wallClock: () -> Instant = { Clock.System.now() },
-    val recorder: QuicTraceRecorder? = null,
+    val recorderFactory: () -> QuicTraceRecorder? = { null },
 )

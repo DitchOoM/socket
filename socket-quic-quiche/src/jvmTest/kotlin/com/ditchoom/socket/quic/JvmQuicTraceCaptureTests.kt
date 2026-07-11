@@ -9,10 +9,12 @@ import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.QuicTraceEvent
 import com.ditchoom.socket.quic.trace.QuicTraceParser
+import com.ditchoom.socket.quic.trace.TraceSink
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -20,6 +22,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assume.assumeTrue
 import java.util.Collections
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -38,6 +41,17 @@ class JvmQuicTraceCaptureTests {
             verifyPeer = false,
             idleTimeout = 10.seconds,
         )
+
+    /**
+     * Peer [PathKey] token of a `v1 … DGRAM_OUT|DGRAM_IN <len> <pathKey> <hex>` trace line, or null
+     * for any non-datagram line. Used to prove per-connection sink isolation without a connection id
+     * (the v1 grammar has none) — a sink's datagrams must all share one peer path.
+     */
+    private fun datagramPathKey(line: String): String? {
+        val tokens = line.split(' ')
+        if (tokens.size < 5) return null
+        return if (tokens[2] == "DGRAM_OUT" || tokens[2] == "DGRAM_IN") tokens[4] else null
+    }
 
     private fun certPath(name: String): String {
         val url =
@@ -135,6 +149,114 @@ class JvmQuicTraceCaptureTests {
                             },
                             "engine must tap NetworkMonitor.availability into the trace: $snapshot",
                         )
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun server_capture_mints_a_fresh_sink_per_accepted_connection() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                withTimeout(30.seconds) {
+                    // Server-side capture: sinkFor mints a fresh sink per ACCEPTED connection, so two
+                    // concurrent clients yield two independent, self-contained v1 traces. This is the
+                    // property deterministic *server* replay needs — the v1 grammar carries no
+                    // connection id, so one-sink-per-connection is the only way accepted connections
+                    // stay separately replayable instead of interleaving onto a shared sink.
+                    val sinks = Collections.synchronizedList(mutableListOf<MutableList<String>>())
+                    val serverOptions =
+                        baseOptions.copy(
+                            trace =
+                                QuicTraceCapture(
+                                    sinkFor = {
+                                        val lines = Collections.synchronizedList(mutableListOf<String>())
+                                        sinks += lines
+                                        TraceSink { line -> lines += line }
+                                    },
+                                ),
+                        )
+
+                    withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = serverOptions) {
+                        val serverPort = port
+                        val serverJob =
+                            launch(Dispatchers.IO) {
+                                connections {
+                                    val stream = acceptStream()
+                                    val data = stream.read(5.seconds)
+                                    if (data is ReadResult.Data) stream.write(data.buffer, 5.seconds)
+                                    stream.close()
+                                }
+                            }
+                        delay(100)
+
+                        suspend fun oneClient(payload: String): String {
+                            val echoed = CompletableDeferred<String>()
+                            withQuicConnection("localhost", serverPort, baseOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                val sendBuf = BufferFactory.Default.allocate(payload.length)
+                                sendBuf.writeString(payload, Charset.UTF8)
+                                sendBuf.resetForRead()
+                                stream.write(sendBuf, 5.seconds)
+                                val response = stream.read(5.seconds)
+                                echoed.complete(
+                                    if (response is ReadResult.Data) {
+                                        response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                                    } else {
+                                        "no_data"
+                                    },
+                                )
+                                // Let the server driver flush its final trace lines before close().
+                                delay(150)
+                                stream.close()
+                            }
+                            return echoed.await()
+                        }
+
+                        try {
+                            val c1 = async(Dispatchers.IO) { oneClient("first-conn") }
+                            val c2 = async(Dispatchers.IO) { oneClient("second-conn") }
+                            assertEquals("first-conn", c1.await())
+                            assertEquals("second-conn", c2.await())
+                            // Beat for the server-side drivers to flush trailing DGRAM lines.
+                            delay(250)
+                        } finally {
+                            serverJob.cancel()
+                        }
+
+                        // The invariant that makes deterministic server replay possible: each accepted
+                        // connection records onto its OWN sink, and no sink ever interleaves two
+                        // connections. We prove it via the per-datagram PathKey (peer address) — every
+                        // DGRAM line on a sink must reference a single peer, and each distinct peer must
+                        // land on exactly one sink (never split, never merged). Loopback also produces
+                        // a couple of short-lived PROTOCOL_VIOLATION accepts with no datagrams; those
+                        // correctly get their own (traffic-free) sinks and simply don't participate in
+                        // the path-isolation check. (Server sinks record DGRAM_OUT only — inbound
+                        // datagrams reach a server driver through the central demux loop, which bypasses
+                        // the per-driver recording channel; that's orthogonal to per-connection routing.)
+                        val perConn = sinks.map { it.toList() }
+                        assertTrue(perConn.isNotEmpty(), "server capture minted no sinks at all")
+                        perConn.forEachIndexed { i, s ->
+                            assertTrue(s.isNotEmpty(), "sink #$i captured nothing: $perConn")
+                            assertTrue(s.all { it.startsWith("v1 ") }, "sink #$i must be a versioned trace: $s")
+                        }
+
+                        // peer PathKey -> indices of sinks it appears on.
+                        val pathToSinks = mutableMapOf<String, MutableSet<Int>>()
+                        perConn.forEachIndexed { i, s ->
+                            val paths = s.mapNotNull(::datagramPathKey).toSet()
+                            assertTrue(paths.size <= 1, "sink #$i interleaves >1 connection's datagrams: $paths")
+                            paths.forEach { p -> pathToSinks.getOrPut(p) { mutableSetOf() } += i }
+                        }
+                        assertTrue(
+                            pathToSinks.size >= 2,
+                            "expected >=2 distinct client connections captured on separate sinks, got ${pathToSinks.keys}",
+                        )
+                        pathToSinks.forEach { (path, idxs) ->
+                            assertEquals(1, idxs.size, "client $path appears on multiple sinks $idxs (interleaved/split)")
+                        }
+                        val established = perConn.count { s -> s.any { it.contains("STATE Established") } }
+                        assertTrue(established >= 2, "expected >=2 fully-established server-side traces, got $established")
                     }
                 }
             }

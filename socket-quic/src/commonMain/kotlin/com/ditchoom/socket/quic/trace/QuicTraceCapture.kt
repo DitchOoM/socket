@@ -21,13 +21,16 @@ import com.ditchoom.socket.NetworkMonitor
  * every connection (log-sink semantics), fine for one connection or for aggregate diagnostics but
  * not for per-connection replay.
  *
- * A server [bind][com.ditchoom.socket.quic.QuicEngine.bind] currently invokes [sinkFor] **once** and
- * records **all** accepted connections onto that one sink — aggregate diagnostics, not per-connection
- * replay. (Per-connection server capture would invoke [sinkFor] per accepted connection; not wired
- * in v1.)
+ * A server [bind][com.ditchoom.socket.quic.QuicEngine.bind] invokes [sinkFor] **once per accepted
+ * connection**, so each accepted connection records onto its own sink — per-connection, independently
+ * replayable server traces (this is what makes deterministic *server* replay possible). Return a
+ * fresh sink per call, exactly as for the client; a [sinkFor] that hands back one shared sink (the
+ * single-[TraceSink] convenience constructor) instead interleaves every accepted connection onto it —
+ * aggregate diagnostics, not per-connection replay.
  *
- * @property sinkFor mints the [TraceSink] for a captured connection. Called once per connection (the
- *   client `connect`) — return a fresh sink per call for independent, replayable traces. The consumer
+ * @property sinkFor mints the [TraceSink] for a captured connection. Called once per connection — the
+ *   client `connect`, or each accepted connection on a server `bind` — so return a fresh sink per call
+ *   for independent, replayable traces. The consumer
  *   owns IO (append to a file, ship over the network, buffer in memory) so capture stays platform-free.
  *   Each returned sink may be called from several coroutines concurrently — treat it like a log sink.
  * @property networkMonitor optional connectivity tap. When supplied, a **client** connection also
