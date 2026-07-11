@@ -268,7 +268,7 @@ internal suspend fun buildAppleQuicConnection(
                         clock = tuning.clock,
                         driverContext = tuning.driverContext,
                         random = tuning.random,
-                        recorder = tuning.recorder,
+                        recorder = tuning.recorderFactory(),
                         // Peer + primary local sockaddrs (pinned via onCleanup) for the initial path's
                         // recv_info/send_info. No udpChannelFactory: explicit quiche path migration via a
                         // second local socket does not map to NWConnection (NW owns path moves); the

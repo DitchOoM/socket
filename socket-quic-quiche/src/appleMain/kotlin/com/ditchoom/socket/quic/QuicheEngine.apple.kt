@@ -32,7 +32,7 @@ object QuicheEngine : QuicEngine {
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
         val recorder = traceRecorderFor(quicOptions)
         val connection =
-            buildAppleQuicConnection(hostname, port, quicOptions, transport, timeout, QuicheDriverTuning(recorder = recorder))
+            buildAppleQuicConnection(hostname, port, quicOptions, transport, timeout, QuicheDriverTuning(recorderFactory = { recorder }))
         wireClientConnectivityTap(quicOptions, recorder, connection)
         return connection
     }
@@ -43,5 +43,5 @@ object QuicheEngine : QuicEngine {
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
-    ): QuicServer = buildAppleQuicServer(port, host, tlsConfig, quicOptions, QuicheDriverTuning(recorder = traceRecorderFor(quicOptions)))
+    ): QuicServer = buildAppleQuicServer(port, host, tlsConfig, quicOptions, QuicheDriverTuning(recorderFactory = { traceRecorderFor(quicOptions) }))
 }

@@ -615,7 +615,7 @@ private class AppleQuicServer(
                 clock = tuning.clock,
                 driverContext = tuning.driverContext,
                 random = tuning.random,
-                recorder = tuning.recorder,
+                recorder = tuning.recorderFactory(),
                 onScidIssued = { scid, len ->
                     // Snapshot the CID (scid is freed right after this returns) and hand the
                     // registration to the receive loop, which owns connectionsByDcid.
