@@ -74,10 +74,21 @@ jobs:
       # performs a REAL echo round-trip through the PUBLISHED socket-testsuite artifact.
       # The controller jar is built from source here — it is harness *infrastructure*, not
       # the artifact under test (that's the socket-testsuite the test resolves from the
-      # merged repo). Pure-JVM compile, no quiche natives involved. If the stack still
-      # fails to come up, compose-up-retry fails the job loudly (a silent skip is exactly
-      # the coverage gap the harness discipline exists to avoid); the tests themselves
-      # stay green off-CI via withNetworkHarness's skip-on-unreachable.
+      # merged repo). If the stack still fails to come up, compose-up-retry fails the job
+      # loudly (a silent skip is exactly the coverage gap the harness discipline exists to
+      # avoid); the tests themselves stay green off-CI via withNetworkHarness's
+      # skip-on-unreachable.
+      #
+      # Building it on a Linux runner enables every linux-target task in the graph, and
+      # the KMP metadata/cinterop chain reaches the arm64 native prerequisites
+      # (:buildBoringsslArm64 cmake-configures with aarch64-linux-gnu-g++; the quiche
+      # linux-arm64 .a cargo-builds against the aarch64-unknown-linux-gnu target). Install
+      # the same cross toolchain the other Linux lanes use or the jar build dies at cmake
+      # configure — same failure class android_integration.yaml already documents.
+      - name: Install arm64 cross toolchain (linux-target tasks in the jar's task graph)
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libclang-dev
+          rustup target add aarch64-unknown-linux-gnu
       - name: Build harness controller jar (harness infrastructure)
         run: ./gradlew :socket-testsuite:controllerJar --no-configuration-cache
       - name: Bring up harness (echo + controller)
