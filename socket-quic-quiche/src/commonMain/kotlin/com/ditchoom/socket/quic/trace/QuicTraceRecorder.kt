@@ -20,17 +20,6 @@ import kotlin.time.TimeMark
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
 /**
- * Where recorded trace lines go. The recorder never touches files or sockets — the **consumer**
- * owns IO (append to a file, ship over the network, buffer in memory), which keeps the recorder
- * platform-free and `ByteArray`-free. [emit] may be invoked from multiple coroutines (the driver
- * loop, per-path reader loops, monitor collectors); implementations must tolerate concurrent
- * calls the same way a log sink does.
- */
-fun interface TraceSink {
-    fun emit(line: String)
-}
-
-/**
  * Opt-in capture tap for a quiche-backed QUIC connection — the W3 `TraceRecorder` of
  * RFC_DETERMINISTIC_SIMULATION.md §5/§5.1. Enable by setting `QuicheDriverTuning.recorder`; when
  * set, the driver wraps its `UdpChannel`s in a recording decorator ([wrap]), mirrors its

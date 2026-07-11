@@ -25,7 +25,23 @@ object QuicheEngine : QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection = buildJvmQuicConnection(hostname, port, quicOptions, transport, timeout, loadQuicheApi())
+    ): QuicConnection {
+        // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
+        // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
+        val recorder = traceRecorderFor(quicOptions)
+        val connection =
+            buildJvmQuicConnection(
+                hostname,
+                port,
+                quicOptions,
+                transport,
+                timeout,
+                loadQuicheApi(),
+                QuicheDriverTuning(recorder = recorder),
+            )
+        wireClientConnectivityTap(quicOptions, recorder, connection)
+        return connection
+    }
 
     override suspend fun bind(
         port: Int,
@@ -33,5 +49,5 @@ object QuicheEngine : QuicEngine {
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
-    ): QuicServer = buildJvmQuicServer(port, host, tlsConfig, quicOptions)
+    ): QuicServer = buildJvmQuicServer(port, host, tlsConfig, quicOptions, QuicheDriverTuning(recorder = traceRecorderFor(quicOptions)))
 }
