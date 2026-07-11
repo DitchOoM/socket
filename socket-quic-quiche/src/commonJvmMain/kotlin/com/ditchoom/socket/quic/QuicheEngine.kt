@@ -37,7 +37,7 @@ object QuicheEngine : QuicEngine {
                 transport,
                 timeout,
                 loadQuicheApi(),
-                QuicheDriverTuning(recorder = recorder),
+                QuicheDriverTuning(recorderFactory = { recorder }),
             )
         wireClientConnectivityTap(quicOptions, recorder, connection)
         return connection
@@ -49,5 +49,14 @@ object QuicheEngine : QuicEngine {
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
-    ): QuicServer = buildJvmQuicServer(port, host, tlsConfig, quicOptions, QuicheDriverTuning(recorder = traceRecorderFor(quicOptions)))
+    ): QuicServer =
+        buildJvmQuicServer(
+            port,
+            host,
+            tlsConfig,
+            quicOptions,
+            QuicheDriverTuning(recorderFactory = {
+                traceRecorderFor(quicOptions)
+            }),
+        )
 }

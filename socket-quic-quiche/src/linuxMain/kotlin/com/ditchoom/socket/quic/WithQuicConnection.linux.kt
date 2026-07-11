@@ -226,7 +226,7 @@ internal suspend fun buildLinuxQuicConnection(
                         clock = tuning.clock,
                         driverContext = tuning.driverContext,
                         random = tuning.random,
-                        recorder = tuning.recorder,
+                        recorder = tuning.recorderFactory(),
                         // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs
                         // (kept pinned via onCleanup for the driver's life) and a factory that opens
                         // additional io_uring path sockets to the same peer. Mirrors the JVM client.
