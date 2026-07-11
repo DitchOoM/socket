@@ -12,6 +12,14 @@ import com.ditchoom.socket.NetworkMonitor
  * (DGRAM_OUT / DGRAM_IN), mirrors state / path / close-error transitions, and polls path-stats on
  * the driver's timer wake — all encoded onto [sink].
  *
+ * **One capture per connection.** The v1 trace grammar carries no connection identifier and each
+ * connection records against its own clock origin, so a [sink] is meant to receive exactly one
+ * connection's lines for a clean, replayable trace. Reusing one [QuicTraceCapture] across concurrent
+ * connections interleaves them onto the shared [sink] (log-sink semantics) — give each connection its
+ * own capture if you intend to replay. A server [bind][com.ditchoom.socket.quic.QuicEngine.bind]
+ * likewise records **all** accepted connections onto the one [sink] (useful for aggregate diagnostics,
+ * not per-connection replay).
+ *
  * @property sink where each encoded `v1` trace line goes. The consumer owns IO (append to a file,
  *   ship over the network, buffer in memory) so capture stays platform-free. [sink] may be called
  *   from several coroutines concurrently — treat it like a log sink.
