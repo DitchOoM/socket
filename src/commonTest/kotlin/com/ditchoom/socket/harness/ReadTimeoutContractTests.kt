@@ -26,15 +26,15 @@ import kotlin.time.Duration.Companion.seconds
  * These five assertions encode the **proposed contract** (§3), not today's behavior. They run
  * unchanged on every platform against the in-process [SilentPeer] (accept-then-silence) fixture,
  * so a failure is a *provable* per-platform divergence. Current expected colors against each
- * platform's **default** implementation (**Phases 2 + 4a landed** — JVM-NIO2 now fully green):
+ * platform's **default** implementation (**Phases 2 + 4a + 4b landed** — all platforms conformant):
  *
  * | Assertion (contract §3)                              | Axis | JVM (NIO2 default) | Node | Apple | Linux |
  * |------------------------------------------------------|------|--------------------|------|-------|-------|
  * | [boundedReadOfSilentPeerTimesOut]                    | 1    | green              | green| green | green |
  * | [readTimeoutThrowsSocketTimeoutException]            | 3    | green ✅ (was IOException) | green ✅ (was TCE) | green ✅ (was TCE) | green |
- * | [connectionSurvivesReadTimeoutForReading]            | 2    | green ✅ (was destructive) | green| **RED** | green |
+ * | [connectionSurvivesReadTimeoutForReading]            | 2    | green ✅ (was destructive) | green| green ✅ (was destructive) | green |
  * | [untilClosedReadOfSilentPeerDoesNotTimeOut]          | opt-out | green           | green| green | green |
- * | [connectionSurvivesReadTimeoutForWriting]            | 2    | green              | green| **RED** | green |
+ * | [connectionSurvivesReadTimeoutForWriting]            | 2    | green              | green| green | green |
  *
  * The JVM *blocking* and *selector* variants are not the JVM default, so they're exercised
  * separately in `JvmReadTimeoutVariantTests` (commonJvmTest) — that's where the Axis-1 enforcement
@@ -42,10 +42,11 @@ import kotlin.time.Duration.Companion.seconds
  * made the selector path fully conformant** (it previously leaked a `TimeoutCancellationException`).
  *
  * **Phase 4a** made JVM-NIO2 non-destructive via the orphaned-read single-flight
- * (`AsyncBaseClientSocket.orphanedReadRaw`, RFC §3.2) — the last JVM red. The **only** remaining RED
- * is Axis 2 destructiveness on Apple (`NWSocketWrapper.closeInternal` in the receive-cancellation
- * path) — RFC Phase 4b, surfacing on the macOS CI lane. **Do not "fix" it by weakening the
- * assertion.** Linux is the reference impl (§3.1).
+ * (`AsyncBaseClientSocket.orphanedReadRaw`, RFC §3.2); **Phase 4b** did the same for Apple
+ * (`NWSocketWrapper.readRaw` captures the outstanding native receive in a `CompletableDeferred`,
+ * `closeInternal` only on real EOF/error/close — macOS-CI-validated). With 4b the whole matrix is
+ * green. **Do not "fix" a regression here by weakening the assertion.** Linux is the reference impl
+ * (§3.1).
  */
 class ReadTimeoutContractTests {
     private val deadline = 1.seconds
