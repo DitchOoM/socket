@@ -166,15 +166,84 @@ class SocketUnknownHostException(
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * A socket operation timed out (connect timeout, read timeout, write timeout).
+ * Exhaustive, allocation-free description of *what* timed out — the structured source of truth for a
+ * [SocketTimeoutException]. Callers pattern-match on the variant (`when (e.context)`) instead of
+ * parsing a message string; the human-readable [SocketTimeoutException.message] is *derived* from
+ * this on demand, so no string is allocated on the throw path (only if something reads `.message`,
+ * e.g. a logger). This is the timeout-half of the "model error causes as sealed types, not free-form
+ * strings" direction — [Platform] is the explicit quarantine for the one case where a platform
+ * primitive handed us only text (an errno/JDK message) with no structured detail to recover.
+ */
+sealed interface TimeoutContext {
+    /** Human-readable rendering, built lazily by [SocketTimeoutException.message]. */
+    fun describe(): String
+
+    /**
+     * The connect handshake exceeded [deadline]. [host] is `null` only when connecting by raw
+     * address (no hostname) — a genuine absence, not an "unknown deadline" sentinel.
+     */
+    data class Connect(
+        val deadline: Duration,
+        val host: String?,
+        val port: Int,
+    ) : TimeoutContext {
+        override fun describe(): String = "Connection to ${host ?: "?"}:$port timed out after $deadline"
+    }
+
+    /** A read exceeded [deadline] (the `ReadPolicy.Bounded` contract). */
+    data class Read(
+        val deadline: Duration,
+    ) : TimeoutContext {
+        override fun describe(): String = "Read timed out after $deadline"
+    }
+
+    /** A write exceeded [deadline]. */
+    data class Write(
+        val deadline: Duration,
+    ) : TimeoutContext {
+        override fun describe(): String = "Write timed out after $deadline"
+    }
+
+    /**
+     * A timeout surfaced by a platform primitive that gave us only a string (an errno description,
+     * a JDK exception message, the NIO selector) with no structured operation or deadline to
+     * recover. This is a *distinct variant* — not a null deadline on the typed ones — so "we have
+     * no structured detail" can never be confused with "the deadline happens to be absent". It
+     * quarantines the unavoidable platform-string leak in one named place.
+     */
+    data class Platform(
+        val detail: String,
+    ) : TimeoutContext {
+        override fun describe(): String = detail
+    }
+}
+
+/**
+ * A socket operation timed out (connect / read / write). The typed [context] is the source of truth;
+ * [message] is derived from it lazily (see [TimeoutContext]). [host] / [port] remain first-class so
+ * mappers that know the endpoint can carry it regardless of the [context] variant.
  */
 class SocketTimeoutException(
-    override val message: String,
+    val context: TimeoutContext,
     val host: String? = null,
     val port: Int = -1,
     override val cause: Throwable? = null,
-) : SocketException(message, cause),
+) : SocketException("", cause),
     ConnectionFailure {
+    /**
+     * Back-compat / platform-boundary convenience: wrap a bare string as [TimeoutContext.Platform].
+     * Prefer the [context]-taking primary constructor with a typed [TimeoutContext] variant wherever
+     * the operation and deadline are known (read/write/connect paths we own).
+     */
+    constructor(
+        message: String,
+        host: String? = null,
+        port: Int = -1,
+        cause: Throwable? = null,
+    ) : this(TimeoutContext.Platform(message), host, port, cause)
+
+    // Derived lazily from the typed context — no string is allocated unless `.message` is read.
+    override val message: String get() = context.describe()
     override val reason: ConnectionFailureReason get() = ConnectionFailureReason.Timeout
 }
 

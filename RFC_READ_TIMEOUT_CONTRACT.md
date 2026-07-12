@@ -45,6 +45,10 @@ A `read(deadline)` where `deadline` is finite (`ReadPolicy.Bounded`) and the pee
 2. **Non-destructive.** The timeout aborts *this read only*. The connection remains open and a subsequent `read()` / `write()` behaves normally. A timeout is not a close.
 3. **Uniform type.** It throws `SocketTimeoutException` — a `SocketException`, never a `SocketClosedException` and never a bare `TimeoutCancellationException`. `translateRead` continues to *not* catch it, so it propagates to the caller as-is.
 
+### 3.3 The exception carries a typed payload, not a string (landed with Phase 2)
+
+`SocketTimeoutException` carries a sealed **`TimeoutContext`** (`Connect` / `Read` / `Write` / `Platform`) as its source of truth; `message` is *derived lazily* from it (the throw path passes the interned `""` to the supertype and overrides the getter, so no string is allocated unless something reads `.message`). Callers branch on `when (e.context)`, not on parsed text — the timeout-half of the "model error causes as sealed types, not free-form strings" direction. `TimeoutContext.Platform(detail)` is the explicit quarantine for the sites where a platform primitive handed us only a string (errno text, a JDK exception message, the NIO selector) with no structured operation/deadline to recover; the read/write/connect paths the library owns use the typed variants. Those typed variants carry a **non-null `Duration` deadline** — "no structured detail" is the separate `Platform` *variant*, never an overloaded `null` field, so the two states can't be confused. `host`/`port` stay first-class fields so endpoint-aware mappers carry them regardless of variant.
+
 ### 3.1 Why non-destructive
 
 `Bounded` exists to express *"give up on this read, but keep the connection."* That is what makes it useful:
@@ -99,6 +103,26 @@ Per [`RFC_DETERMINISTIC_SIMULATION.md`](./RFC_DETERMINISTIC_SIMULATION.md), the 
 
 This is precisely the QUIC-vs-TCP harness gap: QUIC has deterministic impairment + clock seams (`ManualDriverClock`, in-process `ImpairingProxy`, `StubQuicheApi`); TCP has Toxiproxy + `ScriptedTransport` but no uniform deterministic timeout fixture. Building the silent-peer harness is a prerequisite, and doubles as the first real step of TCP harness parity.
 
+### 6.1 Empirical baseline (Phase 1 landed 2026-07-12)
+
+The harness (`SilentPeer` — an in-process `ServerSocket` that accepts then goes silent; needs no Docker/netem, so it runs identically on every platform) and the five assertions (`ReadTimeoutContractTests` in `commonTest`; the JVM-variant re-runs in `JvmReadTimeoutVariantTests`) are implemented. The assertions encode the §3 contract, so a failure *is* a divergence. Measured red/green:
+
+| Impl | (1) enforced | (3) `SocketTimeoutException` | (2) read survives | opt-out | (2) write survives |
+|---|---|---|---|---|---|
+| **Linux io_uring** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **JVM NIO2** *(default)* | ✅ | ❌ `SocketIOException` | ❌ `IllegalStateException` "Reading not allowed…" | ✅ | ✅ |
+| **JVM NIO selector** | ✅ | ❌ `TimeoutCancellationException` | ✅ | ✅ | ✅ |
+| **JVM NIO blocking** | ❌ hangs (`WatchdogExpired`) | ❌ (never throws) | ❌ (never throws) | ✅ | ❌ (never throws) |
+| **Node** | ✅ | ❌ `TimeoutCancellationException` | ✅ | ✅ | ✅ |
+| **Apple** | *(CI-only; not measured on this box — predicted ❌ type, ❌ read survives per §4)* | | | | |
+
+Red on 4 of the 5 measured impls (Linux is the sole fully-conformant one); Apple's reds surface on the macOS CI lane. **Two refinements to §2/§4's predictions fell out of the measurement:**
+
+- **JVM NIO2 destructiveness is read-half only.** A `write()` after a read-timeout *succeeds* — the JDK `readKilled` flag kills the read side but leaves the write side live. §4's fix scope narrows accordingly: the NIO2 non-destructive work is about the read half, not a whole-connection teardown.
+- **The JVM NIO selector path is *not* Axis-3 conformant.** §2/§4 called it "conformant / the JVM reference," but it throws a bare `TimeoutCancellationException`, not `SocketTimeoutException` — it needs the same Phase-2 TCE→`SocketTimeoutException` wrap as Apple/Node. **Linux is therefore the *only* true reference impl today; no JVM variant is fully conformant.**
+
+`ReadOutcome` (the harness's classifier) converts "hangs forever" into a deterministic `WatchdogExpired` value so the non-enforcing blocking path fails as a fast assertion instead of the 30 s framework timeout.
+
 ## 7. The allocation seam (shared with future UDP work)
 
 `ClientSocket.allocate()` picks the implementation class *before* `TransportConfig` exists — config only arrives at `open()` (`ClientSocket.kt:19`). Any per-connection choice of implementation (the `IoConcurrency` strategy; later, a datagram vs. stream socket) needs config at allocation time. Two options were on the table:
@@ -119,7 +143,7 @@ interface ClientToServerSocket : ClientSocket { suspend fun open(port: Int, host
 ## 8. Scope / phasing
 
 1. **Define + assert (this RFC's core).** Land `SocketTimeoutException` as the uniform type in `translateRead`'s vocabulary; build the silent-peer harness (§6); write the failing `commonTest` matrix. Red across ~4 of 6 impls — that's the baseline.
-2. **Fix the exception types (§4.1).** Cheapest wins: NIO2 → `SocketTimeoutException`, Apple/Node `TimeoutCancellationException` → `SocketTimeoutException`. Turns Axis 3 green.
+2. **Fix the exception types (§4.1). ✅ LANDED 2026-07-12.** NIO2 `InterruptedByTimeoutException` → `SocketTimeoutException` (explicit case in `wrapJvmException`); Node/Apple `TimeoutCancellationException` → `SocketTimeoutException` (wrapped at the read boundary); the JVM **selector** path (found non-conformant in §6.1) routed through `aSelect`'s existing `SocketTimeoutException` by swallowing its own `TimeoutCancellationException`. Axis 3 now uniform on NIO2 / selector / Node (verified) + Apple (CI). Blocking path still can't satisfy it (never throws — Phase 3).
 3. **Fix enforcement (JVM blocking).** Turns Axis 1 green.
 4. **Fix destructiveness (JVM NIO2 default + Apple).** The hardest slice — the orphaned-read / non-destructive receive work. Turns Axis 2 green. Requires the §3.2 buffer-lifetime discipline.
 5. **(Optional) VT strategy.** Only after 1–4. Adds `IoConcurrency` + the allocation seam (§7).

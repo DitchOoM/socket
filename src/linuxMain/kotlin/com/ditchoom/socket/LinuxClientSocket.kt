@@ -334,7 +334,7 @@ class LinuxClientSocket(
                     }
                     else -> {
                         if (ssl != null) {
-                            handleSslReadError(bytesRead)
+                            handleSslReadError(bytesRead, deadline)
                         } else {
                             handleReadError(-bytesRead)
                         }
@@ -368,7 +368,7 @@ class LinuxClientSocket(
                     }
                     else -> {
                         if (ssl != null) {
-                            handleSslReadError(bytesRead)
+                            handleSslReadError(bytesRead, deadline)
                         } else {
                             handleReadError(-bytesRead)
                         }
@@ -442,11 +442,14 @@ class LinuxClientSocket(
         }
     }
 
-    private fun handleSslReadError(result: Int): Nothing {
+    private fun handleSslReadError(
+        result: Int,
+        deadline: Duration,
+    ): Nothing {
         val error = SSL_get_error(ssl, result)
         when (error) {
             SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE -> {
-                throw SocketTimeoutException("Read timed out")
+                throw SocketTimeoutException(TimeoutContext.Read(deadline))
             }
             SSL_ERROR_ZERO_RETURN -> {
                 closeInternal()
@@ -483,7 +486,7 @@ class LinuxClientSocket(
                 } else {
                     writeWithIoUring(ptr, remaining, deadline).toLong()
                 }
-            return BytesWritten(handleWriteResult(buffer, bytesSent))
+            return BytesWritten(handleWriteResult(buffer, bytesSent, deadline))
         }
 
         // Zero-copy path: check if buffer has managed array access
@@ -499,7 +502,7 @@ class LinuxClientSocket(
                     } else {
                         writeWithIoUring(ptr, remaining, deadline).toLong()
                     }
-                BytesWritten(handleWriteResult(buffer, bytesSent))
+                BytesWritten(handleWriteResult(buffer, bytesSent, deadline))
             }
         }
 
@@ -524,7 +527,7 @@ class LinuxClientSocket(
                 } else {
                     writeWithIoUring(ptr, remaining, deadline).toLong()
                 }
-            return BytesWritten(handleWriteResult(buffer, bytesSent))
+            return BytesWritten(handleWriteResult(buffer, bytesSent, deadline))
         } finally {
             scratch.freeNativeMemory()
         }
@@ -533,6 +536,7 @@ class LinuxClientSocket(
     private fun handleWriteResult(
         buffer: ReadBuffer,
         bytesSent: Long,
+        deadline: Duration,
     ): Int =
         when {
             bytesSent >= 0 -> {
@@ -541,7 +545,7 @@ class LinuxClientSocket(
             }
             else ->
                 if (ssl != null) {
-                    handleSslWriteError(bytesSent.toInt())
+                    handleSslWriteError(bytesSent.toInt(), deadline)
                 } else {
                     handleWriteError((-bytesSent).toInt())
                 }
@@ -594,11 +598,14 @@ class LinuxClientSocket(
         }
     }
 
-    private fun handleSslWriteError(result: Int): Nothing {
+    private fun handleSslWriteError(
+        result: Int,
+        deadline: Duration,
+    ): Nothing {
         val error = SSL_get_error(ssl, result)
         when (error) {
             SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE -> {
-                throw SocketTimeoutException("Write timed out")
+                throw SocketTimeoutException(TimeoutContext.Write(deadline))
             }
             else -> {
                 throw SSLProtocolException("SSL write error: ${getOpenSSLError()}")

@@ -52,7 +52,7 @@ suspend fun connect(
                             socket.destroy()
                             cont.resumeWithException(
                                 SocketTimeoutException(
-                                    "Connection timeout after $timeout",
+                                    TimeoutContext.Connect(timeout, tcpOptions.host, tcpOptions.port),
                                     tcpOptions.host,
                                     tcpOptions.port,
                                 ),

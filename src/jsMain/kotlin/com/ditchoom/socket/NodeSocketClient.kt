@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.unwrapFully
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
@@ -125,15 +126,22 @@ open class NodeSocket(
         // (like Autobahn) send a response and close before read() is called.
         socket.resume()
         val message =
-            withTimeout(timeout) {
-                try {
-                    incomingMessageChannel.receive()
-                } catch (e: ClosedReceiveChannelException) {
-                    throw SocketClosedException.General(
-                        "Socket is already closed. transmissionError=$hadTransmissionError",
-                        e,
-                    )
+            try {
+                withTimeout(timeout) {
+                    try {
+                        incomingMessageChannel.receive()
+                    } catch (e: ClosedReceiveChannelException) {
+                        throw SocketClosedException.General(
+                            "Socket is already closed. transmissionError=$hadTransmissionError",
+                            e,
+                        )
+                    }
                 }
+            } catch (e: TimeoutCancellationException) {
+                // withTimeout expiry leaks kotlinx's TimeoutCancellationException; surface the uniform
+                // timeout type instead (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Node reads are already
+                // non-destructive, so the connection stays usable after this throws.
+                throw SocketTimeoutException(TimeoutContext.Read(timeout), cause = e)
             }
         if (message.bytesRead < 0) {
             throw SocketClosedException.General(

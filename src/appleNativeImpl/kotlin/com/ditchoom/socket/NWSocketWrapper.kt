@@ -18,6 +18,7 @@ import com.ditchoom.socket.nwhelpers.nw_helper_remote_port
 import com.ditchoom.socket.nwhelpers.nw_helper_send_tcp
 import com.ditchoom.socket.nwhelpers.nw_helper_tcp_receive
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -74,38 +75,46 @@ open class NWSocketWrapper(
         if (closedLocally) throw SocketClosedException.General("Socket is closed")
         val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         return readMutex.withLock {
-            withTimeout(deadline) {
-                suspendCancellableCoroutine { continuation ->
-                    nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
-                        when {
-                            data != null && data.length.toInt() > 0 -> {
-                                // Zero-copy: wrap NSData directly using NSDataBuffer
-                                val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
-                                buffer.position(data.length.toInt())
-                                buffer.resetForRead()
-                                continuation.resume(buffer)
-                            }
-                            isComplete?.boolValue == true -> {
-                                closeInternal()
-                                continuation.resumeWithException(
-                                    SocketClosedException.EndOfStream(),
-                                )
-                            }
-                            errorDomain != 0 -> {
-                                closeInternal()
-                                continuation.resumeWithException(
-                                    mapSocketException(errorDomain, errorDesc),
-                                )
-                            }
-                            else -> {
-                                continuation.resume(EMPTY_BUFFER)
+            try {
+                withTimeout(deadline) {
+                    suspendCancellableCoroutine { continuation ->
+                        nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
+                            when {
+                                data != null && data.length.toInt() > 0 -> {
+                                    // Zero-copy: wrap NSData directly using NSDataBuffer
+                                    val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
+                                    buffer.position(data.length.toInt())
+                                    buffer.resetForRead()
+                                    continuation.resume(buffer)
+                                }
+                                isComplete?.boolValue == true -> {
+                                    closeInternal()
+                                    continuation.resumeWithException(
+                                        SocketClosedException.EndOfStream(),
+                                    )
+                                }
+                                errorDomain != 0 -> {
+                                    closeInternal()
+                                    continuation.resumeWithException(
+                                        mapSocketException(errorDomain, errorDesc),
+                                    )
+                                }
+                                else -> {
+                                    continuation.resume(EMPTY_BUFFER)
+                                }
                             }
                         }
-                    }
-                    continuation.invokeOnCancellation {
-                        closeInternal()
+                        continuation.invokeOnCancellation {
+                            closeInternal()
+                        }
                     }
                 }
+            } catch (e: TimeoutCancellationException) {
+                // withTimeout expiry leaks kotlinx's TimeoutCancellationException; surface the
+                // uniform timeout type instead (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). NOTE: the
+                // connection was already torn down by invokeOnCancellation above — that Axis-2
+                // destructiveness is deferred to RFC Phase 4.
+                throw SocketTimeoutException(TimeoutContext.Read(deadline), cause = e)
             }
         }
     }

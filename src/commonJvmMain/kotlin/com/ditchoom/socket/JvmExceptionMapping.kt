@@ -5,6 +5,7 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.ClosedChannelException
+import java.nio.channels.InterruptedByTimeoutException
 import javax.net.ssl.SSLHandshakeException
 
 /**
@@ -45,6 +46,16 @@ internal fun wrapJvmException(
         is UnknownHostException ->
             SocketUnknownHostException(host ?: ex.message, cause = ex)
         is SocketTimeoutException ->
+            com.ditchoom.socket.SocketTimeoutException(
+                ex.message ?: "Socket operation timed out",
+                host,
+                port,
+                ex,
+            )
+        is InterruptedByTimeoutException ->
+            // NIO2's read/write timeout. Subclass of IOException with a null message, so without
+            // this explicit case it would fall through to the generic SocketIOException branch
+            // (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Map it to the uniform timeout type.
             com.ditchoom.socket.SocketTimeoutException(
                 ex.message ?: "Socket operation timed out",
                 host,
