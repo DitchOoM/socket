@@ -67,7 +67,7 @@ Making a timeout non-destructive on a *blocking* read means the read must be aba
 
 | Platform | Gap vs. contract | Fix |
 |---|---|---|
-| JVM NIO blocking | Axis 1 (not enforced) | Enforce the deadline; simplest is to route blocking reads through the single-flight orphaned-read pattern (§3.2), or deprecate the pure-blocking path in favor of selector/VT. |
+| JVM NIO blocking | ~~Axis 1 (not enforced)~~ **conformant (Phase 3 landed)** | Routed through the single-flight orphaned-read pattern (§3.2) in `BaseClientSocket.blockingReadRaw`: the actual `channel.read` runs on a socket-scoped coroutine that owns the receive buffer, the caller `withTimeout`s only the wait, and a timed-out read is left orphaned for the next `read()` to re-await. Enforced *and* non-destructive — all five assertions green. |
 | JVM NIO2 *(default)* | Axis 2 (destructive), Axis 3 (`SocketIOException`) | The JDK read-timeout is destructive by design (`readKilled`), so **do not pass the timeout to the JDK.** Enforce non-destructively via the selector path (already conformant) or the orphaned-read pattern. Map the timeout to `SocketTimeoutException`. |
 | JVM NIO selector | conformant | Reference for the JVM side. |
 | Apple | Axis 2 (destructive), Axis 3 (`TimeoutCancellationException`) | Remove `closeInternal()` from the receive cancellation path *for the timeout case*; distinguish "deadline elapsed" (keep connection, throw `SocketTimeoutException`) from "cancelled/closed" (tear down). |
@@ -114,6 +114,8 @@ The harness (`SilentPeer` — an in-process `ServerSocket` that accepts then goe
 | **JVM NIO selector** | ✅ | ❌ `TimeoutCancellationException` | ✅ | ✅ | ✅ |
 | **JVM NIO blocking** | ❌ hangs (`WatchdogExpired`) | ❌ (never throws) | ❌ (never throws) | ✅ | ❌ (never throws) |
 | **Node** | ✅ | ❌ `TimeoutCancellationException` | ✅ | ✅ | ✅ |
+
+> **Phase 2 (Axis 3) + Phase 3 (blocking-path enforcement) landed after this baseline was measured.** With Phase 2 the JVM-selector / Node type reds are now `SocketTimeoutException`. With **Phase 3** the JVM-blocking row above is fully green — the orphaned-read single-flight (`BaseClientSocket.blockingReadRaw`, §3.2) makes it enforced *and* non-destructive across all five assertions. The remaining reds are Axis-2 destructiveness on **JVM-NIO2 (read half)** and **Apple** — RFC Phase 4.
 | **Apple** | *(CI-only; not measured on this box — predicted ❌ type, ❌ read survives per §4)* | | | | |
 
 Red on 4 of the 5 measured impls (Linux is the sole fully-conformant one); Apple's reds surface on the macOS CI lane. **Two refinements to §2/§4's predictions fell out of the measurement:**
@@ -144,8 +146,8 @@ interface ClientToServerSocket : ClientSocket { suspend fun open(port: Int, host
 
 1. **Define + assert (this RFC's core).** Land `SocketTimeoutException` as the uniform type in `translateRead`'s vocabulary; build the silent-peer harness (§6); write the failing `commonTest` matrix. Red across ~4 of 6 impls — that's the baseline.
 2. **Fix the exception types (§4.1). ✅ LANDED 2026-07-12.** NIO2 `InterruptedByTimeoutException` → `SocketTimeoutException` (explicit case in `wrapJvmException`); Node/Apple `TimeoutCancellationException` → `SocketTimeoutException` (wrapped at the read boundary); the JVM **selector** path (found non-conformant in §6.1) routed through `aSelect`'s existing `SocketTimeoutException` by swallowing its own `TimeoutCancellationException`. Axis 3 now uniform on NIO2 / selector / Node (verified) + Apple (CI). Blocking path still can't satisfy it (never throws — Phase 3).
-3. **Fix enforcement (JVM blocking).** Turns Axis 1 green.
-4. **Fix destructiveness (JVM NIO2 default + Apple).** The hardest slice — the orphaned-read / non-destructive receive work. Turns Axis 2 green. Requires the §3.2 buffer-lifetime discipline.
+3. **Fix enforcement (JVM blocking). ✅ LANDED.** Implemented as the orphaned-read single-flight (§3.2) in `BaseClientSocket.blockingReadRaw`, not a deprecation of the pure-blocking path. Because the technique orphans the read rather than cancelling it, the blocking path turned **both** Axis 1 (enforcement) *and* Axis 2 (non-destructive, read + write halves) green at once — all five JVM-blocking-variant assertions now pass.
+4. **Fix destructiveness (JVM NIO2 default + Apple).** The hardest slice — the orphaned-read / non-destructive receive work. Turns Axis 2 green. Requires the §3.2 buffer-lifetime discipline. (The JVM-blocking half of this was already delivered by Phase 3; what remains is NIO2's read-half `readKilled` and Apple's `closeInternal`-on-cancel.)
 5. **(Optional) VT strategy.** Only after 1–4. Adds `IoConcurrency` + the allocation seam (§7).
 
 ## 9. Open questions

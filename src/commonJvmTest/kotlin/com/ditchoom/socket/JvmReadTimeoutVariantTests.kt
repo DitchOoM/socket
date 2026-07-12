@@ -14,10 +14,12 @@ import kotlin.test.Test
  * default, `useAsyncChannels = true`). These subclasses flip the process-global mode knobs — with
  * the same save/restore discipline as [SimpleNioBlockingSocketTests] — to reach the other two rows:
  *
- *  - **NIO blocking** (`useNioBlocking = true`): the read `timeout` is silently dropped
- *    (`SocketChannelExtensions.kt:204`). Its Phase-1 RED is Axis 1 — the bounded read never fires,
- *    surfacing as [com.ditchoom.socket.harness.ReadOutcome.WatchdogExpired]. This is the *only*
- *    place the enforcement divergence is provable, since blocking is never the default.
+ *  - **NIO blocking** (`useNioBlocking = true`): **Phase 3 landed** — the read now honors the
+ *    deadline via the orphaned-read single-flight (`BaseClientSocket.blockingReadRaw`, RFC §3.2), so
+ *    all five assertions are green (enforced *and* non-destructive; the orphaned read owns its buffer,
+ *    so a timed-out read survives to be re-awaited by the next `read()`). Its Phase-1 RED was Axis 1 —
+ *    the bounded read never fired, surfacing as [com.ditchoom.socket.harness.ReadOutcome.WatchdogExpired].
+ *    This was the *only* place the enforcement divergence was provable, since blocking is never the default.
  *  - **NIO selector** (non-blocking): the JVM reference path — enforced, non-destructive,
  *    `SocketTimeoutException`. Expected all-green today; here to lock that it stays the reference.
  *
@@ -41,7 +43,8 @@ class NioBlockingReadTimeoutContractTests {
         useNioBlocking = savedBlocking
     }
 
-    // Axis 1 RED: the blocking path ignores the deadline, so this hangs → WatchdogExpired.
+    // Phase 3: the blocking path now enforces the deadline via the orphaned-read single-flight
+    // (was Axis 1 RED — hung → WatchdogExpired).
     @Test
     fun boundedReadOfSilentPeerTimesOut() = ReadTimeoutContractTests().boundedReadOfSilentPeerTimesOut()
 
