@@ -56,13 +56,13 @@ internal object NativeLibLoader {
             }
         val dir = Files.createTempDirectory("quiche").toFile().apply { deleteOnExit() }
 
-        // If the classifier ships a separate self-contained libquiche.{so,dylib}, extract it into the
-        // SAME dir first so a thin shim resolves it via RUNPATH $ORIGIN (Linux) / @loader_path (macOS).
-        // Tolerant by design: some classifiers ship only a self-contained shim with no separate base lib
-        // (e.g. the linux-arm64 whole-archive shim, or Windows) — then this resource is absent and the
-        // shim loads standalone. (A thin shim is only ever packaged alongside its base lib.)
-        if (os == "linux") extractIfPresent(dir, "META-INF/native/linux-$arch/libquiche.so")
-        if (os == "macos") extractIfPresent(dir, "META-INF/native/macos-$arch/libquiche.dylib")
+        // The thin JNI shim DT_NEEDEDs the self-contained libquiche.{so,dylib}, so extract that base lib
+        // into the SAME dir first — the shim then resolves it via RUNPATH $ORIGIN (Linux) / @loader_path
+        // (macOS). Every non-Windows classifier ships it (same invariant the JDK 21+ FFM loader relies on);
+        // a missing resource is a packaging bug and extract() fails loudly. Windows ships a single
+        // self-contained quiche_jni.dll with no separate base lib.
+        if (os == "linux") extract(dir, "META-INF/native/linux-$arch/libquiche.so")
+        if (os == "macos") extract(dir, "META-INF/native/macos-$arch/libquiche.dylib")
 
         val jni =
             when (os) {
@@ -73,18 +73,6 @@ internal object NativeLibLoader {
             }
         System.load(jni.absolutePath)
         loaded = true
-    }
-
-    // Extract [resource] if it's on the classpath, else return null (used for the optional base lib —
-    // classifiers that ship only a self-contained shim don't include it).
-    private fun extractIfPresent(
-        dir: File,
-        resource: String,
-    ): File? {
-        val cl = NativeLibLoader::class.java.classLoader ?: return null
-        val probe = cl.getResourceAsStream(resource) ?: return null
-        probe.close()
-        return extract(dir, resource)
     }
 
     private fun extract(
