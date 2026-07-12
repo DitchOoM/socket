@@ -88,6 +88,8 @@ fun downloadQuicheSource(
     // Applied to every consumer of this clone (idempotent). Only affects the boringssl-boring-crate
     // code path; external `ffi,qlog` builds are untouched.
     patchQuicheBuildRsForBoringCrate(sourceDir)
+    // Make the linux cdylib emit an UNVERSIONED soname (idempotent; no-op off-linux).
+    patchQuicheBuildRsForUnversionedSoname(sourceDir)
 
     return sourceDir
 }
@@ -134,6 +136,51 @@ fun patchQuicheBuildRsForBoringCrate(sourceDir: File) {
         """.trimMargin()
     buildRs.writeText(text.replace(original, replacement))
     logger.lifecycle("Patched quiche build.rs: de-duplicated boring-crate BoringSSL static link")
+}
+
+/**
+ * Patch quiche's build.rs so the **linux** cdylib gets an UNVERSIONED soname (`libquiche.so`).
+ *
+ * quiche's `build.rs` calls `cdylib_link_lines::metabuild()`, which — on linux — emits
+ * `-Wl,-soname,libquiche.so.<major>` (e.g. `libquiche.so.0`). We ship and extract the file as plain
+ * `libquiche.so`, and the JNI shim DT_NEEDEDs that exact name; a versioned soname would make the shim
+ * depend on `libquiche.so.0`, which we never ship. (Android's metabuild branch already emits an
+ * unversioned soname; macOS uses install_name, retargeted to @rpath post-build.) `-C link-arg` can't
+ * win — metabuild's `rustc-cdylib-link-arg` is appended *after* it — so we fix it at the source: emit
+ * our own `-soname` right after the metabuild call, making it the last (winning) `-soname` on the link
+ * line. This is the underlying fix; no post-build ELF/soname surgery is needed.
+ *
+ * Idempotent (marker-guarded); a no-op if the metabuild block isn't present (upstream changed / ≤0.28).
+ */
+fun patchQuicheBuildRsForUnversionedSoname(sourceDir: File) {
+    val buildRs = sourceDir.resolve("quiche/src/build.rs")
+    if (!buildRs.exists()) return
+    val text = buildRs.readText()
+    if (text.contains("socket-unversioned-soname")) return // already patched
+
+    val original =
+        """
+        |    if target_os != "windows" {
+        |        cdylib_link_lines::metabuild();
+        |    }
+        """.trimMargin()
+    if (!text.contains(original)) return // upstream changed the ffi metabuild block — nothing to patch
+
+    val replacement =
+        """
+        |    if target_os != "windows" {
+        |        cdylib_link_lines::metabuild();
+        |        // socket-unversioned-soname: metabuild versions the linux soname (libquiche.so.<major>),
+        |        // but we ship/extract plain libquiche.so and the JNI shim DT_NEEDEDs that exact name.
+        |        // Emitted after metabuild so it is the last -soname on the link line and wins.
+        |        if target_os == "linux" {
+        |            println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libquiche.so");
+        |        }
+        |    }
+        """.trimMargin()
+
+    buildRs.writeText(text.replace(original, replacement))
+    logger.lifecycle("Patched quiche build.rs: unversioned linux cdylib soname (libquiche.so)")
 }
 
 /**
@@ -272,22 +319,41 @@ fun createBuildQuicheSharedTask(
 
             logger.lifecycle("Building quiche $quicheVersion (shared, $os-$arch)...")
 
-            // Use pre-built BoringSSL if available. Probe ONCE: this single decision determines
-            // both whether libquiche.a vendors its own BoringSSL and whether the JNI shim must
-            // link the external archives. Re-probing `libs/boringssl` independently in the shim
-            // task races a concurrent :buildBoringssl* populating that dir mid-build — a vendored
-            // libquiche.a then gets the external libcrypto.a linked alongside it, yielding
-            // duplicate-symbol link errors (v3_utl.c.o, a2i_IPADDRESS, …). We record the choice
-            // in a marker next to libquiche.a and have the shim read THAT, never the live dir.
+            // Use pre-built BoringSSL if available. When present, quiche builds against external
+            // BoringSSL (`ffi,qlog`) and we whole-archive those archives into the cdylib below; when
+            // absent, quiche vendors its own via boring-crate (already self-contained).
             val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
             val usesExternalBssl = boringsslDir.resolve("lib/libssl.a").exists()
             val env = mutableMapOf<String, String>()
             // Note: avoid -C lto=thin / -C embed-bitcode=yes — they conflict with
             // pre-built BoringSSL objects that lack LTO bitcode.
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
-            if (usesExternalBssl) {
-                env["QUICHE_BSSL_PATH"] = boringsslDir.absolutePath
-                logger.lifecycle("Using pre-built BoringSSL from ${boringsslDir.absolutePath}")
+            val baseRustflags = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
+            if (os == "linux" && usesExternalBssl) {
+                // External-BoringSSL path: whole-archive libssl.a + libcrypto.a INTO the cdylib so
+                // libquiche.so is SELF-CONTAINED. quiche 0.29 removed the QUICHE_BSSL_PATH mechanism;
+                // with `--features ffi,qlog` (no boringssl-boring-crate) quiche emits NO BoringSSL link
+                // directives, and rustc does not pass --no-undefined for a cdylib — so without this the
+                // .so links "successfully" with ~70 unresolved SSL_/EVP_/CRYPTO_ symbols and only dlopens
+                // where a compatible BoringSSL is already globally loaded (broken on a clean box; verify
+                // with `ldd -r libquiche.so` in a bare container). Passed as TARGET-specific rustflags —
+                // NOT generic RUSTFLAGS, which would also hit host build-scripts/proc-macros and, in the
+                // arm64 cross-build, feed an aarch64 archive to the x64 host linker. rustc's own
+                // --exclude-libs,ALL keeps the BoringSSL symbols non-exported (no pollution); quiche_*
+                // stay exported (crate objects, not a linked lib). The unversioned soname the shim
+                // DT_NEEDEDs is set at the source via patchQuicheBuildRsForUnversionedSoname.
+                val targetRustflagsVar = "CARGO_TARGET_${cargoTarget.uppercase().replace('-', '_')}_RUSTFLAGS"
+                env[targetRustflagsVar] =
+                    baseRustflags +
+                    " -C link-arg=-Wl,--whole-archive" +
+                    " -C link-arg=${boringsslDir.resolve("lib/libssl.a").absolutePath}" +
+                    " -C link-arg=${boringsslDir.resolve("lib/libcrypto.a").absolutePath}" +
+                    " -C link-arg=-Wl,--no-whole-archive"
+                logger.lifecycle("Bundling pre-built BoringSSL into libquiche.$libExt from ${boringsslDir.absolutePath}")
+            } else {
+                // Self-contained without injection: macOS and the linux boring-crate fallback both link
+                // BoringSSL statically via boring-crate. No whole-archive needed; the linux soname is set
+                // by the build.rs patch, and the macOS @rpath install_name via install_name_tool below.
+                env["RUSTFLAGS"] = baseRustflags
             }
             if (os == "linux" && arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
                 env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
@@ -327,25 +393,12 @@ fun createBuildQuicheSharedTask(
             val destLib = outputDir.resolve("lib/libquiche.$libExt")
             builtLib.copyTo(destLib, overwrite = true)
 
-            // Also copy libquiche.a — the JVM JNI shim links against it for self-
-            // contained packaging (the .dylib is for FFM on JDK 21+).
+            // Also copy libquiche.a alongside the shared lib. The JNI shim no longer links it (it now
+            // dynamically links libquiche.$libExt), but the static archive is kept for other consumers
+            // that need it (Linux K/Native cinterop / any static-linking downstream).
             val builtStatic = sourceDir.resolve("target/$cargoTarget/release/libquiche.a")
             if (builtStatic.exists()) {
                 builtStatic.copyTo(outputDir.resolve("lib/libquiche.a"), overwrite = true)
-            }
-            // Record whether this libquiche.a was built against external BoringSSL (so it has
-            // unresolved SSL_*/EVP_*/CRYPTO_* refs the shim must satisfy) or vendored its own
-            // (already self-contained — the shim must NOT add the external archives, or ld sees
-            // every BoringSSL object twice). The shim reads this marker, NOT the live boringssl
-            // dir, so a concurrent :buildBoringssl* can't flip the decision out from under it.
-            val externalMarker = outputDir.resolve("lib/.bssl-external")
-            val vendoredMarker = outputDir.resolve("lib/.bssl-vendored")
-            if (usesExternalBssl) {
-                externalMarker.writeText("external\n")
-                if (vendoredMarker.exists()) vendoredMarker.delete()
-            } else {
-                vendoredMarker.writeText("vendored\n")
-                if (externalMarker.exists()) externalMarker.delete()
             }
             // Copy quiche.h for the JNI shim compile (Android task reads from libs/quiche/include).
             val headerSrc = sourceDir.resolve("quiche/include/quiche.h")
@@ -605,10 +658,11 @@ if (isMacOS) {
 }
 
 // --- JVM JNI shim build (desktop macOS / Linux) ---
-// Compiles src/jni/quiche_jni.c and links quiche statically so the resulting
-// libquiche_jni.{dylib,so} is self-contained (no dyld dependency chain).
-// FFM on JDK 21+ uses libquiche.{dylib,so} directly; this shim is the JDK 8–20
-// fallback path loaded by NativeLibLoader.
+// Compiles src/jni/quiche_jni.c into a THIN libquiche_jni.{dylib,so} that dynamically links the
+// sibling self-contained libquiche.{dylib,so} (via -lquiche) rather than re-bundling quiche +
+// BoringSSL a second time — so those ship exactly once. NativeLibLoader extracts libquiche.* next to
+// the shim so its DT_NEEDED / @rpath resolves via $ORIGIN / @loader_path. FFM on JDK 21+ loads
+// libquiche.{dylib,so} directly; this shim is only the JDK 8–20 JNI fallback path.
 
 fun createBuildJvmJniShimTask(
     os: String,
@@ -643,11 +697,14 @@ fun createBuildJvmJniShimTask(
         }
 
         doLast {
-            val quicheStatic = outputDir.resolve("libquiche.a")
-            if (!quicheStatic.exists()) {
+            // The shim dynamically links the sibling self-contained libquiche.$libExt (built by the
+            // shared task we dependsOn) rather than static-bundling libquiche.a — so quiche + BoringSSL
+            // ship exactly once, in libquiche.$libExt, and the shim is a thin JNI forwarder.
+            val quicheShared = outputDir.resolve("libquiche.$libExt")
+            if (!quicheShared.exists()) {
                 throw GradleException(
-                    "libquiche.a missing at ${quicheStatic.absolutePath} — " +
-                        "the shared build should have copied it alongside libquiche.$libExt",
+                    "libquiche.$libExt missing at ${quicheShared.absolutePath} — " +
+                        "the shared build should have produced it before the JNI shim links against it",
                 )
             }
             val javaHome =
@@ -676,51 +733,19 @@ fun createBuildJvmJniShimTask(
                         "-I$javaHome/include",
                         "-I$javaHome/include/$jdkIncludeOs",
                         "-I${quicheInclude.absolutePath}",
-                        // Pull every symbol from libquiche.a so the JNI dylib is self-contained
-                        "-Wl,-force_load,${quicheStatic.absolutePath}",
+                        // Dynamically link the sibling libquiche.dylib (self-contained: boring-crate
+                        // statically links BoringSSL into it) instead of force_load'ing a second copy.
+                        // quiche_jni.c calls only quiche_* (never BoringSSL), so -lquiche resolves every
+                        // reference. The dylib's install_name is @rpath/libquiche.dylib, so give the shim
+                        // an @loader_path rpath to find it beside itself (NativeLibLoader extracts both
+                        // into one temp dir). -undefined error → fail the link, not a runtime dlopen.
+                        "-L${outputDir.absolutePath}",
+                        "-lquiche",
+                        "-Wl,-rpath,@loader_path",
+                        "-Wl,-undefined,error",
                         "-Wl,-install_name,@rpath/libquiche_jni.$libExt",
                     )
             } else {
-                // Whether libquiche.a needs the external BoringSSL archives is decided ONCE, at
-                // quiche-build time, and recorded in `.bssl-external` next to libquiche.a (see the
-                // shared-build task). Read THAT marker — never re-probe the live `libs/boringssl`
-                // dir, which a concurrent :buildBoringssl* can populate after the cargo build chose
-                // the self-contained backend (boringssl-boring-crate on 0.29+; was boringssl-vendored
-                // ≤0.28), causing the external libcrypto.a to be linked on top of the already-vendored
-                // objects (duplicate-symbol ld failure: v3_utl.c.o, a2i_IPADDRESS…).
-                val boringsslLibDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch/lib")
-                // Primary signal: the marker the shared build wrote next to this libquiche.a.
-                // Fallback (legacy artifact predating the marker, or a partial cache): ask the
-                // archive itself — a vendored libquiche.a carries the BoringSSL objects (e.g.
-                // v3_utl.c.o) as members, an external one does not. Either way the decision comes
-                // from the artifact we're about to link, never the racy live `libs/boringssl` dir.
-                val bsslMarker = outputDir.resolve(".bssl-external")
-                val usedExternalBssl =
-                    if (bsslMarker.exists()) {
-                        true
-                    } else if (outputDir.resolve(".bssl-vendored").exists()) {
-                        false
-                    } else {
-                        // No marker — inspect the archive members. `ar t` lists object files;
-                        // vendored builds include BoringSSL's, external builds don't.
-                        val members =
-                            ProcessBuilder("ar", "t", quicheStatic.absolutePath)
-                                .redirectErrorStream(true)
-                                .start()
-                                .inputStream
-                                .bufferedReader()
-                                .readText()
-                        !members.lineSequence().any { it.contains("v3_utl") || it.contains("boringssl") }
-                    }
-                val bsslArchives =
-                    if (usedExternalBssl) {
-                        listOf(
-                            boringsslLibDir.resolve("libssl.a").absolutePath,
-                            boringsslLibDir.resolve("libcrypto.a").absolutePath,
-                        )
-                    } else {
-                        emptyList()
-                    }
                 // Pick the host or cross compiler based on the target arch.
                 // Cross-build is needed when `-PquicEchoAllArches=true` is
                 // set and the requested arch differs from the host — e.g.
@@ -753,16 +778,20 @@ fun createBuildJvmJniShimTask(
                         "-I$javaHome/include",
                         "-I$javaHome/include/$jdkIncludeOs",
                         "-I${quicheInclude.absolutePath}",
-                        "-Wl,--whole-archive",
-                        quicheStatic.absolutePath,
-                    ) + bsslArchives +
-                    listOf(
-                        "-Wl,--no-whole-archive",
+                        // Dynamically link the sibling self-contained libquiche.so (which bundles quiche +
+                        // BoringSSL) via -lquiche instead of static-bundling a second copy. The shared
+                        // build gives libquiche.so soname=libquiche.so, so this records DT_NEEDED=libquiche.so,
+                        // resolved at load through RUNPATH $ORIGIN (NativeLibLoader extracts both into one
+                        // temp dir). quiche_jni.c calls only quiche_*, never BoringSSL directly, so -lquiche
+                        // satisfies every reference; --no-undefined turns any gap into a link error here
+                        // rather than a runtime dlopen failure.
+                        "-L${outputDir.absolutePath}",
+                        "-lquiche",
                         "-lm",
                         "-ldl",
                         "-lpthread",
-                        // ELF RUNPATH so the shim can find sibling libs if it ever needs them
                         "-Wl,-rpath,\$ORIGIN",
+                        "-Wl,--no-undefined",
                     )
             }
 
@@ -1204,7 +1233,8 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
         // the host JNI-shim task. Do NOT reintroduce a marker + onlyIf gate.
         inputs.property("quicheVersion", quicheVersion)
         inputs.file("src/jni/quiche_jni.c")
-        outputs.file(outputLib)
+        // Both natives are outputs: the thin JNI shim AND the self-contained cdylib it DT_NEEDEDs.
+        outputs.files(outputLib, outputDir.resolve("libquiche.so"))
 
         doLast {
             // 1. Get quiche source (reuses shared clone)
@@ -1245,12 +1275,19 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
                     .waitFor()
             if (cargoResult != 0) throw GradleException("cargo ndk build failed for ${abi.abi}")
 
-            // 3. Find the static library
-            val quicheLib = sourceDir.resolve("target/${abi.rustTarget}/release/libquiche.a")
-            if (!quicheLib.exists()) throw GradleException("libquiche.a not found at ${quicheLib.absolutePath}")
+            // 3. Ship the self-contained cdylib in jniLibs; the shim links against it (dedup — quiche +
+            // BoringSSL live once in libquiche.so, not re-bundled into the shim). boring-crate statically
+            // links BoringSSL into libquiche.so; Android resolves the shim's DT_NEEDED=libquiche.so from
+            // the same APK nativeLibraryDir.
+            outputDir.mkdirs()
+            val quicheShared = sourceDir.resolve("target/${abi.rustTarget}/release/libquiche.so")
+            if (!quicheShared.exists()) throw GradleException("libquiche.so not found at ${quicheShared.absolutePath}")
+            // Android's cdylib-link-lines branch already emits an unversioned soname (libquiche.so), which
+            // is the only form Android's APK packaging keeps and the shim can DT_NEEDED from the
+            // nativeLibraryDir — no soname fix-up needed here (unlike linux, patched in build.rs).
+            quicheShared.copyTo(outputDir.resolve("libquiche.so"), overwrite = true)
 
             // 4. Compile JNI shim with NDK clang
-            outputDir.mkdirs()
             val ndkHost = if (org.jetbrains.kotlin.konan.target.HostManager.hostIsMac) "darwin-x86_64" else "linux-x86_64"
             val ndkToolchain = ndk.resolve("toolchains/llvm/prebuilt/$ndkHost")
             val ndkClang = ndkToolchain.resolve("bin/${abi.ndkClangPrefix}-clang")
@@ -1283,12 +1320,15 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
                         "linux"
                     }}",
                     "-I${projectDir.resolve("libs/quiche/include").absolutePath}",
-                    "-Wl,--whole-archive",
-                    quicheLib.absolutePath,
-                    "-Wl,--no-whole-archive",
+                    // Dynamically link the sibling libquiche.so via -lquiche (quiche_jni.c calls only
+                    // quiche_*, never BoringSSL); --no-undefined fails the link here rather than at a
+                    // runtime dlopen if anything is unresolved.
+                    "-L${outputDir.absolutePath}",
+                    "-lquiche",
                     "-lm",
                     "-ldl",
                     "-llog",
+                    "-Wl,--no-undefined",
                 ).redirectErrorStream(true)
                     .start()
                     .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
@@ -1883,8 +1923,8 @@ kotlin {
     // Network.framework system-QUIC backend (the deleted :socket-quic-nw). macOS .a comes from the
     // shared cargo tasks; iOS .a from createBuildQuicheAppleStaticTask. See quiche-on-apple-pivot.
     if (isMacOS) {
-        // One configurator for every Apple target. Each target's self-contained libquiche.a (vendored
-        // BoringSSL — see the .bssl-vendored marker next to it) is EMBEDDED into the Quiche cinterop
+        // One configurator for every Apple target. Each target's self-contained libquiche.a (boring-crate
+        // vendors BoringSSL into it) is EMBEDDED into the Quiche cinterop
         // klib via staticLibraries/libraryPaths def directives, so the published klib is self-contained:
         // a downstream K/N consumer that links it gets the archive (copied into the klib's included/)
         // and the Apple frameworks (carried in the def's linkerOpts, which K/N replays at the consumer's

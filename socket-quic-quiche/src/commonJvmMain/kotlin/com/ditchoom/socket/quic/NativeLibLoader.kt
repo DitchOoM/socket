@@ -24,6 +24,13 @@ internal object NativeLibLoader {
 
         // Android
         try {
+            // The shim DT_NEEDEDs libquiche.so; load it first so the shim resolves against the sibling
+            // copy in the APK nativeLibraryDir (older Android linkers don't auto-resolve transitive
+            // NEEDED from the app lib dir). No-op on a JVM (no such lib on java.library.path).
+            try {
+                System.loadLibrary("quiche")
+            } catch (_: UnsatisfiedLinkError) {
+            }
             System.loadLibrary("quiche_jni")
             loaded = true
             return
@@ -49,7 +56,12 @@ internal object NativeLibLoader {
             }
         val dir = Files.createTempDirectory("quiche").toFile().apply { deleteOnExit() }
 
-        // macOS: quiche cdylib (Rust runtime) must load before the JNI shim
+        // The thin JNI shim DT_NEEDEDs the self-contained libquiche.{so,dylib}, so extract that base lib
+        // into the SAME dir first — the shim then resolves it via RUNPATH $ORIGIN (Linux) / @loader_path
+        // (macOS). Every non-Windows classifier ships it (same invariant the JDK 21+ FFM loader relies on);
+        // a missing resource is a packaging bug and extract() fails loudly. Windows ships a single
+        // self-contained quiche_jni.dll with no separate base lib.
+        if (os == "linux") extract(dir, "META-INF/native/linux-$arch/libquiche.so")
         if (os == "macos") extract(dir, "META-INF/native/macos-$arch/libquiche.dylib")
 
         val jni =

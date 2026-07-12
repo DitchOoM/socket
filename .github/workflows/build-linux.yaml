@@ -186,13 +186,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
@@ -212,8 +212,8 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-          restore-keys: quiche-cargo-target-v1-
+          key: quiche-cargo-target-v2-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-cargo-target-v2-
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -261,27 +261,37 @@ jobs:
 
           build_jni() {
             local TARGET=$1 CC=$2 STRIP=$3 DEST=$4 NAME=$5 EXTRA_LIBS=$6 BSSL_DIR=$7
-            local LIB=$(find "$QUICHE_DIR/target/$TARGET/release" -name "libquiche.a" 2>/dev/null | head -1)
-            [ -z "$LIB" ] && echo "No libquiche.a for $TARGET" && return
-            # Collect all static libs to link (quiche + BoringSSL if separate)
-            local ARCHIVES="$LIB"
-            if [ -n "$BSSL_DIR" ] && [ -f "$BSSL_DIR/lib/libcrypto.a" ]; then
-              ARCHIVES="$ARCHIVES $BSSL_DIR/lib/libcrypto.a $BSSL_DIR/lib/libssl.a"
-            fi
             mkdir -p "$DEST"
             # -fno-omit-frame-pointer: keep the frame pointer so a JVM hs_err / core backtrace can
             # unwind through the JNI shim (the JVM's native stack walker doesn't use DWARF CFI). This
             # is the CI counterpart of the gradle buildJvmJniShim task — CI builds the shim HERE, not
-            # via that task, so symbolication has to be applied in both places.
-            $CC -shared -fPIC -fno-omit-frame-pointer -Wall \
-              -o "$DEST/$NAME" "$JNI_SRC" \
-              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
-              -I"$QUICHE_H" \
-              -Wl,--whole-archive $ARCHIVES -Wl,--no-whole-archive \
-              -Wl,--allow-multiple-definition \
-              -lpthread -ldl -lm -lstdc++ $EXTRA_LIBS \
-              && $STRIP "$DEST/$NAME" \
-              && echo "Built $DEST/$NAME ($(du -h "$DEST/$NAME" | cut -f1))"
+            # via that task, so it must mirror that task's linking (thin vs self-contained + symbols).
+            local COMMON=(-shared -fPIC -fno-omit-frame-pointer -Wall -o "$DEST/$NAME" "$JNI_SRC"
+              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux -I"$QUICHE_H")
+            if [ -f "$DEST/libquiche.so" ]; then
+              # A self-contained libquiche.so is present (built by gradle buildQuicheShared*): link the
+              # shim THIN against it (matches build.gradle.kts) so quiche + BoringSSL ship exactly once.
+              # DT_NEEDED=libquiche.so (soname), resolved at load via RUNPATH $ORIGIN.
+              $CC "${COMMON[@]}" -L"$DEST" -lquiche -lpthread -ldl -lm $EXTRA_LIBS \
+                -Wl,-rpath,'$ORIGIN' -Wl,--no-undefined \
+                && $STRIP "$DEST/$NAME" \
+                && echo "Built (thin) $DEST/$NAME ($(du -h "$DEST/$NAME" | cut -f1))"
+            else
+              # No separate base lib for this arch: fall back to a SELF-CONTAINED shim (whole-archive
+              # libquiche.a + BoringSSL), which loads standalone.
+              local LIB=$(find "$QUICHE_DIR/target/$TARGET/release" -name "libquiche.a" 2>/dev/null | head -1)
+              [ -z "$LIB" ] && echo "No libquiche.a for $TARGET" && return
+              local ARCHIVES="$LIB"
+              if [ -n "$BSSL_DIR" ] && [ -f "$BSSL_DIR/lib/libcrypto.a" ]; then
+                ARCHIVES="$ARCHIVES $BSSL_DIR/lib/libcrypto.a $BSSL_DIR/lib/libssl.a"
+              fi
+              $CC "${COMMON[@]}" \
+                -Wl,--whole-archive $ARCHIVES -Wl,--no-whole-archive \
+                -Wl,--allow-multiple-definition \
+                -lpthread -ldl -lm -lstdc++ $EXTRA_LIBS \
+                && $STRIP "$DEST/$NAME" \
+                && echo "Built (self-contained) $DEST/$NAME ($(du -h "$DEST/$NAME" | cut -f1))"
+            fi
           }
 
           # Linux x64 JNI shim
@@ -325,27 +335,13 @@ jobs:
               && echo "Built Windows x64: $(du -h "$QUICHE_LIBS/windows-x64/lib/quiche_jni.dll" | cut -f1)"
           fi
 
-          # Android arm64 JNI shim (via cargo-ndk)
-          echo "=== Android arm64 JNI ==="
-          if command -v cargo-ndk &>/dev/null && [ -d "$ANDROID_NDK_HOME" ]; then
-            cargo ndk --target arm64-v8a --platform 24 -- build --release --package quiche \
-              --no-default-features --features ffi,boringssl-boring-crate \
-              --manifest-path "$QUICHE_DIR/Cargo.toml" 2>/dev/null || true
-            NDK_CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
-            NDK_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-            AND_LIB=$(find "$QUICHE_DIR/target/aarch64-linux-android/release" -name "libquiche.a" 2>/dev/null | head -1)
-            if [ -n "$AND_LIB" ]; then
-              mkdir -p "$ANDROID_JNI/arm64-v8a"
-              $NDK_CC -shared -fPIC -Wall \
-                -o "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" "$JNI_SRC" \
-                -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
-                -I"$QUICHE_H" \
-                -Wl,--whole-archive "$AND_LIB" -Wl,--no-whole-archive \
-                -lm -ldl -llog \
-                && $NDK_STRIP --strip-all "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" \
-                && echo "Built Android arm64: $(du -h "$ANDROID_JNI/arm64-v8a/libquiche_jni.so" | cut -f1)"
-            fi
-          fi
+          # Android arm64 native libs — built via Gradle (buildAndroidJni*) rather than a hand-rolled
+          # cargo-ndk + clang duplicate, so CI can't drift from build.gradle.kts. The Gradle task emits
+          # the dedup'd pair into src/androidMain/jniLibs/arm64-v8a/: a thin libquiche_jni.so
+          # (DT_NEEDED=libquiche.so) beside a self-contained libquiche.so (unversioned soname). libclang
+          # (installed above) satisfies boring-sys' bindgen; the NDK/cargo-ndk/targets are set up above.
+          echo "=== Android arm64 (gradle) ==="
+          ./gradlew :socket-quic-quiche:buildAndroidJniArm64v8a --no-configuration-cache || true
 
           echo "=== Done ==="
           find "$QUICHE_LIBS" "$ANDROID_JNI" -name "*.so" -o -name "*.dll" -o -name "*.dylib" 2>/dev/null

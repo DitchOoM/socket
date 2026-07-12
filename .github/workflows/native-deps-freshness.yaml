@@ -200,13 +200,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v6-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       # Intermediate cargo target/ tree + cloned quiche source — the same entry
       # build-linux.yaml keeps so a quiche rebuild is incremental, not from zero.
@@ -214,8 +214,8 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v1-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-          restore-keys: quiche-cargo-target-v1-
+          key: quiche-cargo-target-v2-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-cargo-target-v2-
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
