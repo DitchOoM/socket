@@ -32,13 +32,12 @@ private fun loadFfmQuicheApi(): QuicheApi {
     val classLoader =
         QuicheApi::class.java.classLoader
             ?: error("Cannot load quiche FFM backend: no class loader for QuicheApi")
-    // Try each candidate native lib via FFM, preferring the self-contained JNI
-    // shim (libquiche_jni.*). FFM only needs quiche's C API symbols, which the
-    // shim re-exports (it whole-archives libquiche.a + BoringSSL), so it loads
-    // cleanly via dlopen on every platform we ship. The "pure" libquiche.* is
-    // kept as a secondary candidate for platforms where it *is* self-contained
-    // (e.g. macOS boringssl-vendored); on Linux it is non-self-contained and is
-    // simply skipped when its load fails.
+    // Load the self-contained libquiche.{so,dylib} directly. It bundles quiche + BoringSSL on every
+    // platform (Linux whole-archives the external BoringSSL into the cdylib; macOS/Android via
+    // boring-crate), so it dlopens cleanly on a clean box with zero ambient libs. The JNI shim is NOT
+    // an FFM candidate: it now dynamically DT_NEEDEDs libquiche and is not standalone-loadable without
+    // co-extracting it, and it exists only for the JDK < 21 JNI path. (Windows is the exception — it
+    // ships a single self-contained quiche_jni.dll; see quicheFfmResourceCandidates.)
     val failures = mutableListOf<String>()
     for (resourcePath in quicheFfmResourceCandidates()) {
         val stream = classLoader.getResourceAsStream(resourcePath)
@@ -75,8 +74,8 @@ private fun extractToTemp(resourcePath: String): String {
 }
 
 /**
- * Candidate classpath resources for the FFM native lib, in load-preference order:
- * the self-contained JNI shim first (always loads), then the pure quiche lib.
+ * Candidate classpath resources for the FFM native lib. Non-Windows: the self-contained
+ * libquiche.{so,dylib} (bundles quiche + BoringSSL). Windows: the single self-contained quiche_jni.dll.
  */
 private fun quicheFfmResourceCandidates(): List<String> {
     val osName = System.getProperty("os.name").lowercase()
@@ -100,6 +99,6 @@ private fun quicheFfmResourceCandidates(): List<String> {
         listOf("$dir/quiche_jni.dll")
     } else {
         val ext = if (os == "macos") "dylib" else "so"
-        listOf("$dir/libquiche_jni.$ext", "$dir/libquiche.$ext")
+        listOf("$dir/libquiche.$ext")
     }
 }
