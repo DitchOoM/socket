@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
@@ -19,7 +20,9 @@ import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
 import kotlin.time.Duration
 
-abstract class AsyncBaseClientSocket : ByteBufferClientSocket<AsynchronousSocketChannel>() {
+abstract class AsyncBaseClientSocket(
+    config: TransportConfig = TransportConfig(),
+) : ByteBufferClientSocket<AsynchronousSocketChannel>(config) {
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
 

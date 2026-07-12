@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.nio.util.aClose
 import com.ditchoom.socket.nio.util.read
 import com.ditchoom.socket.nio.util.remoteAddressOrNull
@@ -22,7 +23,8 @@ import kotlin.time.Duration
 
 abstract class BaseClientSocket(
     protected val blocking: Boolean = false,
-) : ByteBufferClientSocket<SocketChannel>() {
+    config: TransportConfig = TransportConfig(),
+) : ByteBufferClientSocket<SocketChannel>(config) {
     val selector = if (!blocking) Selector.open()!! else null
 
     private val readMutex = Mutex()

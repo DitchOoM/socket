@@ -15,7 +15,7 @@ Both need `TransportConfig` at **socket-allocation** time, and today `ClientSock
 - UDP needs it to pick datagram-vs-stream.
 - The TCP work needs it for the `IoConcurrency` / conformant-impl choice.
 
-**Decide the allocation seam ONCE before fanning out** — either a JVM/per-platform *deferring wrapper* (`allocate()` returns a thin socket that resolves the impl in `open()`), or change the `expect`/`actual` to `allocate(config)` (cleaner, but ripples all five platforms). If two subagents redesign this in parallel they **will** collide on `allocate()` / `TransportConfig`.
+**✅ SHARED SEAM LANDED (2026-07-12).** Chose `allocate(config)` over the deferring wrapper (see RFC §7 for the decision + rationale). Both `ClientSocket.allocate(config)` and `ServerSocket.allocate(config)` now take `TransportConfig` (default arg, so no-arg call sites still compile); `config` dropped from `ClientToServerSocket.open(port, hostname)` and is now a **constructor val** on every impl (`readPolicy`/`writePolicy` are real immutable vals). `ServerSocket` threads config into every accepted socket. All 5 platform actuals + ~67 test sites migrated; JVM (3 NIO variants + server-accept), Linux io_uring, and JS Node tests green; Apple validates on CI. **The fan-out below can now start — both subagents build on this seam instead of redesigning it.** (Still open: fold the JVM `useAsyncChannels`/`useNioBlocking` globals into a config-borne `IoConcurrency` — that's RFC phase 5, not the seam.)
 
 ### Suggested structure (fresh session)
 

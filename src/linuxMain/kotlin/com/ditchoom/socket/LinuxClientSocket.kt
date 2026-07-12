@@ -24,14 +24,14 @@ import kotlin.time.TimeSource
  * Uses IoUringManager for proper completion dispatch.
  */
 @OptIn(ExperimentalForeignApi::class)
-class LinuxClientSocket : ClientToServerSocket {
+class LinuxClientSocket(
+    /** The injected transport configuration, supplied at `allocate(config)` time. */
+    private val config: TransportConfig = TransportConfig(),
+) : ClientToServerSocket {
     private var sockfd: Int = -1
     private var sslCtx: CPointer<SSL_CTX>? = null
     private var ssl: CPointer<SSL>? = null
     private var currentTlsConfig: TlsConfig = TlsConfig.DEFAULT
-
-    /** The injected transport configuration, set at the top of [open]. */
-    private var config: TransportConfig = TransportConfig()
 
     /**
      * Cached socket receive buffer size from SO_RCVBUF.
@@ -62,9 +62,7 @@ class LinuxClientSocket : ClientToServerSocket {
     override suspend fun open(
         port: Int,
         hostname: String?,
-        config: TransportConfig,
     ) {
-        this.config = config
         val timeout = config.connectTimeout
         val host = hostname ?: "localhost"
         val tlsConfig = config.tls

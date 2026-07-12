@@ -18,4 +18,9 @@ interface ServerSocket {
     companion object
 }
 
-expect fun ServerSocket.Companion.allocate(): ServerSocket
+/**
+ * Allocates the platform server socket, injecting [config] at allocation time. The config is applied
+ * to every socket this server accepts (read/write policy, buffer factory, I/O tuning), so accepted
+ * connections obey the same contract as client connections. Mirrors [ClientSocket.allocate].
+ */
+expect fun ServerSocket.Companion.allocate(config: TransportConfig = TransportConfig()): ServerSocket

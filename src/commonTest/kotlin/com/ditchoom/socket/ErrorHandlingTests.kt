@@ -37,8 +37,8 @@ class ErrorHandlingTests {
             // Use a random high port that's unlikely to be in use
             val port = 59000 + (kotlin.random.Random.nextInt(999))
             try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
+                val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
+                socket.open(port = port, hostname = "127.0.0.1")
                 // If we get here, the port happened to be open - close and skip
                 socket.close()
             } catch (e: SocketException) {
@@ -80,8 +80,8 @@ class ErrorHandlingTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
             serverReady.lockWithTimeout()
 
             // Try to read with a short timeout - should timeout since server sends nothing
@@ -117,8 +117,8 @@ class ErrorHandlingTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
             clientConnected.lockWithTimeout()
 
             // Give server time to close
@@ -173,8 +173,8 @@ class ErrorHandlingTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
             clientConnected.lockWithTimeout()
 
             // Read the data that was sent
@@ -213,8 +213,8 @@ class ErrorHandlingTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 1.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 1.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
             clientConnected.lockWithTimeout()
 
             // Server has handled the connection - close server
@@ -238,8 +238,8 @@ class ErrorHandlingTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
 
             // Multiple close calls should not throw
             client.close()
@@ -259,8 +259,8 @@ class ErrorHandlingTests {
             // 10.255.255.1 is typically non-routable and should timeout
             // Use 1 second timeout to complete before test framework timeout
             try {
-                val socket = ClientSocket.allocate()
-                socket.open(port = 80, hostname = "10.255.255.1", config = TransportConfig(connectTimeout = 1.seconds))
+                val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 1.seconds))
+                socket.open(port = 80, hostname = "10.255.255.1")
                 socket.close()
                 // If connection succeeded, the address was routable in this network
             } catch (e: SocketException) {
@@ -287,8 +287,8 @@ class ErrorHandlingTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
 
             // Write empty buffer - should succeed without error
             val emptyBuffer = BufferFactory.Default.allocate(0)

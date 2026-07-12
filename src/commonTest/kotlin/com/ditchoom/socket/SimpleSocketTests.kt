@@ -176,8 +176,8 @@ class SimpleSocketTests {
             }
             val serverPort = server.port()
             assertTrue(serverPort > 0, "No port ($serverPort) number from server")
-            val clientToServer = ClientSocket.allocate()
-            clientToServer.open(serverPort, config = TransportConfig(connectTimeout = 5.seconds))
+            val clientToServer = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            clientToServer.open(serverPort)
             clientToServer.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
             serverToClientMutex.lockWithTimeout()
             val clientToServerPort = clientToServer.localPort()

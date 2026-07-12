@@ -90,15 +90,15 @@ private fun String.substringFrom(marker: String): String {
     return if (idx >= 0) substring(idx) else this
 }
 
-open class NodeSocket : ClientSocket {
+open class NodeSocket(
+    /** The injected-once configuration tree, supplied at `allocate(config)` / accept time. */
+    protected val config: TransportConfig = TransportConfig(),
+) : ClientSocket {
     internal var isClosed = true
     internal var netSocket: Socket? = null
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
-
-    /** The injected-once configuration tree. Set at the top of `open(...)`. */
-    protected var config: TransportConfig = TransportConfig()
 
     override val readPolicy: ReadPolicy get() = config.readPolicy
     override val writePolicy: WritePolicy get() = config.writePolicy
@@ -191,15 +191,14 @@ open class NodeSocket : ClientSocket {
     }
 }
 
-class NodeClientSocket :
-    NodeSocket(),
+class NodeClientSocket(
+    config: TransportConfig = TransportConfig(),
+) : NodeSocket(config),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,
         hostname: String?,
-        config: TransportConfig,
     ) {
-        this.config = config
         val tls = config.tls
         val useTls = tls != null
         val rejectUnauthorized = tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true

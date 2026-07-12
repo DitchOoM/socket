@@ -4,16 +4,16 @@ import com.ditchoom.socket.nio.NioClientSocket
 import com.ditchoom.socket.nio2.AsyncClientSocket
 import com.ditchoom.socket.nio2.AsyncServerSocket
 
-actual fun ClientSocket.Companion.allocate(): ClientToServerSocket =
+actual fun ClientSocket.Companion.allocate(config: TransportConfig): ClientToServerSocket =
     if (useAsyncChannels) {
         try {
-            AsyncClientSocket()
+            AsyncClientSocket(config)
         } catch (t: Throwable) {
             // It's possible Android OS version is too old to support AsyncSocketChannel
-            NioClientSocket(useNioBlocking)
+            NioClientSocket(useNioBlocking, config)
         }
     } else {
-        NioClientSocket(useNioBlocking)
+        NioClientSocket(useNioBlocking, config)
     }
 
 // Per-JVM-process knobs for which client-socket implementation `allocate()`
@@ -38,4 +38,4 @@ actual fun ClientSocket.Companion.allocate(): ClientToServerSocket =
 var useAsyncChannels = true
 var useNioBlocking = false
 
-actual fun ServerSocket.Companion.allocate(): ServerSocket = AsyncServerSocket()
+actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket = AsyncServerSocket(config)

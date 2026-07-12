@@ -160,8 +160,8 @@ class ResourceCleanupTests {
 
             // Repeatedly open and close connections
             repeat(10) { i ->
-                val client = ClientSocket.allocate()
-                client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+                val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+                client.open(server.port(), hostname = "127.0.0.1")
                 assertTrue(client.isOpen, "Client $i should be open")
 
                 client.writeString("ping")
@@ -198,9 +198,9 @@ class ResourceCleanupTests {
             var clientRef: ClientSocket? = null
             val clientJob =
                 launch(Dispatchers.Default) {
-                    val client = ClientSocket.allocate()
+                    val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
                     clientRef = client
-                    client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+                    client.open(server.port(), hostname = "127.0.0.1")
                     clientConnected.lockWithTimeout()
 
                     // This should block and be cancelled (5s keeps it inside the
@@ -277,8 +277,8 @@ class ResourceCleanupTests {
                 }
 
             repeat(3) {
-                val client = ClientSocket.allocate()
-                client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+                val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+                client.open(server.port(), hostname = "127.0.0.1")
 
                 try {
                     withTimeout(100.milliseconds) {
@@ -310,8 +310,8 @@ class ResourceCleanupTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
             assertTrue(client.isOpen, "Socket should be open")
 
             client.close()
@@ -355,23 +355,23 @@ class ResourceCleanupTests {
                 }
 
             // First client - connect and immediately close (server will get error)
-            val client1 = ClientSocket.allocate()
-            client1.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client1 = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client1.open(server.port(), hostname = "127.0.0.1")
             client1.close()
 
             delay(100)
 
             // Second client - send proper data
-            val client2 = ClientSocket.allocate()
-            client2.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client2 = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client2.open(server.port(), hostname = "127.0.0.1")
             client2.writeString("hello")
             client2.close()
 
             delay(100)
 
             // Third client - should also work
-            val client3 = ClientSocket.allocate()
-            client3.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client3 = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client3.open(server.port(), hostname = "127.0.0.1")
             client3.writeString("world")
             client3.close()
 

@@ -17,17 +17,17 @@ import java.net.StandardSocketOptions
 import java.nio.channels.NetworkChannel
 import kotlin.time.Duration
 
-abstract class ByteBufferClientSocket<T : NetworkChannel> : ClientSocket {
+abstract class ByteBufferClientSocket<T : NetworkChannel>(
+    /** The injected-once configuration tree, supplied at `allocate(config)` / accept time. */
+    protected val config: TransportConfig = TransportConfig(),
+) : ClientSocket {
     protected lateinit var socket: T
     internal var tlsHandler: JvmTlsHandler? = null
-
-    /** The injected-once configuration tree. Set at the top of `open(...)`. */
-    protected var config: TransportConfig = TransportConfig()
 
     /**
      * The single per-connection source of receive buffers — a pool over [config]'s buffer factory, so
      * `readRaw` reuses buffers instead of allocating a fresh GC-reclaimed one per read (see
-     * [ReadBufferSource]). Lazy so it captures the [config] set at the top of `open(...)`.
+     * [ReadBufferSource]).
      */
     protected val readBufferSource: ReadBufferSource by lazy { ReadBufferSource(config) }
 

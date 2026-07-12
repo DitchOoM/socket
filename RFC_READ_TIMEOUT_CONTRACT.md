@@ -101,12 +101,20 @@ This is precisely the QUIC-vs-TCP harness gap: QUIC has deterministic impairment
 
 ## 7. The allocation seam (shared with future UDP work)
 
-`ClientSocket.allocate()` picks the implementation class *before* `TransportConfig` exists — config only arrives at `open()` (`ClientSocket.kt:19`). Any per-connection choice of implementation (the `IoConcurrency` strategy; later, a datagram vs. stream socket) needs config at allocation time. Two options:
+`ClientSocket.allocate()` picks the implementation class *before* `TransportConfig` exists — config only arrives at `open()` (`ClientSocket.kt:19`). Any per-connection choice of implementation (the `IoConcurrency` strategy; later, a datagram vs. stream socket) needs config at allocation time. Two options were on the table:
 
 - **JVM deferring wrapper** — `allocate()` returns a thin `ClientToServerSocket` that resolves the concrete impl in `open()` and delegates the ~13 `ByteStream`/`SocketController` members. Localized, no signature change.
 - **`allocate(config)`** — thread `TransportConfig` into the `expect`/`actual`. Cleaner long-term and directly reused by the phased UDP work, but ripples across all five platforms' actuals.
 
-Decision deferred; noted here because the contract's JVM fix (choosing a conformant impl) is the first thing that trips over it.
+**Decision (landed 2026-07-12): `allocate(config)`, dropping `config` from `open()`.** The wrapper only solves the JVM `IoConcurrency` case; UDP needs datagram-vs-stream selection on *every* platform, so the wrapper would force either five per-platform wrappers or a later move to `allocate(config)` anyway. `allocate(config)` also makes `config` a **constructor val** on each impl, so `ByteSource.readPolicy` / `ByteSink.writePolicy` become real immutable vals instead of reassigned-at-`open` mutable state. Shape:
+
+```kotlin
+expect fun ClientSocket.Companion.allocate(config: TransportConfig = TransportConfig()): ClientToServerSocket
+expect fun ServerSocket.Companion.allocate(config: TransportConfig = TransportConfig()): ServerSocket   // symmetric — accepted sockets inherit the config
+interface ClientToServerSocket : ClientSocket { suspend fun open(port: Int, hostname: String? = null) }  // config removed
+```
+
+`connect()` now does `allocate(config).open(port, hostname)`. The default arg means no-arg `allocate()` call sites still compile; only `open(…, config)` sites changed. `ServerSocket` gained config too (it had none before) and threads it into every accepted socket, so server-side reads obey the same contract. The JVM global `useAsyncChannels`/`useNioBlocking` knobs still drive impl selection for now — folding them into a config-borne `IoConcurrency` field is the phase-5 follow-up (§5); this change only made config *available* at `allocate` so that later selection has something to read.
 
 ## 8. Scope / phasing
 

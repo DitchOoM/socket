@@ -17,17 +17,16 @@ import kotlin.coroutines.resumeWithException
  * TLS is derived from [TransportConfig.tls] in [open].
  */
 @OptIn(ExperimentalForeignApi::class)
-class NWClientSocketWrapper :
-    NWSocketWrapper(),
+class NWClientSocketWrapper(
+    config: TransportConfig = TransportConfig(),
+) : NWSocketWrapper(config),
     ClientToServerSocket {
     // C API nw_connection_state_t values:
     // 0=invalid/setup, 1=waiting, 2=preparing, 3=ready, 4=failed, 5=cancelled
     override suspend fun open(
         port: Int,
         hostname: String?,
-        config: TransportConfig,
     ) {
-        this.config = config
         val host = hostname ?: "localhost"
         val tlsConfig = config.tls
         val useTls = tlsConfig != null

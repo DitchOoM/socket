@@ -35,7 +35,10 @@ import kotlin.time.Duration
  * Write operations pass NSData directly to Network.framework without copying.
  */
 @OptIn(ExperimentalForeignApi::class)
-open class NWSocketWrapper : ClientSocket {
+open class NWSocketWrapper(
+    /** Injected-once configuration, supplied at `allocate(config)` / accept time. */
+    internal val config: TransportConfig = TransportConfig(),
+) : ClientSocket {
     internal var connection: nw_connection_t = null
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
@@ -45,9 +48,6 @@ open class NWSocketWrapper : ClientSocket {
 
     @Volatile
     internal var connectionReady = false
-
-    /** Injected-once configuration; set at the top of [NWClientSocketWrapper.open]. */
-    internal var config: TransportConfig = TransportConfig()
 
     override val readPolicy: ReadPolicy get() = config.readPolicy
     override val writePolicy: WritePolicy get() = config.writePolicy

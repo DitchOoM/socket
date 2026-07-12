@@ -26,8 +26,8 @@ class LinuxExceptionSubtypeTests {
             val port = 59500 + kotlin.random.Random.nextInt(499)
             val ex =
                 try {
-                    val socket = ClientSocket.allocate()
-                    socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
+                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
+                    socket.open(port = port, hostname = "127.0.0.1")
                     socket.close()
                     fail("Should have thrown for connection refused")
                 } catch (e: SocketConnectionException.Refused) {
@@ -53,8 +53,8 @@ class LinuxExceptionSubtypeTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
             serverReady.lockWithTimeout()
 
             client.readString(deadline = 2.seconds)
@@ -89,8 +89,8 @@ class LinuxExceptionSubtypeTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
             clientConnected.lockWithTimeout()
             kotlinx.coroutines.delay(200)
 
@@ -125,11 +125,10 @@ class LinuxExceptionSubtypeTests {
         runTestNoTimeSkipping {
             val ex =
                 try {
-                    val socket = ClientSocket.allocate()
+                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
                     socket.open(
                         port = 80,
                         hostname = "nonexistent.linux.test.invalid",
-                        config = TransportConfig(connectTimeout = 5.seconds),
                     )
                     socket.close()
                     fail("Should have thrown")

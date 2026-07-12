@@ -41,8 +41,8 @@ class DataIntegrityTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
 
             val sendBuffer = BufferFactory.Default.allocate(binaryData.size)
             sendBuffer.writeBytes(binaryData)
@@ -114,8 +114,8 @@ class DataIntegrityTests {
                 }
             }
 
-        val client = ClientSocket.allocate()
-        client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 10.seconds))
+        val client = ClientSocket.allocate(TransportConfig(connectTimeout = 10.seconds))
+        client.open(server.port(), hostname = "127.0.0.1")
 
         // Send data in chunks
         var offset = 0
@@ -170,8 +170,8 @@ class DataIntegrityTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
 
             // Send to server
             client.writeString(clientToServerData)
@@ -229,8 +229,8 @@ class DataIntegrityTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
 
             // Send many small messages
             repeat(messageCount) { i ->
@@ -267,8 +267,8 @@ class DataIntegrityTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
             clientConnected.lockWithTimeout()
 
             // Read all data - may come in chunks
@@ -311,8 +311,8 @@ class DataIntegrityTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), hostname = "127.0.0.1")
 
             val sendBuffer = BufferFactory.Default.allocate(dataWithNulls.size)
             sendBuffer.writeBytes(dataWithNulls)

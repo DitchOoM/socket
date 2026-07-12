@@ -102,9 +102,9 @@ class IoUringManagerTests {
                     (1..clientCount)
                         .map { i ->
                             async {
-                                val client = ClientSocket.allocate()
+                                val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
                                 try {
-                                    client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+                                    client.open(port, "127.0.0.1")
                                     val message = "Hello from client $i"
                                     client.writeString(message)
                                     val response = client.readString(deadline = 5.seconds)
@@ -161,10 +161,10 @@ class IoUringManagerTests {
 
             for (i in 1..cycleCount) {
                 try {
-                    val client = ClientSocket.allocate()
+                    val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
                     // Generous connect timeout absorbs scheduler jitter; this loop
                     // is sequential so a healthy server accepts every connection.
-                    client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+                    client.open(port, "127.0.0.1")
                     client.close()
                     successCount++
                 } catch (e: Exception) {
@@ -212,8 +212,8 @@ class IoUringManagerTests {
                 val port = server.port()
 
                 // Do a successful operation
-                val client = ClientSocket.allocate()
-                client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+                val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+                client.open(port, "127.0.0.1")
                 val testMessage = "Cycle $cycle test"
                 client.writeString(testMessage)
                 val response = client.readString(deadline = 5.seconds)
@@ -260,8 +260,8 @@ class IoUringManagerTests {
             delay(100.milliseconds)
             val port = server.port()
 
-            val client = ClientSocket.allocate()
-            client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(port, "127.0.0.1")
 
             // Start a read that will block (no data coming)
             var readException: Exception? = null
@@ -323,8 +323,8 @@ class IoUringManagerTests {
             delay(100.milliseconds)
             val port = server.port()
 
-            val client = ClientSocket.allocate()
-            client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(port, "127.0.0.1")
 
             val before = IoUringManager.timeoutCancelSubmitCount.value
             var timedOut = false
@@ -369,8 +369,8 @@ class IoUringManagerTests {
 
                 // Quick connect/disconnect
                 try {
-                    val client = ClientSocket.allocate()
-                    client.open(port, "127.0.0.1", TransportConfig(connectTimeout = 2.seconds))
+                    val client = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
+                    client.open(port, "127.0.0.1")
                     client.close()
                 } catch (e: Exception) {
                     // May fail due to timing, that's ok

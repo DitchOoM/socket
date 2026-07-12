@@ -52,8 +52,8 @@ class PartialBufferWriteTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
 
             // Allocate a 256-byte buffer and write 14 bytes into offsets [8, 22), matching the
             // websocket frame encoder's reserved-prefix layout.
@@ -108,8 +108,8 @@ class PartialBufferWriteTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
 
             // Two sequential sub-window writes from the same backing buffer — catches the case
             // where send ignores position on every call (would duplicate the first window).
