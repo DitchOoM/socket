@@ -354,9 +354,15 @@ internal class JvmQuicServer(
         // dropped from the routing map (drainCleanupQueue / trySend-failure removeIf) can still have
         // a live run loop draining buffered RecvPackets, each of which connRecv's a shared
         // peerRecvInfos entry — freeing the cache below while such a loop runs is the recv_info UAF
-        // (#179). receiveJob.join() above guarantees no new drivers are added, so liveDrivers is now
-        // stable; joining them all releases every in-flight cache ref before the free.
-        for (driver in liveDrivers.toList()) {
+        // (#179). receiveJob.join() above guarantees no new drivers are *added*, but a driver
+        // finishing on its own still calls removeLiveDriver() from onCleanup concurrently with us,
+        // so the set can shrink under our feet. Snapshot via ArrayList(...) — which copies through
+        // the weakly-consistent toArray(), NOT a size()-based fast path — because Kotlin's toList()
+        // special-cases size==1 as listOf(iterator().next()) and would throw NoSuchElementException
+        // if that last element is removed between the size read and next(). Joining them all
+        // releases every in-flight cache ref before the free; destroy() is idempotent, so a driver
+        // that already removed itself (its run loop returned → no in-flight ref) is harmless here.
+        for (driver in ArrayList(liveDrivers)) {
             driver.destroy()
         }
         liveDrivers.clear()
