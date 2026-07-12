@@ -6,8 +6,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.bufferHashCode
-import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
@@ -32,7 +30,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,8 +47,6 @@ import platform.posix.ntohs
 import platform.posix.sockaddr_in
 import platform.posix.sockaddr_storage
 import platform.posix.socket
-import kotlin.concurrent.AtomicInt
-import kotlin.concurrent.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
@@ -200,37 +195,12 @@ private class LinuxQuicServer(
 ) : QuicServer {
     override val port: Int get() = boundPort
 
-    private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
-    private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
-
     /**
-     * Authoritative ledger of every accepted driver whose run loop may still be alive (mirrors
-     * [JvmQuicServer.liveDrivers]). [connectionsByDcid] is a *routing* table, not a lifecycle set: a
-     * driver is dropped from it the moment it stops routing new packets (cleanup-queue drain, or the
-     * trySend-failure `removeAll`) — while its run loop can still be draining buffered
-     * [QuicheCmd.RecvPacket]s that `connRecv` a shared [peerRecvInfos] entry via
-     * [QuicheCmd.RecvPacket.recvInfoOverride]. [close] must destroy+join every driver in *this* set,
-     * not just those still routing, before it frees the recv_info cache — otherwise a lagging run
-     * loop `connRecv`s a recv_info [close] already freed (the recv_info UAF the #179 guard chased on
-     * JVM; latent here too since K/N has no guard). Copy-on-write over an [AtomicReference]: added on
-     * the receive-loop coroutine, removed on a driver-cleanup coroutine — both cold paths.
+     * All connection-lifecycle bookkeeping (routing table, live-driver ledger, per-source recv_info
+     * cache, cleanup/SCID queues, and the load-bearing close sweep). Only this server's io_uring UDP
+     * transport and its native sockaddr handling stay here; see [ServerConnectionRegistry].
      */
-    private val liveDrivers = AtomicReference<Set<QuicheDriver>>(emptySet())
-
-    private fun addLiveDriver(driver: QuicheDriver) {
-        while (true) {
-            val cur = liveDrivers.value
-            if (liveDrivers.compareAndSet(cur, cur + driver)) return
-        }
-    }
-
-    private fun removeLiveDriver(driver: QuicheDriver) {
-        while (true) {
-            val cur = liveDrivers.value
-            if (driver !in cur) return
-            if (liveDrivers.compareAndSet(cur, cur - driver)) return
-        }
-    }
+    private val registry = ServerConnectionRegistry<PathKey>(api)
 
     /**
      * Recv buffer pool — mirrors [JvmQuicServer]'s: each datagram is acquired here, ownership
@@ -248,86 +218,6 @@ private class LinuxQuicServer(
             factory = bufferFactory,
         )
 
-    /**
-     * Passive-migration support (mirrors [JvmQuicServer]): one server socket sees a client's
-     * source change after it migrates (RFC 9000 §9). quiche needs the *actual* per-datagram
-     * source as recv_info.from to recognise the new path, so cache one recv_info per distinct
-     * source (its `to` is the server's fixed local addr in [localAddrBuf]).
-     *
-     * Bounded ([maxPeerRecvInfos]) + reference-counted, identical to the JVM server: the cached
-     * pointer is handed to a driver over an UNLIMITED command channel, so eviction frees only an
-     * entry whose [CachedRecvInfo.inFlight] is zero (released via [QuicheCmd.RecvPacket.
-     * onRecvInfoConsumed]). Access order is maintained manually (remove+reinsert on hit) since
-     * K/N's LinkedHashMap has no accessOrder constructor. Receive-loop coroutine is the only
-     * writer; [inFlight] is the only field a driver coroutine touches.
-     */
-    private val maxPeerRecvInfos = 256
-    private val peerRecvInfos = LinkedHashMap<PathKey, CachedRecvInfo>()
-
-    private class CachedRecvInfo(
-        val info: QuicheRecvInfo,
-        val fromBuf: PlatformBuffer,
-    ) {
-        val inFlight = AtomicInt(0)
-    }
-
-    private fun recvInfoFor(
-        peerAddr: Long,
-        peerAddrLen: Int,
-    ): CachedRecvInfo {
-        val key = api.decodePathKey(peerAddr)
-        peerRecvInfos.remove(key)?.let {
-            peerRecvInfos[key] = it // bump to most-recently-used
-            return it
-        }
-        // Miss: pin a copy of this source's sockaddr (recvFrom's buffer is reused next call) and
-        // build a recv_info from = source, to = the server's fixed local addr.
-        val fromBuf = bufferFactory.allocate(peerAddrLen)
-        val dst = fromBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-        memcpy(dst, peerAddr.toCPointer<ByteVar>()!!, peerAddrLen.convert())
-        val info =
-            api.recvInfoNew(
-                fromBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                peerAddrLen,
-                localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                sizeOf<sockaddr_in>().toInt(),
-            )
-        val cached = CachedRecvInfo(info, fromBuf)
-        peerRecvInfos[key] = cached
-        evictIdlePeerRecvInfo()
-        return cached
-    }
-
-    /** Free the least-recently-used cached recv_info whose [inFlight] is zero once over cap. */
-    private fun evictIdlePeerRecvInfo() {
-        if (peerRecvInfos.size <= maxPeerRecvInfos) return
-        val iterator = peerRecvInfos.entries.iterator() // insertion order == access order (maintained above)
-        while (iterator.hasNext()) {
-            val cached = iterator.next().value
-            if (cached.inFlight.value == 0) {
-                api.recvInfoFree(cached.info)
-                cached.fromBuf.freeNativeMemory()
-                iterator.remove()
-                return
-            }
-        }
-    }
-
-    /**
-     * Queue for drivers that need their [connectionsByDcid] entries removed.
-     * Connection handlers add drivers here after close; the receive loop drains it.
-     * This keeps all map mutations on the receive loop coroutine.
-     */
-    private val driverCleanupCh = Channel<QuicheDriver>(Channel.UNLIMITED)
-
-    /**
-     * Queue of spare-SCID registrations from drivers' [QuicheDriver.onScidIssued] (fired on a
-     * driver coroutine when it issues spare CIDs at establishment). The receive loop drains it
-     * into [connectionsByDcid] so a migrating peer's new DCID (a server-issued SCID) routes to the
-     * right driver — without this, active migration fails path validation. Mirrors [JvmQuicServer].
-     */
-    private val scidRegistrationCh = Channel<Pair<ConnectionIdKey, QuicheDriver>>(Channel.UNLIMITED)
-
     @kotlin.concurrent.Volatile
     private var closed = false
 
@@ -341,7 +231,7 @@ private class LinuxQuicServer(
         // engine's scope and surfaced as a CI hang in
         // JvmQuicServerTestSuite.rapidBindConnectCloseCyclesAreClean).
         kotlinx.coroutines.coroutineScope {
-            for (driver in acceptedDrivers) {
+            for (driver in registry.acceptedDrivers) {
                 launch(Dispatchers.Default) {
                     val connJob = SupervisorJob(coroutineContext[Job])
                     val connScope = CoroutineScope(coroutineContext + connJob)
@@ -353,7 +243,7 @@ private class LinuxQuicServer(
                         }
                     } finally {
                         conn.close()
-                        driverCleanupCh.trySend(driver)
+                        registry.enqueueCleanup(driver)
                         connJob.cancel()
                     }
                 }
@@ -375,33 +265,13 @@ private class LinuxQuicServer(
         //    corrupted" otherwise).
         serverChannel.closeFd()
         receiveJob.cancelAndJoin()
-        // Destroy+join EVERY accepted driver, not just those still in connectionsByDcid. A driver
-        // dropped from the routing map (cleanup-queue drain / trySend-failure removeAll) can still
-        // have a live run loop draining buffered RecvPackets, each of which connRecv's a shared
-        // peerRecvInfos entry — freeing the cache below while such a loop runs is the recv_info UAF
-        // (#179). receiveJob join above guarantees no new drivers are added, so liveDrivers is now
-        // stable; joining them all releases every in-flight cache ref before the free.
-        for (driver in liveDrivers.value) {
-            driver.destroy()
-        }
-        liveDrivers.value = emptySet()
-        connectionsByDcid.clear()
-        // Every driver joined → every in-flight ref released (inFlight == 0 for all). Free the
-        // per-source recv_info cache. Each recv_info before its `from` buffer; localAddrBuf (the
-        // shared `to`) is freed last, below.
-        for (cached in peerRecvInfos.values) {
-            check(cached.inFlight.value == 0) {
-                // Unreachable given the join sweep above; asserted so any future regression trips
-                // here deterministically instead of as an opaque native connRecv SIGSEGV.
-                "recv_info still in-flight at server close (inFlight=${cached.inFlight.value})"
-            }
-            api.recvInfoFree(cached.info)
-            cached.fromBuf.freeNativeMemory()
-        }
-        peerRecvInfos.clear()
+        // receiveJob join above guarantees no new drivers are added or routed and nothing else
+        // touches the registry's maps/cache. Destroy+join EVERY live driver (a superset of the
+        // routing table) before freeing the per-source recv_info cache — the #179 UAF invariant.
+        // localAddrBuf (the shared recv_info `to`) is freed last, below.
+        registry.reapAllDriversAndFreeRecvInfoCache()
         api.configFree(config)
-        acceptedDrivers.close()
-        scidRegistrationCh.close()
+        registry.closeChannels()
         serverChannel.freeBuffers()
         // Late returns from drivers still tearing down are benign — they repopulate
         // a pool that is GC'd with the server.
@@ -430,10 +300,9 @@ private class LinuxQuicServer(
 
         try {
             while (!closed) {
-                // Remove entries for drivers closed by connection handlers
-                drainCleanupChannel()
-                // Register spare SCIDs issued by drivers so a migrating peer's new DCID routes.
-                drainScidRegistrations()
+                // Remove entries for drivers closed by connection handlers, then register spare SCIDs
+                // issued by drivers so a migrating peer's new DCID routes. Receive-loop coroutine only.
+                registry.drainRoutingQueues()
 
                 // Acquire a buffer per packet — ownership transfers to driver (zero-copy).
                 // The driver's freeNativeMemory() recycles it back to recvBufPool.
@@ -483,13 +352,31 @@ private class LinuxQuicServer(
                 }
 
                 val dcidLen = readSizeT(dcidLenBuf)
-                val dcidKey = ConnectionIdKey.fromNative(dcidBuf, dcidLen)
+                val dcidKey = ConnectionIdKey.from(dcidBuf, dcidLen)
 
-                val existingDriver = connectionsByDcid[dcidKey]
+                val existingDriver = registry.driverForDcid(dcidKey)
                 if (existingDriver != null) {
                     // Per-source recv_info so quiche sees a migrated client's new source as a new
                     // path. Hold an in-flight ref so the cache can't evict+free it while queued.
-                    val cached = recvInfoFor(recvResult.peerAddr.rawValue.toLong(), recvResult.peerAddrLen.toInt())
+                    val peerAddrPtr = recvResult.peerAddr.rawValue.toLong()
+                    val peerAddrLen = recvResult.peerAddrLen.toInt()
+                    val pathKey = api.decodePathKey(peerAddrPtr)
+                    val cached =
+                        registry.lookupRecvInfo(pathKey) ?: run {
+                            // Miss: pin a copy of this source's sockaddr (recvFrom's buffer is reused
+                            // next call) and build a recv_info from = source, to = the fixed local addr.
+                            val fromBuf = bufferFactory.allocate(peerAddrLen)
+                            val dst = fromBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
+                            memcpy(dst, peerAddrPtr.toCPointer<ByteVar>()!!, peerAddrLen.convert())
+                            val info =
+                                api.recvInfoNew(
+                                    fromBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                    peerAddrLen,
+                                    localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                                    sizeOf<sockaddr_in>().toInt(),
+                                )
+                            registry.putRecvInfo(pathKey, info) { fromBuf.freeNativeMemory() }
+                        }
                     cached.inFlight.incrementAndGet()
                     val sendResult =
                         existingDriver.commands.trySend(
@@ -504,15 +391,15 @@ private class LinuxQuicServer(
                         cached.inFlight.decrementAndGet()
                         recvBuf.freeNativeMemory()
                         // Remove ALL entries for this dead driver, not just the one we hit
-                        connectionsByDcid.keys.removeAll { connectionsByDcid[it] === existingDriver }
+                        registry.deRouteDriver(existingDriver)
                     }
                 } else {
                     val result = acceptNewConnection(recvBuf, recvResult)
                     if (result != null) {
                         val (driver, serverScidKey) = result
-                        connectionsByDcid[serverScidKey] = driver
-                        connectionsByDcid[dcidKey] = driver
-                        acceptedDrivers.trySend(driver)
+                        registry.routeDriver(serverScidKey, driver)
+                        registry.routeDriver(dcidKey, driver)
+                        registry.acceptedDrivers.trySend(driver)
                     }
                 }
             }
@@ -525,29 +412,6 @@ private class LinuxQuicServer(
             dcidLenBuf.freeNativeMemory()
             tokenBuf.freeNativeMemory()
             tokenLenBuf.freeNativeMemory()
-        }
-    }
-
-    /**
-     * Drain the cleanup channel — remove all [connectionsByDcid] entries for dead drivers.
-     * Called from the receive loop coroutine only.
-     */
-    private fun drainCleanupChannel() {
-        while (true) {
-            val driver = driverCleanupCh.tryReceive().getOrNull() ?: break
-            connectionsByDcid.keys.removeAll { connectionsByDcid[it] === driver }
-        }
-    }
-
-    /**
-     * Register spare SCIDs issued by drivers — maps each to its driver so a migrating peer's new
-     * DCID routes correctly. Receive-loop coroutine only. A registration for an already-removed
-     * driver is harmless: [drainCleanupChannel] runs first each iteration.
-     */
-    private fun drainScidRegistrations() {
-        while (true) {
-            val (key, driver) = scidRegistrationCh.tryReceive().getOrNull() ?: break
-            connectionsByDcid[key] = driver
         }
     }
 
@@ -641,12 +505,12 @@ private class LinuxQuicServer(
                 onCleanup = {
                     // Runs after run() has fully returned, so the driver can no longer connRecv —
                     // drop it from the lifecycle ledger (bounds the set for long-lived servers).
-                    driverRef?.let { removeLiveDriver(it) }
+                    driverRef?.let { registry.untrackLiveDriver(it) }
                 },
                 onScidIssued = { scid, len ->
                     // Snapshot the CID (scid is freed right after this returns) and hand the
-                    // registration to the receive loop, which owns connectionsByDcid.
-                    driverRef?.let { d -> scidRegistrationCh.trySend(ConnectionIdKey.fromNative(scid, len) to d) }
+                    // registration to the receive loop, which owns the routing table.
+                    driverRef?.let { d -> registry.enqueueScidRegistration(ConnectionIdKey.from(scid, len), d) }
                 },
             )
         driverRef = driver
@@ -654,10 +518,10 @@ private class LinuxQuicServer(
         // Ledger the driver BEFORE starting its run loop so close() can never observe a started-but-
         // untracked driver (additions happen only here, on the receive-loop coroutine, so they cease
         // once close() has joined receiveJob — the set is then stable for close()'s destroy sweep).
-        addLiveDriver(driver)
+        registry.trackLiveDriver(driver)
         driver.start(scope)
 
-        val scidKey = ConnectionIdKey.fromNative(serverScid, QUIC_MAX_CONN_ID_LEN)
+        val scidKey = ConnectionIdKey.from(serverScid, QUIC_MAX_CONN_ID_LEN)
         serverScid.freeNativeMemory()
         return driver to scidKey
     }
@@ -701,35 +565,6 @@ private fun readSizeT(buf: PlatformBuffer): Int =
         .pointed
         .value
         .toInt()
-
-/**
- * Key for connection lookup by DCID.
- *
- * Holds a managed-heap snapshot of the CID bytes (typically ≤20 bytes
- * per RFC 9000 §5.1) so the key is stable across datagram buffer
- * recycling. Equality/hash reuse the buffer library's content-based
- * helpers, eliminating the per-datagram [ByteArray] that the pre-v2
- * implementation allocated.
- */
-private class ConnectionIdKey private constructor(
-    private val snapshot: com.ditchoom.buffer.ReadBuffer,
-) {
-    override fun equals(other: Any?): Boolean = other is ConnectionIdKey && snapshot.contentEquals(other.snapshot)
-
-    override fun hashCode(): Int = bufferHashCode(snapshot)
-
-    companion object {
-        fun fromNative(
-            buffer: PlatformBuffer,
-            length: Int,
-        ): ConnectionIdKey {
-            val snapshot = BufferFactory.managed().allocate(length)
-            for (i in 0 until length) snapshot.writeByte(buffer.get(i))
-            snapshot.resetForRead()
-            return ConnectionIdKey(snapshot)
-        }
-    }
-}
 
 /**
  * Server-side QUIC connection backed by a [QuicheDriver].
