@@ -61,54 +61,13 @@ jobs:
               armv7-linux-androideabi i686-linux-android
           cargo install cargo-ndk
 
-      - name: Build Android QUIC native libs
-        continue-on-error: true
-        run: |
-          # Clone quiche source (version tracks the catalog — was a hardcoded 0.28.0)
-          QUICHE_VER=$(grep -E '^quiche[[:space:]]*=' gradle/libs.versions.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "Pinned quiche version: $QUICHE_VER"
-          mkdir -p socket-quic-quiche/build/quiche
-          git clone --recursive --depth 1 --branch "$QUICHE_VER" \
-            https://github.com/cloudflare/quiche.git socket-quic-quiche/build/quiche/quiche-src
-
-          # De-dup BoringSSL for the boring-crate staticlib: quiche's build.rs re-emits the
-          # static ssl/crypto link that boring-sys already emits, double-bundling BoringSSL into
-          # libquiche.a → "duplicate symbol" under the JNI shim's --whole-archive. Neutralize
-          # quiche's redundant emission (idempotent; mirrors patchQuicheBuildRsForBoringCrate).
-          python3 - <<'PY'
-          p = "socket-quic-quiche/build/quiche/quiche-src/quiche/src/build.rs"
-          s = open(p).read()
-          if "socket-dedup-boringssl" not in s:
-              s = s.replace(
-                  '    if cfg!(feature = "boringssl-boring-crate") {',
-                  '    // socket-dedup-boringssl\n    if false && cfg!(feature = "boringssl-boring-crate") {',
-                  1,
-              )
-              open(p, "w").write(s)
-              print("patched build.rs (boring-crate BoringSSL de-dup)")
-          PY
-
-          # Build for x86_64 (emulator)
-          cd socket-quic-quiche/build/quiche/quiche-src
-          cargo ndk --target x86_64 --platform 24 -- build --release --package quiche \
-            --no-default-features --features ffi,boringssl-boring-crate
-          cd ${{ github.workspace }}
-
-          # Build JNI shim
-          NDK_TC="$ANDROID_SDK_ROOT/ndk/$(ls $ANDROID_SDK_ROOT/ndk/ | head -1)/toolchains/llvm/prebuilt/linux-x86_64"
-          QUICHE_LIB=$(find socket-quic-quiche/build/quiche -path "*x86_64-linux-android*release*libquiche.a" | head -1)
-          if [ -n "$QUICHE_LIB" ]; then
-            mkdir -p socket-quic-quiche/src/androidMain/jniLibs/x86_64
-            $NDK_TC/bin/x86_64-linux-android24-clang -shared -fPIC -Wall \
-              -o socket-quic-quiche/src/androidMain/jniLibs/x86_64/libquiche_jni.so \
-              socket-quic-quiche/src/jni/quiche_jni.c \
-              -I${JAVA_HOME}/include -I${JAVA_HOME}/include/linux \
-              -I socket-quic-quiche/libs/quiche/include \
-              -Wl,--whole-archive $QUICHE_LIB -Wl,--no-whole-archive \
-              -lm -ldl -llog \
-              && $NDK_TC/bin/llvm-strip --strip-all socket-quic-quiche/src/androidMain/jniLibs/x86_64/libquiche_jni.so \
-              && echo "Built Android x86_64 JNI shim"
-          fi
+      # Build the x86_64 (emulator ABI) native libs via Gradle instead of a hand-rolled cargo-ndk +
+      # clang duplicate, so this can't drift from build.gradle.kts. buildAndroidJniX86_64 emits the
+      # dedup'd pair into src/androidMain/jniLibs/x86_64/: a thin libquiche_jni.so (DT_NEEDED=libquiche.so)
+      # beside a self-contained libquiche.so (unversioned soname), exactly what the emulator loads
+      # (libquiche.so first, then the shim). NDK/cargo-ndk/targets/libclang are set up in the steps above.
+      - name: Build Android QUIC native libs (x86_64, via Gradle)
+        run: ./gradlew :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
 
       # Bring up the docker quic-echo harness (same image / port as
       # build-linux + build-apple) before the emulator starts. The
