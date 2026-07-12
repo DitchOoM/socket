@@ -46,6 +46,15 @@ suspend fun AsynchronousSocketChannel.aConnect(
  * This suspending function is cancellable.
  * If the [kotlinx.coroutines.Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
  * *closes the underlying channel* and immediately resumes with [kotlin.coroutines.cancellation.CancellationException].
+ *
+ * An **infinite** [duration] maps to the JDK's *untimed* `read` overload rather than a very large
+ * millisecond timeout. This is deliberate and load-bearing: the JDK read-timeout is **destructive**
+ * — when it elapses the channel's `readKilled` flag is armed and every later read throws
+ * `IllegalStateException` (RFC_READ_TIMEOUT_CONTRACT §4, Axis 2). The non-destructive read path
+ * ([com.ditchoom.socket.nio2.AsyncBaseClientSocket] orphaned-read single-flight) therefore enforces
+ * the deadline itself and calls here with [Duration.INFINITE], relying on the untimed read to never
+ * arm `readKilled`. Passing a finite [duration] keeps the JDK's destructive timeout (used only on the
+ * TLS raw-read path, which is out of scope for the contract — see the class doc).
  */
 
 suspend fun AsynchronousSocketChannel.aRead(
@@ -54,13 +63,17 @@ suspend fun AsynchronousSocketChannel.aRead(
 ): Int {
     val result =
         suspendCancellableCoroutine<Int> { cont ->
-            read(
-                buf,
-                duration.inWholeMilliseconds,
-                TimeUnit.MILLISECONDS,
-                cont,
-                asyncIOIntHandler(),
-            )
+            if (duration.isInfinite()) {
+                read(buf, cont, asyncIOIntHandler())
+            } else {
+                read(
+                    buf,
+                    duration.inWholeMilliseconds,
+                    TimeUnit.MILLISECONDS,
+                    cont,
+                    asyncIOIntHandler(),
+                )
+            }
             closeOnCancel(cont)
         }
     return result

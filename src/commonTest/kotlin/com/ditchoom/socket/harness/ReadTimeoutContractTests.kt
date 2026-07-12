@@ -26,24 +26,26 @@ import kotlin.time.Duration.Companion.seconds
  * These five assertions encode the **proposed contract** (§3), not today's behavior. They run
  * unchanged on every platform against the in-process [SilentPeer] (accept-then-silence) fixture,
  * so a failure is a *provable* per-platform divergence. Current expected colors against each
- * platform's **default** implementation (**Phase 2 landed** — Axis 3 now uniform):
+ * platform's **default** implementation (**Phases 2 + 4a landed** — JVM-NIO2 now fully green):
  *
  * | Assertion (contract §3)                              | Axis | JVM (NIO2 default) | Node | Apple | Linux |
  * |------------------------------------------------------|------|--------------------|------|-------|-------|
  * | [boundedReadOfSilentPeerTimesOut]                    | 1    | green              | green| green | green |
  * | [readTimeoutThrowsSocketTimeoutException]            | 3    | green ✅ (was IOException) | green ✅ (was TCE) | green ✅ (was TCE) | green |
- * | [connectionSurvivesReadTimeoutForReading]            | 2    | **RED** (destructive)| green| **RED** | green |
+ * | [connectionSurvivesReadTimeoutForReading]            | 2    | green ✅ (was destructive) | green| **RED** | green |
  * | [untilClosedReadOfSilentPeerDoesNotTimeOut]          | opt-out | green           | green| green | green |
- * | [connectionSurvivesReadTimeoutForWriting]            | 2    | green (read-half only) | green| **RED** | green |
+ * | [connectionSurvivesReadTimeoutForWriting]            | 2    | green              | green| **RED** | green |
  *
  * The JVM *blocking* and *selector* variants are not the JVM default, so they're exercised
  * separately in `JvmReadTimeoutVariantTests` (commonJvmTest) — that's where the Axis-1 enforcement
- * RED (blocking path hangs → [ReadOutcome.WatchdogExpired]) is visible. **Phase 2 also made the
- * selector path fully conformant** (it previously leaked a `TimeoutCancellationException`).
+ * RED (blocking path hangs → [ReadOutcome.WatchdogExpired]) was visible before Phase 3. **Phase 2 also
+ * made the selector path fully conformant** (it previously leaked a `TimeoutCancellationException`).
  *
- * Remaining RED after Phase 2 is Axis 2 destructiveness on JVM-NIO2 (read half) and Apple — the
- * hardest slice (RFC Phase 4). **Do not "fix" these by weakening the assertion.** Linux is the
- * reference impl (§3.1).
+ * **Phase 4a** made JVM-NIO2 non-destructive via the orphaned-read single-flight
+ * (`AsyncBaseClientSocket.orphanedReadRaw`, RFC §3.2) — the last JVM red. The **only** remaining RED
+ * is Axis 2 destructiveness on Apple (`NWSocketWrapper.closeInternal` in the receive-cancellation
+ * path) — RFC Phase 4b, surfacing on the macOS CI lane. **Do not "fix" it by weakening the
+ * assertion.** Linux is the reference impl (§3.1).
  */
 class ReadTimeoutContractTests {
     private val deadline = 1.seconds
