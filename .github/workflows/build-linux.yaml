@@ -248,8 +248,10 @@ jobs:
           QUICHE_LIBS="$WS/socket-quic-quiche/libs/quiche"
           ANDROID_JNI="$WS/socket-quic-quiche/src/androidMain/jniLibs"
 
-          # Build quiche static (Linux K/Native) + shared (Linux JVM)
-          ./gradlew :socket-quic-quiche:buildQuicheStaticX64 :socket-quic-quiche:buildQuicheStaticArm64 :socket-quic-quiche:buildQuicheSharedLinuxX64 --no-configuration-cache || true
+          # One cargo build per Linux triple: each shared task emits BOTH the JVM libquiche.so and the
+          # K/Native libquiche.a (no separate static task). Builds x64 + arm64 (arm64 cross via the
+          # aarch64 linker the shared task configures).
+          ./gradlew :socket-quic-quiche:buildQuicheSharedLinuxX64 :socket-quic-quiche:buildQuicheSharedLinuxArm64 --no-configuration-cache || true
 
           # Ensure quiche source exists for JNI builds (Gradle may skip download on cache hit)
           QUICHE_DIR=$(find socket-quic-quiche/build/quiche -maxdepth 1 -name "quiche-*" -type d 2>/dev/null | head -1)

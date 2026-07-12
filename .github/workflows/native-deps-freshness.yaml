@@ -251,13 +251,12 @@ jobs:
         continue-on-error: true
         run: ./gradlew :buildLiburingX64 :buildLiburingArm64 --no-configuration-cache
 
-      - name: Warm quiche cache (static x64/arm64 + shared x64)
+      - name: Warm quiche cache (shared x64/arm64 — each emits .so + K/Native .a)
         continue-on-error: true
         run: >-
           ./gradlew
-          :socket-quic-quiche:buildQuicheStaticX64
-          :socket-quic-quiche:buildQuicheStaticArm64
           :socket-quic-quiche:buildQuicheSharedLinuxX64
+          :socket-quic-quiche:buildQuicheSharedLinuxArm64
           --no-configuration-cache
 
       - name: Report warmed artifacts

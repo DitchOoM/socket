@@ -184,100 +184,6 @@ fun patchQuicheBuildRsForUnversionedSoname(sourceDir: File) {
 }
 
 /**
- * Build quiche as a static library for K/Native cinterop (Linux).
- * Uses QUICHE_BSSL_PATH to share BoringSSL with the base module (future).
- */
-fun createBuildQuicheStaticTask(arch: String): TaskProvider<Task> {
-    val taskName = "buildQuicheStatic${arch.replaceFirstChar { it.uppercase() }}"
-    val outputDir = projectDir.resolve("libs/quiche/linux-$arch")
-    // `-qlog` suffix: the qlog feature was added to the cargo build, so a lib built before it (a stale
-    // `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a rebuild
-    // with qlog on every host/CI runner that cached the old output.
-    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog")
-
-    val cargoTarget =
-        if (arch == "x64") "x86_64-unknown-linux-gnu" else "aarch64-unknown-linux-gnu"
-
-    return tasks.register(taskName) {
-        group = "build"
-        description = "Build quiche static library for Linux $arch"
-        inputs.property("quicheVersion", quicheVersion)
-        outputs.file(markerFile)
-        onlyIf { !markerFile.exists() }
-
-        doLast {
-            val buildDir = quicheBuildDir.get().asFile
-            val sourceDir = downloadQuicheSource(buildDir, quicheVersion, quicheSha256)
-
-            logger.lifecycle("Building quiche $quicheVersion (static, $arch)...")
-
-            // Use pre-built BoringSSL from the base module (avoids rebuilding inside quiche)
-            val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
-            val env = mutableMapOf<String, String>()
-            // Note: avoid -C lto=thin / -C embed-bitcode=yes here — they conflict with
-            // pre-built BoringSSL objects that lack LTO bitcode.
-            env["RUSTFLAGS"] = "-C opt-level=s -C codegen-units=1 -C strip=symbols"
-            if (boringsslDir.resolve("lib/libssl.a").exists()) {
-                env["QUICHE_BSSL_PATH"] = boringsslDir.absolutePath
-                logger.lifecycle("Using pre-built BoringSSL from ${boringsslDir.absolutePath}")
-            }
-            if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
-                env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"] = "aarch64-linux-gnu-gcc"
-            }
-
-            val cargoArgs =
-                mutableListOf(
-                    cargoBin,
-                    "build",
-                    "--release",
-                    "--package",
-                    "quiche",
-                    "--target",
-                    cargoTarget,
-                    "--no-default-features",
-                    "--features",
-                    // qlog: env-gated diagnostics (QUIC_QLOG_DIR) need quiche_conn_set_qlog_path, which is
-                    // #[cfg(feature = "qlog")] — without it the symbol is absent and the JNI/cinterop
-                    // bindings don't link. Pulls serde_json/serde/qlog into the binary.
-                    // quiche 0.29 removed the `boringssl-vendored` feature; `boringssl-boring-crate`
-                    // (the new default) is the self-contained fallback (boring-sys builds BoringSSL +
-                    // runs bindgen → needs libclang). External path (ffi,qlog) stays the CI norm.
-                    if (boringsslDir.resolve("lib/libssl.a").exists()) "ffi,qlog" else "ffi,boringssl-boring-crate,qlog",
-                )
-
-            val process =
-                ProcessBuilder(cargoArgs)
-                    .directory(sourceDir)
-                    .also { pb -> pb.environment().putAll(env) }
-                    .redirectErrorStream(true)
-                    .start()
-            // Stream cargo output through Gradle logger so it appears in CI logs
-            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
-            val result = process.waitFor()
-
-            if (result != 0) {
-                throw GradleException("quiche cargo build failed for $arch (exit $result)")
-            }
-
-            // Copy static library
-            outputDir.resolve("lib").mkdirs()
-            outputDir.resolve("include").mkdirs()
-            sourceDir.resolve("target/$cargoTarget/release/libquiche.a").copyTo(
-                outputDir.resolve("lib/libquiche.a"),
-                overwrite = true,
-            )
-            sourceDir.resolve("quiche/include/quiche.h").copyTo(
-                outputDir.resolve("include/quiche.h"),
-                overwrite = true,
-            )
-
-            markerFile.writeText("quiche $quicheVersion built on ${System.currentTimeMillis()}")
-            logger.lifecycle("quiche $quicheVersion built successfully (static, $arch)")
-        }
-    }
-}
-
-/**
  * Build quiche as a shared library for JVM/Android (loaded via JNI or FFM).
  */
 fun createBuildQuicheSharedTask(
@@ -286,13 +192,11 @@ fun createBuildQuicheSharedTask(
 ): TaskProvider<Task> {
     val taskName = "buildQuicheShared${os.replaceFirstChar { it.uppercase() }}${arch.replaceFirstChar { it.uppercase() }}"
     val outputDir = projectDir.resolve("libs/quiche/$os-$arch")
-    // `-qlog` suffix: the qlog feature was added to the cargo build, so a lib built before it (a stale
-    // `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a rebuild
-    // with qlog on every host/CI runner that cached the old output.
-    // `-jvm` suffix: on Linux this task and the K/Native `buildQuicheStatic<arch>` BOTH target
-    // libs/quiche/linux-<arch>/lib. They used to share one marker, so on a cache-miss build (e.g. a
-    // version bump) whichever ran first made the other SKIP — leaving libquiche.so (this task's only
-    // artifact) stale while the FFM lane loaded it. Distinct markers let both run and both refresh.
+    // `-qlog-jvm` marker suffix: the qlog feature was added to the cargo build, so a lib built before it
+    // (a stale `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a
+    // rebuild with qlog on every host/CI runner that cached the old output. (The `-jvm` suffix is a
+    // historical leftover from when a separate Linux static task shared this dir with its own marker;
+    // that task is gone — this one cargo build now emits both the JVM .so and the K/Native .a.)
     val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog-jvm")
 
     val cargoTarget =
@@ -616,9 +520,10 @@ fun createBuildQuicheAppleStaticTask(
 }
 
 // Register build tasks for the current host
-val buildQuicheStaticX64 = if (isLinux) createBuildQuicheStaticTask("x64") else null
-val buildQuicheStaticArm64 = if (isLinux) createBuildQuicheStaticTask("arm64") else null
-
+// Linux K/Native cinterop consumes libquiche.a from the SAME shared-task output below — a cdylib cargo
+// build already emits the staticlib crate-type, and the shared task copies it (the .so's whole-archive
+// link-arg doesn't touch the .a). So there is no separate static task: one cargo build per Linux triple
+// produces both the K/Native .a and the JVM .so.
 val buildQuicheSharedLinuxX64 = if (isLinux) createBuildQuicheSharedTask("linux", "x64") else null
 val buildQuicheSharedLinuxArm64 = if (isLinux) createBuildQuicheSharedTask("linux", "arm64") else null
 val buildQuicheSharedMacosX64 = if (isMacOS) createBuildQuicheSharedTask("macos", "x64") else null
@@ -634,9 +539,9 @@ val buildQuicheStaticIosX64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios
 // Convenience task: build all quiche libraries for the current host
 tasks.register("buildQuicheAll") {
     group = "build"
-    description = "Build all quiche libraries (static + shared) for the current host OS"
+    description = "Build all quiche libraries for the current host OS"
     if (isLinux) {
-        dependsOn(buildQuicheStaticX64!!, buildQuicheStaticArm64!!)
+        // Each shared task emits both the JVM .so and the K/Native .a for its triple.
         dependsOn(buildQuicheSharedLinuxX64!!, buildQuicheSharedLinuxArm64!!)
     }
     if (isMacOS) {
