@@ -51,6 +51,7 @@ import platform.posix.sockaddr_in
 import platform.posix.sockaddr_storage
 import platform.posix.socket
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
@@ -203,6 +204,35 @@ private class LinuxQuicServer(
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
 
     /**
+     * Authoritative ledger of every accepted driver whose run loop may still be alive (mirrors
+     * [JvmQuicServer.liveDrivers]). [connectionsByDcid] is a *routing* table, not a lifecycle set: a
+     * driver is dropped from it the moment it stops routing new packets (cleanup-queue drain, or the
+     * trySend-failure `removeAll`) — while its run loop can still be draining buffered
+     * [QuicheCmd.RecvPacket]s that `connRecv` a shared [peerRecvInfos] entry via
+     * [QuicheCmd.RecvPacket.recvInfoOverride]. [close] must destroy+join every driver in *this* set,
+     * not just those still routing, before it frees the recv_info cache — otherwise a lagging run
+     * loop `connRecv`s a recv_info [close] already freed (the recv_info UAF the #179 guard chased on
+     * JVM; latent here too since K/N has no guard). Copy-on-write over an [AtomicReference]: added on
+     * the receive-loop coroutine, removed on a driver-cleanup coroutine — both cold paths.
+     */
+    private val liveDrivers = AtomicReference<Set<QuicheDriver>>(emptySet())
+
+    private fun addLiveDriver(driver: QuicheDriver) {
+        while (true) {
+            val cur = liveDrivers.value
+            if (liveDrivers.compareAndSet(cur, cur + driver)) return
+        }
+    }
+
+    private fun removeLiveDriver(driver: QuicheDriver) {
+        while (true) {
+            val cur = liveDrivers.value
+            if (driver !in cur) return
+            if (liveDrivers.compareAndSet(cur, cur - driver)) return
+        }
+    }
+
+    /**
      * Recv buffer pool — mirrors [JvmQuicServer]'s: each datagram is acquired here, ownership
      * transfers to the connection's driver, and every existing free-path's `freeNativeMemory()`
      * recycles the buffer back to this pool instead of malloc/freeing per packet.
@@ -345,14 +375,26 @@ private class LinuxQuicServer(
         //    corrupted" otherwise).
         serverChannel.closeFd()
         receiveJob.cancelAndJoin()
-        for (driver in connectionsByDcid.values.toSet()) {
+        // Destroy+join EVERY accepted driver, not just those still in connectionsByDcid. A driver
+        // dropped from the routing map (cleanup-queue drain / trySend-failure removeAll) can still
+        // have a live run loop draining buffered RecvPackets, each of which connRecv's a shared
+        // peerRecvInfos entry — freeing the cache below while such a loop runs is the recv_info UAF
+        // (#179). receiveJob join above guarantees no new drivers are added, so liveDrivers is now
+        // stable; joining them all releases every in-flight cache ref before the free.
+        for (driver in liveDrivers.value) {
             driver.destroy()
         }
+        liveDrivers.value = emptySet()
         connectionsByDcid.clear()
-        // Drivers destroyed (their drain released every in-flight ref) — free the per-source
-        // recv_info cache. Each recv_info before its `from` buffer; localAddrBuf (the shared `to`)
-        // is freed last, below.
+        // Every driver joined → every in-flight ref released (inFlight == 0 for all). Free the
+        // per-source recv_info cache. Each recv_info before its `from` buffer; localAddrBuf (the
+        // shared `to`) is freed last, below.
         for (cached in peerRecvInfos.values) {
+            check(cached.inFlight.value == 0) {
+                // Unreachable given the join sweep above; asserted so any future regression trips
+                // here deterministically instead of as an opaque native connRecv SIGSEGV.
+                "recv_info still in-flight at server close (inFlight=${cached.inFlight.value})"
+            }
             api.recvInfoFree(cached.info)
             cached.fromBuf.freeNativeMemory()
         }
@@ -596,6 +638,11 @@ private class LinuxQuicServer(
                 driverContext = tuning.driverContext,
                 random = tuning.random,
                 recorder = tuning.recorderFactory(),
+                onCleanup = {
+                    // Runs after run() has fully returned, so the driver can no longer connRecv —
+                    // drop it from the lifecycle ledger (bounds the set for long-lived servers).
+                    driverRef?.let { removeLiveDriver(it) }
+                },
                 onScidIssued = { scid, len ->
                     // Snapshot the CID (scid is freed right after this returns) and hand the
                     // registration to the receive loop, which owns connectionsByDcid.
@@ -604,6 +651,10 @@ private class LinuxQuicServer(
             )
         driverRef = driver
 
+        // Ledger the driver BEFORE starting its run loop so close() can never observe a started-but-
+        // untracked driver (additions happen only here, on the receive-loop coroutine, so they cease
+        // once close() has joined receiveJob — the set is then stable for close()'s destroy sweep).
+        addLiveDriver(driver)
         driver.start(scope)
 
         val scidKey = ConnectionIdKey.fromNative(serverScid, QUIC_MAX_CONN_ID_LEN)

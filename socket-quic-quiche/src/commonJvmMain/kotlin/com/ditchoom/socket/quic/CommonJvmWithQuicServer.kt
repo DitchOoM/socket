@@ -27,6 +27,7 @@ import java.net.SocketAddress
 import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration
@@ -163,6 +164,24 @@ internal class JvmQuicServer(
 
     private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
     private val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
+
+    /**
+     * Authoritative ledger of every accepted driver whose run loop may still be alive — added the
+     * instant a driver is started ([acceptNewConnection]) and removed only once its teardown has
+     * fully completed (via the driver's `onCleanup`, which runs after `run()` returns).
+     *
+     * [connectionsByDcid] is a *routing* table, NOT a lifecycle set: a driver is dropped from it the
+     * moment it stops routing new packets ([drainCleanupQueue], or the trySend-failure `removeIf` in
+     * the receive loop) — while its run loop can still be draining already-buffered [QuicheCmd.RecvPacket]s,
+     * each of which `connRecv`s a shared [peerRecvInfos] entry via [QuicheCmd.RecvPacket.recvInfoOverride].
+     * [close] must therefore destroy+join every driver in *this* set (a superset of the routing map),
+     * not just those still routing, before it frees the recv_info cache — otherwise a lagging run loop
+     * `connRecv`s a recv_info [close] already freed. That was the intermittent recv_info use-after-free
+     * the JNI SIGSEGV hunt chased (#179); the lifecycle guard's freeing stack named [close] as the racer.
+     *
+     * Concurrent (newKeySet): added on the receive-loop thread, removed on a driver-cleanup coroutine.
+     */
+    private val liveDrivers = ConcurrentHashMap.newKeySet<QuicheDriver>()
 
     /**
      * Recv buffer pool — each incoming UDP datagram needs a fresh MAX_DATAGRAM_SIZE
@@ -316,14 +335,26 @@ internal class JvmQuicServer(
         receiveSelector?.wakeup() // unblock selector.select() in receiveLoop
         channel.close()
         receiveJob.join()
-        for (driver in connectionsByDcid.values.toSet()) {
+        // Destroy+join EVERY accepted driver, not just those still in connectionsByDcid. A driver
+        // dropped from the routing map (drainCleanupQueue / trySend-failure removeIf) can still have
+        // a live run loop draining buffered RecvPackets, each of which connRecv's a shared
+        // peerRecvInfos entry — freeing the cache below while such a loop runs is the recv_info UAF
+        // (#179). receiveJob.join() above guarantees no new drivers are added, so liveDrivers is now
+        // stable; joining them all releases every in-flight cache ref before the free.
+        for (driver in liveDrivers.toList()) {
             driver.destroy()
         }
+        liveDrivers.clear()
         connectionsByDcid.clear()
-        // Drivers destroyed (their drain released every in-flight ref) — free the per-source
-        // recv_info cache. Free each recv_info before the `from` sockaddr it points at, then the
-        // shared `to` sockaddr last (every recv_info pointed at it).
+        // Every driver joined → every in-flight ref released (inFlight == 0 for all). Free the
+        // per-source recv_info cache: each recv_info before the `from` sockaddr it points at, then
+        // the shared `to` sockaddr last (every recv_info pointed at it).
         for (cached in peerRecvInfos.values) {
+            check(cached.inFlight.get() == 0) {
+                // Unreachable given the join sweep above; asserted so any future regression trips
+                // here deterministically instead of as an opaque native connRecv SIGSEGV.
+                "recv_info still in-flight at server close (inFlight=${cached.inFlight.get()})"
+            }
             api.recvInfoFree(cached.info)
             cached.from.free()
         }
@@ -630,6 +661,9 @@ internal class JvmQuicServer(
                 random = tuning.random,
                 recorder = tuning.recorderFactory(),
                 onCleanup = {
+                    // Runs after run() has fully returned, so the driver can no longer connRecv —
+                    // drop it from the lifecycle ledger (bounds the set for long-lived servers).
+                    driverRef?.let { liveDrivers.remove(it) }
                     peerSockAddr.free()
                     localSockAddr.free()
                 },
@@ -644,6 +678,10 @@ internal class JvmQuicServer(
             )
         driverRef = driver
 
+        // Ledger the driver BEFORE starting its run loop so close() can never observe a started-but-
+        // untracked driver (additions happen only here, on the receive-loop thread, so they cease
+        // once close() has joined receiveJob — the set is then stable for close()'s destroy sweep).
+        liveDrivers.add(driver)
         driver.start(scope)
 
         val scidKey = ConnectionIdKey.from(serverScid, QUIC_MAX_CONN_ID_LEN)
