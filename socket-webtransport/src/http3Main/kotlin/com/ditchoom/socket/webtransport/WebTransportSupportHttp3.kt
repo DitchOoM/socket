@@ -1,10 +1,14 @@
 package com.ditchoom.socket.webtransport
 
+import com.ditchoom.socket.ConnectionFailureReason
+import com.ditchoom.socket.SSLSocketException
 import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.http3.Http3Connection
 import com.ditchoom.socket.http3.withHttp3Connection
 import com.ditchoom.socket.quic.CertificateHash
 import com.ditchoom.socket.quic.DatagramOptions
+import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -13,6 +17,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import com.ditchoom.socket.http3.WebTransportException as Http3WebTransportException
+import com.ditchoom.socket.http3.WebTransportFailure as Http3WebTransportFailure
 import com.ditchoom.socket.http3.WebTransportOptions as Http3WebTransportOptions
 
 /**
@@ -108,7 +114,7 @@ internal class Http3WebTransportSupport : WebTransportSupport.Multiplexed {
                 throw c
             } catch (t: Throwable) {
                 scope.cancel()
-                throw WebTransportException("WebTransport connect to $url failed: ${t.message}", t)
+                throw WebTransportException(t.toNeutralWebTransportFailure(), t)
             }
         return MultiplexedHttp3WebTransport(connection, target.authority, scope)
     }
@@ -123,6 +129,54 @@ private fun Http3WebTransportConfig.resolvedQuicOptions(): QuicOptions = quicOpt
 
 /** The default QUIC options for a WebTransport dial: `h3` ALPN + DATAGRAM support. */
 private fun defaultWebTransportQuicOptions(): QuicOptions = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN), datagrams = DatagramOptions())
+
+/**
+ * Cert-related TLS alert codes (RFC 8446/5246 §6): bad_certificate(42), unsupported_certificate(43),
+ * certificate_revoked(44), certificate_expired(45), certificate_unknown(46), unknown_ca(48),
+ * access_denied(49). Used to classify a QUIC [QuicError.CryptoError] as a certificate rejection vs a
+ * generic handshake failure by its typed alert code — never by matching a message string.
+ */
+private val CERT_TLS_ALERTS: Set<Int> = setOf(42, 43, 44, 45, 46, 48, 49)
+
+/**
+ * Map a native WebTransport establishment failure onto the neutral typed [WebTransportFailure] by TYPE:
+ *  - socket-http3's [Http3WebTransportException] → the matching neutral variant (its `when (failure)` is
+ *    exhaustive, so a new http3 variant won't compile here until it's mapped);
+ *  - a TLS/cert [SSLSocketException] (incl. certificate-pinning) → [WebTransportFailure.TlsHandshake],
+ *    with [WebTransportFailure.TlsHandshake.badCertificate] read from the typed
+ *    [SSLSocketException.reason];
+ *  - a [QuicCloseException] carrying a [QuicError.CryptoError] → [WebTransportFailure.TlsHandshake],
+ *    cert-vs-handshake decided by the typed [QuicError.CryptoError.tlsAlert];
+ *  - anything else → [WebTransportFailure.SessionError] (the honest catch-all, cause preserved).
+ *
+ * This is the single seam that replaces the old `WebTransportException("...: ${t.message}")` rewrap the
+ * neutral mapper then string-matched.
+ */
+internal fun Throwable.toNeutralWebTransportFailure(): WebTransportFailure =
+    when (this) {
+        is Http3WebTransportException ->
+            when (val f = failure) {
+                Http3WebTransportFailure.NotEnabledLocally -> WebTransportFailure.NotEnabledLocally
+                Http3WebTransportFailure.PeerDoesNotSupport -> WebTransportFailure.PeerDoesNotSupport
+                is Http3WebTransportFailure.ConnectRejected -> WebTransportFailure.ConnectRejected(f.status)
+                Http3WebTransportFailure.DatagramsNotEnabled -> WebTransportFailure.DatagramsNotEnabled
+            }
+        is SSLSocketException ->
+            WebTransportFailure.TlsHandshake(
+                badCertificate = reason == ConnectionFailureReason.TlsBadCertificate,
+                detail = message ?: "TLS handshake failed",
+            )
+        is QuicCloseException ->
+            when (val q = quicError) {
+                is QuicError.CryptoError ->
+                    WebTransportFailure.TlsHandshake(
+                        badCertificate = q.tlsAlert in CERT_TLS_ALERTS,
+                        detail = message ?: "QUIC TLS handshake failed",
+                    )
+                else -> WebTransportFailure.SessionError(message ?: "WebTransport connection closed")
+            }
+        else -> WebTransportFailure.SessionError(message ?: this::class.simpleName ?: "WebTransport connect failed")
+    }
 
 /**
  * Map the neutral [WebTransportOptions] onto the native [Http3WebTransportConfig]. Today only
@@ -171,7 +225,7 @@ private class MultiplexedHttp3WebTransport(
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                throw WebTransportException("WebTransport openSession $path on $authority failed: ${t.message}", t)
+                throw WebTransportException(t.toNeutralWebTransportFailure(), t)
             }
         return NativeWebTransportSession(session)
     }

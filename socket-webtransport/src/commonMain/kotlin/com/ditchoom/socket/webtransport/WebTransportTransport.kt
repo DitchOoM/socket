@@ -142,33 +142,42 @@ private fun buildUrl(
     return "https://$hostname:$port$normalizedPath"
 }
 
-/** Map a WebTransport establishment failure to the unified [SocketException] family (RFC §6.1). */
+/**
+ * Map a WebTransport establishment failure to the unified [SocketException] family (RFC §6.1) by an
+ * EXHAUSTIVE `when` over the typed [WebTransportException.failure] — no message string-matching. The
+ * `when` is `else`-free on purpose: a new [WebTransportFailure] variant won't compile here until its
+ * mapping is chosen, which is the regression guard against silently defaulting a new failure mode.
+ */
 private fun mapEstablishmentError(
     e: WebTransportException,
     hostname: String,
     port: Int,
-): SocketException {
-    val msg = e.message?.lowercase() ?: ""
-    return when {
-        msg.contains("certificate") || msg.contains("cert") || msg.contains("tls") || msg.contains("trust") ->
+): SocketException =
+    when (val failure = e.failure) {
+        is WebTransportFailure.TlsHandshake ->
             SSLHandshakeFailedException(
                 e.message ?: "WebTransport TLS handshake failed",
                 cause = e,
                 reason =
-                    if (msg.contains("cert") || msg.contains("trust")) {
+                    if (failure.badCertificate) {
                         ConnectionFailureReason.TlsBadCertificate
                     } else {
                         ConnectionFailureReason.TlsHandshake
                     },
             )
-        else ->
+        WebTransportFailure.NotEnabledLocally,
+        WebTransportFailure.PeerDoesNotSupport,
+        is WebTransportFailure.ConnectRejected,
+        WebTransportFailure.DatagramsNotEnabled,
+        is WebTransportFailure.StreamAborted,
+        is WebTransportFailure.SessionError,
+        ->
             SocketConnectionException.Other(
                 ConnectionFailureReason.Unknown(e.message ?: e::class.simpleName ?: "WebTransport connect failed"),
                 "WebTransport connect to $hostname:$port failed: ${e.message}",
                 e,
             )
     }
-}
 
 /** Map a WebTransport stream abort to the unified connection-lost error for the single-stream surface. */
 private fun mapStreamError(t: Throwable): Throwable =

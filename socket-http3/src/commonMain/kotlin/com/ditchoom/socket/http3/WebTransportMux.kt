@@ -199,7 +199,7 @@ internal class WebTransportMux(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                throw WebTransportException("QUIC datagrams are not enabled on this connection: ${e.message}")
+                throw WebTransportException(WebTransportFailure.DatagramsNotEnabled, cause = e)
             }
         } finally {
             out.freeIfNeeded()

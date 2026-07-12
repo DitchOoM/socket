@@ -302,11 +302,9 @@ class Http3Connection private constructor(
         headers: List<QpackHeaderField> = emptyList(),
     ): WebTransportSession {
         val mux =
-            webTransportMux ?: throw WebTransportException(
-                "WebTransport is not enabled on this connection — pass WebTransportOptions to withHttp3Connection()/bootstrap()",
-            )
+            webTransportMux ?: throw WebTransportException(WebTransportFailure.NotEnabledLocally)
         if (!peerSettings().webTransportSupported) {
-            throw WebTransportException("the peer did not advertise WebTransport support (Extended CONNECT + H3_DATAGRAM + sessions)")
+            throw WebTransportException(WebTransportFailure.PeerDoesNotSupport)
         }
         val stream = openExtendedConnectStream(WEBTRANSPORT_PROTOCOL, authority, path, headers)
         // Table the session by its CONNECT stream id immediately, so a WebTransport stream/datagram the
@@ -326,7 +324,9 @@ class Http3Connection private constructor(
             reader.release()
             mux.abandon(session)
             resetStreamQuietly(stream, Http3ErrorCode.REQUEST_CANCELLED)
-            throw WebTransportException("WebTransport CONNECT to $authority$path was rejected with status $status")
+            throw WebTransportException(
+                WebTransportFailure.ConnectRejected(status = status, authority = authority, path = path),
+            )
         }
         // Confirmed: hand the CONNECT-stream reader to the session's capsule loop.
         mux.activate(session, reader)

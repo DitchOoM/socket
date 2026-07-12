@@ -109,7 +109,7 @@ private suspend fun writeChunk(
         throw t
     } catch (e: Throwable) {
         val code = streamResetCode(e)
-        if (code != null) throw WebTransportStreamException(code, "WebTransport stream reset by peer (code $code)", e)
+        if (code != null) throw WebTransportStreamException(code, e)
         throw e
     }
     buffer.position(buffer.position() + n)

@@ -19,10 +19,16 @@ data class WebTransportCloseInfo(
     val reason: String = "",
 )
 
-/** A WebTransport-over-HTTP/3 failure (RFC 9220 + draft-ietf-webtrans-http3) that isn't a plain H3 error. */
+/**
+ * A WebTransport-over-HTTP/3 failure (RFC 9220 + draft-ietf-webtrans-http3) that isn't a plain H3 error.
+ * The typed reason is [failure] (see [WebTransportFailure]); the exception [message] is rendered from it,
+ * and any underlying transport error is chained as [cause]. Consumers switch on [failure] rather than
+ * parsing the message.
+ */
 class WebTransportException internal constructor(
-    message: String,
-) : Exception(message)
+    val failure: WebTransportFailure,
+    cause: Throwable? = null,
+) : Exception(failure.describe(), cause)
 
 /**
  * An established WebTransport session (RFC 9220 + draft-ietf-webtrans-http3), shared by the client
