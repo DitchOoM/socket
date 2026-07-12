@@ -50,8 +50,10 @@ internal fun buildJvmQuicServer(
     // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
     // byte-identical to the pre-seam behaviour; the sim harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    // Injectable backend — defaults to the process-wide native binding. A test passes a delegating
+    // spy (e.g. to gate connRecv) exactly as the client's commonJvmWithQuicConnection already allows.
+    api: QuicheApi = loadQuicheApi(),
 ): JvmQuicServer {
-    val api: QuicheApi = loadQuicheApi()
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     var bound = false
@@ -328,6 +330,19 @@ internal class JvmQuicServer(
                 }
             }
         }
+
+    /**
+     * TEST SEAM (do not call in production): drop every driver from the [connectionsByDcid] routing
+     * table without destroying it, deterministically reproducing the state the trySend-failure
+     * `removeIf` / cleanup-queue drain create in production — a *live* driver that is no longer
+     * routable. Lets a test assert [close] still reaps such a driver (via [liveDrivers]) before it
+     * frees the recv_info cache, the invariant behind the #179 recv_info UAF fix, without racing a
+     * native packet to trigger the real de-route. Safe to call only while the receive loop is idle
+     * (it is the sole other writer of the map); the caller (test) guarantees that.
+     */
+    internal fun deRouteAllDriversForTest() {
+        connectionsByDcid.clear()
+    }
 
     override suspend fun close() {
         if (closed) return
