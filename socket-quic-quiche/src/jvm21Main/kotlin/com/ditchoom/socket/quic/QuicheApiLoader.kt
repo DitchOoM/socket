@@ -32,12 +32,13 @@ private fun loadFfmQuicheApi(): QuicheApi {
     val classLoader =
         QuicheApi::class.java.classLoader
             ?: error("Cannot load quiche FFM backend: no class loader for QuicheApi")
-    // Load the self-contained libquiche.{so,dylib} directly. It bundles quiche + BoringSSL on every
-    // platform (Linux whole-archives the external BoringSSL into the cdylib; macOS/Android via
-    // boring-crate), so it dlopens cleanly on a clean box with zero ambient libs. The JNI shim is NOT
-    // an FFM candidate: it now dynamically DT_NEEDEDs libquiche and is not standalone-loadable without
-    // co-extracting it, and it exists only for the JDK < 21 JNI path. (Windows is the exception — it
-    // ships a single self-contained quiche_jni.dll; see quicheFfmResourceCandidates.)
+    // Prefer the self-contained libquiche.{so,dylib}: it bundles quiche + BoringSSL (Linux
+    // whole-archives the external BoringSSL into the cdylib; macOS/Android via boring-crate), so it
+    // dlopens cleanly on a clean box with zero ambient libs — the case that was broken. The JNI shim is
+    // kept as a FALLBACK only for platforms/builds that ship a self-contained shim with no separate base
+    // lib (e.g. a linux-arm64 classifier that bundles only the whole-archived shim). Where the base lib
+    // is present it always wins, so a thin shim (which DT_NEEDEDs the base lib) is never reached via this
+    // path. (Windows ships a single self-contained quiche_jni.dll; see quicheFfmResourceCandidates.)
     val failures = mutableListOf<String>()
     for (resourcePath in quicheFfmResourceCandidates()) {
         val stream = classLoader.getResourceAsStream(resourcePath)
@@ -74,8 +75,9 @@ private fun extractToTemp(resourcePath: String): String {
 }
 
 /**
- * Candidate classpath resources for the FFM native lib. Non-Windows: the self-contained
- * libquiche.{so,dylib} (bundles quiche + BoringSSL). Windows: the single self-contained quiche_jni.dll.
+ * Candidate classpath resources for the FFM native lib, in load-preference order. Non-Windows: the
+ * self-contained libquiche.{so,dylib} first, then the JNI shim as a fallback for classifiers that ship
+ * only a self-contained shim (no separate base lib). Windows: the single self-contained quiche_jni.dll.
  */
 private fun quicheFfmResourceCandidates(): List<String> {
     val osName = System.getProperty("os.name").lowercase()
@@ -99,6 +101,6 @@ private fun quicheFfmResourceCandidates(): List<String> {
         listOf("$dir/quiche_jni.dll")
     } else {
         val ext = if (os == "macos") "dylib" else "so"
-        listOf("$dir/libquiche.$ext")
+        listOf("$dir/libquiche.$ext", "$dir/libquiche_jni.$ext")
     }
 }
