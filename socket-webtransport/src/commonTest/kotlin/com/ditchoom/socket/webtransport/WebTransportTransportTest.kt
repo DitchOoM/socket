@@ -68,16 +68,42 @@ class WebTransportTransportTest {
     @Test
     fun connect_certFailure_mapsToSSLHandshakeFailed() =
         runTest {
-            val support = FakeWebTransportSupport(failWith = WebTransportException("bad certificate: untrusted root"))
-            assertFailsWith<SSLHandshakeFailedException> {
-                WebTransportTransport(support = support).connect("h", 443, TransportConfig())
-            }
+            // Typed TlsHandshake(badCertificate = true) → SSLHandshakeFailedException with the
+            // TlsBadCertificate reason, decided by the typed field (not a "bad certificate" message match).
+            val support =
+                FakeWebTransportSupport(
+                    failWith = WebTransportException(WebTransportFailure.TlsHandshake(badCertificate = true, detail = "untrusted root")),
+                )
+            val e =
+                assertFailsWith<SSLHandshakeFailedException> {
+                    WebTransportTransport(support = support).connect("h", 443, TransportConfig())
+                }
+            assertEquals(com.ditchoom.socket.ConnectionFailureReason.TlsBadCertificate, e.reason)
+        }
+
+    @Test
+    fun connect_tlsHandshakeFailure_mapsToSSLHandshakeFailed_notCert() =
+        runTest {
+            // A generic (non-cert) TLS handshake failure maps to the TlsHandshake reason, distinct from
+            // the certificate case above — the discrimination is by the typed `badCertificate` flag.
+            val support =
+                FakeWebTransportSupport(
+                    failWith =
+                        WebTransportException(
+                            WebTransportFailure.TlsHandshake(badCertificate = false, detail = "handshake_failure"),
+                        ),
+                )
+            val e =
+                assertFailsWith<SSLHandshakeFailedException> {
+                    WebTransportTransport(support = support).connect("h", 443, TransportConfig())
+                }
+            assertEquals(com.ditchoom.socket.ConnectionFailureReason.TlsHandshake, e.reason)
         }
 
     @Test
     fun connect_genericFailure_mapsToSocketConnectionOther() =
         runTest {
-            val support = FakeWebTransportSupport(failWith = WebTransportException("peer does not support WebTransport"))
+            val support = FakeWebTransportSupport(failWith = WebTransportException(WebTransportFailure.PeerDoesNotSupport))
             val e =
                 assertFailsWith<SocketConnectionException.Other> {
                     WebTransportTransport(support = support).connect("h", 443, TransportConfig())
@@ -203,7 +229,7 @@ class WebTransportTransportTest {
         override suspend fun write(
             buffer: ReadBuffer,
             deadline: kotlin.time.Duration,
-        ) = throw WebTransportStreamException(code, "peer reset")
+        ) = throw WebTransportStreamException(code)
 
         override suspend fun close() {}
     }

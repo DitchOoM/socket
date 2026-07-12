@@ -17,11 +17,19 @@ data class WebTransportCloseInfo(
     val reason: String = "",
 )
 
-/** A WebTransport (RFC 9220 + draft-ietf-webtrans-http3) failure surfaced through the neutral API. */
+/**
+ * A WebTransport (RFC 9220 + draft-ietf-webtrans-http3) failure surfaced through the neutral API. The
+ * typed reason is [failure] (see [WebTransportFailure]); the exception [message] is rendered from it and
+ * any underlying transport error is chained as [cause]. Consumers switch on [failure] rather than parsing
+ * the message. A legacy `(message, cause)` constructor is retained (folding the text into a
+ * [WebTransportFailure.SessionError]) so existing callers stay source-compatible.
+ */
 open class WebTransportException(
-    message: String,
+    val failure: WebTransportFailure,
     cause: Throwable? = null,
-) : Exception(message, cause)
+) : Exception(failure.describe(), cause) {
+    constructor(message: String, cause: Throwable? = null) : this(WebTransportFailure.SessionError(message), cause)
+}
 
 /**
  * A WebTransport **stream** was aborted by the peer (RESET_STREAM / STOP_SENDING,
@@ -41,9 +49,8 @@ open class WebTransportException(
  */
 class WebTransportStreamException(
     val errorCode: UInt,
-    message: String,
     cause: Throwable? = null,
-) : WebTransportException(message, cause)
+) : WebTransportException(WebTransportFailure.StreamAborted(errorCode), cause)
 
 /**
  * An established WebTransport session (RFC 9220 + draft-ietf-webtrans-http3) — **platform-neutral**.

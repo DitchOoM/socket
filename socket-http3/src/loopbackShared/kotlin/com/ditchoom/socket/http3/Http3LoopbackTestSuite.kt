@@ -30,6 +30,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -856,33 +857,58 @@ abstract class Http3LoopbackTestSuite {
         }
 
     @Test
-    fun webTransport_serverRejects_throwsWithStatus() =
+    fun webTransport_serverRejects_typedConnectRejected() =
         runHttp3LoopbackTest {
             wrapTestBody {
-                withHttp3Server(
-                    port = 0,
-                    tlsConfig = testTlsConfig(),
-                    quicOptions = serverQuicOptions,
-                    connectionOptions = connectionOptions,
-                    webTransport = WebTransportOptions(maxSessions = 4),
-                    onWebTransport = { reject(403) },
-                    onRequest = { response.send(404) },
-                ) {
-                    delay(100)
-                    withHttp3Connection(
-                        "localhost",
-                        port,
-                        clientQuicOptions,
-                        connectionOptions,
-                        15.seconds,
+                // Every non-2xx CONNECT status surfaces as a typed WebTransportFailure.ConnectRejected
+                // carrying the EXACT status/authority/path — no message parsing (this replaces the old
+                // `message.contains("403")` assert). Each status is exercised TWICE on the same connection
+                // to pin determinism: identical input → structurally-equal typed failure, every time.
+                for (status in listOf(401, 403, 404)) {
+                    withHttp3Server(
+                        port = 0,
+                        tlsConfig = testTlsConfig(),
+                        quicOptions = serverQuicOptions,
+                        connectionOptions = connectionOptions,
                         webTransport = WebTransportOptions(maxSessions = 4),
+                        onWebTransport = { reject(status) },
+                        onRequest = { response.send(404) },
                     ) {
-                        withTimeout(5.seconds) { peerSettings() }
-                        val ex =
-                            assertFailsWith<WebTransportException> {
-                                connectWebTransport(authority = "localhost", path = "/nope")
+                        delay(100)
+                        withHttp3Connection(
+                            "localhost",
+                            port,
+                            clientQuicOptions,
+                            connectionOptions,
+                            15.seconds,
+                            webTransport = WebTransportOptions(maxSessions = 4),
+                        ) {
+                            withTimeout(5.seconds) { peerSettings() }
+                            repeat(2) {
+                                val ex =
+                                    assertFailsWith<WebTransportException> {
+                                        connectWebTransport(authority = "localhost", path = "/nope")
+                                    }
+                                val failure = ex.failure
+                                assertIs<WebTransportFailure.ConnectRejected>(
+                                    failure,
+                                    "expected ConnectRejected, got $failure",
+                                )
+                                assertEquals(status, failure.status, "typed reject status")
+                                assertEquals("localhost", failure.authority, "reject authority")
+                                assertEquals("/nope", failure.path, "reject path")
+                                // Determinism: the typed failure is structurally identical across repeats.
+                                assertEquals(
+                                    WebTransportFailure.ConnectRejected(status, "localhost", "/nope"),
+                                    failure,
+                                )
+                                // Message stays wire-readable (rendered from the typed fields).
+                                assertTrue(
+                                    ex.message!!.contains(status.toString()),
+                                    "message should still carry the status: ${ex.message}",
+                                )
                             }
-                        assertTrue(ex.message!!.contains("403"), "message should carry the reject status: ${ex.message}")
+                        }
                     }
                 }
             }
@@ -911,9 +937,53 @@ abstract class Http3LoopbackTestSuite {
                         webTransport = WebTransportOptions(maxSessions = 1),
                     ) {
                         withTimeout(5.seconds) { peerSettings() }
-                        assertFailsWith<WebTransportException> {
-                            connectWebTransport(authority = "localhost", path = "/x")
-                        }
+                        val ex =
+                            assertFailsWith<WebTransportException> {
+                                connectWebTransport(authority = "localhost", path = "/x")
+                            }
+                        assertEquals(
+                            WebTransportFailure.PeerDoesNotSupport,
+                            ex.failure,
+                            "peer-without-support must be the typed PeerDoesNotSupport failure, got ${ex.failure}",
+                        )
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun webTransport_notEnabledLocally_typedFailure() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // Client bootstraps the HTTP/3 connection WITHOUT WebTransportOptions (webTransport = null,
+                // the default) — so connectWebTransport fails the local-enablement gate with the typed
+                // NotEnabledLocally, before any peer/CONNECT interaction. Server config is irrelevant.
+                withHttp3Server(
+                    port = 0,
+                    tlsConfig = testTlsConfig(),
+                    quicOptions = serverQuicOptions,
+                    connectionOptions = connectionOptions,
+                    webTransport = WebTransportOptions(maxSessions = 4),
+                    onRequest = { response.send(404) },
+                ) {
+                    delay(100)
+                    withHttp3Connection(
+                        "localhost",
+                        port,
+                        clientQuicOptions,
+                        connectionOptions,
+                        15.seconds,
+                        // webTransport intentionally omitted → no local WebTransport mux.
+                    ) {
+                        val ex =
+                            assertFailsWith<WebTransportException> {
+                                connectWebTransport(authority = "localhost", path = "/ws")
+                            }
+                        assertEquals(
+                            WebTransportFailure.NotEnabledLocally,
+                            ex.failure,
+                            "no local WebTransportOptions must be the typed NotEnabledLocally, got ${ex.failure}",
+                        )
                     }
                 }
             }

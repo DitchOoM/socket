@@ -76,7 +76,7 @@ private suspend fun writeChunk(
         // A peer STOP_SENDING rejects the write with a WebTransportError carrying its code → raise the
         // neutral stream-scoped exception (the native backend's QuicStreamException analog).
         val code = streamResetCode(e)
-        if (code != null) throw WebTransportStreamException(code, "WebTransport stream reset by peer (code $code)", e)
+        if (code != null) throw WebTransportStreamException(code, e)
         throw e
     }
     buffer.position(buffer.position() + n)
