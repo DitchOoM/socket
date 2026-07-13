@@ -165,16 +165,19 @@ class UdpNativeConformanceTests {
         udpTest {
             val a = bind()
             val b = bind()
-            // Read-side ancillary data is absent in this landing → sentinels regardless of what was sent.
+            // Capability-gated (§7.2): only assert the sentinel for a read field the platform CANNOT
+            // report. Where the platform can (Linux cmsg), the positive roundtrip is covered in the
+            // platform-specific suite; here we only prove absent → sentinel, never a wrong value.
             b.send(
                 payload("cp"),
                 to = a.addr(),
                 options = DatagramSendOptions(ecn = Ecn.Ect0, hopLimit = 55, fromLocal = b.addr()),
             )
+            val caps = a.capabilities
             val d = assertIs<DatagramReadResult.Received>(a.recv()).datagram
-            assertEquals(Ecn.Unknown, d.ecn)
-            assertEquals(-1, d.hopLimit)
-            assertEquals(null, d.localAddress)
+            if (!caps.ecnReceive) assertEquals(Ecn.Unknown, d.ecn)
+            if (!caps.hopLimitReceive) assertEquals(-1, d.hopLimit)
+            if (!caps.localAddressReceive) assertEquals(null, d.localAddress)
         }
 
     @Test
