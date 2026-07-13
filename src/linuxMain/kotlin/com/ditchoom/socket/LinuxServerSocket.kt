@@ -17,7 +17,9 @@ import kotlin.coroutines.coroutineContext
  * for immediate cancellation instead of timeout polling.
  */
 @OptIn(ExperimentalForeignApi::class)
-class LinuxServerSocket : ServerSocket {
+class LinuxServerSocket(
+    private val config: TransportConfig = TransportConfig(),
+) : ServerSocket {
     private var serverFd: Int = -1
     private var boundPort: Int = -1
 
@@ -169,8 +171,10 @@ class LinuxServerSocket : ServerSocket {
 
             return when {
                 result >= 0 -> {
-                    // Successfully accepted a connection
+                    // Successfully accepted a connection — apply the server's injected config so
+                    // accepted sockets obey the same read/write policy + buffer factory as clients.
                     val wrapper = LinuxSocketWrapper()
+                    wrapper.configure(config)
                     wrapper.sockfd = result
                     wrapper
                 }

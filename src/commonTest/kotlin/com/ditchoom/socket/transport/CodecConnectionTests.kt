@@ -201,8 +201,8 @@ class CodecConnectionTests {
     @Test
     fun receiveThrowsOnStreamReset() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "test", testConfig)
+            val mock = MockClientToServerSocket(testConfig)
+            mock.open(80, "test")
             mock.enqueueReadError(SocketClosedException.ConnectionReset("peer reset"))
 
             // ClientSocket IS a ByteStream — pass the socket straight in, no TcpByteStream adapter.
@@ -225,8 +225,8 @@ class CodecConnectionTests {
     @Test
     fun receiveThrowsOnSocketTimeout() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "test", testConfig)
+            val mock = MockClientToServerSocket(testConfig)
+            mock.open(80, "test")
             mock.enqueueReadError(SocketTimeoutException("timed out"))
 
             val codec =

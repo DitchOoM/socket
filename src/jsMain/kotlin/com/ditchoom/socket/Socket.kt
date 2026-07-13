@@ -4,17 +4,17 @@ val isNodeJs = nodeJs()
 
 private fun nodeJs(): Boolean = js("global.window") == null
 
-actual fun ClientSocket.Companion.allocate(): ClientToServerSocket =
+actual fun ClientSocket.Companion.allocate(config: TransportConfig): ClientToServerSocket =
     if (js("global.window") == null) {
-        NodeClientSocket()
+        NodeClientSocket(config)
     } else {
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }
 
-actual fun ServerSocket.Companion.allocate(): ServerSocket {
+actual fun ServerSocket.Companion.allocate(config: TransportConfig): ServerSocket {
     if (js("global.window") == null) {
 //        throw UnsupportedOperationException("Not implemented yet")
-        return NodeServerSocket()
+        return NodeServerSocket(config)
     } else {
         throw UnsupportedOperationException("Sockets are not supported in the browser")
     }

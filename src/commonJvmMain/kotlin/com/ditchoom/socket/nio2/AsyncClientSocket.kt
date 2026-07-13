@@ -7,15 +7,14 @@ import com.ditchoom.socket.nio2.util.aConnect
 import com.ditchoom.socket.nio2.util.asyncSocket
 import kotlinx.coroutines.withTimeout
 
-class AsyncClientSocket :
-    AsyncBaseClientSocket(),
+class AsyncClientSocket(
+    config: TransportConfig = TransportConfig(),
+) : AsyncBaseClientSocket(config),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,
         hostname: String?,
-        config: TransportConfig,
     ) {
-        this.config = config
         val timeout = config.connectTimeout
         withTimeout(timeout) {
             val asyncSocket = asyncSocket()

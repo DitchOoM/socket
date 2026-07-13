@@ -11,10 +11,10 @@ class TcpTransport : Transport {
         port: Int,
         config: TransportConfig,
     ): ByteStream {
-        val socket = ClientSocket.allocate()
         // ClientSocket IS a ByteStream — no TcpByteStream adapter. The socket adopts the
-        // injected bufferFactory + read/write policy from config at open() time.
-        socket.open(port, hostname, config)
+        // injected bufferFactory + read/write policy from config at allocate() time.
+        val socket = ClientSocket.allocate(config)
+        socket.open(port, hostname)
         return socket
     }
 }

@@ -15,8 +15,8 @@ class MockSocketTests {
     @Test
     fun mockReadReturnsEnqueuedData() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
+            val mock = MockClientToServerSocket(TransportConfig(connectTimeout = 1.seconds))
+            mock.open(80, "localhost")
 
             val expected = BufferFactory.Default.allocate(3)
             expected.writeByte(1)
@@ -35,8 +35,8 @@ class MockSocketTests {
     @Test
     fun mockWriteRecordsData() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
+            val mock = MockClientToServerSocket(TransportConfig(connectTimeout = 1.seconds))
+            mock.open(80, "localhost")
 
             val buffer = BufferFactory.Default.allocate(2)
             buffer.writeByte(42)
@@ -56,8 +56,8 @@ class MockSocketTests {
     @Test
     fun mockReadAfterCloseThrows() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
+            val mock = MockClientToServerSocket(TransportConfig(connectTimeout = 1.seconds))
+            mock.open(80, "localhost")
             mock.close()
 
             assertFalse(mock.isOpen)
@@ -69,8 +69,8 @@ class MockSocketTests {
     @Test
     fun mockReadErrorPropagates() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
+            val mock = MockClientToServerSocket(TransportConfig(connectTimeout = 1.seconds))
+            mock.open(80, "localhost")
 
             mock.enqueueReadError(SocketIOException("test error"))
 
@@ -82,8 +82,8 @@ class MockSocketTests {
     @Test
     fun mockDisconnectInterruptsRead() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
+            val mock = MockClientToServerSocket(TransportConfig(connectTimeout = 1.seconds))
+            mock.open(80, "localhost")
 
             mock.simulateDisconnect()
             assertFalse(mock.isOpen)
@@ -96,8 +96,8 @@ class MockSocketTests {
     @Test
     fun mockReadBytesConvenience() =
         runTest {
-            val mock = MockClientToServerSocket()
-            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
+            val mock = MockClientToServerSocket(TransportConfig(connectTimeout = 1.seconds))
+            mock.open(80, "localhost")
 
             mock.enqueueReadBytes(10, 20, 30)
 
@@ -111,10 +111,10 @@ class MockSocketTests {
     @Test
     fun mockVerifyOpened() =
         runTest {
-            val mock = MockClientToServerSocket()
+            val mock = MockClientToServerSocket(TransportConfig(connectTimeout = 1.seconds))
             assertFalse(mock.openCalled)
 
-            mock.open(80, "localhost", TransportConfig(connectTimeout = 1.seconds))
+            mock.open(80, "localhost")
             mock.verifyOpened()
             assertTrue(mock.isOpen)
         }

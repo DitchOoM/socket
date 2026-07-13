@@ -38,8 +38,8 @@ class LoopbackEchoInstrumentedTest {
                 assertTrue("server port should be > 0", port > 0)
 
                 val text = "loopback-echo-android-instrumented"
-                val client = ClientSocket.allocate()
-                client.open(port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+                val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+                client.open(port, hostname = "127.0.0.1")
                 client.writeString(text, deadline = 5.seconds)
                 val echoed = client.readString(deadline = 5.seconds)
                 assertEquals(text, echoed)

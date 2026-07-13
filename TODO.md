@@ -2,6 +2,30 @@
 
 Tracked here so the gaps from each session aren't lost.
 
+## ▶ NEXT SESSION KICKOFF — UDP support + read-timeout contract (2026-07-12)
+
+Two workstreams were scoped this session. Both are **specced but not started**. Read these first:
+
+- **`RFC_READ_TIMEOUT_CONTRACT.md`** (committed `5f6f334`, branch `rfc/read-timeout-contract`) — the read-timeout contract + per-platform conformance gaps + phasing. This is the TCP workstream's spec.
+- Memory: `project_read_timeout_contract` and the UDP-infra exploration (four of five platforms already have internal `UdpChannel` impls inside `:socket-quic-quiche`; JS/Node has none).
+
+### The two workstreams are NOT independent — settle the shared seam first
+
+Both need `TransportConfig` at **socket-allocation** time, and today `ClientSocket.allocate()` runs *before* config exists (config arrives at `open()`; see RFC §7):
+- UDP needs it to pick datagram-vs-stream.
+- The TCP work needs it for the `IoConcurrency` / conformant-impl choice.
+
+**✅ SHARED SEAM LANDED (2026-07-12).** Chose `allocate(config)` over the deferring wrapper (see RFC §7 for the decision + rationale). Both `ClientSocket.allocate(config)` and `ServerSocket.allocate(config)` now take `TransportConfig` (default arg, so no-arg call sites still compile); `config` dropped from `ClientToServerSocket.open(port, hostname)` and is now a **constructor val** on every impl (`readPolicy`/`writePolicy` are real immutable vals). `ServerSocket` threads config into every accepted socket. All 5 platform actuals + ~67 test sites migrated; JVM (3 NIO variants + server-accept), Linux io_uring, and JS Node tests green; Apple validates on CI. **The fan-out below can now start — both subagents build on this seam instead of redesigning it.** (Still open: fold the JVM `useAsyncChannels`/`useNioBlocking` globals into a config-borne `IoConcurrency` — that's RFC phase 5, not the seam.)
+
+### Suggested structure (fresh session)
+
+1. **Decide + land the allocation seam** (small, shared prerequisite).
+2. **Fan out** — ordering is not pure-parallel:
+   - **TCP / read-timeout subagent** — Phase 1 of the RFC first: build the deterministic **"silent peer" harness** (connect, then never write/close) + the red-baseline `commonTest` matrix (RFC §6). This harness is *shared foundation* — the UDP tests want it too — and doubles as the first step of TCP↔QUIC test-harness parity. Then work RFC §8 phases: fix exception types → enforcement → destructiveness.
+   - **UDP subagent** — Phase 1: connected-peer datagram API + hoist the existing internal `UdpChannel` impls (NIO `DatagramChannel`, Apple `NWConnection`-UDP + POSIX server, Linux io_uring) out of `:socket-quic-quiche` into a shared/lower module. **Node `dgram` deferred** (user decision — do it in Phase 2, unconnected). Must NOT unilaterally redesign the allocation seam.
+
+Constraint reminder: no `ByteArray` in `*Main/` (CLAUDE.md); Apple lanes validate only on macOS CI (no Mac on this box).
+
 ## Test-harness migration — closed (2026-05-23)
 
 Phases 0–5 of `TESTING_STRATEGY.md` are done. The work that landed:

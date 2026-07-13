@@ -246,8 +246,8 @@ class WrapJvmExceptionTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
             clientConnected.lockWithTimeout()
 
             val data = client.readString(deadline = 1.seconds)

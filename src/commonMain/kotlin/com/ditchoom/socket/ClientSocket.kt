@@ -16,8 +16,8 @@ suspend fun ClientSocket.Companion.connect(
     hostname: String? = null,
     config: TransportConfig = TransportConfig(),
 ): ClientToServerSocket {
-    val socket = ClientSocket.allocate()
-    socket.open(port, hostname, config)
+    val socket = ClientSocket.allocate(config)
+    socket.open(port, hostname)
     return socket
 }
 
@@ -27,13 +27,20 @@ suspend fun <T> ClientSocket.Companion.connect(
     config: TransportConfig = TransportConfig(),
     lambda: suspend (ClientSocket) -> T,
 ): T {
-    val socket = ClientSocket.allocate()
+    val socket = ClientSocket.allocate(config)
     return try {
-        socket.open(port, hostname, config)
+        socket.open(port, hostname)
         lambda(socket)
     } finally {
         socket.close()
     }
 }
 
-expect fun ClientSocket.Companion.allocate(): ClientToServerSocket
+/**
+ * Allocates the platform client socket, injecting [config] **at allocation time** so the concrete
+ * implementation can be chosen from it (e.g. JVM I/O strategy; datagram-vs-stream for UDP) and so the
+ * connection's [com.ditchoom.buffer.flow.ReadPolicy] / [com.ditchoom.buffer.flow.WritePolicy] are real
+ * immutable vals rather than reassigned at [ClientToServerSocket.open]. Config is injected once, here —
+ * [ClientToServerSocket.open] no longer takes it.
+ */
+expect fun ClientSocket.Companion.allocate(config: TransportConfig = TransportConfig()): ClientToServerSocket

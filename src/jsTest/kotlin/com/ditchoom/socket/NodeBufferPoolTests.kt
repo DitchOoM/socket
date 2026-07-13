@@ -52,8 +52,8 @@ class NodeBufferPoolTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
             serverReady.lockWithTimeout()
 
             // Read all data and collect buffers before inspecting them.
@@ -140,8 +140,8 @@ class NodeBufferPoolTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", config = TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
             serverReady.lockWithTimeout()
 
             // Read all data

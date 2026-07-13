@@ -19,7 +19,9 @@ import kotlin.time.Duration
  * Enqueue server responses via [enqueueRead] / [enqueueReadBytes] and
  * inspect client writes via [writtenBuffers].
  */
-class MockClientToServerSocket : ClientToServerSocket {
+class MockClientToServerSocket(
+    private val config: TransportConfig = TransportConfig(),
+) : ClientToServerSocket {
     private var open = false
     private val readQueue = Channel<Result<ReadBuffer>>(Channel.UNLIMITED)
     val writtenBuffers = mutableListOf<ReadBuffer>()
@@ -46,14 +48,10 @@ class MockClientToServerSocket : ClientToServerSocket {
         readQueue.trySend(Result.failure(SocketClosedException.General("Mock disconnect")))
     }
 
-    private var config: TransportConfig = TransportConfig()
-
     override suspend fun open(
         port: Int,
         hostname: String?,
-        config: TransportConfig,
     ) {
-        this.config = config
         open = true
         openCalled = true
     }

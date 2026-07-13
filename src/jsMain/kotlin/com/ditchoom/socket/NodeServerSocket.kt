@@ -10,7 +10,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
-class NodeServerSocket : ServerSocket {
+class NodeServerSocket(
+    private val config: TransportConfig = TransportConfig(),
+) : ServerSocket {
     private var server: Server? = null
     private val acceptedConnections = mutableListOf<Socket>()
 
@@ -25,7 +27,7 @@ class NodeServerSocket : ServerSocket {
             callbackFlow {
                 server.on<Socket>("connection") { clientSocket ->
                     connections.add(clientSocket)
-                    val nodeSocket = NodeSocket()
+                    val nodeSocket = NodeSocket(config)
                     nodeSocket.isClosed = false
                     nodeSocket.netSocket = clientSocket
                     clientSocket.on("data") { data ->

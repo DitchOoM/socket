@@ -51,15 +51,16 @@ class NWTcpNoDelayTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(
-                server.port(),
-                hostname = "127.0.0.1",
-                config =
+            val client =
+                ClientSocket.allocate(
                     TransportConfig(
                         io = IoTuning(tcpNoDelay = true),
                         connectTimeout = 5.seconds,
                     ),
+                )
+            client.open(
+                server.port(),
+                hostname = "127.0.0.1",
             )
 
             val payload = ByteArray(payloadSize) { (it % 251).toByte() }

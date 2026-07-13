@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.unwrapFully
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
@@ -90,15 +91,15 @@ private fun String.substringFrom(marker: String): String {
     return if (idx >= 0) substring(idx) else this
 }
 
-open class NodeSocket : ClientSocket {
+open class NodeSocket(
+    /** The injected-once configuration tree, supplied at `allocate(config)` / accept time. */
+    protected val config: TransportConfig = TransportConfig(),
+) : ClientSocket {
     internal var isClosed = true
     internal var netSocket: Socket? = null
     internal val incomingMessageChannel = Channel<SocketDataRead<ReadBuffer>>(Channel.UNLIMITED)
     internal var hadTransmissionError = false
     private val writeMutex = Mutex()
-
-    /** The injected-once configuration tree. Set at the top of `open(...)`. */
-    protected var config: TransportConfig = TransportConfig()
 
     override val readPolicy: ReadPolicy get() = config.readPolicy
     override val writePolicy: WritePolicy get() = config.writePolicy
@@ -125,15 +126,22 @@ open class NodeSocket : ClientSocket {
         // (like Autobahn) send a response and close before read() is called.
         socket.resume()
         val message =
-            withTimeout(timeout) {
-                try {
-                    incomingMessageChannel.receive()
-                } catch (e: ClosedReceiveChannelException) {
-                    throw SocketClosedException.General(
-                        "Socket is already closed. transmissionError=$hadTransmissionError",
-                        e,
-                    )
+            try {
+                withTimeout(timeout) {
+                    try {
+                        incomingMessageChannel.receive()
+                    } catch (e: ClosedReceiveChannelException) {
+                        throw SocketClosedException.General(
+                            "Socket is already closed. transmissionError=$hadTransmissionError",
+                            e,
+                        )
+                    }
                 }
+            } catch (e: TimeoutCancellationException) {
+                // withTimeout expiry leaks kotlinx's TimeoutCancellationException; surface the uniform
+                // timeout type instead (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Node reads are already
+                // non-destructive, so the connection stays usable after this throws.
+                throw SocketTimeoutException(TimeoutContext.Read(timeout), cause = e)
             }
         if (message.bytesRead < 0) {
             throw SocketClosedException.General(
@@ -191,15 +199,14 @@ open class NodeSocket : ClientSocket {
     }
 }
 
-class NodeClientSocket :
-    NodeSocket(),
+class NodeClientSocket(
+    config: TransportConfig = TransportConfig(),
+) : NodeSocket(config),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,
         hostname: String?,
-        config: TransportConfig,
     ) {
-        this.config = config
         val tls = config.tls
         val useTls = tls != null
         val rejectUnauthorized = tls?.let { it.verifyCertificates && !it.allowSelfSigned } ?: true

@@ -29,11 +29,10 @@ class ExceptionIntegrationTests {
             if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             val ex =
                 try {
-                    val socket = ClientSocket.allocate()
+                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
                     socket.open(
                         port = 80,
                         hostname = "this.host.does.not.exist.invalid",
-                        config = TransportConfig(connectTimeout = 5.seconds),
                     )
                     socket.close()
                     fail("Should have thrown for invalid hostname")
@@ -59,8 +58,8 @@ class ExceptionIntegrationTests {
             val port = 59000 + kotlin.random.Random.nextInt(999)
             val ex =
                 try {
-                    val socket = ClientSocket.allocate()
-                    socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
+                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
+                    socket.open(port = port, hostname = "127.0.0.1")
                     socket.close()
                     fail("Should have thrown for connection refused")
                 } catch (e: SocketConnectionException) {
@@ -89,8 +88,8 @@ class ExceptionIntegrationTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
             serverReady.lockWithTimeout()
 
             val data = client.readString(deadline = 2.seconds)
@@ -129,8 +128,8 @@ class ExceptionIntegrationTests {
                     }
                 }
 
-            val client = ClientSocket.allocate()
-            client.open(server.port(), "127.0.0.1", TransportConfig(connectTimeout = 5.seconds))
+            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+            client.open(server.port(), "127.0.0.1")
             serverReady.lockWithTimeout()
 
             kotlinx.coroutines.delay(100)
@@ -180,11 +179,10 @@ class ExceptionIntegrationTests {
 
             val ex =
                 try {
-                    val socket = ClientSocket.allocate()
+                    val socket = ClientSocket.allocate(TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds))
                     socket.open(
                         port = server.port(),
                         hostname = "127.0.0.1",
-                        config = TransportConfig.tlsDefault().copy(connectTimeout = 5.seconds),
                     )
                     socket.close()
                     fail("TLS handshake should have failed on non-TLS server")
@@ -221,8 +219,8 @@ class ExceptionIntegrationTests {
             val port = 59100 + kotlin.random.Random.nextInt(899)
             val ex =
                 try {
-                    val socket = ClientSocket.allocate()
-                    socket.open(port = port, hostname = "127.0.0.1", config = TransportConfig(connectTimeout = 2.seconds))
+                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
+                    socket.open(port = port, hostname = "127.0.0.1")
                     socket.close()
                     fail("Should have thrown")
                 } catch (e: SocketConnectionException) {
@@ -237,8 +235,8 @@ class ExceptionIntegrationTests {
             if (!networkCapabilities().transports.contains(TransportKind.TCP)) return@runTestNoTimeSkipping
             val ex =
                 try {
-                    val socket = ClientSocket.allocate()
-                    socket.open(port = 80, hostname = "nonexistent.test.invalid", config = TransportConfig(connectTimeout = 5.seconds))
+                    val socket = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+                    socket.open(port = 80, hostname = "nonexistent.test.invalid")
                     socket.close()
                     fail("Should have thrown")
                 } catch (e: SocketException) {

@@ -197,12 +197,17 @@ class StaleConnectionDiagnosticTests {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
                         delay(100)
 
-                        // Access connectionsByDcid via reflection
+                        // Access the routing map via reflection — it now lives on the server's
+                        // ServerConnectionRegistry (extracted from the per-platform server), so hop
+                        // through the `registry` field first, then its private `connectionsByDcid`.
                         val server: QuicServer = this@withQuicServer
-                        val dcidMapField = server::class.java.getDeclaredField("connectionsByDcid")
+                        val registryField = server::class.java.getDeclaredField("registry")
+                        registryField.isAccessible = true
+                        val registry = registryField.get(server)
+                        val dcidMapField = registry::class.java.getDeclaredField("connectionsByDcid")
                         dcidMapField.isAccessible = true
                         @Suppress("UNCHECKED_CAST")
-                        val dcidMap = dcidMapField.get(server) as MutableMap<*, *>
+                        val dcidMap = dcidMapField.get(registry) as MutableMap<*, *>
 
                         try {
                             // Connection 1: echo round-trip

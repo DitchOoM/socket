@@ -18,6 +18,8 @@ import com.ditchoom.socket.nwhelpers.nw_helper_remote_port
 import com.ditchoom.socket.nwhelpers.nw_helper_send_tcp
 import com.ditchoom.socket.nwhelpers.nw_helper_tcp_receive
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -35,19 +37,27 @@ import kotlin.time.Duration
  * Write operations pass NSData directly to Network.framework without copying.
  */
 @OptIn(ExperimentalForeignApi::class)
-open class NWSocketWrapper : ClientSocket {
+open class NWSocketWrapper(
+    /** Injected-once configuration, supplied at `allocate(config)` / accept time. */
+    internal val config: TransportConfig = TransportConfig(),
+) : ClientSocket {
     internal var connection: nw_connection_t = null
     private val readMutex = Mutex()
     private val writeMutex = Mutex()
+
+    /**
+     * The single outstanding native receive, if one is in flight — enforces single-flight (RFC §3.2).
+     * Network.framework has no per-receive cancel, so a `nw_connection_receive` can't be abandoned;
+     * instead the one-shot completion is captured here and, on a caller timeout, left outstanding for
+     * the next `read()` to re-await. Non-destructive: a deadline no longer tears down the connection.
+     */
+    private var inFlightRead: CompletableDeferred<ReadBuffer>? = null
 
     @Volatile
     internal var closedLocally = false
 
     @Volatile
     internal var connectionReady = false
-
-    /** Injected-once configuration; set at the top of [NWClientSocketWrapper.open]. */
-    internal var config: TransportConfig = TransportConfig()
 
     override val readPolicy: ReadPolicy get() = config.readPolicy
     override val writePolicy: WritePolicy get() = config.writePolicy
@@ -67,47 +77,78 @@ open class NWSocketWrapper : ClientSocket {
     override suspend fun read(deadline: Duration): ReadResult = translateRead { readRaw(deadline) }
 
     /**
-     * Zero-copy read operation.
-     * Returns a buffer backed by NSData received from Network.framework.
+     * Zero-copy read operation (RFC §3.2 orphaned-read single-flight). Returns a buffer backed by
+     * NSData received from Network.framework, enforcing [deadline] **non-destructively**:
+     *
+     *  - **Enforced (Axis 1):** the caller waits at most [deadline] for the receive; on expiry it
+     *    throws [SocketTimeoutException] rather than blocking forever.
+     *  - **Non-destructive (Axis 2):** a timeout abandons only the *wait*. The native receive stays
+     *    outstanding (Network.framework has no per-receive cancel) and its result is left in
+     *    [inFlightRead] for the next `read()` to re-await — no data is lost and the connection is not
+     *    cancelled. `closeInternal()` runs only on a genuine EOF / error / [close], never on a timeout.
+     *  - **Buffer safety (§3.2):** the NSData buffer is materialized only when the receive callback
+     *    fires, so a gave-up caller can never free a buffer a live receive is still filling.
      */
     private suspend fun readRaw(deadline: Duration): ReadBuffer {
         if (closedLocally) throw SocketClosedException.General("Socket is closed")
         val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         return readMutex.withLock {
-            withTimeout(deadline) {
-                suspendCancellableCoroutine { continuation ->
-                    nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
-                        when {
-                            data != null && data.length.toInt() > 0 -> {
-                                // Zero-copy: wrap NSData directly using NSDataBuffer
-                                val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
-                                buffer.position(data.length.toInt())
-                                buffer.resetForRead()
-                                continuation.resume(buffer)
-                            }
-                            isComplete?.boolValue == true -> {
-                                closeInternal()
-                                continuation.resumeWithException(
-                                    SocketClosedException.EndOfStream(),
-                                )
-                            }
-                            errorDomain != 0 -> {
-                                closeInternal()
-                                continuation.resumeWithException(
-                                    mapSocketException(errorDomain, errorDesc),
-                                )
-                            }
-                            else -> {
-                                continuation.resume(EMPTY_BUFFER)
-                            }
-                        }
+            val pending = inFlightRead ?: startReceive(conn).also { inFlightRead = it }
+            val buffer =
+                try {
+                    if (deadline.isInfinite()) {
+                        pending.await()
+                    } else {
+                        withTimeout(deadline) { pending.await() }
                     }
-                    continuation.invokeOnCancellation {
-                        closeInternal()
-                    }
+                } catch (e: TimeoutCancellationException) {
+                    // Deadline elapsed: leave the native receive outstanding (single-flight) and abandon
+                    // only the wait — the next read() re-awaits this same receive. Do NOT cancel the
+                    // connection (RFC §3.2, Axis 2). withTimeout leaks kotlinx's
+                    // TimeoutCancellationException; surface the uniform type (§4.1, Axis 3).
+                    throw SocketTimeoutException(TimeoutContext.Read(deadline), cause = e)
+                } catch (e: Throwable) {
+                    // The receive itself failed / hit EOF (deferred completed exceptionally) — drop the
+                    // single-flight state so the next read() starts a fresh receive.
+                    inFlightRead = null
+                    throw e
+                }
+            inFlightRead = null
+            buffer
+        }
+    }
+
+    /**
+     * Schedules the one-shot native receive that backs [readRaw] and captures its completion in a
+     * [CompletableDeferred]. Runs no timeout of its own — enforcement is the caller's `withTimeout`
+     * — so the receive stays outstanding across a caller timeout (RFC §3.2) and completes when the
+     * peer finally sends, the stream ends, the connection errors, or [close] cancels it.
+     */
+    private fun startReceive(conn: nw_connection_t): CompletableDeferred<ReadBuffer> {
+        val deferred = CompletableDeferred<ReadBuffer>()
+        nw_helper_tcp_receive(conn, 1u, 65536u) { data, isComplete, errorDomain, _, errorDesc ->
+            when {
+                data != null && data.length.toInt() > 0 -> {
+                    // Zero-copy: wrap NSData directly using NSDataBuffer
+                    val buffer = NSDataBuffer(data, ByteOrder.BIG_ENDIAN)
+                    buffer.position(data.length.toInt())
+                    buffer.resetForRead()
+                    deferred.complete(buffer)
+                }
+                isComplete?.boolValue == true -> {
+                    closeInternal()
+                    deferred.completeExceptionally(SocketClosedException.EndOfStream())
+                }
+                errorDomain != 0 -> {
+                    closeInternal()
+                    deferred.completeExceptionally(mapSocketException(errorDomain, errorDesc))
+                }
+                else -> {
+                    deferred.complete(EMPTY_BUFFER)
                 }
             }
         }
+        return deferred
     }
 
     /**

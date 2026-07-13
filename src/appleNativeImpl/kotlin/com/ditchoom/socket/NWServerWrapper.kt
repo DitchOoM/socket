@@ -26,7 +26,9 @@ import kotlin.coroutines.suspendCoroutine
  * Accepts incoming connections and returns zero-copy socket wrappers.
  */
 @OptIn(ExperimentalForeignApi::class)
-class NWServerWrapper : ServerSocket {
+class NWServerWrapper(
+    private val config: TransportConfig = TransportConfig(),
+) : ServerSocket {
     private var listener: nw_listener_t = null
     private var acceptChannel: Channel<ClientSocket>? = null
     private val closeHandlers = mutableListOf<() -> Unit>()
@@ -53,7 +55,7 @@ class NWServerWrapper : ServerSocket {
             nw_helper_set_state_handler(conn) { state, _, _, _ ->
                 when (state) {
                     3 -> { // ready
-                        val clientSocket = NWSocketWrapper()
+                        val clientSocket = NWSocketWrapper(config)
                         clientSocket.connection = conn
                         clientSocket.connectionReady = true
                         channel.trySend(clientSocket)

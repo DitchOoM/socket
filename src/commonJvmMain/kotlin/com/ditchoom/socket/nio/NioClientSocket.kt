@@ -11,14 +11,13 @@ import java.net.InetSocketAddress
 
 class NioClientSocket(
     blocking: Boolean = true,
-) : BaseClientSocket(blocking),
+    config: TransportConfig = TransportConfig(),
+) : BaseClientSocket(blocking, config),
     ClientToServerSocket {
     override suspend fun open(
         port: Int,
         hostname: String?,
-        config: TransportConfig,
     ) {
-        this.config = config
         val timeout = config.connectTimeout
         val socketAddress = buildInetAddress(port, hostname)
         val socketChannel = openSocketChannel()
