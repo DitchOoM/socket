@@ -39,7 +39,7 @@ jobs:
       flow: ${{ steps.check.outputs.flow }}
       gradle-args: ${{ steps.check.outputs.gradle-args }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Determine release flow
@@ -282,7 +282,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download quic-echo Docker context
         uses: actions/download-artifact@v8
@@ -302,13 +302,13 @@ jobs:
 
       # qemu gives buildx the arm64 emulation it needs for the linux/arm64 halves.
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -347,7 +347,7 @@ jobs:
       # the workflow scope and silently rejects such tag pushes (v3.1.0/v3.1.1
       # both failed this way and were backfilled manually).
       # Falls back to GITHUB_TOKEN if RELEASE_PAT is not configured.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
