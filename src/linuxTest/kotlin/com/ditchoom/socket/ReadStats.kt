@@ -39,3 +39,6 @@ actual fun isRunningInSimulator(): Boolean = false
 internal actual fun isWindowsJvm(): Boolean = false
 
 internal actual fun harnessHost(): String = HarnessConfig.host
+
+// K/Native io_uring sockets are pull-based, so a NonDrainingPeer reliably back-pressures the writer.
+actual fun nonDrainingPeerIsReliable(): Boolean = true

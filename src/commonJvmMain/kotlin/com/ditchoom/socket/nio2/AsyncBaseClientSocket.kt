@@ -192,6 +192,14 @@ abstract class AsyncBaseClientSocket(
                     totalWritten += bytesWritten
                 }
             }
+        } catch (e: SocketTimeoutException) {
+            // An opt-in Bounded(d) write blew its deadline: the JDK timed write's InterruptedByTimeout
+            // has already been mapped to SocketTimeoutException by asyncIOHandler().failed(). This is
+            // DESTRUCTIVE (RFC_WRITE_TIMEOUT_CONTRACT §4): the send buffer is wedged and the connection's
+            // write capacity is gone, so auto-close, then surface the uniform typed Write timeout. An
+            // UntilClosed/infinite write uses the untimed overload and never reaches here.
+            close()
+            throw SocketTimeoutException(TimeoutContext.Write(timeout), cause = e)
         } catch (e: IOException) {
             // Route every platform IOException (Broken pipe, Connection reset, etc.)
             // through the single mapper. The async failed() callback also wraps; this

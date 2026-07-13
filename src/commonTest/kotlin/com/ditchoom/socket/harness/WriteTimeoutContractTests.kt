@@ -11,6 +11,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.TransportKind
 import com.ditchoom.socket.connect
 import com.ditchoom.socket.networkCapabilities
+import com.ditchoom.socket.nonDrainingPeerIsReliable
 import com.ditchoom.socket.runTestNoTimeSkipping
 import kotlin.test.Test
 import kotlin.test.assertFalse
@@ -78,7 +79,7 @@ class WriteTimeoutContractTests {
     @Test
     fun untilClosedWriteToNonDrainingPeerSuspends() =
         runTestNoTimeSkipping {
-            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            if (!tcpAvailable() || !nonDrainingPeerIsReliable()) return@runTestNoTimeSkipping
             val peer = NonDrainingPeer.start()
             val client = ClientSocket.connect(peer.port, config = suspendConfig())
             try {
@@ -102,7 +103,7 @@ class WriteTimeoutContractTests {
     @Test
     fun boundedWriteToNonDrainingPeerTimesOut() =
         runTestNoTimeSkipping {
-            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            if (!tcpAvailable() || !nonDrainingPeerIsReliable()) return@runTestNoTimeSkipping
             val peer = NonDrainingPeer.start()
             val client = ClientSocket.connect(peer.port, config = boundedConfig())
             try {
@@ -131,7 +132,7 @@ class WriteTimeoutContractTests {
     @Test
     fun boundedWriteTimeoutThrowsSocketTimeoutException() =
         runTestNoTimeSkipping {
-            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            if (!tcpAvailable() || !nonDrainingPeerIsReliable()) return@runTestNoTimeSkipping
             val peer = NonDrainingPeer.start()
             val client = ClientSocket.connect(peer.port, config = boundedConfig())
             try {
@@ -161,7 +162,7 @@ class WriteTimeoutContractTests {
     @Test
     fun boundedWriteTimeoutClosesConnection() =
         runTestNoTimeSkipping {
-            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            if (!tcpAvailable() || !nonDrainingPeerIsReliable()) return@runTestNoTimeSkipping
             val peer = NonDrainingPeer.start()
             val client = ClientSocket.connect(peer.port, config = boundedConfig())
             try {

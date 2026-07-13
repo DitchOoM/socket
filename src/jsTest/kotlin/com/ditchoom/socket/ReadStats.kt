@@ -37,3 +37,8 @@ actual fun isRunningInSimulator(): Boolean = false
 internal actual fun isWindowsJvm(): Boolean = false
 
 internal actual fun harnessHost(): String = HarnessConfig.host
+
+// Node net.Socket goes to flowing mode once a 'data' listener is attached (our ServerSocket does on
+// accept), so the OS receive buffer is always drained and our ServerSocket can't be a non-draining peer.
+// Node's write path is covered by NodeWriteBackpressureTests (raw net, paused peer) instead.
+actual fun nonDrainingPeerIsReliable(): Boolean = false

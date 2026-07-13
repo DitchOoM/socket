@@ -1,7 +1,9 @@
 # RFC: `write(deadline)` timeout contract
 
-Status: **Phase 1 landed** (harness + red baseline). Fixes pending.
-Companion to `RFC_READ_TIMEOUT_CONTRACT.md`. Branch: `rfc/write-timeout-contract`.
+Status: **Phase 1 + Phase 2 landed** — harness, red baseline, and all-platform fixes.
+JVM (NIO2 / blocking / selector), Node, and Linux verified green locally; Apple hand-authored,
+validated on `build-apple` CI only. Companion to `RFC_READ_TIMEOUT_CONTRACT.md`. Branch:
+`rfc/write-timeout-contract`.
 
 ## 1. Motivation — writes are *not* symmetric to reads
 
@@ -61,32 +63,41 @@ Against the in-process `NonDrainingPeer` (accept-then-never-read) fixture:
 | §3 | uniform type | the throw is `SocketTimeoutException` |
 | §4 | bounded destructive | after the timeout `isOpen == false`; next write throws `SocketClosedException` |
 
-## 4. Measured baseline (Phase 1, 2026-07-12)
+## 4. Baseline → after-fix (2026-07-12)
 
-Red baseline from `WriteTimeoutContractTests` (+ `JvmWriteTimeoutVariantTests`), measured on
-this box; Apple is `build-apple`-CI-only.
+Red baseline from `WriteTimeoutContractTests` (+ `JvmWriteTimeoutVariantTests`), then the same
+matrix after Phase 2. Apple is `build-apple`-CI-only.
 
 | impl | §1 suspend | §2 enforced | §3 STE type | §4 destructive-close |
 |------|:---------:|:-----------:|:-----------:|:--------------------:|
-| JVM NIO2 (default) | ✅ | ✅ | ✅ | ❌ stays open |
-| JVM NIO blocking | ✅ | ❌ hangs (deadline dropped) | ❌ | ❌ |
-| JVM NIO selector | ✅ | ✅ | ✅ | ❌ stays open |
-| Node | ❌ fire-and-forget | ❌ | ❌ | ❌ |
-| Linux io_uring | ✅ | ✅ | ✅ | ❌ stays open |
-| Apple NWConnection | CI-only | CI-only | CI-only | CI-only |
+| JVM NIO2 (default) | ✅ | ✅ | ✅ | ❌→✅ |
+| JVM NIO blocking | ✅ | ❌→✅ (was hang) | ❌→✅ | ❌→✅ |
+| JVM NIO selector | ✅ | ✅ | ✅ | ❌→✅ |
+| Node | ❌→✅ (was fire-and-forget) | ❌→✅ | ❌→✅ | ❌→✅ |
+| Linux io_uring | ✅ | ✅ | ✅ | ❌→✅ |
+| Apple NWConnection | CI | CI | CI | CI |
 
-Key takeaways:
-- **§4 (destructive auto-close) is red everywhere** — no impl auto-closes on a bounded
-  write-timeout today. This is the biggest cross-cutting fix.
-- **JVM blocking** also drops the deadline entirely (`SocketChannelExtensions.write`
-  ignores `timeout` on the `isBlocking` branch), so a bounded write hangs (§2/§3).
-- **Node** fire-and-forget (`NodeSocketClient.write` never awaits `'drain'`) reports
-  success for merely *queued* bytes — red on every axis, including the default (§1): it
-  neither back-pressures nor enforces.
+Baseline takeaways (all now fixed):
+- **§4 (destructive auto-close) was red everywhere** — no impl auto-closed on a bounded
+  write-timeout. The biggest cross-cutting fix: close at the `write()` boundary when a *finite*
+  deadline elapses (only a finite deadline can time out; an infinite one suspends).
+- **JVM blocking** dropped the deadline entirely; now runs the write on a background scope that the
+  caller `withTimeout`s, closing the channel to unblock the parked syscall on timeout.
+- **Node** was fire-and-forget; now awaits the write's flush callback so a peer that isn't draining
+  suspends the writer (§1) and a bounded deadline enforces + closes (§2–§4).
 
-## 5. Implementation plan (Phase 2+)
+### Node harness limitation
 
-- **Auto-close on bounded write-timeout (all impls).** Centralize at the `write()` boundary:
+Node's `net.Socket` enters *flowing* mode the moment a `'data'` listener is attached — which our
+`ServerSocket` does on accept — so its OS receive buffer is always drained into an unbounded channel
+and our own `ServerSocket` can never be a non-draining peer. The common `WriteTimeoutContractTests`
+therefore **skip Node** (`nonDrainingPeerIsReliable()` = `false` on JS/Wasm). The Node write path is
+proven instead by `NodeWriteBackpressureTests` (jsTest), which uses a **raw** `net` server whose
+accepted sockets get no `'data'` listener — they stay paused, so the client genuinely back-pressures.
+
+## 5. Implementation (Phase 2, landed)
+
+- **Auto-close on bounded write-timeout (all impls).** Centralized at the `write()` boundary:
   when a bounded deadline elapses, close the connection, then throw
   `SocketTimeoutException(TimeoutContext.Write(d))`.
 - **JVM NIO2**: keep timed `aWrite` for `Bounded`; map its `InterruptedByTimeoutException`

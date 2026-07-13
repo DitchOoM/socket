@@ -45,3 +45,7 @@ actual fun isRunningInSimulator(): Boolean = false
 internal actual fun isWindowsJvm(): Boolean = System.getProperty("os.name", "").lowercase().contains("windows")
 
 internal actual fun harnessHost(): String = HarnessConfig.host
+
+// JVM sockets are pull-based (the accepted channel is only read when the app calls read()), so a
+// NonDrainingPeer that never reads reliably back-pressures the writer.
+actual fun nonDrainingPeerIsReliable(): Boolean = true

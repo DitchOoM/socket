@@ -29,6 +29,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.nio.channels.Selector
 import java.nio.channels.SocketChannel
 import kotlin.time.Duration
@@ -51,6 +52,14 @@ abstract class BaseClientSocket(
      * Cancelled in [close] so an outstanding read unwinds when the socket closes.
      */
     private val blockingReadScope by lazy { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
+
+    /**
+     * The socket-scoped home for a *bounded* blocking write. A blocking `SocketChannel.write()` can't be
+     * interrupted without closing the channel; unlike reads (non-destructive → orphaned single-flight), a
+     * bounded write-timeout is **destructive** (RFC_WRITE_TIMEOUT_CONTRACT §4), so the write runs here and
+     * a caller timeout simply closes the channel to unblock it. Cancelled in [close].
+     */
+    private val blockingWriteScope by lazy { CoroutineScope(Dispatchers.IO + SupervisorJob()) }
 
     /** The single outstanding blocking read, if one is in flight — enforces single-flight (§3.2). */
     private var inFlightBlockingRead: InFlightBlockingRead? = null
@@ -191,6 +200,9 @@ abstract class BaseClientSocket(
         timeout: Duration,
     ): Int {
         val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
+        // The blocking channel can't honor a deadline in-line, so route bounded blocking writes through
+        // a background write the caller withTimeouts (RFC_WRITE_TIMEOUT_CONTRACT §5).
+        if (blocking) return blockingWriteRaw(byteBuffer, timeout)
         var totalWritten = 0
         try {
             writeMutex.withLock {
@@ -202,6 +214,12 @@ abstract class BaseClientSocket(
                     totalWritten += bytesWritten
                 }
             }
+        } catch (e: SocketTimeoutException) {
+            // Selector OP_WRITE starvation: an opt-in Bounded(d) write blew its deadline. This is
+            // DESTRUCTIVE (RFC §4) — auto-close, then surface the uniform typed Write timeout. (An
+            // UntilClosed write waits on an infinite selector deadline and never lands here.)
+            close()
+            throw SocketTimeoutException(TimeoutContext.Write(timeout), cause = e)
         } catch (e: IOException) {
             // Route every platform IOException (Broken pipe, Connection reset,
             // ClosedChannelException, etc.) through the single mapper so callers see
@@ -212,11 +230,53 @@ abstract class BaseClientSocket(
         return totalWritten
     }
 
+    /**
+     * The blocking-path write. Unlike the orphaned-read single-flight (reads are non-destructive), a
+     * bounded write-timeout is **destructive** (RFC §4), so this is simpler: the blocking write runs on
+     * [blockingWriteScope] and the caller waits at most [deadline]; on expiry we close the channel —
+     * which unblocks the orphaned write syscall — and throw the typed timeout. An infinite deadline just
+     * suspends on back-pressure (the default write policy).
+     */
+    private suspend fun blockingWriteRaw(
+        byteBuffer: ByteBuffer,
+        deadline: Duration,
+    ): Int =
+        writeMutex.withLock {
+            val deferred =
+                blockingWriteScope.async {
+                    var total = 0
+                    try {
+                        while (byteBuffer.hasRemaining()) {
+                            val n = socket.write(byteBuffer, selector, Duration.INFINITE)
+                            if (n < 0) {
+                                throw SocketClosedException.EndOfStream("Received $n from server indicating a socket close.")
+                            }
+                            total += n
+                        }
+                    } catch (e: IOException) {
+                        throw wrapJvmException(e)
+                    }
+                    total
+                }
+            try {
+                if (deadline.isInfinite()) deferred.await() else withTimeout(deadline) { deferred.await() }
+            } catch (e: TimeoutCancellationException) {
+                // Bounded deadline elapsed: destructive. Cancel the background write and close the
+                // channel (which unblocks its parked syscall), then surface the typed Write timeout.
+                deferred.cancel()
+                close()
+                throw SocketTimeoutException(TimeoutContext.Write(deadline), cause = e)
+            }
+        }
+
     override suspend fun close() {
         selector?.aClose()
-        // Closing the channel (in super.close) is what unblocks an orphaned blocking read; cancelling
-        // its scope tears down the waiter so no read leaks past close.
-        if (blocking) blockingReadScope.cancel()
+        // Closing the channel (in super.close) is what unblocks an orphaned blocking read/write;
+        // cancelling their scopes tears down the waiters so nothing leaks past close.
+        if (blocking) {
+            blockingReadScope.cancel()
+            blockingWriteScope.cancel()
+        }
         super.close()
     }
 }

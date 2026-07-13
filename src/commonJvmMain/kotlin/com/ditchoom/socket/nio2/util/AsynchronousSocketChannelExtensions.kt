@@ -84,6 +84,13 @@ suspend fun AsynchronousSocketChannel.aRead(
  * This suspending function is cancellable.
  * If the [kotlinx.coroutines.Job] of the current coroutine is cancelled or completed while this suspending function is waiting, this function
  * *closes the underlying channel* and immediately resumes with [kotlin.coroutines.cancellation.CancellationException].
+ *
+ * An **infinite** [duration] maps to the JDK's *untimed* `write` overload rather than a `Long.MAX_VALUE`
+ * millisecond timeout — the write-side analogue of [aRead]. The default write policy is
+ * `WritePolicy.UntilClosed` (RFC_WRITE_TIMEOUT_CONTRACT §2): a stalled write must **suspend** on
+ * back-pressure, and the untimed overload never arms the JDK's `writeKilled` timeout machinery. A finite
+ * [duration] keeps the timed overload — an opt-in `Bounded(d)` write, whose timeout is deliberately
+ * destructive (the caller's `write` closes the connection when it elapses).
  */
 
 suspend fun AsynchronousSocketChannel.aWrite(
@@ -91,13 +98,17 @@ suspend fun AsynchronousSocketChannel.aWrite(
     duration: Duration,
 ): Int =
     suspendCancellableCoroutine<Int> { cont ->
-        write(
-            buf,
-            duration.inWholeMilliseconds,
-            TimeUnit.MILLISECONDS,
-            cont,
-            asyncIOHandler(),
-        )
+        if (duration.isInfinite()) {
+            write(buf, cont, asyncIOHandler())
+        } else {
+            write(
+                buf,
+                duration.inWholeMilliseconds,
+                TimeUnit.MILLISECONDS,
+                cont,
+                asyncIOHandler(),
+            )
+        }
         closeOnCancel(cont)
     }
 

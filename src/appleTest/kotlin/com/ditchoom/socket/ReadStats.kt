@@ -47,3 +47,6 @@ actual fun isRunningInSimulator(): Boolean {
 internal actual fun isWindowsJvm(): Boolean = false
 
 internal actual fun harnessHost(): String = HarnessConfig.host
+
+// Apple NWConnection sockets are pull-based, so a NonDrainingPeer reliably back-pressures the writer.
+actual fun nonDrainingPeerIsReliable(): Boolean = true
