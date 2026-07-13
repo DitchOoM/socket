@@ -123,6 +123,22 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
     }
 
+    // Node.js `dgram` UDP (RFC Phase 4). The single JS target compiles for both runtimes; the
+    // production actual guards on `global.window` and throws UnsupportedOperationException in the
+    // browser (parity with root :socket's TCP), while `require('dgram')` is only reached at runtime
+    // on Node (dynamic require, never webpack-bundled). Only jsNodeTest runs the conformance suite —
+    // the browser has no raw UDP, so jsBrowserTest is disabled to avoid a headless-browser dependency.
+    js {
+        nodejs {
+            testTask {
+                useMocha { timeout = "30s" }
+            }
+        }
+        browser {
+            testTask { enabled = false }
+        }
+    }
+
     // Linux io_uring UDP (K/N). ARM64 must be cross-compiled from x64 (no prebuilt K/N linux-aarch64
     // compiler); both targets are always registered on Linux x64 for source-set resolution.
     if (isLinux) {

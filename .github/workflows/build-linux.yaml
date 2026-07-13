@@ -443,7 +443,7 @@ jobs:
           :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test
           :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck
           :socket-webtransport:jvmTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck
-          :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck
+          :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
