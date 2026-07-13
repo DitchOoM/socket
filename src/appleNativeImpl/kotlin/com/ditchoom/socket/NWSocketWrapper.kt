@@ -24,6 +24,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import platform.Foundation.NSData
 import platform.Network.nw_connection_t
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resume
@@ -168,28 +169,54 @@ open class NWSocketWrapper(
         val nsData = buffer.toNSData()
         val bytesToWrite = nsData.length.toInt()
 
-        return BytesWritten(
-            writeMutex.withLock {
-                withTimeout(deadline) {
-                    suspendCancellableCoroutine { continuation ->
-                        nw_helper_send_tcp(conn, nsData) { errorDomain, _, errorDesc ->
-                            if (errorDomain != 0) {
-                                continuation.resumeWithException(
-                                    mapSocketException(errorDomain, errorDesc),
-                                )
-                            } else {
-                                buffer.position(buffer.position() + bytesToWrite)
-                                continuation.resume(bytesToWrite)
-                            }
-                        }
-                        continuation.invokeOnCancellation {
-                            closeInternal()
-                        }
+        val bytesWritten =
+            try {
+                writeMutex.withLock {
+                    // The default WritePolicy.UntilClosed passes an infinite deadline: suspend on
+                    // back-pressure (RFC_WRITE_TIMEOUT_CONTRACT §1) without arming a timeout that could
+                    // kill the connection. Only an opt-in Bounded(d) write bounds the send.
+                    if (deadline.isInfinite()) {
+                        performSend(conn, nsData, buffer, bytesToWrite)
+                    } else {
+                        withTimeout(deadline) { performSend(conn, nsData, buffer, bytesToWrite) }
                     }
                 }
-            },
-        )
+            } catch (e: TimeoutCancellationException) {
+                // An opt-in Bounded(d) write blew its deadline. DESTRUCTIVE (RFC §4): Network.framework
+                // has no per-send cancel, so cancel the connection to abandon the outstanding send, then
+                // surface the uniform typed Write timeout. (No blanket invokeOnCancellation close here —
+                // that would also kill an infinite write cancelled from outside, which must stay
+                // non-destructive.)
+                closeInternal()
+                throw SocketTimeoutException(TimeoutContext.Write(deadline), cause = e)
+            }
+        return BytesWritten(bytesWritten)
     }
+
+    /**
+     * Issues a single native `nw_helper_send_tcp` and suspends until Network.framework reports the send
+     * completed (or failed). Runs no timeout of its own — enforcement is the caller's `withTimeout` — so
+     * an infinite (default) write simply suspends on back-pressure. On success advances [buffer]'s
+     * position by [bytesToWrite], matching the JVM NIO write contract.
+     */
+    private suspend fun performSend(
+        conn: nw_connection_t,
+        nsData: NSData,
+        buffer: ReadBuffer,
+        bytesToWrite: Int,
+    ): Int =
+        suspendCancellableCoroutine { continuation ->
+            nw_helper_send_tcp(conn, nsData) { errorDomain, _, errorDesc ->
+                if (errorDomain != 0) {
+                    continuation.resumeWithException(
+                        mapSocketException(errorDomain, errorDesc),
+                    )
+                } else {
+                    buffer.position(buffer.position() + bytesToWrite)
+                    continuation.resume(bytesToWrite)
+                }
+            }
+        }
 
     internal fun closeInternal() {
         if (closedLocally) return

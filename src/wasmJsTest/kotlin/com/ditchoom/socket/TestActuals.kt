@@ -35,3 +35,6 @@ actual fun isRunningInSimulator(): Boolean = false
 internal actual fun isWindowsJvm(): Boolean = false
 
 internal actual fun harnessHost(): String = HarnessConfig.host
+
+// Browser/Wasm has no socket access; the write-timeout harness does not apply.
+actual fun nonDrainingPeerIsReliable(): Boolean = false

@@ -37,7 +37,12 @@ import kotlin.time.Duration.Companion.seconds
 data class TransportConfig(
     val bufferFactory: BufferFactory = BufferFactory.Default,
     val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds),
-    val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds),
+    // Writes default to UntilClosed (suspend / back-pressure), NOT a bounded deadline: a stalled write
+    // is connection-global TCP flow control, and the correct response is to suspend the writer until
+    // the peer drains, not to fail a usable connection. Only an opt-in WritePolicy.Bounded(d) enforces
+    // a deadline — and when that deadline elapses it is *destructive* (auto-close), the deliberate
+    // asymmetry with the non-destructive read-timeout contract. See RFC_WRITE_TIMEOUT_CONTRACT.md.
+    val writePolicy: WritePolicy = WritePolicy.UntilClosed,
     val connectTimeout: Duration = 15.seconds,
     val tls: TlsConfig? = null,
     val io: IoTuning = IoTuning(),

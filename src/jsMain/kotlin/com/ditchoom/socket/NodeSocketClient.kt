@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.unwrapFully
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -179,8 +180,28 @@ open class NodeSocket(
                 buffer.position(buffer.position() - bytesToWrite) // undo readByteArray advance
                 Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, bytesToWrite)
             }
-        writeMutex.withLock { socket.write(dataToWrite) }
+        // Back-pressure (RFC_WRITE_TIMEOUT_CONTRACT §1): Node's socket.write queues into an unbounded
+        // JS-side buffer and returns immediately, so a naive write acknowledges bytes it only *queued*.
+        // Await the write's flush callback instead — it fires when the chunk is actually handed to the
+        // OS, which a peer that isn't draining delays — so the writer suspends on back-pressure rather
+        // than letting bytes pile up. The default WritePolicy.UntilClosed passes an infinite deadline and
+        // simply suspends; an opt-in Bounded(d) bounds the wait.
+        val flushed = CompletableDeferred<Unit>()
+        writeMutex.withLock { socket.write(dataToWrite) { flushed.complete(Unit) } }
         buffer.position(buffer.position() + bytesToWrite)
+        try {
+            if (deadline.isInfinite()) {
+                flushed.await()
+            } else {
+                withTimeout(deadline) { flushed.await() }
+            }
+        } catch (e: TimeoutCancellationException) {
+            // Bounded write-timeout is DESTRUCTIVE (§4): the send buffer is wedged. Tear the socket down
+            // and null it so isOpen is deterministically false, then surface the uniform typed timeout.
+            cleanSocket(socket)
+            netSocket = null
+            throw SocketTimeoutException(TimeoutContext.Write(deadline), cause = e)
+        }
         return BytesWritten(bytesToWrite)
     }
 

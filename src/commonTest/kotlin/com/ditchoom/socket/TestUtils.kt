@@ -29,6 +29,19 @@ expect fun isRunningInSimulator(): Boolean
 internal expect fun isWindowsJvm(): Boolean
 
 /**
+ * Whether `NonDrainingPeer` can reliably create write back-pressure on this platform (the
+ * write-timeout contract, RFC_WRITE_TIMEOUT_CONTRACT.md).
+ *
+ * `false` on Node/JS (and browser/Wasm): a Node `net.Socket` switches to flowing mode the moment a
+ * `'data'` listener is attached — which our `ServerSocket` does on accept — so the OS receive buffer is
+ * always drained into an unbounded channel and the client never back-pressures. Node also has no
+ * OS-level writer suspension, only cooperative `highWaterMark` `'drain'`. The Node write path is covered
+ * separately by a raw-`net`, paused-peer test in `jsTest` (`NodeWriteBackpressureTests`). `true`
+ * everywhere the accepted socket is pull-based (JVM, K/Native, Apple).
+ */
+expect fun nonDrainingPeerIsReliable(): Boolean
+
+/**
  * Platform-specific return type for test functions.
  * On JVM/K/N: Unit (required by K/N test framework).
  * On JS: Any (allows returning Promise for mocha async test tracking).

@@ -543,12 +543,19 @@ class LinuxClientSocket(
                 buffer.position(buffer.position() + bytesSent.toInt())
                 bytesSent.toInt()
             }
-            else ->
-                if (ssl != null) {
-                    handleSslWriteError(bytesSent.toInt(), deadline)
-                } else {
-                    handleWriteError((-bytesSent).toInt())
+            ssl != null -> handleSslWriteError(bytesSent.toInt(), deadline)
+            else -> {
+                val errorCode = (-bytesSent).toInt()
+                if (errorCode == ETIME || errorCode == ETIMEDOUT) {
+                    // An opt-in Bounded(d) write blew its io_uring linked-timeout. DESTRUCTIVE
+                    // (RFC_WRITE_TIMEOUT_CONTRACT §4): the send buffer is wedged, so close, then surface
+                    // the uniform typed Write timeout. An UntilClosed write submits with no linked
+                    // timeout and never lands here.
+                    closeInternal()
+                    throw SocketTimeoutException(TimeoutContext.Write(deadline))
                 }
+                handleWriteError(errorCode)
+            }
         }
 
     private suspend fun writeWithIoUring(

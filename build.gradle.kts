@@ -500,6 +500,12 @@ kotlin {
                     // can only run under Node (note the `.harness.` subpackage — the prefix below still
                     // resolves to its fully-qualified name).
                     "harness.ReadTimeoutContractTests",
+                    // The write-timeout contract suite spins up an in-process TCP NonDrainingPeer, and the
+                    // Node backpressure suite drives a raw `net.createServer` — both are Node-only
+                    // (`net` has no browser surface; the contract suite early-returns via
+                    // nonDrainingPeerIsReliable()=false, but exclude it for parity with the read suite).
+                    "harness.WriteTimeoutContractTests",
+                    "NodeWriteBackpressureTests",
                 ).forEach { filter.excludeTestsMatching("com.ditchoom.socket.$it") }
             }
         }
