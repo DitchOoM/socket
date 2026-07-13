@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -9,6 +10,8 @@ plugins {
 }
 
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
+val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
+val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 // The datagram trichotomy lives in buffer-flow under @ExperimentalDatagramApi (RFC Phase 0/1). Until
 // it publishes to Maven Central as a real release, :socket-udp consumes the pinned local SNAPSHOT
@@ -22,6 +25,81 @@ repositories {
     mavenCentral()
 }
 
+// --- Native cinterop wiring (RFC Phase 3) ---
+//
+// Deliberately liburing-ONLY on Linux and Network.framework-ONLY on Apple: UDP has no TLS, so unlike
+// root :socket's LinuxSockets.def (which bundles BoringSSL for K/N TLS) the UDP datapath needs neither
+// OpenSSL nor BoringSSL. We reuse root :socket's already-built liburing static lib (the `.a` is
+// TLS-free — exactly how :socket-quic-quiche gets io_uring transitively) instead of duplicating the
+// download/build machinery.
+
+// Configure the Linux io_uring cinterop (liburing static lib + POSIX socket/cmsg C shims, NO OpenSSL).
+fun KotlinNativeTarget.configureLinuxUdpCinterop(arch: String) {
+    val liburingDir = rootProject.projectDir.resolve("libs/liburing/linux-$arch")
+    val liburingLibDir = liburingDir.resolve("lib")
+    val liburingIncludeDir = liburingDir.resolve("include")
+    val buildLiburingTask =
+        rootProject.tasks.named(if (arch == "x64") "buildLiburingX64" else "buildLiburingArm64")
+
+    val systemIncludeDirs =
+        if (arch == "x64") {
+            listOf("/usr/include", "/usr/include/x86_64-linux-gnu")
+        } else {
+            val crossRoot = "/usr/aarch64-linux-gnu"
+            val crossInclude = "/usr/include/aarch64-linux-gnu"
+            when {
+                File(crossRoot).exists() -> listOf("$crossRoot/include")
+                File(crossInclude).exists() -> listOf(crossInclude)
+                else -> listOf("/usr/include/aarch64-linux-gnu")
+            }
+        }
+
+    // Rewrite the base def's placeholder linkerOpts into static-library embedding (liburing.a), the
+    // same technique root :socket uses for OpenSSL+liburing — minus everything TLS.
+    val generatedDefFile = projectDir.resolve("build/generated/cinterop/UdpSockets-$arch.def")
+    val generateDefTask =
+        tasks.register("generateUdpSocketsDef${arch.replaceFirstChar { it.uppercase() }}") {
+            inputs.file("src/nativeInterop/cinterop/UdpSockets.def")
+            outputs.file(generatedDefFile)
+            doLast {
+                val base = file("src/nativeInterop/cinterop/UdpSockets.def").readText()
+                val modified =
+                    base.replace(
+                        "linkerOpts.linux = -luring -lpthread",
+                        """libraryPaths.linux = ${liburingLibDir.absolutePath}
+staticLibraries.linux = liburing.a
+linkerOpts.linux = -lpthread""",
+                    )
+                generatedDefFile.parentFile.mkdirs()
+                generatedDefFile.writeText(modified)
+            }
+        }
+
+    compilations["main"].cinterops {
+        create("UdpSockets") {
+            defFile(generatedDefFile)
+            includeDirs(*(listOf(liburingIncludeDir.absolutePath) + systemIncludeDirs).toTypedArray())
+            tasks.named(interopProcessingTaskName) {
+                dependsOn(generateDefTask)
+                dependsOn(buildLiburingTask)
+            }
+        }
+    }
+    binaries.all {
+        linkerOpts("-L${liburingLibDir.absolutePath}", "-luring", "-lpthread")
+    }
+}
+
+// Configure the Apple Network.framework cinterop (plain-UDP NWConnection + POSIX server helpers).
+fun KotlinNativeTarget.configureNwUdpCinterop() {
+    compilations["main"].cinterops {
+        create("NwUdp") {
+            defFile("src/nativeInterop/cinterop/NwUdp.def")
+            includeDirs("src/nativeInterop/cinterop")
+        }
+    }
+}
+
 // :socket-udp — a first-class UDP datagram substrate (RFC_UDP_MODULE.md).
 //
 // Deliberately a SEPARATE published module, not folded into root :socket: a consumer (../webrtc,
@@ -29,8 +107,8 @@ repositories {
 // the buffer-flow datagram trichotomy (DatagramChannel / DatagramSource / DatagramSink + SocketAddress)
 // on real sockets.
 //
-// Phase 2 ships JVM + Android only (NIO DatagramChannel). Native (Linux io_uring + Apple), Node dgram,
-// and the QUIC cutover land in later phases; targets are added per-phase so each phase stays green.
+// Phase 2 shipped JVM + Android (NIO DatagramChannel). Phase 3 adds Linux io_uring + Apple
+// Network.framework native actuals. Node dgram and the QUIC cutover land in later phases.
 kotlin {
     jvmToolchain(21)
 
@@ -43,6 +121,23 @@ kotlin {
         // (DatagramChannel/Selector), no post-8 java.* API on the shipped path (JDK-version-specific
         // socket options are resolved reflectively via DatagramChannel.supportedOptions()).
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+    }
+
+    // Linux io_uring UDP (K/N). ARM64 must be cross-compiled from x64 (no prebuilt K/N linux-aarch64
+    // compiler); both targets are always registered on Linux x64 for source-set resolution.
+    if (isLinux) {
+        linuxX64 { configureLinuxUdpCinterop("x64") }
+        linuxArm64 { configureLinuxUdpCinterop("arm64") }
+    }
+
+    // Apple Network.framework UDP (K/N). Mirrors :socket-quic-quiche's five targets (no tvos/watchos —
+    // buffer-flow's Apple klibs and the NW UDP client path target the mac/ios set).
+    if (isMacOS) {
+        macosArm64 { configureNwUdpCinterop() }
+        macosX64 { configureNwUdpCinterop() }
+        iosArm64 { configureNwUdpCinterop() }
+        iosSimulatorArm64 { configureNwUdpCinterop() }
+        iosX64 { configureNwUdpCinterop() }
     }
 
     applyDefaultHierarchyTemplate()

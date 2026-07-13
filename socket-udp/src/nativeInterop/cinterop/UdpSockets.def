@@ -1,0 +1,67 @@
+language = C
+package = com.ditchoom.socket.udp.linux
+
+# Linux UDP datagram substrate: io_uring async I/O over plain POSIX UDP sockets.
+#
+# Deliberately TLS-free — unlike root :socket's LinuxSockets.def (which links -lssl -lcrypto for
+# K/N TLS), UDP needs neither OpenSSL nor BoringSSL. Only liburing + libc.
+#
+# Dependency: liburing static lib, reused from root :socket's libs/liburing/linux-<arch>/ (built by
+# root's buildLiburing<Arch> task). libraryPaths/staticLibraries are injected by the generate task in
+# build.gradle.kts (which rewrites the linkerOpts.linux line below into static-library embedding).
+
+headers = sys/socket.h sys/types.h netinet/in.h netinet/ip.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h string.h sys/eventfd.h poll.h sys/select.h sys/time.h liburing.h
+
+compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
+
+# Rewritten by generateUdpSocketsDef<Arch> into libraryPaths + staticLibraries + -lpthread.
+linkerOpts.linux = -luring -lpthread
+
+---
+
+// --- sockaddr union wrappers ---
+// glibc's getsockname/getpeername/bind take the __SOCKADDR_ARG transparent union, which Kotlin/Native
+// cannot express. These thin wrappers take raw struct sockaddr* so K/N can call them (same technique
+// as root :socket's LinuxSockets.def).
+
+static inline int socket_getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    return getsockname(sockfd, addr, addrlen);
+}
+
+static inline int socket_getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    return getpeername(sockfd, addr, addrlen);
+}
+
+static inline int socket_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    return bind(sockfd, addr, addrlen);
+}
+
+static inline int socket_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    return connect(sockfd, addr, addrlen);
+}
+
+// --- cmsg macro wrappers ---
+// CMSG_FIRSTHDR/NXTHDR/SPACE/LEN/DATA are function-like C macros; cinterop binds only
+// functions/typedefs/enums, not macros. Wrap them as static inline functions so the Kotlin control
+// plane (ECN / TTL / IP_PKTINFO ancillary data) can walk and build cmsgs. `struct cmsghdr` itself is
+// a plain struct and binds directly.
+
+static inline struct cmsghdr *cmsg_firsthdr(struct msghdr *msg) {
+    return CMSG_FIRSTHDR(msg);
+}
+
+static inline struct cmsghdr *cmsg_nxthdr(struct msghdr *msg, struct cmsghdr *cmsg) {
+    return CMSG_NXTHDR(msg, cmsg);
+}
+
+static inline size_t cmsg_space(size_t length) {
+    return CMSG_SPACE(length);
+}
+
+static inline size_t cmsg_len(size_t length) {
+    return CMSG_LEN(length);
+}
+
+static inline unsigned char *cmsg_data(struct cmsghdr *cmsg) {
+    return CMSG_DATA(cmsg);
+}
