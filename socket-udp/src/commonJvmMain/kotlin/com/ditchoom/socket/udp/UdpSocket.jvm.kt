@@ -1,10 +1,19 @@
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel as NioChannel
+
+/**
+ * The JVM/Android default: [BufferFactory.Default] hands out a NIO-writable direct buffer (a
+ * [com.ditchoom.buffer.BaseJvmBuffer] whose `byteBuffer` the channel receives into, and whose
+ * `nativeAddress` downstream FFI reads) — the exact strategy [NioDatagramChannel] has always used.
+ */
+internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.Default
 
 /**
  * JVM/Android [UdpSocket] over NIO [NioChannel]. Shared by both platforms via `commonJvmMain` (NIO is
@@ -22,11 +31,12 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
         val channel = NioChannel.open()
         channel.configureBlocking(false)
         channel.bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
-        return NioDatagramChannel(channel, receiveBufferSize)
+        return NioDatagramChannel(channel, receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun connect(
@@ -35,6 +45,7 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed
         // peer. A `connect()`ed UDP socket only receives from — and `write()`s to — this address.
@@ -43,7 +54,7 @@ actual object UdpSocket {
         channel.configureBlocking(false)
         channel.bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
         channel.connect(peer)
-        return NioDatagramChannel(channel, receiveBufferSize)
+        return NioDatagramChannel(channel, receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun resolve(

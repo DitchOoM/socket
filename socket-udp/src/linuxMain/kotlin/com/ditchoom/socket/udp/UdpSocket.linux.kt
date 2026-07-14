@@ -2,6 +2,8 @@
 
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -31,6 +33,14 @@ import platform.posix.socket
 import platform.posix.socklen_tVar
 
 /**
+ * The Linux/K-N default: a native deterministic factory (`malloc`/`free` `NativeBuffer`). io_uring
+ * `recvmsg` writes into the payload's raw native memory, so — unlike the JVM — `BufferFactory.Default`
+ * (a GC `ByteArrayBuffer` with no native address) is *not* usable here; this is the exact strategy
+ * [IoUringDatagramChannel] has always used (formerly `PlatformBuffer.allocateNative`).
+ */
+internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.deterministic()
+
+/**
  * Linux/K-N [UdpSocket] over io_uring (see [IoUringDatagramChannel]). Sockets match the family of the
  * bind/connect address (an IPv4 literal → `AF_INET`, matching the JVM actual's family-follows-address
  * behavior), so the conformance suite's `127.0.0.1` binds report an IPv4 [SocketAddress.localAddress].
@@ -46,6 +56,7 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
         val local = LinuxSocketAddressResolver.resolve(localHost ?: WILDCARD_V4, localPort) as LinuxSocketAddress
         val fd = openDatagramSocket(local.family)
@@ -58,6 +69,7 @@ actual object UdpSocket {
             localAddress = localAddressOf(fd),
             ipv6 = local.family == AddressFamily.IPv6,
             receiveBufferSize = receiveBufferSize,
+            bufferFactory = bufferFactory,
         ).also { IoUringManager.onSocketOpened() }
     }
 
@@ -67,6 +79,7 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
         val peer = resolve(remoteHost, remotePort) as LinuxSocketAddress
         val fd = openDatagramSocket(peer.family)
@@ -92,6 +105,7 @@ actual object UdpSocket {
             localAddress = localAddressOf(fd),
             ipv6 = peer.family == AddressFamily.IPv6,
             receiveBufferSize = receiveBufferSize,
+            bufferFactory = bufferFactory,
         ).also { IoUringManager.onSocketOpened() }
     }
 

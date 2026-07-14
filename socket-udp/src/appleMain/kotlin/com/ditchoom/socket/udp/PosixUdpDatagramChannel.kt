@@ -2,9 +2,9 @@
 
 package com.ditchoom.socket.udp
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
@@ -54,6 +54,7 @@ internal class PosixUdpDatagramChannel(
     private val fd: Int,
     override val localAddress: SocketAddress?,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
+    private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
 ) : DatagramChannel {
     private val closedFlag = AtomicInt(0)
     private val recvDispatcher = newSingleThreadContext("apple-udp-recv-$fd")
@@ -65,7 +66,7 @@ internal class PosixUdpDatagramChannel(
     override val capabilities: DatagramCapabilities = DatagramCapabilities.None
 
     override suspend fun receive(): DatagramReadResult {
-        val payload = PlatformBuffer.allocateNative(receiveBufferSize)
+        val payload = bufferFactory.allocate(receiveBufferSize)
         val ptr = payload.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         try {
             while (true) {

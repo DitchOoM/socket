@@ -2,9 +2,9 @@
 
 package com.ditchoom.socket.udp
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
@@ -46,6 +46,7 @@ internal class NwUdpDatagramChannel(
     private val connectedPeer: SocketAddress,
     override val localAddress: SocketAddress?,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
+    private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
 ) : DatagramChannel {
     private val closedFlag = AtomicInt(0)
 
@@ -69,7 +70,7 @@ internal class NwUdpDatagramChannel(
      */
     override suspend fun receive(): DatagramReadResult {
         if (closedFlag.value != 0 || terminal.isCompleted) return DatagramReadResult.Closed()
-        val payload = PlatformBuffer.allocateNative(receiveBufferSize)
+        val payload = bufferFactory.allocate(receiveBufferSize)
         val dst = payload.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         val done = CompletableDeferred<Int>()
         nw_udp_receive(conn) { content, _, errorCode ->

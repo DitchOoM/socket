@@ -2,6 +2,8 @@
 
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -41,6 +43,14 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
+ * The Apple/K-N default: a native deterministic factory (ARC-managed `NSMutableData`). Both the
+ * NWConnection receive callback and POSIX `recvfrom` copy into the payload's raw native memory, so
+ * `BufferFactory.Default` on native (a non-native GC buffer) is unusable; this is the exact strategy
+ * both Apple channels have always used (formerly `PlatformBuffer.allocateNative`).
+ */
+internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.deterministic()
+
+/**
  * Apple/K-N [UdpSocket]. `connect()` opens an `nw_connection_t` (NWConnection UDP mode) — the connected,
  * NWPath-aware client path ([NwUdpDatagramChannel]); `bind()` opens a POSIX datagram socket — the
  * unconnected many-peer server path ([PosixUdpDatagramChannel]). This split mirrors the quiche Apple
@@ -57,6 +67,7 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
         // A wildcard (null host) bind is DUAL-STACK IPv6: bind `::` with IPV6_V6ONLY=0 so the socket
         // receives BOTH ::1 and IPv4 (as ::ffff:a.b.c.d v4-mapped). Apple's NWConnection UDP *client*
@@ -71,7 +82,7 @@ actual object UdpSocket {
         setReuseAddr(fd)
         if (wildcard && local.family == AddressFamily.IPv6) setV6Only(fd, false)
         bindTo(fd, local)
-        return PosixUdpDatagramChannel(fd, localAddressOf(fd), receiveBufferSize)
+        return PosixUdpDatagramChannel(fd, localAddressOf(fd), receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun connect(
@@ -80,6 +91,7 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
         // NWConnection assigns the local endpoint itself; localHost/localPort are advisory here (matching
         // the quiche NW client path, which does not bind a specific local address).
@@ -121,7 +133,7 @@ actual object UdpSocket {
         }
         val peer = copyConnectionSockaddr(conn, local = false) ?: (resolve(remoteHost, remotePort))
         val local = copyConnectionSockaddr(conn, local = true)
-        return NwUdpDatagramChannel(conn, peer, local, receiveBufferSize)
+        return NwUdpDatagramChannel(conn, peer, local, receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun resolve(

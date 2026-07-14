@@ -2,9 +2,9 @@
 
 package com.ditchoom.socket.udp
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
@@ -94,6 +94,7 @@ internal class IoUringDatagramChannel(
     override val localAddress: SocketAddress?,
     private val ipv6: Boolean,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
+    private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
 ) : DatagramChannel {
     private val closedFlag = AtomicInt(0)
 
@@ -226,7 +227,7 @@ internal class IoUringDatagramChannel(
         // One payload per received datagram, reused across the internal idle re-arm (submitAndWait
         // times out ~every second when no data arrives). Handed out on success; freed on any
         // non-delivery exit so an idle socket does not leak a 64 KiB buffer per second.
-        val payload = PlatformBuffer.allocateNative(receiveBufferSize)
+        val payload = bufferFactory.allocate(receiveBufferSize)
         val basePtr = payload.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         try {
             while (true) {

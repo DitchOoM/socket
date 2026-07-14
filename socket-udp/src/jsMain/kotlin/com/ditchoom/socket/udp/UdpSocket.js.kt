@@ -1,5 +1,7 @@
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -7,6 +9,13 @@ import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+/**
+ * The Node default. Note that `dgram` delivers each datagram as its own Node `Buffer` (copied out in
+ * [NodeDatagramChannel]), so — like [receiveBufferSize] — an injected [BufferFactory] has no staging
+ * buffer to allocate and is not consulted; this value only satisfies the common default.
+ */
+internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.Default
 
 /**
  * Node.js [UdpSocket] over `dgram` (RFC Phase 4). The single JS target also compiles for the browser,
@@ -25,9 +34,11 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
-        // receiveBufferSize is ignored on Node: `dgram` delivers each datagram as its own Node Buffer
-        // (copied out in NodeDatagramChannel), so there is no pre-allocated staging buffer to size.
+        // receiveBufferSize and bufferFactory are ignored on Node: `dgram` delivers each datagram as its
+        // own Node Buffer (copied out in NodeDatagramChannel), so there is no staging buffer to size or
+        // allocate from an injected factory.
         ensureNode()
         val socket = createDgramSocket(if (isIpv6(localHost)) UDP6 else UDP4)
         awaitBind(socket, localPort, localHost)
@@ -40,6 +51,7 @@ actual object UdpSocket {
         localHost: String?,
         localPort: Int,
         receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
     ): DatagramChannel {
         ensureNode()
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed

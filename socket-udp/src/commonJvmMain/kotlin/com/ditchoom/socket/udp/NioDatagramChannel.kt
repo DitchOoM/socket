@@ -43,6 +43,7 @@ import java.nio.channels.DatagramChannel as NioChannel
 internal class NioDatagramChannel(
     private val channel: NioChannel,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
+    private val bufferFactory: BufferFactory = BufferFactory.Default,
 ) : DatagramChannel {
     private val selector: Selector = Selector.open().also { channel.register(it, SelectionKey.OP_READ) }
 
@@ -114,7 +115,7 @@ internal class NioDatagramChannel(
             selector.selectedKeys().clear()
             if (closed) return DatagramReadResult.Closed()
 
-            val payload = BufferFactory.Default.allocate(receiveBufferSize)
+            val payload = bufferFactory.allocate(receiveBufferSize)
             val byteBuffer = (payload.unwrapFully() as BaseJvmBuffer).byteBuffer
             byteBuffer.clear()
             val sender = channel.receive(byteBuffer) as InetSocketAddress? ?: continue // spurious wakeup

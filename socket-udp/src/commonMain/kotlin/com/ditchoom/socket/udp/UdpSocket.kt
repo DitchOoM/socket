@@ -1,11 +1,22 @@
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 
 /** The classic UDP payload ceiling (65535 − 8 UDP − 20 IPv4). The default per-datagram staging size. */
 const val MAX_UDP_DATAGRAM_SIZE: Int = 65507
+
+/**
+ * The default [BufferFactory] each channel allocates its per-datagram receive payload from when a
+ * caller does not inject its own. This is the platform's proven native-capable factory — [BufferFactory.Default]
+ * on the JVM/Android (a NIO-writable direct buffer), a native deterministic factory on Linux/Apple (io_uring
+ * `recvmsg` / `recvfrom` and `NWConnection` all require raw native memory, which `BufferFactory.Default` is
+ * *not* on Linux). Kept per-platform via `expect`/`actual` so the default never changes a platform's existing,
+ * validated allocation strategy.
+ */
+internal expect val defaultDatagramBufferFactory: BufferFactory
 
 /**
  * The `:socket-udp` entry point — opens real UDP [DatagramChannel]s and resolves addresses.
@@ -35,17 +46,25 @@ expect object UdpSocket {
      * datagram delivered without truncation). It defaults to the UDP payload ceiling; a caller that knows
      * its datagrams are small — e.g. the QUIC datapath, whose `max_recv_udp_payload_size` is ~1350 — passes
      * a smaller value to avoid a 64 KB allocation per received packet.
+     *
+     * [bufferFactory] is where each received [com.ditchoom.buffer.flow.Datagram]'s payload is allocated from
+     * — the allocate-and-transfer hook (RFC §4, [feedback_zero_copy_buffers]). It defaults to the platform's
+     * native-capable factory; a caller with its own pool injects it here (e.g. quiche passes its `recvBufPool`,
+     * a `BufferPool` — which *is* a `BufferFactory`) so the kernel lands each datagram straight in a pooled
+     * buffer with no downstream copy. Ownership of the allocated payload transfers out on `receive()`; the
+     * consumer frees it (a pooled factory's `freeNativeMemory()` returns it to the pool).
      */
     suspend fun bind(
         localHost: String? = null,
         localPort: Int = 0,
         receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
+        bufferFactory: BufferFactory = defaultDatagramBufferFactory,
     ): DatagramChannel
 
     /**
      * Open a **connected** UDP channel to [remoteHost]:[remotePort] (resolved via [resolve]), bound to
      * [localHost]:[localPort]. `send(payload, to = null)` then targets the fixed peer; only datagrams
-     * from that peer are received. [receiveBufferSize] behaves as in [bind].
+     * from that peer are received. [receiveBufferSize] and [bufferFactory] behave as in [bind].
      */
     suspend fun connect(
         remoteHost: String,
@@ -53,6 +72,7 @@ expect object UdpSocket {
         localHost: String? = null,
         localPort: Int = 0,
         receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
+        bufferFactory: BufferFactory = defaultDatagramBufferFactory,
     ): DatagramChannel
 
     /**
