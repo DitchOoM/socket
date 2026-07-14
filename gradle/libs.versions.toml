@@ -27,7 +27,17 @@ kotlinWrappers = "2026.6.0"
 # 6.1.0 adds the raw ByteStreamMux primitive + BufferedByteSource.peek (buffer PR #239).
 # 6.5.0→6.7.2: buffer-pool use-after-release fail-fast (#261), okio interop, codec-framed
 # streaming layer + typed pipe (#268), buffer-sqldelight module. Additive, drop-in.
-buffer = "6.7.2"
+# 6.7.2→6.9.1 ships buffer #276: the KClass-bearing codegen annotations (@ForwardCompatible,
+# @DispatchOn, @FramedBy) move from BINARY to SOURCE retention. This is load-bearing for
+# CONSUMERS that shrink: Kotlin 2.4 embeds those annotations' nested-KClass args (e.g.
+# Http3Frame.Unknown) into the sealed parent's @Metadata, and proguard-core 9.3.2 can't
+# resolve the ref — it aborts the shrink with "can't find referenced class …$Unknown".
+# SOURCE retention drops the arg from .class AND @Metadata (KSP still reads it — SOURCE
+# annotations are visible on source symbols), so socket-http3's Http3Frame shrinks cleanly.
+# Pinned to 6.9.1 (not the newer 6.10.0) to match downstream's runtime buffer exactly: a
+# socket compiled against a buffer NEWER than the runtime buffer AbstractMethodErrors if
+# ByteStream grew abstract members — 6.9.1 is the fixed version the consumer actually runs.
+buffer = "6.9.1"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
