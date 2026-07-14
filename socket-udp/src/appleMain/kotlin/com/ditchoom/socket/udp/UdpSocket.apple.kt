@@ -21,10 +21,12 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.value
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.AF_INET
 import platform.posix.AF_INET6
+import platform.posix.IPPROTO_IPV6
 import platform.posix.IPPROTO_UDP
+import platform.posix.IPV6_V6ONLY
 import platform.posix.SOCK_DGRAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_REUSEADDR
@@ -35,6 +37,8 @@ import platform.posix.setsockopt
 import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
 import platform.posix.socket
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Apple/K-N [UdpSocket]. `connect()` opens an `nw_connection_t` (NWConnection UDP mode) — the connected,
@@ -54,11 +58,18 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
     ): DatagramChannel {
-        val local = AppleSocketAddressResolver.resolve(localHost ?: WILDCARD_V4, localPort) as AppleSocketAddress
+        // A wildcard (null host) bind is DUAL-STACK IPv6: bind `::` with IPV6_V6ONLY=0 so the socket
+        // receives BOTH ::1 and IPv4 (as ::ffff:a.b.c.d v4-mapped). Apple's NWConnection UDP *client*
+        // resolves a name like "localhost" to ::1 by preference on Darwin, so an IPv4-only server would
+        // silently never receive its packets (the handshake idle-times-out) — this is what makes a quiche
+        // server reachable from the NW client either way. A specific host keeps its address family.
+        val wildcard = localHost == null
+        val local = AppleSocketAddressResolver.resolve(localHost ?: WILDCARD_V6, localPort) as AppleSocketAddress
         val af = if (local.family == AddressFamily.IPv6) AF_INET6 else AF_INET
         val fd = socket(af, SOCK_DGRAM, IPPROTO_UDP)
         check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
         setReuseAddr(fd)
+        if (wildcard && local.family == AddressFamily.IPv6) setV6Only(fd, false)
         bindTo(fd, local)
         return PosixUdpDatagramChannel(fd, localAddressOf(fd), receiveBufferSize)
     }
@@ -74,19 +85,39 @@ actual object UdpSocket {
         // the quiche NW client path, which does not bind a specific local address).
         val conn =
             nw_udp_create(remoteHost, remotePort.toString())
-                ?: error("nw_udp_create($remoteHost:$remotePort) failed")
-        val ready = CompletableDeferred<Boolean>()
-        nw_udp_set_state_handler(conn) { state, _, _, _ ->
-            when (state) {
-                STATE_READY -> ready.complete(true)
-                STATE_FAILED, STATE_CANCELLED -> ready.complete(false)
-                else -> {}
+                ?: throw UdpConnectException("nw_udp_create($remoteHost:$remotePort) failed")
+        try {
+            // Await NW readiness cancellably: a caller's withTimeout (e.g. the QUIC connect timeout) then
+            // actually interrupts a stuck connect, and invokeOnCancellation cancels the NWConnection so a
+            // timed-out/cancelled connect never leaks the nw_connection_t (B4c/B4d). Terminal NW states
+            // surface as a typed [UdpConnectException] instead of a bare error (B4e).
+            suspendCancellableCoroutine { continuation ->
+                var resumed = false
+                nw_udp_set_state_handler(conn) { state, _, _, desc ->
+                    if (resumed) return@nw_udp_set_state_handler
+                    when (state) {
+                        STATE_READY -> {
+                            resumed = true
+                            continuation.resume(Unit)
+                        }
+                        STATE_FAILED, STATE_CANCELLED -> {
+                            resumed = true
+                            continuation.resumeWithException(
+                                UdpConnectException(
+                                    desc ?: "NW UDP connection to $remoteHost:$remotePort " +
+                                        (if (state == STATE_FAILED) "failed" else "cancelled"),
+                                ),
+                            )
+                        }
+                        else -> {}
+                    }
+                }
+                nw_udp_start(conn)
+                continuation.invokeOnCancellation { nw_udp_cancel(conn) }
             }
-        }
-        nw_udp_start(conn)
-        if (!ready.await()) {
+        } catch (t: Throwable) {
             nw_udp_cancel(conn)
-            error("NWConnection to $remoteHost:$remotePort failed")
+            throw t
         }
         val peer = copyConnectionSockaddr(conn, local = false) ?: (resolve(remoteHost, remotePort))
         val local = copyConnectionSockaddr(conn, local = true)
@@ -103,6 +134,18 @@ actual object UdpSocket {
             val v = alloc<IntVar>()
             v.value = 1
             setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, v.ptr, sizeOf<IntVar>().convert())
+        }
+    }
+
+    /** Toggle `IPV6_V6ONLY` (dual-stack when false). Best-effort — Darwin's default is already 0. */
+    private fun setV6Only(
+        fd: Int,
+        enabled: Boolean,
+    ) {
+        memScoped {
+            val v = alloc<IntVar>()
+            v.value = if (enabled) 1 else 0
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, v.ptr, sizeOf<IntVar>().convert())
         }
     }
 
@@ -146,10 +189,15 @@ actual object UdpSocket {
             sockaddrToAppleSocketAddress(storage.ptr.reinterpret<sockaddr>())
         }
 
-    private const val WILDCARD_V4 = "0.0.0.0"
+    private const val WILDCARD_V6 = "::"
 
     // nw_connection_state_t values (nw_udp_helpers.h): 3=ready, 4=failed, 5=cancelled.
     private const val STATE_READY = 3
     private const val STATE_FAILED = 4
     private const val STATE_CANCELLED = 5
 }
+
+/** A `connect()` fault surfaced by the NWConnection state handler (terminal failed/cancelled). */
+internal class UdpConnectException(
+    message: String,
+) : RuntimeException(message)
