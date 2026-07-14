@@ -21,11 +21,12 @@ actual object UdpSocket {
     actual suspend fun bind(
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
         val channel = NioChannel.open()
         channel.configureBlocking(false)
         channel.bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
-        return NioDatagramChannel(channel)
+        return NioDatagramChannel(channel, receiveBufferSize)
     }
 
     actual suspend fun connect(
@@ -33,6 +34,7 @@ actual object UdpSocket {
         remotePort: Int,
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed
         // peer. A `connect()`ed UDP socket only receives from — and `write()`s to — this address.
@@ -41,7 +43,7 @@ actual object UdpSocket {
         channel.configureBlocking(false)
         channel.bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
         channel.connect(peer)
-        return NioDatagramChannel(channel)
+        return NioDatagramChannel(channel, receiveBufferSize)
     }
 
     actual suspend fun resolve(

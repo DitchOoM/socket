@@ -24,7 +24,10 @@ actual object UdpSocket {
     actual suspend fun bind(
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
+        // receiveBufferSize is ignored on Node: `dgram` delivers each datagram as its own Node Buffer
+        // (copied out in NodeDatagramChannel), so there is no pre-allocated staging buffer to size.
         ensureNode()
         val socket = createDgramSocket(if (isIpv6(localHost)) UDP6 else UDP4)
         awaitBind(socket, localPort, localHost)
@@ -36,6 +39,7 @@ actual object UdpSocket {
         remotePort: Int,
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
         ensureNode()
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed

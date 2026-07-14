@@ -53,7 +53,8 @@ internal class AppleSocketAddress(
     override val family: AddressFamily,
     val hi: Long,
     val lo: Long,
-) : SocketAddress, PackedSocketAddress {
+) : SocketAddress,
+    PackedSocketAddress {
     override val packedHi: Long get() = hi
     override val packedLo: Long get() = lo
 

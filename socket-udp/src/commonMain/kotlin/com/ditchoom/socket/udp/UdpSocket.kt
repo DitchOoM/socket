@@ -4,6 +4,9 @@ import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 
+/** The classic UDP payload ceiling (65535 − 8 UDP − 20 IPv4). The default per-datagram staging size. */
+const val MAX_UDP_DATAGRAM_SIZE: Int = 65507
+
 /**
  * The `:socket-udp` entry point — opens real UDP [DatagramChannel]s and resolves addresses.
  *
@@ -27,22 +30,29 @@ expect object UdpSocket {
     /**
      * Open an **unconnected** UDP channel bound to [localHost]:[localPort]. A `null` [localHost] binds
      * the wildcard address; a [localPort] of `0` picks an ephemeral port. Sends must name a destination.
+     *
+     * [receiveBufferSize] bounds the per-datagram staging buffer each `receive()` allocates (the largest
+     * datagram delivered without truncation). It defaults to the UDP payload ceiling; a caller that knows
+     * its datagrams are small — e.g. the QUIC datapath, whose `max_recv_udp_payload_size` is ~1350 — passes
+     * a smaller value to avoid a 64 KB allocation per received packet.
      */
     suspend fun bind(
         localHost: String? = null,
         localPort: Int = 0,
+        receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
     ): DatagramChannel
 
     /**
      * Open a **connected** UDP channel to [remoteHost]:[remotePort] (resolved via [resolve]), bound to
      * [localHost]:[localPort]. `send(payload, to = null)` then targets the fixed peer; only datagrams
-     * from that peer are received.
+     * from that peer are received. [receiveBufferSize] behaves as in [bind].
      */
     suspend fun connect(
         remoteHost: String,
         remotePort: Int,
         localHost: String? = null,
         localPort: Int = 0,
+        receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
     ): DatagramChannel
 
     /**

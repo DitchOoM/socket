@@ -52,6 +52,7 @@ actual object UdpSocket {
     actual suspend fun bind(
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
         val local = AppleSocketAddressResolver.resolve(localHost ?: WILDCARD_V4, localPort) as AppleSocketAddress
         val af = if (local.family == AddressFamily.IPv6) AF_INET6 else AF_INET
@@ -59,7 +60,7 @@ actual object UdpSocket {
         check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
         setReuseAddr(fd)
         bindTo(fd, local)
-        return PosixUdpDatagramChannel(fd, localAddressOf(fd))
+        return PosixUdpDatagramChannel(fd, localAddressOf(fd), receiveBufferSize)
     }
 
     actual suspend fun connect(
@@ -67,6 +68,7 @@ actual object UdpSocket {
         remotePort: Int,
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
         // NWConnection assigns the local endpoint itself; localHost/localPort are advisory here (matching
         // the quiche NW client path, which does not bind a specific local address).
@@ -88,7 +90,7 @@ actual object UdpSocket {
         }
         val peer = copyConnectionSockaddr(conn, local = false) ?: (resolve(remoteHost, remotePort))
         val local = copyConnectionSockaddr(conn, local = true)
-        return NwUdpDatagramChannel(conn, peer, local)
+        return NwUdpDatagramChannel(conn, peer, local, receiveBufferSize)
     }
 
     actual suspend fun resolve(

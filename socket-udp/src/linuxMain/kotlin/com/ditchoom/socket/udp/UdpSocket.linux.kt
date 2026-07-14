@@ -45,6 +45,7 @@ actual object UdpSocket {
     actual suspend fun bind(
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
         val local = LinuxSocketAddressResolver.resolve(localHost ?: WILDCARD_V4, localPort) as LinuxSocketAddress
         val fd = openDatagramSocket(local.family)
@@ -56,6 +57,7 @@ actual object UdpSocket {
             connectedPeer = null,
             localAddress = localAddressOf(fd),
             ipv6 = local.family == AddressFamily.IPv6,
+            receiveBufferSize = receiveBufferSize,
         ).also { IoUringManager.onSocketOpened() }
     }
 
@@ -64,6 +66,7 @@ actual object UdpSocket {
         remotePort: Int,
         localHost: String?,
         localPort: Int,
+        receiveBufferSize: Int,
     ): DatagramChannel {
         val peer = resolve(remoteHost, remotePort) as LinuxSocketAddress
         val fd = openDatagramSocket(peer.family)
@@ -88,6 +91,7 @@ actual object UdpSocket {
             connectedPeer = peer,
             localAddress = localAddressOf(fd),
             ipv6 = peer.family == AddressFamily.IPv6,
+            receiveBufferSize = receiveBufferSize,
         ).also { IoUringManager.onSocketOpened() }
     }
 

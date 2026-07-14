@@ -19,7 +19,8 @@ import java.net.InetSocketAddress
 @ExperimentalDatagramApi
 internal class InternedJvmSocketAddress(
     val inet: InetSocketAddress,
-) : SocketAddress, PackedSocketAddress {
+) : SocketAddress,
+    PackedSocketAddress {
     override val host: String get() = inet.address?.hostAddress ?: inet.hostString
     override val port: Int get() = inet.port
     override val family: AddressFamily
@@ -30,6 +31,7 @@ internal class InternedJvmSocketAddress(
     // source), never per packet.
     private val packed: LongArray by lazy {
         val addr = inet.address ?: error("InternedJvmSocketAddress requires a resolved address for sockaddr encoding")
+
         @Suppress("NoByteArrayInProd") // java.net.InetAddress.getAddress() boundary
         val b = addr.address
         if (b.size == 4) longArrayOf(0L, bigEndian(b, 0, 4)) else longArrayOf(bigEndian(b, 0, 8), bigEndian(b, 8, 8))
