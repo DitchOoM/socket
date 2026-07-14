@@ -55,7 +55,10 @@ internal class LinuxSocketAddress(
     override val family: AddressFamily,
     val hi: Long,
     val lo: Long,
-) : SocketAddress {
+) : SocketAddress, PackedSocketAddress {
+    override val packedHi: Long get() = hi
+    override val packedLo: Long get() = lo
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is LinuxSocketAddress) return false
@@ -71,6 +74,13 @@ internal class LinuxSocketAddress(
 
     override fun toString(): String = if (family == AddressFamily.IPv6) "[$host]:$port" else "$host:$port"
 }
+
+/**
+ * The Linux C `sockaddr` layout for [SocketAddressCodec]: no length byte, 2-byte host-order
+ * `sa_family`, `AF_INET6` = 10.
+ */
+@ExperimentalDatagramApi
+val linuxSockAddrLayout: SockAddrLayout = SockAddrLayout(hasLenByte = false, afInet = AF_INET, afInet6 = AF_INET6)
 
 /**
  * Materialize [this] address into [storage] as network-order `sockaddr` bytes and return its length —

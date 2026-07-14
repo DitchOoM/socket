@@ -53,7 +53,10 @@ internal class AppleSocketAddress(
     override val family: AddressFamily,
     val hi: Long,
     val lo: Long,
-) : SocketAddress {
+) : SocketAddress, PackedSocketAddress {
+    override val packedHi: Long get() = hi
+    override val packedLo: Long get() = lo
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is AppleSocketAddress) return false
@@ -69,6 +72,13 @@ internal class AppleSocketAddress(
 
     override fun toString(): String = if (family == AddressFamily.IPv6) "[$host]:$port" else "$host:$port"
 }
+
+/**
+ * The BSD/Darwin C `sockaddr` layout for [SocketAddressCodec]: a length byte, a single-byte
+ * `sa_family`, `AF_INET6` = 30.
+ */
+@ExperimentalDatagramApi
+val appleSockAddrLayout: SockAddrLayout = SockAddrLayout(hasLenByte = true, afInet = AF_INET, afInet6 = AF_INET6)
 
 /**
  * Materialize [this] address into [storage] as BSD/Darwin network-order `sockaddr` bytes; return its

@@ -26,6 +26,7 @@ val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
 repositories {
+    mavenLocal() // Phase 6 (local-only): buffer 6.11.0-SNAPSHOT until Central release; drop on release
     google()
     mavenCentral()
 }
@@ -1910,6 +1911,11 @@ kotlin {
         commonMain.dependencies {
             api(project(":"))
             api(project(":socket-quic"))
+            // Phase 6 QUIC cutover: the UDP datapath rides :socket-udp's DatagramChannel + UdpSocket
+            // (buffer-flow datagram trichotomy) instead of quiche's private UdpChannel. socket-udp
+            // covers every quiche target (jvm/android/linux/apple); its datagram API is
+            // @ExperimentalDatagramApi, opted into at the adapter call sites.
+            implementation(project(":socket-udp"))
             implementation(libs.kotlinx.coroutines.core)
         }
         commonTest {

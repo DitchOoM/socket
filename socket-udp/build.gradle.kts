@@ -161,6 +161,11 @@ kotlin {
         commonMain.dependencies {
             api("com.ditchoom:buffer-flow:$bufferFlowVersion")
             api("com.ditchoom:buffer:$bufferFlowVersion")
+            // buffer-codec: SocketAddressCodec (Codec<SocketAddress>) is the type-safe sockaddr SPI the
+            // QUIC cutover consumes — encode a resolved SocketAddress into native C-sockaddr bytes for
+            // quiche's recv_info/send_info FFI. api (not implementation): the Codec type is in its
+            // public surface.
+            api("com.ditchoom:buffer-codec:$bufferFlowVersion")
             implementation(libs.kotlinx.coroutines.core)
         }
         commonTest.dependencies {

@@ -19,11 +19,23 @@ import java.net.InetSocketAddress
 @ExperimentalDatagramApi
 internal class InternedJvmSocketAddress(
     val inet: InetSocketAddress,
-) : SocketAddress {
+) : SocketAddress, PackedSocketAddress {
     override val host: String get() = inet.address?.hostAddress ?: inet.hostString
     override val port: Int get() = inet.port
     override val family: AddressFamily
         get() = if (inet.address is Inet6Address) AddressFamily.IPv6 else AddressFamily.IPv4
+
+    // Packed address (big-endian; IPv4 in low 32 of packedLo) for SocketAddressCodec, computed once
+    // from the interned InetAddress bytes. Only read at the FFI wall (connection setup / per new
+    // source), never per packet.
+    private val packed: LongArray by lazy {
+        val addr = inet.address ?: error("InternedJvmSocketAddress requires a resolved address for sockaddr encoding")
+        @Suppress("NoByteArrayInProd") // java.net.InetAddress.getAddress() boundary
+        val b = addr.address
+        if (b.size == 4) longArrayOf(0L, bigEndian(b, 0, 4)) else longArrayOf(bigEndian(b, 0, 8), bigEndian(b, 8, 8))
+    }
+    override val packedHi: Long get() = packed[0]
+    override val packedLo: Long get() = packed[1]
 
     // Value semantics: a demux routing table keys by peer. InetSocketAddress compares by resolved
     // address + port, so two InternedJvmSocketAddress over equal endpoints are equal.
@@ -32,6 +44,38 @@ internal class InternedJvmSocketAddress(
     override fun hashCode(): Int = inet.hashCode()
 
     override fun toString(): String = inet.toString()
+}
+
+/** Pack [n] big-endian bytes of [b] starting at [offset] into a long. */
+private fun bigEndian(
+    b: ByteArray,
+    offset: Int,
+    n: Int,
+): Long {
+    var v = 0L
+    for (i in 0 until n) v = (v shl 8) or (b[offset + i].toLong() and 0xFF)
+    return v
+}
+
+/**
+ * The running host-OS C `sockaddr` layout for [SocketAddressCodec] on JVM/Android. Unlike the K/N
+ * targets (which know their OS at compile time), a JVM jar runs on Linux, macOS, or Windows, so the
+ * `AF_INET6` value and the BSD length-byte convention are detected at runtime from `os.name`. This
+ * mirrors the exact detection the quiche `SockAddrUtil` used — a wrong `AF_INET6` (Linux 10 / BSD 30 /
+ * Windows 23) makes quiche reject the sockaddr with a hard panic.
+ */
+@ExperimentalDatagramApi
+fun hostOsSockAddrLayout(): SockAddrLayout {
+    val osName = System.getProperty("os.name").lowercase()
+    val isBsd = osName.contains("mac") || osName.contains("darwin") || osName.contains("bsd")
+    val isWindows = osName.contains("win")
+    val afInet6 =
+        when {
+            isBsd -> 30
+            isWindows -> 23
+            else -> 10
+        }
+    return SockAddrLayout(hasLenByte = isBsd, afInet = 2, afInet6 = afInet6)
 }
 
 /**

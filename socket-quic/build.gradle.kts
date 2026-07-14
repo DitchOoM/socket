@@ -24,6 +24,7 @@ val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 repositories {
+    mavenLocal() // Phase 6 (local-only): buffer 6.11.0-SNAPSHOT until Central release; drop on release
     google()
     mavenCentral()
 }
