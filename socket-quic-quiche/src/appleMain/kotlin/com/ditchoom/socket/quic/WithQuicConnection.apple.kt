@@ -1,4 +1,8 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlin.experimental.ExperimentalNativeApi::class, com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
+@file:OptIn(
+    kotlinx.cinterop.ExperimentalForeignApi::class,
+    kotlin.experimental.ExperimentalNativeApi::class,
+    com.ditchoom.buffer.flow.ExperimentalDatagramApi::class,
+)
 
 package com.ditchoom.socket.quic
 
