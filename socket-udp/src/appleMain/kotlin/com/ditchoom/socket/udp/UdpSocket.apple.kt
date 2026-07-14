@@ -103,7 +103,7 @@ actual object UdpSocket {
             // actually interrupts a stuck connect, and invokeOnCancellation cancels the NWConnection so a
             // timed-out/cancelled connect never leaks the nw_connection_t (B4c/B4d). Terminal NW states
             // surface as a typed [UdpConnectException] instead of a bare error (B4e).
-            suspendCancellableCoroutine { continuation ->
+            suspendCancellableCoroutine<Unit> { continuation ->
                 var resumed = false
                 nw_udp_set_state_handler(conn) { state, _, _, desc ->
                     if (resumed) return@nw_udp_set_state_handler

@@ -114,7 +114,7 @@ internal class NwUdpDatagramChannel(
         val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
         val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
         val len = payload.remaining()
-        suspendCancellableCoroutine { continuation ->
+        suspendCancellableCoroutine<Unit> { continuation ->
             nw_udp_send(conn, ptr, len) { _, _ ->
                 // Best-effort UDP send: a transient NW failure is non-fatal. Resume unconditionally.
                 continuation.resume(Unit)
