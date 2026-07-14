@@ -260,7 +260,7 @@ internal class IoUringUdpServerChannel(
  *
  * Owns [peerAddr] (a nativeHeap-allocated copy) and frees it on [close].
  */
-internal class ServerConnectionUdpChannel(
+internal class IoUringServerConnectionUdpChannel(
     private val serverChannel: IoUringUdpServerChannel,
     private val peerAddr: CPointer<sockaddr_storage>,
     private val peerAddrLen: socklen_t,

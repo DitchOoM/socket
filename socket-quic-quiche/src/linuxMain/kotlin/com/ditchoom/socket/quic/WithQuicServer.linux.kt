@@ -482,7 +482,7 @@ private class LinuxQuicServer(
         api.connRecv(conn, recvAddr, recvResult.bytesReceived, recvInfo)
         recvBuf.freeNativeMemory()
 
-        val udpChannel = ServerConnectionUdpChannel(serverChannel, peerAddrCopy.ptr, peerAddrLen.convert(), bufferFactory)
+        val udpChannel = IoUringServerConnectionUdpChannel(serverChannel, peerAddrCopy.ptr, peerAddrLen.convert(), bufferFactory)
         // Self-reference for onScidIssued: the driver doesn't exist when we build the callback, so
         // capture it via this holder, set right after construction. The callback only fires at
         // establishment (well after this), so the holder is always populated by then.
