@@ -5,7 +5,6 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
 import com.ditchoom.buffer.flow.DatagramChannel
@@ -13,6 +12,7 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.alloc
