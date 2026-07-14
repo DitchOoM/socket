@@ -121,6 +121,37 @@ class QuicheDriver(
      * incoming packets by their per-path socket, not by an app-level DCID map).
      */
     private val onScidIssued: ((PlatformBuffer, Int) -> Unit)? = null,
+    /**
+     * Per-connection datagram recv buffer pool — mirrors the server-side pool in
+     * CommonJvmWithQuicServer. Two acquirers: the client-mode [udpReaderLoop]
+     * (server-accepted drivers receive packets via commands.send() from the
+     * server's receive loop and never run it), and [DriverDatagramAdapter.receiveDatagram]
+     * (both modes) for RFC 9221 application datagrams.
+     *
+     * Hoisted to a constructor parameter (default: a fresh per-connection pool) so a client build
+     * site can create ONE pool and inject it *both* here and into the `:socket-udp` receive channel
+     * (`UdpSocket.connect(bufferFactory = recvBufPool)`, since a [BufferPool] *is* a [BufferFactory]):
+     * the channel then allocates each datagram straight from this pool and, for an [UdpChannel] that
+     * [UdpChannel.ownsReceiveBuffer], hands the pooled buffer to [udpReaderLoop] with no copy — the B2
+     * receive-copy elimination. Server-accepted drivers and every test double omit it and get the
+     * default per-connection pool, exactly as before.
+     *
+     * MultiThreaded mode: [udpReaderLoop] acquires on its own Dispatchers.Default
+     * coroutine; the driver's [run] loop releases (via [QuicheCmd.RecvPacket]'s
+     * `freeNativeMemory()` in [execute] or [failCommand]) on a different
+     * Dispatchers.Default coroutine — different threads under load.
+     * maxPoolSize=64 → ~87 KB cached (64 × 1350), generous for a single
+     * connection's in-flight datagram count.
+     *
+     * Ownership invariant: [bufferFactory] is a **leaf** factory per the
+     * `TransportConfig.bufferFactory` contract — this pool is built *from* it.
+     * Never pass an already-pooled factory: wrapping a pool in a pool is the
+     * `80575c1` double-wrap regression (the inner pool reclaims on
+     * `freeNativeMemory()` while the outer pool's accounting still counts the
+     * buffer, so the cap stops bounding RSS). Same shape as the server-side pool
+     * in CommonJvmWithQuicServer.
+     */
+    internal val recvBufPool: BufferPool = newRecvBufPool(bufferFactory),
 ) {
     val commands = Channel<QuicheCmd>(Channel.UNLIMITED)
 
@@ -171,36 +202,6 @@ class QuicheDriver(
     private val udpSendBuf: PlatformBuffer = bufferFactory.allocate(MAX_DATAGRAM_SIZE)
     private val sendAddr = udpSendBuf.nativeMemoryAccess!!.nativeAddress.toLong()
     private var driverJob: Job? = null
-
-    /**
-     * Per-connection datagram recv buffer pool — mirrors the server-side pool in
-     * CommonJvmWithQuicServer. Two acquirers: the client-mode [udpReaderLoop]
-     * (server-accepted drivers receive packets via commands.send() from the
-     * server's receive loop and never run it), and [DriverDatagramAdapter.receiveDatagram]
-     * (both modes) for RFC 9221 application datagrams.
-     *
-     * MultiThreaded mode: [udpReaderLoop] acquires on its own Dispatchers.Default
-     * coroutine; the driver's [run] loop releases (via [QuicheCmd.RecvPacket]'s
-     * `freeNativeMemory()` in [execute] or [failCommand]) on a different
-     * Dispatchers.Default coroutine — different threads under load.
-     * maxPoolSize=64 → ~87 KB cached (64 × 1350), generous for a single
-     * connection's in-flight datagram count.
-     *
-     * Ownership invariant: [bufferFactory] is a **leaf** factory per the
-     * `TransportConfig.bufferFactory` contract — this pool is built *from* it.
-     * Never pass an already-pooled factory: wrapping a pool in a pool is the
-     * `80575c1` double-wrap regression (the inner pool reclaims on
-     * `freeNativeMemory()` while the outer pool's accounting still counts the
-     * buffer, so the cap stops bounding RSS). Same shape as the server-side pool
-     * in CommonJvmWithQuicServer.
-     */
-    internal val recvBufPool: BufferPool =
-        BufferPool(
-            threadingMode = ThreadingMode.MultiThreaded,
-            maxPoolSize = 64,
-            defaultBufferSize = MAX_DATAGRAM_SIZE,
-            factory = bufferFactory,
-        )
 
     /**
      * Per-connection pool of stream-read buffers. Every [QuicheStreamByteStream] created for this
@@ -675,6 +676,10 @@ class QuicheDriver(
      * the driver feeds quiche the right recv_info during migration.
      */
     private suspend fun udpReaderLoop(entry: PathEntry) {
+        // A channel that allocates its own receive buffer (from the injected [recvBufPool]) hands the
+        // pooled buffer out directly — no driver pre-allocation, no copy (the B2 elimination). Every
+        // other channel (test doubles, legacy io_uring/NIO proxies) fills a buffer we pre-allocate.
+        if (entry.channel.ownsReceiveBuffer) return ownedBufferReaderLoop(entry)
         val pool = recvBufPool
         try {
             while (coroutineContext[Job]?.isActive != false) {
@@ -710,6 +715,41 @@ class QuicheDriver(
                     // channel that is genuinely, permanently dead must instead suspend in receive() until
                     // the driver cancels the reader (see AppleNwUdpChannel's terminal park).
                     buf.freeNativeMemory()
+                }
+            }
+        } catch (_: ClosedSendChannelException) {
+            // Driver closed
+        }
+    }
+
+    /**
+     * Zero-copy variant of [udpReaderLoop] for an [UdpChannel] that [UdpChannel.ownsReceiveBuffer]:
+     * the channel allocated each datagram straight from [recvBufPool] and hands us that pooled buffer,
+     * so we enqueue it as-is with no pre-allocation and no copy. [UdpChannel.receiveOwned] absorbs the
+     * transient re-arm/timeout retries internally (returning only a real datagram) and suspends
+     * indefinitely once the socket is permanently closed — the driver cancels this reader during
+     * teardown — so there is no non-positive "keep looping" case to handle here.
+     */
+    private suspend fun ownedBufferReaderLoop(entry: PathEntry) {
+        try {
+            while (coroutineContext[Job]?.isActive != false) {
+                val owned =
+                    try {
+                        entry.channel.receiveOwned()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        if (commands.isClosedForSend) return
+                        continue
+                    }
+                try {
+                    commands.send(QuicheCmd.RecvPacket(owned.buffer, owned.length, entry.key))
+                } catch (e: ClosedSendChannelException) {
+                    // Same close race as [udpReaderLoop]: the driver closed between receiveOwned() and
+                    // this enqueue. The packet can never be processed — free its pooled buffer here or
+                    // it leaks (ReaderLoopCloseRaceRegressionTests).
+                    owned.buffer.freeNativeMemory()
+                    throw e
                 }
             }
         } catch (_: ClosedSendChannelException) {
@@ -991,6 +1031,24 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /** maxPoolSize for a per-connection datagram recv pool — ~87 KB cached (64 × 1350). */
+        private const val RECV_BUF_POOL_SIZE = 64
+
+        /**
+         * Build a per-connection datagram recv [BufferPool] from a **leaf** [factory]. One construction
+         * shared by the driver's default and the client build sites, which create the pool up front and
+         * inject the SAME instance into both the driver ([recvBufPool]) and the `:socket-udp` receive
+         * channel (`UdpSocket.connect(bufferFactory = pool)`) so datagrams land in it with no copy. Never
+         * pass an already-pooled factory (the `80575c1` double-wrap regression).
+         */
+        internal fun newRecvBufPool(factory: BufferFactory): BufferPool =
+            BufferPool(
+                threadingMode = ThreadingMode.MultiThreaded,
+                maxPoolSize = RECV_BUF_POOL_SIZE,
+                defaultBufferSize = MAX_DATAGRAM_SIZE,
+                factory = factory,
+            )
 
         /**
          * Default per-read buffer size for QUIC stream reads — [QuicheStreamByteStream]'s default

@@ -80,6 +80,9 @@ internal suspend fun buildAppleQuicConnection(
     try {
         return run {
             val bufferFactory = connectionOptions.quicBufferFactory()
+            // One recv pool per connection, injected into both the :socket-udp channel (allocates each
+            // datagram from it) and the driver (frees each back to it) — no receive copy (B2 elimination).
+            val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
@@ -127,6 +130,7 @@ internal suspend fun buildAppleQuicConnection(
                             remoteHost = peer.host,
                             remotePort = peer.port,
                             receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                            bufferFactory = recvBufPool,
                         )
                     }
                 } catch (e: UdpConnectException) {
@@ -194,6 +198,7 @@ internal suspend fun buildAppleQuicConnection(
                     recvInfo = recvInfo,
                     sendInfo = sendInfo,
                     udpChannel = udpChannel,
+                    recvBufPool = recvBufPool,
                     clientMode = true,
                     isServer = false,
                     keepAliveInterval = quicOptions.keepAliveInterval,

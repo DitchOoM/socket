@@ -17,12 +17,16 @@ import kotlinx.coroutines.awaitCancellation
  * unchanged — the driver still owns its pooled buffers; the adapter only bridges the two ownership
  * models (RFC §12 Phase 6, "Option A").
  *
- * ## Buffer ownership (the B2 bridge)
- * quiche's driver hands a pooled [PlatformBuffer] into [receive]; a buffer-flow channel instead
- * *allocates* the datagram payload and transfers ownership out. The adapter reconciles them with one
- * copy: read a [DatagramReadResult.Received], copy its payload into the driver's pooled buffer, then
- * free the channel-owned payload. The channel is opened with a QUIC-sized staging buffer
- * ([QuicheDriver.MAX_DATAGRAM_SIZE]) so that copy is from ~1350 bytes, not the 64 KB UDP ceiling.
+ * ## Buffer ownership (zero-copy via [ownsReceiveBuffer])
+ * The build site opens the `:socket-udp` channel with the driver's `recvBufPool` as its `bufferFactory`
+ * (a [com.ditchoom.buffer.pool.BufferPool] *is* a [com.ditchoom.buffer.BufferFactory]), so each
+ * [DatagramReadResult.Received] payload is *already* a pooled buffer. This adapter therefore reports
+ * [ownsReceiveBuffer] = true and the driver's reader loop consumes [receiveOwned], handing that pooled
+ * buffer straight to `quiche_conn_recv` with **no copy** — the buffer-flow allocate-and-transfer model
+ * and quiche's pooled-buffer model line up on the same buffer. (The legacy caller-buffer [receive] path
+ * is kept for completeness — it copies into the provided buffer — but the driver never calls it here.)
+ * The channel is opened with a QUIC-sized staging buffer ([QuicheDriver.MAX_DATAGRAM_SIZE]) so a pool
+ * miss allocates ~1350 bytes, not the 64 KB UDP ceiling, and matches the pool's buffer size.
  *
  * ## Destination
  * The client is a *connected* channel: the driver only supplies a non-null [PathKey] `dest` on the
@@ -34,6 +38,24 @@ import kotlinx.coroutines.awaitCancellation
 internal class DatagramChannelUdpChannel(
     private val channel: DatagramChannel,
 ) : UdpChannel {
+    override val ownsReceiveBuffer: Boolean = true
+
+    override suspend fun receiveOwned(): OwnedDatagram =
+        when (val result = channel.receive()) {
+            is DatagramReadResult.Received -> {
+                // The payload was allocated from the driver's recvBufPool (the channel's bufferFactory),
+                // so it IS a pooled buffer — transfer it out as-is with no copy. Its window is [0, len)
+                // and its native address is the datagram start (what quiche_conn_recv reads).
+                val payload = result.datagram.payload
+                OwnedDatagram(payload, payload.remaining())
+            }
+            is DatagramReadResult.Closed -> {
+                // Permanently closed — park until the driver cancels this reader during teardown, exactly
+                // as the caller-buffer [receive] path does, so the reader loop never busy-spins.
+                awaitCancellation()
+            }
+        }
+
     override suspend fun receive(buffer: PlatformBuffer): Int =
         when (val result = channel.receive()) {
             is DatagramReadResult.Received -> {

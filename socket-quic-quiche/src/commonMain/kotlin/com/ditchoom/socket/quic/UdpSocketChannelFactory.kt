@@ -17,18 +17,24 @@ import com.ditchoom.socket.udp.UdpSocket
  * parse to the same address (no DNS). The new path's local sockaddr is encoded via [codec] into pinned
  * native memory that the driver decodes into a [PathKey] to route datagrams to this socket; the driver
  * frees it via [NewPath.release] when the path is torn down.
+ *
+ * [recvBufferFactory] is the driver's `recvBufPool` (a [BufferFactory]): the migrated path's channel
+ * allocates each datagram from it so a migrated path is as copy-free as the primary. [bufferFactory] is
+ * the leaf factory used only for the tiny sockaddr encoding — never the pool, or a 28-byte sockaddr would
+ * check out a 1350-byte pooled buffer for its whole lifetime.
  */
 internal class UdpSocketChannelFactory(
     private val peer: SocketAddress,
     private val codec: SocketAddressCodec,
     private val bufferFactory: BufferFactory,
+    private val recvBufferFactory: BufferFactory,
     private val receiveBufferSize: Int,
 ) : UdpChannelFactory {
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,
     ): NewPath {
-        val channel = UdpSocket.connect(peer.host, peer.port, localHost, localPort, receiveBufferSize)
+        val channel = UdpSocket.connect(peer.host, peer.port, localHost, localPort, receiveBufferSize, recvBufferFactory)
         val local = channel.localAddress ?: error("connected migration path has no local address")
         val encoded = codec.encodeToNative(local, bufferFactory)
         return NewPath(

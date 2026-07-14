@@ -80,6 +80,9 @@ internal suspend fun buildLinuxQuicConnection(
     try {
         return run {
             val bufferFactory = connectionOptions.quicBufferFactory()
+            // One recv pool per connection, injected into both the :socket-udp channel (allocates each
+            // datagram from it) and the driver (frees each back to it) — no receive copy (B2 elimination).
+            val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
@@ -124,6 +127,7 @@ internal suspend fun buildLinuxQuicConnection(
                     remoteHost = peer.host,
                     remotePort = peer.port,
                     receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                    bufferFactory = recvBufPool,
                 )
             val local =
                 channel.localAddress
@@ -176,6 +180,7 @@ internal suspend fun buildLinuxQuicConnection(
                     recvInfo = recvInfo,
                     sendInfo = sendInfo,
                     udpChannel = udpChannel,
+                    recvBufPool = recvBufPool,
                     clientMode = true,
                     isServer = false,
                     keepAliveInterval = quicOptions.keepAliveInterval,
@@ -190,7 +195,7 @@ internal suspend fun buildLinuxQuicConnection(
                     peerLen = peerSockAddr.length,
                     primaryLocalAddr = localSockAddr.address,
                     primaryLocalLen = localSockAddr.length,
-                    udpChannelFactory = UdpSocketChannelFactory(peer, codec, bufferFactory, QuicheDriver.MAX_DATAGRAM_SIZE),
+                    udpChannelFactory = UdpSocketChannelFactory(peer, codec, bufferFactory, recvBufPool, QuicheDriver.MAX_DATAGRAM_SIZE),
                     onCleanup = {
                         peerSockAddr.free()
                         localSockAddr.free()

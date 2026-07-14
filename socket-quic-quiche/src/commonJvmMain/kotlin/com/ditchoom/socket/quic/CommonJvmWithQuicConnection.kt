@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.udp.SocketAddressCodec
@@ -76,6 +77,11 @@ internal suspend fun buildJvmQuicConnection(
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     var established = false
     val bufferFactory = connectionOptions.quicBufferFactory()
+    // One recv pool per connection, created up front so it can be injected into BOTH the :socket-udp
+    // receive channel (which allocates each datagram straight from it) and the driver (which frees each
+    // pooled buffer back to it after quiche_conn_recv) — the datagram never leaves the pool, so the old
+    // receive→pool copy is gone (B2 elimination).
+    val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
 
     // 1. Create quiche config
     val config = api.configNew(QUICHE_PROTOCOL_VERSION)
@@ -122,7 +128,7 @@ internal suspend fun buildJvmQuicConnection(
         // connect is NOT atomic on Darwin — see [openConnectedDatagramChannel] — so it retries the rare
         // ephemeral-port collision instead of letting it surface as a flake.
         val peer = UdpSocket.resolve(hostname, port)
-        val channel = openConnectedDatagramChannel(peer)
+        val channel = openConnectedDatagramChannel(peer, recvBufPool)
         val localAddress = channel.localAddress ?: error("connected UDP channel has no local address")
 
         // 3. Server name — null-terminated UTF-8 in buffer
@@ -185,6 +191,7 @@ internal suspend fun buildJvmQuicConnection(
                 recvInfo = connRecvInfo,
                 sendInfo = connSendInfo,
                 udpChannel = udpChannel,
+                recvBufPool = recvBufPool,
                 clientMode = true,
                 isServer = false,
                 keepAliveInterval = quicOptions.keepAliveInterval,
@@ -204,6 +211,7 @@ internal suspend fun buildJvmQuicConnection(
                         peer = peer,
                         codec = codec,
                         bufferFactory = bufferFactory,
+                        recvBufferFactory = recvBufPool,
                         receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
                     ),
                 onCleanup = {
@@ -261,8 +269,9 @@ internal suspend fun buildJvmQuicConnection(
 
 /**
  * Open a connected `:socket-udp` [DatagramChannel] to the already-resolved [peer] (bound to an
- * ephemeral local port), retrying the rare ephemeral-port collision. The QUIC-sized receive staging
- * buffer keeps the adapter's per-datagram copy bounded to ~1350 bytes rather than the 64 KB UDP ceiling.
+ * ephemeral local port), retrying the rare ephemeral-port collision. The channel allocates each datagram
+ * from [recvBufPool] (the driver's recv pool) at a QUIC-sized ([QuicheDriver.MAX_DATAGRAM_SIZE]) staging
+ * size, so a received datagram is handed to the driver already pooled — no copy, no 64 KB allocation.
  *
  * [UdpSocket.connect] binds(0) before connect() so the OS assigns the source port up front. On Linux
  * that reservation is effectively atomic, but on BSD/Darwin it is NOT: two UDP sockets racing bind(0)
@@ -282,7 +291,10 @@ internal suspend fun buildJvmQuicConnection(
  * generous safety margin, not a hot path. On Linux the collision never happens, so the retry loop
  * simply succeeds on its first attempt.
  */
-private suspend fun openConnectedDatagramChannel(peer: SocketAddress): DatagramChannel {
+private suspend fun openConnectedDatagramChannel(
+    peer: SocketAddress,
+    recvBufPool: BufferPool,
+): DatagramChannel {
     var lastFailure: BindException? = null
     repeat(MAX_EPHEMERAL_BIND_ATTEMPTS) {
         try {
@@ -290,6 +302,7 @@ private suspend fun openConnectedDatagramChannel(peer: SocketAddress): DatagramC
                 remoteHost = peer.host,
                 remotePort = peer.port,
                 receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                bufferFactory = recvBufPool,
             )
         } catch (e: BindException) {
             lastFailure = e
