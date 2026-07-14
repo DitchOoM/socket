@@ -32,9 +32,8 @@ kotlinWrappers = "2026.6.0"
 # resolves socket-http3's Http3Frame.Unknown ref. 6.11.0 supersedes it (linear on buffer main, so it
 # carries #276) AND adds the datagram trichotomy (DatagramChannel/DatagramSource/DatagramSink +
 # SocketAddress) under @ExperimentalDatagramApi (RFC Phase 0/1) — the substrate :socket-udp + the
-# Phase 6 QUIC cutover consume. LOCAL-ONLY 6.11.0-SNAPSHOT from mavenLocal until buffer 6.11.0 lands on
-# Central; on that release, flip to "6.11.0" and drop the mavenLocal() lines from the module repos blocks.
-buffer = "6.11.0-SNAPSHOT"
+# Phase 6 QUIC cutover consume. Released on Maven Central (buffer #291).
+buffer = "6.11.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"

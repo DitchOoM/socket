@@ -13,14 +13,11 @@ val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
-// The datagram trichotomy lives in buffer-flow under @ExperimentalDatagramApi (RFC Phase 0/1). Until
-// it publishes to Maven Central as a real release, :socket-udp consumes the pinned local SNAPSHOT
-// (published via `./gradlew :buffer-flow:publishToMavenLocal -Pversion=6.11.0-SNAPSHOT`). mavenLocal()
-// is listed first so the snapshot wins; when 6.11.0 lands on Central this pin becomes a normal dep.
-val bufferFlowVersion = "6.11.0-SNAPSHOT"
+// The datagram trichotomy lives in buffer-flow under @ExperimentalDatagramApi (RFC Phase 0/1),
+// released on Maven Central in buffer 6.11.0 (buffer #291).
+val bufferFlowVersion = "6.11.0"
 
 repositories {
-    mavenLocal()
     google()
     mavenCentral()
 }

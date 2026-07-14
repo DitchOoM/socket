@@ -15,7 +15,6 @@ val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
 repositories {
-    mavenLocal() // Phase 6 (local-only): buffer 6.11.0-SNAPSHOT until Central release; drop on release
     google()
     mavenCentral()
 }
