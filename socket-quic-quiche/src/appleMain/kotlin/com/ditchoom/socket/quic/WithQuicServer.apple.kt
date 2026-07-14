@@ -11,7 +11,6 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.appleSockAddrLayout
@@ -88,7 +87,11 @@ internal suspend fun buildAppleQuicServer(
         // Bind the shared server socket via :socket-udp (dual-stack by default) with a QUIC-sized receive
         // staging buffer. One channel serves every accepted connection; egress is a thin
         // ServerConnectionUdpChannel over it.
-        val channel = UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE)
+        // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
+        // datagram is allocated straight from it — the receive loop then routes it with no copy.
+        val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
+        val channel =
+            UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE, bufferFactory = recvBufPool)
         val localAddress = channel.localAddress ?: error("bound server channel has no local address")
 
         val server =
@@ -105,6 +108,7 @@ internal suspend fun buildAppleQuicServer(
                 // to cancel last, so the withQuicServer wrapper stays a plain block + close().
                 onClose = { parentScope.cancel() },
                 tuning = tuning,
+                recvBufPool = recvBufPool,
             )
         bound = true
         return server
@@ -136,6 +140,14 @@ private class AppleQuicServer(
     private val onClose: (() -> Unit)? = null,
     // Determinism seams forwarded to every accepted connection's driver (RFC_DETERMINISTIC_SIMULATION.md §3.1).
     private val tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    /**
+     * Recv buffer pool — each datagram's ownership transfers to the connection's driver and every free-path
+     * recycles it back. Hoisted to a ctor param (default: a fresh pool) so [buildAppleQuicServer] injects
+     * the SAME instance as the shared [channel]'s `bufferFactory`: the channel allocates each datagram from
+     * it and the receive loop routes it with no copy (B2 elimination). Built from a **leaf** [bufferFactory]
+     * — never an already-pooled factory (the `80575c1` double-wrap regression).
+     */
+    private val recvBufPool: BufferPool = QuicheDriver.newRecvBufPool(bufferFactory),
 ) : QuicServer {
     override val port: Int get() = localAddress.port
 
@@ -159,19 +171,6 @@ private class AppleQuicServer(
 
     /** Prompt-wake for the receive loop on a routing-table change (see JvmQuicServer.wakeups). */
     private val wakeups = Channel<Unit>(Channel.CONFLATED)
-
-    /**
-     * Recv buffer pool — each datagram is acquired here, ownership transfers to the connection's driver,
-     * and every free-path recycles it back instead of malloc/freeing per packet. [bufferFactory] is a
-     * leaf factory — the pool is built *from* it (never pass an already-pooled factory).
-     */
-    private val recvBufPool =
-        BufferPool(
-            threadingMode = ThreadingMode.MultiThreaded,
-            maxPoolSize = 64,
-            defaultBufferSize = MAX_DATAGRAM_SIZE,
-            factory = bufferFactory,
-        )
 
     /** The shared recv_info `to` sockaddr (the server's fixed local addr), encoded lazily; freed in close(). */
     private var serverLocalSockAddr: EncodedSockAddr? = null
@@ -283,18 +282,15 @@ private class AppleQuicServer(
                     }
 
                     val peer = datagram.peer
-                    val received = datagram.payload.remaining()
+                    // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
+                    // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
+                    // the driver, which frees it back to the pool after quiche_conn_recv.
+                    val recvBuf = datagram.payload
+                    val received = recvBuf.remaining()
                     if (received <= 0) {
-                        datagram.payload.freeNativeMemory()
+                        recvBuf.freeNativeMemory()
                         continue@loop
                     }
-
-                    // Copy into a pooled buffer (ownership transfers to the driver, freed back to the pool
-                    // once quiche_conn_recv copies the bytes) and free the channel-owned payload (B2 copy).
-                    val recvBuf = recvBufPool.allocate(MAX_DATAGRAM_SIZE)
-                    recvBuf.position(0)
-                    recvBuf.write(datagram.payload)
-                    datagram.payload.freeNativeMemory()
                     val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
                     writeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
@@ -490,7 +486,6 @@ private class AppleQuicServer(
     }
 
     companion object {
-        private const val MAX_DATAGRAM_SIZE = 1350
         private const val MAX_TOKEN_LEN = 256
     }
 }

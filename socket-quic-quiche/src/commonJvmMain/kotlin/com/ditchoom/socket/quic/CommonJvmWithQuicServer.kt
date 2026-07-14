@@ -10,7 +10,6 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.udp.SocketAddressCodec
@@ -81,11 +80,14 @@ internal suspend fun buildJvmQuicServer(
 
         applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
 
-        // Bind the shared unconnected server socket via :socket-udp (Phase 6 adapter-first cutover),
-        // sized to QUIC datagrams so the receive loop's copy into the pool is bounded (not the 64 KB
-        // UDP ceiling). One channel serves every accepted connection; per-connection egress is a thin
-        // ServerConnectionUdpChannel over it.
-        val channel = UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE)
+        // Bind the shared unconnected server socket via :socket-udp (Phase 6 adapter-first cutover), sized
+        // to QUIC datagrams (not the 64 KB UDP ceiling). One channel serves every accepted connection;
+        // per-connection egress is a thin ServerConnectionUdpChannel over it.
+        // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
+        // datagram is allocated straight from it — the receive loop then routes it with no copy.
+        val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
+        val channel =
+            UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE, bufferFactory = recvBufPool)
         val localAddress = channel.localAddress ?: error("bound server channel has no local address")
 
         val server =
@@ -101,6 +103,7 @@ internal suspend fun buildJvmQuicServer(
                 // to cancel last, so the withQuicServer wrapper stays a plain block + close().
                 onClose = { parentScope.cancel() },
                 tuning = tuning,
+                recvBufPool = recvBufPool,
             )
         bound = true
         return server
@@ -156,6 +159,18 @@ internal class JvmQuicServer(
     private val onClose: (() -> Unit)? = null,
     // Determinism seams forwarded to every accepted connection's driver (RFC_DETERMINISTIC_SIMULATION.md §3.1).
     private val tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    /**
+     * Recv buffer pool — one MAX_DATAGRAM_SIZE (1350-byte) buffer per incoming UDP datagram, whose
+     * ownership transfers to the routed driver and returns here on `freeNativeMemory()` after
+     * `quiche_conn_recv`. Hoisted to a ctor param (default: a fresh pool) so [buildJvmQuicServer] can
+     * inject the SAME instance as the shared [channel]'s `bufferFactory`: the channel then allocates each
+     * datagram straight from this pool and the receive loop routes it with no copy (B2 elimination).
+     *
+     * MultiThreaded mode: the reader coroutine acquires; drivers release (per-connection coroutine).
+     * Ownership invariant: built from a **leaf** [bufferFactory] — never an already-pooled factory (the
+     * `80575c1` double-wrap regression).
+     */
+    private val recvBufPool: BufferPool = QuicheDriver.newRecvBufPool(bufferFactory),
 ) : QuicServer {
     override val port: Int get() = localAddress.port
 
@@ -196,36 +211,6 @@ internal class JvmQuicServer(
      * transport and its `InetSocketAddress`→sockaddr handling stay here; see [ServerConnectionRegistry].
      */
     private val registry = ServerConnectionRegistry<SocketAddress>(api)
-
-    /**
-     * Recv buffer pool — each incoming UDP datagram needs a fresh MAX_DATAGRAM_SIZE
-     * (1350-byte) buffer, and ownership transfers to the connection's driver which
-     * frees it after quiche_conn_recv copies the bytes internally. PooledBuffer's
-     * `freeNativeMemory()` returns to the pool, so all existing free-paths
-     * (driver command execution, receive-loop error branches, destroy drain) feed
-     * the pool without code changes.
-     *
-     * MultiThreaded mode: receive loop acquires (Selector thread); drivers release
-     * (per-connection coroutine, can hop dispatchers under Dispatchers.IO).
-     * maxPoolSize=64 → ~87 KB cached (64 × 1350) — caps steady-state RSS while
-     * covering typical concurrent-driver counts.
-     *
-     * Ownership invariant: [bufferFactory] is a **leaf** factory per the
-     * `TransportConfig.bufferFactory` contract — this pool is built *from* it
-     * here. Never pass an already-pooled factory as `factory`: wrapping a pool
-     * in a pool is the `80575c1` double-wrap regression. A `BufferPool` whose
-     * leaf `factory` is itself a `BufferPool` makes `freeNativeMemory()` return
-     * the buffer to the inner pool while the outer pool's accounting still
-     * counts it, so neither pool reclaims correctly and the cap stops bounding
-     * RSS. Keep the leaf-factory-in, pool-built-here shape.
-     */
-    private val recvBufPool =
-        BufferPool(
-            threadingMode = ThreadingMode.MultiThreaded,
-            maxPoolSize = 64,
-            defaultBufferSize = MAX_DATAGRAM_SIZE,
-            factory = bufferFactory,
-        )
 
     /**
      * The shared recv_info `to` sockaddr: the server's fixed local address, reused by every cached
@@ -318,10 +303,11 @@ internal class JvmQuicServer(
      * channel's `receive()` to one coroutine (per the buffer-flow single-consumer contract) and hands
      * each datagram to this loop over a rendezvous channel; the loop [select]s that against [wakeups] so
      * a routing-table change (connection close / spare SCID) drains promptly without an external selector
-     * wake. Each datagram carries its per-packet source ([com.ditchoom.buffer.flow.Datagram.peer]); we
-     * copy it into a pooled buffer whose ownership transfers to the routed driver (freed back to the pool
-     * after `quiche_conn_recv`), then parse its header to route or accept. [close]'s `channel.close()`
-     * makes the reader's `receive()` return Closed, which unwinds this loop.
+     * wake. Each datagram carries its per-packet source ([com.ditchoom.buffer.flow.Datagram.peer]) and its
+     * payload is already a [recvBufPool] buffer (the channel's `bufferFactory`), so ownership transfers to
+     * the routed driver with no copy (freed back to the pool after `quiche_conn_recv`); we then parse its
+     * header to route or accept. [close]'s `channel.close()` makes the reader's `receive()` return Closed,
+     * which unwinds this loop.
      */
     private suspend fun receiveLoop() =
         kotlinx.coroutines.coroutineScope {
@@ -386,18 +372,15 @@ internal class JvmQuicServer(
                     }
 
                     val peer = datagram.peer
-                    val received = datagram.payload.remaining()
+                    // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
+                    // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
+                    // the driver, which frees it back to the pool after quiche_conn_recv.
+                    val recvBuf = datagram.payload
+                    val received = recvBuf.remaining()
                     if (received <= 0) {
-                        datagram.payload.freeNativeMemory()
+                        recvBuf.freeNativeMemory()
                         continue@loop
                     }
-
-                    // Copy into a pooled buffer (ownership transfers to the driver, freed back to the pool
-                    // once quiche_conn_recv copies the bytes) and free the channel-owned payload (B2 copy).
-                    val recvBuf = recvBufPool.allocate(MAX_DATAGRAM_SIZE)
-                    recvBuf.position(0)
-                    recvBuf.write(datagram.payload)
-                    datagram.payload.freeNativeMemory()
                     val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
                     // Initialize length output buffers with max capacity
@@ -630,7 +613,6 @@ internal class JvmQuicServer(
     }
 
     companion object {
-        private const val MAX_DATAGRAM_SIZE = 1350
         private const val MAX_TOKEN_LEN = 256
     }
 }
