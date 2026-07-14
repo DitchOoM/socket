@@ -1889,13 +1889,9 @@ kotlin {
                 create("BoringSslSha256") {
                     defFile("src/nativeInterop/cinterop/BoringSslSha256.def")
                 }
-                // NWConnection-UDP datapath for the Apple QUIC *client* (production path: keeps NWPath
-                // migration awareness, deterministic cancel). Server datapath stays POSIX. See NwUdp.def
-                // / AppleNwUdpChannel.
-                create("NwUdp") {
-                    defFile("src/nativeInterop/cinterop/NwUdp.def")
-                    includeDirs("src/nativeInterop/cinterop")
-                }
+                // The Apple QUIC client's UDP datapath now rides :socket-udp's NwUdp cinterop (Phase 6
+                // cutover); quiche's own copy was deleted — keeping both linked one binary hit
+                // "nw_udp_create: symbol multiply defined" (the C symbols are module-agnostic).
             }
         }
         macosArm64 { configureQuicheApple("macos-arm64") }
