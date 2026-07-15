@@ -63,6 +63,31 @@ class JvmQuicTraceCaptureTests {
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
+    /**
+     * Suspend until the capture [lines] hold BOTH connectivity emissions the client made — the
+     * `NET_ID` for [migratedTo] and the `NET_AVAIL` UNAVAILABLE. Lets the caller close the
+     * connection only after the monitor tap has demonstrably recorded them, replacing a fixed
+     * post-emission delay that raced connection teardown under CI load (the `observe()` collectors
+     * live on the connection scope and die when it closes). Bounded by the caller's `withTimeout`:
+     * if the tap is broken the predicate never holds and the test times out — a real failure, not a
+     * flaky pass. Reads the concurrently-appended list under its own monitor to avoid a CME.
+     */
+    private suspend fun awaitConnectivityTapped(
+        lines: List<String>,
+        migratedTo: NetworkId,
+    ) {
+        while (true) {
+            val events = QuicTraceParser.parse(synchronized(lines) { lines.toList() })
+            val gotId = events.filterIsInstance<QuicTraceEvent.Net>().any { it.id == migratedTo }
+            val gotAvail =
+                events.filterIsInstance<QuicTraceEvent.NetAvail>().any {
+                    it.value == NetworkAvailability.UNAVAILABLE
+                }
+            if (gotId && gotAvail) return
+            delay(10)
+        }
+    }
+
     private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
         try {
             block()
@@ -119,8 +144,14 @@ class JvmQuicTraceCaptureTests {
                                     } else {
                                         echoResult.complete("no_data")
                                     }
-                                    // Let the monitor collectors flush before close() cancels them.
-                                    delay(200)
+                                    // Deterministically wait until the engine's connectivity tap has
+                                    // folded BOTH monitor emissions into the trace before closing —
+                                    // instead of a fixed sleep that races teardown on a loaded CI
+                                    // runner. The observe() collectors run on THIS connection's scope
+                                    // and are cancelled by close(); if we close too early, only the
+                                    // replayed initial NET_ID (Unidentified) is recorded and the
+                                    // migratedTo emission is lost (the intermittent CI failure).
+                                    awaitConnectivityTapped(lines, migratedTo)
                                     stream.close()
                                 }
                             }
@@ -132,7 +163,7 @@ class JvmQuicTraceCaptureTests {
                             serverJob.cancel()
                         }
 
-                        val snapshot = lines.toList()
+                        val snapshot = synchronized(lines) { lines.toList() }
                         assertTrue(snapshot.isNotEmpty(), "capture opt-in recorded nothing")
                         assertTrue(snapshot.all { it.startsWith("v1 ") }, "every line is versioned: $snapshot")
                         assertTrue(snapshot.any { it.contains("DGRAM_OUT") }, "engine must record sent datagrams: $snapshot")
