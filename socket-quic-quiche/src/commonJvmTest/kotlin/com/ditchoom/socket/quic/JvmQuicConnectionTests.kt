@@ -1,7 +1,11 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +24,7 @@ import kotlin.test.assertTrue
  */
 class JvmQuicConnectionTests {
     private val bufferFactory = BufferFactory.Default
+    private val testPeer = SocketAddress.ofLiteral("127.0.0.1", 4433)
 
     @Test
     fun jvmConnection_openStream_succeeds() =
@@ -28,7 +33,7 @@ class JvmQuicConnectionTests {
             api.established = true
             val driver = createTestDriver(api)
             val connScope = CoroutineScope(coroutineContext + SupervisorJob())
-            val conn = JvmQuicConnection(driver, bufferFactory, connScope)
+            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope)
             conn.start()
 
             try {
@@ -51,7 +56,7 @@ class JvmQuicConnectionTests {
             api.established = true
             val driver = createTestDriver(api)
             val connScope = CoroutineScope(coroutineContext + SupervisorJob())
-            val conn = JvmQuicConnection(driver, bufferFactory, connScope)
+            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope)
             conn.start()
 
             try {
@@ -81,7 +86,7 @@ class JvmQuicConnectionTests {
             api.established = true
             val driver = createTestDriver(api)
             val connScope = CoroutineScope(coroutineContext + SupervisorJob())
-            val conn = JvmQuicConnection(driver, bufferFactory, connScope)
+            val conn = JvmQuicConnection(driver, bufferFactory, testPeer, connScope)
             conn.start()
 
             conn.close()

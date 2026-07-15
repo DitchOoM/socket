@@ -25,6 +25,16 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
+ * An accepted server connection handed from the receive loop to `connections()`: the [driver] plus the
+ * [remoteAddress] of the peer that opened it. The peer is only known on the receive loop, so it rides
+ * alongside the driver here to become the handler connection's `remoteAddress` (the datagram peer).
+ */
+internal class AcceptedConnection(
+    val driver: QuicheDriver,
+    val remoteAddress: SocketAddress,
+)
+
+/**
  * The one QUIC server implementation, shared by every platform (JVM/Android via `buildJvmQuicServer`,
  * Linux via `buildLinuxQuicServer`, Apple via `buildAppleQuicServer`). It binds over a `:socket-udp`
  * [DatagramChannel]: a dedicated reader coroutine confines the channel's `receive()` (the buffer-flow
@@ -97,11 +107,12 @@ internal class SharedQuicheServer(
         // connections() must cancel each in-flight handler. coroutineScope { … } suspends until every
         // launched child returns, making the lifetime explicit (structured concurrency).
         coroutineScope {
-            for (driver in registry.acceptedDrivers) {
+            for (accepted in registry.acceptedDrivers) {
+                val driver = accepted.driver
                 launch(serverReceiveDispatcher) {
                     val connJob = SupervisorJob(coroutineContext[Job])
                     val connScope = CoroutineScope(coroutineContext + connJob)
-                    val conn = DriverQuicConnection(driver, bufferFactory, connScope)
+                    val conn = DriverQuicConnection(driver, bufferFactory, accepted.remoteAddress, connScope)
                     try {
                         conn.state.first { it !is QuicConnectionState.Handshaking }
                         if (conn.state.value is QuicConnectionState.Established) {
@@ -299,7 +310,7 @@ internal class SharedQuicheServer(
                             val (driver, serverScidKey) = accepted
                             registry.routeDriver(serverScidKey, driver)
                             registry.routeDriver(dcidKey, driver)
-                            registry.acceptedDrivers.trySend(driver)
+                            registry.acceptedDrivers.trySend(AcceptedConnection(driver, peer))
                         }
                     }
                 }

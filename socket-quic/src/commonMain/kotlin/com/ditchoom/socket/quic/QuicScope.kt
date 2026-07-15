@@ -2,11 +2,16 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.Datagram
+import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
 
 /**
  * A QUIC connection scope — the receiver inside [withQuicConnection] and [QuicServer.connections].
@@ -94,42 +99,103 @@ interface QuicScope : CoroutineScope {
         get() = MutableStateFlow(PathInfo())
 
     // --- Unreliable datagrams (RFC 9221) ---
-    // Available only when [QuicOptions.datagrams] was set. The default implementations make a
-    // non-datagram connection behave correctly: send throws, receive throws, the flow is empty,
-    // and the max size is null. Platforms that support datagrams override all four.
+    // Folded onto the buffer-flow datagram trichotomy: [datagramChannel] is this connection's
+    // connected (single-peer) DatagramChannel over its RFC-9221 datagrams, and the four legacy methods
+    // below are deprecated delegating shims over it. Available only when [QuicOptions.datagrams] was
+    // set; the defaults make a non-datagram connection behave correctly (channel access throws,
+    // maxWritableSize is 0). Platforms that support datagrams override [remoteAddress] + [datagramChannel].
+
+    /**
+     * This connection's remote endpoint — the single peer every datagram on [datagramChannel] is
+     * addressed to and from (a connected QUIC connection has exactly one). Exposed so received
+     * [Datagram]s carry a real, inspectable [Datagram.peer] (buffer-flow requires a non-null peer) and
+     * an ICE/relay layer can read the path. Defaults to [UnsupportedOperationException] on platforms
+     * without datagram support; quiche-backed and Apple connections override it.
+     */
+    @ExperimentalDatagramApi
+    val remoteAddress: SocketAddress
+        get() = throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
+
+    /**
+     * This connection's RFC-9221 unreliable datagrams as a buffer-flow [DatagramChannel] — the
+     * connected, single-peer datagram endpoint (the datagram analogue of [openStream] / [streams] over
+     * the shared datagram trichotomy). Every received [Datagram]'s peer is [remoteAddress];
+     * [com.ditchoom.buffer.flow.DatagramSink.maxWritableSize] tracks the current path MTU and is `0`
+     * when datagrams are not enabled (not set locally, or the peer never advertised
+     * `max_datagram_frame_size`). Sends read the payload zero-copy (the caller retains ownership); the
+     * `to` / `options` send arguments are ignored — a QUIC datagram flow has one implicit peer and no
+     * per-datagram IP control plane. The returned instance is stable for the connection's life.
+     *
+     * Defaults to [UnsupportedOperationException]; platforms that support datagrams override this.
+     */
+    @ExperimentalDatagramApi
+    fun datagramChannel(): DatagramChannel = throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
 
     /**
      * Send one unreliable datagram (RFC 9221). The whole [buffer] is one datagram; it is delivered
      * at most once, unordered, with no retransmission. Suspends only while the send queue is full
      * (backpressure); the bytes are read zero-copy and the caller retains ownership of [buffer].
      *
-     * @throws IllegalArgumentException if `buffer.remaining()` exceeds the current [maxDatagramSize].
-     * @throws IllegalStateException if datagrams are [MaxDatagramSize.Unavailable] (not enabled).
+     * @throws IllegalArgumentException if `buffer.remaining()` exceeds the current max datagram size.
      * @throws QuicCloseException if the connection is closed.
      */
-    suspend fun sendDatagram(buffer: ReadBuffer): Unit =
-        throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
+    @Deprecated(
+        "Folded onto the buffer-flow datagram trichotomy.",
+        ReplaceWith("datagramChannel().send(buffer)"),
+    )
+    @OptIn(ExperimentalDatagramApi::class)
+    suspend fun sendDatagram(buffer: ReadBuffer): Unit = datagramChannel().send(buffer)
 
     /**
      * Receive the next unreliable datagram. Suspends until one arrives or the connection closes.
      * Returns [DatagramReceiveResult.Received] (ownership of the buffer transfers to the caller) or
      * [DatagramReceiveResult.ConnectionClosed] — never null.
      */
+    @Deprecated(
+        "Folded onto the buffer-flow datagram trichotomy; use datagramChannel().receive().",
+    )
+    @OptIn(ExperimentalDatagramApi::class)
     suspend fun receiveDatagram(): DatagramReceiveResult =
-        throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
+        when (val result = datagramChannel().receive()) {
+            is DatagramReadResult.Received -> DatagramReceiveResult.Received(result.datagram.payload)
+            is DatagramReadResult.Closed ->
+                DatagramReceiveResult.ConnectionClosed(result.reason as? QuicError ?: QuicError.NoError)
+        }
 
     /**
-     * Flow of incoming unreliable datagrams — a thin loop over [receiveDatagram] for parity with
+     * Flow of incoming unreliable datagrams — a thin loop over [datagramChannel] for parity with
      * [streams]. Completes when the connection closes. Each emitted buffer is owned by the collector,
      * which must release it (same contract as [com.ditchoom.data.Reader.readFlow]).
      */
-    fun datagrams(): Flow<ReadBuffer> = emptyFlow()
+    @Deprecated(
+        "Folded onto the buffer-flow datagram trichotomy; collect datagramChannel() directly.",
+    )
+    @OptIn(ExperimentalDatagramApi::class)
+    fun datagrams(): Flow<ReadBuffer> =
+        flow {
+            val channel = datagramChannel()
+            while (true) {
+                when (val result = channel.receive()) {
+                    is DatagramReadResult.Received -> emit(result.datagram.payload)
+                    is DatagramReadResult.Closed -> return@flow
+                }
+            }
+        }
 
     /**
-     * Maximum payload a single [sendDatagram] may carry right now — [MaxDatagramSize.Bytes] when
-     * datagrams can be sent, or [MaxDatagramSize.Unavailable] when they cannot (not enabled locally,
-     * or the peer never advertised `max_datagram_frame_size`). Tracks the current path MTU, so the
-     * byte count can change over the connection's life.
+     * Maximum payload a single datagram may carry right now — [MaxDatagramSize.Bytes] when datagrams
+     * can be sent, or [MaxDatagramSize.Unavailable] when they cannot (not enabled locally, or the peer
+     * never advertised `max_datagram_frame_size`). Tracks the current path MTU, so the byte count can
+     * change over the connection's life.
      */
-    fun maxDatagramSize(): MaxDatagramSize = MaxDatagramSize.Unavailable
+    @Deprecated(
+        "Folded onto the buffer-flow datagram trichotomy.",
+        ReplaceWith("datagramChannel().maxWritableSize"),
+    )
+    @OptIn(ExperimentalDatagramApi::class)
+    fun maxDatagramSize(): MaxDatagramSize =
+        when (val bytes = datagramChannel().maxWritableSize) {
+            0 -> MaxDatagramSize.Unavailable
+            else -> MaxDatagramSize.Bytes(bytes)
+        }
 }
