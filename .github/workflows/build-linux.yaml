@@ -443,6 +443,7 @@ jobs:
           :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test
           :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck
           :socket-webtransport:jvmTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck
+          :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
@@ -737,6 +738,7 @@ jobs:
           :socket-quic-quiche:linkDebugTestLinuxX64
           linkDebugTestLinuxArm64
           :socket-quic-quiche:linkDebugTestLinuxArm64
+          :socket-udp:linkDebugTestLinuxArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Native-crash post-mortem: if the test worker dumped a core (the malloc-check
@@ -841,6 +843,7 @@ jobs:
           path: |
             build/bin/linuxArm64/debugTest/test.kexe
             socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe
+            socket-udp/build/bin/linuxArm64/debugTest/test.kexe
             socket-quic-quiche/testcerts/
           retention-days: 1
 
@@ -1051,6 +1054,19 @@ jobs:
         run: |
           chmod +x build/bin/linuxArm64/debugTest/test.kexe
           ./build/bin/linuxArm64/debugTest/test.kexe
+
+      # :socket-udp's io_uring datagram suite. This runs here (real ubuntu-24.04-arm hardware)
+      # rather than under the x64 job's qemu-user, which returns ENOSYS for io_uring_setup —
+      # so the arm64 datapath is only validatable on native arm64. The .kexe was linked in the
+      # x64 job (:socket-udp:linkDebugTestLinuxArm64) and uploaded via linux-arm64-test-binary.
+      - name: Run ARM64 tests (socket-udp)
+        run: |
+          if [ -f socket-udp/build/bin/linuxArm64/debugTest/test.kexe ]; then
+            chmod +x socket-udp/build/bin/linuxArm64/debugTest/test.kexe
+            ./socket-udp/build/bin/linuxArm64/debugTest/test.kexe
+          else
+            echo "socket-udp ARM64 binary not found — skipping"
+          fi
 
       - name: Run ARM64 tests (socket-quic-quiche)
         run: |

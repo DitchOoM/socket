@@ -1889,13 +1889,9 @@ kotlin {
                 create("BoringSslSha256") {
                     defFile("src/nativeInterop/cinterop/BoringSslSha256.def")
                 }
-                // NWConnection-UDP datapath for the Apple QUIC *client* (production path: keeps NWPath
-                // migration awareness, deterministic cancel). Server datapath stays POSIX. See NwUdp.def
-                // / AppleNwUdpChannel.
-                create("NwUdp") {
-                    defFile("src/nativeInterop/cinterop/NwUdp.def")
-                    includeDirs("src/nativeInterop/cinterop")
-                }
+                // The Apple QUIC client's UDP datapath now rides :socket-udp's NwUdp cinterop (Phase 6
+                // cutover); quiche's own copy was deleted — keeping both linked one binary hit
+                // "nw_udp_create: symbol multiply defined" (the C symbols are module-agnostic).
             }
         }
         macosArm64 { configureQuicheApple("macos-arm64") }
@@ -1910,6 +1906,11 @@ kotlin {
         commonMain.dependencies {
             api(project(":"))
             api(project(":socket-quic"))
+            // Phase 6 QUIC cutover: the UDP datapath rides :socket-udp's DatagramChannel + UdpSocket
+            // (buffer-flow datagram trichotomy) instead of quiche's private UdpChannel. socket-udp
+            // covers every quiche target (jvm/android/linux/apple); its datagram API is
+            // @ExperimentalDatagramApi, opted into at the adapter call sites.
+            implementation(project(":socket-udp"))
             implementation(libs.kotlinx.coroutines.core)
         }
         commonTest {

@@ -1,4 +1,4 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -6,21 +6,16 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.buffer.pool.ThreadingMode
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.IntVar
-import kotlinx.cinterop.UIntVar
+import com.ditchoom.socket.udp.SocketAddressCodec
+import com.ditchoom.socket.udp.UdpSocket
+import com.ditchoom.socket.udp.appleSockAddrLayout
 import kotlinx.cinterop.ULongVar
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.pointed
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
@@ -29,54 +24,36 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import platform.posix.AF_INET6
-import platform.posix.IPPROTO_IPV6
-import platform.posix.IPV6_V6ONLY
-import platform.posix.SOCK_DGRAM
-import platform.posix.bind
-import platform.posix.getsockname
-import platform.posix.memcpy
-import platform.posix.setsockopt
-import platform.posix.sockaddr_in6
-import platform.posix.sockaddr_storage
-import platform.posix.socket
+import kotlinx.coroutines.selects.select
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
-// Darwin Kotlin/Native does not expose htons/ntohs as functions (they are C macros in <arpa/inet.h>,
-// unlike Linux K/N which surfaces them in platform.posix). arm64/x86_64 macOS is little-endian, so
-// host↔network byte order is a fixed byte swap. (The dual-stack bind uses in6addr_any = all zeros, so
-// no htonl is needed for the wildcard address.)
-private fun htons(v: UShort): UShort = (((v.toInt() and 0xFF) shl 8) or ((v.toInt() shr 8) and 0xFF)).toUShort()
-
-private fun ntohs(v: UShort): UShort = htons(v)
-
 /**
- * Build + bind an Apple quiche-backed [AppleQuicServer] over a dual-stack POSIX UDP socket, returning
- * it ready to accept. The returned server owns its teardown via [AppleQuicServer.close]; the `onClose`
- * lambda cancels the per-call parent scope (previously the withQuicServer wrapper's job). Shared by
- * [QuicheEngine.bind]; the [withQuicServer] wrapper runs the block and calls `close()`.
+ * Build + bind an Apple quiche-backed [AppleQuicServer] over the `:socket-udp` dual-stack POSIX UDP
+ * datagram channel (Phase 6 adapter-first cutover). The dual-stack (`::` + `IPV6_V6ONLY=0`) bind lives
+ * in `UdpSocket.bind` now, so a client reaching the server over IPv4 or IPv6 is served. The returned
+ * server owns its teardown via [AppleQuicServer.close]; the `onClose` lambda cancels the per-call
+ * parent scope. Shared by [QuicheEngine.bind]; the [withQuicServer] wrapper runs the block + `close()`.
  */
-internal fun buildAppleQuicServer(
+internal suspend fun buildAppleQuicServer(
     port: Int,
-    @Suppress("UNUSED_PARAMETER") host: String?,
+    host: String?,
     tlsConfig: QuicTlsConfig,
     quicOptions: QuicOptions,
     // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
     // byte-identical to the pre-seam behaviour; the sim harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
 ): QuicServer {
-    // Linux bind path defaults to INADDR_ANY; `host` is accepted for API parity
-    // with the JVM/Android impl but not yet wired through to inet_pton / bind.
     val api: QuicheApi = CinteropQuicheApi
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
@@ -107,80 +84,31 @@ internal fun buildAppleQuicServer(
 
         applyQuicOptions(quicOptions, AppleQuicConfigCalls(config.handle.toCPointer()!!))
 
-        // Create & bind a DUAL-STACK IPv6 UDP socket. The Apple QUIC *client* is NWConnection-UDP, and NW
-        // resolves a name like "localhost" to IPv6 (::1) by preference on Darwin; an IPv4-only server
-        // would then never receive the client's packets (the handshake silently idle-times-out). Binding
-        // AF_INET6 with IPV6_V6ONLY=0 accepts BOTH ::1 and IPv4 (as ::ffff:127.0.0.1 v4-mapped), so a
-        // client reaching the server over either family is served. quiche reads whatever sockaddr the OS
-        // reports (the CinteropQuicheApi BSD decode already handles AF_INET6 = family 30).
-        val fd = socket(AF_INET6, SOCK_DGRAM, 0)
-        check(fd >= 0) { "Failed to create UDP socket" }
-
-        memScoped {
-            // IPV6_V6ONLY=0 → dual-stack (also receive IPv4 as v4-mapped). Best-effort: a failure here
-            // just leaves the OS default (already 0 on Darwin), so don't hard-fail on it.
-            val off = alloc<IntVar>()
-            off.value = 0
-            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, off.ptr, sizeOf<IntVar>().convert())
-
-            val addr = alloc<sockaddr_in6>()
-            platform.posix.memset(addr.ptr, 0, sizeOf<sockaddr_in6>().convert())
-            addr.sin6_family = AF_INET6.convert()
-            // sin6_addr left zeroed = in6addr_any (wildcard).
-            addr.sin6_port = htons(port.toUShort())
-            val bindRc = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in6>().convert())
-            check(bindRc == 0) { "Failed to bind UDP socket to port $port" }
-        }
-
-        // Get assigned port. memScoped.alloc does not zero-init; we must check the
-        // getsockname return value — a silent failure leaves sin6_family as garbage, which
-        // SIGABRTs through Rust's std_addr_from_c panic when quiche_accept reads it.
-        val boundPort =
-            memScoped {
-                val boundAddr = alloc<sockaddr_in6>()
-                platform.posix.memset(boundAddr.ptr, 0, sizeOf<sockaddr_in6>().convert())
-                val boundLen = alloc<UIntVar>()
-                boundLen.value = sizeOf<sockaddr_in6>().convert()
-                val rc = getsockname(fd, boundAddr.ptr.reinterpret(), boundLen.ptr)
-                check(rc == 0) { "getsockname(boundPort) returned $rc" }
-                check(boundAddr.sin6_family.toInt() == AF_INET6) {
-                    "getsockname(boundPort) sin6_family=${boundAddr.sin6_family.toInt()} (expected AF_INET6=$AF_INET6)"
-                }
-                ntohs(boundAddr.sin6_port).toInt()
-            }
-
-        // Copy local address to heap buffer for recvInfo (outlives memScoped). Same
-        // init/check discipline as above — this buffer is handed to quiche via api.accept
-        // and api.recvInfoNew, so a garbage sin6_family here poisons every accepted connection.
-        val localAddrBuf = bufferFactory.allocate(sizeOf<sockaddr_in6>().toInt())
-        memScoped {
-            val localAddr = alloc<sockaddr_in6>()
-            platform.posix.memset(localAddr.ptr, 0, sizeOf<sockaddr_in6>().convert())
-            val localLen = alloc<UIntVar>()
-            localLen.value = sizeOf<sockaddr_in6>().convert()
-            val rc = getsockname(fd, localAddr.ptr.reinterpret(), localLen.ptr)
-            check(rc == 0) { "getsockname(localAddr) returned $rc" }
-            check(localAddr.sin6_family.toInt() == AF_INET6) {
-                "getsockname(localAddr) sin6_family=${localAddr.sin6_family.toInt()} (expected AF_INET6=$AF_INET6)"
-            }
-            val dst = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-            memcpy(dst, localAddr.ptr, sizeOf<sockaddr_in6>().convert())
-        }
+        // Bind the shared server socket via :socket-udp (dual-stack by default) with a QUIC-sized receive
+        // staging buffer. One channel serves every accepted connection; egress is a thin
+        // ServerConnectionUdpChannel over it.
+        // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
+        // datagram is allocated straight from it — the receive loop then routes it with no copy.
+        val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
+        val channel =
+            UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE, bufferFactory = recvBufPool)
+        val localAddress = channel.localAddress ?: error("bound server channel has no local address")
 
         val server =
             AppleQuicServer(
                 api = api,
                 config = config,
-                serverChannel = AppleUdpServerChannel(fd),
-                boundPort = boundPort,
-                localAddrBuf = localAddrBuf,
+                channel = channel,
+                localAddress = localAddress,
+                codec = SocketAddressCodec(appleSockAddrLayout),
                 bufferFactory = bufferFactory,
-                scope = parentScope,
+                parentScope = parentScope,
                 keepAliveInterval = quicOptions.keepAliveInterval,
                 // server.close() frees config + drivers; the per-call parent scope is the server's
                 // to cancel last, so the withQuicServer wrapper stays a plain block + close().
                 onClose = { parentScope.cancel() },
                 tuning = tuning,
+                recvBufPool = recvBufPool,
             )
         bound = true
         return server
@@ -192,51 +120,60 @@ internal fun buildAppleQuicServer(
 }
 
 /**
- * Apple QUIC server. Central receive loop uses [AppleUdpServerChannel.recvFrom]
- * to parse QUIC headers and route packets by DCID to the appropriate [QuicheDriver].
- *
- * Mirrors [JvmQuicServer] architecture — each connection driven by its own [QuicheDriver],
- * no shared mutexes, zero-copy packet delivery.
+ * Apple QUIC server over the `:socket-udp` [DatagramChannel]. Structurally mirrors `JvmQuicServer` /
+ * `LinuxQuicServer`: a dedicated reader coroutine confines the channel's `receive()` and feeds a central
+ * loop that routes each datagram by DCID to its [QuicheDriver] (or accepts a new connection). All
+ * connection-lifecycle bookkeeping lives in the shared [ServerConnectionRegistry] (the #179 recv_info-UAF
+ * invariants are fix-once).
  */
 private class AppleQuicServer(
     private val api: QuicheApi,
     private val config: QuicheConfig,
-    private val serverChannel: AppleUdpServerChannel,
-    private val boundPort: Int,
-    private val localAddrBuf: PlatformBuffer,
+    private val channel: DatagramChannel,
+    private val localAddress: SocketAddress,
+    private val codec: SocketAddressCodec,
     private val bufferFactory: BufferFactory,
-    private val scope: CoroutineScope,
+    parentScope: CoroutineScope,
     private val keepAliveInterval: Duration? = null,
     // Per-call lifecycle teardown wired by buildAppleQuicServer (cancel the parent scope). Invoked
     // last by close(); null for any direct-construction test that owns the scope externally.
     private val onClose: (() -> Unit)? = null,
     // Determinism seams forwarded to every accepted connection's driver (RFC_DETERMINISTIC_SIMULATION.md §3.1).
     private val tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    /**
+     * Recv buffer pool — each datagram's ownership transfers to the connection's driver and every free-path
+     * recycles it back. Hoisted to a ctor param (default: a fresh pool) so [buildAppleQuicServer] injects
+     * the SAME instance as the shared [channel]'s `bufferFactory`: the channel allocates each datagram from
+     * it and the receive loop routes it with no copy (B2 elimination). Built from a **leaf** [bufferFactory]
+     * — never an already-pooled factory (the `80575c1` double-wrap regression).
+     */
+    private val recvBufPool: BufferPool = QuicheDriver.newRecvBufPool(bufferFactory),
 ) : QuicServer {
-    override val port: Int get() = boundPort
+    override val port: Int get() = localAddress.port
+
+    // Child scope of the per-call parent — cancelling it takes down every handler coroutine spawned
+    // via connections() plus the receive loop.
+    private val serverJob = SupervisorJob(parentScope.coroutineContext[Job])
+    private val scope = CoroutineScope(parentScope.coroutineContext + serverJob)
+
+    /** Connection-lifecycle bookkeeping shared with the other platform servers (see [ServerConnectionRegistry]). */
+    private val registry = ServerConnectionRegistry<SocketAddress>(api)
 
     /**
-     * All connection-lifecycle bookkeeping (routing table, live-driver ledger, per-source recv_info
-     * cache, cleanup/SCID queues, and the load-bearing close sweep). Only this server's dual-stack
-     * POSIX UDP transport and its native sockaddr handling stay here; see [ServerConnectionRegistry].
+     * PathKey→peer resolution for the egress channels (sendInfo.to → real send target, no address
+     * reconstruction — RFC §4). Single-writer: only the receive loop mutates it (on cache miss / evict),
+     * plus the close sweep after the loop has joined; readers are the driver egress coroutines. K/N has no
+     * concurrent map, so it is a `@Volatile` **immutable** map — the writer publishes a fresh copy and
+     * readers see a consistent snapshot. Entries are removed when their recv_info cache entry is freed.
      */
-    private val registry = ServerConnectionRegistry<PathKey>(api)
+    @kotlin.concurrent.Volatile
+    private var peersByPathKey: Map<PathKey, SocketAddress> = emptyMap()
 
-    /**
-     * Recv buffer pool — mirrors [JvmQuicServer]'s: each datagram is acquired here, ownership
-     * transfers to the connection's driver, and every existing free-path's `freeNativeMemory()`
-     * recycles the buffer back to this pool instead of malloc/freeing per packet.
-     *
-     * Ownership invariant: [bufferFactory] is a **leaf** factory — this pool is built *from* it;
-     * never pass an already-pooled factory (the `80575c1` double-wrap regression).
-     */
-    private val recvBufPool =
-        BufferPool(
-            threadingMode = ThreadingMode.MultiThreaded,
-            maxPoolSize = 64,
-            defaultBufferSize = MAX_DATAGRAM_SIZE,
-            factory = bufferFactory,
-        )
+    /** Prompt-wake for the receive loop on a routing-table change (see JvmQuicServer.wakeups). */
+    private val wakeups = Channel<Unit>(Channel.CONFLATED)
+
+    /** The shared recv_info `to` sockaddr (the server's fixed local addr), encoded lazily; freed in close(). */
+    private var serverLocalSockAddr: EncodedSockAddr? = null
 
     @kotlin.concurrent.Volatile
     private var closed = false
@@ -244,13 +181,7 @@ private class AppleQuicServer(
     private val receiveJob = scope.launch(Dispatchers.Default) { receiveLoop() }
 
     override suspend fun connections(handler: suspend QuicScope.() -> Unit) =
-        // Structured concurrency: handler lifetime is bound to this connections()
-        // invocation. Cancelling the caller cancels every in-flight handler — see
-        // commonJvmWithQuicServer's JvmQuicServer.connections() for the long
-        // comment on why this matters (previously handlers were orphaned onto the
-        // engine's scope and surfaced as a CI hang in
-        // JvmQuicServerTestSuite.rapidBindConnectCloseCyclesAreClean).
-        kotlinx.coroutines.coroutineScope {
+        coroutineScope {
             for (driver in registry.acceptedDrivers) {
                 launch(Dispatchers.Default) {
                     val connJob = SupervisorJob(coroutineContext[Job])
@@ -264,6 +195,7 @@ private class AppleQuicServer(
                     } finally {
                         conn.close()
                         registry.enqueueCleanup(driver)
+                        wakeups.trySend(Unit) // drain the routing table now, not on the next datagram
                         connJob.cancel()
                     }
                 }
@@ -273,185 +205,193 @@ private class AppleQuicServer(
     override suspend fun close() {
         if (closed) return
         closed = true
-        // Order is load-bearing.
-        // 1. Stop receiving FIRST: closing the fd makes any in-flight recvfrom on the POSIX UDP
-        //    socket fail, which the loop's catch{} + closed-check translates into a clean exit.
-        //    cancelAndJoin then waits for the loop to fully exit.
-        // 2. Only after the receive loop is gone is it safe to destroy drivers — otherwise
-        //    the loop may be mid-routing a packet to existingDriver.commands.trySend(...)
-        //    and touch a freed driver (the close-vs-receive-loop race the Linux twin also guards).
-        // 3. Only after the loop is gone is it safe to free the recv buffers it shares
-        //    with the channel.
-        serverChannel.closeFd()
-        receiveJob.cancelAndJoin()
-        // receiveJob join above guarantees no new drivers are added or routed and nothing else
-        // touches the registry's maps/cache. Destroy+join EVERY live driver (a superset of the
-        // routing table) before freeing the per-source recv_info cache — the #179 UAF invariant.
-        // localAddrBuf (the shared recv_info `to`) is freed last, below.
+        // Closing the :socket-udp channel makes any in-flight recvfrom on the POSIX UDP socket fail, so
+        // the reader's receive() returns Closed, the loop exits, and receiveJob completes.
+        channel.close()
+        receiveJob.join()
+        // receiveJob.join() guarantees no new drivers are added/routed and nothing else touches the
+        // registry. Destroy+join EVERY live driver (a superset of the routing table) before freeing the
+        // per-source recv_info cache — the #179 UAF invariant.
         registry.reapAllDriversAndFreeRecvInfoCache()
+        serverLocalSockAddr?.free()
+        serverLocalSockAddr = null
+        recvBufPool.clear()
         api.configFree(config)
         registry.closeChannels()
-        serverChannel.freeBuffers()
-        // Late returns from drivers still tearing down are benign — they repopulate
-        // a pool that is GC'd with the server.
-        recvBufPool.clear()
-        localAddrBuf.freeNativeMemory()
-        // Cancel the per-call parent scope last (buildAppleQuicServer wires this); previously the
-        // withQuicServer wrapper did it after server.close(). receiveJob/handlers are its children.
+        serverJob.cancel()
         onClose?.invoke()
     }
 
-    /**
-     * Central receive loop. Suspends on the dual-stack POSIX UDP channel until a datagram arrives,
-     * parses the QUIC header to extract the DCID, and routes to the owning
-     * [QuicheDriver] or accepts a new connection.
-     */
-    private suspend fun receiveLoop() {
-        // Header parsing scratch buffers (reused across iterations)
-        val versionBuf = bufferFactory.allocate(4)
-        val typeBuf = bufferFactory.allocate(1)
-        val scidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
-        val scidLenBuf = bufferFactory.allocate(8)
-        val dcidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
-        val dcidLenBuf = bufferFactory.allocate(8)
-        val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
-        val tokenLenBuf = bufferFactory.allocate(8)
+    private suspend fun receiveLoop() =
+        coroutineScope {
+            // Header parsing scratch buffers (reused across iterations)
+            val versionBuf = bufferFactory.allocate(4)
+            val typeBuf = bufferFactory.allocate(1)
+            val scidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
+            val scidLenBuf = bufferFactory.allocate(8)
+            val dcidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
+            val dcidLenBuf = bufferFactory.allocate(8)
+            val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
+            val tokenLenBuf = bufferFactory.allocate(8)
 
-        try {
-            while (!closed) {
-                // Remove entries for drivers closed by connection handlers, then register spare SCIDs
-                // issued by drivers so a migrating peer's new DCID routes. Receive-loop coroutine only.
-                registry.drainRoutingQueues()
-
-                // Acquire a buffer per packet — ownership transfers to driver (zero-copy).
-                // The driver's freeNativeMemory() recycles it back to recvBufPool.
-                val recvBuf = recvBufPool.allocate(MAX_DATAGRAM_SIZE)
-
-                val recvResult =
+            val inbound = Channel<DatagramReadResult>(Channel.RENDEZVOUS)
+            val reader =
+                launch(Dispatchers.Default) {
                     try {
-                        serverChannel.recvFrom(recvBuf)
-                    } catch (e: CancellationException) {
-                        recvBuf.freeNativeMemory()
-                        throw e
-                    } catch (_: Exception) {
-                        recvBuf.freeNativeMemory()
-                        if (closed) return
-                        continue
-                    }
-
-                if (recvResult.bytesReceived <= 0) {
-                    recvBuf.freeNativeMemory()
-                    continue
-                }
-
-                val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-
-                // Initialize size_t output buffers with max capacity
-                writeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
-                writeSizeT(dcidLenBuf, QUIC_MAX_CONN_ID_LEN)
-                writeSizeT(tokenLenBuf, MAX_TOKEN_LEN)
-
-                val rc =
-                    api.headerInfo(
-                        recvAddr,
-                        recvResult.bytesReceived,
-                        QUIC_MAX_CONN_ID_LEN,
-                        versionBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        typeBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        scidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        scidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        dcidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        dcidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        tokenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        tokenLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                    )
-                if (rc < 0) {
-                    recvBuf.freeNativeMemory()
-                    continue
-                }
-
-                val dcidLen = readSizeT(dcidLenBuf)
-                val dcidKey = ConnectionIdKey.from(dcidBuf, dcidLen)
-
-                val existingDriver = registry.driverForDcid(dcidKey)
-                if (existingDriver != null) {
-                    // Per-source recv_info so quiche sees a migrated client's new source as a new
-                    // path. Hold an in-flight ref so the cache can't evict+free it while queued.
-                    val peerAddrPtr = recvResult.peerAddr.rawValue.toLong()
-                    val peerAddrLen = recvResult.peerAddrLen.toInt()
-                    val pathKey = api.decodePathKey(peerAddrPtr)
-                    val cached =
-                        registry.lookupRecvInfo(pathKey) ?: run {
-                            // Miss: pin a copy of this source's sockaddr (recvFrom's buffer is reused
-                            // next call) and build a recv_info from = source, to = the fixed local addr.
-                            val fromBuf = bufferFactory.allocate(peerAddrLen)
-                            val dst = fromBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-                            memcpy(dst, peerAddrPtr.toCPointer<ByteVar>()!!, peerAddrLen.convert())
-                            val info =
-                                api.recvInfoNew(
-                                    fromBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                                    peerAddrLen,
-                                    localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                                    sizeOf<sockaddr_in6>().toInt(),
-                                )
-                            registry.putRecvInfo(pathKey, info) { fromBuf.freeNativeMemory() }
+                        while (true) {
+                            val r =
+                                try {
+                                    channel.receive()
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    if (closed) break else continue
+                                }
+                            inbound.send(r)
+                            if (r is DatagramReadResult.Closed) break
                         }
-                    cached.inFlight.incrementAndGet()
-                    val sendResult =
-                        existingDriver.commands.trySend(
-                            QuicheCmd.RecvPacket(
-                                recvBuf,
-                                recvResult.bytesReceived,
-                                recvInfoOverride = cached.info,
-                                onRecvInfoConsumed = { cached.inFlight.decrementAndGet() },
-                            ),
-                        )
-                    if (sendResult.isFailure) {
-                        cached.inFlight.decrementAndGet()
-                        recvBuf.freeNativeMemory()
-                        // Remove ALL entries for this dead driver, not just the one we hit
-                        registry.deRouteDriver(existingDriver)
-                    }
-                } else {
-                    val result = acceptNewConnection(recvBuf, recvResult)
-                    if (result != null) {
-                        val (driver, serverScidKey) = result
-                        registry.routeDriver(serverScidKey, driver)
-                        registry.routeDriver(dcidKey, driver)
-                        registry.acceptedDrivers.trySend(driver)
+                    } catch (_: CancellationException) {
+                    } finally {
+                        inbound.close()
                     }
                 }
+
+            val wake = Any()
+            val readerDone = Any()
+            try {
+                loop@ while (!closed) {
+                    val item =
+                        select<Any?> {
+                            inbound.onReceiveCatching { res -> res.getOrNull() ?: readerDone }
+                            wakeups.onReceive { wake }
+                        }
+                    // Register spare SCIDs / drop closed drivers BEFORE routing anything. Receive-loop only.
+                    registry.drainRoutingQueues()
+
+                    val datagram =
+                        when (item) {
+                            wake -> continue@loop
+                            readerDone -> break@loop
+                            is DatagramReadResult.Closed -> break@loop
+                            is DatagramReadResult.Received -> item.datagram
+                            else -> continue@loop
+                        }
+                    if (closed) {
+                        datagram.payload.freeNativeMemory()
+                        break@loop
+                    }
+
+                    val peer = datagram.peer
+                    // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
+                    // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
+                    // the driver, which frees it back to the pool after quiche_conn_recv.
+                    val recvBuf = datagram.payload
+                    val received = recvBuf.remaining()
+                    if (received <= 0) {
+                        recvBuf.freeNativeMemory()
+                        continue@loop
+                    }
+                    val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
+
+                    writeSizeT(scidLenBuf, QUIC_MAX_CONN_ID_LEN)
+                    writeSizeT(dcidLenBuf, QUIC_MAX_CONN_ID_LEN)
+                    writeSizeT(tokenLenBuf, MAX_TOKEN_LEN)
+
+                    val rc =
+                        api.headerInfo(
+                            recvAddr,
+                            received,
+                            QUIC_MAX_CONN_ID_LEN,
+                            versionBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            typeBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            scidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            scidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            dcidBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            dcidLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            tokenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                            tokenLenBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
+                        )
+                    if (rc < 0) {
+                        recvBuf.freeNativeMemory()
+                        continue@loop
+                    }
+
+                    val dcidLen = readSizeT(dcidLenBuf)
+                    val dcidKey = ConnectionIdKey.from(dcidBuf, dcidLen)
+
+                    val existingDriver = registry.driverForDcid(dcidKey)
+                    if (existingDriver != null) {
+                        val cached =
+                            registry.lookupRecvInfo(peer) ?: run {
+                                val local =
+                                    serverLocalSockAddr ?: codec.encodeToNative(localAddress, bufferFactory).also {
+                                        serverLocalSockAddr = it
+                                    }
+                                val from = codec.encodeToNative(peer, bufferFactory)
+                                val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
+                                // Record this source's PathKey→peer (single-writer volatile map) so a reply
+                                // quiche routes here resolves to the real send target; removed on cache free.
+                                val fromKey = api.decodePathKey(from.address)
+                                peersByPathKey = peersByPathKey + (fromKey to peer)
+                                registry.putRecvInfo(peer, info) {
+                                    from.free()
+                                    peersByPathKey = peersByPathKey - fromKey
+                                }
+                            }
+                        cached.inFlight.incrementAndGet()
+                        val sendResult =
+                            existingDriver.commands.trySend(
+                                QuicheCmd.RecvPacket(
+                                    recvBuf,
+                                    received,
+                                    recvInfoOverride = cached.info,
+                                    onRecvInfoConsumed = { cached.inFlight.decrementAndGet() },
+                                ),
+                            )
+                        if (sendResult.isFailure) {
+                            cached.inFlight.decrementAndGet()
+                            recvBuf.freeNativeMemory()
+                            registry.deRouteDriver(existingDriver)
+                        }
+                    } else {
+                        val accepted = acceptNewConnection(recvBuf, received, peer)
+                        if (accepted != null) {
+                            val (driver, serverScidKey) = accepted
+                            registry.routeDriver(serverScidKey, driver)
+                            registry.routeDriver(dcidKey, driver)
+                            registry.acceptedDrivers.trySend(driver)
+                        }
+                    }
+                }
+            } finally {
+                reader.cancel()
+                versionBuf.freeNativeMemory()
+                typeBuf.freeNativeMemory()
+                scidBuf.freeNativeMemory()
+                scidLenBuf.freeNativeMemory()
+                dcidBuf.freeNativeMemory()
+                dcidLenBuf.freeNativeMemory()
+                tokenBuf.freeNativeMemory()
+                tokenLenBuf.freeNativeMemory()
             }
-        } finally {
-            versionBuf.freeNativeMemory()
-            typeBuf.freeNativeMemory()
-            scidBuf.freeNativeMemory()
-            scidLenBuf.freeNativeMemory()
-            dcidBuf.freeNativeMemory()
-            dcidLenBuf.freeNativeMemory()
-            tokenBuf.freeNativeMemory()
-            tokenLenBuf.freeNativeMemory()
         }
-    }
 
     /**
-     * Accept a new QUIC connection.
-     * [recvBuf] ownership is consumed: it is freed after the initial packet is fed to quiche.
+     * Accept a new QUIC connection. [recvBuf] ownership is consumed: it is freed after the initial
+     * packet is fed to quiche.
      */
     private fun acceptNewConnection(
         recvBuf: PlatformBuffer,
-        recvResult: RecvFromResult,
+        received: Int,
+        peer: SocketAddress,
     ): Pair<QuicheDriver, ConnectionIdKey>? {
         val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
         val serverScid = generateScid(bufferFactory, tuning.random)
         val serverScidAddr = serverScid.nativeMemoryAccess!!.nativeAddress.toLong()
 
-        val localAddr = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong()
-        val localAddrLen = sizeOf<sockaddr_in6>().toInt()
-
-        val peerAddr = recvResult.peerAddr.rawValue.toLong()
-        val peerAddrLen = recvResult.peerAddrLen.toInt()
+        val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
+        val localSockAddr = codec.encodeToNative(localAddress, bufferFactory)
 
         val conn =
             try {
@@ -460,51 +400,47 @@ private class AppleQuicServer(
                     QUIC_MAX_CONN_ID_LEN,
                     0L, // no retry / odcid
                     0,
-                    localAddr,
-                    localAddrLen,
-                    peerAddr,
-                    peerAddrLen,
+                    localSockAddr.address,
+                    localSockAddr.length,
+                    peerSockAddr.address,
+                    peerSockAddr.length,
                     config,
                 )
             } catch (_: Exception) {
                 serverScid.freeNativeMemory()
+                peerSockAddr.free()
+                localSockAddr.free()
                 recvBuf.freeNativeMemory()
                 return null
             }
 
         if (conn.handle == 0L) {
             serverScid.freeNativeMemory()
+            peerSockAddr.free()
+            localSockAddr.free()
             recvBuf.freeNativeMemory()
             return null
         }
 
-        // Copy peer address to heap — recvResult.peerAddr points to AppleUdpServerChannel's
-        // internal buffer which will be overwritten on the next recvFrom call
-        val peerAddrCopy = nativeHeap.alloc<sockaddr_storage>()
-        memcpy(peerAddrCopy.ptr, recvResult.peerAddr, peerAddrLen.convert())
-
-        // Create per-connection recvInfo (peer → local) and sendInfo
-        val peerBuf = bufferFactory.allocate(peerAddrLen)
-        val peerDst = peerBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-        memcpy(peerDst, recvResult.peerAddr, peerAddrLen.convert())
-
         val recvInfo =
-            api.recvInfoNew(
-                peerBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                peerAddrLen,
-                localAddr,
-                localAddrLen,
-            )
+            api.recvInfoNew(peerSockAddr.address, peerSockAddr.length, localSockAddr.address, localSockAddr.length)
         val sendInfo = api.sendInfoNew()
 
-        // Feed the initial packet before the driver starts
-        api.connRecv(conn, recvAddr, recvResult.bytesReceived, recvInfo)
+        // Feed the initial packet before the driver starts — safe, driver not yet running.
+        api.connRecv(conn, recvAddr, received, recvInfo)
         recvBuf.freeNativeMemory()
 
-        val udpChannel = ServerConnectionUdpChannel(serverChannel, peerAddrCopy.ptr, peerAddrLen.convert(), bufferFactory)
+        // Per-connection egress over the shared server socket. fixedPeerKey is this peer's PathKey (what
+        // quiche echoes as sendInfo.to for the un-migrated path); peersByPathKey resolves a migrated source.
+        val udpChannel =
+            ServerConnectionUdpChannel(
+                channel = channel,
+                fixedPeer = peer,
+                fixedPeerKey = api.decodePathKey(peerSockAddr.address),
+                peerFor = { peersByPathKey[it] },
+            )
         // Self-reference for onScidIssued: the driver doesn't exist when we build the callback, so
-        // capture it via this holder, set right after construction. The callback only fires at
-        // establishment (well after this), so the holder is always populated by then.
+        // capture it via this holder, set right after construction.
         var driverRef: QuicheDriver? = null
         val driver =
             QuicheDriver(
@@ -521,22 +457,26 @@ private class AppleQuicServer(
                 driverContext = tuning.driverContext,
                 random = tuning.random,
                 recorder = tuning.recorderFactory(),
+                // recvInfo holds raw pointers into peerSockAddr/localSockAddr; keep them reachable for the
+                // driver's life and freed on teardown so recv_info.from/to can never dangle.
                 onCleanup = {
-                    // Runs after run() has fully returned, so the driver can no longer connRecv —
-                    // drop it from the lifecycle ledger (bounds the set for long-lived servers).
                     driverRef?.let { registry.untrackLiveDriver(it) }
+                    peerSockAddr.free()
+                    localSockAddr.free()
                 },
                 onScidIssued = { scid, len ->
-                    // Snapshot the CID (scid is freed right after this returns) and hand the
-                    // registration to the receive loop, which owns the routing table.
-                    driverRef?.let { d -> registry.enqueueScidRegistration(ConnectionIdKey.from(scid, len), d) }
+                    // Snapshot the CID (scid is freed right after this returns) and hand the registration
+                    // to the receive loop; poke it to drain promptly so a migrating peer's new DCID routes.
+                    driverRef?.let { d ->
+                        registry.enqueueScidRegistration(ConnectionIdKey.from(scid, len), d)
+                        wakeups.trySend(Unit)
+                    }
                 },
             )
         driverRef = driver
 
         // Ledger the driver BEFORE starting its run loop so close() can never observe a started-but-
-        // untracked driver (additions happen only here, on the receive-loop coroutine, so they cease
-        // once close() has joined receiveJob — the set is then stable for close()'s destroy sweep).
+        // untracked driver (additions happen only on the receive-loop coroutine).
         registry.trackLiveDriver(driver)
         driver.start(scope)
 
@@ -546,7 +486,6 @@ private class AppleQuicServer(
     }
 
     companion object {
-        private const val MAX_DATAGRAM_SIZE = 1350
         private const val MAX_TOKEN_LEN = 256
     }
 }

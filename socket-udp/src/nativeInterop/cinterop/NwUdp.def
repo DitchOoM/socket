@@ -1,5 +1,5 @@
 language = Objective-C
-package = com.ditchoom.socket.quic.nwudp
+package = com.ditchoom.socket.udp.nw
 headers = nw_udp_helpers.h
 headerFilter = nw_udp_helpers.h
 linkerOpts = -framework Network -framework Foundation
@@ -8,7 +8,7 @@ linkerOpts = -framework Network -framework Foundation
 #include <Foundation/Foundation.h>
 #include <sys/socket.h>
 
-// Decompose an nw_error_t into K/N-safe scalars (see nw_helpers.h's describe_nw_error).
+// Decompose an nw_error_t into K/N-safe scalars (see the base module's nw_helpers.h describe_nw_error).
 static void nw_udp_describe_error(nw_error_t _Nullable error,
     int32_t *out_domain, int32_t *out_code, NSString * __autoreleasing *out_desc)
 {
@@ -34,7 +34,7 @@ nw_connection_t _Nullable nw_udp_create(const char * _Nonnull host, const char *
 {
     nw_endpoint_t endpoint = nw_endpoint_create_host(host, port);
     if (endpoint == NULL) return NULL;
-    // DISABLE_PROTOCOL on the TLS configure slot = plain UDP (quiche owns QUIC's crypto). Default UDP
+    // DISABLE_PROTOCOL on the TLS configure slot = plain UDP (raw datagrams, no DTLS). Default UDP
     // configuration otherwise.
     nw_parameters_t params = nw_parameters_create_secure_udp(
         NW_PARAMETERS_DISABLE_PROTOCOL,

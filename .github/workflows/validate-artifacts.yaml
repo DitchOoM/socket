@@ -93,7 +93,7 @@ jobs:
           # its Apple .module is simply left Linux-only (no worse than before).
           # socket-testsuite joined in W7 (RFC_DETERMINISTIC_SIMULATION §8) when it
           # became a published consumer-facing artifact — the #188 lesson below.
-          for module in socket socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
+          for module in socket socket-udp socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
             LINUX_MODULE="$LINUX_BASE/$module/$version/$module-$version.module"
             APPLE_MODULE="$APPLE_BASE/$module/$version/$module-$version.module"
             MERGED_MODULE="$MERGED/$module/$version/$module-$version.module"
@@ -301,7 +301,7 @@ jobs:
           # in it survived into the merged root .module. This catches a future module addition that
           # forgets to extend the merge loop, which the socket-only checks above cannot see.
           APPLE_BASE="/tmp/apple-repo/com/ditchoom"
-          for module in socket socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
+          for module in socket socket-udp socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
             APPLE_MODULE="$APPLE_BASE/$module/${version}/$module-${version}.module"
             MERGED_MODULE="$MERGED/$module/${version}/$module-${version}.module"
             [ -f "$APPLE_MODULE" ] || continue

@@ -1,12 +1,21 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.buffer.use
+import com.ditchoom.socket.udp.SocketAddressCodec
+import com.ditchoom.socket.udp.UdpSocket
+import com.ditchoom.socket.udp.hostOsSockAddrLayout
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,11 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.net.InetSocketAddress
-import java.net.SocketAddress
-import java.nio.channels.DatagramChannel
-import java.nio.channels.SelectionKey
-import java.nio.channels.Selector
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
@@ -36,7 +41,7 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
  *
  * Lives in `commonJvmMain` so both `jvmMain` and `androidMain` reach it via [QuicheEngine.bind].
  */
-internal fun buildJvmQuicServer(
+internal suspend fun buildJvmQuicServer(
     port: Int,
     host: String?,
     tlsConfig: QuicTlsConfig,
@@ -75,17 +80,22 @@ internal fun buildJvmQuicServer(
 
         applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config))
 
-        val channel = DatagramChannel.open()
-        channel.configureBlocking(false)
-        channel.bind(InetSocketAddress(host ?: "0.0.0.0", port))
-        val localAddr = channel.localAddress as InetSocketAddress
+        // Bind the shared unconnected server socket via :socket-udp (Phase 6 adapter-first cutover), sized
+        // to QUIC datagrams (not the 64 KB UDP ceiling). One channel serves every accepted connection;
+        // per-connection egress is a thin ServerConnectionUdpChannel over it.
+        // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
+        // datagram is allocated straight from it — the receive loop then routes it with no copy.
+        val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
+        val channel =
+            UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE, bufferFactory = recvBufPool)
+        val localAddress = channel.localAddress ?: error("bound server channel has no local address")
 
         val server =
             JvmQuicServer(
                 api,
                 config,
                 channel,
-                localAddr,
+                localAddress,
                 bufferFactory,
                 parentScope,
                 quicOptions.keepAliveInterval,
@@ -93,6 +103,7 @@ internal fun buildJvmQuicServer(
                 // to cancel last, so the withQuicServer wrapper stays a plain block + close().
                 onClose = { parentScope.cancel() },
                 tuning = tuning,
+                recvBufPool = recvBufPool,
             )
         bound = true
         return server
@@ -139,7 +150,7 @@ internal class JvmQuicServer(
     private val api: QuicheApi,
     private val config: QuicheConfig,
     private val channel: DatagramChannel,
-    private val localAddr: InetSocketAddress,
+    private val localAddress: SocketAddress,
     private val bufferFactory: BufferFactory,
     parentScope: CoroutineScope,
     private val keepAliveInterval: Duration? = null,
@@ -148,8 +159,44 @@ internal class JvmQuicServer(
     private val onClose: (() -> Unit)? = null,
     // Determinism seams forwarded to every accepted connection's driver (RFC_DETERMINISTIC_SIMULATION.md §3.1).
     private val tuning: QuicheDriverTuning = QuicheDriverTuning(),
+    /**
+     * Recv buffer pool — one MAX_DATAGRAM_SIZE (1350-byte) buffer per incoming UDP datagram, whose
+     * ownership transfers to the routed driver and returns here on `freeNativeMemory()` after
+     * `quiche_conn_recv`. Hoisted to a ctor param (default: a fresh pool) so [buildJvmQuicServer] can
+     * inject the SAME instance as the shared [channel]'s `bufferFactory`: the channel then allocates each
+     * datagram straight from this pool and the receive loop routes it with no copy (B2 elimination).
+     *
+     * MultiThreaded mode: the reader coroutine acquires; drivers release (per-connection coroutine).
+     * Ownership invariant: built from a **leaf** [bufferFactory] — never an already-pooled factory (the
+     * `80575c1` double-wrap regression).
+     */
+    private val recvBufPool: BufferPool = QuicheDriver.newRecvBufPool(bufferFactory),
 ) : QuicServer {
-    override val port: Int get() = localAddr.port
+    override val port: Int get() = localAddress.port
+
+    /**
+     * The one differential-tested sockaddr codec (Phase 6 SPI) — encodes peer/local [SocketAddress]es
+     * into the C sockaddr bytes quiche's `accept`/`recv_info` FFI needs, replacing SockAddrUtil.
+     */
+    private val codec = SocketAddressCodec(hostOsSockAddrLayout())
+
+    /**
+     * Shared PathKey→peer map resolving `sendInfo.to` back to a real send target on the egress channels,
+     * without reconstructing an address from the opaque [PathKey] (RFC §4). Populated by the receive loop
+     * from each passive-migration source's `Datagram.peer`; each entry is removed when its recv_info cache
+     * entry is evicted/freed, so it stays bounded to the live recv_info cache. Cross-thread: written on
+     * the receive loop, read by driver egress coroutines — hence a concurrent map.
+     */
+    private val peersByPathKey = ConcurrentHashMap<PathKey, SocketAddress>()
+
+    /**
+     * Prompt-wake signal for the receive loop, replacing the old shared `Selector.wakeup()`: a
+     * connection handler that closes a driver (or a driver issuing spare SCIDs) enqueues a routing-table
+     * change and pokes this so the loop drains it *now* instead of on the next inbound datagram. Conflated
+     * — many pokes collapse to one drain, which drains the whole queue. Reactive (no polling): with the
+     * select over a dedicated reader, only a real datagram or a real poke wakes the loop.
+     */
+    private val wakeups = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
 
     // Child scope of the per-call parent — cancelling it takes down every handler
     // coroutine spawned via connections() plus the receive loop. Without this,
@@ -163,37 +210,7 @@ internal class JvmQuicServer(
      * cache, cleanup/SCID queues, and the load-bearing close sweep). Only this server's NIO Selector
      * transport and its `InetSocketAddress`→sockaddr handling stay here; see [ServerConnectionRegistry].
      */
-    private val registry = ServerConnectionRegistry<InetSocketAddress>(api)
-
-    /**
-     * Recv buffer pool — each incoming UDP datagram needs a fresh MAX_DATAGRAM_SIZE
-     * (1350-byte) buffer, and ownership transfers to the connection's driver which
-     * frees it after quiche_conn_recv copies the bytes internally. PooledBuffer's
-     * `freeNativeMemory()` returns to the pool, so all existing free-paths
-     * (driver command execution, receive-loop error branches, destroy drain) feed
-     * the pool without code changes.
-     *
-     * MultiThreaded mode: receive loop acquires (Selector thread); drivers release
-     * (per-connection coroutine, can hop dispatchers under Dispatchers.IO).
-     * maxPoolSize=64 → ~87 KB cached (64 × 1350) — caps steady-state RSS while
-     * covering typical concurrent-driver counts.
-     *
-     * Ownership invariant: [bufferFactory] is a **leaf** factory per the
-     * `TransportConfig.bufferFactory` contract — this pool is built *from* it
-     * here. Never pass an already-pooled factory as `factory`: wrapping a pool
-     * in a pool is the `80575c1` double-wrap regression. A `BufferPool` whose
-     * leaf `factory` is itself a `BufferPool` makes `freeNativeMemory()` return
-     * the buffer to the inner pool while the outer pool's accounting still
-     * counts it, so neither pool reclaims correctly and the cap stops bounding
-     * RSS. Keep the leaf-factory-in, pool-built-here shape.
-     */
-    private val recvBufPool =
-        BufferPool(
-            threadingMode = ThreadingMode.MultiThreaded,
-            maxPoolSize = 64,
-            defaultBufferSize = MAX_DATAGRAM_SIZE,
-            factory = bufferFactory,
-        )
+    private val registry = ServerConnectionRegistry<SocketAddress>(api)
 
     /**
      * The shared recv_info `to` sockaddr: the server's fixed local address, reused by every cached
@@ -202,11 +219,10 @@ internal class JvmQuicServer(
      * miss; freed in [close] after the registry sweep. The per-source `from` addrs are owned by the
      * registry's cache entries.
      */
-    private var serverLocalSockAddr: NativeSockAddr? = null
+    private var serverLocalSockAddr: EncodedSockAddr? = null
 
     @Volatile private var closed = false
 
-    @Volatile private var receiveSelector: Selector? = null
     private val receiveJob = scope.launch(Dispatchers.IO) { receiveLoop() }
 
     override suspend fun connections(handler: suspend QuicScope.() -> Unit) =
@@ -232,7 +248,7 @@ internal class JvmQuicServer(
                     } finally {
                         conn.close()
                         registry.enqueueCleanup(driver)
-                        receiveSelector?.wakeup()
+                        wakeups.trySend(Unit) // drain the routing table now, not on the next datagram
                         connJob.cancel()
                     }
                 }
@@ -253,7 +269,8 @@ internal class JvmQuicServer(
     override suspend fun close() {
         if (closed) return
         closed = true
-        receiveSelector?.wakeup() // unblock selector.select() in receiveLoop
+        // Closing the :socket-udp channel wakes the receive loop's internal select and makes its
+        // dc.receive() return Closed, so the loop exits and receiveJob completes.
         channel.close()
         receiveJob.join()
         // receiveJob.join() above guarantees no new drivers are added or routed and nothing else
@@ -282,81 +299,88 @@ internal class JvmQuicServer(
     }
 
     /**
-     * Async receive loop using NIO [Selector].
-     * Allocates a fresh buffer per packet — zero copy to driver.
+     * Async receive loop over the shared `:socket-udp` channel. A dedicated [reader] confines the
+     * channel's `receive()` to one coroutine (per the buffer-flow single-consumer contract) and hands
+     * each datagram to this loop over a rendezvous channel; the loop [select]s that against [wakeups] so
+     * a routing-table change (connection close / spare SCID) drains promptly without an external selector
+     * wake. Each datagram carries its per-packet source ([com.ditchoom.buffer.flow.Datagram.peer]) and its
+     * payload is already a [recvBufPool] buffer (the channel's `bufferFactory`), so ownership transfers to
+     * the routed driver with no copy (freed back to the pool after `quiche_conn_recv`); we then parse its
+     * header to route or accept. [close]'s `channel.close()` makes the reader's `receive()` return Closed,
+     * which unwinds this loop.
      */
-    private suspend fun receiveLoop() {
-        val selector = Selector.open()
-        receiveSelector = selector
+    private suspend fun receiveLoop() =
+        kotlinx.coroutines.coroutineScope {
+            // Header parsing output buffers (reused across iterations — these are scratch space)
+            val versionBuf = bufferFactory.allocate(4)
+            val typeBuf = bufferFactory.allocate(1)
+            val scidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
+            val scidLenBuf = bufferFactory.allocate(8)
+            val dcidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
+            val dcidLenBuf = bufferFactory.allocate(8)
+            val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
+            val tokenLenBuf = bufferFactory.allocate(8)
 
-        // Header parsing output buffers (reused across iterations — these are scratch space)
-        val versionBuf = bufferFactory.allocate(4)
-        val typeBuf = bufferFactory.allocate(1)
-        val scidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
-        val scidLenBuf = bufferFactory.allocate(8)
-        val dcidBuf = bufferFactory.allocate(QUIC_MAX_CONN_ID_LEN)
-        val dcidLenBuf = bufferFactory.allocate(8)
-        val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
-        val tokenLenBuf = bufferFactory.allocate(8)
-
-        try {
-            // Guard against the race where close() runs before this coroutine has been
-            // scheduled. The channel would already be closed and register() would throw.
-            if (closed) return
-            try {
-                channel.register(selector, SelectionKey.OP_READ)
-            } catch (_: java.nio.channels.ClosedChannelException) {
-                return
-            }
-
-            while (!closed) {
-                // runInterruptible: see NioUdpChannel.receive — the same
-                // "suspend method calling blocking Selector.select" trap.
-                // Without it, coroutine cancellation can't reach a thread
-                // parked in EPoll.wait; if close()'s `selector.wakeup() +
-                // channel.close()` race against our entry into select(),
-                // the receive loop stalls and `receiveJob.join()` in close()
-                // hangs forever. With runInterruptible, scope cancel ⇒
-                // thread interrupt ⇒ select() returns ⇒ loop exits.
-                // Dispatcher routes through quicBlockingDispatcher — virtual
-                // threads on JDK 21+, Dispatchers.IO fallback otherwise.
-                kotlinx.coroutines.runInterruptible(quicBlockingDispatcher) { selector.select() }
-                if (closed) break
-                selector.selectedKeys().clear()
-
-                // Remove entries for drivers that have been closed by connection handlers,
-                // and register spare SCIDs issued by drivers. Both run on the receive loop
-                // thread — sole writer to the registry's routing table.
-                registry.drainRoutingQueues()
-
-                // Drain all available packets after select returns
-                while (true) {
-                    // Acquire a buffer from the per-server pool — ownership transfers to driver
-                    // (zero-copy). The driver's freeNativeMemory() releases back to the pool.
-                    val recvBuf = recvBufPool.allocate(MAX_DATAGRAM_SIZE)
-                    val recvByteBuffer = (recvBuf.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
-                    recvByteBuffer.clear()
-
-                    val peerAddr: SocketAddress? =
-                        try {
-                            channel.receive(recvByteBuffer) // non-blocking
-                        } catch (_: Exception) {
-                            recvBuf.freeNativeMemory()
-                            if (closed) return
-                            break
+            val inbound = kotlinx.coroutines.channels.Channel<DatagramReadResult>(kotlinx.coroutines.channels.Channel.RENDEZVOUS)
+            val reader =
+                launch(Dispatchers.IO) {
+                    try {
+                        while (true) {
+                            val r =
+                                try {
+                                    channel.receive()
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (_: Exception) {
+                                    // Transient receive error — retry (matches the old loop), unless the
+                                    // server is closing, in which case fall through to shut the reader down.
+                                    if (closed) break else continue
+                                }
+                            inbound.send(r)
+                            if (r is DatagramReadResult.Closed) break
                         }
+                    } catch (_: CancellationException) {
+                    } finally {
+                        inbound.close()
+                    }
+                }
 
-                    if (peerAddr == null) {
-                        recvBuf.freeNativeMemory()
-                        break // no more packets ready
+            val wake = Any()
+            val readerDone = Any()
+            try {
+                loop@ while (!closed) {
+                    val item =
+                        kotlinx.coroutines.selects.select<Any?> {
+                            inbound.onReceiveCatching { res -> res.getOrNull() ?: readerDone }
+                            wakeups.onReceive { wake }
+                        }
+                    // Register spare SCIDs / drop closed drivers BEFORE routing anything — matches the old
+                    // "drain right after the select wakes" order. Receive-loop coroutine is the sole writer.
+                    registry.drainRoutingQueues()
+
+                    val datagram =
+                        when (item) {
+                            wake -> continue@loop // woke only to drain the routing queues
+                            readerDone -> break@loop // reader saw Closed / error → shut down
+                            is DatagramReadResult.Closed -> break@loop
+                            is DatagramReadResult.Received -> item.datagram
+                            else -> continue@loop
+                        }
+                    if (closed) {
+                        datagram.payload.freeNativeMemory()
+                        break@loop
                     }
 
-                    val received = recvByteBuffer.position()
+                    val peer = datagram.peer
+                    // The channel allocated this payload straight from recvBufPool (its bufferFactory), so
+                    // it IS the pooled recv buffer — route it directly with no copy. Ownership transfers to
+                    // the driver, which frees it back to the pool after quiche_conn_recv.
+                    val recvBuf = datagram.payload
+                    val received = recvBuf.remaining()
                     if (received <= 0) {
                         recvBuf.freeNativeMemory()
-                        continue
+                        continue@loop
                     }
-
                     val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
                     // Initialize length output buffers with max capacity
@@ -380,30 +404,35 @@ internal class JvmQuicServer(
                         )
                     if (rc < 0) {
                         recvBuf.freeNativeMemory()
-                        continue
+                        continue@loop
                     }
 
                     val dcidLen = readNativeSizeT(dcidLenBuf)
                     val dcidKey = ConnectionIdKey.from(dcidBuf, dcidLen)
-                    val peerInetAddr = peerAddr as InetSocketAddress
 
                     val existingDriver = registry.driverForDcid(dcidKey)
                     if (existingDriver != null) {
-                        // Zero-copy: transfer buffer ownership to driver. The per-source recv_info
-                        // lets quiche see the real datagram origin so a migrated client's new source
-                        // is recognised as a new path (passive migration). Hold an in-flight ref so
-                        // the cache can't evict+free this recv_info while the driver still has it queued.
+                        // The per-source recv_info lets quiche see the real datagram origin so a migrated
+                        // client's new source is recognised as a new path (passive migration). Hold an
+                        // in-flight ref so the cache can't evict+free it while the driver has it queued.
                         val cached =
-                            registry.lookupRecvInfo(peerInetAddr) ?: run {
+                            registry.lookupRecvInfo(peer) ?: run {
                                 // Cache miss: build a recv_info from = the datagram's source, to = the
-                                // server's fixed local addr (allocated once, kept in serverLocalSockAddr).
+                                // server's fixed local addr (encoded once, kept in serverLocalSockAddr).
                                 val local =
-                                    serverLocalSockAddr ?: localAddr.toNativeSockAddr(bufferFactory).also {
+                                    serverLocalSockAddr ?: codec.encodeToNative(localAddress, bufferFactory).also {
                                         serverLocalSockAddr = it
                                     }
-                                val from = peerInetAddr.toNativeSockAddr(bufferFactory)
+                                val from = codec.encodeToNative(peer, bufferFactory)
                                 val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
-                                registry.putRecvInfo(peerInetAddr, info) { from.free() }
+                                // Record this source's PathKey→peer so a reply quiche routes here
+                                // (sendInfo.to) resolves to the real send target; removed on cache free.
+                                val fromKey = api.decodePathKey(from.address)
+                                peersByPathKey[fromKey] = peer
+                                registry.putRecvInfo(peer, info) {
+                                    from.free()
+                                    peersByPathKey.remove(fromKey)
+                                }
                             }
                         cached.inFlight.incrementAndGet()
                         val sendResult =
@@ -424,35 +453,27 @@ internal class JvmQuicServer(
                         }
                     } else {
                         // Accept new connection — recvBuf ownership transfers inside
-                        val result = acceptNewConnection(recvBuf, received, peerInetAddr)
-                        if (result != null) {
-                            val (driver, serverScidKey) = result
+                        val accepted = acceptNewConnection(recvBuf, received, peer)
+                        if (accepted != null) {
+                            val (driver, serverScidKey) = accepted
                             registry.routeDriver(serverScidKey, driver)
                             registry.routeDriver(dcidKey, driver)
-
                             registry.acceptedDrivers.trySend(driver)
                         }
                     }
                 }
-            }
-        } catch (_: java.nio.channels.ClosedSelectorException) {
-            // Shutdown
-        } finally {
-            receiveSelector = null
-            versionBuf.freeNativeMemory()
-            typeBuf.freeNativeMemory()
-            scidBuf.freeNativeMemory()
-            scidLenBuf.freeNativeMemory()
-            dcidBuf.freeNativeMemory()
-            dcidLenBuf.freeNativeMemory()
-            tokenBuf.freeNativeMemory()
-            tokenLenBuf.freeNativeMemory()
-            try {
-                selector.close()
-            } catch (_: Exception) {
+            } finally {
+                reader.cancel()
+                versionBuf.freeNativeMemory()
+                typeBuf.freeNativeMemory()
+                scidBuf.freeNativeMemory()
+                scidLenBuf.freeNativeMemory()
+                dcidBuf.freeNativeMemory()
+                dcidLenBuf.freeNativeMemory()
+                tokenBuf.freeNativeMemory()
+                tokenLenBuf.freeNativeMemory()
             }
         }
-    }
 
     /**
      * Write a native size_t value into a buffer for quiche_header_info output params.
@@ -473,15 +494,15 @@ internal class JvmQuicServer(
     private fun acceptNewConnection(
         recvBuf: com.ditchoom.buffer.PlatformBuffer,
         received: Int,
-        peerAddr: InetSocketAddress,
+        peer: SocketAddress,
     ): Pair<QuicheDriver, ConnectionIdKey>? {
         val recvAddr = recvBuf.nativeMemoryAccess!!.nativeAddress.toLong()
 
         val serverScid = generateScid(bufferFactory, tuning.random)
         val serverScidAddr = serverScid.nativeMemoryAccess!!.nativeAddress.toLong()
 
-        val peerSockAddr = peerAddr.toNativeSockAddr(bufferFactory)
-        val localSockAddr = localAddr.toNativeSockAddr(bufferFactory)
+        val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
+        val localSockAddr = codec.encodeToNative(localAddress, bufferFactory)
 
         val conn =
             try {
@@ -525,7 +546,16 @@ internal class JvmQuicServer(
         api.connRecv(conn, recvAddr, received, recvInfo)
         recvBuf.freeNativeMemory() // initial packet consumed
 
-        val udpChannel = NioUdpChannel(channel, peerAddr)
+        // Per-connection egress over the shared server socket. fixedPeerKey is this peer's PathKey (what
+        // quiche echoes as sendInfo.to for the un-migrated path); peersByPathKey resolves a migrated
+        // source's key. See ServerConnectionUdpChannel.
+        val udpChannel =
+            ServerConnectionUdpChannel(
+                channel = channel,
+                fixedPeer = peer,
+                fixedPeerKey = api.decodePathKey(peerSockAddr.address),
+                peerFor = peersByPathKey::get,
+            )
         // onCleanup keeps peerSockAddr/localSockAddr strongly reachable for the driver's
         // lifetime — recvInfo holds only raw Long pointers into their PlatformBuffers,
         // so without this the buffers become GC-eligible immediately and DirectByteBuffer
@@ -558,10 +588,11 @@ internal class JvmQuicServer(
                 },
                 onScidIssued = { scid, len ->
                     // Snapshot the CID bytes now (scid is freed right after this returns) and hand
-                    // the registration to the receive loop, which owns the routing table.
+                    // the registration to the receive loop, which owns the routing table; poke it to
+                    // drain promptly so a migrating peer's new DCID routes before its first packet.
                     driverRef?.let { d ->
                         registry.enqueueScidRegistration(ConnectionIdKey.from(scid, len), d)
-                        receiveSelector?.wakeup()
+                        wakeups.trySend(Unit)
                     }
                 },
             )
@@ -582,7 +613,6 @@ internal class JvmQuicServer(
     }
 
     companion object {
-        private const val MAX_DATAGRAM_SIZE = 1350
         private const val MAX_TOKEN_LEN = 256
     }
 }

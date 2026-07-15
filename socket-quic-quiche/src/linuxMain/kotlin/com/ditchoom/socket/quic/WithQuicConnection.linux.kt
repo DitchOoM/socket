@@ -1,13 +1,13 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
 
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.TransportConfig
-import com.ditchoom.socket.linux.socket_getsockname
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_config_free
 import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_directory
@@ -15,22 +15,19 @@ import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_
 import com.ditchoom.socket.quic.quiche.quiche_config_new
 import com.ditchoom.socket.quic.quiche.quiche_config_set_application_protos
 import com.ditchoom.socket.quic.quiche.quiche_connect
+import com.ditchoom.socket.udp.SocketAddressCodec
+import com.ditchoom.socket.udp.UdpSocket
+import com.ditchoom.socket.udp.linuxSockAddrLayout
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.UByteVar
-import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.pointed
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.rawValue
 import kotlinx.cinterop.set
-import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
-import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,22 +40,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
-import platform.posix.AF_INET
 import platform.posix.F_OK
-import platform.posix.SOCK_DGRAM
 import platform.posix.access
-import platform.posix.addrinfo
 import platform.posix.close
-import platform.posix.connect
 import platform.posix.fclose
 import platform.posix.fdopen
 import platform.posix.fputs
-import platform.posix.freeaddrinfo
-import platform.posix.getaddrinfo
 import platform.posix.mkstemp
 import platform.posix.sockaddr
-import platform.posix.sockaddr_in
-import platform.posix.socket
 import platform.posix.unlink
 import kotlin.time.Duration
 
@@ -91,6 +80,9 @@ internal suspend fun buildLinuxQuicConnection(
     try {
         return run {
             val bufferFactory = connectionOptions.quicBufferFactory()
+            // One recv pool per connection, injected into both the :socket-udp channel (allocates each
+            // datagram from it) and the driver (frees each back to it) — no receive copy (B2 elimination).
+            val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
 
             val config =
                 quiche_config_new(QUICHE_PROTOCOL_VERSION.convert())
@@ -127,149 +119,120 @@ internal suspend fun buildLinuxQuicConnection(
                 loadSystemCaTrust(config)
             }
 
-            memScoped {
-                val fd = socket(AF_INET, SOCK_DGRAM, 0)
-                if (fd < 0) throw SocketConnectionException.Refused(hostname, port, platformError = "Failed to create UDP socket")
-
-                val hints = alloc<addrinfo>()
-                hints.ai_family = AF_INET
-                hints.ai_socktype = SOCK_DGRAM
-                val resultPtr = alloc<kotlinx.cinterop.CPointerVar<addrinfo>>()
-                if (getaddrinfo(hostname, port.toString(), hints.ptr, resultPtr.ptr) != 0) {
-                    close(fd)
-                    quiche_config_free(config)
-                    throw SocketConnectionException.Refused(hostname, port, platformError = "DNS resolution failed")
-                }
-                val addrInfo = resultPtr.value!!.pointed
-                val peerSockAddr: CPointer<sockaddr> = addrInfo.ai_addr!!
-                val peerSockAddrLen = addrInfo.ai_addrlen
-
-                if (connect(fd, peerSockAddr, peerSockAddrLen) < 0) {
-                    freeaddrinfo(resultPtr.value)
-                    close(fd)
-                    quiche_config_free(config)
-                    throw SocketConnectionException.Refused(hostname, port, platformError = "UDP connect failed")
-                }
-
-                // memScoped.alloc does not zero-init. If socket_getsockname fails silently,
-                // sin_family is garbage and quiche_connect SIGABRTs through std_addr_from_c.
-                val localAddr = alloc<sockaddr_in>()
-                platform.posix.memset(localAddr.ptr, 0, sizeOf<sockaddr_in>().convert())
-                val localAddrLen = alloc<kotlinx.cinterop.UIntVar>()
-                localAddrLen.value = sizeOf<sockaddr_in>().convert()
-                val gsRc = socket_getsockname(fd, localAddr.ptr.reinterpret(), localAddrLen.ptr)
-                check(gsRc == 0) { "socket_getsockname returned $gsRc" }
-                check(localAddr.sin_family.toInt() == AF_INET) {
-                    "socket_getsockname sin_family=${localAddr.sin_family.toInt()} (expected AF_INET=$AF_INET)"
-                }
-
-                // SCID — shared generator (20 random bytes, reset for read), seeded via the tuning.
-                val scidBuf = generateScid(bufferFactory, tuning.random)
-                val scidPtr = scidBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
-
-                val conn =
-                    quiche_connect(
-                        hostname,
-                        scidPtr,
-                        MAX_CONN_ID_LEN.convert(),
-                        localAddr.ptr.reinterpret(),
-                        sizeOf<sockaddr_in>().convert(),
-                        peerSockAddr,
-                        peerSockAddrLen,
-                        config,
-                    ) ?: run {
-                        scidBuf.freeNativeMemory()
-                        freeaddrinfo(resultPtr.value)
-                        close(fd)
-                        quiche_config_free(config)
-                        throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
-                    }
-
-                scidBuf.freeNativeMemory()
-
-                // Copy sockaddrs to heap buffers (memScoped will free originals)
-                val peerAddrBuf = bufferFactory.allocate(peerSockAddrLen.toInt())
-                val peerAddrDst = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-                platform.posix.memcpy(peerAddrDst, peerSockAddr.reinterpret<ByteVar>(), peerSockAddrLen.convert())
-                peerAddrBuf.resetForRead()
-
-                val localAddrBuf = bufferFactory.allocate(sizeOf<sockaddr_in>().toInt())
-                val localAddrDst = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
-                platform.posix.memcpy(localAddrDst, localAddr.ptr, sizeOf<sockaddr_in>().convert())
-                localAddrBuf.resetForRead()
-
-                freeaddrinfo(resultPtr.value)
-                quiche_config_free(config)
-
-                // Create recvInfo/sendInfo via the QuicheApi
-                val recvInfo =
-                    api.recvInfoNew(
-                        peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        peerSockAddrLen.toInt(),
-                        localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        sizeOf<sockaddr_in>().toInt(),
-                    )
-                val sendInfo = api.sendInfoNew()
-
-                val udpChannel = IoUringUdpChannel(fd)
-                val driver =
-                    QuicheDriver(
-                        api = api,
-                        conn = QuicheConn(conn.rawValue.toLong()),
-                        bufferFactory = bufferFactory,
-                        recvInfo = recvInfo,
-                        sendInfo = sendInfo,
-                        udpChannel = udpChannel,
-                        clientMode = true,
-                        isServer = false,
-                        keepAliveInterval = quicOptions.keepAliveInterval,
-                        clock = tuning.clock,
-                        driverContext = tuning.driverContext,
-                        random = tuning.random,
-                        recorder = tuning.recorderFactory(),
-                        // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs
-                        // (kept pinned via onCleanup for the driver's life) and a factory that opens
-                        // additional io_uring path sockets to the same peer. Mirrors the JVM client.
-                        peerAddr = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        peerLen = peerSockAddrLen.toInt(),
-                        primaryLocalAddr = localAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                        primaryLocalLen = sizeOf<sockaddr_in>().toInt(),
-                        udpChannelFactory =
-                            IoUringUdpChannelFactory(
-                                peerSockAddrAddress = peerAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
-                                peerSockAddrLen = peerSockAddrLen.toInt(),
-                                bufferFactory = bufferFactory,
-                            ),
-                        onCleanup = {
-                            peerAddrBuf.freeNativeMemory()
-                            localAddrBuf.freeNativeMemory()
-                        },
-                    )
-
-                val connJob = SupervisorJob(parentScope.coroutineContext[Job])
-                val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
-                // Sockaddr buffers are freed by the driver's onCleanup (after quiche is done
-                // dereferencing recvInfo.from/to during destroy, in close()) — matches the JVM
-                // client. onRelease only cancels the per-call parent scope (the driver's destroy
-                // closes the io_uring fd), run once by close() after the block returns.
-                val quicConn = LinuxQuicConnection(driver, bufferFactory, connScope, onRelease = { parentScope.cancel() })
-                quicConn.start()
-                quicConn.awaitEstablished(timeout)
-                // Connection owns teardown via onRelease now — set established first so the failure
-                // `finally` won't double-cancel; a pin mismatch tears down via quicConn.close() instead.
-                established = true
-                verifyServerCertificateHashes(
-                    quicOptions.serverCertificateHashes,
-                    bufferFactory,
-                    readPeerCertDer = quicConn::readPeerCertDer,
-                    closeConnection = { quicConn.close() },
-                    // Linux extracts the W3C constraint fields via BoringSSL's X.509 parser (the same
-                    // ASN.1 decoder quiche links), then the shared policy enforces validity/P-256.
-                    parseLeafFields = ::parsePinnedLeafFieldsLinux,
-                    now = tuning.wallClock(),
+            // Resolve the peer once (numeric literal → no DNS), then open a connected :socket-udp channel
+            // to it (Phase 6 adapter-first cutover) with a QUIC-sized receive staging buffer.
+            val peer = UdpSocket.resolve(hostname, port)
+            val channel =
+                UdpSocket.connect(
+                    remoteHost = peer.host,
+                    remotePort = peer.port,
+                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                    bufferFactory = recvBufPool,
                 )
-                quicConn
-            }
+            val local =
+                channel.localAddress
+                    ?: throw SocketConnectionException.Refused(hostname, port, platformError = "connected UDP channel has no local address")
+
+            // Encode the peer + local sockaddrs via the one differential-tested SocketAddressCodec (Phase 6
+            // sockaddr SPI, replacing the memcpy'd kernel sockaddrs). A single encoding of each backs
+            // quiche_connect AND recv_info; both stay pinned for the driver's life and are freed by
+            // onCleanup so recv_info.from/to can never dangle.
+            val codec = SocketAddressCodec(linuxSockAddrLayout)
+            val peerSockAddr = codec.encodeToNative(peer, bufferFactory)
+            val localSockAddr = codec.encodeToNative(local, bufferFactory)
+
+            // SCID — shared generator (20 random bytes, reset for read), seeded via the tuning.
+            val scidBuf = generateScid(bufferFactory, tuning.random)
+            val scidPtr = scidBuf.nativeMemoryAccess!!.nativeAddress.toCPointer<UByteVar>()!!
+
+            val connPtr =
+                quiche_connect(
+                    hostname,
+                    scidPtr,
+                    MAX_CONN_ID_LEN.convert(),
+                    localSockAddr.address.toCPointer<sockaddr>(),
+                    localSockAddr.length.convert(),
+                    peerSockAddr.address.toCPointer<sockaddr>(),
+                    peerSockAddr.length.convert(),
+                    config,
+                ) ?: run {
+                    scidBuf.freeNativeMemory()
+                    peerSockAddr.free()
+                    localSockAddr.free()
+                    runCatching { channel.close() }
+                    quiche_config_free(config)
+                    throw SocketConnectionException.Refused(hostname, port, platformError = "quiche_connect failed")
+                }
+
+            scidBuf.freeNativeMemory()
+            quiche_config_free(config)
+
+            // Create recvInfo/sendInfo from the same pinned sockaddr encodings.
+            val recvInfo = api.recvInfoNew(peerSockAddr.address, peerSockAddr.length, localSockAddr.address, localSockAddr.length)
+            val sendInfo = api.sendInfoNew()
+
+            val udpChannel = DatagramChannelUdpChannel(channel)
+            val driver =
+                QuicheDriver(
+                    api = api,
+                    conn = QuicheConn(connPtr.rawValue.toLong()),
+                    bufferFactory = bufferFactory,
+                    recvInfo = recvInfo,
+                    sendInfo = sendInfo,
+                    udpChannel = udpChannel,
+                    recvBufPool = recvBufPool,
+                    clientMode = true,
+                    isServer = false,
+                    keepAliveInterval = quicOptions.keepAliveInterval,
+                    clock = tuning.clock,
+                    driverContext = tuning.driverContext,
+                    random = tuning.random,
+                    recorder = tuning.recorderFactory(),
+                    // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs (kept pinned
+                    // via onCleanup for the driver's life) and a factory that opens additional :socket-udp
+                    // path sockets to the same peer. Mirrors the JVM client.
+                    peerAddr = peerSockAddr.address,
+                    peerLen = peerSockAddr.length,
+                    primaryLocalAddr = localSockAddr.address,
+                    primaryLocalLen = localSockAddr.length,
+                    udpChannelFactory = UdpSocketChannelFactory(peer, codec, bufferFactory, recvBufPool, QuicheDriver.MAX_DATAGRAM_SIZE),
+                    onCleanup = {
+                        peerSockAddr.free()
+                        localSockAddr.free()
+                    },
+                )
+
+            val connJob = SupervisorJob(parentScope.coroutineContext[Job])
+            val connScope = CoroutineScope(parentScope.coroutineContext + connJob)
+            // onRelease cancels the per-call scope (which cancels the primary reader parked in the
+            // channel's terminal wait), then closes the primary UDP channel (fd + io_uring refcount).
+            // Run once by close() after the block returns. Mirrors the JVM client.
+            val quicConn =
+                LinuxQuicConnection(
+                    driver,
+                    bufferFactory,
+                    connScope,
+                    onRelease = {
+                        parentScope.cancel()
+                        runCatching { udpChannel.close() }
+                    },
+                )
+            quicConn.start()
+            quicConn.awaitEstablished(timeout)
+            // Connection owns teardown via onRelease now — set established first so the failure
+            // `finally` won't double-cancel; a pin mismatch tears down via quicConn.close() instead.
+            established = true
+            verifyServerCertificateHashes(
+                quicOptions.serverCertificateHashes,
+                bufferFactory,
+                readPeerCertDer = quicConn::readPeerCertDer,
+                closeConnection = { quicConn.close() },
+                // Linux extracts the W3C constraint fields via BoringSSL's X.509 parser (the same
+                // ASN.1 decoder quiche links), then the shared policy enforces validity/P-256.
+                parseLeafFields = ::parsePinnedLeafFieldsLinux,
+                now = tuning.wallClock(),
+            )
+            quicConn
         }
     } finally {
         // On success the connection owns parentScope teardown via onRelease; only release here if

@@ -183,9 +183,9 @@ internal class AppleUdpServerChannel(
  * [UdpChannel] adapter for a single QUIC server-side connection. Sends via the shared
  * [AppleUdpServerChannel] to a fixed peer address; [receive] is unsupported (the server's central
  * loop delivers packets to each driver). Owns [peerAddr] (a nativeHeap copy) and frees it on [close].
- * Mirrors the linux `ServerConnectionUdpChannel`.
+ * Mirrors the linux `IoUringServerConnectionUdpChannel`.
  */
-internal class ServerConnectionUdpChannel(
+internal class AppleServerConnectionUdpChannel(
     private val serverChannel: AppleUdpServerChannel,
     private val peerAddr: CPointer<sockaddr_storage>,
     private val peerAddrLen: socklen_t,
