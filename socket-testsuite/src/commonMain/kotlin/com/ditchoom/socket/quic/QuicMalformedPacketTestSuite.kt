@@ -65,7 +65,7 @@ abstract class QuicMalformedPacketTestSuite {
                             "127.0.0.1",
                             port,
                             options,
-                            timeout = 10.seconds,
+                            timeout = 10.seconds.scaled,
                             reason = "server did not serve a legit client after malformed datagrams",
                         ) { confirmLive ->
                             val stream = openStream()
@@ -88,7 +88,17 @@ abstract class QuicMalformedPacketTestSuite {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
                     val serverJob = launch { echoEveryStream() }
                     try {
-                        withQuicConnection("127.0.0.1", port, options, timeout = 10.seconds) {
+                        // Trace-capturing + scaled establishment: this connect has flaked on loaded macOS
+                        // CI runners (awaitEstablished timing out ~10s while normally <1s). The helper
+                        // scales the budget by QUIC_TEST_TIME_SCALE and, if it still fails, dumps the QUIC
+                        // trace into the exception so the next occurrence is diagnosable, not opaque.
+                        withTracedQuicConnection(
+                            "127.0.0.1",
+                            port,
+                            options,
+                            timeout = 10.seconds,
+                            label = "liveConnectionSurvivesMalformedDatagrams",
+                        ) {
                             val stream = openStream()
                             assertEquals("before", stream.echoOnce("before"), "echo failed before the blast")
 

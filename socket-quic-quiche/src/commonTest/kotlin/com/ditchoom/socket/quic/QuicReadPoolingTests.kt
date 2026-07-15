@@ -1,9 +1,14 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.counting
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
@@ -16,7 +21,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Regression tests for QUIC read-path buffer recycling — the quiche-layer companion of the TCP
  * `ReadBufferPoolingTest`. [DriverStreamAdapter.streamRead] used to allocate a fresh 64 KB buffer
- * from the leaf factory on EVERY stream read (and [DriverDatagramAdapter.receiveDatagram] a fresh
+ * from the leaf factory on EVERY stream read (and [DriverDatagramAdapter.receive] a fresh
  * 1350-byte buffer per datagram); under the default GC-reclaimed factory those accumulate to the
  * JVM direct-memory cap under high read throughput. Reads now draw from the driver's per-connection
  * [QuicheDriver.streamReadPool] / [QuicheDriver.recvBufPool], and the consumer's `freeNativeMemory()`
@@ -98,13 +103,13 @@ class QuicReadPoolingTests {
                 val counting = leaf.counting()
                 val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(3, false) }
                 val driver = driverWith(api, counting)
-                val adapter = DriverDatagramAdapter(driver)
+                val adapter = DriverDatagramAdapter(driver, SocketAddress.ofLiteral("127.0.0.1", 4433))
                 driver.start(this)
                 try {
                     repeat(300) {
-                        val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
-                        assertIs<DatagramReceiveResult.Received>(result)
-                        result.buffer.freeIfNeeded()
+                        val result = withTimeout(2.seconds) { adapter.receive() }
+                        assertIs<DatagramReadResult.Received>(result)
+                        result.datagram.payload.freeIfNeeded()
                     }
                 } finally {
                     driver.destroy()

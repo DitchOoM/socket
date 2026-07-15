@@ -1,7 +1,11 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
 import kotlinx.coroutines.CoroutineScope
@@ -244,8 +248,8 @@ internal suspend fun <R> withSemanticSim(
         serverDriver.start(simScope)
         clientDriver.start(simScope)
 
-        val client = DriverQuicConnection(clientDriver, bufferFactory, simScope)
-        val server = DriverQuicConnection(serverDriver, bufferFactory, simScope)
+        val client = DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", 42002), simScope)
+        val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", 42001), simScope)
         try {
             withTimeout(establishTimeout) {
                 clientDriver.state.first { it !is QuicConnectionState.Handshaking }

@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.BufferFactory
@@ -5,6 +7,8 @@ import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
@@ -195,7 +199,7 @@ internal class WebTransportMux(
             if (payload.remaining() > 0) out.write(payload)
             out.resetForRead()
             try {
-                scope.sendDatagram(out)
+                scope.datagramChannel().send(out)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -208,14 +212,19 @@ internal class WebTransportMux(
 
     /**
      * Pump inbound QUIC datagrams to their session's [WebTransportSession.datagrams] flow, keyed by the
-     * Quarter Stream ID. A datagram for an unknown/closed session is dropped. Collecting
-     * [QuicScope.datagrams] completes immediately (does nothing) when datagrams are not enabled, so this
-     * is safe to launch unconditionally for a WebTransport-enabled connection.
+     * Quarter Stream ID (the WebTransport flow-id demux — the datagram analogue of stream muxing, kept
+     * consumer-side per the [com.ditchoom.buffer.flow.DatagramMux] contract). A datagram for an
+     * unknown/closed session is dropped. The channel receive parks harmlessly until a datagram arrives
+     * or the connection ends, so this is safe to launch unconditionally for a WebTransport connection.
      */
     fun startDatagramLoop() {
         scope.launch {
             try {
-                scope.datagrams().collect { buffer ->
+                val channel = scope.datagramChannel()
+                while (true) {
+                    val received = channel.receive()
+                    if (received !is DatagramReadResult.Received) break // Closed — connection ended
+                    val buffer = received.datagram.payload
                     val sessionId =
                         try {
                             VarIntCodec.decode(buffer, DecodeContext.Empty) * 4
@@ -223,7 +232,7 @@ internal class WebTransportMux(
                             throw e
                         } catch (_: Throwable) {
                             buffer.freeIfNeeded() // malformed Quarter Stream ID
-                            return@collect
+                            continue
                         }
                     val session = session(sessionId)
                     if (session != null && !session.isClosed) {

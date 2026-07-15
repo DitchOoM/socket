@@ -45,8 +45,13 @@ internal class ServerConnectionRegistry<K>(
      */
     private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
 
-    /** Hand-off of newly accepted drivers from the receive loop to `connections()`'s consumer loop. */
-    val acceptedDrivers = Channel<QuicheDriver>(Channel.UNLIMITED)
+    /**
+     * Hand-off of newly accepted connections from the receive loop to `connections()`'s consumer loop.
+     * Carries the accepted driver together with its remote peer address so the handler's
+     * [DriverQuicConnection] can expose `remoteAddress` (the datagram-channel peer) — the receive loop
+     * is the only place the peer [com.ditchoom.buffer.flow.SocketAddress] is known.
+     */
+    val acceptedDrivers = Channel<AcceptedConnection>(Channel.UNLIMITED)
 
     /**
      * Authoritative ledger of every accepted driver whose run loop may still be alive — added the

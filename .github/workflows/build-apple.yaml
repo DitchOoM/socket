@@ -24,6 +24,14 @@ jobs:
     timeout-minutes: 60
     outputs:
       version: ${{ steps.version.outputs.version }}
+    env:
+      # Loaded macOS runners occasionally take >10s for a QUIC handshake that is normally <1s (this is a
+      # real-network establishment test, not the deterministic ManualDriverClock sim tier), tripping the
+      # fixed test deadlines and flaking the release. Scale every `.scaled` test budget
+      # (TestHelpers.testTimeScale, clamped 1..10) by 3x so a slow runner simply gets more wall-clock
+      # without weakening any assertion or timing ratio. Left unset on Linux/local (scale = 1). See
+      # QuicMalformedPacketTestSuite + withTracedQuicConnection.
+      QUIC_TEST_TIME_SCALE: "3"
     steps:
       - uses: actions/checkout@v6
 

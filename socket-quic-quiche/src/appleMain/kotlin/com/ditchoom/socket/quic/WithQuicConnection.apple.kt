@@ -7,7 +7,8 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.TransportConfig
@@ -234,6 +235,7 @@ internal suspend fun buildAppleQuicConnection(
                 AppleQuicConnection(
                     driver,
                     bufferFactory,
+                    peer,
                     connScope,
                     onRelease = {
                         runCatching { udpChannel.close() }
@@ -272,13 +274,14 @@ internal suspend fun buildAppleQuicConnection(
 internal class AppleQuicConnection(
     private val driver: QuicheDriver,
     override val bufferFactory: BufferFactory,
+    override val remoteAddress: SocketAddress,
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
-    private val datagramAdapter = DriverDatagramAdapter(driver)
+    private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
 
     fun start() {
         driver.start(scope)
@@ -325,13 +328,7 @@ internal class AppleQuicConnection(
         return deferred.await()
     }
 
-    override suspend fun sendDatagram(buffer: ReadBuffer) = datagramAdapter.sendDatagram(buffer)
-
-    override suspend fun receiveDatagram(): DatagramReceiveResult = datagramAdapter.receiveDatagram()
-
-    override fun datagrams(): Flow<ReadBuffer> = datagramAdapter.datagrams()
-
-    override fun maxDatagramSize(): MaxDatagramSize = datagramAdapter.maxDatagramSize()
+    override fun datagramChannel(): DatagramChannel = datagramAdapter
 
     override val pathState: StateFlow<PathInfo> = driver.pathState
 

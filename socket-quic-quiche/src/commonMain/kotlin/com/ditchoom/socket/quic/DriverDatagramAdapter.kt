@@ -1,20 +1,30 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.Datagram
+import com.ditchoom.buffer.flow.DatagramCapabilities
+import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.DatagramSendOptions
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.channels.ClosedSendChannelException
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 
 /**
- * Implements the [QuicScope] datagram surface (RFC 9221) on top of [QuicheDriver].
+ * Exposes a [QuicheDriver]'s RFC-9221 unreliable datagrams as a buffer-flow [DatagramChannel] — the
+ * *connected* (single-peer) datagram endpoint backing [QuicScope.datagramChannel]. This is the Phase-7
+ * fold of the old `QuicScope.sendDatagram`/`receiveDatagram` surface onto the shared datagram
+ * trichotomy; every received [Datagram] carries the connection's [remote] peer.
  *
- * Shared by every quiche-backed platform connection (JVM/Android/Linux) so the buffer-ownership and
- * native-lifetime rules live in one place. The logic mirrors [DriverStreamAdapter] for streams:
+ * Shared by every quiche-backed platform connection (JVM/Android/Linux/Apple) so the buffer-ownership
+ * and native-lifetime rules live in one place. The logic mirrors [DriverStreamAdapter] for streams:
  *
  * - **receive**: acquire from the driver's per-connection [QuicheDriver.recvBufPool] (the caller's
  *   `freeNativeMemory()` recycles the buffer back to that pool), let quiche write into it, transfer
@@ -23,15 +33,42 @@ import kotlinx.coroutines.withContext
  *   read-after-free guard from [DriverStreamAdapter]).
  * - **send**: the caller owns the buffer; the driver only reads its native address. The same in-flight
  *   join guarantees quiche finished reading before the caller frees/recycles it.
+ *
+ * A QUIC datagram flow has one implicit peer and no per-datagram IP control plane, so [send] ignores
+ * its `to`/`options` arguments, [capabilities] is [DatagramCapabilities.None], and [close] is a no-op
+ * (the connection owns the datagram flow's lifecycle).
  */
 internal class DriverDatagramAdapter(
     private val driver: QuicheDriver,
-) {
+    private val remote: SocketAddress,
+) : DatagramChannel {
     /** The structured close reason if the connection has closed, else [fallback]. */
     private fun closedReason(fallback: QuicError): QuicError = (driver.state.value as? QuicConnectionState.Closed)?.error ?: fallback
 
-    suspend fun sendDatagram(buffer: ReadBuffer) {
-        val remaining = buffer.remaining()
+    override val isOpen: Boolean
+        get() = driver.state.value !is QuicConnectionState.Closed
+
+    /** The local UDP endpoint is not surfaced through the driver; a QUIC connected channel reports null. */
+    override val localAddress: SocketAddress? = null
+
+    /** QUIC application datagrams carry no raw IP control plane (ECN/DF/PKTINFO). */
+    override val capabilities: DatagramCapabilities = DatagramCapabilities.None
+
+    override val maxWritableSize: Int
+        get() =
+            when (val max = driver.lastMaxDatagramSize) {
+                is MaxDatagramSize.Bytes -> max.bytes
+                is MaxDatagramSize.Unavailable -> 0
+            }
+
+    override suspend fun send(
+        payload: ReadBuffer,
+        to: SocketAddress?,
+        options: DatagramSendOptions,
+    ) {
+        // Connected single peer: `to` (must be `remote` or null) and the IP control-plane `options`
+        // do not apply to a QUIC datagram flow, so they are ignored.
+        val remaining = payload.remaining()
         when (val max = driver.lastMaxDatagramSize) {
             is MaxDatagramSize.Unavailable ->
                 throw IllegalStateException("QUIC datagrams are not enabled, or the peer did not advertise support")
@@ -40,7 +77,7 @@ internal class DriverDatagramAdapter(
         }
         // A zero-length datagram is valid (RFC 9221); a 0-remaining buffer may not expose a native
         // address, so pass a null pointer in that case (the backends send NULL/len 0).
-        val addr = if (remaining > 0) buffer.nativeMemoryAccess!!.nativeAddress.toLong() + buffer.position() else 0L
+        val addr = if (remaining > 0) payload.nativeMemoryAccess!!.nativeAddress.toLong() + payload.position() else 0L
 
         // See DriverStreamAdapter.streamWrite: keep the buffer alive until any in-flight send finishes
         // reading `addr`, since the caller frees it the instant we return.
@@ -74,7 +111,7 @@ internal class DriverDatagramAdapter(
         }
     }
 
-    suspend fun receiveDatagram(): DatagramReceiveResult {
+    override suspend fun receive(): DatagramReadResult {
         val buffer = driver.recvBufPool.allocate(QuicheDriver.MAX_DATAGRAM_SIZE)
         val addr = buffer.nativeMemoryAccess!!.nativeAddress.toLong()
 
@@ -95,34 +132,24 @@ internal class DriverDatagramAdapter(
                         buffer.position(result.bytesRead)
                         buffer.resetForRead()
                         transferred = true
-                        return DatagramReceiveResult.Received(buffer)
+                        return DatagramReadResult.Received(Datagram(payload = buffer, peer = remote))
                     }
                     is StreamRecvResult.Done -> driver.dgramSignal.receive() // park until one arrives, then retry
-                    is StreamRecvResult.Error -> return DatagramReceiveResult.ConnectionClosed(closedReason(QuicError.NoError))
+                    is StreamRecvResult.Error -> return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
                 }
             }
             @Suppress("UNREACHABLE_CODE")
-            DatagramReceiveResult.ConnectionClosed(closedReason(QuicError.NoError))
+            DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
         } catch (_: ClosedSendChannelException) {
-            return DatagramReceiveResult.ConnectionClosed(closedReason(QuicError.NoError))
+            return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
         } catch (_: ClosedReceiveChannelException) {
-            return DatagramReceiveResult.ConnectionClosed(closedReason(QuicError.NoError))
+            return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
         } finally {
             inFlight?.let { withContext(NonCancellable) { it.join() } }
             if (!transferred) buffer.freeNativeMemory()
         }
     }
 
-    /** Thin loop over [receiveDatagram] for parity with `streams()`; completes when the connection closes. */
-    fun datagrams(): Flow<ReadBuffer> =
-        flow {
-            while (true) {
-                when (val result = receiveDatagram()) {
-                    is DatagramReceiveResult.Received -> emit(result.buffer)
-                    is DatagramReceiveResult.ConnectionClosed -> return@flow
-                }
-            }
-        }
-
-    fun maxDatagramSize(): MaxDatagramSize = driver.lastMaxDatagramSize
+    /** The QUIC connection owns the datagram flow's lifecycle; closing the channel alone is a no-op. */
+    override fun close() = Unit
 }

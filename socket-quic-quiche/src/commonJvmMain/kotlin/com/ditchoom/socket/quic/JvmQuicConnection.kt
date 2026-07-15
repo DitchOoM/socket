@@ -1,7 +1,11 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.ClosedSendChannelException
@@ -27,6 +31,7 @@ import kotlin.time.Duration
 internal class JvmQuicConnection(
     private val driver: QuicheDriver,
     override val bufferFactory: BufferFactory,
+    override val remoteAddress: SocketAddress,
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
@@ -35,7 +40,7 @@ internal class JvmQuicConnection(
 
     private val closed = AtomicBoolean(false)
 
-    private val datagramAdapter = DriverDatagramAdapter(driver)
+    private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
 
     internal fun start() {
         driver.start(scope)
@@ -83,13 +88,7 @@ internal class JvmQuicConnection(
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
 
-    override suspend fun sendDatagram(buffer: ReadBuffer) = datagramAdapter.sendDatagram(buffer)
-
-    override suspend fun receiveDatagram(): DatagramReceiveResult = datagramAdapter.receiveDatagram()
-
-    override fun datagrams(): Flow<ReadBuffer> = datagramAdapter.datagrams()
-
-    override fun maxDatagramSize(): MaxDatagramSize = datagramAdapter.maxDatagramSize()
+    override fun datagramChannel(): DatagramChannel = datagramAdapter
 
     override val pathState: StateFlow<PathInfo> = driver.pathState
 

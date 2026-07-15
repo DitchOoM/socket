@@ -1,7 +1,12 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
@@ -21,6 +26,9 @@ import kotlin.time.Duration.Companion.seconds
  */
 class QuicDatagramAdapterTests {
     private val bufferFactory = BufferFactory.deterministic()
+
+    /** The connection's remote peer — every received [com.ditchoom.buffer.flow.Datagram] carries it. */
+    private val testPeer = SocketAddress.ofLiteral("127.0.0.1", 4433)
 
     private fun driverWith(
         api: StubQuicheApi,
@@ -48,13 +56,13 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(5, false) }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver)
+            val adapter = DriverDatagramAdapter(driver, testPeer)
             driver.start(this)
             try {
-                val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
-                assertIs<DatagramReceiveResult.Received>(result)
-                assertEquals(5, result.buffer.remaining(), "received buffer should expose the datagram length")
-                result.buffer.freeIfNeeded()
+                val result = withTimeout(2.seconds) { adapter.receive() }
+                assertIs<DatagramReadResult.Received>(result)
+                assertEquals(5, result.datagram.payload.remaining(), "received buffer should expose the datagram length")
+                result.datagram.payload.freeIfNeeded()
             } finally {
                 driver.destroy()
             }
@@ -71,13 +79,13 @@ class QuicDatagramAdapterTests {
                     dgramRecvSequence.addAll(listOf(StreamRecvResult.Done, StreamRecvResult.Data(3, false)))
                 }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver)
+            val adapter = DriverDatagramAdapter(driver, testPeer)
             driver.start(this)
             try {
-                val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
-                assertIs<DatagramReceiveResult.Received>(result)
-                assertEquals(3, result.buffer.remaining())
-                result.buffer.freeIfNeeded()
+                val result = withTimeout(2.seconds) { adapter.receive() }
+                assertIs<DatagramReadResult.Received>(result)
+                assertEquals(3, result.datagram.payload.remaining())
+                result.datagram.payload.freeIfNeeded()
             } finally {
                 driver.destroy()
             }
@@ -89,13 +97,13 @@ class QuicDatagramAdapterTests {
             // Done + no readable signal → the receiver parks on dgramSignal; destroy() closes it.
             val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Done }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver)
+            val adapter = DriverDatagramAdapter(driver, testPeer)
             driver.start(this)
-            val pending = async { adapter.receiveDatagram() }
+            val pending = async { adapter.receive() }
             yield() // let it park
             driver.destroy()
             val result = withTimeout(2.seconds) { pending.await() }
-            assertIs<DatagramReceiveResult.ConnectionClosed>(result)
+            assertIs<DatagramReadResult.Closed>(result)
         }
 
     @Test
@@ -103,7 +111,7 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramMaxWritableLen = MaxDatagramSize.Unavailable }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver)
+            val adapter = DriverDatagramAdapter(driver, testPeer)
             driver.start(this)
             try {
                 val buf =
@@ -111,7 +119,7 @@ class QuicDatagramAdapterTests {
                         writeInt(1)
                         resetForRead()
                     }
-                assertFailsWith<IllegalStateException> { adapter.sendDatagram(buf) }
+                assertFailsWith<IllegalStateException> { adapter.send(buf) }
                 buf.freeNativeMemory()
             } finally {
                 driver.destroy()
@@ -123,7 +131,7 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramMaxWritableLen = MaxDatagramSize.Bytes(1200) }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver)
+            val adapter = DriverDatagramAdapter(driver, testPeer)
             driver.start(this)
             try {
                 awaitMaxSizePublished(driver)
@@ -132,7 +140,7 @@ class QuicDatagramAdapterTests {
                         repeat(5) { writeByte(it.toByte()) }
                         resetForRead()
                     }
-                withTimeout(2.seconds) { adapter.sendDatagram(buf) } // returns normally on success
+                withTimeout(2.seconds) { adapter.send(buf) } // returns normally on success
                 buf.freeNativeMemory()
             } finally {
                 driver.destroy()
@@ -144,7 +152,7 @@ class QuicDatagramAdapterTests {
         runQuicTest {
             val api = StubQuicheApi().apply { dgramMaxWritableLen = MaxDatagramSize.Bytes(4) }
             val driver = driverWith(api)
-            val adapter = DriverDatagramAdapter(driver)
+            val adapter = DriverDatagramAdapter(driver, testPeer)
             driver.start(this)
             try {
                 awaitMaxSizePublished(driver)
@@ -153,7 +161,7 @@ class QuicDatagramAdapterTests {
                         repeat(8) { writeByte(0) }
                         resetForRead()
                     }
-                assertFailsWith<IllegalArgumentException> { adapter.sendDatagram(buf) }
+                assertFailsWith<IllegalArgumentException> { adapter.send(buf) }
                 buf.freeNativeMemory()
             } finally {
                 driver.destroy()
@@ -170,12 +178,12 @@ class QuicDatagramAdapterTests {
             val factory = TrackingBufferFactory()
             val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(3, false) }
             val driver = driverWith(api, factory)
-            val adapter = DriverDatagramAdapter(driver)
+            val adapter = DriverDatagramAdapter(driver, testPeer)
             driver.start(this)
             try {
-                val result = withTimeout(2.seconds) { adapter.receiveDatagram() }
-                assertIs<DatagramReceiveResult.Received>(result)
-                result.buffer.freeIfNeeded() // caller owns the received buffer
+                val result = withTimeout(2.seconds) { adapter.receive() }
+                assertIs<DatagramReadResult.Received>(result)
+                result.datagram.payload.freeIfNeeded() // caller owns the received buffer
             } finally {
                 driver.destroy()
             }

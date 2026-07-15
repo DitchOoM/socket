@@ -1,5 +1,15 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.BaseJvmBuffer
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.unwrapFully
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -39,4 +49,40 @@ internal actual class LiveDriverLedger actual constructor() {
     actual fun clear() {
         set.clear()
     }
+}
+
+internal actual val serverReceiveDispatcher: CoroutineDispatcher = Dispatchers.IO
+
+internal actual fun writeNativeSizeT(
+    buf: PlatformBuffer,
+    value: Int,
+) {
+    val bb = (buf.unwrapFully() as BaseJvmBuffer).byteBuffer
+    bb.order(ByteOrder.nativeOrder())
+    bb.putLong(0, value.toLong())
+}
+
+internal actual fun readNativeSizeT(buf: PlatformBuffer): Int {
+    val bb = (buf.unwrapFully() as BaseJvmBuffer).byteBuffer
+    bb.order(ByteOrder.nativeOrder())
+    return bb.getLong(0).toInt()
+}
+
+internal actual class PeerPathTable actual constructor() {
+    // Concurrent: written on the receive loop (insert/evict) + the post-join close sweep, read by
+    // driver egress coroutines. Matches the pre-refactor JvmQuicServer.peersByPathKey.
+    private val map = ConcurrentHashMap<PathKey, SocketAddress>()
+
+    actual fun put(
+        key: PathKey,
+        peer: SocketAddress,
+    ) {
+        map[key] = peer
+    }
+
+    actual fun remove(key: PathKey) {
+        map.remove(key)
+    }
+
+    actual fun get(key: PathKey): SocketAddress? = map[key]
 }
