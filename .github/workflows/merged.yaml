@@ -297,6 +297,14 @@ jobs:
           java-version: '21'
           cache: gradle
 
+      # :socket-testsuite:controllerJar is pure-JVM, but configuring the project pulls in
+      # socket-quic-quiche's linuxArm64 target, whose :buildBoringsslArm64 cmake-configures with
+      # aarch64-linux-gnu-g++. Without the cross-toolchain on PATH the job dies with
+      # "CMAKE_C_COMPILER aarch64-linux-gnu-gcc ... not found in the PATH" (same fix as review.yaml /
+      # android_integration.yaml / native-deps-freshness.yaml).
+      - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64) + libclang
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libclang-dev
+
       - name: Build harness controller jar
         run: ./gradlew :socket-testsuite:controllerJar --no-configuration-cache
 
