@@ -1,8 +1,11 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.quic.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -156,6 +159,54 @@ internal suspend fun withLiveQuicConnection(
         }
     }
     throw AssertionError("$reason after $attempts attempts", lastWedge)
+}
+
+/**
+ * Run a client [withQuicConnection] with QUIC trace capture enabled (RFC_DETERMINISTIC_SIMULATION.md §5
+ * v1 grammar), giving a real-network establishment a **diagnosable** failure. Two hardening levers:
+ *
+ *  - the establishment/session [timeout] is [scaled] by [testTimeScale], so a loaded CI runner (with
+ *    `QUIC_TEST_TIME_SCALE` set) gets proportionally more budget than the local default;
+ *  - if [block] throws — most importantly an establishment `TimeoutCancellationException` from
+ *    `awaitEstablished` — the captured trace (DGRAM_OUT / DGRAM_IN + STATE lines) is folded into the
+ *    rethrown exception's **message**. Gradle's `testLogging` surfaces the full exception at LIFECYCLE
+ *    level, so the packet-level trace lands durably in the CI job log (surviving the JNI→FFM re-run
+ *    that clobbers `test-results/jvmTest`) instead of an opaque "awaitEstablished timed out".
+ *
+ * On success the trace is discarded — capture is zero-cost to the passing path. Deliberately does NOT
+ * retry (contrast [withLiveQuicConnection]): a retry would mask the very failure whose trace we want to
+ * see. Use this for a real-network establishment that has been observed to flake on CI.
+ */
+internal suspend fun withTracedQuicConnection(
+    hostname: String,
+    port: Int,
+    quicOptions: QuicOptions,
+    timeout: Duration,
+    label: String,
+    block: suspend QuicScope.() -> Unit,
+) {
+    // UNLIMITED + trySend: the recorder emits from driver coroutines (non-suspend, possibly off-thread),
+    // so a channel is the simplest cross-platform thread-safe collector; drained only on the failure path.
+    val traceLines = Channel<String>(Channel.UNLIMITED)
+    val traced = quicOptions.copy(trace = QuicTraceCapture(sink = TraceSink { traceLines.trySend(it) }))
+    try {
+        withQuicConnection(hostname, port, traced, timeout = timeout.scaled, block = block)
+    } catch (t: Throwable) {
+        traceLines.close()
+        val captured =
+            buildList {
+                while (true) {
+                    val line = traceLines.tryReceive().getOrNull() ?: break
+                    add(line)
+                }
+            }
+        throw AssertionError(
+            "$label: QUIC connection failed (scale=${testTimeScale()}, budget=${timeout.scaled}). " +
+                "Captured ${captured.size} trace lines:\n" +
+                captured.joinToString("\n").ifEmpty { "(no trace lines recorded before failure)" },
+            t,
+        )
+    }
 }
 
 /**
