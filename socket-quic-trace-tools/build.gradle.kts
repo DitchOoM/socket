@@ -3,10 +3,14 @@ plugins {
     // multiplatform plugin, same jar) so the jvm plugin id must be requested version-less.
     id("org.jetbrains.kotlin.jvm")
     alias(libs.plugins.ktlint)
+    alias(libs.plugins.maven.publish)
+    signing
 }
 
-// :socket-quic-trace-tools — a JVM-only developer tool (NOT a published library, no maven-publish)
-// that deobfuscates a captured QUIC v1 trace against an Android-release R8/ProGuard `mapping.txt`.
+// :socket-quic-trace-tools — a JVM-only developer tool that deobfuscates a captured QUIC v1 trace
+// against a ProGuard/R8 `mapping.txt`. Published so a consumer can retrace their OWN app's traces:
+// they hold the mapping.txt, so the tool belongs in their hands (a JVM server/CLI dependency), not
+// just ours.
 //
 // Why a standalone module and not buildSrc: it depends on `com.android.tools:r8` for retrace, and
 // R8/asm MUST NOT land on the Gradle plugin/buildSrc classpath — AGP already bundles its own R8
@@ -25,6 +29,8 @@ plugins {
 // step regardless of which target produced the trace. The capture side stays multiplatform (it
 // already emits qualified FQNs on every platform).
 
+val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
+
 repositories {
     google() // com.android.tools:r8
     mavenCentral()
@@ -35,7 +41,10 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":socket-quic"))
+    // `api`: TraceDeobfuscator's surface exposes TraceEvent, so consumers need it transitively.
+    api(project(":socket-quic"))
+    // `implementation`: R8 is fully encapsulated in R8ClassResolver (never in a public signature).
+    // It is still runtime-transitive, so a consumer must add `google()` to resolve it.
     implementation(libs.r8)
     testImplementation(kotlin("test"))
 }
@@ -62,6 +71,74 @@ tasks.register<JavaExec>("retraceQuicTrace") {
             if (traceIn.isPresent) add(traceIn.get())
             if (mapping.isPresent) add(mapping.get())
             if (traceOut.isPresent) add(traceOut.get())
+        }
+    }
+}
+
+// --- Publishing ---
+// Coordinates from socket-quic-trace-tools/gradle.properties (artifactName=socket-quic-trace-tools).
+// Signing + Central upload engage only on a main-branch CI build supplying the in-memory PGP key;
+// publishToMavenLocal needs none. Mirrors the sibling modules' publish setup.
+
+val publishedGroupId: String by project
+val libraryName: String by project
+val artifactName: String by project
+val libraryDescription: String by project
+val siteUrl: String by project
+val gitUrl: String by project
+val licenseName: String by project
+val licenseUrl: String by project
+val developerOrg: String by project
+val developerName: String by project
+val developerEmail: String by project
+val developerId: String by project
+
+project.group = publishedGroupId
+project.version = rootProject.version
+
+val signingInMemoryKey = project.findProperty("signingInMemoryKey")
+val signingInMemoryKeyPassword = project.findProperty("signingInMemoryKeyPassword")
+val shouldSignAndPublish = isMainBranchGithub && signingInMemoryKey is String && signingInMemoryKeyPassword is String
+
+if (shouldSignAndPublish) {
+    signing {
+        useInMemoryPgpKeys(signingInMemoryKey as String, signingInMemoryKeyPassword as String)
+        sign(publishing.publications)
+    }
+}
+
+mavenPublishing {
+    if (shouldSignAndPublish) {
+        publishToMavenCentral()
+        signAllPublications()
+    }
+
+    coordinates(publishedGroupId, artifactName, project.version.toString())
+
+    pom {
+        name.set(libraryName)
+        description.set(libraryDescription)
+        url.set(siteUrl)
+        licenses {
+            license {
+                name.set(licenseName)
+                url.set(licenseUrl)
+            }
+        }
+        developers {
+            developer {
+                id.set(developerId)
+                name.set(developerName)
+                email.set(developerEmail)
+            }
+        }
+        organization {
+            name.set(developerOrg)
+        }
+        scm {
+            connection.set(gitUrl)
+            developerConnection.set(gitUrl)
+            url.set(siteUrl)
         }
     }
 }

@@ -71,6 +71,35 @@ Each `QuicByteStream` has independent send/receive sides: `write()`/`read()` for
 
 Allocate send buffers from the scope's `bufferFactory` (defaults to `BufferFactory.network()` — the native-memory factory QUIC needs on every backend) and pair them with `use { }`; the connection scope reclaims streams on exit, but buffers are yours to free.
 
+#### Trace capture & retrace
+
+A connection can record a **deterministic-replay trace** — every datagram, state transition, error, and path-stats snapshot, one clock, one line each — by setting `QuicOptions.trace`. It's opt-in and zero-cost when off (the default). The sink is **typed**: it receives a `TraceEvent`, and `event.toString()` is the canonical `v1` line, so persisting is just an append:
+
+```kotlin
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.quic.trace.TraceSink
+
+val out = File("captured.trace").bufferedWriter()
+val opts = QuicOptions(
+    alpnProtocols = listOf("h3"),
+    trace = QuicTraceCapture(sink = TraceSink { event -> synchronized(out) { out.appendLine(event.toString()) } }),
+)
+withQuicConnection("example.com", 443, opts) { /* … every packet is recorded … */ }
+```
+
+On a minified release build (R8/ProGuard, Android **or** JVM), the class names in `STATE`/`ERROR` lines are obfuscated — capture uses **qualified** names precisely so they can be mapped back afterward (no keep-rules; keep your `mapping.txt`). The `socket-quic-trace-tools` artifact retraces them offline:
+
+```kotlin
+// build.gradle.kts:  repositories { google(); mavenCentral() }
+//                    implementation("com.ditchoom:socket-quic-trace-tools:<latest-version>")
+import com.ditchoom.socket.quic.trace.tools.TraceDeobfuscator
+
+val readable = TraceDeobfuscator.fromMapping(File("mapping.txt").readText())
+    .deobfuscateAll(File("captured.trace").readLines())
+```
+
+See the [Trace Capture & Retrace][trace-docs] guide for per-connection server sinks, the connectivity tap, and the full event model.
+
 #### Typed stream multiplexing
 
 `withQuicMux(..., codec) { … }` layers a `Codec<T>` over the connection so each stream exchanges typed messages instead of raw buffers:
@@ -346,4 +375,5 @@ Socket builds on the [buffer v4](https://github.com/DitchOoM/buffer) library for
 
 [docs]: https://ditchoom.github.io/socket/
 [quic-docs]: https://ditchoom.github.io/socket/quic/intro
+[trace-docs]: https://ditchoom.github.io/socket/quic/trace-capture
 [http3-docs]: https://ditchoom.github.io/socket/http3/intro
