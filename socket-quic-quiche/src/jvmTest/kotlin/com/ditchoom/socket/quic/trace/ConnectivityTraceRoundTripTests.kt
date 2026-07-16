@@ -40,7 +40,7 @@ class ConnectivityTraceRoundTripTests {
     fun connectivity_events_captured_midflight_roundtrip_and_drive_the_monitor_seam() =
         runTest(timeout = 60.seconds) {
             val lines = mutableListOf<String>()
-            val recorder = QuicTraceRecorder({ line -> lines += line })
+            val recorder = QuicTraceRecorder({ e -> lines += e.toString() })
             // The engine taps NetworkMonitor.availability/networkId; liveness is driven by the
             // transport seam above the engine (ReconnectingConnection), so its capture goes through
             // the recorder's wrap() — a probe records one LIVENESS input event.
@@ -90,17 +90,17 @@ class ConnectivityTraceRoundTripTests {
             }
 
             // --- capture: connectivity events landed in the SAME trace as the QUIC traffic, typed. ---
-            val events = QuicTraceParser.parse(lines)
-            assertTrue(events.any { it is QuicTraceEvent.DgramIn }, "expected QUIC traffic in the same trace")
+            val events = TraceEvent.parseAll(lines)
+            assertTrue(events.any { it is TraceEvent.DgramIn }, "expected QUIC traffic in the same trace")
             assertEquals(
                 NetworkAvailability.UNAVAILABLE,
-                events.filterIsInstance<QuicTraceEvent.NetAvail>().single().value,
+                events.filterIsInstance<TraceEvent.NetAvail>().single().value,
                 "captured NET_AVAIL",
             )
-            assertEquals(migratedTo, events.filterIsInstance<QuicTraceEvent.Net>().single().id, "captured NET_ID")
+            assertEquals(migratedTo, events.filterIsInstance<TraceEvent.Net>().single().id, "captured NET_ID")
             assertEquals(
                 TransportLiveness.Result.Dead,
-                events.filterIsInstance<QuicTraceEvent.Liveness>().single().result,
+                events.filterIsInstance<TraceEvent.Liveness>().single().result,
                 "captured LIVENESS via recorder.wrap",
             )
 
@@ -164,7 +164,7 @@ class ConnectivityTraceRoundTripTests {
     fun observe_and_wrap_forward_the_transport_seams_into_the_trace() =
         runTest {
             val lines = mutableListOf<String>()
-            val recorder = QuicTraceRecorder({ line -> lines += line })
+            val recorder = QuicTraceRecorder({ e -> lines += e.toString() })
             val monitor =
                 SimNetworkMonitor(
                     initial = NetworkAvailability.AVAILABLE,
@@ -182,21 +182,21 @@ class ConnectivityTraceRoundTripTests {
             val wrapped = recorder.wrap(TransportLiveness { TransportLiveness.Result.Alive })
             assertEquals(TransportLiveness.Result.Alive, wrapped.probe())
 
-            val events = QuicTraceParser.parse(lines)
+            val events = TraceEvent.parseAll(lines)
             assertTrue(
                 events
-                    .filterIsInstance<QuicTraceEvent.NetAvail>()
+                    .filterIsInstance<TraceEvent.NetAvail>()
                     .map { it.value }
                     .containsAll(listOf(NetworkAvailability.AVAILABLE, NetworkAvailability.UNAVAILABLE)),
                 "observe must record current + changed availability: $lines",
             )
             assertTrue(
-                events.filterIsInstance<QuicTraceEvent.Net>().any { it.id == cellular },
+                events.filterIsInstance<TraceEvent.Net>().any { it.id == cellular },
                 "observe must record the networkId change: $lines",
             )
             assertEquals(
                 TransportLiveness.Result.Alive,
-                events.filterIsInstance<QuicTraceEvent.Liveness>().single().result,
+                events.filterIsInstance<TraceEvent.Liveness>().single().result,
                 "wrap must record the probe outcome",
             )
         }

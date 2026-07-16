@@ -57,8 +57,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  * ```
  *
  * `detail`/`message` are the line's tail (may contain spaces; newlines are flattened). The
- * `Other(...)` label is %-escaped so no `kind` ever contains a delimiter. [QuicTraceParser]
- * decodes lines back into [QuicTraceEvent]s; `parse(emit(e)) == e` holds for every event type.
+ * `Other(...)` label is %-escaped so no `kind` ever contains a delimiter. [TraceEvent.parse]
+ * decodes lines back into [TraceEvent]s; `parse(e.toString()) == e` holds for every event type.
  */
 class QuicTraceRecorder(
     private val sink: TraceSink,
@@ -68,12 +68,15 @@ class QuicTraceRecorder(
 
     private fun nowNanos(): Long = origin.elapsedNow().inWholeNanoseconds
 
-    /** Encode and emit one pre-stamped [event] as a `v1` line. */
-    fun record(event: QuicTraceEvent) {
-        sink.emit(encodeTraceLine(event))
+    /** Emit one pre-stamped [event] to the sink. The sink owns serialization ([TraceEvent.toString]). */
+    fun record(event: TraceEvent) {
+        sink.emit(event)
     }
 
-    /** Record a `QuicConnectionState` transition (STATE). */
+    /**
+     * Record a `QuicConnectionState` transition (STATE). [TraceEvent.State.name] is the state's
+     * **qualified** class name so an obfuscated Android-release trace retraces against `mapping.txt`.
+     */
     fun connectionState(state: QuicConnectionState) {
         val detail =
             when (state) {
@@ -81,42 +84,45 @@ class QuicTraceRecorder(
                 is QuicConnectionState.Closed -> state.error?.describe()
                 else -> null
             }
-        record(QuicTraceEvent.State(nowNanos(), state::class.simpleName ?: "Unknown", detail))
+        record(TraceEvent.State(nowNanos(), state::class.qualifiedName ?: "Unknown", detail))
     }
 
     /** Record a `PathInfo` (migration) transition (PATH_STATE). */
     fun pathState(info: PathInfo) {
-        record(QuicTraceEvent.PathState(nowNanos(), info.phase.name, info.localHost, info.localPort))
+        record(TraceEvent.PathState(nowNanos(), info.phase.name, info.localHost, info.localPort))
     }
 
-    /** Record a typed exception (ERROR) — class name + message, never a bare string error. */
+    /**
+     * Record a typed exception (ERROR) — **qualified** class name + message, never a bare string
+     * error. The FQN keeps the error type retraceable against R8's `mapping.txt`.
+     */
     fun error(error: Throwable) {
-        record(QuicTraceEvent.Error(nowNanos(), error::class.simpleName ?: "Throwable", error.message ?: ""))
+        record(TraceEvent.Error(nowNanos(), error::class.qualifiedName ?: "Throwable", error.message ?: ""))
     }
 
-    /** Record a typed QUIC close reason (ERROR) — the sealed class name + [QuicError.describe]. */
+    /** Record a typed QUIC close reason (ERROR) — the sealed class's **qualified** name + [QuicError.describe]. */
     fun closeError(error: QuicError) {
-        record(QuicTraceEvent.Error(nowNanos(), error::class.simpleName ?: "QuicError", error.describe()))
+        record(TraceEvent.Error(nowNanos(), error::class.qualifiedName ?: "QuicError", error.describe()))
     }
 
-    /** Record a path-stats snapshot (STATS). */
+    /** Record a path-stats snapshot (STATS), projecting [QuicPathStats] onto the neutral [TracePathStats]. */
     fun stats(stats: QuicPathStats) {
-        record(QuicTraceEvent.Stats(nowNanos(), stats))
+        record(TraceEvent.Stats(nowNanos(), stats.toTracePathStats()))
     }
 
     /** Record a `NetworkMonitor.availability` emission (NET_AVAIL). */
     fun networkAvailability(value: NetworkAvailability) {
-        record(QuicTraceEvent.NetAvail(nowNanos(), value))
+        record(TraceEvent.NetAvail(nowNanos(), value))
     }
 
     /** Record a `NetworkMonitor.networkId` emission (NET_ID). */
     fun networkId(id: NetworkId) {
-        record(QuicTraceEvent.Net(nowNanos(), id))
+        record(TraceEvent.Net(nowNanos(), id))
     }
 
     /** Record a liveness probe outcome (LIVENESS). */
     fun livenessResult(result: TransportLiveness.Result) {
-        record(QuicTraceEvent.Liveness(nowNanos(), result))
+        record(TraceEvent.Liveness(nowNanos(), result))
     }
 
     /**
@@ -157,14 +163,41 @@ class QuicTraceRecorder(
     ) {
         val hex = hexOf(buffer, len)
         val t = nowNanos()
+        val tracePath = path?.toTracePath()
         record(
             if (out) {
-                QuicTraceEvent.DgramOut(t, len, path, hex)
+                TraceEvent.DgramOut(t, len, tracePath, hex)
             } else {
-                QuicTraceEvent.DgramIn(t, len, path, hex)
+                TraceEvent.DgramIn(t, len, tracePath, hex)
             },
         )
     }
+
+    // Project the quiche-side path/stats types onto the neutral trace model in `:socket-quic` at the
+    // two choke points that carry them — so `PathKey`/`QuicPathStats` stay in this module untouched.
+    private fun PathKey.toTracePath(): TracePath = TracePath(family, port, hi, lo)
+
+    private fun QuicPathStats.toTracePathStats(): TracePathStats =
+        TracePathStats(
+            validationState = validationState,
+            active = active,
+            recv = recv,
+            sent = sent,
+            lost = lost,
+            retrans = retrans,
+            totalPtoCount = totalPtoCount,
+            rtt = rtt,
+            minRtt = minRtt,
+            maxRtt = maxRtt,
+            rttvar = rttvar,
+            cwnd = cwnd,
+            sentBytes = sentBytes,
+            recvBytes = recvBytes,
+            lostBytes = lostBytes,
+            streamRetransBytes = streamRetransBytes,
+            pmtu = pmtu,
+            deliveryRate = deliveryRate,
+        )
 
     private companion object {
         private const val HEX = "0123456789abcdef"

@@ -1,41 +1,40 @@
 package com.ditchoom.socket.quic.trace
 
 import com.ditchoom.socket.NetworkAvailability
-import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration.Companion.nanoseconds
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
-// The v1 trace line codec — one line per QuicTraceEvent, versioned, single-line, space-delimited.
-// The full grammar is documented on [QuicTraceRecorder]; [QuicTraceParser] is the public decode
+// The v1 trace line codec — one line per TraceEvent, versioned, single-line, space-delimited.
+// The full grammar is documented on `QuicTraceRecorder`; [TraceEvent.parse] is the public decode
 // entry point. encode/decode are exact inverses for every event type (`decode(encode(e)) == e`),
-// which the round-trip tests assert for the input-event subset.
+// which the round-trip tests assert for the input-event subset. Each TraceEvent.toString() routes
+// here, so the string is only ever the sink serialization boundary — the typed event is canonical.
 
-internal fun encodeTraceLine(event: QuicTraceEvent): String =
+internal fun encodeTraceLine(event: TraceEvent): String =
     buildString {
         append("v1 ")
         append(event.atNanos)
         append(' ')
         when (event) {
-            is QuicTraceEvent.DgramOut -> {
+            is TraceEvent.DgramOut -> {
                 append("DGRAM_OUT ")
                 append(event.len)
                 append(' ')
-                append(encodePathKey(event.path))
+                append(encodeTracePath(event.path))
                 append(' ')
                 append(event.payloadHex)
             }
-            is QuicTraceEvent.DgramIn -> {
+            is TraceEvent.DgramIn -> {
                 append("DGRAM_IN ")
                 append(event.len)
                 append(' ')
-                append(encodePathKey(event.path))
+                append(encodeTracePath(event.path))
                 append(' ')
                 append(event.payloadHex)
             }
-            is QuicTraceEvent.State -> {
+            is TraceEvent.State -> {
                 append("STATE ")
                 append(event.name)
                 event.detail?.let {
@@ -43,7 +42,7 @@ internal fun encodeTraceLine(event: QuicTraceEvent): String =
                     append(flattenLine(it))
                 }
             }
-            is QuicTraceEvent.PathState -> {
+            is TraceEvent.PathState -> {
                 append("PATH_STATE ")
                 append(event.phase)
                 append(' ')
@@ -51,13 +50,13 @@ internal fun encodeTraceLine(event: QuicTraceEvent): String =
                 append(' ')
                 append(event.localPort)
             }
-            is QuicTraceEvent.Error -> {
+            is TraceEvent.Error -> {
                 append("ERROR ")
                 append(event.type)
                 append(' ')
                 append(flattenLine(event.message))
             }
-            is QuicTraceEvent.Stats -> {
+            is TraceEvent.Stats -> {
                 val s = event.stats
                 append("STATS ")
                 append(s.validationState).append(' ')
@@ -79,22 +78,22 @@ internal fun encodeTraceLine(event: QuicTraceEvent): String =
                 append(s.pmtu).append(' ')
                 append(s.deliveryRate)
             }
-            is QuicTraceEvent.NetAvail -> {
+            is TraceEvent.NetAvail -> {
                 append("NET_AVAIL ")
                 append(event.value.name)
             }
-            is QuicTraceEvent.Net -> {
+            is TraceEvent.Net -> {
                 append("NET_ID ")
                 append(encodeNetworkId(event.id))
             }
-            is QuicTraceEvent.Liveness -> {
+            is TraceEvent.Liveness -> {
                 append("LIVENESS ")
                 append(event.result.name)
             }
         }
     }
 
-internal fun decodeTraceLine(line: String): QuicTraceEvent {
+internal fun decodeTraceLine(line: String): TraceEvent {
     val afterVersion =
         line.removePrefix("v1 ").also {
             require(it !== line) { "unsupported trace line (expected 'v1 ' prefix): $line" }
@@ -111,39 +110,39 @@ internal fun decodeTraceLine(line: String): QuicTraceEvent {
             val (lenStr, pathStr, hex) = fields.split(' ', limit = 3)
             val len = lenStr.toInt()
             require(hex.length == len * 2) { "DGRAM payload hex length ${hex.length} != 2*len ($len): $line" }
-            val path = decodePathKey(pathStr)
+            val path = decodeTracePath(pathStr)
             if (eventName == "DGRAM_OUT") {
-                QuicTraceEvent.DgramOut(at, len, path, hex)
+                TraceEvent.DgramOut(at, len, path, hex)
             } else {
-                QuicTraceEvent.DgramIn(at, len, path, hex)
+                TraceEvent.DgramIn(at, len, path, hex)
             }
         }
         "STATE" -> {
             val sp = fields.indexOf(' ')
             if (sp < 0) {
-                QuicTraceEvent.State(at, fields, null)
+                TraceEvent.State(at, fields, null)
             } else {
-                QuicTraceEvent.State(at, fields.substring(0, sp), fields.substring(sp + 1))
+                TraceEvent.State(at, fields.substring(0, sp), fields.substring(sp + 1))
             }
         }
         "PATH_STATE" -> {
             val (phase, host, port) = fields.split(' ', limit = 3)
-            QuicTraceEvent.PathState(at, phase, host.takeUnless { it == "-" }, port.toInt())
+            TraceEvent.PathState(at, phase, host.takeUnless { it == "-" }, port.toInt())
         }
         "ERROR" -> {
             val sp = fields.indexOf(' ')
             if (sp < 0) {
-                QuicTraceEvent.Error(at, fields, "")
+                TraceEvent.Error(at, fields, "")
             } else {
-                QuicTraceEvent.Error(at, fields.substring(0, sp), fields.substring(sp + 1))
+                TraceEvent.Error(at, fields.substring(0, sp), fields.substring(sp + 1))
             }
         }
         "STATS" -> {
             val f = fields.split(' ')
             require(f.size == 18) { "STATS expects 18 fields, got ${f.size}: $line" }
-            QuicTraceEvent.Stats(
+            TraceEvent.Stats(
                 at,
-                QuicPathStats(
+                TracePathStats(
                     validationState = f[0].toLong(),
                     active = f[1] == "1",
                     recv = f[2].toLong(),
@@ -165,9 +164,9 @@ internal fun decodeTraceLine(line: String): QuicTraceEvent {
                 ),
             )
         }
-        "NET_AVAIL" -> QuicTraceEvent.NetAvail(at, NetworkAvailability.valueOf(fields))
-        "NET_ID" -> QuicTraceEvent.Net(at, decodeNetworkId(fields))
-        "LIVENESS" -> QuicTraceEvent.Liveness(at, TransportLiveness.Result.valueOf(fields))
+        "NET_AVAIL" -> TraceEvent.NetAvail(at, NetworkAvailability.valueOf(fields))
+        "NET_ID" -> TraceEvent.Net(at, decodeNetworkId(fields))
+        "LIVENESS" -> TraceEvent.Liveness(at, TransportLiveness.Result.valueOf(fields))
         else -> throw IllegalArgumentException("unknown trace event '$eventName': $line")
     }
 }
@@ -175,20 +174,20 @@ internal fun decodeTraceLine(line: String): QuicTraceEvent {
 /** Newlines would break the one-event-per-line invariant — flatten them (diagnostic fields only). */
 private fun flattenLine(s: String): String = if ('\n' in s || '\r' in s) s.replace('\n', ' ').replace('\r', ' ') else s
 
-// --- PathKey: "-" (unknown) or family:port:hiHex:loHex ---
+// --- TracePath: "-" (unknown) or family:port:hiHex:loHex ---
 
-internal fun encodePathKey(key: PathKey?): String =
-    if (key == null) {
+internal fun encodeTracePath(path: TracePath?): String =
+    if (path == null) {
         "-"
     } else {
-        "${key.family}:${key.port}:${key.hi.toULong().toString(16)}:${key.lo.toULong().toString(16)}"
+        "${path.family}:${path.port}:${path.hi.toULong().toString(16)}:${path.lo.toULong().toString(16)}"
     }
 
-internal fun decodePathKey(s: String): PathKey? {
+internal fun decodeTracePath(s: String): TracePath? {
     if (s == "-") return null
     val p = s.split(':')
-    require(p.size == 4) { "malformed PathKey '$s'" }
-    return PathKey(p[0].toInt(), p[1].toInt(), p[2].toULong(16).toLong(), p[3].toULong(16).toLong())
+    require(p.size == 4) { "malformed TracePath '$s'" }
+    return TracePath(p[0].toInt(), p[1].toInt(), p[2].toULong(16).toLong(), p[3].toULong(16).toLong())
 }
 
 // --- NetworkId: Unidentified | KindOnly:<kind> | Link:<kind>:<handle> ---
