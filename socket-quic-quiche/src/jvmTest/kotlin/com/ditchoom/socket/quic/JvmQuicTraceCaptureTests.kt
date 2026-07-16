@@ -7,8 +7,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
-import com.ditchoom.socket.quic.trace.QuicTraceEvent
-import com.ditchoom.socket.quic.trace.QuicTraceParser
+import com.ditchoom.socket.quic.trace.TraceEvent
 import com.ditchoom.socket.quic.trace.TraceSink
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
@@ -77,10 +76,10 @@ class JvmQuicTraceCaptureTests {
         migratedTo: NetworkId,
     ) {
         while (true) {
-            val events = QuicTraceParser.parse(synchronized(lines) { lines.toList() })
-            val gotId = events.filterIsInstance<QuicTraceEvent.Net>().any { it.id == migratedTo }
+            val events = TraceEvent.parseAll(synchronized(lines) { lines.toList() })
+            val gotId = events.filterIsInstance<TraceEvent.Net>().any { it.id == migratedTo }
             val gotAvail =
-                events.filterIsInstance<QuicTraceEvent.NetAvail>().any {
+                events.filterIsInstance<TraceEvent.NetAvail>().any {
                     it.value == NetworkAvailability.UNAVAILABLE
                 }
             if (gotId && gotAvail) return
@@ -121,7 +120,7 @@ class JvmQuicTraceCaptureTests {
                         val migratedTo = NetworkId.Link(NetworkKind.Wifi, 9L)
                         val clientOptions =
                             baseOptions.copy(
-                                trace = QuicTraceCapture(sink = { line -> lines += line }, networkMonitor = monitor),
+                                trace = QuicTraceCapture(sink = { e -> lines += e.toString() }, networkMonitor = monitor),
                             )
 
                         val clientJob =
@@ -169,13 +168,13 @@ class JvmQuicTraceCaptureTests {
                         assertTrue(snapshot.any { it.contains("DGRAM_OUT") }, "engine must record sent datagrams: $snapshot")
                         assertTrue(snapshot.any { it.contains("DGRAM_IN") }, "engine must record received datagrams")
 
-                        val events = QuicTraceParser.parse(snapshot)
+                        val events = TraceEvent.parseAll(snapshot)
                         assertTrue(
-                            events.filterIsInstance<QuicTraceEvent.Net>().any { it.id == migratedTo },
+                            events.filterIsInstance<TraceEvent.Net>().any { it.id == migratedTo },
                             "engine must tap NetworkMonitor.networkId into the trace: $snapshot",
                         )
                         assertTrue(
-                            events.filterIsInstance<QuicTraceEvent.NetAvail>().any {
+                            events.filterIsInstance<TraceEvent.NetAvail>().any {
                                 it.value == NetworkAvailability.UNAVAILABLE
                             },
                             "engine must tap NetworkMonitor.availability into the trace: $snapshot",
@@ -203,7 +202,7 @@ class JvmQuicTraceCaptureTests {
                                     sinkFor = {
                                         val lines = Collections.synchronizedList(mutableListOf<String>())
                                         sinks += lines
-                                        TraceSink { line -> lines += line }
+                                        TraceSink { e -> lines += e.toString() }
                                     },
                                 ),
                         )
@@ -286,7 +285,13 @@ class JvmQuicTraceCaptureTests {
                         pathToSinks.forEach { (path, idxs) ->
                             assertEquals(1, idxs.size, "client $path appears on multiple sinks $idxs (interleaved/split)")
                         }
-                        val established = perConn.count { s -> s.any { it.contains("STATE Established") } }
+                        // STATE lines carry the state's *qualified* class name (…QuicConnectionState.Established).
+                        val established =
+                            perConn.count { s ->
+                                s.any { line ->
+                                    (TraceEvent.parse(line) as? TraceEvent.State)?.name?.endsWith(".Established") == true
+                                }
+                            }
                         assertTrue(established >= 2, "expected >=2 fully-established server-side traces, got $established")
                     }
                 }

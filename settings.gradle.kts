@@ -14,6 +14,7 @@ include(":socket-quic-default")
 include(":socket-http3")
 include(":socket-webtransport")
 include(":socket-udp")
+include(":socket-quic-trace-tools")
 
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"

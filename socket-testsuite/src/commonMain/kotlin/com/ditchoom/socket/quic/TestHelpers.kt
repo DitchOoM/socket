@@ -188,7 +188,7 @@ internal suspend fun withTracedQuicConnection(
     // UNLIMITED + trySend: the recorder emits from driver coroutines (non-suspend, possibly off-thread),
     // so a channel is the simplest cross-platform thread-safe collector; drained only on the failure path.
     val traceLines = Channel<String>(Channel.UNLIMITED)
-    val traced = quicOptions.copy(trace = QuicTraceCapture(sink = TraceSink { traceLines.trySend(it) }))
+    val traced = quicOptions.copy(trace = QuicTraceCapture(sink = TraceSink { traceLines.trySend(it.toString()) }))
     try {
         withQuicConnection(hostname, port, traced, timeout = timeout.scaled, block = block)
     } catch (t: Throwable) {

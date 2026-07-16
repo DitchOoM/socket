@@ -6,7 +6,6 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.quic.ImpairmentConfig
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.sim.Observed
 import com.ditchoom.socket.quic.sim.runQuicSim
@@ -37,7 +36,7 @@ class TraceRecorderRoundTripTests {
     fun semanticSim_trace_roundtrips_and_replays() =
         runTest(timeout = 60.seconds) {
             val lines = mutableListOf<String>()
-            val recorder = QuicTraceRecorder({ line -> lines += line })
+            val recorder = QuicTraceRecorder({ e -> lines += e.toString() })
             try {
                 withSemanticSim(
                     // Lossless + zero latency: a pure event cascade, fully virtual-time (the W4
@@ -78,45 +77,45 @@ class TraceRecorderRoundTripTests {
             // --- 1. Shape: the session must have produced every driver-side event class. ---
             assertTrue(lines.isNotEmpty(), "recorder captured nothing")
             assertTrue(lines.all { it.startsWith("v1 ") }, "every line is versioned")
-            val events = QuicTraceParser.parse(lines)
-            assertTrue(events.any { it is QuicTraceEvent.DgramOut }, "DGRAM_OUT missing:\n${lines.joinToString("\n")}")
-            assertTrue(events.any { it is QuicTraceEvent.DgramIn }, "DGRAM_IN missing")
+            val events = TraceEvent.parseAll(lines)
+            assertTrue(events.any { it is TraceEvent.DgramOut }, "DGRAM_OUT missing:\n${lines.joinToString("\n")}")
+            assertTrue(events.any { it is TraceEvent.DgramIn }, "DGRAM_IN missing")
             assertTrue(
-                events.any { it is QuicTraceEvent.State && it.name == "Handshaking" },
+                events.any { it is TraceEvent.State && it.name.endsWith(".Handshaking") },
                 "initial STATE Handshaking missing",
             )
             assertTrue(
-                events.any { it is QuicTraceEvent.State && it.name == "Established" },
+                events.any { it is TraceEvent.State && it.name.endsWith(".Established") },
                 "STATE Established missing",
             )
-            assertTrue(events.any { it is QuicTraceEvent.Stats }, "STATS missing (teardown snapshot guarantees one)")
-            val stats = events.filterIsInstance<QuicTraceEvent.Stats>().last().stats
+            assertTrue(events.any { it is TraceEvent.Stats }, "STATS missing (teardown snapshot guarantees one)")
+            val stats = events.filterIsInstance<TraceEvent.Stats>().last().stats
             assertTrue(stats.sent > 0 && stats.recv > 0, "terminal STATS must show traffic: $stats")
             // Recorded DGRAM payloads carry their bytes as hex, lengths consistent.
-            events.filterIsInstance<QuicTraceEvent.DgramIn>().forEach {
+            events.filterIsInstance<TraceEvent.DgramIn>().forEach {
                 assertEquals(it.len * 2, it.payloadHex.length, "hex length mismatch on $it")
             }
 
             // --- 2. One clock: timestamps are monotonically non-decreasing in emit order. ---
             lines
-                .map { QuicTraceParser.parseLine(it).atNanos }
+                .map { TraceEvent.parse(it).atNanos }
                 .zipWithNext()
                 .forEach { (a, b) -> assertTrue(b >= a, "timestamps regressed: $a -> $b") }
 
             // --- 3. Round-trip: parse(emit(e)) == e for the input-event subset. ---
             val inputs = events.filter { it.isInput }
-            assertTrue(inputs.filterIsInstance<QuicTraceEvent.DgramIn>().isNotEmpty(), "no replayable inputs recorded")
+            assertTrue(inputs.filterIsInstance<TraceEvent.DgramIn>().isNotEmpty(), "no replayable inputs recorded")
             val reEmitted = mutableListOf<String>()
-            val reEncoder = QuicTraceRecorder({ line -> reEmitted += line })
+            val reEncoder = QuicTraceRecorder({ e -> reEmitted += e.toString() })
             inputs.forEach { reEncoder.record(it) } // record() emits pre-stamped events verbatim
-            assertEquals(inputs, QuicTraceParser.parse(reEmitted), "parse(emit(events)) != events")
+            assertEquals(inputs, TraceEvent.parseAll(reEmitted), "parse(emit(events)) != events")
 
             // --- 4. Replay smoke: the extracted inputs drive the W2 engine to completion. ---
             val fixture = TraceToFixture.toSimFixture("semantic-sim-replay", inputs)
             val replay = runQuicSim(fixture, clientMode = true)
             val fedCount = replay.trace.events.count { it is Observed.DatagramFed }
             assertEquals(
-                inputs.count { it is QuicTraceEvent.DgramIn },
+                inputs.count { it is TraceEvent.DgramIn },
                 fedCount,
                 "replay must feed every recorded DGRAM_IN to the driver:\n${replay.trace.render()}",
             )
@@ -125,51 +124,51 @@ class TraceRecorderRoundTripTests {
     @Test
     fun every_input_event_type_roundtrips_through_the_line_format() {
         val events =
-            listOf<QuicTraceEvent>(
-                QuicTraceEvent.DgramIn(0L, 4, null, "c0ffee00"),
-                QuicTraceEvent.DgramIn(1_000L, 2, PathKey(4, 4433, 0L, 0x7f000001L), "beef"),
-                QuicTraceEvent.Error(2_000L, "SimIoException", "ENETDOWN: network is down"),
-                QuicTraceEvent.Error(3_000L, "QuicCloseException", ""),
-                QuicTraceEvent.NetAvail(4_000L, NetworkAvailability.UNAVAILABLE),
-                QuicTraceEvent.Net(5_000L, NetworkId.Unidentified),
-                QuicTraceEvent.Net(6_000L, NetworkId.KindOnly(NetworkKind.Cellular)),
-                QuicTraceEvent.Net(7_000L, NetworkId.Link(NetworkKind.Wifi, -42L)),
-                QuicTraceEvent.Net(
+            listOf<TraceEvent>(
+                TraceEvent.DgramIn(0L, 4, null, "c0ffee00"),
+                TraceEvent.DgramIn(1_000L, 2, TracePath(4, 4433, 0L, 0x7f000001L), "beef"),
+                TraceEvent.Error(2_000L, "SimIoException", "ENETDOWN: network is down"),
+                TraceEvent.Error(3_000L, "QuicCloseException", ""),
+                TraceEvent.NetAvail(4_000L, NetworkAvailability.UNAVAILABLE),
+                TraceEvent.Net(5_000L, NetworkId.Unidentified),
+                TraceEvent.Net(6_000L, NetworkId.KindOnly(NetworkKind.Cellular)),
+                TraceEvent.Net(7_000L, NetworkId.Link(NetworkKind.Wifi, -42L)),
+                TraceEvent.Net(
                     8_000L,
                     NetworkId.Link(NetworkKind.Vpn(setOf(NetworkKind.Cellular, NetworkKind.Other("weird label (x, y): z"))), 7L),
                 ),
-                QuicTraceEvent.Liveness(9_000L, TransportLiveness.Result.Dead),
+                TraceEvent.Liveness(9_000L, TransportLiveness.Result.Dead),
             )
         val lines = mutableListOf<String>()
-        val recorder = QuicTraceRecorder({ line -> lines += line })
+        val recorder = QuicTraceRecorder({ e -> lines += e.toString() })
         events.forEach { recorder.record(it) }
-        assertEquals(events, QuicTraceParser.parse(lines))
+        assertEquals(events, TraceEvent.parseAll(lines))
         // Observation events round-trip too (tooling reads whole traces back).
         val observations =
-            listOf<QuicTraceEvent>(
-                QuicTraceEvent.DgramOut(10_000L, 3, null, "aabbcc"),
-                QuicTraceEvent.State(11_000L, "Established", "h3"),
-                QuicTraceEvent.State(12_000L, "Closed", "IdleTimeout (0x-1)"),
-                QuicTraceEvent.PathState(13_000L, "Probing", "10.0.0.2", 4444),
-                QuicTraceEvent.PathState(14_000L, "None", null, 0),
+            listOf<TraceEvent>(
+                TraceEvent.DgramOut(10_000L, 3, null, "aabbcc"),
+                TraceEvent.State(11_000L, "Established", "h3"),
+                TraceEvent.State(12_000L, "Closed", "IdleTimeout (0x-1)"),
+                TraceEvent.PathState(13_000L, "Probing", "10.0.0.2", 4444),
+                TraceEvent.PathState(14_000L, "None", null, 0),
             )
         val obsLines = mutableListOf<String>()
-        QuicTraceRecorder({ line -> obsLines += line }).also { r -> observations.forEach { r.record(it) } }
-        assertEquals(observations, QuicTraceParser.parse(obsLines))
+        QuicTraceRecorder({ e -> obsLines += e.toString() }).also { r -> observations.forEach { r.record(it) } }
+        assertEquals(observations, TraceEvent.parseAll(obsLines))
     }
 
     @Test
     fun generated_fixture_source_uses_the_simFixture_dsl() {
         val inputs =
-            listOf<QuicTraceEvent>(
-                QuicTraceEvent.DgramIn(0L, 3, null, "010203"),
-                QuicTraceEvent.NetAvail(1_000_000L, NetworkAvailability.UNAVAILABLE),
-                QuicTraceEvent.Net(2_000_000L, NetworkId.KindOnly(NetworkKind.Cellular)),
-                QuicTraceEvent.Liveness(3_000_000L, TransportLiveness.Result.Dead),
-                QuicTraceEvent.Error(4_000_000L, "SimIoException", "ENETDOWN"),
+            listOf<TraceEvent>(
+                TraceEvent.DgramIn(0L, 3, null, "010203"),
+                TraceEvent.NetAvail(1_000_000L, NetworkAvailability.UNAVAILABLE),
+                TraceEvent.Net(2_000_000L, NetworkId.KindOnly(NetworkKind.Cellular)),
+                TraceEvent.Liveness(3_000_000L, TransportLiveness.Result.Dead),
+                TraceEvent.Error(4_000_000L, "SimIoException", "ENETDOWN"),
                 // Observations must be dropped by codegen:
-                QuicTraceEvent.DgramOut(5_000_000L, 1, null, "ff"),
-                QuicTraceEvent.State(6_000_000L, "Closed", null),
+                TraceEvent.DgramOut(5_000_000L, 1, null, "ff"),
+                TraceEvent.State(6_000_000L, "Closed", null),
             )
         val source = TraceToFixture.generateKotlin("field-capture-1", "fieldCapture1", inputs)
         val expectedFragments =

@@ -81,4 +81,5 @@ the native-memory factory QUIC needs — unless you override `ConnectionOptions.
 
 - [Connections & Streams](./connection) — client, server, the `QuicByteStream` lifecycle, and datagrams
 - [Typed Stream Multiplexing](./stream-mux) — exchange codec-typed messages with `withQuicMux`
+- [Trace Capture & Retrace](./trace-capture) — record a connection's packet-level trace and deobfuscate it
 - [HTTP/3 & WebTransport](../http3/intro) — the `socket-http3` layer built on top of QUIC

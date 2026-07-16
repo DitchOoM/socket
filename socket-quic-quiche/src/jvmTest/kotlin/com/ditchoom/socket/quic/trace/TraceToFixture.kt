@@ -12,7 +12,7 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
 /**
  * W3 fixture codegen (RFC_DETERMINISTIC_SIMULATION.md §3.2 "fixture codegen" + §5): converts the
- * **input-event** subset of a recorded trace ([QuicTraceEvent.isInput] — DGRAM_IN, ERROR, NET_*,
+ * **input-event** subset of a recorded trace ([TraceEvent.isInput] — DGRAM_IN, ERROR, NET_*,
  * LIVENESS) into
  *
  *  1. an in-memory [SimFixture] ([toSimFixture]) replayable through the W2 `SimTimeline` engine, and
@@ -28,15 +28,15 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  */
 internal object TraceToFixture {
     /** Map the replayable input events of [events] onto the W2 [SimEvent] model, in order. */
-    fun toSimEvents(events: List<QuicTraceEvent>): List<SimEvent> =
+    fun toSimEvents(events: List<TraceEvent>): List<SimEvent> =
         events.filter { it.isInput }.map { event ->
             val at = event.atNanos.nanoseconds
             when (event) {
-                is QuicTraceEvent.DgramIn -> SimEvent.DatagramIn(at, event.payloadHex)
-                is QuicTraceEvent.Error -> SimEvent.RecvError(at, SimError("${event.type}: ${event.message}"))
-                is QuicTraceEvent.NetAvail -> SimEvent.Availability(at, event.value)
-                is QuicTraceEvent.Net -> SimEvent.Network(at, event.id)
-                is QuicTraceEvent.Liveness -> SimEvent.Liveness(at, event.result)
+                is TraceEvent.DgramIn -> SimEvent.DatagramIn(at, event.payloadHex)
+                is TraceEvent.Error -> SimEvent.RecvError(at, SimError("${event.type}: ${event.message}"))
+                is TraceEvent.NetAvail -> SimEvent.Availability(at, event.value)
+                is TraceEvent.Net -> SimEvent.Network(at, event.id)
+                is TraceEvent.Liveness -> SimEvent.Liveness(at, event.result)
                 else -> error("not an input event: $event")
             }
         }
@@ -44,7 +44,7 @@ internal object TraceToFixture {
     /** Build an in-memory [SimFixture] from a recorded trace — the replay-smoke entry point. */
     fun toSimFixture(
         name: String,
-        events: List<QuicTraceEvent>,
+        events: List<TraceEvent>,
         runFor: Duration = Duration.ZERO,
     ): SimFixture {
         val sim = toSimEvents(events)
@@ -60,7 +60,7 @@ internal object TraceToFixture {
     fun generateKotlin(
         fixtureName: String,
         valName: String,
-        events: List<QuicTraceEvent>,
+        events: List<TraceEvent>,
         runFor: Duration = Duration.ZERO,
         packageName: String = "com.ditchoom.socket.quic.sim.fixtures",
     ): String {

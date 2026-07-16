@@ -22,6 +22,7 @@ const sidebars: SidebarsConfig = {
         'quic/intro',
         'quic/connection',
         'quic/stream-mux',
+        'quic/trace-capture',
       ],
     },
     {
