@@ -12,6 +12,7 @@ plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
+    id("com.ditchoom.boringssl.provision") version "0.0.1-SNAPSHOT"
     signing
 }
 
@@ -26,8 +27,18 @@ val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
 repositories {
+    mavenLocal()
     google()
     mavenCentral()
+}
+
+// Canonical BoringSSL bundle (commit 44b3df6f) via the provision plugin. quiche's Linux libquiche.a
+// is built against THIS external bundle (ffi,qlog), and its external SSL_/EVP_ refs resolve at the
+// final K/N link against the single :boringssl-canonical owner klib (contributed transitively via
+// project(":")). Same dev dist the owner klib embedded — byte-identical archives, matching headers.
+boringssl {
+    version = "0.0.1-dev"
+    localDist = file("/home/rbehera/git/boringssl-kmp/boringssl-build/build/dist")
 }
 
 // Resolve cargo binary — checks PATH, then ~/.cargo/bin
@@ -229,7 +240,7 @@ fun createBuildQuicheSharedTask(
             // Use pre-built BoringSSL if available. When present, quiche builds against external
             // BoringSSL (`ffi,qlog`) and we whole-archive those archives into the cdylib below; when
             // absent, quiche vendors its own via boring-crate (already self-contained).
-            val boringsslDir = rootProject.projectDir.resolve("libs/boringssl/linux-$arch")
+            val boringsslDir = boringssl.boringsslDir(if (arch == "x64") "linuxX64" else "linuxArm64")
             val usesExternalBssl = boringsslDir.resolve("lib/libssl.a").exists()
             val env = mutableMapOf<String, String>()
             // Note: avoid -C lto=thin / -C embed-bitcode=yes — they conflict with
@@ -1827,14 +1838,13 @@ kotlin {
                 // (staticLibraries.linux = libcrypto.a), so no extra linkerOpts are added here.
                 create("BoringSslX509") {
                     defFile("src/nativeInterop/cinterop/BoringSslX509.def")
+                    // Headers from the canonical bundle. The X509/EVP/EC symbols resolve at final link
+                    // from the single :boringssl-canonical owner klib (transitive via project(":")).
                     includeDirs(
-                        rootProject.projectDir.resolve("libs/boringssl/linux-x64/include").absolutePath,
+                        boringssl.boringsslDir("linuxX64").resolve("include").absolutePath,
                         "/usr/include",
                         "/usr/include/x86_64-linux-gnu",
                     )
-                    tasks.named(interopProcessingTaskName) {
-                        dependsOn(rootProject.tasks.named("buildBoringsslX64"))
-                    }
                 }
             }
         }
@@ -1855,14 +1865,12 @@ kotlin {
                 // contributed transitively by the base :socket: module's arm64 cinterop.
                 create("BoringSslX509") {
                     defFile("src/nativeInterop/cinterop/BoringSslX509.def")
+                    // See linuxX64: headers from the canonical bundle; symbols from the owner klib.
                     includeDirs(
-                        rootProject.projectDir.resolve("libs/boringssl/linux-arm64/include").absolutePath,
+                        boringssl.boringsslDir("linuxArm64").resolve("include").absolutePath,
                         "/usr/aarch64-linux-gnu/include",
                         "/usr/include/aarch64-linux-gnu",
                     )
-                    tasks.named(interopProcessingTaskName) {
-                        dependsOn(rootProject.tasks.named("buildBoringsslArm64"))
-                    }
                 }
             }
         }
@@ -2014,6 +2022,18 @@ kotlin {
         if (isMacOS) {
             val appleMain by getting {
                 kotlin.srcDir(generateMozillaCaRoots.map { mozillaCaGeneratedDir })
+            }
+        }
+        // Canonical BoringSSL owner klib on the Linux K/N link. The base :socket: module already exposes
+        // it as `api` on its linuxMain (propagated transitively via commonMain's api(project(":"))), but
+        // declaring it here too is belt-and-suspenders so THIS module's own linux final links (e.g. its
+        // test binaries) definitely carry the single owner archive. quiche's external SSL_/EVP_ refs and
+        // the BoringSslX509/Quiche cinterops resolve against it.
+        if (isLinux) {
+            val linuxMain by getting {
+                dependencies {
+                    api("com.ditchoom.boringssl:boringssl-canonical:0.0.1-SNAPSHOT")
+                }
             }
         }
         androidMain.dependencies {
