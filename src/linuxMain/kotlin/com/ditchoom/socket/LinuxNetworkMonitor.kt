@@ -203,7 +203,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
             }
 
         /** Classify a link kind from the kernel's `/sys/class/net/<iface>/` view (see [primaryNetworkId]). */
-        private fun classifyLinkKind(iface: String): NetworkKind {
+        internal fun classifyLinkKind(iface: String): NetworkKind {
             val base = "/sys/class/net/$iface"
             return classifyLinkKind(
                 iface = iface,
