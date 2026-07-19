@@ -14,9 +14,12 @@ import kotlinx.coroutines.flow.StateFlow
  * - **Node.js**: `os.networkInterfaces()` polling
  * - **Linux native**: netlink sockets (event-driven)
  *
- * Each platform provides its own factory on [Companion] because constructor
- * signatures differ (e.g., Android requires `Context`). Use [AlwaysAvailable]
- * when monitoring is not needed.
+ * The platform's best default is `NetworkMonitor.default()`, and the process-shared instance is
+ * `NetworkMonitor.processDefault()` — both `expect`/extension functions provided by the owning
+ * platform module (`com.ditchoom:socket`), because a functional native monitor needs the same
+ * platform interop (`LinuxSockets` / `NWHelpers` cinterop) as `:socket`'s sockets. This module holds
+ * the portable contract plus the JVM/Android/JS monitors; the native (Linux/Apple) monitors live in
+ * `:socket`. Use [AlwaysAvailable] when monitoring is not needed.
  */
 interface NetworkMonitor {
     /** Current network availability, updated as the platform detects changes. */
@@ -52,27 +55,20 @@ interface NetworkMonitor {
                 override fun close() {}
             }
 
-        /** Process-wide override installed via [installProcessDefault]; null → use [platformDefault]. */
+        /** Process-wide override installed via [installProcessDefault]; null → use the platform default. */
         private var installed: NetworkMonitor? = null
 
         /**
-         * The one platform [default] monitor for the whole process, created lazily on first
-         * [processDefault] use. A path monitor answers a process-wide question ("what's my network?"),
-         * so a single shared instance is all any number of connections need — and it is untouched (zero
-         * cost) unless something actually reads [processDefault].
-         */
-        private val platformDefault: NetworkMonitor by lazy { default() }
-
-        /**
-         * Install a process-wide [NetworkMonitor] that every subsystem resolving [processDefault]
-         * (e.g. QUIC auto-migration) will use. Call once at startup.
+         * Install a process-wide [NetworkMonitor] that every subsystem resolving
+         * `NetworkMonitor.processDefault()` (e.g. QUIC auto-migration) will use. Call once at startup.
          *
-         * This is the injection seam for platforms whose zero-arg [default] cannot build a reactive
-         * monitor by itself — **Android**, where `ConnectivityManager` needs a `Context`. Android apps
-         * call the `Context`-typed `NetworkMonitor.installAndroidContext(applicationContext)` (which
-         * routes here); there is no way to obtain a functional Android monitor without a `Context`, so
-         * the requirement is enforced by that entry point. Other platforms never need to call this —
-         * their [default] is already functional, so [processDefault] just works at no extra cost.
+         * This is the injection seam for platforms whose zero-arg `NetworkMonitor.default()` cannot
+         * build a reactive monitor by itself — **Android**, where `ConnectivityManager` needs a
+         * `Context`. Android apps call the `Context`-typed
+         * `NetworkMonitor.installAndroidContext(applicationContext)` (which routes here); there is no
+         * way to obtain a functional Android monitor without a `Context`, so the requirement is enforced
+         * by that entry point. Other platforms never need to call this — their `default()` is already
+         * functional, so `processDefault()` just works at no extra cost.
          *
          * The installed monitor is caller-owned and long-lived (install one, not one per connection);
          * nothing here closes it.
@@ -82,32 +78,13 @@ interface NetworkMonitor {
         }
 
         /**
-         * The process default monitor: the [installProcessDefault] override if one was installed, else
-         * the shared lazily-created platform [default]. Used by auto-migration and any other
-         * process-level network-aware behavior so they share a single monitor.
+         * The [installProcessDefault] override, or `null` if none was installed. Read by
+         * `NetworkMonitor.processDefault()` (an extension in the owning platform module, `:socket`),
+         * which falls back to the shared platform `NetworkMonitor.default()` when this is `null`.
          */
-        fun processDefault(): NetworkMonitor = installed ?: platformDefault
+        fun installedProcessDefaultOrNull(): NetworkMonitor? = installed
     }
 }
 
 /** Shared constant flow for monitors that cannot identify the network (the [NetworkMonitor.networkId] default). */
 private val UnidentifiedNetworkId: StateFlow<NetworkId> = MutableStateFlow(NetworkId.Unidentified)
-
-/**
- * Returns the platform's best default [NetworkMonitor]: reactive and event-driven where a
- * zero-argument construction is possible, and a polling or no-op ([NetworkMonitor.AlwaysAvailable])
- * monitor otherwise.
- *
- * | Platform | Default |
- * |----------|---------|
- * | Apple (iOS/macOS/tvOS/watchOS) | `NWPathMonitor` (reactive) |
- * | Linux native | netlink socket (reactive) |
- * | Desktop JVM, JDK 21+ | FFM routing socket — netlink (Linux) / `PF_ROUTE` (macOS), reactive; polling on Windows |
- * | Desktop JVM, JDK 8–20 | interface polling |
- * | Node.js | interface polling — **browser JS**: `online`/`offline` (reactive) |
- * | Android | [NetworkMonitor.AlwaysAvailable] — reactive monitoring needs a `Context` (use `NetworkMonitor.android(context)`) |
- * | Wasm (browser) | [NetworkMonitor.AlwaysAvailable] |
- *
- * The returned monitor owns platform resources; call [NetworkMonitor.close] when finished.
- */
-expect fun NetworkMonitor.Companion.default(): NetworkMonitor

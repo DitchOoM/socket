@@ -11,8 +11,11 @@ package com.ditchoom.socket
  * - **macOS**: [RouteNetworkMonitor] (`PF_ROUTE` route socket).
  * - **Windows / other**: [PollingNetworkMonitor] — no reactive routing socket is
  *   wired yet (a `NotifyAddrChange` seam can replace it later).
+ *
+ * Public because the owning platform module (`com.ditchoom:socket`) delegates its
+ * `NetworkMonitor.default()` JVM actual here across the module boundary.
  */
-internal fun defaultJvmNetworkMonitor(): NetworkMonitor {
+fun defaultJvmNetworkMonitor(): NetworkMonitor {
     val os = System.getProperty("os.name").orEmpty().lowercase()
     return when {
         os.contains("linux") -> NetlinkNetworkMonitor()

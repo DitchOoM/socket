@@ -7,6 +7,7 @@ pluginManagement {
 }
 
 rootProject.name = "socket"
+include(":network-monitor")
 include(":socket-quic")
 include(":socket-testsuite")
 include(":socket-quic-quiche")

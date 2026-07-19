@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.drop
