@@ -81,6 +81,9 @@ kotlin {
             // on every target. Still test-scope-only for consumers → no main-code cycle.
             api(project(":socket-http3"))
             api(project(":socket-webtransport"))
+            // Neutral trace model (TraceSink) referenced by TestHelpers' capture helpers
+            // (RFC unified-harness P0).
+            api(project(":socket-testkit"))
             api(libs.buffer)
             api(libs.buffer.flow)
             api(libs.kotlinx.coroutines.core)

@@ -4,6 +4,7 @@ import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.quic.sim.SimError
 import com.ditchoom.socket.quic.sim.SimEvent
 import com.ditchoom.socket.quic.sim.SimFixture
+import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration

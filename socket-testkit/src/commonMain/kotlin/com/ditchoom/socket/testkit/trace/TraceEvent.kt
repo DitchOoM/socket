@@ -1,4 +1,4 @@
-package com.ditchoom.socket.quic.trace
+package com.ditchoom.socket.testkit.trace
 
 import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.transport.NetworkId
@@ -7,9 +7,9 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
 /**
  * A network path's identity as it appears in a trace — the neutral projection of the quiche-side
- * `PathKey` (family / port / raw address bits). Defined here in `:socket-quic` so the trace model
- * stays free of the quiche backend: the recorder maps `PathKey → TracePath` at its `UdpChannel`
- * choke point, one module downstream. Byte order of [hi]/[lo] is unspecified (a path is only ever
+ * `PathKey` (family / port / raw address bits). Defined here in the transport-neutral `:socket-testkit`
+ * so the trace model stays free of the quiche backend: the recorder maps `PathKey → TracePath` at its
+ * `UdpChannel` choke point, one module downstream. Byte order of [hi]/[lo] is unspecified (a path is only ever
  * compared, never reconstructed), mirroring the source type.
  */
 data class TracePath(
@@ -22,7 +22,7 @@ data class TracePath(
 
 /**
  * A per-path quiche stats snapshot as it appears in a trace — the neutral projection of the
- * quiche-side `QuicPathStats` (same 18 fields, same declaration order). Kept in `:socket-quic` so
+ * quiche-side `QuicPathStats` (same 18 fields, same declaration order). Kept in `:socket-testkit` so
  * the trace model has no compile dependency on the quiche backend; the recorder maps
  * `QuicPathStats → TracePathStats` at its `stats()` choke point.
  */

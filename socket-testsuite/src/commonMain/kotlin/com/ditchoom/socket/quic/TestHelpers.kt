@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
-import com.ditchoom.socket.quic.trace.TraceSink
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException

@@ -8,6 +8,7 @@ pluginManagement {
 
 rootProject.name = "socket"
 include(":socket-quic")
+include(":socket-testkit")
 include(":socket-testsuite")
 include(":socket-quic-quiche")
 include(":socket-quic-default")

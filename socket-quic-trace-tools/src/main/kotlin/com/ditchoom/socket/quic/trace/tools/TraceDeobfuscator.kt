@@ -1,6 +1,6 @@
 package com.ditchoom.socket.quic.trace.tools
 
-import com.ditchoom.socket.quic.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceEvent
 
 /**
  * Rewrites the obfuscated class-name tokens in a captured QUIC `v1` trace back to their original
