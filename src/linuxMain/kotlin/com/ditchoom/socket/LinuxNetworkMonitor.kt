@@ -75,6 +75,13 @@ class LinuxNetworkMonitor : NetworkMonitor {
         }
     }
 
+    /** Result of scanning one netlink reply chunk: the best (lowest-metric) default route in it. */
+    internal class RouteScan(
+        val oif: Int?,
+        val metric: Int,
+        val done: Boolean,
+    )
+
     companion object {
         private fun createNetlinkSocket(): Int =
             memScoped {
@@ -122,19 +129,32 @@ class LinuxNetworkMonitor : NetworkMonitor {
          * the framework-level richness Android adds — authoritative cellular, metered, validated — lives
          * in NetworkManager/D-Bus, not the kernel Android and desktop Linux share):
          *
-         * 1. **Which link** = the *default-route* interface (`/proc/net/route` destination `00000000`,
-         *    RTF_UP, lowest metric) — not a guess. It is what actually carries new connections, so with
-         *    bridges/containers up (`docker0`, `br-*`) it still picks the real uplink. Falls back to the
-         *    first up, non-loopback interface from the `getifaddrs` scan when there is no default route.
+         * 1. **Which link** = the *default-route* interface. Primary source is an authoritative netlink
+         *    `RTM_GETROUTE` dump ([queryDefaultRouteOif]) — it is the kernel's own answer, works inside
+         *    network namespaces/containers where `/proc/net/route` may be unpopulated, and covers IPv4
+         *    **and** IPv6 (the `/proc/net/route` text file is IPv4-only). Falls back to parsing
+         *    `/proc/net/route` (destination `00000000`, RTF_UP, lowest metric), then to the first up,
+         *    non-loopback interface from the `getifaddrs` scan. Not a guess: it is what actually carries
+         *    new connections, so with bridges/containers up (`docker0`, `br-*`) it still picks the real
+         *    uplink.
          * 2. **What kind** = classified from `/sys/class/net/<iface>/`: a `wireless`/`phy80211` entry ⇒
          *    [NetworkKind.Wifi]; a `tun_flags` entry ⇒ [NetworkKind.Vpn]; a `wwan`/`rmnet`/`ppp` name ⇒
          *    [NetworkKind.Cellular]; ARPHRD type 1 ⇒ [NetworkKind.Ethernet]; else [NetworkKind.Other].
-         * 3. **Which handle** = the OS interface index (`if_nametoindex`) — the stable per-link
-         *    discriminator QUIC auto-migration reacts to.
+         * 3. **Which handle** = the OS interface index — the stable per-link discriminator QUIC
+         *    auto-migration reacts to (the netlink path already yields the index; the text/scan fallbacks
+         *    resolve it with `if_nametoindex`).
          *
          * [NetworkId.Unidentified] when nothing qualifies.
          */
         internal fun primaryNetworkId(): NetworkId {
+            // Authoritative kernel query first (netns/container-safe, IPv4+IPv6).
+            val oif = queryDefaultRouteOif()
+            if (oif != null && oif > 0) {
+                val name = interfaceName(oif)
+                val kind = if (name != null) classifyLinkKind(name) else NetworkKind.Other("if$oif")
+                return NetworkId.Link(kind, oif.toLong())
+            }
+            // Fallbacks: the IPv4 /proc text table, then the first up non-loopback interface.
             val iface =
                 readFileOrNull("/proc/net/route")?.let { parseDefaultRouteInterface(it) }
                     ?: firstUpNonLoopbackInterface()
@@ -214,6 +234,162 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 arphrdType == ARPHRD_ETHER -> NetworkKind.Ethernet
                 else -> NetworkKind.Other(iface)
             }
+
+        /** Resolve an OS interface index to its name via `if_indextoname`, or null. */
+        private fun interfaceName(index: Int): String? =
+            memScoped {
+                val buf = allocArray<ByteVar>(IF_NAMESIZE)
+                if_indextoname(index.toUInt(), buf)
+                    ?.toKString()
+                    ?.takeIf { it.isNotEmpty() }
+            }
+
+        /**
+         * Query the kernel routing table for the default route's output interface via an `RTM_GETROUTE`
+         * dump on a short-lived `NETLINK_ROUTE` socket, returning the output-interface index of the
+         * lowest-metric default route (destination prefix length 0), or null if none / on any error.
+         *
+         * `AF_UNSPEC` dumps both IPv4 and IPv6, so an IPv6-only default route is honored too. The reply
+         * is parsed by the pure [scanDefaultRoutes] (unit-tested); a dump can span several `recv`s, so
+         * we accumulate the global lowest-metric winner until `NLMSG_DONE`.
+         */
+        private fun queryDefaultRouteOif(): Int? =
+            memScoped {
+                val fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)
+                if (fd < 0) return null
+                try {
+                    val reqLen = NLMSGHDR_SIZE + RTMSG_SIZE
+                    val req = allocArray<ByteVar>(reqLen)
+                    for (i in 0 until reqLen) req[i] = 0
+                    putU32(req, 0, reqLen.toUInt()) // nlmsg_len
+                    putU16(req, 4, RTM_GETROUTE.toUShort()) // nlmsg_type
+                    putU16(req, 6, (NLM_F_REQUEST or NLM_F_DUMP).toUShort()) // nlmsg_flags
+                    putU32(req, 8, 1u) // nlmsg_seq
+                    req[NLMSGHDR_SIZE] = AF_UNSPEC.toByte() // rtm_family
+                    if (send(fd, req, reqLen.convert(), 0) < 0) return null
+
+                    val cap = 8192
+                    val resp = allocArray<ByteVar>(cap)
+                    var bestOif: Int? = null
+                    var bestMetric = Int.MAX_VALUE
+                    while (true) {
+                        val n = recv(fd, resp, cap.convert(), 0).toInt()
+                        if (n <= 0) break
+                        val scan = scanDefaultRoutes(resp, n)
+                        if (scan.oif != null && scan.metric < bestMetric) {
+                            bestOif = scan.oif
+                            bestMetric = scan.metric
+                        }
+                        if (scan.done) break
+                    }
+                    bestOif
+                } finally {
+                    close(fd)
+                }
+            }
+
+        /**
+         * Pure walk of a netlink `RTM_GETROUTE` reply buffer (unit-tested): returns the lowest-metric
+         * default route (`rtm_dst_len == 0`, unicast) output-interface index in this chunk, whether an
+         * `NLMSG_DONE`/`NLMSG_ERROR` terminator was seen, and the winning metric. Manual struct offsets
+         * because cinterop does not expose the `NLMSG_*`/`RTA_*` macros: `nlmsghdr` is 16 bytes, `rtmsg`
+         * 12, each `rtattr` a 4-byte header, all `NLMSG_ALIGNTO`/`RTA_ALIGNTO`-aligned to 4. Fields are
+         * host byte order (netlink), read directly through the pointer.
+         */
+        internal fun scanDefaultRoutes(
+            buf: CPointer<ByteVar>,
+            len: Int,
+        ): RouteScan {
+            var offset = 0
+            var bestOif: Int? = null
+            var bestMetric = Int.MAX_VALUE
+            while (offset + NLMSGHDR_SIZE <= len) {
+                val nlmsgLen = getU32(buf, offset).toInt()
+                val nlmsgType = getU16(buf, offset + 4).toInt()
+                if (nlmsgLen < NLMSGHDR_SIZE || offset + nlmsgLen > len) break
+                if (nlmsgType == NLMSG_DONE || nlmsgType == NLMSG_ERROR) {
+                    return RouteScan(bestOif, bestMetric, done = true)
+                }
+                if (nlmsgType == RTM_NEWROUTE.toInt()) {
+                    val rtmOff = offset + NLMSGHDR_SIZE
+                    val dstLen = getU8(buf, rtmOff + 1)
+                    val rtmType = getU8(buf, rtmOff + 7)
+                    if (dstLen == 0 && rtmType == RTN_UNICAST.toInt()) {
+                        var oif: Int? = null
+                        var metric = 0 // absent RTA_PRIORITY == kernel default (highest priority)
+                        var attrOff = rtmOff + RTMSG_SIZE
+                        val msgEnd = offset + nlmsgLen
+                        while (attrOff + RTATTR_SIZE <= msgEnd) {
+                            val rtaLen = getU16(buf, attrOff).toInt()
+                            val rtaType = getU16(buf, attrOff + 2).toInt()
+                            if (rtaLen < RTATTR_SIZE || attrOff + rtaLen > msgEnd) break
+                            val payloadOff = attrOff + RTATTR_SIZE
+                            if (payloadOff + 4 <= msgEnd) {
+                                when (rtaType) {
+                                    RTA_OIF -> oif = getU32(buf, payloadOff).toInt()
+                                    RTA_PRIORITY -> metric = getU32(buf, payloadOff).toInt()
+                                }
+                            }
+                            attrOff += align4(rtaLen)
+                        }
+                        if (oif != null && oif > 0 && metric < bestMetric) {
+                            bestOif = oif
+                            bestMetric = metric
+                        }
+                    }
+                }
+                offset += align4(nlmsgLen)
+            }
+            return RouteScan(bestOif, bestMetric, done = false)
+        }
+
+        private fun align4(v: Int): Int = (v + 3) and 3.inv()
+
+        private fun getU8(
+            p: CPointer<ByteVar>,
+            off: Int,
+        ): Int = p[off].toUByte().toInt()
+
+        private fun getU16(
+            p: CPointer<ByteVar>,
+            off: Int,
+        ): Int =
+            (p + off)!!
+                .reinterpret<UShortVar>()
+                .pointed.value
+                .toInt()
+
+        private fun getU32(
+            p: CPointer<ByteVar>,
+            off: Int,
+        ): UInt = (p + off)!!.reinterpret<UIntVar>().pointed.value
+
+        private fun putU16(
+            p: CPointer<ByteVar>,
+            off: Int,
+            value: UShort,
+        ) {
+            (p + off)!!.reinterpret<UShortVar>().pointed.value = value
+        }
+
+        private fun putU32(
+            p: CPointer<ByteVar>,
+            off: Int,
+            value: UInt,
+        ) {
+            (p + off)!!.reinterpret<UIntVar>().pointed.value = value
+        }
+
+        private const val NLMSGHDR_SIZE = 16
+        private const val RTMSG_SIZE = 12
+        private const val RTATTR_SIZE = 4
+        private const val IF_NAMESIZE = 16
+
+        // Frozen Linux UAPI attribute types (enum rtattr_type_t in <linux/rtnetlink.h>). cinterop turns
+        // that *named* enum into a Kotlin enum class, so the entries aren't usable as `when` constants;
+        // these values are part of the stable kernel ABI and never change.
+        private const val RTA_OIF = 4
+        private const val RTA_PRIORITY = 6
 
         /** Read a small `/proc` or `/sys` file into a native buffer and return its text, or null on any error. */
         private fun readFileOrNull(path: String): String? =

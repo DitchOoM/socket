@@ -1,13 +1,79 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.ditchoom.socket
 
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class LinuxNetworkIdTest {
+    // --- Synthetic netlink RTM_GETROUTE dump builders (host little-endian x86_64/arm64). ---
+    private fun le16(v: Int) = byteArrayOf((v and 0xff).toByte(), ((v shr 8) and 0xff).toByte())
+
+    private fun le32(v: Int) =
+        byteArrayOf(
+            (v and 0xff).toByte(),
+            ((v shr 8) and 0xff).toByte(),
+            ((v shr 16) and 0xff).toByte(),
+            ((v shr 24) and 0xff).toByte(),
+        )
+
+    /** One rtattr: u16 len(=8) + u16 type + u32 value. */
+    private fun rtattr(
+        type: Int,
+        value: Int,
+    ) = le16(8) + le16(type) + le32(value)
+
+    /** One RTM_NEWROUTE message: nlmsghdr(16) + rtmsg(12) + RTA_OIF(8) + RTA_PRIORITY(8) = 44 bytes. */
+    private fun routeMsg(
+        dstLen: Int,
+        oif: Int,
+        metric: Int,
+        nlmsgType: Int = 24, // RTM_NEWROUTE
+        rtnType: Int = 1, // RTN_UNICAST
+    ): ByteArray {
+        val rtmsg = byteArrayOf(2, dstLen.toByte(), 0, 0, 254.toByte(), 0, 0, rtnType.toByte()) + le32(0)
+        val payload = rtmsg + rtattr(4, oif) + rtattr(6, metric) // RTA_OIF=4, RTA_PRIORITY=6
+        val len = 16 + payload.size
+        val hdr = le32(len) + le16(nlmsgType) + le16(0) + le32(0) + le32(0)
+        return hdr + payload
+    }
+
+    private fun doneMsg() = le32(16) + le16(3) + le16(0) + le32(0) + le32(0) // NLMSG_DONE
+
+    private fun scan(bytes: ByteArray): LinuxNetworkMonitor.RouteScan =
+        bytes.usePinned { pinned ->
+            LinuxNetworkMonitor.scanDefaultRoutes(pinned.addressOf(0), bytes.size)
+        }
+
+    @Test
+    fun scanDefaultRoutesPicksLowestMetricDefaultRouteOif() {
+        // Two default routes (dst_len 0): oif 5 @ metric 25 beats oif 3 @ metric 100. A non-default
+        // route (dst_len 24) is ignored, and NLMSG_DONE terminates the dump.
+        val bytes =
+            routeMsg(dstLen = 0, oif = 3, metric = 100) +
+                routeMsg(dstLen = 0, oif = 5, metric = 25) +
+                routeMsg(dstLen = 24, oif = 9, metric = 0) +
+                doneMsg()
+        val result = scan(bytes)
+        assertEquals(5, result.oif, "lowest-metric default route's output interface wins")
+        assertEquals(25, result.metric)
+        assertTrue(result.done, "NLMSG_DONE must terminate the scan")
+    }
+
+    @Test
+    fun scanDefaultRoutesReportsNoneWhenNoDefaultRoutePresent() {
+        // A chunk with only a non-default route and no terminator: no oif, not done.
+        val result = scan(routeMsg(dstLen = 24, oif = 9, metric = 0))
+        assertNull(result.oif, "a chunk with no default route yields no interface")
+        assertTrue(!result.done, "no NLMSG_DONE ⇒ not terminated")
+    }
+
     @Test
     fun parsesDefaultRouteInterfaceChoosingLowestMetric() {
         // Two default routes (Destination 00000000, RTF_UP=0x0003) — eth2 metric 25 wins over wlan0
