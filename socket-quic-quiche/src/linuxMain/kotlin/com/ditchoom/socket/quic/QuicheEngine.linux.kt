@@ -31,6 +31,8 @@ object QuicheEngine : QuicEngine {
         val connection =
             buildLinuxQuicConnection(hostname, port, quicOptions, transport, timeout, QuicheDriverTuning(recorderFactory = { recorder }))
         wireClientConnectivityTap(quicOptions, recorder, connection)
+        // Auto-migration (QuicOptions.autoMigrateOnNetworkChange, on by default): re-home on link change.
+        wireAutoMigration(quicOptions, connection)
         return connection
     }
 
