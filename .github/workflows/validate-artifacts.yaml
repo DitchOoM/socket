@@ -71,8 +71,14 @@ jobs:
           mkdir -p /tmp/maven-local/com
           cp -r "$LINUX_BASE" /tmp/maven-local/com/
 
-          # Copy Apple per-target artifacts
-          for dir in "$APPLE_BASE"/socket-*/; do
+          # Copy Apple per-target artifacts for EVERY module. Glob is */ (not socket-*/):
+          # a published module whose name doesn't start with "socket" — e.g.
+          # network-monitor-iosarm64 — would otherwise be skipped, leaving its Apple klib
+          # absent from the merged repo so `socket-iosarm64 -> network-monitor` fails to
+          # resolve (the actual artifact, after its root .module already lists the variant).
+          # Base module dirs (socket, network-monitor, …) are already copied from Linux
+          # above and skipped by the guard; their root .module is merged separately below.
+          for dir in "$APPLE_BASE"/*/; do
             [ -d "$dir" ] || continue
             target_name=$(basename "$dir")
             if [ -d "$MERGED/$target_name" ]; then
@@ -93,7 +99,7 @@ jobs:
           # its Apple .module is simply left Linux-only (no worse than before).
           # socket-testsuite joined in W7 (RFC_DETERMINISTIC_SIMULATION §8) when it
           # became a published consumer-facing artifact — the #188 lesson below.
-          for module in socket socket-udp socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
+          for module in socket network-monitor socket-udp socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
             LINUX_MODULE="$LINUX_BASE/$module/$version/$module-$version.module"
             APPLE_MODULE="$APPLE_BASE/$module/$version/$module-$version.module"
             MERGED_MODULE="$MERGED/$module/$version/$module-$version.module"
@@ -301,7 +307,7 @@ jobs:
           # in it survived into the merged root .module. This catches a future module addition that
           # forgets to extend the merge loop, which the socket-only checks above cannot see.
           APPLE_BASE="/tmp/apple-repo/com/ditchoom"
-          for module in socket socket-udp socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
+          for module in socket network-monitor socket-udp socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-testsuite; do
             APPLE_MODULE="$APPLE_BASE/$module/${version}/$module-${version}.module"
             MERGED_MODULE="$MERGED/$module/${version}/$module-${version}.module"
             [ -f "$APPLE_MODULE" ] || continue

@@ -437,6 +437,7 @@ jobs:
       - name: Run checks and tests
         run: >-
           ./gradlew :jvmTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck
+          :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck
           :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest
           :socket-quic-quiche:jvmProcessResources
           :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck

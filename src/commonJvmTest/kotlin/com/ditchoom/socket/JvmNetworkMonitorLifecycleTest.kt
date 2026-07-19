@@ -19,11 +19,12 @@ import kotlin.time.Duration.Companion.seconds
  * only [NetworkId.Link] or [NetworkId.Unidentified] on a raw-scan platform), and [close] tears the
  * polling scope down without throwing. Host-independent — a link may or may not exist on the runner.
  *
- * Note: [NetworkMonitor.default] here returns the polling base — the JDK only version-shadows the
- * reactive FFM routing-socket monitors (`NetlinkNetworkMonitor`/`RouteNetworkMonitor`, in the
- * `jvm21Main` compilation) in from the *assembled* multi-release JAR at runtime. Those monitors are
- * exercised directly by `NetlinkNetworkMonitorTest`, whose `jvmTest` classpath the build augments with
- * the `java21` compilation output.
+ * Note: [NetworkMonitor.default] here returns the polling base — this `:socket` jvmTest classpath sees
+ * only the base (JDK 8) compilation of the `com.ditchoom:network-monitor` dependency, whose reactive FFM
+ * routing-socket monitors (`NetlinkNetworkMonitor`/`RouteNetworkMonitor`) ship shadowed under the
+ * multi-release JAR's `META-INF/versions/21` and only load from the *assembled* JAR at runtime. Those
+ * monitors are exercised directly by that module's own `NetlinkNetworkMonitorTest`, whose `jvmTest`
+ * classpath the network-monitor build augments with the `java21` compilation output.
  */
 class JvmNetworkMonitorLifecycleTest {
     private fun assertNetworkIdInvariant(id: NetworkId) {

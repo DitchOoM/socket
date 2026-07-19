@@ -15,6 +15,10 @@ import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
+// Node-vs-browser detection, module-local to :network-monitor (root :socket has its own copy in
+// Socket.kt, which this module does not depend on): the browser has `window`, Node does not.
+private val isNodeJs: Boolean = js("global.window") == null
+
 /**
  * JavaScript [NetworkMonitor].
  *

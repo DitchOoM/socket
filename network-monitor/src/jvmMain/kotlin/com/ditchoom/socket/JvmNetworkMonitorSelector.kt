@@ -9,5 +9,8 @@ package com.ditchoom.socket
  * ships a same-named class under `META-INF/versions/21` that the JVM loads instead
  * on JDK 21+, returning a reactive FFM routing-socket monitor. On older JDKs there
  * is no event-driven network-change API, so we fall back to interface polling.
+ *
+ * Public because the owning platform module (`com.ditchoom:socket`) delegates its
+ * `NetworkMonitor.default()` JVM actual here across the module boundary.
  */
-internal fun defaultJvmNetworkMonitor(): NetworkMonitor = PollingNetworkMonitor()
+fun defaultJvmNetworkMonitor(): NetworkMonitor = PollingNetworkMonitor()
