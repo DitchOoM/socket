@@ -41,6 +41,8 @@ object QuicheEngine : QuicEngine {
                 QuicheDriverTuning(recorderFactory = { recorder }),
             )
         wireClientConnectivityTap(quicOptions, recorder, connection)
+        // Auto-migration (QuicOptions.autoMigrateOnNetworkChange, on by default): re-home on link change.
+        wireAutoMigration(quicOptions, connection)
         return connection
     }
 

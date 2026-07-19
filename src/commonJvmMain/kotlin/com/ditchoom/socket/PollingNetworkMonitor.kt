@@ -30,12 +30,17 @@ class PollingNetworkMonitor(
 ) : NetworkMonitor {
     private val _availability = MutableStateFlow(NetworkAvailability.UNKNOWN)
     override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
+
+    private val _networkId = MutableStateFlow<com.ditchoom.socket.transport.NetworkId>(com.ditchoom.socket.transport.NetworkId.Unidentified)
+    override val networkId: StateFlow<com.ditchoom.socket.transport.NetworkId> = _networkId.asStateFlow()
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     init {
         scope.launch {
             while (isActive) {
                 _availability.value = checkNetwork()
+                _networkId.value = currentPrimaryNetworkId()
                 delay(interval)
             }
         }

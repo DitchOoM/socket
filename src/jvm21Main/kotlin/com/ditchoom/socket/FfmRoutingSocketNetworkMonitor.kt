@@ -91,6 +91,9 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     private val _availability = MutableStateFlow(NetworkAvailability.UNKNOWN)
     override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
 
+    private val _networkId = MutableStateFlow<com.ditchoom.socket.transport.NetworkId>(com.ditchoom.socket.transport.NetworkId.Unidentified)
+    override val networkId: StateFlow<com.ditchoom.socket.transport.NetworkId> = _networkId.asStateFlow()
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile
@@ -105,6 +108,7 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
 
     protected fun start() {
         _availability.value = checkInterfaces()
+        _networkId.value = currentPrimaryNetworkId()
         fd = openRoutingSocket()
         if (fd < 0) return
 
@@ -120,6 +124,7 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
                         val n = Libc.recv(localFd, scratch, RECV_BUFFER_SIZE.toLong(), 0)
                         if (n <= 0L) break
                         _availability.value = checkInterfaces()
+                        _networkId.value = currentPrimaryNetworkId()
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -156,6 +161,38 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
                 if (hasUp) NetworkAvailability.AVAILABLE else NetworkAvailability.UNAVAILABLE
             } catch (_: Exception) {
                 NetworkAvailability.UNKNOWN
+            }
+
+        /**
+         * Primary-link identity from the interface scan. Identical semantics to the desktop-JVM
+         * `currentPrimaryNetworkId` (duplicated here because the java21 compilation cannot see
+         * commonJvmMain internals — same reason [checkInterfaces] mirrors [PollingNetworkMonitor]).
+         */
+        fun currentPrimaryNetworkId(): com.ditchoom.socket.transport.NetworkId =
+            try {
+                val primary =
+                    NetworkInterface
+                        .getNetworkInterfaces()
+                        ?.asSequence()
+                        ?.filter { !it.isLoopback && it.isUp && !it.isVirtual }
+                        ?.minByOrNull {
+                            val i = it.index
+                            if (i >= 0) i else Int.MAX_VALUE
+                        }
+                if (primary == null) {
+                    com.ditchoom.socket.transport.NetworkId.Unidentified
+                } else {
+                    val idx = primary.index
+                    val handle = if (idx >= 0) idx.toLong() else primary.name.hashCode().toLong()
+                    com.ditchoom.socket.transport.NetworkId
+                        .Link(
+                            com.ditchoom.socket.transport.NetworkKind
+                                .Other(primary.name),
+                            handle,
+                        )
+                }
+            } catch (_: Exception) {
+                com.ditchoom.socket.transport.NetworkId.Unidentified
             }
     }
 }
