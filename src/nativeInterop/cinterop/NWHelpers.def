@@ -10,6 +10,9 @@ linkerOpts = -framework Network -framework Foundation -framework Security
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netdb.h>
 
 // ============================================================
 // TCP receive/send helpers
@@ -558,4 +561,35 @@ void nw_helper_path_monitor_start(nw_path_monitor_t _Nonnull monitor)
 void nw_helper_path_monitor_cancel(nw_path_monitor_t _Nonnull monitor)
 {
     nw_path_monitor_cancel(monitor);
+}
+
+// ============================================================
+// Network interface enumeration
+// ============================================================
+
+void nw_helper_enumerate_interfaces(nw_helper_iface_block _Nonnull cb)
+{
+    struct ifaddrs *head = NULL;
+    if (getifaddrs(&head) != 0) return;
+    for (struct ifaddrs *ifa = head; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_name == NULL) continue;
+        NSString *address = nil;
+        if (ifa->ifa_addr != NULL) {
+            int family = ifa->ifa_addr->sa_family;
+            socklen_t salen = (family == AF_INET) ? sizeof(struct sockaddr_in)
+                            : (family == AF_INET6) ? sizeof(struct sockaddr_in6) : 0;
+            if (salen > 0) {
+                char host[1025];
+                if (getnameinfo(ifa->ifa_addr, salen, host, sizeof(host), NULL, 0, NI_NUMERICHOST) == 0) {
+                    address = [NSString stringWithUTF8String:host];
+                }
+            }
+        }
+        cb([NSString stringWithUTF8String:ifa->ifa_name],
+           if_nametoindex(ifa->ifa_name),
+           (ifa->ifa_flags & IFF_UP) != 0 ? 1 : 0,
+           (ifa->ifa_flags & IFF_LOOPBACK) != 0 ? 1 : 0,
+           address);
+    }
+    freeifaddrs(head);
 }

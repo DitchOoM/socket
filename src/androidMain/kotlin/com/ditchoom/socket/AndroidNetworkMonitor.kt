@@ -148,3 +148,22 @@ internal fun androidNetworkId(
  * @param context Application context (use `applicationContext` to avoid Activity leaks).
  */
 fun NetworkMonitor.Companion.android(context: Context): NetworkMonitor = AndroidNetworkMonitor(context)
+
+/**
+ * Install a `ConnectivityManager`-backed [NetworkMonitor] as the process default, so QUIC
+ * auto-migration (and any other [NetworkMonitor.processDefault] consumer) becomes functional on
+ * Android. Call once at startup, e.g. from `Application.onCreate()`:
+ *
+ * ```kotlin
+ * NetworkMonitor.installAndroidContext(applicationContext)
+ * ```
+ *
+ * This `Context`-typed function is the **only** way to obtain a working Android monitor — the zero-arg
+ * [default] cannot, because `ConnectivityManager` needs a [Context]. That makes the Context a hard
+ * requirement on Android (enforced by this being the functional entry point) while costing other
+ * platforms nothing: they never call this, and their [default] already works. Uses
+ * [Context.getApplicationContext] to avoid leaking an Activity.
+ */
+fun NetworkMonitor.Companion.installAndroidContext(context: Context) {
+    installProcessDefault(android(context.applicationContext))
+}
