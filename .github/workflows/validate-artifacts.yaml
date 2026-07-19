@@ -71,8 +71,14 @@ jobs:
           mkdir -p /tmp/maven-local/com
           cp -r "$LINUX_BASE" /tmp/maven-local/com/
 
-          # Copy Apple per-target artifacts
-          for dir in "$APPLE_BASE"/socket-*/; do
+          # Copy Apple per-target artifacts for EVERY module. Glob is */ (not socket-*/):
+          # a published module whose name doesn't start with "socket" — e.g.
+          # network-monitor-iosarm64 — would otherwise be skipped, leaving its Apple klib
+          # absent from the merged repo so `socket-iosarm64 -> network-monitor` fails to
+          # resolve (the actual artifact, after its root .module already lists the variant).
+          # Base module dirs (socket, network-monitor, …) are already copied from Linux
+          # above and skipped by the guard; their root .module is merged separately below.
+          for dir in "$APPLE_BASE"/*/; do
             [ -d "$dir" ] || continue
             target_name=$(basename "$dir")
             if [ -d "$MERGED/$target_name" ]; then
