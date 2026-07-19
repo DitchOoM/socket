@@ -434,18 +434,74 @@ jobs:
       - name: Start QPACK differential oracle (ls-qpack)
         run: socket-http3/qpack-diff/run-qpack-diff.sh start
 
+      # HANG DIAGNOSTIC (temporary): a progress-watchdog wraps the gradle run. If gradle
+      # emits no new output for 7 min the build is deadlocked (the failure mode seen on
+      # PR #246: harness up, all tests start, then ~46 min of silence until the 60-min job
+      # cap — 5 JVM workers + a native test.kexe orphaned). The watchdog dumps every JVM
+      # test worker (jstack -l, with lock info) AND every native debugTest/test.kexe
+      # (gdb thread apply all bt), then kills the build so the step FAILS FAST with the
+      # exact deadlocked stacks in the log instead of an opaque timeout. The full dump is
+      # also uploaded as an artifact by the step below.
       - name: Run checks and tests
-        run: >-
-          ./gradlew :jvmTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck
-          :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest
-          :socket-quic-quiche:jvmProcessResources
-          :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck
-          :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test
-          :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck
-          :socket-webtransport:jvmTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck
-          :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck
-          -PquicEchoAllArches=true
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        timeout-minutes: 45
+        run: |
+          set -o pipefail
+          command -v gdb >/dev/null 2>&1 || sudo apt-get install -y gdb >/dev/null 2>&1 || true
+          LOG=/tmp/gradle-out.log
+          DUMP=/tmp/hang-threaddump.txt
+          : > "$LOG"
+          (
+            while sleep 30; do
+              [ -f "$LOG" ] || continue
+              now=$(date +%s); mtime=$(stat -c %Y "$LOG" 2>/dev/null || echo "$now")
+              idle=$(( now - mtime ))
+              # 15 min of TOTAL output silence = deadlocked (the real hang is ~46 min silent);
+              # a slow-but-healthy native link/test suite is never quiet this long.
+              if [ "$idle" -ge 900 ]; then
+                {
+                  echo "################ HANG WATCHDOG: no gradle output for ${idle}s — dumping stacks ################"
+                  date -u
+                  echo "== processes =="
+                  ps -eo pid,rss,etimes,comm,args | grep -E 'GradleWorkerMain|GradleDaemon|test\.kexe|java|kotlin' | grep -v grep || true
+                  for p in $(pgrep -f 'GradleWorkerMain' 2>/dev/null); do
+                    echo "===== jstack (JVM worker) pid=$p ====="; jstack -l "$p" 2>&1 || true
+                  done
+                  for p in $(pgrep -f 'test\.kexe' 2>/dev/null); do
+                    echo "===== gdb backtrace (native) pid=$p ====="
+                    sudo gdb -p "$p" -batch -ex 'thread apply all bt' 2>&1 | head -500 || true
+                  done
+                  echo "################ END WATCHDOG DUMP ################"
+                } | tee -a "$DUMP" | tee -a "$LOG"
+                # Kill the build so the step fails fast now that we have the stacks.
+                pkill -f 'GradleWorkerMain' 2>/dev/null || true
+                pkill -f 'test\.kexe' 2>/dev/null || true
+                pkill -f 'GradleDaemon' 2>/dev/null || true
+                break
+              fi
+            done
+          ) &
+          WD=$!
+          ./gradlew :jvmTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck \
+            :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest \
+            :socket-quic-quiche:jvmProcessResources \
+            :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck \
+            :socket-http3:jvmTest :socket-http3:jsNodeTest :socket-http3:wasmJsNodeTest :socket-http3:linuxX64Test \
+            :socket-http3:testDebugUnitTest :socket-http3:ktlintCheck \
+            :socket-webtransport:jvmTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \
+            :socket-udp:jvmTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
+            -PquicEchoAllArches=true \
+            --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee -a "$LOG"
+          RC=${PIPESTATUS[0]}
+          kill "$WD" 2>/dev/null || true
+          exit "$RC"
+
+      - name: Upload hang thread-dump (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-threaddump-linux
+          path: /tmp/hang-threaddump.txt
+          if-no-files-found: ignore
 
       - name: Stop HTTP/3 QPACK interop server
         if: always()
