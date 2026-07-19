@@ -226,4 +226,26 @@ void nw_helper_path_monitor_set_update_handler(
 void nw_helper_path_monitor_start(nw_path_monitor_t _Nonnull monitor);
 void nw_helper_path_monitor_cancel(nw_path_monitor_t _Nonnull monitor);
 
+// ============================================================
+// Network interface enumeration (getifaddrs) — ICE / WebRTC host candidates
+// ============================================================
+
+// Per-address callback, invoked synchronously once per getifaddrs record:
+//   name: BSD interface name (e.g. "en0"); index: OS interface index;
+//   is_up / is_loopback: interface flags as 0/1; address: numeric IP literal
+//   (NI_NUMERICHOST), or nil when the record carries no address.
+// Uses NSString*/int32_t params (K/N-safe, same as the path handler) because
+// getifaddrs / struct ifaddrs are NOT exposed by platform.posix on Apple K/N —
+// the whole scan therefore lives in C and only scalars/strings cross to Kotlin.
+typedef void (^nw_helper_iface_block)(
+    NSString * _Nullable name,
+    uint32_t index,
+    int32_t is_up,
+    int32_t is_loopback,
+    NSString * _Nullable address);
+
+// Enumerates every local interface address via getifaddrs, invoking [cb] once per
+// (interface, address) record. A no-op if getifaddrs fails.
+void nw_helper_enumerate_interfaces(nw_helper_iface_block _Nonnull cb);
+
 #endif /* NW_HELPERS_H */

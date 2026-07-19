@@ -28,7 +28,7 @@ actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> {
             }
             NetworkInterfaceInfo(
                 name = name,
-                index = 0L,
+                index = InterfaceIndex(0L), // Node exposes no OS interface index
                 kind = NetworkKind.Other(name),
                 addresses = addresses,
                 isUp = true, // Node lists only interfaces that are up

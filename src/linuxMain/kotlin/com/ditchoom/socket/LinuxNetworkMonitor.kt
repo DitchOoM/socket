@@ -75,12 +75,39 @@ class LinuxNetworkMonitor : NetworkMonitor {
         }
     }
 
-    /** Result of scanning one netlink reply chunk: the best (lowest-metric) default route in it. */
-    internal class RouteScan(
-        val oif: Int?,
-        val metric: Int,
-        val done: Boolean,
-    )
+    /**
+     * A default route resolved from a netlink dump. Sealed so the "no default route" case is a
+     * distinct, named state rather than a `null` output-interface index paired with a meaningless
+     * metric — the two can never be observed apart.
+     */
+    internal sealed interface DefaultRoute {
+        /** The lowest-metric default route: [oif] output-interface index (always > 0), [metric] its RTA_PRIORITY. */
+        data class Via(
+            val oif: InterfaceIndex,
+            val metric: Int,
+        ) : DefaultRoute
+
+        /** No default route was present. */
+        data object None : DefaultRoute
+    }
+
+    /**
+     * Outcome of scanning one netlink reply chunk: the best [route] found in it, plus whether the dump
+     * has ended. [End] vs [More] replaces a `done: Boolean` so the terminator is a state, not a flag.
+     */
+    internal sealed interface ChunkScan {
+        val route: DefaultRoute
+
+        /** More reply chunks may follow (no terminator seen yet). */
+        data class More(
+            override val route: DefaultRoute,
+        ) : ChunkScan
+
+        /** The dump terminated (`NLMSG_DONE` / `NLMSG_ERROR`) — stop reading. */
+        data class End(
+            override val route: DefaultRoute,
+        ) : ChunkScan
+    }
 
     companion object {
         private fun createNetlinkSocket(): Int =
@@ -148,11 +175,9 @@ class LinuxNetworkMonitor : NetworkMonitor {
          */
         internal fun primaryNetworkId(): NetworkId {
             // Authoritative kernel query first (netns/container-safe, IPv4+IPv6).
-            val oif = queryDefaultRouteOif()
-            if (oif != null && oif > 0) {
-                val name = interfaceName(oif)
-                val kind = if (name != null) classifyLinkKind(name) else NetworkKind.Other("if$oif")
-                return NetworkId.Link(kind, oif.toLong())
+            when (val route = queryDefaultRoute()) {
+                is DefaultRoute.Via -> return NetworkId.Link(classifyOif(route.oif), route.oif.value)
+                DefaultRoute.None -> Unit // no kernel default route — fall through to the fallbacks
             }
             // Fallbacks: the IPv4 /proc text table, then the first up non-loopback interface.
             val iface =
@@ -162,6 +187,12 @@ class LinuxNetworkMonitor : NetworkMonitor {
             val idx = if_nametoindex(iface).toLong()
             if (idx <= 0L) return NetworkId.Unidentified
             return NetworkId.Link(classifyLinkKind(iface), idx)
+        }
+
+        /** Classify the interface behind an OS index, keeping a diagnostic name when it can't be resolved. */
+        private fun classifyOif(oif: InterfaceIndex): NetworkKind {
+            val name = interfaceName(oif)
+            return if (name != null) classifyLinkKind(name) else NetworkKind.Other("if${oif.value}")
         }
 
         /**
@@ -236,27 +267,27 @@ class LinuxNetworkMonitor : NetworkMonitor {
             }
 
         /** Resolve an OS interface index to its name via `if_indextoname`, or null. */
-        private fun interfaceName(index: Int): String? =
+        private fun interfaceName(index: InterfaceIndex): String? =
             memScoped {
                 val buf = allocArray<ByteVar>(IF_NAMESIZE)
-                if_indextoname(index.toUInt(), buf)
+                if_indextoname(index.value.toUInt(), buf)
                     ?.toKString()
                     ?.takeIf { it.isNotEmpty() }
             }
 
         /**
-         * Query the kernel routing table for the default route's output interface via an `RTM_GETROUTE`
-         * dump on a short-lived `NETLINK_ROUTE` socket, returning the output-interface index of the
-         * lowest-metric default route (destination prefix length 0), or null if none / on any error.
+         * Query the kernel routing table for the default route via an `RTM_GETROUTE` dump on a
+         * short-lived `NETLINK_ROUTE` socket. Returns the lowest-metric [DefaultRoute.Via] (destination
+         * prefix length 0), or [DefaultRoute.None] if there is none / on any error.
          *
          * `AF_UNSPEC` dumps both IPv4 and IPv6, so an IPv6-only default route is honored too. The reply
          * is parsed by the pure [scanDefaultRoutes] (unit-tested); a dump can span several `recv`s, so
-         * we accumulate the global lowest-metric winner until `NLMSG_DONE`.
+         * we fold the per-chunk winner into the global lowest-metric one until the dump ends.
          */
-        private fun queryDefaultRouteOif(): Int? =
+        private fun queryDefaultRoute(): DefaultRoute =
             memScoped {
                 val fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)
-                if (fd < 0) return null
+                if (fd < 0) return DefaultRoute.None
                 try {
                     val reqLen = NLMSGHDR_SIZE + RTMSG_SIZE
                     val req = allocArray<ByteVar>(reqLen)
@@ -266,32 +297,39 @@ class LinuxNetworkMonitor : NetworkMonitor {
                     putU16(req, 6, (NLM_F_REQUEST or NLM_F_DUMP).toUShort()) // nlmsg_flags
                     putU32(req, 8, 1u) // nlmsg_seq
                     req[NLMSGHDR_SIZE] = AF_UNSPEC.toByte() // rtm_family
-                    if (send(fd, req, reqLen.convert(), 0) < 0) return null
+                    if (send(fd, req, reqLen.convert(), 0) < 0) return DefaultRoute.None
 
                     val cap = 8192
                     val resp = allocArray<ByteVar>(cap)
-                    var bestOif: Int? = null
-                    var bestMetric = Int.MAX_VALUE
+                    var best: DefaultRoute = DefaultRoute.None
                     while (true) {
                         val n = recv(fd, resp, cap.convert(), 0).toInt()
                         if (n <= 0) break
                         val scan = scanDefaultRoutes(resp, n)
-                        if (scan.oif != null && scan.metric < bestMetric) {
-                            bestOif = scan.oif
-                            bestMetric = scan.metric
-                        }
-                        if (scan.done) break
+                        best = lowerMetric(best, scan.route)
+                        if (scan is ChunkScan.End) break
                     }
-                    bestOif
+                    best
                 } finally {
                     close(fd)
                 }
             }
 
+        /** The lower-metric of two [DefaultRoute]s ([DefaultRoute.None] acts as "no route" / +∞ metric). */
+        private fun lowerMetric(
+            a: DefaultRoute,
+            b: DefaultRoute,
+        ): DefaultRoute =
+            when {
+                a is DefaultRoute.Via && b is DefaultRoute.Via -> if (b.metric < a.metric) b else a
+                b is DefaultRoute.Via -> b
+                else -> a
+            }
+
         /**
-         * Pure walk of a netlink `RTM_GETROUTE` reply buffer (unit-tested): returns the lowest-metric
-         * default route (`rtm_dst_len == 0`, unicast) output-interface index in this chunk, whether an
-         * `NLMSG_DONE`/`NLMSG_ERROR` terminator was seen, and the winning metric. Manual struct offsets
+         * Pure walk of a netlink `RTM_GETROUTE` reply buffer (unit-tested): the lowest-metric default
+         * route (`rtm_dst_len == 0`, unicast) in this chunk, wrapped in [ChunkScan.End] when an
+         * `NLMSG_DONE`/`NLMSG_ERROR` terminator was seen, else [ChunkScan.More]. Manual struct offsets
          * because cinterop does not expose the `NLMSG_*`/`RTA_*` macros: `nlmsghdr` is 16 bytes, `rtmsg`
          * 12, each `rtattr` a 4-byte header, all `NLMSG_ALIGNTO`/`RTA_ALIGNTO`-aligned to 4. Fields are
          * host byte order (netlink), read directly through the pointer.
@@ -299,48 +337,55 @@ class LinuxNetworkMonitor : NetworkMonitor {
         internal fun scanDefaultRoutes(
             buf: CPointer<ByteVar>,
             len: Int,
-        ): RouteScan {
+        ): ChunkScan {
             var offset = 0
-            var bestOif: Int? = null
-            var bestMetric = Int.MAX_VALUE
+            var best: DefaultRoute = DefaultRoute.None
             while (offset + NLMSGHDR_SIZE <= len) {
                 val nlmsgLen = getU32(buf, offset).toInt()
                 val nlmsgType = getU16(buf, offset + 4).toInt()
                 if (nlmsgLen < NLMSGHDR_SIZE || offset + nlmsgLen > len) break
-                if (nlmsgType == NLMSG_DONE || nlmsgType == NLMSG_ERROR) {
-                    return RouteScan(bestOif, bestMetric, done = true)
-                }
+                if (nlmsgType == NLMSG_DONE || nlmsgType == NLMSG_ERROR) return ChunkScan.End(best)
                 if (nlmsgType == RTM_NEWROUTE.toInt()) {
                     val rtmOff = offset + NLMSGHDR_SIZE
                     val dstLen = getU8(buf, rtmOff + 1)
                     val rtmType = getU8(buf, rtmOff + 7)
                     if (dstLen == 0 && rtmType == RTN_UNICAST.toInt()) {
-                        var oif: Int? = null
-                        var metric = 0 // absent RTA_PRIORITY == kernel default (highest priority)
-                        var attrOff = rtmOff + RTMSG_SIZE
-                        val msgEnd = offset + nlmsgLen
-                        while (attrOff + RTATTR_SIZE <= msgEnd) {
-                            val rtaLen = getU16(buf, attrOff).toInt()
-                            val rtaType = getU16(buf, attrOff + 2).toInt()
-                            if (rtaLen < RTATTR_SIZE || attrOff + rtaLen > msgEnd) break
-                            val payloadOff = attrOff + RTATTR_SIZE
-                            if (payloadOff + 4 <= msgEnd) {
-                                when (rtaType) {
-                                    RTA_OIF -> oif = getU32(buf, payloadOff).toInt()
-                                    RTA_PRIORITY -> metric = getU32(buf, payloadOff).toInt()
-                                }
-                            }
-                            attrOff += align4(rtaLen)
-                        }
-                        if (oif != null && oif > 0 && metric < bestMetric) {
-                            bestOif = oif
-                            bestMetric = metric
-                        }
+                        best = lowerMetric(best, parseRouteAttrs(buf, rtmOff + RTMSG_SIZE, offset + nlmsgLen))
                     }
                 }
                 offset += align4(nlmsgLen)
             }
-            return RouteScan(bestOif, bestMetric, done = false)
+            return ChunkScan.More(best)
+        }
+
+        /**
+         * Parse a route message's rtattrs in `[start, end)` into a [DefaultRoute]: [DefaultRoute.Via]
+         * when an `RTA_OIF` is present (its `RTA_PRIORITY`, or 0 if absent = kernel default), else
+         * [DefaultRoute.None]. `oif == 0` is the natural "no RTA_OIF yet" scratch value — a real OS
+         * interface index is always ≥ 1 — and never escapes as state (it becomes [DefaultRoute.None]).
+         */
+        private fun parseRouteAttrs(
+            buf: CPointer<ByteVar>,
+            start: Int,
+            end: Int,
+        ): DefaultRoute {
+            var oif = 0
+            var metric = 0
+            var attrOff = start
+            while (attrOff + RTATTR_SIZE <= end) {
+                val rtaLen = getU16(buf, attrOff).toInt()
+                val rtaType = getU16(buf, attrOff + 2).toInt()
+                if (rtaLen < RTATTR_SIZE || attrOff + rtaLen > end) break
+                val payloadOff = attrOff + RTATTR_SIZE
+                if (payloadOff + 4 <= end) {
+                    when (rtaType) {
+                        RTA_OIF -> oif = getU32(buf, payloadOff).toInt()
+                        RTA_PRIORITY -> metric = getU32(buf, payloadOff).toInt()
+                    }
+                }
+                attrOff += align4(rtaLen)
+            }
+            return if (oif > 0) DefaultRoute.Via(InterfaceIndex(oif.toLong()), metric) else DefaultRoute.None
         }
 
         private fun align4(v: Int): Int = (v + 3) and 3.inv()

@@ -16,7 +16,7 @@ actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> =
                 val idx = nif.index
                 NetworkInterfaceInfo(
                     name = nif.name,
-                    index = if (idx >= 0) idx.toLong() else nif.name.hashCode().toLong(),
+                    index = InterfaceIndex(if (idx >= 0) idx.toLong() else nif.name.hashCode().toLong()),
                     kind = NetworkKind.Other(nif.name),
                     addresses =
                         nif.inetAddresses

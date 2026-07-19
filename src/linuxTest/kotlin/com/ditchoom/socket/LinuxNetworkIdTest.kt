@@ -46,7 +46,7 @@ class LinuxNetworkIdTest {
 
     private fun doneMsg() = le32(16) + le16(3) + le16(0) + le32(0) + le32(0) // NLMSG_DONE
 
-    private fun scan(bytes: ByteArray): LinuxNetworkMonitor.RouteScan =
+    private fun scan(bytes: ByteArray): LinuxNetworkMonitor.ChunkScan =
         bytes.usePinned { pinned ->
             LinuxNetworkMonitor.scanDefaultRoutes(pinned.addressOf(0), bytes.size)
         }
@@ -54,24 +54,27 @@ class LinuxNetworkIdTest {
     @Test
     fun scanDefaultRoutesPicksLowestMetricDefaultRouteOif() {
         // Two default routes (dst_len 0): oif 5 @ metric 25 beats oif 3 @ metric 100. A non-default
-        // route (dst_len 24) is ignored, and NLMSG_DONE terminates the dump.
+        // route (dst_len 24) is ignored, and NLMSG_DONE terminates the dump (ChunkScan.End).
         val bytes =
             routeMsg(dstLen = 0, oif = 3, metric = 100) +
                 routeMsg(dstLen = 0, oif = 5, metric = 25) +
                 routeMsg(dstLen = 24, oif = 9, metric = 0) +
                 doneMsg()
         val result = scan(bytes)
-        assertEquals(5, result.oif, "lowest-metric default route's output interface wins")
-        assertEquals(25, result.metric)
-        assertTrue(result.done, "NLMSG_DONE must terminate the scan")
+        assertTrue(result is LinuxNetworkMonitor.ChunkScan.End, "NLMSG_DONE must terminate the scan")
+        assertEquals(
+            LinuxNetworkMonitor.DefaultRoute.Via(InterfaceIndex(5), 25),
+            result.route,
+            "lowest-metric default route wins",
+        )
     }
 
     @Test
     fun scanDefaultRoutesReportsNoneWhenNoDefaultRoutePresent() {
-        // A chunk with only a non-default route and no terminator: no oif, not done.
+        // A chunk with only a non-default route and no terminator: DefaultRoute.None, ChunkScan.More.
         val result = scan(routeMsg(dstLen = 24, oif = 9, metric = 0))
-        assertNull(result.oif, "a chunk with no default route yields no interface")
-        assertTrue(!result.done, "no NLMSG_DONE ⇒ not terminated")
+        assertTrue(result is LinuxNetworkMonitor.ChunkScan.More, "no NLMSG_DONE ⇒ not terminated")
+        assertEquals(LinuxNetworkMonitor.DefaultRoute.None, result.route, "no default route ⇒ None")
     }
 
     @Test
