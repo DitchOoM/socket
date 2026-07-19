@@ -289,6 +289,16 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 val fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)
                 if (fd < 0) return DefaultRoute.None
                 try {
+                    // Bound the blocking recv. On a sandboxed host (e.g. a CI runner that restricts
+                    // netlink via seccomp/AppArmor) send() can succeed while no reply ever arrives, and
+                    // an untimed recv() would hang forever; likewise a mis-detected NLMSG_DONE would
+                    // block waiting for a message that never comes. SO_RCVTIMEO + an iteration guard
+                    // degrade both to "no route → fall back to /proc/net/route" instead of a hang.
+                    val tv = alloc<timeval>()
+                    tv.tv_sec = 0.convert()
+                    tv.tv_usec = RECV_TIMEOUT_USEC.convert()
+                    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, tv.ptr, sizeOf<timeval>().convert())
+
                     val reqLen = NLMSGHDR_SIZE + RTMSG_SIZE
                     val req = allocArray<ByteVar>(reqLen)
                     for (i in 0 until reqLen) req[i] = 0
@@ -302,9 +312,10 @@ class LinuxNetworkMonitor : NetworkMonitor {
                     val cap = 8192
                     val resp = allocArray<ByteVar>(cap)
                     var best: DefaultRoute = DefaultRoute.None
-                    while (true) {
+                    var iterations = 0
+                    while (iterations++ < MAX_RECV_ITERATIONS) {
                         val n = recv(fd, resp, cap.convert(), 0).toInt()
-                        if (n <= 0) break
+                        if (n <= 0) break // timeout (EAGAIN), peer EOF, or error — stop, use what we have
                         val scan = scanDefaultRoutes(resp, n)
                         best = lowerMetric(best, scan.route)
                         if (scan is ChunkScan.End) break
@@ -429,6 +440,12 @@ class LinuxNetworkMonitor : NetworkMonitor {
         private const val RTMSG_SIZE = 12
         private const val RTATTR_SIZE = 4
         private const val IF_NAMESIZE = 16
+
+        // Netlink recv guards (see queryDefaultRoute): a real RTM_GETROUTE reply lands in microseconds,
+        // so 250ms is generous; the iteration cap bounds even a pathological stream of non-terminating
+        // messages. Both exist only to make a restricted/misbehaving netlink socket non-hanging.
+        private const val RECV_TIMEOUT_USEC = 250_000
+        private const val MAX_RECV_ITERATIONS = 64
 
         // Frozen Linux UAPI attribute types (enum rtattr_type_t in <linux/rtnetlink.h>). cinterop turns
         // that *named* enum into a Kotlin enum class, so the entries aren't usable as `when` constants;
