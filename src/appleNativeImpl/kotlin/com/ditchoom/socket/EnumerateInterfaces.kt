@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.ditchoom.socket
 
 import com.ditchoom.socket.nwhelpers.nw_helper_enumerate_interfaces
