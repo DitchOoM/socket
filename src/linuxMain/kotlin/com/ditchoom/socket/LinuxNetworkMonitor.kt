@@ -180,10 +180,23 @@ class LinuxNetworkMonitor : NetworkMonitor {
             // Authoritative kernel query first (netns/container-safe, IPv4+IPv6).
             when (val route = queryDefaultRoute()) {
                 is DefaultRoute.Via -> return NetworkId.Link(classifyOif(route.oif), route.oif.value)
-                DefaultRoute.None -> Unit // no kernel default route — fall through to the fallbacks
+                DefaultRoute.None -> Unit // no kernel default route — fall through to the /proc + scan fallbacks
             }
-            // Fallbacks (netlink unavailable): the IPv4 /proc text table, then its IPv6 companion (so an
-            // IPv6-only host still resolves a route-aware link), then the first up non-loopback interface.
+            return primaryNetworkIdFromProcFallback()
+        }
+
+        /**
+         * The non-netlink fallback tier of [primaryNetworkId], split out so it is directly reachable by
+         * the netns integration harness (`test-harness/netns`). netlink is available on any normal test
+         * host, so [queryDefaultRoute] short-circuits and this branch would otherwise never execute at
+         * runtime — the harness calls it directly against a namespace's real `/proc` + `/sys` to prove it.
+         *
+         * Resolves the default-route interface from the IPv4 `/proc/net/route` text table, then its IPv6
+         * companion `/proc/net/ipv6_route` (so an IPv6-only host stays route-aware), then the first up
+         * non-loopback interface from the `getifaddrs` scan; classifies it from `/sys/class/net`.
+         * [NetworkId.Unidentified] when nothing qualifies.
+         */
+        internal fun primaryNetworkIdFromProcFallback(): NetworkId {
             val iface =
                 readFileOrNull("/proc/net/route")?.let { parseDefaultRouteInterface(it) }
                     ?: readFileOrNull("/proc/net/ipv6_route")?.let { parseDefaultRouteInterfaceV6(it) }

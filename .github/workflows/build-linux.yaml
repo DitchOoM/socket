@@ -448,6 +448,16 @@ jobs:
           -PquicEchoAllArches=true
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Exercise LinuxNetworkMonitor's REAL route-resolution paths (netlink RTM_GETROUTE, the
+      # /proc/net/{route,ipv6_route} fallbacks, the getifaddrs scan, and /sys link-kind classification)
+      # against controlled network namespaces — the integration paths unit tests cannot reach (netlink
+      # always answers on a normal host, so the fallback tier never runs and the route table is whatever
+      # the host has). Rootless via `unshare -rnm`; :linuxX64Test above already linked the test binary.
+      - name: NetworkMonitor route resolution — netns integration (Linux)
+        run: |
+          chmod +x test-harness/netns/run-netns-tests.sh
+          ./test-harness/netns/run-netns-tests.sh build/bin/linuxX64/debugTest/test.kexe
+
       - name: Stop HTTP/3 QPACK interop server
         if: always()
         run: socket-http3/docker-interop/run-server.sh stop
