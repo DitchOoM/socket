@@ -185,12 +185,35 @@ class LinuxNetworkMonitor : NetworkMonitor {
         /** Classify a link kind from the kernel's `/sys/class/net/<iface>/` view (see [primaryNetworkId]). */
         private fun classifyLinkKind(iface: String): NetworkKind {
             val base = "/sys/class/net/$iface"
-            if (access("$base/wireless", F_OK) == 0 || access("$base/phy80211", F_OK) == 0) return NetworkKind.Wifi
-            if (access("$base/tun_flags", F_OK) == 0) return NetworkKind.Vpn()
-            if (iface.startsWith("wwan") || iface.startsWith("rmnet") || iface.startsWith("ppp")) return NetworkKind.Cellular
-            val type = readFileOrNull("$base/type")?.trim()?.toIntOrNull()
-            return if (type == ARPHRD_ETHER) NetworkKind.Ethernet else NetworkKind.Other(iface)
+            return classifyLinkKind(
+                iface = iface,
+                hasWireless = access("$base/wireless", F_OK) == 0 || access("$base/phy80211", F_OK) == 0,
+                hasTunFlags = access("$base/tun_flags", F_OK) == 0,
+                arphrdType = readFileOrNull("$base/type")?.trim()?.toIntOrNull(),
+            )
         }
+
+        /**
+         * Pure link-kind classification from the `/sys/class/net/<iface>/` facts (unit-tested): a
+         * `wireless`/`phy80211` entry ([hasWireless]) ⇒ [NetworkKind.Wifi]; a `tun_flags` entry
+         * ([hasTunFlags]) ⇒ [NetworkKind.Vpn]; a `wwan`/`rmnet`/`ppp` name ⇒ [NetworkKind.Cellular];
+         * ARPHRD [arphrdType] 1 (`ARPHRD_ETHER`) ⇒ [NetworkKind.Ethernet]; else diagnostic
+         * [NetworkKind.Other]. Wi-Fi wins over the Ethernet ARPHRD type (a Wi-Fi NIC also reports
+         * `ARPHRD_ETHER`), and the tunnel check precedes the cellular name check.
+         */
+        internal fun classifyLinkKind(
+            iface: String,
+            hasWireless: Boolean,
+            hasTunFlags: Boolean,
+            arphrdType: Int?,
+        ): NetworkKind =
+            when {
+                hasWireless -> NetworkKind.Wifi
+                hasTunFlags -> NetworkKind.Vpn()
+                iface.startsWith("wwan") || iface.startsWith("rmnet") || iface.startsWith("ppp") -> NetworkKind.Cellular
+                arphrdType == ARPHRD_ETHER -> NetworkKind.Ethernet
+                else -> NetworkKind.Other(iface)
+            }
 
         /** Read a small `/proc` or `/sys` file into a native buffer and return its text, or null on any error. */
         private fun readFileOrNull(path: String): String? =
