@@ -159,9 +159,12 @@ class LinuxNetworkMonitor : NetworkMonitor {
          * 1. **Which link** = the *default-route* interface. Primary source is an authoritative netlink
          *    `RTM_GETROUTE` dump ([queryDefaultRouteOif]) — it is the kernel's own answer, works inside
          *    network namespaces/containers where `/proc/net/route` may be unpopulated, and covers IPv4
-         *    **and** IPv6 (the `/proc/net/route` text file is IPv4-only). Falls back to parsing
-         *    `/proc/net/route` (destination `00000000`, RTF_UP, lowest metric), then to the first up,
-         *    non-loopback interface from the `getifaddrs` scan. Not a guess: it is what actually carries
+         *    **and** IPv6 (the `/proc/net/route` text file is IPv4-only). Falls back — only when netlink
+         *    is unavailable (a sandbox restricting `NETLINK_ROUTE`) — to parsing `/proc/net/route`
+         *    (IPv4, destination `00000000`, RTF_UP, lowest metric), then `/proc/net/ipv6_route` (IPv6,
+         *    destination `::/0`, RTF_UP, lowest metric, so an IPv6-only host is still route-aware), then
+         *    to the first up, non-loopback interface from the `getifaddrs` scan. Not a guess: it is what
+         *    actually carries
          *    new connections, so with bridges/containers up (`docker0`, `br-*`) it still picks the real
          *    uplink.
          * 2. **What kind** = classified from `/sys/class/net/<iface>/`: a `wireless`/`phy80211` entry ⇒
@@ -179,9 +182,11 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 is DefaultRoute.Via -> return NetworkId.Link(classifyOif(route.oif), route.oif.value)
                 DefaultRoute.None -> Unit // no kernel default route — fall through to the fallbacks
             }
-            // Fallbacks: the IPv4 /proc text table, then the first up non-loopback interface.
+            // Fallbacks (netlink unavailable): the IPv4 /proc text table, then its IPv6 companion (so an
+            // IPv6-only host still resolves a route-aware link), then the first up non-loopback interface.
             val iface =
                 readFileOrNull("/proc/net/route")?.let { parseDefaultRouteInterface(it) }
+                    ?: readFileOrNull("/proc/net/ipv6_route")?.let { parseDefaultRouteInterfaceV6(it) }
                     ?: firstUpNonLoopbackInterface()
                     ?: return NetworkId.Unidentified
             val idx = if_nametoindex(iface).toLong()
@@ -210,6 +215,34 @@ class LinuxNetworkMonitor : NetworkMonitor {
                     val flags = cols[3].toIntOrNull(16) ?: 0
                     if (cols[1] != "00000000" || (flags and RTF_UP_FLAG) == 0) return@mapNotNull null
                     cols[0] to (cols[6].toIntOrNull() ?: Int.MAX_VALUE)
+                }.minByOrNull { it.second }
+                ?.first
+
+        /**
+         * Parse the default-route interface from `/proc/net/ipv6_route` text (pure — unit-tested): the
+         * IPv6 companion to [parseDefaultRouteInterface]. The authoritative netlink `RTM_GETROUTE` dump
+         * already covers IPv6, so this only matters as a fallback when netlink is unavailable on an
+         * IPv6-only host. Unlike `/proc/net/route` this file has **no header row**, every field is hex,
+         * and the interface name is the **last** column. Columns:
+         * `destNetwork(32) destPrefixLen(2) srcNetwork(32) srcPrefixLen(2) nextHop(32) metric(8) refcnt(8) use(8) flags(8) iface`.
+         *
+         * A default route is `::/0` — an all-zero 128-bit destination with prefix length `00` — that is
+         * RTF_UP and **not** RTF_REJECT (systemd installs an `unreachable default dev lo` reject entry
+         * whose destination is also `::/0`; without the reject filter the fallback would pick `lo`).
+         * Lowest metric wins, matching the IPv4 parser. Flags/metric are read as [Long] because the
+         * 32-bit hex fields can set the high bit (e.g. RTF_LOCAL `0x80000000`), which an [Int] parse rejects.
+         */
+        internal fun parseDefaultRouteInterfaceV6(routeTable: String): String? =
+            routeTable
+                .lineSequence()
+                .mapNotNull { line ->
+                    val cols = line.trim().split(WHITESPACE)
+                    if (cols.size < 10) return@mapNotNull null
+                    val isDefault = cols[0] == V6_ANY_ADDR && cols[1] == "00"
+                    val flags = cols[8].toLongOrNull(16) ?: 0L
+                    val usable = (flags and RTF_UP_FLAG.toLong()) != 0L && (flags and RTF_REJECT_FLAG) == 0L
+                    if (!isDefault || !usable) return@mapNotNull null
+                    cols[9] to (cols[5].toLongOrNull(16) ?: Long.MAX_VALUE)
                 }.minByOrNull { it.second }
                 ?.first
 
@@ -472,6 +505,12 @@ class LinuxNetworkMonitor : NetworkMonitor {
 
         private val WHITESPACE = Regex("""\s+""")
         private const val RTF_UP_FLAG = 0x0001
+
+        // /proc/net/ipv6_route default-route matching (see parseDefaultRouteInterfaceV6): RTF_REJECT
+        // (0x0200) marks systemd's `unreachable default dev lo` entry, which must not win the fallback;
+        // V6_ANY_ADDR is the 128-bit all-zero destination (::) that, with prefix length 0, is ::/0.
+        private const val RTF_REJECT_FLAG = 0x0200L
+        private const val V6_ANY_ADDR = "00000000000000000000000000000000"
         private const val ARPHRD_ETHER = 1
     }
 }
