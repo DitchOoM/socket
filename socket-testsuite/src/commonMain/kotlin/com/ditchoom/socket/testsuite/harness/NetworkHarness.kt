@@ -1,5 +1,6 @@
 package com.ditchoom.socket.testsuite.harness
 
+import com.ditchoom.socket.testkit.fault.FaultSchedule
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -97,6 +98,13 @@ class NetworkHarnessScope internal constructor(
     fun quicEcho(): HarnessEndpoint = manifest.scenario("quic-echo")
 
     /**
+     * Plain UDP datagram echo (`socat UDP-RECVFROM … EXEC:cat`) — the datagram analogue of [echo], a
+     * clean (unimpaired) round-trip endpoint for `:socket-udp`'s `UdpSocket`. For faults, front it with
+     * [impairedUdp].
+     */
+    fun udpEcho(): HarnessEndpoint = manifest.scenario("udp-echo")
+
+    /**
      * Deterministic peer-close sidecar: after the client's first byte, the server
      * sets `SO_LINGER=0` and closes → RST. The test controls *when* by *when* it
      * writes (see the root module's `pendingReadDuringPeerReset` consumer).
@@ -152,6 +160,49 @@ class NetworkHarnessScope internal constructor(
     }
 
     /**
+     * Run [block] against a `udp-toxi`-fronted UDP echo endpoint, impairing the two datagram legs with
+     * [clientToServer] (client→echo) and [serverToClient] (echo→client) — the Tier-C twin of the
+     * in-process [com.ditchoom.socket.udp] `ImpairedDatagramPipe`. The same [FaultSchedule] drives both
+     * tiers (via the shared codec + engine), so a schedule that reproduces bit-for-bit in Tier-A
+     * reproduces on the wire here.
+     *
+     * The relay is (re)provisioned through the `udp-toxi` control API and its schedules are cleared
+     * afterwards, so scenarios stay isolated. The endpoint handed to [block] is the relay's data-plane
+     * UDP port — send `:socket-udp` datagrams there and they are impaired on the way to `udp-echo` and
+     * back.
+     */
+    suspend fun impairedUdp(
+        clientToServer: FaultSchedule,
+        serverToClient: FaultSchedule = FaultSchedule.CLEAN,
+        block: suspend (HarnessEndpoint) -> Unit,
+    ) {
+        val (client, relay) = provisionUdpRelay()
+        client.setSchedule(SUITE_UDP_RELAY, RelayDirection.ClientToServer, clientToServer)
+        client.setSchedule(SUITE_UDP_RELAY, RelayDirection.ServerToClient, serverToClient)
+        try {
+            block(HarnessEndpoint(relay.host, relay.data))
+        } finally {
+            runCatching { client.clearSchedules(SUITE_UDP_RELAY) }
+        }
+    }
+
+    /**
+     * Upsert the suite UDP relay (bound to its own data port, schedules cleared) and return the control
+     * client + ports. The upstream uses the compose service address ([UDP_ECHO_UPSTREAM]) — resolvable
+     * from *inside* the harness network, where `udp-toxi` runs.
+     */
+    private suspend fun provisionUdpRelay(): Pair<UdpToxiClient, UdpToxiPorts> {
+        val relay =
+            manifest.udpToxi
+                ?: throw IllegalStateException(
+                    "harness manifest has no 'udp-toxi' scenario — UDP impairments unavailable on this runtime",
+                )
+        val client = UdpToxiClient(relay.host, relay.api)
+        client.upsertRelay(name = SUITE_UDP_RELAY, listenPort = relay.data, upstream = UDP_ECHO_UPSTREAM)
+        return client to relay
+    }
+
+    /**
      * Upsert the echo proxy (fresh, enabled, toxic-free) and return the control
      * client + ports. The upstream uses the compose service address ([ECHO_UPSTREAM])
      * — resolvable from *inside* the harness network, where toxiproxy lives.
@@ -179,5 +230,15 @@ class NetworkHarnessScope internal constructor(
 
         /** Compose-internal address of the echo upstream (toxiproxy resolves it in-network). */
         const val ECHO_UPSTREAM = "echo:14000"
+
+        /**
+         * The suite's own `udp-toxi` relay name — isolated (own name + own data port, pinned by
+         * `UDP_TOXI_SUITE_PORT`) from any relay a parallel test-task family provisions, the datagram
+         * twin of [ECHO_PROXY].
+         */
+        const val SUITE_UDP_RELAY = "suite-udp"
+
+        /** Compose-internal address of the UDP echo upstream (udp-toxi resolves it in-network). */
+        const val UDP_ECHO_UPSTREAM = "udp-echo:14434"
     }
 }

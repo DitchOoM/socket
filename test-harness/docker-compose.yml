@@ -267,6 +267,60 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # L1 — UDP datagram echo (socat UDP-RECVFROM,fork EXEC:cat). The datagram analogue
+  # of the `echo` service and the upstream that `udp-toxi` forwards to
+  # (RFC_UNIFIED_NETWORK_TEST_HARNESS §5). Published on 127.0.0.1 for direct
+  # `udpEcho()` round-trips; reachable in-network as `udp-echo:14434` from udp-toxi.
+  udp-echo:
+    build: ./udp-echo
+    networks: [socketnet]
+    ports:
+      - "127.0.0.1:14434:14434/udp"
+    healthcheck:
+      # Real echo probe: send a datagram, read the reply (RECVFROM replies from 14434,
+      # which the connected socat client accepts), assert it came back. 127.0.0.1 (not
+      # "localhost"): socat's UDP client would try ::1 first otherwise.
+      test: ["CMD-SHELL", "echo PING | socat -T 2 - UDP4:127.0.0.1:14434 | grep -q PING"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped
+
+  # L4 — udp-toxi relay (RFC_UNIFIED_NETWORK_TEST_HARNESS §5). The UDP/QUIC analogue of
+  # toxiproxy: an HTTP/REST CONTROL plane on TCP (8475) provisions a FaultSchedule per
+  # named relay, and a per-datagram UDP DATA plane impairs+forwards to an upstream. The
+  # JVM sidecar (:socket-testsuite:udpToxiJar) drives the same testkit ImpairmentEngine
+  # the Tier-A pipe does. Relays are NOT pre-configured here — test classes POST them at
+  # setup (like toxiproxy), so each run gets a fresh, isolated relay table.
+  #
+  # The suite relay's data port (14435/udp) is published so the host test client can
+  # reach it; the relay only binds it after the first `impairedUdp` upsert, so datagrams
+  # sent before provisioning are simply dropped (the test always upserts first).
+  udp-toxi:
+    build: ./udp-toxi
+    networks: [socketnet]
+    env_file: ./harness.env
+    environment:
+      # Bind the wildcard interface INSIDE the container (docker-proxy reaches it via the
+      # bridge IP, not loopback) — same reasoning as the controller service.
+      UDP_TOXI_BIND: 0.0.0.0
+    depends_on:
+      udp-echo:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8475:8475"          # control API (TCP)
+      - "127.0.0.1:14435:14435/udp"    # suite relay data plane (UDP)
+    healthcheck:
+      # HTTP /health probe via bash's /dev/tcp (temurin-noble ships bash but not
+      # curl/wget; /bin/sh is dash which lacks /dev/tcp — hence explicit bash -c).
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8475 && printf \"GET /health HTTP/1.1\\r\\nHost: udp-toxi\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q ok <&3'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30        # JVM cold-start
+      start_period: 3s
+    restart: unless-stopped
+
   # L8 — W6 harness controller (RFC_DETERMINISTIC_SIMULATION §7). Serves the
   # scenario manifest (`GET /describe`) + `GET /health` so consumer test code
   # (`withNetworkHarness` in :socket-testsuite) discovers endpoints

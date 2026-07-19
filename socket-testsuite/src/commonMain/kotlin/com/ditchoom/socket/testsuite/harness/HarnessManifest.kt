@@ -21,7 +21,9 @@ package com.ditchoom.socket.testsuite.harness
  *     "toxiproxy":       {"api":8474,"echo":15900,"http":15080,"tls":15443},
  *     "rst":             {"host":"127.0.0.1","port":14998},
  *     "blackhole":       {"host":"172.30.0.99","port":14999},
- *     "quic-echo":       {"host":"127.0.0.1","port":14433}
+ *     "quic-echo":       {"host":"127.0.0.1","port":14433},
+ *     "udp-echo":        {"host":"127.0.0.1","port":14434},
+ *     "udp-toxi":        {"api":8475,"data":14435}
  *   }
  * }
  * ```
@@ -35,6 +37,7 @@ class HarnessManifest internal constructor(
     val version: Int,
     val scenarios: Map<String, HarnessEndpoint>,
     val toxiproxy: ToxiproxyPorts?,
+    val udpToxi: UdpToxiPorts?,
 ) {
     fun scenarioOrNull(name: String): HarnessEndpoint? = scenarios[name]
 
@@ -60,6 +63,7 @@ class HarnessManifest internal constructor(
                 "rst",
                 "blackhole",
                 "quic-echo",
+                "udp-echo",
             )
 
         /**
@@ -99,7 +103,17 @@ class HarnessManifest internal constructor(
                         null
                     }
                 }
-            return HarnessManifest(version, scenarios, toxiproxy)
+            val udpToxi =
+                HarnessJson.objectField(scenariosJson, "udp-toxi")?.let { obj ->
+                    val api = HarnessJson.intField(obj, "api")
+                    val data = HarnessJson.intField(obj, "data")
+                    if (api != null && data != null) {
+                        UdpToxiPorts(host = HarnessJson.stringField(obj, "host") ?: defaultHost, api = api, data = data)
+                    } else {
+                        null
+                    }
+                }
+            return HarnessManifest(version, scenarios, toxiproxy, udpToxi)
         }
     }
 }

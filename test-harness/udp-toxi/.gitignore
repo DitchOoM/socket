@@ -1,0 +1,3 @@
+# Build artefact produced by `:socket-testsuite:udpToxiJar`. The Dockerfile +
+# this .gitignore are committed; the jar is regenerated each run.
+udp-toxi.jar

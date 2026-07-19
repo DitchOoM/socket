@@ -105,6 +105,13 @@ kotlin {
             }
         }
         jvmMain.get().dependsOn(commonJvmMain)
+        jvmMain.dependencies {
+            // udp-toxi sidecar (jvmMain-only): the relay's UDP data plane dogfoods :socket-udp's
+            // UdpSocket (ReadBuffer/WriteBuffer at the boundary, no ByteArray) exactly as the controller
+            // dogfoods ServerSocket. JVM-only — the sidecar ships as a docker image built by udpToxiJar;
+            // Android never runs it, so this never widens the android/native published surface.
+            implementation(project(":socket-udp"))
+        }
         androidMain.get().dependsOn(commonJvmMain)
         androidMain.dependencies {
             // buffer-android doesn't declare atomicfu in its metadata; the QUIC StateFlow path needs
@@ -237,5 +244,47 @@ tasks.register<Jar>("controllerJar") {
 
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     // Drop signing metadata from upstream jars — fat-jar invalidates signatures.
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/INDEX.LIST", "module-info.class")
+}
+
+// ─── udpToxiJar ────────────────────────────────────────────────────────
+// Runnable fat jar of the udp-toxi relay sidecar (jvmMain `UdpToxiServer` —
+// RFC_UNIFIED_NETWORK_TEST_HARNESS §5). Identical shape to controllerJar; output:
+// test-harness/udp-toxi/udp-toxi.jar, where the udp-toxi service's Dockerfile COPYs
+// it. Wired as a dependsOn of the root `harnessUp` so `docker compose up` always
+// sees a jar matching the current source.
+//
+// Arch-neutral (pure JVM: TCP control plane on ServerSocket, UDP data plane on
+// :socket-udp's NIO channel, no natives loaded), so the one jar runs under both
+// halves of the eclipse-temurin multi-arch base image.
+tasks.register<Jar>("udpToxiJar") {
+    group = "build"
+    description =
+        "Build a runnable fat jar of the udp-toxi relay for test-harness/udp-toxi. " +
+        "Output: test-harness/udp-toxi/udp-toxi.jar"
+
+    val mainCompilation = kotlin.jvm().compilations.getByName("main")
+    dependsOn(mainCompilation.compileTaskProvider)
+    dependsOn(mainCompilation.runtimeDependencyFiles)
+
+    archiveBaseName.set("udp-toxi")
+    archiveVersion.set("")
+    destinationDirectory.set(rootProject.projectDir.resolve("test-harness/udp-toxi"))
+
+    manifest {
+        attributes(
+            "Main-Class" to "com.ditchoom.socket.testsuite.udptoxi.UdpToxiServerKt",
+            "Multi-Release" to "true",
+        )
+    }
+
+    from(mainCompilation.output.allOutputs)
+    from({
+        mainCompilation.runtimeDependencyFiles.files
+            .filter { it.isFile && it.name.endsWith(".jar") }
+            .map { zipTree(it) }
+    })
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/INDEX.LIST", "module-info.class")
 }

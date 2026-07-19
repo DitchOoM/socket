@@ -198,6 +198,45 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # L1 — UDP datagram echo (socat UDP-RECVFROM,fork EXEC:cat). Datagram analogue of
+  # `echo`; the upstream udp-toxi forwards to.
+  udp-echo:
+    image: ghcr.io/ditchoom/socket-test-harness-udp-echo:latest
+    networks: [socketnet]
+    ports:
+      - "127.0.0.1:14434:14434/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "echo PING | socat -T 2 - UDP4:127.0.0.1:14434 | grep -q PING"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 1s
+    restart: unless-stopped
+
+  # L4 — udp-toxi relay (UDP/QUIC fault plane; toxiproxy is TCP-only). HTTP/REST control
+  # plane on TCP:8475 + per-datagram UDP data plane. Relays are provisioned at test time
+  # via the 8475 API (like toxiproxy). The suite relay's data port (14435/udp) is bound
+  # only after the first `impairedUdp` upsert.
+  udp-toxi:
+    image: ghcr.io/ditchoom/socket-test-harness-udp-toxi:latest
+    networks: [socketnet]
+    environment:
+      UDP_TOXI_BIND: 0.0.0.0
+      UDP_TOXI_API_PORT: 8475
+    depends_on:
+      udp-echo:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8475:8475"          # control API (TCP)
+      - "127.0.0.1:14435:14435/udp"    # suite relay data plane (UDP)
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8475 && printf \"GET /health HTTP/1.1\\r\\nHost: udp-toxi\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q ok <&3'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    restart: unless-stopped
+
   # L8 — harness controller: GET /describe (scenario manifest) + GET /health.
   # The in-repo stack feeds it harness.env via env_file; here the same pinned-port
   # table is inlined so this file stays standalone. Keep in lockstep with
@@ -218,6 +257,9 @@ services:
       NETEM_BLACKHOLE_PORT: 14999
       RST_PORT: 14998
       QUIC_ECHO_PORT: 14433
+      UDP_ECHO_PORT: 14434
+      UDP_TOXI_API_PORT: 8475
+      UDP_TOXI_SUITE_PORT: 14435
       CONTROLLER_PORT: 14100
     ports:
       - "127.0.0.1:14100:14100"
