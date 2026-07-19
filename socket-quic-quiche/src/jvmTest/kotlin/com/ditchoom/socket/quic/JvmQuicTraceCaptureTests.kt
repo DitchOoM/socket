@@ -13,6 +13,7 @@ import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -75,15 +76,24 @@ class JvmQuicTraceCaptureTests {
         lines: List<String>,
         migratedTo: NetworkId,
     ) {
-        while (true) {
-            val events = TraceEvent.parseAll(synchronized(lines) { lines.toList() })
-            val gotId = events.filterIsInstance<TraceEvent.Net>().any { it.id == migratedTo }
-            val gotAvail =
-                events.filterIsInstance<TraceEvent.NetAvail>().any {
-                    it.value == NetworkAvailability.UNAVAILABLE
+        // Bounded so a genuine tap failure fails HERE with a diagnostic, instead of hanging to the
+        // outer timeout. The connection stays alive (we haven't closed) so the tap collectors can run.
+        try {
+            withTimeout(10.seconds) {
+                while (true) {
+                    val events = TraceEvent.parseAll(synchronized(lines) { lines.toList() })
+                    val gotId = events.filterIsInstance<TraceEvent.Net>().any { it.id == migratedTo }
+                    val gotAvail =
+                        events.filterIsInstance<TraceEvent.NetAvail>().any {
+                            it.value == NetworkAvailability.UNAVAILABLE
+                        }
+                    if (gotId && gotAvail) return@withTimeout
+                    delay(10)
                 }
-            if (gotId && gotAvail) return
-            delay(10)
+            }
+        } catch (_: TimeoutCancellationException) {
+            val snapshot = synchronized(lines) { lines.toList() }
+            error("connectivity tap never recorded networkId=$migratedTo + UNAVAILABLE within 10s: $snapshot")
         }
     }
 
@@ -138,19 +148,22 @@ class JvmQuicTraceCaptureTests {
                                     monitor.set(NetworkAvailability.UNAVAILABLE)
 
                                     val response = stream.read(5.seconds)
-                                    if (response is ReadResult.Data) {
-                                        echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
-                                    } else {
-                                        echoResult.complete("no_data")
-                                    }
-                                    // Deterministically wait until the engine's connectivity tap has
-                                    // folded BOTH monitor emissions into the trace before closing —
-                                    // instead of a fixed sleep that races teardown on a loaded CI
-                                    // runner. The observe() collectors run on THIS connection's scope
-                                    // and are cancelled by close(); if we close too early, only the
-                                    // replayed initial NET_ID (Unidentified) is recorded and the
-                                    // migratedTo emission is lost (the intermittent CI failure).
+                                    val echoed =
+                                        if (response is ReadResult.Data) {
+                                            response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                                        } else {
+                                            "no_data"
+                                        }
+                                    // Wait until the engine's connectivity tap has folded BOTH monitor
+                                    // emissions into the trace BEFORE signalling echoResult. The tap's
+                                    // observe() collectors run on THIS connection's scope; the main
+                                    // coroutine cancels this clientJob as soon as echoResult completes, so
+                                    // completing before the tap has recorded lets teardown cancel the
+                                    // collectors before they run — on a slow/contended runner they are
+                                    // starved and record nothing (the intermittent CI failure). Gating
+                                    // completion on the tap makes the teardown order deterministic.
                                     awaitConnectivityTapped(lines, migratedTo)
+                                    echoResult.complete(echoed)
                                     stream.close()
                                 }
                             }
