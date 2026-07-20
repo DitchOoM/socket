@@ -12,7 +12,9 @@ plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
-    id("com.ditchoom.boringssl.provision") version "0.0.1-SNAPSHOT"
+    // Version pinned in settings.gradle.kts (pluginManagement resolutionStrategy → boringsslPluginVersion,
+    // default 0.0.6). The plugin resolves from the Gradle Plugin Portal.
+    id("com.ditchoom.boringssl.provision")
     signing
 }
 
@@ -27,18 +29,31 @@ val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
 repositories {
-    mavenLocal()
+    // Scoped mavenLocal: resolves the canonical :boringssl-canonical OWNER klib from ~/.m2, filtered to
+    // com.ditchoom.boringssl.* so no unrelated ~/.m2 artifact can shadow a real Central dependency
+    // (mirrors settings.gradle.kts). No-op for the stable 0.0.6 default resolve (from Maven Central).
+    mavenLocal {
+        content { includeGroupByRegex("com\\.ditchoom\\.boringssl.*") }
+    }
     google()
     mavenCentral()
 }
 
-// Canonical BoringSSL bundle (commit 44b3df6f) via the provision plugin. quiche's Linux libquiche.a
-// is built against THIS external bundle (ffi,qlog), and its external SSL_/EVP_ refs resolve at the
-// final K/N link against the single :boringssl-canonical owner klib (contributed transitively via
-// project(":")). Same dev dist the owner klib embedded — byte-identical archives, matching headers.
+// Canonical BoringSSL bundle (commit 44b3df6f) via the provision plugin. quiche's Linux libquiche.a is
+// built against THIS external bundle (ffi,qlog), and its external SSL_/EVP_ refs resolve at the final
+// K/N link against the single :boringssl-canonical owner klib (contributed transitively via project(":")).
+// Defaults resolve the published stable 0.0.6 (checksum-pinned bundle from the GitHub Release); every
+// value is overridable via -P (see the base :socket build.gradle.kts for the full property set).
+val boringsslBundleVersion = providers.gradleProperty("boringsslBundleVersion").getOrElse("0.0.6")
+val boringsslLocalBundle = providers.gradleProperty("boringsslLocalBundle").orNull
+val boringsslOwnerVersion = providers.gradleProperty("boringsslOwnerVersion").getOrElse("0.0.6")
+
 boringssl {
-    version = "0.0.1-dev"
-    localDist = file("/home/rbehera/git/boringssl-kmp/boringssl-build/build/dist")
+    version = boringsslBundleVersion
+    boringsslLocalBundle?.let { p ->
+        val f = file(p)
+        localDist = if (f.isAbsolute) f else rootDir.resolve(p)
+    }
 }
 
 // Resolve cargo binary — checks PATH, then ~/.cargo/bin
@@ -2032,7 +2047,7 @@ kotlin {
         if (isLinux) {
             val linuxMain by getting {
                 dependencies {
-                    api("com.ditchoom.boringssl:boringssl-canonical:0.0.1-SNAPSHOT")
+                    api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }
             }
         }

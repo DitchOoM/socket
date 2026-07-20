@@ -9,7 +9,9 @@ plugins {
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
     alias(libs.plugins.dokka)
-    id("com.ditchoom.boringssl.provision") version "0.0.1-SNAPSHOT"
+    // Version pinned in settings.gradle.kts (pluginManagement resolutionStrategy → boringsslPluginVersion,
+    // default 0.0.6). The plugin resolves from the Gradle Plugin Portal.
+    id("com.ditchoom.boringssl.provision")
     signing
 }
 
@@ -17,13 +19,26 @@ apply(from = "gradle/setup.gradle.kts")
 
 group = "com.ditchoom"
 
-// Canonical BoringSSL owner bundle (commit 44b3df6f, quiche 0.29.2 / boring-sys 4.22.0 ABI).
-// Consumed via the boringssl-kmp provision plugin; localDist points at the locally built
-// :boringssl-build dist so no network fetch happens during the migration window. The dev
-// bundle here is byte-identical to the archive the :boringssl-canonical owner klib embeds.
+// Canonical BoringSSL owner bundle (commit 44b3df6f, quiche 0.29.2 / boring-sys 4.22.0 ABI), consumed
+// via the boringssl-kmp provision plugin. Defaults resolve the published stable: the checksum-pinned
+// linux bundle from the v0.0.6 GitHub Release (baked-in SHA-256, no TOFU) and the :boringssl-canonical
+// OWNER klib from Maven Central. Every value is overridable via -P for local dev against an unreleased
+// candidate (-PboringsslLocalBundle at :boringssl-build/build/dist, -PboringsslBundleVersion, etc.).
+val boringsslBundleVersion = providers.gradleProperty("boringsslBundleVersion").getOrElse("0.0.6")
+val boringsslLocalBundle = providers.gradleProperty("boringsslLocalBundle").orNull
+// Version of the canonical :boringssl-canonical OWNER klib whose single libcrypto.a/libssl.a every
+// EXTERNAL-mode socket linux cinterop links against (api dep on linuxMain). Overridable via -P.
+val boringsslOwnerVersion = providers.gradleProperty("boringsslOwnerVersion").getOrElse("0.0.6")
+
 boringssl {
-    version = "0.0.1-dev"
-    localDist = file("/home/rbehera/git/boringssl-kmp/boringssl-build/build/dist")
+    version = boringsslBundleVersion
+    // -PboringsslLocalBundle=<dir> points at a :boringssl-build build/dist holding
+    // boringssl-<version>-<triple>.tar.gz(+.sha256). Relative paths resolve against rootDir; absolute
+    // paths are used as-is. Left unset → the plugin falls back to its baked checksums + release fetch.
+    boringsslLocalBundle?.let { p ->
+        val f = file(p)
+        localDist = if (f.isAbsolute) f else rootDir.resolve(p)
+    }
 }
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
@@ -43,7 +58,13 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
-    mavenLocal()
+    // Scoped mavenLocal: resolves the canonical :boringssl-canonical OWNER klib (external-mode linux
+    // BoringSSL supply) from ~/.m2. Filtered to com.ditchoom.boringssl.* so an unrelated ~/.m2 artifact
+    // can never shadow a real Central dependency (mirrors settings.gradle.kts). No-op for the stable
+    // 0.0.6 default resolve, which comes from Maven Central below.
+    mavenLocal {
+        content { includeGroupByRegex("com\\.ditchoom\\.boringssl.*") }
+    }
     google()
     mavenCentral()
 }
@@ -504,7 +525,7 @@ kotlin {
         if (isLinux) {
             val linuxMain by getting {
                 dependencies {
-                    api("com.ditchoom.boringssl:boringssl-canonical:0.0.1-SNAPSHOT")
+                    api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
                 }
             }
         }
