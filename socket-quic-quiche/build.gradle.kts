@@ -255,8 +255,14 @@ fun createBuildQuicheSharedTask(
             // Use pre-built BoringSSL if available. When present, quiche builds against external
             // BoringSSL (`ffi,qlog`) and we whole-archive those archives into the cdylib below; when
             // absent, quiche vendors its own via boring-crate (already self-contained).
-            val boringsslDir = boringssl.boringsslDir(if (arch == "x64") "linuxX64" else "linuxArm64")
-            val usesExternalBssl = boringsslDir.resolve("lib/libssl.a").exists()
+            // The external-BoringSSL (canonical owner klib) path is LINUX-ONLY — the canonical klib is
+            // linux-only (RFC D2), and on macOS/Apple quiche MUST stay self-contained via boring-crate.
+            // Gate on os == "linux": otherwise boringssl.boringsslDir(...) provisions the LINUX bundle even
+            // during an Apple build, usesExternalBssl flips true, the boringssl-boring-crate feature is
+            // dropped (line below), and — the whole-archive bundling being linux-only — macOS libquiche.a
+            // ends up with NO BoringSSL (undefined _SSL_/_EVP_/_CRYPTO_ at the Apple K/N link).
+            val boringsslDir = if (os == "linux") boringssl.boringsslDir(if (arch == "x64") "linuxX64" else "linuxArm64") else null
+            val usesExternalBssl = boringsslDir?.resolve("lib/libssl.a")?.exists() == true
             val env = mutableMapOf<String, String>()
             // Note: avoid -C lto=thin / -C embed-bitcode=yes — they conflict with
             // pre-built BoringSSL objects that lack LTO bitcode.
@@ -278,7 +284,7 @@ fun createBuildQuicheSharedTask(
                 env[targetRustflagsVar] =
                     baseRustflags +
                     " -C link-arg=-Wl,--whole-archive" +
-                    " -C link-arg=${boringsslDir.resolve("lib/libssl.a").absolutePath}" +
+                    " -C link-arg=${boringsslDir!!.resolve("lib/libssl.a").absolutePath}" +
                     " -C link-arg=${boringsslDir.resolve("lib/libcrypto.a").absolutePath}" +
                     " -C link-arg=-Wl,--no-whole-archive"
                 logger.lifecycle("Bundling pre-built BoringSSL into libquiche.$libExt from ${boringsslDir.absolutePath}")
