@@ -72,3 +72,6 @@ socket-webtransport/testcerts/cert.p12
 # cert+key, so the Apple Http3 loopback suite (AppleHttp3LoopbackTest) can present a Network.framework
 # `sec_identity_t`. JVM/Linux use the committed PEMs directly.
 socket-http3/testcerts/cert.p12
+
+# Python bytecode (netns harness helper)
+__pycache__/

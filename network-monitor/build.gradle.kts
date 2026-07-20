@@ -163,6 +163,37 @@ afterEvaluate {
     }
 }
 
+// netns JVM route-resolution probe support (test-harness/netns): dump the jvmTest runtime classpath and
+// the JDK 21 toolchain `java` launcher to build/netns/ so run-netns-tests.sh can exec NetnsJvmProbe
+// inside a rootless network namespace (`unshare -rnm`) — the JVM twin of the native NetnsRouteResolution
+// test. The classpath already carries the java21 (FFM) output (appended to jvmTest above), so the probe
+// reaches both the commonJvmMain JvmNetworkId path and NetlinkNetworkMonitor. JDK 21 is required for the
+// FFM classes to load; the toolchain launcher below is that exact JVM. See the harness script for how it
+// is consumed (it self-skips when these files are absent, keeping native-only runs working).
+val netnsJava21Launcher =
+    javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
+afterEvaluate {
+    tasks.register("netnsJvmProbeClasspath") {
+        description = "Dumps the jvmTest runtime classpath + JDK21 java launcher for the netns JVM probe."
+        // The probe runs off the compiled jvmTest classes + java21 FFM output + all runtime deps.
+        dependsOn("compileTestKotlinJvm", "compileJava21KotlinJvm")
+        val jvmTest = tasks.named<Test>("jvmTest")
+        val outDir = layout.buildDirectory.dir("netns")
+        val launcher = netnsJava21Launcher
+        outputs.dir(outDir)
+        doLast {
+            val dir = outDir.get().asFile
+            dir.mkdirs()
+            // Resolve the FINAL jvmTest classpath (afterEvaluate appended the java21 output to it).
+            dir.resolve("jvm-test-classpath.txt").writeText(jvmTest.get().classpath.asPath)
+            val javaExe = launcher.get().executablePath.asFile
+            dir.resolve("java21-launcher.txt").writeText(javaExe.absolutePath)
+        }
+    }
+}
+
 // Multi-release JAR: ship the JDK 21 FFM network-monitor bindings under META-INF/versions/21.
 // Wrapped in afterEvaluate because jvmJar is created by the KMP plugin.
 afterEvaluate {
