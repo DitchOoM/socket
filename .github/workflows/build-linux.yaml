@@ -483,6 +483,7 @@ jobs:
           WD=$!
           ./gradlew :jvmTest :jsTest :wasmJsNodeTest :linuxX64Test :testDebugUnitTest :ktlintCheck \
             :network-monitor:jvmTest :network-monitor:jsNodeTest :network-monitor:testDebugUnitTest :network-monitor:linuxX64Test :network-monitor:ktlintCheck \
+            :network-monitor:netnsJvmProbeClasspath \
             :socket-quic:jsNodeTest :socket-quic:wasmJsNodeTest \
             :socket-quic-quiche:jvmProcessResources \
             :socket-quic:ktlintCheck :socket-quic-quiche:ktlintCheck :socket-quic-default:ktlintCheck \
@@ -504,11 +505,14 @@ jobs:
           path: /tmp/hang-threaddump.txt
           if-no-files-found: ignore
 
-      # Exercise LinuxNetworkMonitor's REAL route-resolution paths (netlink RTM_GETROUTE, the
-      # /proc/net/{route,ipv6_route} fallbacks, the getifaddrs scan, and /sys link-kind classification)
-      # against controlled network namespaces — the integration paths unit tests cannot reach (netlink
-      # always answers on a normal host, so the fallback tier never runs and the route table is whatever
-      # the host has). Rootless via `unshare -rnm`; :linuxX64Test above already linked the test binary.
+      # Exercise the REAL Linux route-resolution paths against controlled network namespaces — the
+      # integration paths unit tests cannot reach (netlink always answers on a normal host, so the
+      # fallback tier never runs and the route table is whatever the host has). Two implementations run
+      # in each namespace: the native LinuxNetworkMonitor (netlink RTM_GETROUTE, the /proc/net/{route,
+      # ipv6_route} fallbacks, the getifaddrs scan, /sys link-kind classification) via the .kexe, and the
+      # desktop-JVM :network-monitor resolvers (commonJvmMain JvmNetworkId + jvm21 FFM NetlinkNetworkMonitor)
+      # via NetnsJvmProbe. Rootless via `unshare -rnm`; :linuxX64Test above linked the .kexe and
+      # :network-monitor:netnsJvmProbeClasspath dumped the JVM classpath + JDK21 launcher the harness reads.
       - name: NetworkMonitor route resolution — netns integration (Linux)
         run: |
           chmod +x test-harness/netns/run-netns-tests.sh
