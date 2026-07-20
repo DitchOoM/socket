@@ -1772,7 +1772,7 @@ kotlin {
         // already ride every linux K/N link via that base manifest; carrying them here keeps the Quiche
         // klib self-describing. The old repo-absolute `-L … --whole-archive -lquiche` in binaries.all
         // only reached the producer's own test binaries and never propagated to consumers (Gap A).
-        val genLinuxQuicheDef: (java.io.File, java.io.File, String, TaskProvider<Task>?) -> TaskProvider<Task> = { quicheLibDir, generatedDef, taskSuffix, buildTask ->
+        val genLinuxQuicheDef: (java.io.File, java.io.File, String) -> TaskProvider<Task> = { quicheLibDir, generatedDef, taskSuffix ->
             val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             tasks.register("generateQuicheEmbedDef$taskSuffix") {
@@ -1780,15 +1780,9 @@ kotlin {
                 // (and after a quiche version bump invalidates the archive cache) the .a doesn't exist yet,
                 // embedStatic resolved false, the def dropped `staticLibraries.linux`, and the K/N link
                 // SILENTLY succeeded (--unresolved-symbols=ignore-in-object-files) with quiche_* dangling →
-                // runtime `symbol lookup error`. Fix: read existence in doLast, declare the archive as an
-                // input (so UP-TO-DATE regenerates once it appears), and order after the build with
-                // mustRunAfter — NOT dependsOn. This def-gen already sits in graphs that don't build the
-                // K/N lib at all (the host-arch-only JVM `quicEchoJar` pulls it in); a dependsOn there would
-                // force an arm64 cargo CROSS-compile on a runner that never `rustup target add`ed
-                // aarch64-unknown-linux-gnu → E0463. The task that actually consumes libquiche.a is the
-                // cinterop, so the real dependsOn lives on it (below); here we only order after the build
-                // WHEN it is already scheduled (i.e. a genuine K/N compile), which is exactly when it matters.
-                buildTask?.let { mustRunAfter(it) }
+                // runtime `symbol lookup error`. Fix: read existence in doLast + declare the archive as an
+                // input so UP-TO-DATE regenerates once it appears. Ordering after the build (mustRunAfter,
+                // applied at the call site — see below) is what makes the archive present by doLast time.
                 inputs.file(baseQuicheDef)
                 inputs.files(quicheStatic) // FileCollection tolerates absence; re-runs when the archive appears
                 outputs.file(generatedDef)
@@ -1815,7 +1809,12 @@ kotlin {
         linuxX64 {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
-            val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxX64", buildQuicheSharedLinuxX64)
+            val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxX64")
+            // Order the def-gen after the cargo build (NOT dependsOn): the def-gen is reachable from the
+            // metadata cinterop-commonization graph that the host-arch-only JVM quicEchoJar also pulls, so a
+            // dependsOn would force an arm64 cargo CROSS-compile there (E0463 on a runner without the rustup
+            // target). mustRunAfter is a no-op unless the build is already scheduled — i.e. a real K/N compile.
+            buildQuicheSharedLinuxX64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
@@ -1842,7 +1841,10 @@ kotlin {
         linuxArm64 {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
-            val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxArm64", buildQuicheSharedLinuxArm64)
+            val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxArm64")
+            // See linuxX64: mustRunAfter (not dependsOn) so the arm64 cross-build is never dragged into a
+            // graph that doesn't actually compile the linuxArm64 K/N target.
+            buildQuicheSharedLinuxArm64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
