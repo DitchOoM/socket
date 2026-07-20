@@ -43,12 +43,17 @@ skip() {
     exit 0
 }
 
-# Try to load the simulator. If the module isn't installed, best-effort install linux-modules-extra
-# for the running kernel (GitHub's kernel ships it there), then retry. Skip gracefully if still absent.
-if ! $SUDO modprobe mac80211_hwsim radios=1 2>/dev/null; then
+# Try to load the simulator. If the module isn't installed, best-effort install linux-modules-extra for
+# the running kernel (GitHub's kernel ships it there), rebuild the module dep map (depmod — a freshly
+# apt-installed .ko is invisible to modprobe until then), and retry. Skip gracefully if still absent, and
+# surface modprobe's own error so an environment-blocked load (some CI VMs deny init_module) is diagnosable.
+MODPROBE_ERR=/tmp/hwsim-modprobe.err
+load_hwsim() { $SUDO modprobe mac80211_hwsim radios=1 2>"$MODPROBE_ERR"; }
+if ! load_hwsim; then
     $SUDO apt-get update -qq 2>/dev/null || true
     $SUDO apt-get install -y -qq "linux-modules-extra-$(uname -r)" 2>/dev/null || true
-    $SUDO modprobe mac80211_hwsim radios=1 2>/dev/null || skip "mac80211_hwsim unavailable on kernel $(uname -r)"
+    $SUDO depmod -a 2>/dev/null || true
+    load_hwsim || skip "mac80211_hwsim won't load on kernel $(uname -r): $(head -1 "$MODPROBE_ERR" 2>/dev/null)"
 fi
 
 cleanup() { $SUDO modprobe -r mac80211_hwsim 2>/dev/null || true; }
