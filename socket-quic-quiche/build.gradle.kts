@@ -192,6 +192,9 @@ fun createBuildQuicheSharedTask(
 ): TaskProvider<Task> {
     val taskName = "buildQuicheShared${os.replaceFirstChar { it.uppercase() }}${arch.replaceFirstChar { it.uppercase() }}"
     val outputDir = projectDir.resolve("libs/quiche/$os-$arch")
+    // Full cargo output is persisted here so a CI failure is diagnosable from an uploaded artifact
+    // (`quiche-build-logs/`) instead of hunting through interleaved job logs. See the failure handler below.
+    val buildLogFile = projectDir.resolve("build/quiche-build-logs/quiche-$os-$arch.log")
     // `-qlog-jvm` marker suffix: the qlog feature was added to the cargo build, so a lib built before it
     // (a stale `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a
     // rebuild with qlog on every host/CI runner that cached the old output. (The `-jvm` suffix is a
@@ -284,12 +287,37 @@ fun createBuildQuicheSharedTask(
                     .also { pb -> pb.environment().putAll(env) }
                     .redirectErrorStream(true)
                     .start()
-            // Stream cargo output through Gradle logger so it appears in CI logs
-            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            // Stream cargo output through the Gradle logger (so it appears in CI logs) AND tee it to a
+            // persistent log file, while keeping the last lines for an inline failure message. This makes a
+            // quiche build failure self-diagnosing: the actual rustc error shows up right at the Gradle
+            // failure point, and the full transcript is an uploadable artifact — no more hunting for the
+            // real error buried in interleaved BoringSSL/cargo output.
+            buildLogFile.parentFile.mkdirs()
+            val tail = ArrayDeque<String>()
+            buildLogFile.bufferedWriter().use { writer ->
+                process.inputStream.bufferedReader().forEachLine { line ->
+                    logger.lifecycle(line)
+                    writer.write(line)
+                    writer.newLine()
+                    tail.addLast(line)
+                    if (tail.size > 40) tail.removeFirst()
+                }
+            }
             val result = process.waitFor()
 
             if (result != 0) {
-                throw GradleException("quiche cargo build failed for $os-$arch (exit $result)")
+                throw GradleException(
+                    buildString {
+                        appendLine("quiche cargo build failed for $os-$arch (exit $result).")
+                        appendLine("── last ${tail.size} lines of cargo output ──")
+                        tail.forEach { appendLine(it) }
+                        appendLine("── full transcript: ${buildLogFile.absolutePath} ──")
+                        appendLine(
+                            "Hint: E0463 \"can't find crate for core/std\" means the Rust std for target " +
+                                "'$cargoTarget' is missing on this runner — `rustup target add $cargoTarget`.",
+                        )
+                    },
+                )
             }
 
             outputDir.resolve("lib").mkdirs()

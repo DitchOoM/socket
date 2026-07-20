@@ -248,6 +248,18 @@ jobs:
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
 
+      # Surface the quiche cargo build transcript when anything in this job failed, so a build
+      # failure (e.g. a missing rustup target → E0463) is diagnosable from an artifact instead
+      # of hunting through interleaved BoringSSL/cargo output in the job log.
+      - name: Upload quiche build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-build-logs-apple
+          path: '**/build/quiche-build-logs/'
+          if-no-files-found: ignore
+          retention-days: 7
+
   # macosArm64 K/N tests split out of `build`, mirroring integration-linux-{x64,arm64}:
   # `build` links the .kexe (self-contained, libquiche.a -force_loaded), this job runs it.
   # The Apple QUIC/H3/WebTransport suites are in-process loopback — no Docker harness — and
