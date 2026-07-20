@@ -1,6 +1,10 @@
 package com.ditchoom.socket.quic.trace
 
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
+
+// `as NeutralTraceSink`: the bare `TraceSink` in this package is the deprecated compat typealias
+// (DeprecatedTraceAliases.kt); aliasing lets this class reference the real neutral type clash-free.
 
 /**
  * Consumer opt-in for capturing a QUIC connection's deterministic-replay trace — the public door to
@@ -17,7 +21,7 @@ import com.ditchoom.socket.NetworkMonitor
  * connection's lines for a clean, replayable trace. [sinkFor] is therefore a **factory**, invoked
  * once per captured connection: return a *fresh* sink each call (e.g. a new file, a new buffer) and
  * concurrent connections stay isolated and independently replayable. The convenience constructor
- * that takes a single [TraceSink] is the opposite choice on purpose — it hands the *same* sink to
+ * that takes a single [com.ditchoom.socket.testkit.trace.TraceSink] is the opposite choice on purpose — it hands the *same* sink to
  * every connection (log-sink semantics), fine for one connection or for aggregate diagnostics but
  * not for per-connection replay.
  *
@@ -25,10 +29,10 @@ import com.ditchoom.socket.NetworkMonitor
  * connection**, so each accepted connection records onto its own sink — per-connection, independently
  * replayable server traces (this is what makes deterministic *server* replay possible). Return a
  * fresh sink per call, exactly as for the client; a [sinkFor] that hands back one shared sink (the
- * single-[TraceSink] convenience constructor) instead interleaves every accepted connection onto it —
+ * single-[com.ditchoom.socket.testkit.trace.TraceSink] convenience constructor) instead interleaves every accepted connection onto it —
  * aggregate diagnostics, not per-connection replay.
  *
- * @property sinkFor mints the [TraceSink] for a captured connection. Called once per connection — the
+ * @property sinkFor mints the [com.ditchoom.socket.testkit.trace.TraceSink] for a captured connection. Called once per connection — the
  *   client `connect`, or each accepted connection on a server `bind` — so return a fresh sink per call
  *   for independent, replayable traces. The consumer
  *   owns IO (append to a file, ship over the network, buffer in memory) so capture stays platform-free.
@@ -43,7 +47,7 @@ import com.ditchoom.socket.NetworkMonitor
  *   drives probes ([com.ditchoom.socket.transport.Liveness]) — that seam lives above the engine.
  */
 class QuicTraceCapture(
-    val sinkFor: () -> TraceSink,
+    val sinkFor: () -> NeutralTraceSink,
     val networkMonitor: NetworkMonitor? = null,
 ) {
     /**
@@ -52,5 +56,5 @@ class QuicTraceCapture(
      * server diagnostics; for per-connection replay across concurrent connections use the primary
      * [sinkFor] factory constructor and return a fresh sink each call.
      */
-    constructor(sink: TraceSink, networkMonitor: NetworkMonitor? = null) : this({ sink }, networkMonitor)
+    constructor(sink: NeutralTraceSink, networkMonitor: NetworkMonitor? = null) : this({ sink }, networkMonitor)
 }

@@ -77,7 +77,15 @@ object HarnessController {
             )
             append(""""rst":${ep("RST_PORT", 14998)},""")
             append(""""blackhole":${ep("NETEM_BLACKHOLE_PORT", 14999, env("NETEM_BLACKHOLE_HOST", "172.30.0.99"))},""")
-            append(""""quic-echo":${ep("QUIC_ECHO_PORT", 14433)}""")
+            append(""""quic-echo":${ep("QUIC_ECHO_PORT", 14433)},""")
+            append(""""udp-echo":${ep("UDP_ECHO_PORT", 14434)},""")
+            append(
+                // `data` is the SUITE relay's data port (UDP_TOXI_SUITE_PORT), isolated from any relay
+                // a parallel test-task family provisions — the udp-toxi twin of the toxiproxy suite-echo
+                // split above.
+                """"udp-toxi":{"api":${env("UDP_TOXI_API_PORT", "8475")},""" +
+                    """"data":${env("UDP_TOXI_SUITE_PORT", "14435")}}""",
+            )
             append("}}")
         }
     }

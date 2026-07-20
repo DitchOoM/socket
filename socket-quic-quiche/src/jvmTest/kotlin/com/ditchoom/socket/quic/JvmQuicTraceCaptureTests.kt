@@ -7,8 +7,8 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
-import com.ditchoom.socket.quic.trace.TraceEvent
-import com.ditchoom.socket.quic.trace.TraceSink
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred

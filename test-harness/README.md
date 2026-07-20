@@ -16,13 +16,15 @@ See `../TESTING_STRATEGY.md` for the full design. This directory is
 | `netem-blackhole` | `172.30.0.99:14999` (bridge IP, not published) | Accepts SYNs, drops all egress — deterministic connect-timeout. |
 | `rst`   | `14998` | Deterministic peer-close sidecar (SO_LINGER=0 + close after 1 byte). |
 | `quic-echo` | `14433/udp` | JVM QUIC echo server (quiche). |
+| `udp-echo` | `14434/udp` | socat-backed UDP datagram echo (`UDP-RECVFROM,fork`). Datagram analogue of `echo`; the upstream `udp-toxi` forwards to. |
+| `udp-toxi` | `8475` (control API, TCP), `14435/udp` (`suite-udp` relay data plane) | L4 UDP/QUIC fault plane (toxiproxy is TCP-only). HTTP/REST control plane provisions a `FaultSchedule` per named relay; a per-datagram UDP data plane impairs+forwards. JVM sidecar driving the same testkit `ImpairmentEngine` as the Tier-A pipe (A⇄C parity). The `suite-udp` relay is name- and port-isolated for `withNetworkHarness`'s `impairedUdp`. |
 | `controller` | `14100` | **W6 control plane** — serves the scenario manifest (`GET /describe`) + `GET /health` for `withNetworkHarness`. |
 
 ## Run it
 
 ```bash
-# Build the two JVM image inputs first (harnessUp does both automatically):
-./gradlew :socket-quic-quiche:quicEchoJar :socket-testsuite:controllerJar
+# Build the JVM image inputs first (harnessUp does all of them automatically):
+./gradlew :socket-quic-quiche:quicEchoJar :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar
 
 cd test-harness
 docker compose up -d --wait
@@ -59,7 +61,9 @@ compose `env_file`) as a JSON manifest, so consumers never read that file:
     "toxiproxy":       {"api":8474,"echo":15900,"http":15080,"tls":15443},
     "rst":             {"host":"127.0.0.1","port":14998},
     "blackhole":       {"host":"172.30.0.99","port":14999},
-    "quic-echo":       {"host":"127.0.0.1","port":14433}
+    "quic-echo":       {"host":"127.0.0.1","port":14433},
+    "udp-echo":        {"host":"127.0.0.1","port":14434},
+    "udp-toxi":        {"api":8475,"data":14435}
 } }
 ```
 
@@ -72,7 +76,7 @@ A scenario missing from the manifest is unavailable on that harness runtime
 
 The harness runs from a single downloadable compose file — no repo checkout.
 Every release publishes multi-arch (`linux/amd64` + `linux/arm64`) images to
-GHCR (`ghcr.io/ditchoom/socket-test-harness-{echo,rst,quic-echo,controller}`,
+GHCR (`ghcr.io/ditchoom/socket-test-harness-{echo,rst,quic-echo,controller,udp-echo,udp-toxi}`,
 tagged `<version>` + `latest`); `harness-consumer.yml` wires them together
 with the stock nginx/toxiproxy images on the same pinned ports:
 
@@ -135,12 +139,14 @@ test-harness/
 ├── tls/                    # cert matrix (gen-certs.sh; certs gitignored)
 ├── rst/                    # peer-close sidecar
 ├── quic-echo/              # QUIC echo image (jar from :socket-quic-quiche:quicEchoJar)
+├── udp-echo/               # UDP datagram echo (alpine + socat)
+├── udp-toxi/               # UDP/QUIC fault relay (jar from :socket-testsuite:udpToxiJar)
 └── controller/             # W6 control plane (jar from :socket-testsuite:controllerJar)
 ```
 
-The four services with local build contexts (echo, rst, quic-echo,
-controller) are published to GHCR by the release flow (`merged.yaml` →
-`publish-harness-images`, multi-arch via buildx/qemu) as
+The six services with local build contexts (echo, rst, quic-echo,
+controller, udp-echo, udp-toxi) are published to GHCR by the release flow
+(`merged.yaml` → `publish-harness-images`, multi-arch via buildx/qemu) as
 `ghcr.io/ditchoom/socket-test-harness-<name>:{<version>,latest}` —
 `harness-consumer.yml` consumes those.
 

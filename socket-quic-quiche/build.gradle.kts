@@ -1906,6 +1906,10 @@ kotlin {
         commonMain.dependencies {
             api(project(":"))
             api(project(":socket-quic"))
+            // Neutral trace model (TraceSink/TraceEvent/TracePath) the quiche recorder projects onto
+            // (RFC unified-harness P0). Available transitively via :socket-quic too; declared here
+            // because QuicTraceRecorder references these types directly.
+            implementation(project(":socket-testkit"))
             // Phase 6 QUIC cutover: the UDP datapath rides :socket-udp's DatagramChannel + UdpSocket
             // (buffer-flow datagram trichotomy) instead of quiche's private UdpChannel. socket-udp
             // covers every quiche target (jvm/android/linux/apple); its datagram API is

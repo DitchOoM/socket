@@ -971,6 +971,10 @@ val harnessUp by tasks.registering {
     // (a fat jar of :socket-testsuite's jvmMain HarnessController; see
     // test-harness/controller/Dockerfile and RFC_DETERMINISTIC_SIMULATION §7).
     dependsOn(project(":socket-testsuite").tasks.named("controllerJar"))
+    // P1 (unified-harness) — same for the udp-toxi relay image's input artefact
+    // (a fat jar of :socket-testsuite's jvmMain UdpToxiServer; see
+    // test-harness/udp-toxi/Dockerfile and RFC_UNIFIED_NETWORK_TEST_HARNESS §5).
+    dependsOn(project(":socket-testsuite").tasks.named("udpToxiJar"))
     doLast {
         // --build: `up` alone never rebuilds an existing image, so a changed
         // controllerJar/quicEchoJar would silently keep serving a stale build on

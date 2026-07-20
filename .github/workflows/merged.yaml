@@ -253,7 +253,8 @@ jobs:
 
   # ── W7 (RFC_DETERMINISTIC_SIMULATION §8): publish the test-harness images ──
   # Multi-arch (linux/amd64 + linux/arm64) images for every harness service that has
-  # a local build context — echo, rst, quic-echo, controller — pushed to GHCR as
+  # a local build context — echo, rst, quic-echo, controller, udp-echo, udp-toxi —
+  # pushed to GHCR as
   #   ghcr.io/<owner>/socket-test-harness-<name>:{<version>,latest}
   # so consumers can run test-harness/harness-consumer.yml with zero repo checkout
   # (the remaining services — nginx http, toxiproxy, netem — use stock images there).
@@ -305,8 +306,8 @@ jobs:
       - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64) + libclang
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libclang-dev
 
-      - name: Build harness controller jar
-        run: ./gradlew :socket-testsuite:controllerJar --no-configuration-cache
+      - name: Build harness controller + udp-toxi jars
+        run: ./gradlew :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar --no-configuration-cache
 
       # qemu gives buildx the arm64 emulation it needs for the linux/arm64 halves.
       - name: Set up QEMU
@@ -332,7 +333,7 @@ jobs:
           fi
           # GHCR namespaces are lowercase; github.repository_owner is "DitchOoM".
           owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
-          for name in echo rst quic-echo controller; do
+          for name in echo rst quic-echo controller udp-echo udp-toxi; do
             image="ghcr.io/${owner}/socket-test-harness-${name}"
             echo "=== ${image}:${version} + :latest (linux/amd64,linux/arm64) ==="
             docker buildx build \

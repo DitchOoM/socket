@@ -1,6 +1,6 @@
 package com.ditchoom.socket.quic.trace.tools
 
-import com.ditchoom.socket.quic.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceEvent
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals

@@ -69,6 +69,9 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":"))
+            // TraceSink / TraceEvent moved to the neutral :socket-testkit (RFC unified-harness P0);
+            // QuicTraceCapture's public surface still exposes TraceSink, so re-export it via api.
+            api(project(":socket-testkit"))
             implementation(libs.kotlinx.coroutines.core)
         }
         commonTest {

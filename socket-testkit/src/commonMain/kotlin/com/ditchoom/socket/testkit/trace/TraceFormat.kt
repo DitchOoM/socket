@@ -1,4 +1,4 @@
-package com.ditchoom.socket.quic.trace
+package com.ditchoom.socket.testkit.trace
 
 import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.transport.NetworkId

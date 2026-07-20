@@ -169,6 +169,9 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.coroutines.test)
+            // RFC unified-harness P1: the transport-neutral FaultSchedule + ImpairmentEngine that the
+            // UDP Tier-A sim (ImpairedDatagramPipe) drives. Test-scope only — no production dependency.
+            implementation(project(":socket-testkit"))
         }
 
         // Shared JVM/Android implementation (NIO DatagramChannel), mirroring root :socket's manually

@@ -53,3 +53,16 @@ data class ToxiproxyPorts(
     val http: Int,
     val tls: Int,
 )
+
+/**
+ * Host-visible `udp-toxi` relay ports from the `/describe` manifest (RFC_UNIFIED_NETWORK_TEST_HARNESS.md
+ * §5): the HTTP control-plane API port ([api], TCP) and the pre-published suite relay's data-plane
+ * listen port ([data], UDP). [host] is the host the controller itself was reached on. The datagram
+ * analogue of [ToxiproxyPorts] — one relay is pre-pinned for `:socket-testsuite`'s [impairedUdp], name-
+ * and port-isolated from any relay a parallel test-task family provisions.
+ */
+data class UdpToxiPorts(
+    val host: String,
+    val api: Int,
+    val data: Int,
+)

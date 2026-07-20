@@ -10,6 +10,8 @@ import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.sim.Observed
 import com.ditchoom.socket.quic.sim.runQuicSim
 import com.ditchoom.socket.quic.withSemanticSim
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.launch

@@ -11,6 +11,10 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.RealDriverClock
 import com.ditchoom.socket.quic.UdpChannel
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TracePath
+import com.ditchoom.socket.testkit.trace.TracePathStats
+import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job

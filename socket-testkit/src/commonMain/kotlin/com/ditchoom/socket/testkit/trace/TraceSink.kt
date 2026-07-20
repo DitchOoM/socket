@@ -1,4 +1,4 @@
-package com.ditchoom.socket.quic.trace
+package com.ditchoom.socket.testkit.trace
 
 /**
  * Where recorded trace events go. The recorder never touches files or sockets — the **consumer**
@@ -9,9 +9,10 @@ package com.ditchoom.socket.quic.trace
  * coroutines (the driver loop, per-path reader loops, monitor collectors); implementations must
  * tolerate concurrent calls the same way a log sink does.
  *
- * Lives in `:socket-quic` (not `:socket-quic-quiche`) so the public [com.ditchoom.socket.quic.QuicOptions]
- * capture opt-in ([com.ditchoom.socket.quic.trace.QuicTraceCapture]) can reference it while the
- * quiche-backed `QuicTraceRecorder` — one module downstream — records through the same type.
+ * Lives in the transport-neutral `:socket-testkit` (no QUIC dependency) so every stack — TCP, UDP,
+ * QUIC — and any external KMP consumer can record and replay through the same type. The QUIC
+ * capture opt-in (`QuicOptions.trace` / `QuicTraceCapture`, in `:socket-quic`) and the quiche-backed
+ * `QuicTraceRecorder` (in `:socket-quic-quiche`) both record through this sink, downstream of here.
  */
 fun interface TraceSink {
     fun emit(event: TraceEvent)

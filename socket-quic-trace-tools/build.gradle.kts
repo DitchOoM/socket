@@ -41,7 +41,10 @@ kotlin {
 }
 
 dependencies {
-    // `api`: TraceDeobfuscator's surface exposes TraceEvent, so consumers need it transitively.
+    // `api`: TraceDeobfuscator's surface exposes TraceEvent (now in the neutral :socket-testkit),
+    // so consumers need it transitively. :socket-quic stays for the QUIC-side capture symbols the
+    // retrace tooling references in prose/tests.
+    api(project(":socket-testkit"))
     api(project(":socket-quic"))
     // `implementation`: R8 is fully encapsulated in R8ClassResolver (never in a public signature).
     // It is still runtime-transitive, so a consumer must add `google()` to resolve it.
