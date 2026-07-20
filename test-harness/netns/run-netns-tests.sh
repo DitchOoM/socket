@@ -124,6 +124,45 @@ run_scenario() {
     fi
 }
 
+# run_reactive_scenario — proves the LIVE monitors' event loops re-emit on a real kernel change (not just
+# the construction-time seed). Two default routes (eth-a metric 100 primary, eth-b metric 200); each test
+# constructs the monitor, observes eth-a, then drives `ip link set eth-a down` from inside — a RTMGRP_LINK
+# event that also drops eth-a's default — and asserts networkId flips to eth-b.
+#
+# Unlike the classification scenarios (both legs READ the same immutable namespace, so they share one),
+# each reactive leg MUTATES the namespace (link-down), so native and JVM each run in their OWN fresh
+# namespace — otherwise the second leg would start with eth-a already down.
+run_reactive_scenario() {
+    local name="reactive-link-flip" primary="eth-a" after="eth-b"
+    printf '── scenario: %-20s (primary %s → %s on link-down)\n' "$name" "$primary" "$after"
+    export NETMON_REACT_PRIMARY="$primary" NETMON_REACT_AFTER="$after"
+    local setup="
+        mount -t sysfs sys /sys
+        ip link set lo up
+        ip link add $primary type dummy; ip link set $primary up
+        ip addr add 192.0.2.2/24 dev $primary;    ip route add default via 192.0.2.1 dev $primary metric 100
+        ip link add $after type dummy; ip link set $after up
+        ip addr add 198.51.100.2/24 dev $after; ip route add default via 198.51.100.1 dev $after metric 200"
+    local ok=1
+    unshare -rnm sh -c "set -e; $setup
+            '$KEXE' --ktest_filter='*NetnsReactiveChangeTest*'" >/tmp/netns-$name-native.log 2>&1 || ok=0
+    if [ -n "$JVM_JAVA" ]; then
+        unshare -rnm sh -c "set -e; $setup
+            '$JVM_JAVA' --enable-native-access=ALL-UNNAMED -cp '$JVM_CP' com.ditchoom.socket.NetnsReactiveProbeKt" \
+            >/tmp/netns-$name-jvm.log 2>&1 || ok=0
+    fi
+    if [ "$ok" = 1 ]; then
+        echo "   ✓ PASS"
+        pass=$((pass + 1))
+    else
+        echo "   ✗ FAIL — output:"
+        sed 's/^/     /' /tmp/netns-$name-native.log /tmp/netns-$name-jvm.log 2>/dev/null
+        fail=$((fail + 1))
+        failed+=("$name")
+    fi
+    unset NETMON_REACT_PRIMARY NETMON_REACT_AFTER
+}
+
 # A dummy interface reports ARPHRD_ETHER (type 1) → Ethernet, unless its NAME matches
 # a cellular prefix (wwan/rmnet/ppp). A tun device has /sys/.../tun_flags → Vpn.
 # Documentation-range addresses (RFC 5737 / RFC 3849) keep the fixtures self-evident.
@@ -172,6 +211,9 @@ else
         ip route add default via 198.51.100.1 dev tun0' \
         no ""
 fi
+
+# Reactive: the live monitors must re-emit networkId on a real kernel change, not just seed it.
+run_reactive_scenario
 
 echo
 echo "netns route-resolution: $pass passed, $fail failed"
