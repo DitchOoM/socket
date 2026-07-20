@@ -133,6 +133,60 @@ class LinuxNetworkIdTest {
         assertEquals("eth0", LinuxNetworkMonitor.parseDefaultRouteInterface(routeTable))
     }
 
+    // ── IPv6 /proc/net/ipv6_route fallback (parseDefaultRouteInterfaceV6) ──
+    // Format is headerless, all-hex, iface LAST:
+    // destNet(32) destPrefix(2) srcNet(32) srcPrefix(2) nextHop(32) metric(8) refcnt(8) use(8) flags(8) iface
+
+    @Test
+    fun parsesV6DefaultRouteInterfaceChoosingLowestMetric() {
+        // Two ::/0 defaults (prefix 00, flags RTF_UP|RTF_GATEWAY = 00000003): eth0 metric 0x100 wins over
+        // wlan0 metric 0x400. A non-default route (fe80::/64) and a local ::1 route must be ignored.
+        val table =
+            listOf(
+                "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003 wlan0",
+                "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000002 00000100 00000001 00000000 00000003 eth0",
+                "fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000000 00000000 00000001 eth0",
+                "00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000001 00000000 80200001 lo",
+            ).joinToString("\n")
+        assertEquals("eth0", LinuxNetworkMonitor.parseDefaultRouteInterfaceV6(table))
+    }
+
+    @Test
+    fun ignoresV6UnreachableDefaultRejectRouteToLo() {
+        // systemd installs `unreachable default dev lo`: destination ::/0 (prefix 00) but flags carry
+        // RTF_REJECT (0x0200). Without the reject filter this would be picked as the primary link (lo).
+        val table =
+            "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200203 lo"
+        assertNull(LinuxNetworkMonitor.parseDefaultRouteInterfaceV6(table))
+    }
+
+    @Test
+    fun ignoresV6DownDefaultAndMalformedOrEmptyV6Table() {
+        // A ::/0 row without RTF_UP (flags 00000000) is not usable.
+        assertNull(
+            LinuxNetworkMonitor.parseDefaultRouteInterfaceV6(
+                "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000000 eth0",
+            ),
+            "a ::/0 route without RTF_UP is not a usable default",
+        )
+        assertNull(LinuxNetworkMonitor.parseDefaultRouteInterfaceV6(""), "empty table has no default route")
+        // Truncated rows (fewer than 10 columns) are skipped, not crashed on.
+        assertNull(
+            LinuxNetworkMonitor.parseDefaultRouteInterfaceV6(
+                "00000000000000000000000000000000 00 00 eth0",
+            ),
+            "malformed short rows are skipped",
+        )
+    }
+
+    @Test
+    fun ignoresV6NonDefaultPrefixEvenWhenDestinationIsAllZero() {
+        // A prefix length other than 00 is not a default route even with an all-zero destination.
+        val table =
+            "00000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000003 eth0"
+        assertNull(LinuxNetworkMonitor.parseDefaultRouteInterfaceV6(table))
+    }
+
     @Test
     fun classifyLinkKindMapsEachKernelFactToItsKind() {
         // Wi-Fi wins even though a Wi-Fi NIC also reports the Ethernet ARPHRD type.
