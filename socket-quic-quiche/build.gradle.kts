@@ -1748,14 +1748,19 @@ kotlin {
             val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             tasks.register("generateQuicheEmbedDef$taskSuffix") {
-                // Depend on the cargo build so libquiche.a is present when this task runs. Evaluating
-                // embedStatic at CONFIGURATION time was a clean-checkout bug: on a fresh tree (and after a
-                // quiche version bump invalidates the archive cache) the .a doesn't exist yet, embedStatic
-                // resolved false, the def omitted `staticLibraries.linux`, and the K/N link SILENTLY
-                // succeeded (--unresolved-symbols=ignore-in-object-files) with quiche_* dangling → runtime
-                // `symbol lookup error`. Depending on buildTask + reading existence in doLast fixes both
-                // the ordering and the staleness (the archive is a declared input so UP-TO-DATE is correct).
-                buildTask?.let { dependsOn(it) }
+                // Evaluating embedStatic at CONFIGURATION time was a clean-checkout bug: on a fresh tree
+                // (and after a quiche version bump invalidates the archive cache) the .a doesn't exist yet,
+                // embedStatic resolved false, the def dropped `staticLibraries.linux`, and the K/N link
+                // SILENTLY succeeded (--unresolved-symbols=ignore-in-object-files) with quiche_* dangling →
+                // runtime `symbol lookup error`. Fix: read existence in doLast, declare the archive as an
+                // input (so UP-TO-DATE regenerates once it appears), and order after the build with
+                // mustRunAfter — NOT dependsOn. This def-gen already sits in graphs that don't build the
+                // K/N lib at all (the host-arch-only JVM `quicEchoJar` pulls it in); a dependsOn there would
+                // force an arm64 cargo CROSS-compile on a runner that never `rustup target add`ed
+                // aarch64-unknown-linux-gnu → E0463. The task that actually consumes libquiche.a is the
+                // cinterop, so the real dependsOn lives on it (below); here we only order after the build
+                // WHEN it is already scheduled (i.e. a genuine K/N compile), which is exactly when it matters.
+                buildTask?.let { mustRunAfter(it) }
                 inputs.file(baseQuicheDef)
                 inputs.files(quicheStatic) // FileCollection tolerates absence; re-runs when the archive appears
                 outputs.file(generatedDef)
@@ -1875,7 +1880,10 @@ kotlin {
                 }
             val genDefTask =
                 tasks.register("generateQuicheEmbedDef$libCamel") {
-                    buildTask?.let { dependsOn(it) }
+                    // mustRunAfter, not dependsOn — see the Linux genLinuxQuicheDef comment: the def-gen must
+                    // not pull the (cross-)build into graphs that don't compile this K/N target. The cinterop
+                    // that embeds libquiche.a owns the real build dependency (below).
+                    buildTask?.let { mustRunAfter(it) }
                     inputs.file(baseQuicheDef)
                     inputs.files(quicheStatic) // tolerates absence; re-runs when the archive appears
                     outputs.file(generatedQuicheDef)
