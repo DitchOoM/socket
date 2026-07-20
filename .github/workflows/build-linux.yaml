@@ -518,6 +518,15 @@ jobs:
           chmod +x test-harness/netns/run-netns-tests.sh
           ./test-harness/netns/run-netns-tests.sh build/bin/linuxX64/debugTest/test.kexe
 
+      # The one NetworkKind branch the rootless route harness can't reach: Wi-Fi (classifyLinkKind keys it
+      # on a /sys phy80211 entry that dummy/tun devices never have). Load mac80211_hwsim to get a real
+      # wlan and assert it classifies as Wifi. Privileged (kernel module) + best-effort: skips (exit 0) if
+      # the module isn't available on the runner — the Wi-Fi branch is also covered by unit tests.
+      - name: Wi-Fi link-kind classification — mac80211_hwsim (Linux, best-effort)
+        run: |
+          chmod +x test-harness/netns/run-wifi-classify.sh
+          ./test-harness/netns/run-wifi-classify.sh build/bin/linuxX64/debugTest/test.kexe
+
       - name: Stop HTTP/3 QPACK interop server
         if: always()
         run: socket-http3/docker-interop/run-server.sh stop
