@@ -192,6 +192,9 @@ fun createBuildQuicheSharedTask(
 ): TaskProvider<Task> {
     val taskName = "buildQuicheShared${os.replaceFirstChar { it.uppercase() }}${arch.replaceFirstChar { it.uppercase() }}"
     val outputDir = projectDir.resolve("libs/quiche/$os-$arch")
+    // Full cargo output is persisted here so a CI failure is diagnosable from an uploaded artifact
+    // (`quiche-build-logs/`) instead of hunting through interleaved job logs. See the failure handler below.
+    val buildLogFile = projectDir.resolve("build/quiche-build-logs/quiche-$os-$arch.log")
     // `-qlog-jvm` marker suffix: the qlog feature was added to the cargo build, so a lib built before it
     // (a stale `.built-<ver>` marker with no suffix) must NOT satisfy this — bumping the marker forces a
     // rebuild with qlog on every host/CI runner that cached the old output. (The `-jvm` suffix is a
@@ -284,12 +287,37 @@ fun createBuildQuicheSharedTask(
                     .also { pb -> pb.environment().putAll(env) }
                     .redirectErrorStream(true)
                     .start()
-            // Stream cargo output through Gradle logger so it appears in CI logs
-            process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+            // Stream cargo output through the Gradle logger (so it appears in CI logs) AND tee it to a
+            // persistent log file, while keeping the last lines for an inline failure message. This makes a
+            // quiche build failure self-diagnosing: the actual rustc error shows up right at the Gradle
+            // failure point, and the full transcript is an uploadable artifact — no more hunting for the
+            // real error buried in interleaved BoringSSL/cargo output.
+            buildLogFile.parentFile.mkdirs()
+            val tail = ArrayDeque<String>()
+            buildLogFile.bufferedWriter().use { writer ->
+                process.inputStream.bufferedReader().forEachLine { line ->
+                    logger.lifecycle(line)
+                    writer.write(line)
+                    writer.newLine()
+                    tail.addLast(line)
+                    if (tail.size > 40) tail.removeFirst()
+                }
+            }
             val result = process.waitFor()
 
             if (result != 0) {
-                throw GradleException("quiche cargo build failed for $os-$arch (exit $result)")
+                throw GradleException(
+                    buildString {
+                        appendLine("quiche cargo build failed for $os-$arch (exit $result).")
+                        appendLine("── last ${tail.size} lines of cargo output ──")
+                        tail.forEach { appendLine(it) }
+                        appendLine("── full transcript: ${buildLogFile.absolutePath} ──")
+                        appendLine(
+                            "Hint: E0463 \"can't find crate for core/std\" means the Rust std for target " +
+                                "'$cargoTarget' is missing on this runner — `rustup target add $cargoTarget`.",
+                        )
+                    },
+                )
             }
 
             outputDir.resolve("lib").mkdirs()
@@ -1746,11 +1774,20 @@ kotlin {
         // only reached the producer's own test binaries and never propagated to consumers (Gap A).
         val genLinuxQuicheDef: (java.io.File, java.io.File, String) -> TaskProvider<Task> = { quicheLibDir, generatedDef, taskSuffix ->
             val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
-            val embedStatic = quicheLibDir.resolve("libquiche.a").exists()
+            val quicheStatic = quicheLibDir.resolve("libquiche.a")
             tasks.register("generateQuicheEmbedDef$taskSuffix") {
+                // Evaluating embedStatic at CONFIGURATION time was a clean-checkout bug: on a fresh tree
+                // (and after a quiche version bump invalidates the archive cache) the .a doesn't exist yet,
+                // embedStatic resolved false, the def dropped `staticLibraries.linux`, and the K/N link
+                // SILENTLY succeeded (--unresolved-symbols=ignore-in-object-files) with quiche_* dangling →
+                // runtime `symbol lookup error`. Fix: read existence in doLast + declare the archive as an
+                // input so UP-TO-DATE regenerates once it appears. Ordering after the build (mustRunAfter,
+                // applied at the call site — see below) is what makes the archive present by doLast time.
                 inputs.file(baseQuicheDef)
+                inputs.files(quicheStatic) // FileCollection tolerates absence; re-runs when the archive appears
                 outputs.file(generatedDef)
                 doLast {
+                    val embedStatic = quicheStatic.exists()
                     val base = baseQuicheDef.readText()
                     val content =
                         if (embedStatic) {
@@ -1773,6 +1810,11 @@ kotlin {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
             val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxX64")
+            // Order the def-gen after the cargo build (NOT dependsOn): the def-gen is reachable from the
+            // metadata cinterop-commonization graph that the host-arch-only JVM quicEchoJar also pulls, so a
+            // dependsOn would force an arm64 cargo CROSS-compile there (E0463 on a runner without the rustup
+            // target). mustRunAfter is a no-op unless the build is already scheduled — i.e. a real K/N compile.
+            buildQuicheSharedLinuxX64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
@@ -1800,6 +1842,9 @@ kotlin {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
             val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxArm64")
+            // See linuxX64: mustRunAfter (not dependsOn) so the arm64 cross-build is never dragged into a
+            // graph that doesn't actually compile the linuxArm64 K/N target.
+            buildQuicheSharedLinuxArm64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
@@ -1848,17 +1893,32 @@ kotlin {
             val libCamel = libSubdir.split('-').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
             val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
             val generatedQuicheDef = projectDir.resolve("build/generated/cinterop/Quiche-$libSubdir.def")
-            // Generate the embedding def (base Quiche.def + this target's directives). Gating the
-            // embedding on the archive existing at configuration time mirrors how the old -force_load
-            // gated on quicheStatic.exists() — CI's buildQuicheAppleStaticLibs prepares all five archives
-            // before any K/N task runs. When absent, fall back to the path-free base def (no embedding),
-            // matching the prior "no force_load when the .a is absent" behaviour.
-            val embedStatic = quicheStatic.exists()
+            // The cargo/static task that produces THIS target's libquiche.a. Depending on it (and reading
+            // existence in doLast, not at configuration time) is the clean-checkout fix — see the Linux
+            // genLinuxQuicheDef comment. On a fresh tree the archive doesn't exist at config time, so the
+            // old `embedStatic = quicheStatic.exists()` gate resolved false and the def dropped
+            // `staticLibraries`, producing a dangling K/N link. buildQuicheAppleStaticLibs happened to run
+            // these first in CI; the explicit dependsOn makes that ordering correct-by-construction.
+            val buildTask: TaskProvider<Task>? =
+                when (libSubdir) {
+                    "macos-arm64" -> buildQuicheSharedMacosArm64
+                    "macos-x64" -> buildQuicheSharedMacosX64
+                    "ios-arm64" -> buildQuicheStaticIosArm64
+                    "ios-simulator-arm64" -> buildQuicheStaticIosSimulatorArm64
+                    "ios-x64" -> buildQuicheStaticIosX64
+                    else -> null
+                }
             val genDefTask =
                 tasks.register("generateQuicheEmbedDef$libCamel") {
+                    // mustRunAfter, not dependsOn — see the Linux genLinuxQuicheDef comment: the def-gen must
+                    // not pull the (cross-)build into graphs that don't compile this K/N target. The cinterop
+                    // that embeds libquiche.a owns the real build dependency (below).
+                    buildTask?.let { mustRunAfter(it) }
                     inputs.file(baseQuicheDef)
+                    inputs.files(quicheStatic) // tolerates absence; re-runs when the archive appears
                     outputs.file(generatedQuicheDef)
                     doLast {
+                        val embedStatic = quicheStatic.exists()
                         val embed =
                             if (embedStatic) {
                                 // libraryPaths/staticLibraries copy libquiche.a INTO the klib; linkerOpts

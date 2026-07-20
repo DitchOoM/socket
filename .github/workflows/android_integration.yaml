@@ -227,6 +227,18 @@ jobs:
             echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
           fi
 
+      # Surface the quiche cargo build transcript when anything failed, so a build failure
+      # (e.g. a missing rustup cross target → E0463) is diagnosable from an artifact instead
+      # of hunting through interleaved BoringSSL/cargo output in the job log.
+      - name: Upload quiche build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-build-logs-android-${{ matrix.api-level }}
+          path: '**/build/quiche-build-logs/'
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Bring down quic-echo harness
         if: always()
         run: cd test-harness && docker compose down -v

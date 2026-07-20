@@ -962,6 +962,18 @@ jobs:
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
 
+      # Surface the quiche cargo build transcript when anything in this job failed, so a build
+      # failure (e.g. a missing rustup cross target → E0463) is diagnosable from an artifact
+      # instead of hunting through interleaved BoringSSL/cargo output in the job log.
+      - name: Upload quiche build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-build-logs-linux
+          path: '**/build/quiche-build-logs/'
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The socket-quic-quiche linuxX64Test NATIVE (quiche cinterop) suite, split out of `build`
   # so the core compile + JVM/JS/Android test signal goes green/red fast and isn't gated
   # behind it. Run from the prebuilt .kexe (linked in `build`, uploaded as
