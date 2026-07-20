@@ -38,8 +38,16 @@ if [ "$(id -u)" -ne 0 ]; then
     fi
 fi
 
+# Skip WITHOUT failing the build, but never let the green step imply Wi-Fi was integration-tested: under
+# GitHub Actions emit a ::warning:: annotation so the run visibly flags that this coverage did NOT run
+# here (a plain exit-0 step renders as a passing check, which would mislead). The Wi-Fi classifyLinkKind
+# branch remains covered by unit tests; this integration path runs only where mac80211_hwsim is available.
 skip() {
-    echo "SKIP: $1 — Wi-Fi classify skipped (branch still covered by unit tests)."
+    local msg="Wi-Fi classify NOT run here (integration path skipped): $1"
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        echo "::warning title=Wi-Fi classify skipped — not integration-tested on this runner::$msg"
+    fi
+    echo "SKIP: $msg — classifyLinkKind Wi-Fi branch is still covered by unit tests; integration needs mac80211_hwsim."
     exit 0
 }
 
