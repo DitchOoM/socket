@@ -560,6 +560,10 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.coroutines.test)
+            // Tier-A fault-injection vocabulary (FaultSchedule/ImpairmentEngine). testkit does
+            // api(project(":")), so this is a test→testkit→main chain, not a cycle (main has no
+            // back-edge to test). RFC_UNIFIED_NETWORK_TEST_HARNESS.md §3: TCP Tier-A builds on testkit.
+            implementation(project(":socket-testkit"))
         }
         jsMain.dependencies {
             implementation(libs.kotlin.js)
