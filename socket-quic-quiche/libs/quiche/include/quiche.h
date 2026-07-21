@@ -1270,6 +1270,14 @@ void quiche_h3_conn_stats(const quiche_h3_conn *conn, quiche_h3_stats *out);
 // Frees the HTTP/3 connection object.
 void quiche_h3_conn_free(quiche_h3_conn *conn);
 
+// socket-caller-clock (RFC_UNIFIED_NETWORK_TEST_HARNESS.md §6.1): pin/release this thread's virtual
+// monotonic clock for deterministic simulation. Backed by the marker-guarded source patch applied in
+// socket-quic-quiche/build.gradle.kts (patchQuicheForCallerClock). Simulation-only; unset in production.
+// Declared in this vendored, cinterop/JNI-read header (which the build does not overwrite) so the K/N
+// cinterop and the JNI shim both bind the symbols; the definitions live in the patched libquiche.
+void quiche_set_virtual_time_nanos(uint64_t nanos);
+void quiche_clear_virtual_time(void);
+
 #if defined(__cplusplus)
 }  // extern C
 #endif
