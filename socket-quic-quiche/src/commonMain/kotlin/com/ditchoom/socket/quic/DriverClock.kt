@@ -66,7 +66,9 @@ sealed interface DriverTime {
      * the same synchronous frame as the quiche call, so no thread hop or virtual-time advance can slip
      * between the push and the read.
      */
-    data class Virtual(val nanos: Long) : DriverTime
+    data class Virtual(
+        val nanos: Long,
+    ) : DriverTime
 }
 
 /** Production clock: monotonic time + coroutine `onTimeout`. Behaviour-identical to the pre-seam loop. */

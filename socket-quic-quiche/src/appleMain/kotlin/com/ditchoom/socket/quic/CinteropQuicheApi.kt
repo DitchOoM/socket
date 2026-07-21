@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
 import com.ditchoom.socket.quic.quiche.quiche_accept
+import com.ditchoom.socket.quic.quiche.quiche_clear_virtual_time
 import com.ditchoom.socket.quic.quiche.quiche_config_discover_pmtu
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_dgram
 import com.ditchoom.socket.quic.quiche.quiche_config_enable_early_data
@@ -47,7 +48,6 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_local_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
 import com.ditchoom.socket.quic.quiche.quiche_conn_new_scid
-import com.ditchoom.socket.quic.quiche.quiche_clear_virtual_time
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_stats
