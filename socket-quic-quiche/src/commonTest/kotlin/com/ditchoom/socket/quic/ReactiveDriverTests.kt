@@ -1010,7 +1010,7 @@ class ReactiveDriverTests {
         clock: DriverClock = RealDriverClock,
     ): QuicheDriver =
         QuicheDriver(
-            api = api,
+            rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,
             recvInfo = QuicheRecvInfo(1L),

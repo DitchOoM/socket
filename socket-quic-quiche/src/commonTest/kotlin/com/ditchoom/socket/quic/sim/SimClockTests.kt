@@ -106,7 +106,7 @@ class SimClockTests {
         clock: DriverClock,
     ): QuicheDriver =
         QuicheDriver(
-            api = api,
+            rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,
             recvInfo = QuicheRecvInfo(1L),

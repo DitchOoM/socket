@@ -44,7 +44,7 @@ import kotlin.time.Duration
  * No `closed` boolean — channel closure IS the lifecycle state.
  */
 class QuicheDriver(
-    private val api: QuicheApi,
+    rawApi: QuicheApi,
     private val conn: QuicheConn,
     private val bufferFactory: BufferFactory,
     private val recvInfo: QuicheRecvInfo,
@@ -153,6 +153,15 @@ class QuicheDriver(
      */
     internal val recvBufPool: BufferPool = newRecvBufPool(bufferFactory),
 ) {
+    /**
+     * The quiche FFI. When [clock] is a virtual-time clock ([DriverTime.Virtual]) the backend api is
+     * wrapped in [CallerClockQuicheApi] so every connection call pins libquiche's internal clock first
+     * (RFC §6.1 caller-clock — QUIC Tier-A bit-exact). A production [RealDriverClock] reports
+     * [DriverTime.Real], so the bare backend api is used unchanged and nothing is injected — zero cost.
+     */
+    private val api: QuicheApi =
+        if (clock.quicheTime() is DriverTime.Virtual) CallerClockQuicheApi(rawApi, clock) else rawApi
+
     val commands = Channel<QuicheCmd>(Channel.UNLIMITED)
 
     private val _state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
@@ -978,6 +987,10 @@ class QuicheDriver(
         // any of the api.*Free() calls above. Safe to release the underlying
         // sockaddr storage only after the conn/recvInfo handles are gone.
         onCleanup()
+        // Under a virtual clock the syncing decorator pinned libquiche's per-thread virtual time on
+        // this (potentially pooled) OS thread; release it so no later work on the same thread inherits
+        // a stale virtual instant. No-op under a real clock (nothing was ever pinned).
+        if (clock.quicheTime() is DriverTime.Virtual) api.clearThreadVirtualTime()
     }
 
     private fun failCommand(cmd: QuicheCmd) {

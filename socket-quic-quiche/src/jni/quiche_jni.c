@@ -399,6 +399,16 @@ JNIEXPORT void JNICALL JNI_FN(nConnOnTimeout)(JNIEnv *env, jclass cls, jlong con
     quiche_conn_on_timeout((quiche_conn *)(uintptr_t)conn);
 }
 
+/* Caller-clock (RFC §6.1): pin/release this thread's virtual clock in the patched libquiche. Thread-local,
+   no conn handle. Simulation-only — never called on production paths. */
+JNIEXPORT void JNICALL JNI_FN(nSetVirtualTimeNanos)(JNIEnv *env, jclass cls, jlong nanos) {
+    quiche_set_virtual_time_nanos((uint64_t)nanos);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nClearVirtualTime)(JNIEnv *env, jclass cls) {
+    quiche_clear_virtual_time();
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nConnSendAckEliciting)(JNIEnv *env, jclass cls, jlong conn) {
     /* Schedules a PING on the active path; emitted by the next send(). Returns 0 on success or a
        negative quiche error code. */

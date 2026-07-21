@@ -204,7 +204,7 @@ internal suspend fun <R> withSemanticSim(
 
         val clientDriver =
             QuicheDriver(
-                api = api,
+                rawApi = api,
                 conn = clientConn,
                 bufferFactory = bufferFactory,
                 recvInfo = clientRecvInfo,
@@ -224,7 +224,7 @@ internal suspend fun <R> withSemanticSim(
             )
         val serverDriver =
             QuicheDriver(
-                api = api,
+                rawApi = api,
                 conn = serverConn,
                 bufferFactory = bufferFactory,
                 recvInfo = serverRecvInfo,
