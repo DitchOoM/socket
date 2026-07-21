@@ -33,7 +33,12 @@ kotlinWrappers = "2026.6.0"
 # carries #276) AND adds the datagram trichotomy (DatagramChannel/DatagramSource/DatagramSink +
 # SocketAddress) under @ExperimentalDatagramApi (RFC Phase 0/1) — the substrate :socket-udp + the
 # Phase 6 QUIC cutover consume. Released on Maven Central (buffer #291).
-buffer = "6.11.0"
+# 6.12.0->6.16.1: all additive/drop-in (no source removals/renames across the range; buffer stayed
+# in 6.x so its label-derived semver confirms no break). New: crypto secureRandom (#294),
+# alias-addressable KeyStore + SPKI export (#292), AES-ECB single-block (#301), deriveTlsPremasterSecret
+# raw (EC)DHE (#302); codec @JvmInline value-class-over-String fields (#299); fixes: JVM21 FFM
+# readString bounds-check (#295), generated wireSize growth-safe (#304).
+buffer = "6.16.1"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
