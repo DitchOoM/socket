@@ -40,7 +40,7 @@ kotlinWrappers = "2026.6.0"
 # alias-addressable KeyStore + SPKI export (#292), AES-ECB single-block (#301), deriveTlsPremasterSecret
 # raw (EC)DHE (#302); codec @JvmInline value-class-over-String fields (#299); fixes: JVM21 FFM
 # readString bounds-check (#295), generated wireSize growth-safe (#304).
-buffer = "6.16.1"
+buffer = "6.17.2"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
