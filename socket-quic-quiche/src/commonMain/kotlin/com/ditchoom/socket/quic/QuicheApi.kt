@@ -256,6 +256,34 @@ interface QuicheApi {
     fun connIsTimedOut(conn: QuicheConn): Boolean
 
     /**
+     * Pin libquiche's internal clock for the **calling thread** to [nanos] — a monotonic reading in
+     * nanoseconds from libquiche's fixed per-process anchor (RFC §6.1 caller-clock patch). While set,
+     * every internal `Instant::now()` in the patched libquiche (loss/PTO/RTT/pacing/congestion — 72
+     * sites) returns this virtual instant instead of the real wall clock, making QUIC Tier-A simulation
+     * bit-exact. The value is thread-local: quiche is single-threaded per connection in our usage, so
+     * the driver pushes it in the same synchronous frame as each connection call ([CallerClockQuicheApi]).
+     *
+     * Simulation-only. Production never calls this — [RealDriverClock] reports [DriverTime.Real], so the
+     * syncing decorator is never installed and libquiche keeps its own wall clock (zero cost, no
+     * behaviour change). Requires the caller-clock source patch applied by the build (marker-guarded in
+     * `build.gradle.kts`); on an unpatched libquiche the underlying C symbol would be absent.
+     *
+     * The interface default is a **no-op**: a Tier-A sim over a *test-double* [QuicheApi] models time in
+     * Kotlin and has no libquiche clock to pin, and only the four real backends (FFM, JNI/Android,
+     * cinterop apple + linux) — which override this — reach the patched C symbol. This mirrors the
+     * default-for-test-doubles convention already used by [connStats]/[connPeerError]/[connSetQlogPath].
+     */
+    fun setThreadVirtualTimeNanos(nanos: Long) {}
+
+    /**
+     * Release the calling thread's virtual-clock pin set by [setThreadVirtualTimeNanos], restoring the
+     * real wall clock for subsequent internal `Instant::now()` reads on this thread. Called when a
+     * simulated connection closes so a pooled OS thread never leaks virtual time into later work.
+     * Default no-op for the same reason as [setThreadVirtualTimeNanos]; overridden by the real backends.
+     */
+    fun clearThreadVirtualTime() {}
+
+    /**
      * Returns the timeout duration until the next quiche timer fires, or `null` if no timeout is set.
      * Implementations normalize platform-specific "no timeout" sentinels (UINT64_MAX on native,
      * negative Long on JVM) into `null`.

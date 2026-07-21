@@ -68,7 +68,7 @@ internal suspend fun TestScope.runQuicSim(
     val clock = SimClock(testScheduler)
     val driver =
         QuicheDriver(
-            api = api,
+            rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,
             recvInfo = QuicheRecvInfo(1L),

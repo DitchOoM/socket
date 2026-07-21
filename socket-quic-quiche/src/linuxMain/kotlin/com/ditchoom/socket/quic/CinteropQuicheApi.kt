@@ -47,6 +47,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_local_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate
 import com.ditchoom.socket.quic.quiche.quiche_conn_migrate_source
 import com.ditchoom.socket.quic.quiche.quiche_conn_new_scid
+import com.ditchoom.socket.quic.quiche.quiche_clear_virtual_time
 import com.ditchoom.socket.quic.quiche.quiche_conn_on_timeout
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_stats
@@ -78,6 +79,7 @@ import com.ditchoom.socket.quic.quiche.quiche_path_event_validated
 import com.ditchoom.socket.quic.quiche.quiche_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_recv_info
 import com.ditchoom.socket.quic.quiche.quiche_send_info
+import com.ditchoom.socket.quic.quiche.quiche_set_virtual_time_nanos
 import com.ditchoom.socket.quic.quiche.quiche_stats
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_next
@@ -527,6 +529,11 @@ internal object CinteropQuicheApi : QuicheApi {
     }
 
     override fun connOnTimeout(conn: QuicheConn) = quiche_conn_on_timeout(conn.handle.toCPointer()!!)
+
+    // Caller-clock (RFC §6.1): thread-local virtual clock in the patched libquiche. Simulation-only.
+    override fun setThreadVirtualTimeNanos(nanos: Long) = quiche_set_virtual_time_nanos(nanos.convert())
+
+    override fun clearThreadVirtualTime() = quiche_clear_virtual_time()
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = quiche_conn_send_ack_eliciting(conn.handle.toCPointer()!!).toInt()
 

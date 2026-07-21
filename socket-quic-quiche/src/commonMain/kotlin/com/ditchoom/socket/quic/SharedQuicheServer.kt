@@ -395,7 +395,7 @@ internal class SharedQuicheServer(
         var driverRef: QuicheDriver? = null
         val driver =
             QuicheDriver(
-                api = api,
+                rawApi = api,
                 conn = conn,
                 bufferFactory = bufferFactory,
                 recvInfo = recvInfo,
