@@ -228,9 +228,8 @@ jobs:
         id: version
         run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
 
-      - name: Build BoringSSL (shared with quiche)
-        run: ./gradlew :buildBoringsslX64 :buildBoringsslArm64 --no-configuration-cache
-
+      # BoringSSL is no longer built here: socket consumes the canonical :boringssl-canonical owner
+      # klib + provision bundle (fetched on-demand by the quiche build below via boringssl.boringsslDir).
       - name: Build quiche native libs (all platforms from Linux)
         continue-on-error: true
         run: |
