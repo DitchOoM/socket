@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.socket.quic.DriverClock
+import com.ditchoom.socket.quic.DriverTime
 import com.ditchoom.socket.quic.QuicheCmd
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.selects.SelectBuilder
@@ -55,4 +56,21 @@ internal class SimClock(
         // delay on the test scheduler (W1 seam). See the class KDoc for why no rendezvous is needed.
         with(builder) { onTimeout(wait) { null } }
     }
+
+    /**
+     * The caller-clock wire-up (RFC_UNIFIED_NETWORK_TEST_HARNESS.md §6.1, remaining item b): the *same*
+     * virtual clock that already drives [markNow] and [armTimeout] now also drives libquiche's internal
+     * `Instant::now()` reads. When a real-quiche run rides this clock (Tier-B over the in-memory pipe),
+     * [QuicheDriver] installs the [com.ditchoom.socket.quic.CallerClockQuicheApi] decorator (because this
+     * returns [DriverTime.Virtual]) and pins quiche's per-thread clock to [nanos] before every connection
+     * call — so loss/PTO/RTT/pacing all read the scheduler's time and QUIC Tier-A becomes bit-exact
+     * instead of "prefix-exact ±1 datagram". Against the pure-Kotlin [com.ditchoom.socket.quic.StubQuicheApi]
+     * the pin is a no-op (the stub models time in Kotlin, has no libquiche to drive), so this is inert for
+     * the stub-backed sim corpus and only bites when a real backend is wired in.
+     *
+     * [TestCoroutineScheduler.currentTime] is virtual milliseconds from the run's t0; quiche only ever
+     * subtracts two readings, so the absolute origin is irrelevant — `ms * 1_000_000` gives the matching
+     * nanosecond delta.
+     */
+    override fun quicheTime(): DriverTime = DriverTime.Virtual(scheduler.currentTime * 1_000_000L)
 }
