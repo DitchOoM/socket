@@ -22,7 +22,7 @@ quicheSha256 = "c840a0d04e2406d0989a5238f6d6054aa0139872ed49a6c48395fca0cfcad75c
 # Windows/Android/Apple/fuzz still build a self-contained libquiche via `boringssl-boring-crate`.
 androidGradlePlugin = "9.2.1"
 ktlint = "14.2.0"
-mavenPublish = "0.36.0"
+mavenPublish = "0.37.0"
 dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 kotlinWrappers = "2026.6.0"
@@ -43,7 +43,7 @@ kotlinWrappers = "2026.6.0"
 buffer = "6.17.2"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
-androidxCore = "1.18.0"
+androidxCore = "1.19.0"
 # Jazzer — coverage-guided fuzzing driver; runtime-only on the quicHeaderFuzz task, never a test dep
 jazzer = "0.30.0"
 # R8 — JVM-only offline retrace lib for :socket-quic-trace-tools (deobfuscate captured QUIC traces
