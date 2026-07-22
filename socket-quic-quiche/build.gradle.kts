@@ -36,7 +36,8 @@ val quicheBuildDir = layout.buildDirectory.dir("quiche")
 // quiche_clear_virtual_time) satisfied it → JNI shim link failure. A content digest can't be forgotten the
 // way a hand-bumped version token can — which is exactly the failure mode that caused the incident.
 val quichePatchDigest: String =
-    MessageDigest.getInstance("SHA-256")
+    MessageDigest
+        .getInstance("SHA-256")
         .digest(buildFile.readBytes())
         .joinToString("") { "%02x".format(it) }
         .take(12)
