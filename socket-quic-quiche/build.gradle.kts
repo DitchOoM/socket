@@ -28,6 +28,19 @@ val quicheVersion = libs.versions.quiche.get()
 val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
+// Digest of THIS build script — the single source of truth for every quiche source patch
+// (patchQuicheForCallerClock + the build.rs patches). Embedded in the .built marker so ANY change to how
+// quiche source is patched changes the marker and forces a rebuild from the newly-patched clone. Fixes the
+// caller-clock cache-coherence bug (#260/#263): the marker used to be version-only, so #260's source patch
+// left it byte-identical and a cached pre-patch libquiche.dylib (missing quiche_set_virtual_time_nanos /
+// quiche_clear_virtual_time) satisfied it → JNI shim link failure. A content digest can't be forgotten the
+// way a hand-bumped version token can — which is exactly the failure mode that caused the incident.
+val quichePatchDigest: String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(buildFile.readBytes())
+        .joinToString("") { "%02x".format(it) }
+        .take(12)
+
 repositories {
     // Scoped mavenLocal: resolves the canonical :boringssl-canonical OWNER klib from ~/.m2, filtered to
     // com.ditchoom.boringssl.* so no unrelated ~/.m2 artifact can shadow a real Central dependency
@@ -401,7 +414,7 @@ fun createBuildQuicheSharedTask(
     // rebuild with qlog on every host/CI runner that cached the old output. (The `-jvm` suffix is a
     // historical leftover from when a separate Linux static task shared this dir with its own marker;
     // that task is gone — this one cargo build now emits both the JVM .so and the K/Native .a.)
-    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog-jvm")
+    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog-jvm-$quichePatchDigest")
 
     val cargoTarget =
         when ("$os-$arch") {
@@ -417,9 +430,13 @@ fun createBuildQuicheSharedTask(
     return tasks.register(taskName) {
         group = "build"
         description = "Build quiche shared library for $os-$arch"
+        // Declare the real binaries (not just the marker) so Gradle's up-to-date check is coherent and a
+        // partial cache restore (marker present, .so absent/truncated) still forces a rebuild.
+        val destLib = outputDir.resolve("lib/libquiche.$libExt")
+        val destStatic = outputDir.resolve("lib/libquiche.a")
         inputs.property("quicheVersion", quicheVersion)
-        outputs.file(markerFile)
-        onlyIf { !markerFile.exists() }
+        outputs.files(markerFile, destLib, destStatic)
+        onlyIf { !markerFile.exists() || !destLib.exists() }
 
         doLast {
             val buildDir = quicheBuildDir.get().asFile
@@ -659,14 +676,16 @@ fun createBuildQuicheAppleStaticTask(
 ): TaskProvider<Task> {
     val taskName = "buildQuicheStatic${libSubdir.split('-').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }}"
     val outputDir = projectDir.resolve("libs/quiche/$libSubdir")
-    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog")
+    val markerFile = outputDir.resolve("lib/.built-$quicheVersion-qlog-$quichePatchDigest")
 
     return tasks.register(taskName) {
         group = "build"
         description = "Build quiche static library (libquiche.a) for Apple $libSubdir ($rustTarget)"
+        // Declare the real archive (not just the marker) so a partial cache restore still forces a rebuild.
+        val destStatic = outputDir.resolve("lib/libquiche.a")
         inputs.property("quicheVersion", quicheVersion)
-        outputs.file(markerFile)
-        onlyIf { !markerFile.exists() }
+        outputs.files(markerFile, destStatic)
+        onlyIf { !markerFile.exists() || !destStatic.exists() }
 
         doLast {
             val buildDir = quicheBuildDir.get().asFile

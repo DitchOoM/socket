@@ -46,7 +46,7 @@ jobs:
         # libclang: quiche 0.29 dropped `boringssl-vendored`; the Android build now uses
         # `boringssl-boring-crate`, whose boring-sys build runs bindgen and needs libclang
         # on the host (the NDK clang covers the target compile).
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libclang-dev
+        run: sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
 
       - name: Install Rust + cargo-ndk
         uses: dtolnay/rust-toolchain@stable

@@ -87,8 +87,11 @@ jobs:
       # JNI/FFM tests) and the macOS + iOS static libs the K/N test binaries -force_load. The expensive
       # part is the from-source cargo + boring-crate BoringSSL build for five targets (~10-20 min; quiche
       # 0.29 dropped vendored-BoringSSL, so boring-sys builds it — Xcode supplies libclang for bindgen), so cache
-      # it keyed on the quiche version + the JNI-shim source. A near-version restore-key seeds the cache;
-      # the Gradle tasks' .built-<ver> markers correctly force a rebuild on a version bump.
+      # it keyed on the quiche version + build script (patch source) + the JNI-shim source.
+      # NO restore-keys: a prefix fallback would resurrect a stale sibling dir (marker + libquiche.dylib)
+      # built from a DIFFERENT quiche source patch — exactly the #260/#263 bug where a pre-caller-clock
+      # dylib (missing quiche_set_virtual_time_nanos) satisfied the marker and the JNI shim failed to link.
+      # An exact-key miss must force a clean rebuild; cargo warm-start still comes from the cargo-target cache.
       - name: Cache quiche Apple native libs
         uses: actions/cache@v5
         with:
@@ -98,8 +101,7 @@ jobs:
             socket-quic-quiche/libs/quiche/ios-arm64/lib
             socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
             socket-quic-quiche/libs/quiche/ios-x64/lib
-          key: quiche-apple-v2-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-          restore-keys: quiche-apple-v2-
+          key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (both
       # arches) + the three iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS
