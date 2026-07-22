@@ -149,15 +149,19 @@ jobs:
 
       - name: Install cross-compilation toolchains
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential perl pkg-config cmake nasm
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+          # -o Acquire::Retries=3 absorbs transient archive-mirror 5xx/timeouts (a recurring CI flake).
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
+          # libc6-dev-arm64-cross provides /usr/aarch64-linux-gnu/include/sys/socket.h for the arm64
+          # quiche_jni.c cross-compile. It is only a *Recommends* of gcc-aarch64-linux-gnu, so it can
+          # silently not arrive (causing `fatal error: sys/socket.h: No such file`) — name it explicitly.
+          sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+          sudo apt-get install -y -o Acquire::Retries=3 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
           # quiche 0.29 dropped `boringssl-vendored`; the self-contained Windows/Android
           # builds now use `boringssl-boring-crate`, whose boring-sys build runs bindgen
           # and needs libclang on the host. (Linux x64/arm64 use external BoringSSL + `ffi`,
           # which needs no libclang.)
-          sudo apt-get install -y libclang-dev
+          sudo apt-get install -y -o Acquire::Retries=3 libclang-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -186,13 +190,13 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
@@ -212,8 +216,8 @@ jobs:
         uses: actions/cache@v5
         with:
           path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v2-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-          restore-keys: quiche-cargo-target-v2-
+          key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          restore-keys: quiche-cargo-target-v3-
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -263,6 +267,16 @@ jobs:
           build_jni() {
             local TARGET=$1 CC=$2 STRIP=$3 DEST=$4 NAME=$5 EXTRA_LIBS=$6 BSSL_DIR=$7
             mkdir -p "$DEST"
+            # Coherence-aware warm-cache skip (mirrors the gradle buildJvmJniShim onlyIf): if the shim
+            # already exists and is NEWER than the sibling libquiche.so it links -lquiche against, it's up
+            # to date — skip the recompile. actions/cache (tar) preserves mtimes, so a warm restore keeps
+            # the shim newer than the .so. A shared-lib rebuild (e.g. a patched-quiche source change) bumps
+            # libquiche.so's mtime ahead of the shim → this guard falls through and the shim relinks against
+            # the fresh symbols. Without this the shim recompiled on every run regardless of cache.
+            if [ -f "$DEST/$NAME" ] && [ -f "$DEST/libquiche.so" ] && [ "$DEST/$NAME" -nt "$DEST/libquiche.so" ]; then
+              echo "Skipping $DEST/$NAME (up to date — newer than libquiche.so)"
+              return
+            fi
             # -fno-omit-frame-pointer: keep the frame pointer so a JVM hs_err / core backtrace can
             # unwind through the JNI shim (the JVM's native stack walker doesn't use DWARF CFI). This
             # is the CI counterpart of the gradle buildJvmJniShim task — CI builds the shim HERE, not

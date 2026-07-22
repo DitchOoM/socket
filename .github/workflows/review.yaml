@@ -87,7 +87,7 @@ jobs:
       # configure — same failure class android_integration.yaml already documents.
       - name: Install arm64 cross toolchain (linux-target tasks in the jar's task graph)
         run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libclang-dev
+          sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
           rustup target add aarch64-unknown-linux-gnu
       - name: Build harness controller jar (harness infrastructure)
         run: ./gradlew :socket-testsuite:controllerJar --no-configuration-cache
