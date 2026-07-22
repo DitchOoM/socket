@@ -15,7 +15,7 @@ val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
 // The datagram trichotomy lives in buffer-flow under @ExperimentalDatagramApi (RFC Phase 0/1),
 // released on Maven Central in buffer 6.11.0 (buffer #291).
-val bufferFlowVersion = "6.11.0"
+val bufferFlowVersion = "6.17.2"
 
 repositories {
     google()
