@@ -54,15 +54,37 @@ fun KotlinNativeTarget.configureNWHelpersCinterop() {
 val boringsslCommit = libs.versions.boringssl.get()
 val boringsslBuildDir = layout.buildDirectory.dir("boringssl")
 
-fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
-    val taskName = "buildBoringssl${arch.replaceFirstChar { it.uppercase() }}"
-    val outputDir = projectDir.resolve("libs/boringssl/linux-$arch")
+// [deterministic] builds a TEST-ONLY BoringSSL variant with `-DBORINGSSL_UNSAFE_DETERMINISTIC_MODE`,
+// so `CRYPTO_sysrand` becomes ChaCha20(zero-key, nonce=call-counter) — RNG (packet-number / CID / TLS
+// ClientHello random / X25519 ephemeral) is reproducible across processes. This is the RNG half of the
+// P7 QUIC-Tier-A bit-exactness work (RFC_UNIFIED_NETWORK_TEST_HARNESS.md §6.1); paired with the
+// caller-clock patch it makes a full QUIC session byte-exact. NEVER used in production — it destroys all
+// TLS/QUIC security — only linked into the deterministic libquiche test variant. Note this sets ONLY the
+// deterministic define, NOT `-DBORINGSSL_UNSAFE_FUZZER_MODE` (which the cmake `FUZZ` option would also set
+// and which weakens the TLS record layer, changing bytes); we want reproducible RNG with an otherwise
+// unmodified stack.
+fun createBuildBoringSslTask(
+    arch: String,
+    deterministic: Boolean = false,
+): TaskProvider<Task> {
+    val variant = if (deterministic) "Deterministic" else ""
+    val outDirName = if (deterministic) "boringssl-deterministic" else "boringssl"
+    val taskName = "buildBoringssl$variant${arch.replaceFirstChar { it.uppercase() }}"
+    val outputDir = projectDir.resolve("libs/$outDirName/linux-$arch")
     // Marker keyed on the BoringSSL commit (BoringSSL is now independent of the quiche version).
-    val markerFile = outputDir.resolve("lib/.built-boringssl-$boringsslCommit")
+    val markerSuffix = if (deterministic) "-det" else ""
+    val markerFile = outputDir.resolve("lib/.built-boringssl-$boringsslCommit$markerSuffix")
+    // TEST-ONLY deterministic RNG define — see the banner comment above.
+    val detCFlag = if (deterministic) " -DBORINGSSL_UNSAFE_DETERMINISTIC_MODE" else ""
 
     return tasks.register(taskName) {
         group = "build"
-        description = "Build BoringSSL static libraries for Linux $arch"
+        description =
+            if (deterministic) {
+                "Build TEST-ONLY deterministic-RNG BoringSSL static libraries for Linux $arch"
+            } else {
+                "Build BoringSSL static libraries for Linux $arch"
+            }
         inputs.property("boringsslCommit", boringsslCommit)
         outputs.file(markerFile)
         onlyIf { !markerFile.exists() }
@@ -95,8 +117,9 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                 }
             }
 
-            // CMake configure — clean build dir to avoid stale state
-            val cmakeBuildDir = File(sourceDir, "build-$arch")
+            // CMake configure — clean build dir to avoid stale state. Deterministic variant uses its own
+            // build dir so it never clobbers the production BoringSSL objects from the same source clone.
+            val cmakeBuildDir = File(sourceDir, "build-$arch${if (deterministic) "-deterministic" else ""}")
             if (cmakeBuildDir.exists()) cmakeBuildDir.deleteRecursively()
             cmakeBuildDir.mkdirs()
 
@@ -106,8 +129,8 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                 mutableListOf(
                     "cmake",
                     "-DCMAKE_BUILD_TYPE=Release",
-                    "-DCMAKE_C_FLAGS=-fPIC",
-                    "-DCMAKE_CXX_FLAGS=-fPIC",
+                    "-DCMAKE_C_FLAGS=-fPIC$detCFlag",
+                    "-DCMAKE_CXX_FLAGS=-fPIC$detCFlag",
                     "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
                     // Go generates optimized ASM for BoringSSL crypto
                     "-DBUILD_SHARED_LIBS=OFF",
@@ -125,8 +148,8 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
                         "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
                         // Disable outline atomics to avoid __aarch64_cas* symbols
                         // (K/N linker doesn't have libgcc atomics helpers)
-                        "-DCMAKE_C_FLAGS=-fPIC -mno-outline-atomics",
-                        "-DCMAKE_CXX_FLAGS=-fPIC -mno-outline-atomics",
+                        "-DCMAKE_C_FLAGS=-fPIC -mno-outline-atomics$detCFlag",
+                        "-DCMAKE_CXX_FLAGS=-fPIC -mno-outline-atomics$detCFlag",
                     ),
                 )
             }
@@ -183,6 +206,10 @@ fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
 
 val buildBoringSslX64 = createBuildBoringSslTask("x64")
 val buildBoringSslArm64 = createBuildBoringSslTask("arm64")
+
+// TEST-ONLY deterministic-RNG BoringSSL variants (P7 RNG half — see the banner on createBuildBoringSslTask).
+val buildBoringSslDeterministicX64 = createBuildBoringSslTask("x64", deterministic = true)
+val buildBoringSslDeterministicArm64 = createBuildBoringSslTask("arm64", deterministic = true)
 
 // liburing version for Linux builds - defined in gradle/libs.versions.toml
 val liburingVersion = libs.versions.liburing.get()
