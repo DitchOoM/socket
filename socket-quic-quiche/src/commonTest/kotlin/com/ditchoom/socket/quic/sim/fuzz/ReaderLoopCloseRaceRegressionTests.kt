@@ -75,7 +75,7 @@ class ReaderLoopCloseRaceRegressionTests {
             val udp = TimelineUdpChannel(trace)
             val driver =
                 QuicheDriver(
-                    api = StubQuicheApi(),
+                    rawApi = StubQuicheApi(),
                     conn = QuicheConn(1L),
                     bufferFactory = tracking,
                     recvInfo = QuicheRecvInfo(1L),

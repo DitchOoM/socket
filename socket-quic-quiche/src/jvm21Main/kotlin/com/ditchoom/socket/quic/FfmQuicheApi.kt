@@ -168,6 +168,12 @@ class FfmQuicheApi private constructor(
         downcall("quiche_conn_timeout_as_nanos", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
     }
     private val hOnTimeout by lazy { downcall("quiche_conn_on_timeout", FunctionDescriptor.ofVoid(ADDRESS)) }
+
+    // Caller-clock (RFC §6.1): thread-local virtual clock in the patched libquiche. Simulation-only.
+    private val hSetVirtualTimeNanos by lazy {
+        downcall("quiche_set_virtual_time_nanos", FunctionDescriptor.ofVoid(JAVA_LONG))
+    }
+    private val hClearVirtualTime by lazy { downcall("quiche_clear_virtual_time", FunctionDescriptor.ofVoid()) }
     private val hSendAckEliciting by lazy {
         downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, ADDRESS))
     }
@@ -684,6 +690,14 @@ class FfmQuicheApi private constructor(
 
     override fun connOnTimeout(conn: QuicheConn) {
         hOnTimeout.invokeExact(seg(conn.handle))
+    }
+
+    override fun setThreadVirtualTimeNanos(nanos: Long) {
+        hSetVirtualTimeNanos.invokeExact(nanos)
+    }
+
+    override fun clearThreadVirtualTime() {
+        hClearVirtualTime.invokeExact()
     }
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(seg(conn.handle)) as Long).toInt()

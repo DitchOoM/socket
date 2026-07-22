@@ -197,7 +197,7 @@ internal suspend fun buildAppleQuicConnection(
             val udpChannel = DatagramChannelUdpChannel(channel)
             val driver =
                 QuicheDriver(
-                    api = api,
+                    rawApi = api,
                     conn = QuicheConn(connPtr.rawValue.toLong()),
                     bufferFactory = bufferFactory,
                     recvInfo = recvInfo,

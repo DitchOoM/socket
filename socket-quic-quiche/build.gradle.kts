@@ -116,6 +116,10 @@ fun downloadQuicheSource(
     patchQuicheBuildRsForBoringCrate(sourceDir)
     // Make the linux cdylib emit an UNVERSIONED soname (idempotent; no-op off-linux).
     patchQuicheBuildRsForUnversionedSoname(sourceDir)
+    // Make quiche's internal clock caller-drivable (RFC §6.1 caller-clock, P7). Idempotent, marker-guarded,
+    // fails loudly if a quiche bump adds an un-clocked time read. Simulation-only; production keeps the real
+    // clock (nothing sets the thread-local).
+    patchQuicheForCallerClock(sourceDir)
 
     return sourceDir
 }
@@ -207,6 +211,177 @@ fun patchQuicheBuildRsForUnversionedSoname(sourceDir: File) {
 
     buildRs.writeText(text.replace(original, replacement))
     logger.lifecycle("Patched quiche build.rs: unversioned linux cdylib soname (libquiche.so)")
+}
+
+/**
+ * Patch quiche's SOURCE so its internal clock is **caller-drivable** for deterministic simulation
+ * (RFC_UNIFIED_NETWORK_TEST_HARNESS.md §6.1, phase P7). This retires the long-standing "quiche FFI is not
+ * caller-clocked" cap: with it, a Tier-A QUIC sim can pin libquiche's loss/PTO/RTT/pacing/congestion clock
+ * to virtual time and go bit-exact instead of "trace-prefix-exact ±1 datagram".
+ *
+ * quiche reads the monotonic clock at **72 `Instant::now()` sites across ~15 files** (leaf modules —
+ * `minmax`, `delivery_rate`, the congestion controllers — read it directly, so a per-`Connection` field
+ * can't reach them) plus **one** `pkt_space.largest_rx_pkt_time.elapsed()` (which is `Instant::now() -
+ * self` under the hood). A per-field clock is therefore intractable; the tractable shape is a uniform
+ * mechanical substitution to a crate-internal `crate::now()` that returns a **thread-local virtual
+ * instant when the calling thread has set one, else the real `Instant::now()`**. quiche is single-threaded
+ * per connection in our usage and the Kotlin driver pushes the virtual time in the same synchronous frame
+ * as each connection call ([CallerClockQuicheApi]), so the thread-local is sound and **zero cost / zero
+ * behaviour change in production** (nothing ever sets it → `now()` is a plain `Instant::now()`).
+ *
+ * Four edits, all inside the git clone (like the two `build.rs` patches — a maintained source patch, not a
+ * fork or a binary swap):
+ *  1. rewrite every `Instant::now()` (and the one `.elapsed()`) across the `quiche/src` Rust tree → `crate::now()`;
+ *  2. append the `crate::now()` machinery (thread-local + fixed anchor + set/clear) to `lib.rs`;
+ *  3. append the C FFI entries `quiche_set_virtual_time_nanos` / `quiche_clear_virtual_time` to `ffi.rs`;
+ *  4. declare those two in `quiche/include/quiche.h` so the K/N cinterop generates bindings for them.
+ *
+ * **Idempotent and crash-safe.** Guarded by a `socket-caller-clock` marker in `lib.rs` that is written
+ * **last**, so the marker is present only when all four edits succeeded; a partial run re-does the
+ * (idempotent) rewrite and the individually-guarded appends. **Fails loudly on drift:** after the rewrite
+ * it asserts no `Instant::now()`/`.elapsed()` remains (a quiche bump that adds a clock site, or changes the
+ * `.elapsed()` expression, throws here instead of silently leaving a real-time read un-clocked).
+ *
+ * 72 sites across recovery internals is a wider blast radius than the two `build.rs` patches — it will
+ * conflict more often on bumps, which is exactly why upstreaming a pluggable clock to Cloudflare is the
+ * real long-term plan (RFC §6.1); this patch is what we carry until that lands.
+ */
+fun patchQuicheForCallerClock(sourceDir: File) {
+    val srcDir = sourceDir.resolve("quiche/src")
+    val libRs = srcDir.resolve("lib.rs")
+    if (!libRs.exists()) return
+    if (libRs.readText().contains("socket-caller-clock")) return // marker written last → already fully patched
+
+    // 1. Route every internal clock read through crate::now(). Idempotent: once rewritten there is nothing
+    //    left to match. The lone `.elapsed()` on a stored Instant is `Instant::now() - self`, so it must be
+    //    routed too (targeted replace — there is exactly one such site).
+    val elapsedSite = "pkt_space.largest_rx_pkt_time.elapsed()"
+    val elapsedRewrite = "crate::now().saturating_duration_since(pkt_space.largest_rx_pkt_time)"
+    srcDir.walkTopDown().filter { it.isFile && it.extension == "rs" }.forEach { f ->
+        val before = f.readText()
+        val after =
+            before
+                .replace("std::time::Instant::now()", "crate::now()")
+                .replace("Instant::now()", "crate::now()")
+                .replace(elapsedSite, elapsedRewrite)
+        if (after != before) f.writeText(after)
+    }
+
+    // 2. Assert the rewrite was total BEFORE re-introducing a real read in the appended machinery — a bump
+    //    that adds a clock site (or renames the `.elapsed()` receiver) trips this instead of drifting.
+    val stray =
+        srcDir
+            .walkTopDown()
+            .filter { it.isFile && it.extension == "rs" }
+            .filter { it.readText().let { t -> t.contains("Instant::now()") || t.contains(".elapsed()") } }
+            .map { it.relativeTo(srcDir).path }
+            .toList()
+    if (stray.isNotEmpty()) {
+        throw GradleException(
+            "socket-caller-clock: un-clocked time read(s) remain after rewrite in $stray — a quiche bump " +
+                "added an Instant::now()/.elapsed() site. Extend patchQuicheForCallerClock before shipping.",
+        )
+    }
+
+    // 3. C FFI entries (thread-local, no conn handle — quiche is single-threaded per connection). Appended
+    //    at ffi.rs module scope; guarded so a partial re-run does not double-append.
+    val ffiRs = srcDir.resolve("ffi.rs")
+    if (ffiRs.exists() && !ffiRs.readText().contains("quiche_set_virtual_time_nanos")) {
+        val ffiBlock =
+            """
+            |
+            |// socket-caller-clock (RFC_UNIFIED_NETWORK_TEST_HARNESS.md §6.1): drive the per-thread virtual
+            |// clock read by crate::now(). Simulation-only; production never calls these.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_set_virtual_time_nanos(nanos: u64) {
+            |    crate::set_virtual_time_nanos(nanos);
+            |}
+            |
+            |#[no_mangle]
+            |pub extern "C" fn quiche_clear_virtual_time() {
+            |    crate::clear_virtual_time();
+            |}
+            """.trimMargin()
+        ffiRs.appendText("\n" + ffiBlock + "\n")
+    }
+
+    // 4. Declare in the public header so the K/N cinterop (Quiche.def → quiche.h) generates bindings.
+    val header = sourceDir.resolve("quiche/include/quiche.h")
+    if (header.exists() && !header.readText().contains("quiche_set_virtual_time_nanos")) {
+        val anchor =
+            """
+            |#if defined(__cplusplus)
+            |}  // extern C
+            |#endif
+            """.trimMargin()
+        val headerDecls =
+            """
+            |// socket-caller-clock (RFC §6.1): pin/release this thread's virtual monotonic clock for
+            |// deterministic simulation. Simulation-only; unset in production.
+            |void quiche_set_virtual_time_nanos(uint64_t nanos);
+            |void quiche_clear_virtual_time(void);
+            |
+            |#if defined(__cplusplus)
+            |}  // extern C
+            |#endif
+            """.trimMargin()
+        val headerText = header.readText()
+        if (!headerText.contains(anchor)) {
+            throw GradleException(
+                "socket-caller-clock: could not find the closing extern-C guard in quiche.h to declare the " +
+                    "virtual-clock FFI — quiche.h layout changed on a bump. Re-fit patchQuicheForCallerClock.",
+            )
+        }
+        header.writeText(headerText.replaceFirst(anchor, headerDecls))
+    }
+
+    // 5. The crate::now() machinery — appended LAST so the `socket-caller-clock` marker (present in this
+    //    block) guarantees, when seen on re-entry, that every step above completed. Crate-root items reachable
+    //    as `crate::now()` / `crate::set_virtual_time_nanos()` from every leaf module.
+    val clockModule =
+        """
+        |
+        |// ---- socket-caller-clock (RFC_UNIFIED_NETWORK_TEST_HARNESS.md §6.1) ----
+        |// Every internal `Instant::now()` was rewritten to `crate::now()`. In production nothing sets the
+        |// thread-local, so `now()` is a straight `Instant::now()` (one thread-local read; no behaviour
+        |// change). A deterministic-simulation harness pins the clock per-thread via the FFI in ffi.rs.
+        |thread_local! {
+        |    static SOCKET_VIRTUAL_NOW: std::cell::Cell<Option<std::time::Instant>> =
+        |        std::cell::Cell::new(None);
+        |}
+        |
+        |// A fixed per-process monotonic anchor. Injected virtual nanos are measured relative to it; quiche
+        |// only ever subtracts two `Instant`s, so the absolute anchor is irrelevant as long as it is stable.
+        |fn socket_clock_anchor() -> std::time::Instant {
+        |    static ANCHOR: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        |    *ANCHOR.get_or_init(socket_real_now)
+        |}
+        |
+        |// The one real clock read in the crate; the rewrite left this spelling untouched (appended after it ran).
+        |fn socket_real_now() -> std::time::Instant {
+        |    std::time::Instant::now()
+        |}
+        |
+        |/// The clock every rewritten call site reads: the calling thread's pinned virtual instant when set,
+        |/// else the real monotonic clock (production).
+        |pub(crate) fn now() -> std::time::Instant {
+        |    SOCKET_VIRTUAL_NOW.with(|c| c.get()).unwrap_or_else(socket_real_now)
+        |}
+        |
+        |/// Pin the calling thread's clock to `nanos` from the anchor (driven by the C FFI).
+        |pub(crate) fn set_virtual_time_nanos(nanos: u64) {
+        |    let t = socket_clock_anchor() + std::time::Duration::from_nanos(nanos);
+        |    SOCKET_VIRTUAL_NOW.with(|c| c.set(Some(t)));
+        |}
+        |
+        |/// Release the calling thread's pin, restoring the real clock.
+        |pub(crate) fn clear_virtual_time() {
+        |    SOCKET_VIRTUAL_NOW.with(|c| c.set(None));
+        |}
+        |// ---- end socket-caller-clock ----
+        """.trimMargin()
+    libRs.appendText("\n" + clockModule + "\n")
+    logger.lifecycle("Patched quiche source: caller-clock (crate::now() over 72 sites + virtual-time FFI)")
 }
 
 /**

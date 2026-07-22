@@ -36,7 +36,7 @@ class QuicReadPoolingTests {
         factory: BufferFactory,
     ): QuicheDriver =
         QuicheDriver(
-            api = api,
+            rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = factory,
             recvInfo = QuicheRecvInfo(1L),

@@ -34,6 +34,41 @@ interface DriverClock {
         builder: SelectBuilder<QuicheCmd?>,
         wait: Duration,
     )
+
+    /**
+     * The time to push into quiche's C library **immediately before** each connection operation, so
+     * quiche's own internal `Instant::now()` reads (loss/PTO/RTT/pacing/congestion) see the same clock
+     * the rest of the driver does. This is the Kotlin half of the caller-clock patch (RFC §6.1): the
+     * patched libquiche routes all 72 internal clock reads through a per-thread virtual clock that this
+     * value drives via [QuicheApi.setThreadVirtualTimeNanos].
+     *
+     * Production returns [DriverTime.Real] — nothing is pushed, quiche keeps its own wall clock, and the
+     * decorator that would sync it is never even installed (zero cost, zero behaviour change). A
+     * Tier-A simulation clock returns [DriverTime.Virtual] carrying the current virtual-time reading so
+     * quiche becomes fully caller-clocked and loss/PTO/timeout scenarios go bit-exact.
+     */
+    fun quicheTime(): DriverTime = DriverTime.Real
+}
+
+/**
+ * Which clock quiche's C library should read for a connection operation. A sealed choice, not a nullable
+ * `Long?`, so "use the real wall clock" (production) and "use this exact virtual instant" (sim) are two
+ * distinct, exhaustively-handled cases — never an overloaded sentinel.
+ */
+sealed interface DriverTime {
+    /** Production: quiche keeps its own internal `Instant::now()`; nothing is injected. */
+    object Real : DriverTime
+
+    /**
+     * Simulation: quiche's internal clock is pinned to [nanos] — a monotonic reading in nanoseconds
+     * measured from libquiche's fixed per-process anchor (absolute value is irrelevant; quiche only ever
+     * subtracts two readings). Pushed via [QuicheApi.setThreadVirtualTimeNanos] on the same thread and in
+     * the same synchronous frame as the quiche call, so no thread hop or virtual-time advance can slip
+     * between the push and the read.
+     */
+    data class Virtual(
+        val nanos: Long,
+    ) : DriverTime
 }
 
 /** Production clock: monotonic time + coroutine `onTimeout`. Behaviour-identical to the pre-seam loop. */
@@ -46,4 +81,6 @@ object RealDriverClock : DriverClock {
     ) {
         with(builder) { onTimeout(wait) { null } }
     }
+
+    override fun quicheTime(): DriverTime = DriverTime.Real
 }

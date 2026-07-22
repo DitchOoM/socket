@@ -35,7 +35,7 @@ class QuicDatagramAdapterTests {
         factory: BufferFactory = bufferFactory,
     ): QuicheDriver =
         QuicheDriver(
-            api = api,
+            rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = factory,
             recvInfo = QuicheRecvInfo(1L),

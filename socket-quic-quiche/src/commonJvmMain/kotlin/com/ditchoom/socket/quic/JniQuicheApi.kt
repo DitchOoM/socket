@@ -359,6 +359,10 @@ object JniQuicheApi : QuicheApi {
 
     override fun connOnTimeout(conn: QuicheConn) = nConnOnTimeout(conn.handle)
 
+    override fun setThreadVirtualTimeNanos(nanos: Long) = nSetVirtualTimeNanos(nanos)
+
+    override fun clearThreadVirtualTime() = nClearVirtualTime()
+
     override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
 
     override fun connClose(
@@ -804,6 +808,12 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnTimeoutAsNanos(conn: Long): Long
 
     @JvmStatic private external fun nConnOnTimeout(conn: Long)
+
+    // Caller-clock (RFC §6.1): thread-local, no conn handle — pins the calling thread's virtual clock in
+    // the patched libquiche. Simulation-only; production never invokes these (RealDriverClock reports Real).
+    @JvmStatic private external fun nSetVirtualTimeNanos(nanos: Long)
+
+    @JvmStatic private external fun nClearVirtualTime()
 
     @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
 

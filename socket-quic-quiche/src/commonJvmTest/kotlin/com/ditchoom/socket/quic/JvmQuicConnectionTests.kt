@@ -100,7 +100,7 @@ class JvmQuicConnectionTests {
     private fun createTestDriver(api: StubQuicheApi = StubQuicheApi()): QuicheDriver {
         val channel = DatagramChannel.open().apply { configureBlocking(false) }
         return QuicheDriver(
-            api = api,
+            rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,
             recvInfo = QuicheRecvInfo(1L),
