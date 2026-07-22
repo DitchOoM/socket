@@ -243,10 +243,8 @@ jobs:
       # continue-on-error so a broken native build never blocks the daily
       # freshness signal above, and so a partial warm still gets SAVED. Any
       # entry that hits on restore already skips its build (Gradle up-to-date).
-      - name: Warm BoringSSL cache (x64 + arm64)
-        continue-on-error: true
-        run: ./gradlew :buildBoringsslX64 :buildBoringsslArm64 --no-configuration-cache
-
+      # BoringSSL is no longer built by socket (consumes the canonical :boringssl-canonical owner klib
+      # + provision bundle), so there is no socket-built BoringSSL cache to warm here.
       - name: Warm liburing cache (x64 + arm64)
         continue-on-error: true
         run: ./gradlew :buildLiburingX64 :buildLiburingArm64 --no-configuration-cache

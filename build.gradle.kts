@@ -9,12 +9,37 @@ plugins {
     alias(libs.plugins.ktlint)
     alias(libs.plugins.maven.publish)
     alias(libs.plugins.dokka)
+    // Version pinned in settings.gradle.kts (pluginManagement resolutionStrategy → boringsslPluginVersion,
+    // default 0.0.6). The plugin resolves from the Gradle Plugin Portal.
+    id("com.ditchoom.boringssl.provision")
     signing
 }
 
 apply(from = "gradle/setup.gradle.kts")
 
 group = "com.ditchoom"
+
+// Canonical BoringSSL owner bundle (commit 44b3df6f, quiche 0.29.2 / boring-sys 4.22.0 ABI), consumed
+// via the boringssl-kmp provision plugin. Defaults resolve the published stable: the checksum-pinned
+// linux bundle from the v0.0.6 GitHub Release (baked-in SHA-256, no TOFU) and the :boringssl-canonical
+// OWNER klib from Maven Central. Every value is overridable via -P for local dev against an unreleased
+// candidate (-PboringsslLocalBundle at :boringssl-build/build/dist, -PboringsslBundleVersion, etc.).
+val boringsslBundleVersion = providers.gradleProperty("boringsslBundleVersion").getOrElse("0.0.6")
+val boringsslLocalBundle = providers.gradleProperty("boringsslLocalBundle").orNull
+// Version of the canonical :boringssl-canonical OWNER klib whose single libcrypto.a/libssl.a every
+// EXTERNAL-mode socket linux cinterop links against (api dep on linuxMain). Overridable via -P.
+val boringsslOwnerVersion = providers.gradleProperty("boringsslOwnerVersion").getOrElse("0.0.6")
+
+boringssl {
+    version = boringsslBundleVersion
+    // -PboringsslLocalBundle=<dir> points at a :boringssl-build build/dist holding
+    // boringssl-<version>-<triple>.tar.gz(+.sha256). Relative paths resolve against rootDir; absolute
+    // paths are used as-is. Left unset → the plugin falls back to its baked checksums + release fetch.
+    boringsslLocalBundle?.let { p ->
+        val f = file(p)
+        localDist = if (f.isAbsolute) f else rootDir.resolve(p)
+    }
+}
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
@@ -33,6 +58,13 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
 }
 
 repositories {
+    // Scoped mavenLocal: resolves the canonical :boringssl-canonical OWNER klib (external-mode linux
+    // BoringSSL supply) from ~/.m2. Filtered to com.ditchoom.boringssl.* so an unrelated ~/.m2 artifact
+    // can never shadow a real Central dependency (mirrors settings.gradle.kts). No-op for the stable
+    // 0.0.6 default resolve, which comes from Maven Central below.
+    mavenLocal {
+        content { includeGroupByRegex("com\\.ditchoom\\.boringssl.*") }
+    }
     google()
     mavenCentral()
 }
@@ -47,142 +79,10 @@ fun KotlinNativeTarget.configureNWHelpersCinterop() {
     }
 }
 
-// BoringSSL for Linux TLS. Historically built from quiche's vendored deps/boringssl submodule,
-// but quiche 0.29 removed that submodule (see #210), so we now clone google/boringssl directly
-// at a pinned commit. Serves BOTH the base socket module's Linux K/N TLS (LinuxSockets.def) and
-// the Linux quiche `ffi,qlog` external path — one BoringSSL, no symbol collision.
-val boringsslCommit = libs.versions.boringssl.get()
-val boringsslBuildDir = layout.buildDirectory.dir("boringssl")
-
-fun createBuildBoringSslTask(arch: String): TaskProvider<Task> {
-    val taskName = "buildBoringssl${arch.replaceFirstChar { it.uppercase() }}"
-    val outputDir = projectDir.resolve("libs/boringssl/linux-$arch")
-    // Marker keyed on the BoringSSL commit (BoringSSL is now independent of the quiche version).
-    val markerFile = outputDir.resolve("lib/.built-boringssl-$boringsslCommit")
-
-    return tasks.register(taskName) {
-        group = "build"
-        description = "Build BoringSSL static libraries for Linux $arch"
-        inputs.property("boringsslCommit", boringsslCommit)
-        outputs.file(markerFile)
-        onlyIf { !markerFile.exists() }
-
-        doLast {
-            val buildDir = boringsslBuildDir.get().asFile
-
-            // Clone google/boringssl at the pinned commit. A shallow clone can't --branch an
-            // arbitrary SHA, so init + fetch the exact commit (GitHub allows SHA fetches) + checkout.
-            val sourceDir = File(buildDir, "boringssl-$boringsslCommit")
-            if (!File(sourceDir, "CMakeLists.txt").exists()) {
-                sourceDir.deleteRecursively()
-                sourceDir.mkdirs()
-                logger.lifecycle("Fetching google/boringssl @ $boringsslCommit...")
-
-                fun git(vararg args: String) =
-                    ProcessBuilder(listOf("git", *args))
-                        .directory(sourceDir)
-                        .redirectErrorStream(true)
-                        .start()
-                        .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
-                        .waitFor()
-                if (git("init", "-q") != 0) throw GradleException("git init failed for BoringSSL")
-                git("remote", "add", "origin", "https://github.com/google/boringssl.git")
-                if (git("fetch", "--depth", "1", "origin", boringsslCommit) != 0) {
-                    throw GradleException("Failed to fetch google/boringssl @ $boringsslCommit")
-                }
-                if (git("checkout", "-q", "FETCH_HEAD") != 0) {
-                    throw GradleException("Failed to checkout google/boringssl @ $boringsslCommit")
-                }
-            }
-
-            // CMake configure — clean build dir to avoid stale state
-            val cmakeBuildDir = File(sourceDir, "build-$arch")
-            if (cmakeBuildDir.exists()) cmakeBuildDir.deleteRecursively()
-            cmakeBuildDir.mkdirs()
-
-            logger.lifecycle("Configuring BoringSSL for $arch...")
-
-            val cmakeArgs =
-                mutableListOf(
-                    "cmake",
-                    "-DCMAKE_BUILD_TYPE=Release",
-                    "-DCMAKE_C_FLAGS=-fPIC",
-                    "-DCMAKE_CXX_FLAGS=-fPIC",
-                    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-                    // Go generates optimized ASM for BoringSSL crypto
-                    "-DBUILD_SHARED_LIBS=OFF",
-                    "-G",
-                    "Unix Makefiles",
-                )
-
-            // Cross-compilation for ARM64
-            if (arch == "arm64" && System.getProperty("os.arch") != "aarch64") {
-                cmakeArgs.addAll(
-                    listOf(
-                        "-DCMAKE_SYSTEM_NAME=Linux",
-                        "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
-                        "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc",
-                        "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++",
-                        // Disable outline atomics to avoid __aarch64_cas* symbols
-                        // (K/N linker doesn't have libgcc atomics helpers)
-                        "-DCMAKE_C_FLAGS=-fPIC -mno-outline-atomics",
-                        "-DCMAKE_CXX_FLAGS=-fPIC -mno-outline-atomics",
-                    ),
-                )
-            }
-
-            cmakeArgs.add("..")
-
-            val configResult =
-                ProcessBuilder(cmakeArgs)
-                    .directory(cmakeBuildDir)
-                    .redirectErrorStream(true)
-                    .start()
-                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
-                    .waitFor()
-            if (configResult != 0) throw GradleException("BoringSSL cmake configure failed for $arch (exit $configResult)")
-            logger.lifecycle("BoringSSL cmake configured successfully for $arch")
-
-            // Build ssl and crypto targets only
-            logger.lifecycle("Building BoringSSL (this may take a few minutes)...")
-            val cpuCount = Runtime.getRuntime().availableProcessors()
-            val makeResult =
-                ProcessBuilder("make", "-j$cpuCount", "ssl", "crypto")
-                    .directory(cmakeBuildDir)
-                    .redirectErrorStream(true)
-                    .start()
-                    .also { it.inputStream.bufferedReader().forEachLine { line -> logger.lifecycle(line) } }
-                    .waitFor()
-            if (makeResult != 0) throw GradleException("BoringSSL make failed for $arch (exit $makeResult)")
-
-            // Copy libraries — search for them (cmake may put them in ssl/ and crypto/ subdirs or flat)
-            outputDir.resolve("lib").mkdirs()
-            val sslLib =
-                cmakeBuildDir.walk().firstOrNull { it.name == "libssl.a" }
-                    ?: throw GradleException("libssl.a not found under ${cmakeBuildDir.absolutePath}")
-            val cryptoLib =
-                cmakeBuildDir.walk().firstOrNull { it.name == "libcrypto.a" }
-                    ?: throw GradleException("libcrypto.a not found under ${cmakeBuildDir.absolutePath}")
-            sslLib.copyTo(outputDir.resolve("lib/libssl.a"), overwrite = true)
-            cryptoLib.copyTo(outputDir.resolve("lib/libcrypto.a"), overwrite = true)
-            logger.lifecycle("Copied ${sslLib.absolutePath} and ${cryptoLib.absolutePath}")
-
-            // Copy headers (same paths as OpenSSL: openssl/ssl.h, openssl/err.h, etc.)
-            // BoringSSL headers are under src/include/ (not top-level include/)
-            val includeOutputDir = outputDir.resolve("include")
-            val srcInclude = sourceDir.resolve("src/include")
-            val topInclude = sourceDir.resolve("include")
-            val includeSource = if (srcInclude.exists()) srcInclude else topInclude
-            includeSource.copyRecursively(includeOutputDir, overwrite = true)
-
-            markerFile.writeText("google/boringssl @ $boringsslCommit built on ${System.currentTimeMillis()}")
-            logger.lifecycle("BoringSSL (google/boringssl @ $boringsslCommit) built successfully for $arch")
-        }
-    }
-}
-
-val buildBoringSslX64 = createBuildBoringSslTask("x64")
-val buildBoringSslArm64 = createBuildBoringSslTask("arm64")
+// BoringSSL now comes from the canonical boringssl-kmp bundle via the provision plugin
+// (see the boringssl { } block above). The old google/boringssl clone+cmake tasks are gone:
+// the :boringssl-canonical owner klib is the SINGLE archive owner; every socket cinterop that
+// touches BoringSSL is now EXTERNAL (headers-only) against commit 44b3df6f.
 
 // liburing version for Linux builds - defined in gradle/libs.versions.toml
 val liburingVersion = libs.versions.liburing.get()
@@ -360,13 +260,14 @@ val buildLiburingArm64 = createBuildLiburingTask("arm64")
 // Requires: sudo apt install build-essential cmake
 // For ARM64 cross-compilation: sudo apt install gcc-aarch64-linux-gnu
 fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
-    val boringsslDir = projectDir.resolve("libs/boringssl/linux-$arch")
-    val boringsslLibDir = boringsslDir.resolve("lib")
+    // BoringSSL headers come from the canonical bundle via the provision plugin. No archive is
+    // embedded here (EXTERNAL mode): the :boringssl-canonical owner klib is the single archive owner.
+    // boringsslDir(triple) returns <cache>/<version>/<triple>/{include,lib}.
+    val boringsslDir = boringssl.boringsslDir(if (arch == "x64") "linuxX64" else "linuxArm64")
     val boringsslIncDir = boringsslDir.resolve("include")
     val liburingDir = projectDir.resolve("libs/liburing/linux-$arch")
     val liburingLibDir = liburingDir.resolve("lib")
     val liburingIncludeDir = liburingDir.resolve("include")
-    val buildBoringSslTask = if (arch == "x64") buildBoringSslX64 else buildBoringSslArm64
     val buildLiburingTask = if (arch == "x64") buildLiburingX64 else buildLiburingArm64
 
     // System include paths for standard headers (not liburing - we build that ourselves)
@@ -400,8 +301,8 @@ fun KotlinNativeTarget.configureLinuxCinterop(arch: String) {
                 val modifiedContent =
                     baseDefContent.replace(
                         "linkerOpts.linux = -lssl -lcrypto -luring -lpthread -ldl",
-                        """libraryPaths.linux = ${boringsslLibDir.absolutePath} ${liburingLibDir.absolutePath}
-staticLibraries.linux = libssl.a libcrypto.a liburing.a
+                        """libraryPaths.linux = ${liburingLibDir.absolutePath}
+staticLibraries.linux = liburing.a
 linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files""",
                     )
                 generatedDefFile.parentFile.mkdirs()
@@ -423,23 +324,15 @@ linkerOpts.linux = -lpthread -ldl --unresolved-symbols=ignore-in-object-files"""
 
             tasks.named(interopProcessingTaskName) {
                 dependsOn(generateDefTask)
-                dependsOn(buildBoringSslTask)
                 dependsOn(buildLiburingTask)
             }
         }
     }
-    // Link against BoringSSL/OpenSSL and liburing
-    binaries.all {
-        linkerOpts(
-            "-L${boringsslLibDir.absolutePath}",
-            "-L${liburingLibDir.absolutePath}",
-            "-lssl",
-            "-lcrypto",
-            "-luring",
-            "-lpthread",
-            "-ldl",
-        )
-    }
+    // No binaries.all linkerOpts block here: the old -L...boringssl -lssl -lcrypto was a SECOND
+    // BoringSSL owner (duplicate-symbol hazard). BoringSSL symbols now resolve from the single
+    // :boringssl-canonical owner klib (added as `api` to linuxMain). liburing.a stays embedded via the
+    // cinterop def (staticLibraries.linux = liburing.a) and the pthread/dl floor rides the def's
+    // linkerOpts.linux, so both still propagate to the final link.
 }
 
 kotlin {
@@ -625,7 +518,17 @@ kotlin {
         }
 
         // Linux implementation uses standard KMP hierarchy:
-        // src/linuxMain is automatically shared by linuxX64 and linuxArm64
+        // src/linuxMain is automatically shared by linuxX64 and linuxArm64.
+        // The canonical BoringSSL owner klib is added as `api` here so it (a) contributes the SINGLE
+        // embedded libcrypto.a/libssl.a to every linux K/N final link, and (b) propagates transitively
+        // to downstream modules that depend on project(":") (e.g. :socket-quic-quiche).
+        if (isLinux) {
+            val linuxMain by getting {
+                dependencies {
+                    api("com.ditchoom.boringssl:boringssl-canonical:$boringsslOwnerVersion")
+                }
+            }
+        }
     }
 }
 

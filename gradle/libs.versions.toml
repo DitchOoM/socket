@@ -11,13 +11,15 @@ liburingSha256 = "8d052f2622dcb3678cbaee5ff582a87572672a6c0a56533cdda5b65cb63612
 # liburingSha256 IS enforced (liburing uses a tarball download).
 quiche = "0.29.3"
 quicheSha256 = "c840a0d04e2406d0989a5238f6d6054aa0139872ed49a6c48395fca0cfcad75c"
-# BoringSSL for the base :socket Linux K/N TLS (LinuxSockets.def) AND the Linux quiche
-# `ffi,qlog` external path. quiche 0.29 removed its vendored deps/boringssl submodule
-# (see #210), so :buildBoringssl* now clones google/boringssl directly at this commit.
-# Pinned to the exact BoringSSL quiche 0.28 shipped (its last vendored submodule commit),
-# a known-ABI-good baseline for quiche's C FFI. Windows/Android/Apple/fuzz instead build a
-# self-contained libquiche via `boringssl-boring-crate` (boring-sys bundles its own BoringSSL).
-boringssl = "f1c75347daa2ea81a941e953f2263e0a4d970c8d"
+# BoringSSL is no longer built here. The base :socket Linux K/N TLS (LinuxSockets.def) and the Linux
+# quiche `ffi,qlog` external path now consume the CANONICAL boringssl-kmp bundle via the
+# `com.ditchoom.boringssl.provision` plugin (owner: :boringssl-canonical klib). The canonical commit
+# (44b3df6f — boring-sys 4.22.0 ABI) is pinned in boringssl-kmp, NOT here; socket no longer clones
+# google/boringssl. quiche was bumped 0.29.2 -> 0.29.3 (#258) after the canonical pin was set against
+# 0.29.2; the linuxX64 one-copy/co-link validation is the tripwire that 44b3df6f still satisfies
+# quiche 0.29.3's `ffi,qlog` external BoringSSL refs at K/N final link.
+# The old socket-owned pin was boringssl = "f1c75347..." (removed — mis-pinned vs quiche's ABI).
+# Windows/Android/Apple/fuzz still build a self-contained libquiche via `boringssl-boring-crate`.
 androidGradlePlugin = "9.2.1"
 ktlint = "14.2.0"
 mavenPublish = "0.36.0"
@@ -38,7 +40,7 @@ kotlinWrappers = "2026.6.0"
 # alias-addressable KeyStore + SPKI export (#292), AES-ECB single-block (#301), deriveTlsPremasterSecret
 # raw (EC)DHE (#302); codec @JvmInline value-class-over-String fields (#299); fixes: JVM21 FFM
 # readString bounds-check (#295), generated wireSize growth-safe (#304).
-buffer = "6.16.1"
+buffer = "6.17.2"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
