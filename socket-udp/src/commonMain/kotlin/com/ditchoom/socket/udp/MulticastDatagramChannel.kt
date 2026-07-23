@@ -98,15 +98,56 @@ sealed interface MulticastInterface {
 }
 
 /**
- * A multicast control-plane operation (join / leave / TTL / loopback / interface select) failed. Carries a
- * human-readable [message] and, where the platform surfaced one, the underlying [cause] — the typed seam a
- * consumer catches instead of matching on platform error strings.
+ * A multicast control-plane operation failed. A **sealed** hierarchy so a consumer branches on the *kind*
+ * of failure (a `when` over the subtypes) instead of parsing [message] strings — the typed seam the
+ * `errors-stay-typed-never-strings` directive requires. Each subtype carries the structured context of the
+ * failure (the group, the interface, the OS [cause]); [message] stays human-readable for logs.
+ *
+ * Note: a caller precondition violation — an out-of-range TTL passed to [MulticastDatagramChannel.setTimeToLive]
+ * — is an [IllegalArgumentException], not a [MulticastException]: it is a programming error caught at the
+ * boundary, not a runtime network/OS condition a consumer would branch on.
  */
 @ExperimentalDatagramApi
-class MulticastException(
+sealed class MulticastException(
     message: String,
     cause: Throwable? = null,
-) : RuntimeException(message, cause)
+) : RuntimeException(message, cause) {
+    /** The named / indexed [networkInterface] does not exist on this host. */
+    class NoSuchInterface(
+        val networkInterface: MulticastInterface,
+        cause: Throwable? = null,
+    ) : MulticastException("no such network interface: $networkInterface", cause)
+
+    /** This platform cannot select an interface the requested way (e.g. [MulticastInterface.ByIndex] on
+     * Node, which names interfaces only by address). */
+    class UnsupportedInterface(
+        val networkInterface: MulticastInterface,
+        reason: String,
+    ) : MulticastException("unsupported interface selector $networkInterface: $reason")
+
+    /** Joining [group] on [networkInterface] failed at the OS layer (no route, permission, bad address). */
+    class JoinFailed(
+        val group: SocketAddress,
+        val networkInterface: MulticastInterface,
+        detail: String,
+        cause: Throwable? = null,
+    ) : MulticastException("joinGroup ${group.host} on $networkInterface failed: $detail", cause)
+
+    /** Leaving [group] on [networkInterface] failed — including leaving a group that was never joined. */
+    class LeaveFailed(
+        val group: SocketAddress,
+        val networkInterface: MulticastInterface,
+        detail: String,
+        cause: Throwable? = null,
+    ) : MulticastException("leaveGroup ${group.host} on $networkInterface failed: $detail", cause)
+
+    /** Setting a multicast socket [option] (TTL / loopback / outbound interface) failed at the OS layer. */
+    class OptionFailed(
+        val option: String,
+        detail: String,
+        cause: Throwable? = null,
+    ) : MulticastException("$option failed: $detail", cause)
+}
 
 /** The same platform capabilities with [DatagramCapabilities.multicast] flipped on — the one field a
  * multicast channel differs from its unicast sibling. */

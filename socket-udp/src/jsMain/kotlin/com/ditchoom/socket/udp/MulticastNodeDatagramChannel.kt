@@ -29,7 +29,7 @@ internal class MulticastNodeDatagramChannel(
         try {
             socket.addMembership(membership.group.host, iface)
         } catch (t: Throwable) {
-            throw MulticastException("joinGroup ${membership.group.host} failed: ${t.message}", t)
+            throw MulticastException.JoinFailed(membership.group, membership.networkInterface, t.message ?: "$t", t)
         }
     }
 
@@ -38,7 +38,7 @@ internal class MulticastNodeDatagramChannel(
         try {
             socket.dropMembership(membership.group.host, iface)
         } catch (t: Throwable) {
-            throw MulticastException("leaveGroup ${membership.group.host} failed: ${t.message}", t)
+            throw MulticastException.LeaveFailed(membership.group, membership.networkInterface, t.message ?: "$t", t)
         }
     }
 
@@ -47,7 +47,7 @@ internal class MulticastNodeDatagramChannel(
         try {
             socket.setMulticastTTL(ttl)
         } catch (t: Throwable) {
-            throw MulticastException("setTimeToLive($ttl) failed: ${t.message}", t)
+            throw MulticastException.OptionFailed("setTimeToLive($ttl)", t.message ?: "$t", t)
         }
     }
 
@@ -55,18 +55,17 @@ internal class MulticastNodeDatagramChannel(
         try {
             socket.setMulticastLoopback(enabled)
         } catch (t: Throwable) {
-            throw MulticastException("setLoopbackEnabled($enabled) failed: ${t.message}", t)
+            throw MulticastException.OptionFailed("setLoopbackEnabled($enabled)", t.message ?: "$t", t)
         }
     }
 
     override suspend fun setOutboundInterface(networkInterface: MulticastInterface) {
-        val iface =
-            interfaceAddress(networkInterface)
-                ?: throw MulticastException("setOutboundInterface(Default) is a no-op on Node; select a concrete interface")
+        // Default = kernel default: on Node that means leaving IP_MULTICAST_IF unset (a no-op), not an error.
+        val iface = interfaceAddress(networkInterface) ?: return
         try {
             socket.setMulticastInterface(iface)
         } catch (t: Throwable) {
-            throw MulticastException("setOutboundInterface failed: ${t.message}", t)
+            throw MulticastException.OptionFailed("setOutboundInterface", t.message ?: "$t", t)
         }
     }
 
@@ -76,8 +75,8 @@ internal class MulticastNodeDatagramChannel(
             MulticastInterface.Default -> null
             is MulticastInterface.ByName ->
                 nodeInterfaceAddress(iface.name, wantV6 = ipv6)
-                    ?: throw MulticastException("no ${if (ipv6) "IPv6" else "IPv4"} address on interface '${iface.name}'")
+                    ?: throw MulticastException.NoSuchInterface(iface)
             is MulticastInterface.ByIndex ->
-                throw MulticastException("interface by index is unsupported on Node; use ByName or Default")
+                throw MulticastException.UnsupportedInterface(iface, "Node names interfaces by address; use ByName or Default")
         }
 }

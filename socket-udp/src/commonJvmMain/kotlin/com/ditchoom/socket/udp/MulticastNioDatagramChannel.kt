@@ -42,7 +42,7 @@ internal class MulticastNioDatagramChannel(
             val membershipKey = channel.join(group, nif)
             memberships[key] = membershipKey
         } catch (t: Throwable) {
-            throw MulticastException("joinGroup ${membership.group.host} on $nif failed", t)
+            throw MulticastException.JoinFailed(membership.group, membership.networkInterface, t.message ?: "$t", t)
         }
     }
 
@@ -51,15 +51,18 @@ internal class MulticastNioDatagramChannel(
         val nif = resolveInterface(membership.networkInterface, group)
         val membershipKey =
             memberships.remove(MembershipPair(group, nif))
-                ?: throw MulticastException("leaveGroup ${membership.group.host} on $nif: not joined")
+                ?: throw MulticastException.LeaveFailed(membership.group, membership.networkInterface, "not joined")
         try {
             membershipKey.drop()
         } catch (t: Throwable) {
-            throw MulticastException("leaveGroup ${membership.group.host} on $nif failed", t)
+            throw MulticastException.LeaveFailed(membership.group, membership.networkInterface, t.message ?: "$t", t)
         }
     }
 
-    override suspend fun setTimeToLive(ttl: Int) = setOption(StandardSocketOptions.IP_MULTICAST_TTL, ttl, "setTimeToLive($ttl)")
+    override suspend fun setTimeToLive(ttl: Int) {
+        require(ttl in 0..255) { "ttl out of range: $ttl" }
+        setOption(StandardSocketOptions.IP_MULTICAST_TTL, ttl, "setTimeToLive($ttl)")
+    }
 
     override suspend fun setLoopbackEnabled(enabled: Boolean) =
         // NIO normalizes IP_MULTICAST_LOOP so `true` means loopback ENABLED (the raw setsockopt sense is
@@ -67,9 +70,8 @@ internal class MulticastNioDatagramChannel(
         setOption(StandardSocketOptions.IP_MULTICAST_LOOP, enabled, "setLoopbackEnabled($enabled)")
 
     override suspend fun setOutboundInterface(networkInterface: MulticastInterface) {
-        val nif =
-            resolveInterface(networkInterface, group = null)
-                ?: throw MulticastException("setOutboundInterface: Default has no concrete NIO interface")
+        // Default resolves to a concrete multicast-capable interface (NIO's IP_MULTICAST_IF has no "any").
+        val nif = resolveInterface(networkInterface, group = null)
         setOption(StandardSocketOptions.IP_MULTICAST_IF, nif, "setOutboundInterface")
     }
 
@@ -81,14 +83,14 @@ internal class MulticastNioDatagramChannel(
         try {
             channel.setOption(option, value)
         } catch (t: Throwable) {
-            throw MulticastException("$label failed", t)
+            throw MulticastException.OptionFailed(label, t.message ?: "$t", t)
         }
     }
 
     /**
      * Resolve a [MulticastInterface] to a concrete [NetworkInterface]. [Default] returns a sensible
      * multicast-capable interface for [group]'s family (a real up NIC if one exists, else loopback) — NIO
-     * `join` cannot take "any". A missing named/indexed interface is a typed [MulticastException].
+     * `join` cannot take "any". A missing named/indexed interface is a typed [MulticastException.NoSuchInterface].
      */
     private fun resolveInterface(
         iface: MulticastInterface,
@@ -97,10 +99,10 @@ internal class MulticastNioDatagramChannel(
         when (iface) {
             is MulticastInterface.ByName ->
                 NetworkInterface.getByName(iface.name)
-                    ?: throw MulticastException("no interface named '${iface.name}'")
+                    ?: throw MulticastException.NoSuchInterface(iface)
             is MulticastInterface.ByIndex ->
                 NetworkInterface.getByIndex(iface.index)
-                    ?: throw MulticastException("no interface at index ${iface.index}")
+                    ?: throw MulticastException.NoSuchInterface(iface)
             MulticastInterface.Default -> defaultMulticastInterface(group)
         }
 
@@ -114,7 +116,7 @@ internal class MulticastNioDatagramChannel(
         return candidates.firstOrNull { !it.isLoopback && it.hasFamily() }
             ?: candidates.firstOrNull { it.isLoopback }
             ?: candidates.firstOrNull()
-            ?: throw MulticastException("no multicast-capable interface available")
+            ?: throw MulticastException.NoSuchInterface(MulticastInterface.Default)
     }
 
     private fun SocketAddress.toInetAddress(): InetAddress = toInetSocketAddress().address

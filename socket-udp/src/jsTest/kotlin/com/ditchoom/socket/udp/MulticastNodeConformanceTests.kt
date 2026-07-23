@@ -34,8 +34,10 @@ class MulticastNodeConformanceTests {
         opened.clear()
     }
 
-    private suspend fun bindMc(port: Int): MulticastDatagramChannel =
-        UdpSocket.bindMulticast(port, AddressFamily.IPv4).also { opened.add(it) }
+    private suspend fun bindMc(
+        port: Int,
+        family: AddressFamily = AddressFamily.IPv4,
+    ): MulticastDatagramChannel = UdpSocket.bindMulticast(port, family).also { opened.add(it) }
 
     private fun payload(text: String): PlatformBuffer {
         val bytes = text.encodeToByteArray()
@@ -78,7 +80,8 @@ class MulticastNodeConformanceTests {
         mcTest {
             val ch = bindMc(0)
             val group = UdpSocket.resolve("239.61.61.61", 0)
-            assertFailsWith<MulticastException> {
+            // Node names interfaces by address, never by index → the precise UnsupportedInterface subtype.
+            assertFailsWith<MulticastException.UnsupportedInterface> {
                 ch.joinGroup(MulticastMembership(group, MulticastInterface.ByIndex(1)))
             }
         }
@@ -114,6 +117,39 @@ class MulticastNodeConformanceTests {
                     )
                 else ->
                     println("[MulticastNodeConformanceTests] SKIP e2e: no datagram delivered — multicast not routed on this Node host")
+            }
+        }
+
+    @Test
+    fun senderReachesJoinedReceiverOnSameHostIpv6() =
+        mcTest {
+            val port = 42_346
+            val receiver = bindMc(port, AddressFamily.IPv6)
+            val sender = bindMc(0, AddressFamily.IPv6)
+            val got =
+                try {
+                    val group = UdpSocket.resolve("ff02::114", port) // unassigned link-local group
+                    receiver.joinGroup(MulticastMembership(group))
+                    sender.setLoopbackEnabled(true)
+                    sender.setTimeToLive(1)
+                    sender.send(payload("mc-node-v6"), to = group)
+                    withTimeoutOrNull(2_000) { receiver.receive() }
+                } catch (_: Throwable) {
+                    null
+                }
+            // Conditional, like the IPv4 e2e: exact bytes if delivered, a loud skip if v6 multicast isn't routed.
+            when (got) {
+                is DatagramReadResult.Received ->
+                    assertEquals(
+                        "mc-node-v6",
+                        got.datagram.payload
+                            .readByteArray(got.datagram.payload.remaining())
+                            .decodeToString(),
+                    )
+                else ->
+                    println(
+                        "[MulticastNodeConformanceTests] SKIP e2e (IPv6): no datagram delivered — v6 multicast not routed on this Node host",
+                    )
             }
         }
 }

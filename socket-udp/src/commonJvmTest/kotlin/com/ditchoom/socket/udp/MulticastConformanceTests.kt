@@ -48,13 +48,15 @@ class MulticastConformanceTests {
 
     /** A concrete, up, multicast-capable IPv4 interface for e2e; loopback preferred (self-contained), else
      * the first real NIC. Null means the environment cannot do multicast at all → e2e skips. */
-    private fun usableMulticastInterface(): NetworkInterface? {
+    private fun usableMulticastInterface(wantV6: Boolean = false): NetworkInterface? {
         val up =
             NetworkInterface.getNetworkInterfaces().toList().filter {
                 runCatching {
                     it.isUp &&
                         it.supportsMulticast() &&
-                        it.inetAddresses.asSequence().any { a -> a is java.net.Inet4Address }
+                        it.inetAddresses.asSequence().any { a ->
+                            if (wantV6) a is java.net.Inet6Address else a is java.net.Inet4Address
+                        }
                 }.getOrDefault(false)
             }
         return up.firstOrNull { it.isLoopback } ?: up.firstOrNull { !it.isLoopback } ?: up.firstOrNull()
@@ -97,7 +99,8 @@ class MulticastConformanceTests {
         mcTest {
             val ch = bindMc(0)
             val group = UdpSocket.resolve("239.7.7.8", 0)
-            assertFailsWith<MulticastException> {
+            // A missing named interface is resolved before any join syscall → the precise NoSuchInterface.
+            assertFailsWith<MulticastException.NoSuchInterface> {
                 ch.joinGroup(MulticastMembership(group, MulticastInterface.ByName("nonexistent-nic-xyz")))
             }
         }
@@ -108,7 +111,7 @@ class MulticastConformanceTests {
             val nif = usableMulticastInterface() ?: return@mcTest logSkip("no multicast interface")
             val ch = bindMc(0)
             val group = UdpSocket.resolve("239.7.7.9", 0)
-            assertFailsWith<MulticastException> {
+            assertFailsWith<MulticastException.LeaveFailed> {
                 ch.leaveGroup(MulticastMembership(group, MulticastInterface.ByName(nif.name)))
             }
         }
@@ -147,6 +150,41 @@ class MulticastConformanceTests {
                             .decodeToString(),
                     )
                 else -> logSkip("no datagram delivered on ${nif.name} — loopback multicast not routed here")
+            }
+        }
+
+    @Test
+    fun senderDatagramReachesAJoinedReceiverOnTheSameHostIpv6() =
+        mcTest {
+            val nif =
+                usableMulticastInterface(wantV6 = true) ?: return@mcTest logSkip("no IPv6 multicast interface for e2e")
+            val iface = MulticastInterface.ByName(nif.name)
+            val port = 42_043
+            val receiver = UdpSocket.bindMulticast(port, AddressFamily.IPv6).also { opened.add(it) }
+            val group = UdpSocket.resolve("ff02::114", port) // an unassigned link-local group, same-host scope
+            try {
+                receiver.joinGroup(MulticastMembership(group, iface))
+            } catch (e: MulticastException) {
+                return@mcTest logSkip("IPv6 join failed on ${nif.name}: ${e.message}")
+            }
+
+            val sender = UdpSocket.bindMulticast(0, AddressFamily.IPv6).also { opened.add(it) }
+            runCatching { sender.setOutboundInterface(iface) }
+            sender.setTimeToLive(1)
+            sender.setLoopbackEnabled(true)
+            sender.send(payload("multicast-hello-v6"), to = group)
+
+            // Same conditional posture as the IPv4 e2e: exact bytes if delivered, a loud skip if the host
+            // doesn't route link-local v6 multicast on loopback.
+            when (val got = withTimeoutOrNull(4_000) { receiver.receive() }) {
+                is DatagramReadResult.Received ->
+                    assertEquals(
+                        "multicast-hello-v6",
+                        got.datagram.payload
+                            .readByteArray(got.datagram.payload.remaining())
+                            .decodeToString(),
+                    )
+                else -> logSkip("no IPv6 datagram delivered on ${nif.name} — loopback v6 multicast not routed here")
             }
         }
 

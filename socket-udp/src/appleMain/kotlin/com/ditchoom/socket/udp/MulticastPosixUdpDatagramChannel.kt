@@ -57,8 +57,12 @@ internal class MulticastPosixUdpDatagramChannel(
                     socket_mc_leave(fd, sa, iface.ipv4Be, iface.ifindex)
                 }
             if (rc != 0) {
-                val op = if (join) "joinGroup" else "leaveGroup"
-                throw MulticastException("$op ${membership.group.host} failed: ${errnoMessage()}")
+                val detail = errnoMessage()
+                throw if (join) {
+                    MulticastException.JoinFailed(membership.group, membership.networkInterface, detail)
+                } else {
+                    MulticastException.LeaveFailed(membership.group, membership.networkInterface, detail)
+                }
             }
         }
     }
@@ -66,20 +70,20 @@ internal class MulticastPosixUdpDatagramChannel(
     override suspend fun setTimeToLive(ttl: Int) {
         require(ttl in 0..255) { "ttl out of range: $ttl" }
         if (socket_mc_set_ttl(fd, if (ipv6) 1 else 0, ttl) != 0) {
-            throw MulticastException("setTimeToLive($ttl) failed: ${errnoMessage()}")
+            throw MulticastException.OptionFailed("setTimeToLive($ttl)", errnoMessage())
         }
     }
 
     override suspend fun setLoopbackEnabled(enabled: Boolean) {
         if (socket_mc_set_loop(fd, if (ipv6) 1 else 0, if (enabled) 1 else 0) != 0) {
-            throw MulticastException("setLoopbackEnabled($enabled) failed: ${errnoMessage()}")
+            throw MulticastException.OptionFailed("setLoopbackEnabled($enabled)", errnoMessage())
         }
     }
 
     override suspend fun setOutboundInterface(networkInterface: MulticastInterface) {
         val iface = resolveInterface(networkInterface)
         if (socket_mc_set_if(fd, if (ipv6) 1 else 0, iface.ipv4Be, iface.ifindex) != 0) {
-            throw MulticastException("setOutboundInterface failed: ${errnoMessage()}")
+            throw MulticastException.OptionFailed("setOutboundInterface", errnoMessage())
         }
     }
 
@@ -93,7 +97,7 @@ internal class MulticastPosixUdpDatagramChannel(
             MulticastInterface.Default -> ResolvedInterface(ipv4Be = 0u, ifindex = 0u)
             is MulticastInterface.ByName -> {
                 val idx = socket_if_index(iface.name)
-                if (idx == 0u) throw MulticastException("no interface named '${iface.name}'")
+                if (idx == 0u) throw MulticastException.NoSuchInterface(iface)
                 ResolvedInterface(ipv4Be = socket_if_ipv4_be(idx), ifindex = idx)
             }
             is MulticastInterface.ByIndex -> {

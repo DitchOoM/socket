@@ -52,8 +52,10 @@ class MulticastNativeConformanceTests {
         opened.clear()
     }
 
-    private suspend fun bindMc(port: Int): MulticastDatagramChannel =
-        UdpSocket.bindMulticast(port, AddressFamily.IPv4).also { opened.add(it) }
+    private suspend fun bindMc(
+        port: Int,
+        family: AddressFamily = AddressFamily.IPv4,
+    ): MulticastDatagramChannel = UdpSocket.bindMulticast(port, family).also { opened.add(it) }
 
     private fun payload(text: String): PlatformBuffer {
         val bytes = text.encodeToByteArray()
@@ -97,7 +99,8 @@ class MulticastNativeConformanceTests {
         mcTest {
             val ch = bindMc(0)
             val group = UdpSocket.resolve("239.60.60.60", 0)
-            assertFailsWith<MulticastException> {
+            // A missing named interface is resolved (getifaddrs) before the join syscall → NoSuchInterface.
+            assertFailsWith<MulticastException.NoSuchInterface> {
                 ch.joinGroup(MulticastMembership(group, MulticastInterface.ByName("nonexistent-nic-xyz")))
             }
         }
@@ -136,6 +139,34 @@ class MulticastNativeConformanceTests {
             }
         }
 
+    @Test
+    fun senderReachesJoinedReceiverOnSameHostIpv6() =
+        mcTest {
+            // Link-local IPv6 multicast on the same host: loopback first on Apple, the default NIC first on
+            // Linux — mirroring the IPv4 candidate order.
+            val candidates =
+                if (isApple) {
+                    listOf(MulticastInterface.ByName(loopbackName), MulticastInterface.Default)
+                } else {
+                    listOf(MulticastInterface.Default, MulticastInterface.ByName(loopbackName))
+                }
+            var received: String? = null
+            var port = 42_260
+            for (iface in candidates) {
+                received = receiveOnce(iface, port++, groupHost = "ff02::114", family = AddressFamily.IPv6)
+                if (received != null) break
+            }
+            // Conditional, exactly like the IPv4 e2e: exact bytes if delivered, a loud skip otherwise.
+            if (received != null) {
+                assertEquals("mc-native", received)
+            } else {
+                println(
+                    "[MulticastNativeConformanceTests] SKIP e2e (IPv6): no datagram delivered — v6 multicast " +
+                        "blocked by the OS or no routable interface. Semantics covered by MulticastFabricTests.",
+                )
+            }
+        }
+
     /**
      * One same-host group round-trip on [iface]:[port]; the decoded payload if it came back within a bounded
      * wait, else null. The receive runs in a child job whose completion we `await` (cancellable) — a parked
@@ -145,11 +176,13 @@ class MulticastNativeConformanceTests {
     private suspend fun CoroutineScope.receiveOnce(
         iface: MulticastInterface,
         port: Int,
+        groupHost: String = "239.58.58.58",
+        family: AddressFamily = AddressFamily.IPv4,
     ): String? {
-        val receiver = bindMc(port)
-        val sender = bindMc(0)
+        val receiver = bindMc(port, family)
+        val sender = bindMc(0, family)
         return try {
-            val group = UdpSocket.resolve("239.58.58.58", port)
+            val group = UdpSocket.resolve(groupHost, port)
             try {
                 receiver.joinGroup(MulticastMembership(group, iface))
             } catch (_: MulticastException) {
