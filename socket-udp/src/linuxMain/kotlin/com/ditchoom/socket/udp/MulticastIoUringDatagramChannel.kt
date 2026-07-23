@@ -18,7 +18,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toKString
 import platform.posix.errno
-import platform.posix.sockaddr
 import platform.posix.sockaddr_storage
 import platform.posix.strerror
 
@@ -48,12 +47,13 @@ internal class MulticastIoUringDatagramChannel(
         memScoped {
             val addr = alloc<sockaddr_storage>()
             membership.group.writeSockaddr(addr)
-            val sa = addr.ptr.reinterpret<sockaddr>()
+            // Bare reinterpret(): the cinterop C funcs take the def's OWN `sockaddr` (UdpSockets.def has no
+            // headerFilter, so it generates its own type) — let inference pick it, as socket_bind does.
             val rc =
                 if (join) {
-                    socket_mc_join(fd, sa, iface.ipv4Be, iface.ifindex)
+                    socket_mc_join(fd, addr.ptr.reinterpret(), iface.ipv4Be, iface.ifindex)
                 } else {
-                    socket_mc_leave(fd, sa, iface.ipv4Be, iface.ifindex)
+                    socket_mc_leave(fd, addr.ptr.reinterpret(), iface.ipv4Be, iface.ifindex)
                 }
             if (rc != 0) {
                 val op = if (join) "joinGroup" else "leaveGroup"
