@@ -4,6 +4,10 @@ import com.ditchoom.socket.udp.linux.*
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import platform.posix.pthread_mutex_init
+import platform.posix.pthread_mutex_lock
+import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_unlock
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
@@ -124,6 +128,25 @@ internal object IoUringManager {
     private val pollerScopeRef = AtomicReference<CoroutineScope?>(null)
     private val pollerJobRef = AtomicReference<Job?>(null)
     private val pollerStarted = AtomicInt(0) // 0 = not started, 1 = started
+
+    // Serializes poller start ([ensurePollerStarted]) against poller stop ([cleanup]). Without it, a
+    // start racing the last-socket-close can flip [pollerStarted] back to 1 *after* cleanup cleared it,
+    // so the running event loop never observes the stop and cleanup's `runBlocking { job.join() }` blocks
+    // forever — the intermittent linuxX64 hang seen in the WebTransport suite. This guards only the cold
+    // start/stop transitions; the per-op I/O hot path takes the lock-free fast return in
+    // [ensurePollerStarted], so ring throughput is unchanged (the "no Mutex on ring access" invariant
+    // holds). Process-lifetime singleton mutex: allocated once, never freed.
+    private val lifecycleMutex: CPointer<pthread_mutex_t> =
+        nativeHeap.alloc<pthread_mutex_t>().ptr.also { pthread_mutex_init(it, null) }
+
+    private inline fun <T> withLifecycleLock(block: () -> T): T {
+        pthread_mutex_lock(lifecycleMutex)
+        try {
+            return block()
+        } finally {
+            pthread_mutex_unlock(lifecycleMutex)
+        }
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     private fun getOrCreatePollerDispatcher(): CloseableCoroutineDispatcher {
@@ -256,10 +279,16 @@ internal object IoUringManager {
      * Called lazily on first operation.
      */
     private fun ensurePollerStarted() {
-        if (pollerStarted.compareAndSet(0, 1)) {
-            val scope = getOrCreatePollerScope()
-            val job = scope.launch { eventLoop() }
-            pollerJobRef.value = job
+        // Hot path: loop already running — stays lock-free so per-submission cost is unchanged.
+        if (pollerStarted.value == 1) return
+        // Cold path: serialize the (re)start against cleanup() so it cannot resurrect pollerStarted
+        // after cleanup cleared it (which would strand the running loop and hang cleanup's join).
+        withLifecycleLock {
+            if (pollerStarted.compareAndSet(0, 1)) {
+                val scope = getOrCreatePollerScope()
+                val job = scope.launch { eventLoop() }
+                pollerJobRef.value = job
+            }
         }
     }
 
@@ -568,33 +597,37 @@ internal object IoUringManager {
      * will reinitialize the ring and event loop thread.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun cleanup() {
-        val wasStarted = pollerStarted.getAndSet(0) == 1
-        if (!wasStarted) return
+    fun cleanup() =
+        withLifecycleLock {
+            val wasStarted = pollerStarted.getAndSet(0) == 1
+            if (!wasStarted) return@withLifecycleLock
 
-        // Force-wake the event loop (bypass pollerSleeping check).
-        // After setting pollerStarted=0 above, the event loop will check the
-        // flag and exit. Ring, eventfd, and channel cleanup happen in the
-        // event loop's finally block — no cross-thread resource teardown.
-        val fd = wakeupFd.value
-        if (fd >= 0) {
-            memScoped {
-                val buf = alloc<eventfd_tVar>()
-                buf.value = 1u
-                eventfd_write(fd, buf.value)
+            // Force-wake the event loop (bypass pollerSleeping check).
+            // After setting pollerStarted=0 above, the event loop will check the
+            // flag and exit. Because we hold lifecycleMutex, no concurrent
+            // ensurePollerStarted() can flip pollerStarted back to 1 before the loop
+            // observes the 0, so the loop is guaranteed to terminate and the join
+            // below cannot block forever. Ring, eventfd, and channel cleanup happen
+            // in the event loop's finally block — no cross-thread resource teardown.
+            val fd = wakeupFd.value
+            if (fd >= 0) {
+                memScoped {
+                    val buf = alloc<eventfd_tVar>()
+                    buf.value = 1u
+                    eventfd_write(fd, buf.value)
+                }
             }
-        }
 
-        // Wait for event loop to fully exit (it handles ring/eventfd/channel cleanup)
-        val job = pollerJobRef.getAndSet(null)
-        if (job != null) {
-            runBlocking { job.join() }
-        }
+            // Wait for event loop to fully exit (it handles ring/eventfd/channel cleanup)
+            val job = pollerJobRef.getAndSet(null)
+            if (job != null) {
+                runBlocking { job.join() }
+            }
 
-        // Safe now — event loop has exited and cleaned up ring resources
-        val scope = pollerScopeRef.getAndSet(null)
-        scope?.cancel()
-        val dispatcher = pollerDispatcherRef.getAndSet(null)
-        dispatcher?.close()
-    }
+            // Safe now — event loop has exited and cleaned up ring resources
+            val scope = pollerScopeRef.getAndSet(null)
+            scope?.cancel()
+            val dispatcher = pollerDispatcherRef.getAndSet(null)
+            dispatcher?.close()
+        }
 }
