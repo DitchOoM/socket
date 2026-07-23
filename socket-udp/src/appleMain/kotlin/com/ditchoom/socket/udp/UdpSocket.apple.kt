@@ -32,6 +32,7 @@ import platform.posix.IPV6_V6ONLY
 import platform.posix.SOCK_DGRAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_REUSEADDR
+import platform.posix.SO_REUSEPORT
 import platform.posix.bind
 import platform.posix.close
 import platform.posix.getsockname
@@ -136,6 +137,28 @@ actual object UdpSocket {
         return NwUdpDatagramChannel(conn, peer, local, receiveBufferSize, bufferFactory)
     }
 
+    actual suspend fun bindMulticast(
+        port: Int,
+        family: AddressFamily,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+    ): MulticastDatagramChannel {
+        val v6 = family == AddressFamily.IPv6
+        val af = if (v6) AF_INET6 else AF_INET
+        val fd = socket(af, SOCK_DGRAM, IPPROTO_UDP)
+        check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
+        // SO_REUSEADDR + SO_REUSEPORT: the normal arrangement so several multicast listeners can share the
+        // group's well-known port on one host. A v6 multicast socket is kept v6-only for a clean join family.
+        setReuseAddr(fd)
+        setReusePort(fd)
+        if (v6) setV6Only(fd, true)
+        val wildcard = if (v6) WILDCARD_V6 else WILDCARD_V4
+        val local = AppleSocketAddressResolver.resolve(wildcard, port) as AppleSocketAddress
+        bindTo(fd, local)
+        val base = PosixUdpDatagramChannel(fd, localAddressOf(fd), receiveBufferSize, bufferFactory)
+        return MulticastPosixUdpDatagramChannel(fd, ipv6 = v6, base = base)
+    }
+
     actual suspend fun resolve(
         host: String,
         port: Int,
@@ -146,6 +169,14 @@ actual object UdpSocket {
             val v = alloc<IntVar>()
             v.value = 1
             setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, v.ptr, sizeOf<IntVar>().convert())
+        }
+    }
+
+    private fun setReusePort(fd: Int) {
+        memScoped {
+            val v = alloc<IntVar>()
+            v.value = 1
+            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, v.ptr, sizeOf<IntVar>().convert())
         }
     }
 
@@ -201,6 +232,7 @@ actual object UdpSocket {
             sockaddrToAppleSocketAddress(storage.ptr.reinterpret<sockaddr>())
         }
 
+    private const val WILDCARD_V4 = "0.0.0.0"
     private const val WILDCARD_V6 = "::"
 
     // nw_connection_state_t values (nw_udp_helpers.h): 3=ready, 4=failed, 5=cancelled.

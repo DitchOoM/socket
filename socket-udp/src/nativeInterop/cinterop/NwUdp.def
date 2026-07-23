@@ -7,6 +7,12 @@ linkerOpts = -framework Network -framework Foundation
 #include <Network/Network.h>
 #include <Foundation/Foundation.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <net/if.h>
+#include <ifaddrs.h>
+#include <string.h>
+#include <errno.h>
+#include <stdint.h>
 
 // Decompose an nw_error_t into K/N-safe scalars (see the base module's nw_helpers.h describe_nw_error).
 static void nw_udp_describe_error(nw_error_t _Nullable error,
@@ -119,4 +125,99 @@ void nw_udp_send(nw_connection_t _Nonnull conn, const void * _Nonnull bytes, int
             nw_udp_describe_error(error, &domain, &code, &desc);
             handler(domain, code);
         });
+}
+
+// --- IP multicast control plane (see nw_udp_helpers.h) ---
+
+int socket_mc_join(int fd, const struct sockaddr * _Nonnull group, uint32_t iface_v4_be, unsigned int ifindex)
+{
+    if (group->sa_family == AF_INET) {
+        struct ip_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.imr_multiaddr = ((const struct sockaddr_in *)group)->sin_addr;
+        mreq.imr_interface.s_addr = iface_v4_be; // 0 == INADDR_ANY (kernel default interface)
+        return setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+    } else if (group->sa_family == AF_INET6) {
+        struct ipv6_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.ipv6mr_multiaddr = ((const struct sockaddr_in6 *)group)->sin6_addr;
+        mreq.ipv6mr_interface = ifindex; // 0 == default interface
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP, &mreq, sizeof(mreq));
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+int socket_mc_leave(int fd, const struct sockaddr * _Nonnull group, uint32_t iface_v4_be, unsigned int ifindex)
+{
+    if (group->sa_family == AF_INET) {
+        struct ip_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.imr_multiaddr = ((const struct sockaddr_in *)group)->sin_addr;
+        mreq.imr_interface.s_addr = iface_v4_be;
+        return setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &mreq, sizeof(mreq));
+    } else if (group->sa_family == AF_INET6) {
+        struct ipv6_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.ipv6mr_multiaddr = ((const struct sockaddr_in6 *)group)->sin6_addr;
+        mreq.ipv6mr_interface = ifindex;
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_LEAVE_GROUP, &mreq, sizeof(mreq));
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+int socket_mc_set_ttl(int fd, int ipv6, int ttl)
+{
+    if (ipv6) {
+        int v = ttl;
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &v, sizeof(v));
+    }
+    unsigned char v = (unsigned char)ttl; // Darwin IP_MULTICAST_TTL takes a u_char
+    return setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &v, sizeof(v));
+}
+
+int socket_mc_set_loop(int fd, int ipv6, int on)
+{
+    if (ipv6) {
+        int v = on;
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &v, sizeof(v));
+    }
+    unsigned char v = (unsigned char)on; // Darwin IP_MULTICAST_LOOP takes a u_char
+    return setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &v, sizeof(v));
+}
+
+int socket_mc_set_if(int fd, int ipv6, uint32_t iface_v4_be, unsigned int ifindex)
+{
+    if (ipv6) {
+        unsigned int idx = ifindex;
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &idx, sizeof(idx));
+    }
+    struct in_addr a;
+    a.s_addr = iface_v4_be; // 0 == INADDR_ANY (let the kernel choose)
+    return setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &a, sizeof(a));
+}
+
+unsigned int socket_if_index(const char * _Nonnull name)
+{
+    return if_nametoindex(name); // 0 on failure
+}
+
+uint32_t socket_if_ipv4_be(unsigned int ifindex)
+{
+    if (ifindex == 0) return 0;
+    char name[IF_NAMESIZE];
+    if (if_indextoname(ifindex, name) == NULL) return 0;
+    struct ifaddrs *ifap = NULL;
+    if (getifaddrs(&ifap) != 0) return 0;
+    uint32_t result = 0;
+    for (struct ifaddrs *ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (strcmp(ifa->ifa_name, name) != 0) continue;
+        result = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+        break;
+    }
+    freeifaddrs(ifap);
+    return result;
 }
