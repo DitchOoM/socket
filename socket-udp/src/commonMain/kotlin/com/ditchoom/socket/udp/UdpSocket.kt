@@ -1,6 +1,7 @@
 package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -74,6 +75,27 @@ expect object UdpSocket {
         receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
         bufferFactory: BufferFactory = defaultDatagramBufferFactory,
     ): DatagramChannel
+
+    /**
+     * Open a **multicast-capable** UDP channel bound to the wildcard address of [family] on [port] (`0`
+     * picks an ephemeral port, but a multicast receiver almost always binds the group's well-known port).
+     * The returned [MulticastDatagramChannel] is bound and configured but **not yet joined to any group** —
+     * call [MulticastDatagramChannel.joinGroup] to start receiving one. Sending to a group is an ordinary
+     * `send(payload, to = groupAddress)`.
+     *
+     * `SO_REUSEADDR` (and `SO_REUSEPORT` where the platform has it) is set so several receivers on the same
+     * host can bind the same multicast port — the normal multicast-listener arrangement. [family] selects
+     * IPv4 (`AF_INET`, wildcard `0.0.0.0`) or IPv6 (`AF_INET6`, wildcard `::`); it must match the family of
+     * every group later joined on this channel.
+     *
+     * [receiveBufferSize] and [bufferFactory] behave exactly as in [bind].
+     */
+    suspend fun bindMulticast(
+        port: Int,
+        family: AddressFamily = AddressFamily.IPv4,
+        receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
+        bufferFactory: BufferFactory = defaultDatagramBufferFactory,
+    ): MulticastDatagramChannel
 
     /**
      * Resolve [host]:[port] to a [SocketAddress] that owns its platform representation (zero-alloc reuse

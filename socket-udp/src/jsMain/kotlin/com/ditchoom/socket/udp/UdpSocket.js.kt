@@ -63,6 +63,22 @@ actual object UdpSocket {
         return NodeDatagramChannel(socket, connectedPeer = peer)
     }
 
+    actual suspend fun bindMulticast(
+        port: Int,
+        family: AddressFamily,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+    ): MulticastDatagramChannel {
+        ensureNode()
+        val v6 = family == AddressFamily.IPv6
+        // reuseAddr:true is the multicast-listener arrangement (several receivers share the group port).
+        // Bind the wildcard of the family so joined groups on any interface are received.
+        val socket = createDgramMulticastSocket(if (v6) UDP6 else UDP4)
+        awaitBind(socket, port, null)
+        val base = NodeDatagramChannel(socket, connectedPeer = null)
+        return MulticastNodeDatagramChannel(socket, base, ipv6 = v6)
+    }
+
     actual suspend fun resolve(
         host: String,
         port: Int,

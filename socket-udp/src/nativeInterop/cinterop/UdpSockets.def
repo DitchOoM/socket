@@ -10,7 +10,7 @@ package = com.ditchoom.socket.udp.linux
 # root's buildLiburing<Arch> task). libraryPaths/staticLibraries are injected by the generate task in
 # build.gradle.kts (which rewrites the linkerOpts.linux line below into static-library embedding).
 
-headers = sys/socket.h sys/types.h netinet/in.h netinet/ip.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h string.h sys/eventfd.h poll.h sys/select.h sys/time.h liburing.h
+headers = sys/socket.h sys/types.h netinet/in.h netinet/ip.h arpa/inet.h netdb.h unistd.h fcntl.h errno.h string.h stdint.h net/if.h ifaddrs.h sys/eventfd.h poll.h sys/select.h sys/time.h liburing.h
 
 compilerOpts.linux = -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
 
@@ -64,4 +64,92 @@ static inline size_t cmsg_len(size_t length) {
 
 static inline unsigned char *cmsg_data(struct cmsghdr *cmsg) {
     return CMSG_DATA(cmsg);
+}
+
+// --- IP multicast control plane (POSIX setsockopt) ---
+// Struct-free-at-the-Kotlin-boundary helpers, identical in shape to the Apple module's nw_udp_helpers.h:
+// the group is passed as a filled `sockaddr` (from LinuxSocketAddress.writeSockaddr) and the C side pulls
+// in_addr / in6_addr out by family. The interface is named by a network-order IPv4 s_addr [iface_v4_be]
+// (`0` = INADDR_ANY, for IPv4) OR an index [ifindex] (`0` = default, for IPv6). Each returns 0 on success,
+// -1 on failure (errno set) — no multicast struct crosses the cinterop boundary.
+
+static inline int socket_mc_join(int fd, const struct sockaddr *group, uint32_t iface_v4_be, unsigned int ifindex) {
+    if (group->sa_family == AF_INET) {
+        struct ip_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.imr_multiaddr = ((const struct sockaddr_in *)group)->sin_addr;
+        mreq.imr_interface.s_addr = iface_v4_be;
+        return setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+    } else if (group->sa_family == AF_INET6) {
+        struct ipv6_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.ipv6mr_multiaddr = ((const struct sockaddr_in6 *)group)->sin6_addr;
+        mreq.ipv6mr_interface = ifindex;
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP, &mreq, sizeof(mreq));
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+static inline int socket_mc_leave(int fd, const struct sockaddr *group, uint32_t iface_v4_be, unsigned int ifindex) {
+    if (group->sa_family == AF_INET) {
+        struct ip_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.imr_multiaddr = ((const struct sockaddr_in *)group)->sin_addr;
+        mreq.imr_interface.s_addr = iface_v4_be;
+        return setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &mreq, sizeof(mreq));
+    } else if (group->sa_family == AF_INET6) {
+        struct ipv6_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        mreq.ipv6mr_multiaddr = ((const struct sockaddr_in6 *)group)->sin6_addr;
+        mreq.ipv6mr_interface = ifindex;
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_LEAVE_GROUP, &mreq, sizeof(mreq));
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+static inline int socket_mc_set_ttl(int fd, int ipv6, int ttl) {
+    int v = ttl; // Linux IP_MULTICAST_TTL / IPV6_MULTICAST_HOPS take an int
+    if (ipv6) return setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &v, sizeof(v));
+    return setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &v, sizeof(v));
+}
+
+static inline int socket_mc_set_loop(int fd, int ipv6, int on) {
+    int v = on;
+    if (ipv6) return setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &v, sizeof(v));
+    return setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &v, sizeof(v));
+}
+
+static inline int socket_mc_set_if(int fd, int ipv6, uint32_t iface_v4_be, unsigned int ifindex) {
+    if (ipv6) {
+        unsigned int idx = ifindex;
+        return setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &idx, sizeof(idx));
+    }
+    struct in_addr a;
+    a.s_addr = iface_v4_be;
+    return setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &a, sizeof(a));
+}
+
+static inline unsigned int socket_if_index(const char *name) {
+    return if_nametoindex(name); // 0 on failure
+}
+
+static inline uint32_t socket_if_ipv4_be(unsigned int ifindex) {
+    if (ifindex == 0) return 0;
+    char name[IF_NAMESIZE];
+    if (if_indextoname(ifindex, name) == NULL) return 0;
+    struct ifaddrs *ifap = NULL;
+    if (getifaddrs(&ifap) != 0) return 0;
+    uint32_t result = 0;
+    struct ifaddrs *ifa;
+    for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (strcmp(ifa->ifa_name, name) != 0) continue;
+        result = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+        break;
+    }
+    freeifaddrs(ifap);
+    return result;
 }

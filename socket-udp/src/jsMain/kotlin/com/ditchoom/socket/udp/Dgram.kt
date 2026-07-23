@@ -61,6 +61,27 @@ internal external interface DgramSocket {
     /** Set the outgoing IP TTL / hop limit (the one control-plane knob Node `dgram` exposes). */
     fun setTTL(ttl: Int)
 
+    /** Join a multicast group; [multicastInterface] is an interface *address* (undefined = kernel default). */
+    fun addMembership(
+        multicastAddress: String,
+        multicastInterface: String?,
+    )
+
+    /** Leave a multicast group joined via [addMembership]. */
+    fun dropMembership(
+        multicastAddress: String,
+        multicastInterface: String?,
+    )
+
+    /** Set the outbound multicast hop limit (`IP_MULTICAST_TTL`). */
+    fun setMulticastTTL(ttl: Int)
+
+    /** Enable/disable loopback of this socket's own outbound multicast (`IP_MULTICAST_LOOP`). */
+    fun setMulticastLoopback(flag: Boolean)
+
+    /** Select the outbound multicast interface by its address string (`IP_MULTICAST_IF`). */
+    fun setMulticastInterface(multicastInterface: String)
+
     /** Register a single-argument event listener (`error`, `close`). */
     fun on(
         event: String,
@@ -92,6 +113,39 @@ internal external interface RInfo {
 
 /** Create a `dgram` socket of [type] (`"udp4"` / `"udp6"`) via a runtime-only require. */
 internal fun createDgramSocket(type: String): DgramSocket = js("require('dgram').createSocket({ type: type })").unsafeCast<DgramSocket>()
+
+/**
+ * Create a `dgram` socket of [type] with `reuseAddr: true` — the multicast-listener arrangement so several
+ * receivers on one host can bind the same group port (`SO_REUSEADDR`, and `SO_REUSEPORT` where the OS has
+ * it). Runtime-only require, like [createDgramSocket].
+ */
+internal fun createDgramMulticastSocket(type: String): DgramSocket =
+    js("require('dgram').createSocket({ type: type, reuseAddr: true })").unsafeCast<DgramSocket>()
+
+/**
+ * The first address of interface [name] in [os.networkInterfaces()] matching the wanted family
+ * (`"IPv6"` when [wantV6], else `"IPv4"`), or `null` if the interface or a matching address is absent —
+ * Node names a multicast interface by its address string, not by OS name/index.
+ */
+internal fun nodeInterfaceAddress(
+    name: String,
+    wantV6: Boolean,
+): String? {
+    val family = if (wantV6) "IPv6" else "IPv4"
+    return js(
+        """
+        (function(n, fam) {
+            var ifaces = require('os').networkInterfaces();
+            var list = ifaces[n];
+            if (!list) return null;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].family === fam) return list[i].address;
+            }
+            return null;
+        })(name, family)
+        """,
+    ) as String?
+}
 
 /** Node DNS lookup (numeric result, off the event loop) via a runtime-only require. */
 internal fun dnsLookup(

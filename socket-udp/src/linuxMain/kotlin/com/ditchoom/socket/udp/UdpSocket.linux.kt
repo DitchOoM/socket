@@ -25,6 +25,7 @@ import platform.posix.IPPROTO_UDP
 import platform.posix.SOCK_DGRAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_REUSEADDR
+import platform.posix.SO_REUSEPORT
 import platform.posix.close
 import platform.posix.setsockopt
 import platform.posix.sockaddr
@@ -109,6 +110,34 @@ actual object UdpSocket {
         ).also { IoUringManager.onSocketOpened() }
     }
 
+    actual suspend fun bindMulticast(
+        port: Int,
+        family: AddressFamily,
+        receiveBufferSize: Int,
+        bufferFactory: BufferFactory,
+    ): MulticastDatagramChannel {
+        val v6 = family == AddressFamily.IPv6
+        val wildcard = if (v6) WILDCARD_V6 else WILDCARD_V4
+        val local = LinuxSocketAddressResolver.resolve(wildcard, port) as LinuxSocketAddress
+        val fd = openDatagramSocket(local.family)
+        // SO_REUSEADDR + SO_REUSEPORT: several multicast listeners can share the group's well-known port.
+        setReuseAddr(fd)
+        setReusePort(fd)
+        bindTo(fd, local)
+        val base =
+            IoUringDatagramChannel(
+                fd = fd,
+                connected = false,
+                connectedPeer = null,
+                localAddress = localAddressOf(fd),
+                ipv6 = v6,
+                receiveBufferSize = receiveBufferSize,
+                bufferFactory = bufferFactory,
+            )
+        IoUringManager.onSocketOpened()
+        return MulticastIoUringDatagramChannel(fd = fd, ipv6 = v6, base = base)
+    }
+
     actual suspend fun resolve(
         host: String,
         port: Int,
@@ -126,6 +155,14 @@ actual object UdpSocket {
             val v = alloc<IntVar>()
             v.value = 1
             setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, v.ptr, sizeOf<IntVar>().convert())
+        }
+    }
+
+    private fun setReusePort(fd: Int) {
+        memScoped {
+            val v = alloc<IntVar>()
+            v.value = 1
+            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, v.ptr, sizeOf<IntVar>().convert())
         }
     }
 
