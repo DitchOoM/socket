@@ -32,7 +32,8 @@ internal class MulticastIoUringDatagramChannel(
     private val fd: Int,
     private val ipv6: Boolean,
     private val base: IoUringDatagramChannel,
-) : MulticastDatagramChannel, DatagramChannel by base {
+) : MulticastDatagramChannel,
+    DatagramChannel by base {
     override val capabilities: DatagramCapabilities = base.capabilities.withMulticast()
 
     override suspend fun joinGroup(membership: MulticastMembership) = membership(join = true, membership)
