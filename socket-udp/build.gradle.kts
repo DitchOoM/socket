@@ -13,10 +13,6 @@ val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
 
-// The datagram trichotomy lives in buffer-flow under @ExperimentalDatagramApi (RFC Phase 0/1),
-// released on Maven Central in buffer 6.11.0 (buffer #291).
-val bufferFlowVersion = "6.11.0"
-
 repositories {
     google()
     mavenCentral()
@@ -156,13 +152,17 @@ kotlin {
     applyDefaultHierarchyTemplate()
     sourceSets {
         commonMain.dependencies {
-            api("com.ditchoom:buffer-flow:$bufferFlowVersion")
-            api("com.ditchoom:buffer:$bufferFlowVersion")
+            // The datagram trichotomy lives in buffer-flow under @ExperimentalDatagramApi (RFC Phase
+            // 0/1), first released on Maven Central in buffer 6.11.0 (buffer #291). Version comes
+            // from the single `buffer` version-catalog pin — every other module already uses it, and
+            // a second hardcoded pin here would let :socket-udp drift off the rest of the build.
+            api(libs.buffer.flow)
+            api(libs.buffer)
             // buffer-codec: SocketAddressCodec (Codec<SocketAddress>) is the type-safe sockaddr SPI the
             // QUIC cutover consumes — encode a resolved SocketAddress into native C-sockaddr bytes for
             // quiche's recv_info/send_info FFI. api (not implementation): the Codec type is in its
             // public surface.
-            api("com.ditchoom:buffer-codec:$bufferFlowVersion")
+            api(libs.buffer.codec)
             implementation(libs.kotlinx.coroutines.core)
         }
         commonTest.dependencies {

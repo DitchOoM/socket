@@ -40,7 +40,15 @@ kotlinWrappers = "2026.6.0"
 # alias-addressable KeyStore + SPKI export (#292), AES-ECB single-block (#301), deriveTlsPremasterSecret
 # raw (EC)DHE (#302); codec @JvmInline value-class-over-String fields (#299); fixes: JVM21 FFM
 # readString bounds-check (#295), generated wireSize growth-safe (#304).
-buffer = "6.17.2"
+# 6.17.2->6.22.0: still all additive/drop-in (linear on buffer main, still 6.x, no source
+# removals/renames — the only deletions in the range are `internal expect` seams and KDoc).
+# codec: @LengthFrom widened to deferred payloads + FrameLimits (#310), and two decode-bound
+# HARDENINGS — unframable @LengthFrom peek arithmetic is rejected and decoded frame size is bounded
+# (#309), wire-supplied lengths that would widen decode bounds past the enclosing limit are rejected
+# (#315). Those tighten the generated-codec decode path :socket-http3 rides, so the H3/QPACK
+# conformance suites are the gate on this bump. Rest is buffer-crypto hardware-key work socket does
+# not consume (Android Keystore / Secure Enclave / TPM ECDH: #316, #317, #319, #320, #321, #322).
+buffer = "6.22.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
