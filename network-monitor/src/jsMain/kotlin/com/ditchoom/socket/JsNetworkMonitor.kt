@@ -40,6 +40,14 @@ class JsNetworkMonitor(
     private val _networkId = MutableStateFlow<NetworkId>(NetworkId.Unidentified)
     override val networkId: StateFlow<NetworkId> = _networkId.asStateFlow()
 
+    /**
+     * Node polls `os.networkInterfaces()`; the browser is pushed `online`/`offline` (plus the Network
+     * Information API's `change` where it exists). Resolved from the same [isNodeJs] check the
+     * constructor branches on, so it can never disagree with what was actually wired.
+     */
+    override val mechanism: MonitorMechanism =
+        if (isNodeJs) MonitorMechanism.Polled(interval) else MonitorMechanism.PlatformSignalled
+
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     init {

@@ -112,6 +112,15 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.coroutines.test)
         }
+        androidMain.dependencies {
+            // App Startup: NetworkMonitorInitializer (contributed to androidx.startup's
+            // InitializationProvider by src/androidMain/AndroidManifest.xml) captures the application
+            // Context at process start, so NetworkMonitor.default() is reactive on Android without the
+            // app remembering installAndroidContext(). `implementation`, not `api`: consumers never
+            // compile against androidx.startup, they only need it on the runtime classpath, and its own
+            // consumer proguard.txt keeps `* extends Initializer` so R8 cannot strip ours.
+            implementation(libs.androidx.startup.runtime)
+        }
         jsMain.dependencies {
             implementation(libs.kotlin.js)
         }

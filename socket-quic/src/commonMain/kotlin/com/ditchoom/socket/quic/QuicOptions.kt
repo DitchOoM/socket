@@ -172,11 +172,12 @@ data class QuicOptions(
      * process-shared monitor serves every connection, created lazily so it costs at most a single
      * background socket/thread for the whole process, and only if some connection actually relies on it.
      *
-     * The process default is functional out of the box on Apple (native `NWPathMonitor`). On **Android**
-     * it is functional only once the app installs a `Context` at startup via
-     * `NetworkMonitor.installAndroidContext(applicationContext)` — the `Context` is a hard requirement
-     * there and that call is the only way to satisfy it; until then the default is a no-op and
-     * auto-migration does nothing. Other platforms need no such call.
+     * The process default is functional out of the box on every platform that can identify a link,
+     * including **Android**: `ConnectivityManager` needs a `Context`, and
+     * `NetworkMonitorInitializer` supplies the application one via androidx.startup before app code
+     * runs, so no startup call is required. (An app that strips that initializer from its merged
+     * manifest, and does not call `NetworkMonitor.installAndroidContext(applicationContext)` itself,
+     * gets a no-op default and auto-migration does nothing.)
      *
      * Supply your own here to override the process default per connection (a test double, or a
      * pre-built Android monitor). An injected monitor is **owned by you** — nothing here closes it.

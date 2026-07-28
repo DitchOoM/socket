@@ -24,9 +24,10 @@ import kotlinx.coroutines.launch
  *
  * The monitor is [QuicOptions.networkMonitor] when supplied (caller-owned), else the process-shared
  * [NetworkMonitor.processDefault] (owned by whoever installed/created it) — this function never closes
- * either. On Android that shared default is functional only if the app installed a `Context` via
- * `NetworkMonitor.installAndroidContext`; without it the default is [NetworkMonitor.AlwaysAvailable],
- * whose network identity never changes, so auto-migration is a clean no-op (short-circuited below).
+ * either. On Android that shared default is reactive out of the box (`NetworkMonitorInitializer`
+ * supplies the `Context` via androidx.startup); only if an app strips that initializer and installs no
+ * `Context` itself does the default fall back to [NetworkMonitor.AlwaysAvailable], whose network
+ * identity never changes, making auto-migration a clean no-op (short-circuited below).
  *
  * Trigger contract: [NetworkId.Unidentified] emissions are filtered out (a monitor with no link
  * identity — desktop/Node — never fires, and a link momentarily vanishing is not a migrate target),

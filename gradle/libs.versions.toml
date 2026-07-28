@@ -52,6 +52,10 @@ buffer = "6.22.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
+# androidx.startup — App Startup's InitializationProvider is how :network-monitor gets the application
+# Context on Android without the app remembering to call NetworkMonitor.installAndroidContext().
+# minSdk 21 (matches ours); its consumer proguard.txt already keeps `* extends Initializer`.
+androidxStartup = "1.2.0"
 # Jazzer — coverage-guided fuzzing driver; runtime-only on the quicHeaderFuzz task, never a test dep
 jazzer = "0.30.0"
 # R8 — JVM-only offline retrace lib for :socket-quic-trace-tools (deobfuscate captured QUIC traces
@@ -71,6 +75,7 @@ kotlinx-coroutines-debug = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-
 kotlin-web = { module = "org.jetbrains.kotlin-wrappers:kotlin-web", version.ref = "kotlinWrappers" }
 kotlin-js = { module = "org.jetbrains.kotlin-wrappers:kotlin-js", version.ref = "kotlinWrappers" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
+androidx-startup-runtime = { module = "androidx.startup:startup-runtime", version.ref = "androidxStartup" }
 jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
 r8 = { module = "com.android.tools:r8", version.ref = "r8" }
 

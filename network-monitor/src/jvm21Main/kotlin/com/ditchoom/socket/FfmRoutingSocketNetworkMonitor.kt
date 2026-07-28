@@ -94,6 +94,9 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     private val _networkId = MutableStateFlow<com.ditchoom.socket.transport.NetworkId>(com.ditchoom.socket.transport.NetworkId.Unidentified)
     override val networkId: StateFlow<com.ditchoom.socket.transport.NetworkId> = _networkId.asStateFlow()
 
+    /** The whole point of the FFM subclasses: a blocking read on a routing socket, not a poll. */
+    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile

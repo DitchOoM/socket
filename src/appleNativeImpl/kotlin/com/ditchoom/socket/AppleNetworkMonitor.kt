@@ -28,6 +28,9 @@ class AppleNetworkMonitor : NetworkMonitor {
     private val _networkId = MutableStateFlow<NetworkId>(NetworkId.Unidentified)
     override val networkId: StateFlow<NetworkId> = _networkId.asStateFlow()
 
+    /** `NWPathMonitor` invokes its update handler on every path change — no interval anywhere. */
+    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+
     private val monitor = nw_helper_create_path_monitor()
 
     init {
