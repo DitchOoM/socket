@@ -14,6 +14,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowNetwork
 import org.robolectric.shadows.ShadowNetworkCapabilities
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -37,9 +38,11 @@ class AndroidNetworkMonitorRobolectricTests {
 
     @Before
     fun clearCapturedContext() {
-        // Installs are one-way by design (install once at startup), so there is no public uninstall.
-        // The holder is `internal`, which the test compilation can reach as an associate compilation.
-        applicationContext.set(null)
+        // Installs are one-way in production by design (install once at startup). These are the
+        // documented test-only escapes — the same ones downstream consumers use, so this suite
+        // exercises the seam it ships rather than reaching past it.
+        NetworkMonitor.resetAndroidContextForTesting()
+        NetworkMonitor.resetProcessDefaultForTesting()
     }
 
     // --- App Startup capture path ------------------------------------------------------------
@@ -190,6 +193,69 @@ class AndroidNetworkMonitorRobolectricTests {
     fun withNoCapturedContextThereIsNoAndroidMonitor() {
         // The precondition for socket's Android default() falling back to PollingNetworkMonitor.
         assertNull(NetworkMonitor.androidOrNull())
+    }
+
+    // --- side-effect-free configuration-time query --------------------------------------------
+
+    @Test
+    fun hasAndroidApplicationContextTracksTheCapture() {
+        assertFalse(NetworkMonitor.hasAndroidApplicationContext(), "nothing captured yet")
+
+        NetworkMonitorInitializer().create(context)
+        assertTrue(NetworkMonitor.hasAndroidApplicationContext(), "the initializer captured a Context")
+
+        NetworkMonitor.resetAndroidContextForTesting()
+        assertFalse(NetworkMonitor.hasAndroidApplicationContext(), "the reset seam must actually clear it")
+    }
+
+    @Test
+    fun hasAndroidApplicationContextRegistersNoCallback() {
+        // The entire reason this accessor exists. A consumer deciding at configuration time whether it
+        // can honour a reactive policy (../webrtc's IceRestartPolicy.OnNetworkChange) must be able to
+        // ask without building a monitor: androidOrNull()/default() would register a
+        // ConnectivityManager callback just to be read, and processDefault() would additionally cache a
+        // PollingNetworkMonitor — and its 5s coroutine — for the life of the process in the negative
+        // case. Answering must cost nothing either way.
+        NetworkMonitorInitializer().create(context)
+        val before = registeredCallbacks().size
+
+        assertTrue(NetworkMonitor.hasAndroidApplicationContext())
+        NetworkMonitor.resetAndroidContextForTesting()
+        assertFalse(NetworkMonitor.hasAndroidApplicationContext())
+
+        assertEquals(
+            before,
+            registeredCallbacks().size,
+            "querying for a captured Context must never register a NetworkCallback",
+        )
+    }
+
+    @Test
+    fun hasAndroidApplicationContextAgreesWithAndroidOrNull() {
+        // The two must never disagree: a consumer that branches on the cheap query and then builds via
+        // androidOrNull() would otherwise hit a null it was told could not happen.
+        assertEquals(NetworkMonitor.hasAndroidApplicationContext(), NetworkMonitor.androidOrNull() != null)
+
+        NetworkMonitorInitializer().create(context)
+        val monitor = NetworkMonitor.androidOrNull()
+        try {
+            assertEquals(NetworkMonitor.hasAndroidApplicationContext(), monitor != null)
+        } finally {
+            monitor?.close()
+        }
+    }
+
+    @Test
+    fun resetProcessDefaultForTestingClearsTheInstalledOverride() {
+        NetworkMonitor.installProcessDefault(NetworkMonitor.AlwaysAvailable)
+        assertNotNull(NetworkMonitor.installedProcessDefaultOrNull(), "precondition: an override is installed")
+
+        NetworkMonitor.resetProcessDefaultForTesting()
+
+        assertNull(
+            NetworkMonitor.installedProcessDefaultOrNull(),
+            "without this, whichever test installs first decides what every later test observes",
+        )
     }
 
     // --- helpers -----------------------------------------------------------------------------

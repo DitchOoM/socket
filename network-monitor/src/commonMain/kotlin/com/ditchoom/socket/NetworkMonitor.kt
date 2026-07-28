@@ -106,6 +106,23 @@ interface NetworkMonitor {
         }
 
         /**
+         * Clears the [installProcessDefault] override, restoring "no override installed".
+         *
+         * **Test-only.** Installing is one-way by design — an app installs once at startup and every
+         * subsystem shares that instance — so there is deliberately no production "uninstall". But a
+         * process-global with no way back makes the *absence* case untestable: whichever test ran first
+         * decides what every later test observes, and a suite that wants to exercise the un-installed
+         * path has no way to reach it. Downstream consumers were resorting to reflection over this
+         * module's internals, which breaks silently on a rename — no compile error, just a test that
+         * stops testing anything.
+         *
+         * Does **not** close the monitor being dropped; the caller owns it, as with [installProcessDefault].
+         */
+        fun resetProcessDefaultForTesting() {
+            installed = null
+        }
+
+        /**
          * The [installProcessDefault] override, or `null` if none was installed. Read by
          * `NetworkMonitor.processDefault()` (an extension in the owning platform module, `:socket`),
          * which falls back to the shared platform `NetworkMonitor.default()` when this is `null`.
