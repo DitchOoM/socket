@@ -32,8 +32,9 @@ import androidx.startup.Initializer
  * </provider>
  * ```
  *
- * With it removed, `NetworkMonitor.default()` falls back to [NetworkMonitor.AlwaysAvailable] unless the
- * app supplies a context itself via [NetworkMonitor.Companion.installAndroidApplicationContext] or
+ * With it removed, `NetworkMonitor.default()` falls back to [PollingNetworkMonitor] — late but true,
+ * and it reports [MonitorMechanism.Polled] so the degradation is visible at configuration time — unless
+ * the app supplies a context itself via [NetworkMonitor.Companion.installAndroidApplicationContext] or
  * installs a monitor via [NetworkMonitor.Companion.installAndroidContext].
  */
 class NetworkMonitorInitializer : Initializer<Context> {

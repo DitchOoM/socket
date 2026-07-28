@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference
  * Holding the *application* context (never an Activity) is what makes a process-lifetime static safe
  * here: it is already a process singleton, so this leaks nothing that the process does not own.
  */
-private val applicationContext = AtomicReference<Context?>(null)
+internal val applicationContext = AtomicReference<Context?>(null)
 
 /**
  * Records the application [Context] that [NetworkMonitor.Companion.androidOrNull] (and therefore

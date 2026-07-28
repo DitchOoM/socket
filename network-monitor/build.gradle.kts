@@ -145,6 +145,11 @@ kotlin {
         androidUnitTest.dependencies {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.test)
+            // Robolectric: run the Android monitor against the real framework classes on the host JVM.
+            // Without it the only signal for AndroidNetworkMonitor / NetworkMonitorInitializer is the
+            // emulator lane — one API-29 job that also boots an AVD and builds the quiche NDK libs, and
+            // that cannot reach the API<23 networkHandle branch or the stripped-permission path at all.
+            implementation(libs.robolectric)
         }
     }
 }
@@ -236,6 +241,16 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    // Robolectric needs the merged manifest + resources on the unit-test classpath; without
+    // isIncludeAndroidResources it cannot resolve the application under test. returnDefaultValues keeps
+    // any framework call we have NOT shadowed from throwing "not mocked" and masking the real assertion.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
     }
 
     publishing {
