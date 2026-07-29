@@ -75,10 +75,13 @@ internal object Libc {
 
 /**
  * Base for the desktop-JVM reactive [NetworkMonitor]s that block on a kernel
- * routing socket via FFM and re-derive availability from [NetworkInterface].
+ * routing socket via FFM and re-resolve state with [resolveJvmNetworkState].
  *
  * Subclasses only supply the platform routing socket ([openRoutingSocket]); the
- * event loop, threading, and availability check are shared.
+ * event loop, threading, and state resolution are shared. The resolution itself lives in
+ * `commonJvmMain` as a single `public` function rather than being mirrored here — this compilation is a
+ * separate Kotlin module, and the copies that arrangement used to force had already drifted into three
+ * near-identical route parsers.
  *
  * Lifetime: the recv-loop coroutine owns the native scratch buffer (its own [Arena],
  * closed in `finally` on the coroutine's own thread). [close] merely closes the fd,
@@ -88,14 +91,16 @@ internal object Libc {
  * it throws `IllegalStateException: Session is acquired`.
  */
 abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
-    private val _availability = MutableStateFlow(NetworkAvailability.UNKNOWN)
-    override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
+    private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
+    override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
-    private val _networkId = MutableStateFlow<com.ditchoom.socket.transport.NetworkId>(com.ditchoom.socket.transport.NetworkId.Unidentified)
-    override val networkId: StateFlow<com.ditchoom.socket.transport.NetworkId> = _networkId.asStateFlow()
-
-    /** The whole point of the FFM subclasses: a blocking read on a routing socket, not a poll. */
-    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+    /**
+     * The whole point of the FFM subclasses: a blocking read on a routing socket, not a poll — and
+     * [ReachResolution.RouteOnly], because the routing socket says which link carries the default route
+     * and nothing at all about whether traffic reaches the internet.
+     */
+    override val capability: MonitorCapability =
+        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly)
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -110,8 +115,7 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     protected abstract fun openRoutingSocket(): Int
 
     protected fun start() {
-        _availability.value = checkInterfaces()
-        _networkId.value = currentPrimaryNetworkId()
+        _state.value = resolveJvmNetworkState()
         fd = openRoutingSocket()
         if (fd < 0) return
 
@@ -126,8 +130,7 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
                     while (isActive) {
                         val n = Libc.recv(localFd, scratch, RECV_BUFFER_SIZE.toLong(), 0)
                         if (n <= 0L) break
-                        _availability.value = checkInterfaces()
-                        _networkId.value = currentPrimaryNetworkId()
+                        _state.value = resolveJvmNetworkState()
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -149,93 +152,6 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
 
     private companion object {
         private const val RECV_BUFFER_SIZE = 4096
-
-        /**
-         * Portable availability check: at least one non-loopback interface is up.
-         * Identical semantics to [PollingNetworkMonitor.defaultCheck].
-         */
-        fun checkInterfaces(): NetworkAvailability =
-            try {
-                val hasUp =
-                    NetworkInterface
-                        .getNetworkInterfaces()
-                        ?.toList()
-                        ?.any { !it.isLoopback && it.isUp } == true
-                if (hasUp) NetworkAvailability.AVAILABLE else NetworkAvailability.UNAVAILABLE
-            } catch (_: Exception) {
-                NetworkAvailability.UNKNOWN
-            }
-
-        /**
-         * Route-aware primary-link identity from the interface scan. Identical semantics to the
-         * desktop-JVM `currentPrimaryNetworkId` (duplicated here because the java21 compilation cannot
-         * see commonJvmMain internals — same reason [checkInterfaces] mirrors [PollingNetworkMonitor]):
-         * on Linux prefer the `/proc/net/route` default-route interface (so bridges/containers don't
-         * win over the real uplink), else the lowest-index up, non-loopback, non-virtual interface.
-         */
-        fun currentPrimaryNetworkId(): com.ditchoom.socket.transport.NetworkId =
-            try {
-                val primary = routeAwarePrimaryInterface() ?: firstUpNonLoopbackLowestIndex()
-                if (primary == null) {
-                    com.ditchoom.socket.transport.NetworkId.Unidentified
-                } else {
-                    val idx = primary.index
-                    val handle = if (idx >= 0) idx.toLong() else primary.name.hashCode().toLong()
-                    com.ditchoom.socket.transport.NetworkId
-                        .Link(
-                            com.ditchoom.socket.transport.NetworkKind
-                                .Other(primary.name),
-                            handle,
-                        )
-                }
-            } catch (_: Exception) {
-                com.ditchoom.socket.transport.NetworkId.Unidentified
-            }
-
-        private fun routeAwarePrimaryInterface(): NetworkInterface? {
-            if (!IS_LINUX) return null
-            val name =
-                runCatching {
-                    val f = java.io.File("/proc/net/route")
-                    if (f.canRead()) parseDefaultRouteInterface(f.readText()) else null
-                }.getOrNull() ?: return null
-            return runCatching { NetworkInterface.getByName(name) }
-                .getOrNull()
-                ?.takeIf { !it.isLoopback && it.isUp }
-        }
-
-        private fun firstUpNonLoopbackLowestIndex(): NetworkInterface? =
-            NetworkInterface
-                .getNetworkInterfaces()
-                ?.asSequence()
-                ?.filter { !it.isLoopback && it.isUp && !it.isVirtual }
-                ?.minByOrNull {
-                    val i = it.index
-                    if (i >= 0) i else Int.MAX_VALUE
-                }
-
-        /** Pure mirror of `LinuxNetworkMonitor.parseDefaultRouteInterface` (see the commonJvmMain twin). */
-        private fun parseDefaultRouteInterface(routeTable: String): String? =
-            routeTable
-                .lineSequence()
-                .drop(1)
-                .mapNotNull { line ->
-                    val cols = line.trim().split(ROUTE_WHITESPACE)
-                    if (cols.size < 8) return@mapNotNull null
-                    val flags = cols[3].toIntOrNull(16) ?: 0
-                    if (cols[1] != "00000000" || (flags and RTF_UP_FLAG) == 0) return@mapNotNull null
-                    cols[0] to (cols[6].toIntOrNull() ?: Int.MAX_VALUE)
-                }.minByOrNull { it.second }
-                ?.first
-
-        private val IS_LINUX: Boolean =
-            System
-                .getProperty("os.name")
-                .orEmpty()
-                .lowercase()
-                .contains("linux")
-        private val ROUTE_WHITESPACE = Regex("""\s+""")
-        private const val RTF_UP_FLAG = 0x0001
     }
 }
 

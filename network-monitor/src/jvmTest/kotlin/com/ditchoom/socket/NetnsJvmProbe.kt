@@ -90,15 +90,15 @@ fun main() {
     )
 
     // jvm21Main FFM path: NetlinkNetworkMonitor opens an AF_NETLINK route socket and seeds networkId
-    // synchronously in start() (before the blocking recv loop), from its own route-aware companion — so
+    // synchronously in start() (before the blocking recv loop), from the shared route-aware resolver — so
     // reading .value straight after construction is race-free. close() unblocks/tears down the socket.
     val monitor = NetlinkNetworkMonitor()
     try {
         assertResolvesTo(
-            monitor.networkId.value,
+            monitor.state.value.networkId,
             iface,
             expectIdx,
-            via = "NetlinkNetworkMonitor.networkId (jvm21 FFM)",
+            via = "NetlinkNetworkMonitor.state.networkId (jvm21 FFM)",
         )
     } finally {
         monitor.close()

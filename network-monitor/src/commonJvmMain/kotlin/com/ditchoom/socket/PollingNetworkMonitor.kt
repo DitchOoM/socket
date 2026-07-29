@@ -15,34 +15,32 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * JVM [NetworkMonitor] that polls [NetworkInterface.getNetworkInterfaces].
+ * JVM [NetworkMonitor] that polls [NetworkInterface.getNetworkInterfaces] plus a packet-free route probe
+ * ([resolveJvmNetworkState]). Polling is the only portable option on JVM desktop below JDK 21 — no
+ * event-driven network-change API exists in the JDK before FFM.
  *
- * Reports [NetworkAvailability.AVAILABLE] when at least one non-loopback
- * interface is up. Polling is the only portable option on JVM desktop
- * (no event-driven network change API exists in the JDK).
+ * Reports [ReachResolution.RouteOnly]: it distinguishes [NetworkState.LinkLocal] from
+ * [NetworkState.Routable], and never observes internet reachability.
  *
- * @param interval How often to check network interfaces (default 5 seconds).
- * @param checkNetwork Injectable check function for testing.
+ * @param interval How often to re-resolve the network state (default 5 seconds).
+ * @param checkNetwork Injectable resolver, for testing without touching real interfaces.
  */
 class PollingNetworkMonitor(
     private val interval: Duration = 5.seconds,
-    private val checkNetwork: () -> NetworkAvailability = Companion::defaultCheck,
+    private val checkNetwork: () -> NetworkState = ::resolveJvmNetworkState,
 ) : NetworkMonitor {
-    private val _availability = MutableStateFlow(NetworkAvailability.UNKNOWN)
-    override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
+    private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
+    override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
-    private val _networkId = MutableStateFlow<com.ditchoom.socket.transport.NetworkId>(com.ditchoom.socket.transport.NetworkId.Unidentified)
-    override val networkId: StateFlow<com.ditchoom.socket.transport.NetworkId> = _networkId.asStateFlow()
-
-    override val mechanism: MonitorMechanism = MonitorMechanism.Polled(interval)
+    override val capability: MonitorCapability =
+        MonitorCapability(MonitorMechanism.Polled(interval), ReachResolution.RouteOnly)
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     init {
         scope.launch {
             while (isActive) {
-                _availability.value = checkNetwork()
-                _networkId.value = currentPrimaryNetworkId()
+                _state.value = checkNetwork()
                 delay(interval)
             }
         }
@@ -50,20 +48,6 @@ class PollingNetworkMonitor(
 
     override fun close() {
         scope.cancel()
-    }
-
-    companion object {
-        internal fun defaultCheck(): NetworkAvailability =
-            try {
-                val hasUp =
-                    NetworkInterface
-                        .getNetworkInterfaces()
-                        ?.toList()
-                        ?.any { !it.isLoopback && it.isUp } == true
-                if (hasUp) NetworkAvailability.AVAILABLE else NetworkAvailability.UNAVAILABLE
-            } catch (_: Exception) {
-                NetworkAvailability.UNKNOWN
-            }
     }
 }
 
