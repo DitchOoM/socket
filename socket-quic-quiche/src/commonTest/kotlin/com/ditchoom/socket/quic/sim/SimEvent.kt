@@ -1,8 +1,7 @@
 package com.ditchoom.socket.quic.sim
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.transport.NetworkId
 import kotlin.time.Duration
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
@@ -17,8 +16,7 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  * | [DatagramIn]    | [TimelineUdpChannel] (the driver's `UdpChannel`) |
  * | [SendError]     | [TimelineUdpChannel] — thrown from the next `send()` |
  * | [RecvError]     | [TimelineUdpChannel] — surfaces from the (parked) `receive()` |
- * | [Availability]  | [SimNetworkMonitor.set] |
- * | [Network]       | [SimNetworkMonitor.setNetworkId] |
+ * | [Net]           | [SimNetworkMonitor.set] |
  * | [Liveness]      | [SimLiveness] scripted probe queue |
  *
  * `ClockAdvance` is implicit: the interpreter advances the virtual clock between events, so a
@@ -54,16 +52,16 @@ internal sealed interface SimEvent {
         val error: SimError,
     ) : SimEvent
 
-    /** A scripted `NetworkMonitor.availability` emission. */
-    data class Availability(
+    /**
+     * A scripted `NetworkMonitor.state` emission — the migration/reconnect-race trigger (#222 shape).
+     *
+     * One event, because the monitor has one flow. The former `Availability`/`Network` pair could
+     * script an incoherent pair (an unavailable network with a live identity) that no real monitor can
+     * produce — the torn read RFC_NETWORK_REACHABILITY §1.2 removed from the contract.
+     */
+    data class Net(
         override val at: Duration,
-        val value: NetworkAvailability,
-    ) : SimEvent
-
-    /** A scripted `NetworkMonitor.networkId` emission — the reconnect-race trigger (#222 shape). */
-    data class Network(
-        override val at: Duration,
-        val id: NetworkId,
+        val state: NetworkState,
     ) : SimEvent
 
     /** Script the outcome of the **next** liveness probe (the #222 seam). */

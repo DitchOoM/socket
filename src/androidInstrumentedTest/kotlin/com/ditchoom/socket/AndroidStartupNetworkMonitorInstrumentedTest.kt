@@ -38,12 +38,13 @@ class AndroidStartupNetworkMonitorInstrumentedTest {
                 monitor is AndroidNetworkMonitor,
             )
             // The seam ../webrtc branches on for IceRestartPolicy.OnNetworkChange. Asserting the
-            // concrete class above is not enough: the mechanism is what consumers actually read, and it
-            // must agree with what was wired. Polled here would mean the initializer never ran.
+            // concrete class above is not enough: the capability is what consumers actually read, and it
+            // must agree with what was wired. Polled here would mean the initializer never ran, and a
+            // resolution below RouteAndInternet would mean the ladder never reached the device.
             assertEquals(
-                "a ConnectivityManager-backed monitor must report itself as pushed, not polled",
-                MonitorMechanism.PlatformSignalled,
-                monitor.mechanism,
+                "a ConnectivityManager-backed monitor must report itself as pushed and fully resolving",
+                MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+                monitor.capability,
             )
         } finally {
             monitor.close()
@@ -56,15 +57,23 @@ class AndroidStartupNetworkMonitorInstrumentedTest {
         // activeNetwork must say so — the assertion that it is genuinely wired, not merely constructed.
         val monitor = NetworkMonitor.default()
         try {
-            assertNotNull(monitor.availability.value)
+            val state = monitor.state.value
             assertTrue(
-                "a constructed AndroidNetworkMonitor must seed a resolved availability, was " +
-                    "${monitor.availability.value}",
-                monitor.availability.value != NetworkAvailability.UNKNOWN,
+                "a constructed AndroidNetworkMonitor must seed a resolved state, was $state",
+                state != NetworkState.Unknown,
+            )
+            assertTrue(
+                "the emulator has a working network, so the seeded state must carry a link, was $state",
+                state is NetworkState.Up,
             )
             // The emulator's link is Wi-Fi or Ethernet depending on image/AVD config, so assert the
             // identity resolved at all rather than pinning a kind.
-            assertNotNull(monitor.networkId.value as NetworkId?)
+            assertNotNull(state.networkId as NetworkId?)
+            // Whatever rung the emulator lands on, it must be one this monitor's capability permits.
+            assertTrue(
+                "AndroidNetworkMonitor declares ${monitor.capability.resolution} but published $state",
+                monitor.capability.resolution.permits(state),
+            )
         } finally {
             monitor.close()
         }

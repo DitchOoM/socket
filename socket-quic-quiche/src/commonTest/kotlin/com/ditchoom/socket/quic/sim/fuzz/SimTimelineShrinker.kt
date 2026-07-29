@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.sim.fuzz
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.sim.SimEvent
 import com.ditchoom.socket.quic.sim.SimFixture
 import com.ditchoom.socket.transport.NetworkId
@@ -81,13 +82,27 @@ private fun renderEvent(event: SimEvent): String {
         is SimEvent.DatagramIn -> "$at datagramIn \"${event.payloadHex}\""
         is SimEvent.SendError -> "$at sendError SimError(\"${event.error.message}\")"
         is SimEvent.RecvError -> "$at recvError SimError(\"${event.error.message}\")"
-        is SimEvent.Availability -> "$at availability NetworkAvailability.${availabilityName(event.value)}"
-        is SimEvent.Network -> "$at network ${networkIdLiteral(event.id)}"
+        is SimEvent.Net -> "$at net ${networkStateLiteral(event.state)}"
         is SimEvent.Liveness -> "$at liveness Liveness.Result.${event.result.name}"
     }
 }
 
-private fun availabilityName(value: NetworkAvailability): String = value.name
+/**
+ * A re-pasteable Kotlin literal for a scripted state. Only the rungs the generator draws are rendered
+ * as themselves; anything else falls back to `toString()`, which is still readable in a shrunk repro.
+ */
+private fun networkStateLiteral(state: NetworkState): String =
+    when (state) {
+        NetworkState.Offline -> "NetworkState.Offline"
+        NetworkState.Unknown -> "NetworkState.Unknown"
+        is NetworkState.LinkLocal -> "NetworkState.LinkLocal(${networkIdLiteral(state.id)})"
+        is NetworkState.Routable ->
+            if (state.internet == InternetAccess.Unobserved) {
+                "NetworkState.Routable(${networkIdLiteral(state.id)}, InternetAccess.Unobserved)"
+            } else {
+                "NetworkState.Routable(${networkIdLiteral(state.id)}, ${state.internet})"
+            }
+    }
 
 private fun networkIdLiteral(id: NetworkId): String =
     when (id) {

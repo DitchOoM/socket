@@ -61,7 +61,10 @@ class AndroidNetworkMonitorRobolectricTests {
         val monitor = assertNotNull(NetworkMonitor.androidOrNull(), "the initializer must make a monitor buildable")
         try {
             assertIs<AndroidNetworkMonitor>(monitor)
-            assertEquals(MonitorMechanism.PlatformSignalled, monitor.mechanism)
+            assertEquals(
+                MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+                monitor.capability,
+            )
         } finally {
             monitor.close()
         }
@@ -132,25 +135,91 @@ class AndroidNetworkMonitorRobolectricTests {
     // --- Callback state machine --------------------------------------------------------------
 
     @Test
-    fun onCapabilitiesChangedPublishesAvailabilityAndATypedLinkIdentity() {
+    fun onCapabilitiesChangedPublishesOneCoherentStateWithATypedLinkIdentity() {
         withMonitor { monitor, callback ->
             callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi())
 
-            assertEquals(NetworkAvailability.AVAILABLE, monitor.availability.value)
-            val id = monitor.networkId.value
-            assertIs<NetworkId.Link>(id)
-            assertEquals(NetworkKind.Wifi, id.kind)
+            // INTERNET without VALIDATED is the ~1s validation window, not "online" — the §1.1 fix.
+            val state = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Pending, state.internet)
+            assertTrue(state.canRouteOffLink, "the validation window is still worth attempting")
+            assertTrue(state.isTransient, "…but a consumer must wait it out rather than tear down")
+            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(state.id).kind)
         }
     }
 
     @Test
-    fun capabilitiesWithoutInternetReportUnavailable() {
+    fun validatedCapabilitiesConfirmReachability() {
+        withMonitor { monitor, callback ->
+            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi(validated = true))
+
+            val state = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Confirmed, state.internet)
+            assertFalse(state.isTransient, "a validated network has nothing left to resolve")
+        }
+    }
+
+    @Test
+    fun capabilitiesWithoutInternetAreLinkLocalNotOffline() {
         withMonitor { monitor, callback ->
             callback.onCapabilitiesChanged(
                 ShadowNetwork.newInstance(NET_ID),
                 capabilities(NetworkCapabilities.TRANSPORT_WIFI, internet = false),
             )
-            assertEquals(NetworkAvailability.UNAVAILABLE, monitor.availability.value)
+            // A link with no INTERNET capability still carries mDNS/multicast — LinkLocal, not Offline,
+            // and it keeps its identity so a path-change consumer still sees the right link.
+            val state = assertIs<NetworkState.LinkLocal>(monitor.state.value)
+            assertFalse(state.canRouteOffLink)
+            assertTrue(state.supportsLinkLocal)
+            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(state.id).kind)
+        }
+    }
+
+    @Test
+    @Config(sdk = [Build.VERSION_CODES.P])
+    fun aSuspendedLinkIsTransientNotOffline() {
+        // NOT_SUSPENDED is API 28+ and its ABSENCE is the signal. A suspended cellular link keeps
+        // INTERNET and passes nothing; the pre-RFC monitor ignored the bit entirely and reported it as
+        // plain "available" (Chromium hit the same thing — crbug.com/1120144).
+        withMonitor { monitor, callback ->
+            callback.onCapabilitiesChanged(
+                ShadowNetwork.newInstance(NET_ID),
+                capabilities(NetworkCapabilities.TRANSPORT_CELLULAR, validated = true, notSuspended = false),
+            )
+
+            val state = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Blocked(BlockReason.Suspended), state.internet)
+            assertTrue(state.isTransient, "a suspended link resolves on its own — wait, do not tear down")
+            assertFalse(state.canRouteOffLink)
+            assertFalse(state.needsUserAction)
+        }
+    }
+
+    /**
+     * Below API 28 the bit does not exist, and defaulting it to `false` would report every pre-28 device
+     * as permanently suspended.
+     */
+    @Test
+    @Config(sdk = [Build.VERSION_CODES.N_MR1])
+    fun beforeApi28TheAbsentNotSuspendedBitIsNotReadAsSuspended() {
+        withMonitor { monitor, callback ->
+            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi(validated = true))
+
+            val state = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Confirmed, state.internet)
+        }
+    }
+
+    @Test
+    fun aCaptivePortalNeedsUserActionRatherThanARetry() {
+        withMonitor { monitor, callback ->
+            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), portal())
+
+            val state = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Blocked(BlockReason.CaptivePortal), state.internet)
+            assertTrue(state.needsUserAction, "retrying a portal-intercepted network is futile")
+            assertFalse(state.canRouteOffLink)
+            assertFalse(state.isTransient)
         }
     }
 
@@ -171,14 +240,12 @@ class AndroidNetworkMonitorRobolectricTests {
             callback.onCapabilitiesChanged(new, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR))
             callback.onLost(old)
 
-            assertEquals(
-                NetworkAvailability.AVAILABLE,
-                monitor.availability.value,
-                "a late onLost for the superseded network must not clear the current one",
+            val state = monitor.state.value
+            assertTrue(
+                state.canRouteOffLink,
+                "a late onLost for the superseded network must not clear the current one, was $state",
             )
-            val id = monitor.networkId.value
-            assertIs<NetworkId.Link>(id)
-            assertEquals(NetworkKind.Cellular, id.kind)
+            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(state.networkId).kind)
         }
     }
 
@@ -198,13 +265,13 @@ class AndroidNetworkMonitorRobolectricTests {
             callback.onAvailable(cellular)
             callback.onCapabilitiesChanged(cellular, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR))
 
-            assertEquals(NetworkAvailability.AVAILABLE, monitor.availability.value)
-            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(monitor.networkId.value).kind)
+            assertTrue(monitor.state.value.canRouteOffLink)
+            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(monitor.state.value.networkId).kind)
 
             // Now genuine total loss.
             callback.onLost(cellular)
-            assertEquals(NetworkAvailability.UNAVAILABLE, monitor.availability.value)
-            assertEquals(NetworkId.Unidentified, monitor.networkId.value)
+            assertEquals(NetworkState.Offline, monitor.state.value)
+            assertEquals(NetworkId.Unidentified, monitor.state.value.networkId)
         }
     }
 
@@ -231,30 +298,59 @@ class AndroidNetworkMonitorRobolectricTests {
                 vpn,
                 capabilitiesOver(NetworkCapabilities.TRANSPORT_VPN, NetworkCapabilities.TRANSPORT_WIFI),
             )
-            assertIs<NetworkKind.Vpn>(assertIs<NetworkId.Link>(monitor.networkId.value).kind)
+            assertIs<NetworkKind.Vpn>(assertIs<NetworkId.Link>(monitor.state.value.networkId).kind)
 
             // VPN drops; the default reverts to the still-live Wi-Fi.
             callback.onAvailable(wifiNetwork)
             callback.onCapabilitiesChanged(wifiNetwork, wifi())
 
-            assertEquals(
-                NetworkAvailability.AVAILABLE,
-                monitor.availability.value,
+            assertTrue(
+                monitor.state.value.canRouteOffLink,
                 "Wi-Fi is still up — the monitor must not report the device offline",
             )
-            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(monitor.networkId.value).kind)
+            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(monitor.state.value.networkId).kind)
         }
     }
 
     @Test
-    fun onLostForTheCurrentNetworkClearsAvailabilityAndIdentity() {
+    fun onLostForTheCurrentNetworkPublishesOfflineWhichCarriesNoIdentity() {
         withMonitor { monitor, callback ->
             val network = ShadowNetwork.newInstance(NET_ID)
             callback.onCapabilitiesChanged(network, wifi())
             callback.onLost(network)
 
-            assertEquals(NetworkAvailability.UNAVAILABLE, monitor.availability.value)
-            assertEquals(NetworkId.Unidentified, monitor.networkId.value)
+            // One value, so a dead link's identity cannot survive the loss: Offline structurally has none.
+            assertEquals(NetworkState.Offline, monitor.state.value)
+            assertEquals(NetworkId.Unidentified, monitor.state.value.networkId)
+        }
+    }
+
+    @Test
+    fun everyPublishedStateIsOneTheDeclaredCapabilityPermits() {
+        withMonitor { monitor, callback ->
+            val network = ShadowNetwork.newInstance(NET_ID)
+            val seen = mutableListOf<NetworkState>()
+
+            fun record() = seen.add(monitor.state.value)
+
+            record()
+            callback.onCapabilitiesChanged(network, wifi())
+            record()
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            record()
+            callback.onCapabilitiesChanged(network, portal())
+            record()
+            callback.onCapabilitiesChanged(network, capabilities(NetworkCapabilities.TRANSPORT_WIFI, internet = false))
+            record()
+            callback.onLost(network)
+            record()
+
+            seen.forEach {
+                assertTrue(
+                    monitor.capability.resolution.permits(it),
+                    "AndroidNetworkMonitor declares ${monitor.capability.resolution} but published $it",
+                )
+            }
         }
     }
 
@@ -348,22 +444,44 @@ class AndroidNetworkMonitorRobolectricTests {
         }
     }
 
-    private fun wifi(): NetworkCapabilities = capabilities(NetworkCapabilities.TRANSPORT_WIFI)
+    private fun wifi(validated: Boolean = false): NetworkCapabilities =
+        capabilities(NetworkCapabilities.TRANSPORT_WIFI, validated = validated)
+
+    /** Wi-Fi behind a captive portal — and also VALIDATED, which some builds really do report. */
+    private fun portal(): NetworkCapabilities =
+        capabilities(NetworkCapabilities.TRANSPORT_WIFI, validated = true).also {
+            shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
+        }
 
     /** Capabilities carrying more than one transport, as a VPN over a physical link does. */
     private fun capabilitiesOver(vararg transports: Int): NetworkCapabilities =
         ShadowNetworkCapabilities.newInstance().also {
             transports.forEach { transport -> shadowOf(it).addTransportType(transport) }
             shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+            }
         }
 
+    /**
+     * A capabilities object shaped like a real one. [notSuspended] defaults to `true` because that is
+     * what every working Android network reports and its **absence** is the suspended signal — a shadow
+     * that omitted it would make every test below see `Blocked(Suspended)`. The bit only exists from
+     * API 28, so it is only set where the platform has it (below that the monitor hardcodes `true`).
+     */
     private fun capabilities(
         transport: Int,
         internet: Boolean = true,
+        validated: Boolean = false,
+        notSuspended: Boolean = true,
     ): NetworkCapabilities =
         ShadowNetworkCapabilities.newInstance().also {
             shadowOf(it).addTransportType(transport)
             if (internet) shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            if (validated) shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            if (notSuspended && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+            }
         }
 
     private companion object {

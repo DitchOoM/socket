@@ -98,7 +98,7 @@ class AutoMigrationReactorTests {
 
     @Test
     fun disableActiveMigrationNeverObserves() {
-        val monitor = SimNetworkMonitor(initialNetworkId = wifi)
+        val monitor = SimNetworkMonitor.on(wifi)
         runReactor(monitor, disableActiveMigration = true) { conn ->
             monitor.setNetworkId(cellular)
             assertEquals(0, conn.migrateCount, "disableActiveMigration must not react to network changes")
@@ -107,7 +107,7 @@ class AutoMigrationReactorTests {
 
     @Test
     fun autoMigrateDisabledNeverObserves() {
-        val monitor = SimNetworkMonitor(initialNetworkId = wifi)
+        val monitor = SimNetworkMonitor.on(wifi)
         runReactor(monitor, autoMigrate = false) { conn ->
             monitor.setNetworkId(cellular)
             assertEquals(0, conn.migrateCount, "autoMigrateOnNetworkChange=false must not react")
@@ -128,7 +128,7 @@ class AutoMigrationReactorTests {
 
     @Test
     fun firstIdentifiedLinkIsBaselineNotAMigration() {
-        val monitor = SimNetworkMonitor(initialNetworkId = NetworkId.Unidentified)
+        val monitor = SimNetworkMonitor.on(NetworkId.Unidentified)
         runReactor(monitor) { conn ->
             // The first *identified* link after connect is the baseline the connection already lives on.
             monitor.setNetworkId(wifi)
@@ -141,7 +141,7 @@ class AutoMigrationReactorTests {
 
     @Test
     fun distinctLinkChangeMigratesWithEphemeralDefaults() {
-        val monitor = SimNetworkMonitor(initialNetworkId = wifi)
+        val monitor = SimNetworkMonitor.on(wifi)
         runReactor(monitor) { conn ->
             monitor.setNetworkId(cellular)
             assertEquals(1, conn.migrateCount)
@@ -152,7 +152,7 @@ class AutoMigrationReactorTests {
 
     @Test
     fun unidentifiedEmissionsAreIgnored() {
-        val monitor = SimNetworkMonitor(initialNetworkId = wifi)
+        val monitor = SimNetworkMonitor.on(wifi)
         runReactor(monitor) { conn ->
             // A link momentarily vanishing (Unidentified) is not a migrate target and is not a baseline.
             monitor.setNetworkId(NetworkId.Unidentified)
@@ -164,7 +164,7 @@ class AutoMigrationReactorTests {
 
     @Test
     fun everyDistinctHandoffMigrates() {
-        val monitor = SimNetworkMonitor(initialNetworkId = wifi)
+        val monitor = SimNetworkMonitor.on(wifi)
         runReactor(monitor) { conn ->
             monitor.setNetworkId(cellular)
             monitor.setNetworkId(ethernet)
@@ -174,7 +174,7 @@ class AutoMigrationReactorTests {
 
     @Test
     fun unsupportedBackendStopsObservingAfterFirstAttempt() {
-        val monitor = SimNetworkMonitor(initialNetworkId = wifi)
+        val monitor = SimNetworkMonitor.on(wifi)
         runReactor(monitor, migrateResult = MigrationResult.Unsupported) { conn ->
             monitor.setNetworkId(cellular)
             assertEquals(1, conn.migrateCount)

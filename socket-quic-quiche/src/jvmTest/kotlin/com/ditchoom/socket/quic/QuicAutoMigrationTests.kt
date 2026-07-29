@@ -74,7 +74,7 @@ class QuicAutoMigrationTests {
                     // Baseline link the client "connected on" — Wi-Fi. The reactor drops this as the
                     // connect-time baseline; only a *later* distinct link triggers migration.
                     val monitor =
-                        SimNetworkMonitor(initialNetworkId = NetworkId.Link(NetworkKind.Wifi, 1L))
+                        SimNetworkMonitor.on(NetworkId.Link(NetworkKind.Wifi, 1L))
                     val clientOptions =
                         QuicOptions(
                             alpnProtocols = listOf("test"),

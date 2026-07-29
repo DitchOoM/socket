@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.sim.fixtures
 
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.sim.SimFixture
 import com.ditchoom.socket.quic.sim.simFixture
 import com.ditchoom.socket.transport.NetworkId
@@ -51,7 +53,7 @@ internal val idleTimeoutClose: SimFixture =
 internal val datagramThenStalePath: SimFixture =
     simFixture("datagram-then-stale-path") {
         at(Duration.ZERO) datagramIn "0102030405060708"
-        at(3.seconds) network NetworkId.KindOnly(NetworkKind.Cellular)
+        at(3.seconds) net NetworkState.Routable(NetworkId.KindOnly(NetworkKind.Cellular), InternetAccess.Unobserved)
         at(3.seconds + 5.milliseconds) datagramIn "a1a2a3a4a5a6"
         runFor(4.seconds)
     }

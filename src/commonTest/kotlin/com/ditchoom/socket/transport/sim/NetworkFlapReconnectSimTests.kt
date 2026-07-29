@@ -4,7 +4,7 @@ package com.ditchoom.socket.transport.sim
 
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
@@ -12,6 +12,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.CodecConnection
 import com.ditchoom.socket.transport.MemoryTransport
 import com.ditchoom.socket.transport.MockNetworkMonitor
+import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.ReconnectingConnection
 import com.ditchoom.socket.transport.TestStringCodec
 import com.ditchoom.socket.transport.sim.fixtures.networkFlapReconnect
@@ -33,7 +34,7 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * The `network-flap-reconnect` golden (W2 fixture 3) at the [ReconnectingConnection] tier — no
- * quiche anywhere. The timeline engine injects the `networkId` flap; the trace oracle asserts the
+ * quiche anywhere. The timeline engine injects the path flap; the trace oracle asserts the
  * backoff-cut trajectory and the 50× determinism loop pins it run-over-run.
  */
 class NetworkFlapReconnectSimTests {
@@ -50,9 +51,10 @@ class NetworkFlapReconnectSimTests {
     private suspend fun TestScope.runNetworkFlapReconnect(): SimTrace {
         val t0 = testScheduler.currentTime
         val trace = SimTrace { (testScheduler.currentTime - t0).milliseconds }
-        // UNAVAILABLE throughout: the availability->resetBackoff path never fires; only the
-        // networkId change can cut the 60s backoff short (same setup as the classic test).
-        val monitor = MockNetworkMonitor(NetworkAvailability.UNAVAILABLE)
+        // LinkLocal throughout: canRouteOffLink stays false, so the reachability->resetBackoff path
+        // never fires and only the identity change can cut the 60s backoff short (same setup as the
+        // classic test).
+        val monitor = MockNetworkMonitor(NetworkState.LinkLocal(NetworkId.Unidentified))
         var connectCount = 0
         val conn =
             ReconnectingConnection(
@@ -78,7 +80,7 @@ class NetworkFlapReconnectSimTests {
             conn.state.collect { trace.record(Observed.StateChange(trace.now(), describeConnectionState(it))) }
         }
         simScope.launch {
-            monitor.networkId.drop(1).collect { trace.record(Observed.NetworkChanged(trace.now(), it)) }
+            monitor.state.drop(1).collect { trace.record(Observed.NetworkChanged(trace.now(), it)) }
         }
         testScheduler.runCurrent() // collectors subscribed before the connection starts
 
@@ -118,7 +120,7 @@ class NetworkFlapReconnectSimTests {
             // Recorded per RFC §5 item 2 — the flap itself is visible in the trace at its instant.
             assertTrue(
                 trace.events.any { it is Observed.NetworkChanged && it.at == 1.seconds },
-                "the networkId flap must be recorded at t=1s\n${trace.render()}",
+                "the path flap must be recorded at t=1s\n${trace.render()}",
             )
         }
 

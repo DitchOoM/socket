@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.sim.fuzz
 
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.sim.SimEvent
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -72,8 +73,14 @@ class SimFuzzSmokeTests {
         assertTrue(all.any { it is SimEvent.DatagramIn }, "corpus generated no datagrams")
         assertTrue(all.any { it is SimEvent.SendError }, "corpus generated no send errors")
         assertTrue(all.any { it is SimEvent.RecvError }, "corpus generated no recv errors")
-        assertTrue(all.any { it is SimEvent.Availability }, "corpus generated no availability flaps")
-        assertTrue(all.any { it is SimEvent.Network }, "corpus generated no networkId changes")
+        assertTrue(
+            all.any { it is SimEvent.Net && it.state == NetworkState.Offline },
+            "corpus generated no reachability flaps",
+        )
+        assertTrue(
+            all.any { it is SimEvent.Net && it.state is NetworkState.Routable },
+            "corpus generated no path changes",
+        )
         assertTrue(all.any { it is SimEvent.Liveness }, "corpus generated no liveness outcomes")
         // Both driver configs must be represented, or half the state space went dark.
         val configs = smokeSeeds.map { SimTimelineGenerator(it).generate().keepAliveInterval }.toSet()

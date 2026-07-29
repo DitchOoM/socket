@@ -4,7 +4,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
@@ -64,36 +65,35 @@ class JvmQuicTraceCaptureTests {
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
     /**
-     * Suspend until the capture [lines] hold BOTH connectivity emissions the client made — the
-     * `NET_ID` for [migratedTo] and the `NET_AVAIL` UNAVAILABLE. Lets the caller close the
-     * connection only after the monitor tap has demonstrably recorded them, replacing a fixed
-     * post-emission delay that raced connection teardown under CI load (the `observe()` collectors
-     * live on the connection scope and die when it closes). Bounded by the caller's `withTimeout`:
-     * if the tap is broken the predicate never holds and the test times out — a real failure, not a
-     * flaky pass. Reads the concurrently-appended list under its own monitor to avoid a CME.
+     * Suspend until the capture [lines] hold a `NET` line whose state satisfies [predicate]. Lets the
+     * caller drive the next monitor emission (and close the connection) only after the tap has
+     * demonstrably recorded this one, replacing a fixed post-emission delay that raced connection
+     * teardown under CI load (the `observe()` collectors live on the connection scope and die when it
+     * closes). Bounded here so a genuine tap failure fails with a diagnostic instead of hanging to the
+     * outer timeout — a real failure, not a flaky pass. Reads the concurrently-appended list under its
+     * own monitor to avoid a CME.
+     *
+     * **One emission at a time, deliberately.** `NetworkMonitor.state` is a `StateFlow`, so it
+     * conflates: two `set` calls in a row can deliver only the second, and a test that fired both and
+     * then looked for both would fail on a slow runner for a reason that is not a bug. Awaiting each in
+     * turn is what the single-flow contract actually promises — every *settled* value is observed.
      */
-    private suspend fun awaitConnectivityTapped(
+    private suspend fun awaitNetStateTapped(
         lines: List<String>,
-        migratedTo: NetworkId,
+        what: String,
+        predicate: (NetworkState) -> Boolean,
     ) {
-        // Bounded so a genuine tap failure fails HERE with a diagnostic, instead of hanging to the
-        // outer timeout. The connection stays alive (we haven't closed) so the tap collectors can run.
         try {
             withTimeout(10.seconds) {
                 while (true) {
-                    val events = TraceEvent.parseAll(synchronized(lines) { lines.toList() })
-                    val gotId = events.filterIsInstance<TraceEvent.Net>().any { it.id == migratedTo }
-                    val gotAvail =
-                        events.filterIsInstance<TraceEvent.NetAvail>().any {
-                            it.value == NetworkAvailability.UNAVAILABLE
-                        }
-                    if (gotId && gotAvail) return@withTimeout
+                    val nets = TraceEvent.parseAll(synchronized(lines) { lines.toList() }).filterIsInstance<TraceEvent.Net>()
+                    if (nets.any { predicate(it.state) }) return@withTimeout
                     delay(10)
                 }
             }
         } catch (_: TimeoutCancellationException) {
             val snapshot = synchronized(lines) { lines.toList() }
-            error("connectivity tap never recorded networkId=$migratedTo + UNAVAILABLE within 10s: $snapshot")
+            error("connectivity tap never recorded $what within 10s: $snapshot")
         }
     }
 
@@ -126,7 +126,7 @@ class JvmQuicTraceCaptureTests {
                         // Consumer-owned sink (thread-safe: the recorder emits from driver loops +
                         // the monitor collectors) + a settable monitor standing in for the platform one.
                         val lines = Collections.synchronizedList(mutableListOf<String>())
-                        val monitor = SimNetworkMonitor(initial = NetworkAvailability.AVAILABLE)
+                        val monitor = SimNetworkMonitor()
                         val migratedTo = NetworkId.Link(NetworkKind.Wifi, 9L)
                         val clientOptions =
                             baseOptions.copy(
@@ -142,10 +142,13 @@ class JvmQuicTraceCaptureTests {
                                     sendBuf.resetForRead()
                                     stream.write(sendBuf, 5.seconds)
 
-                                    // Mid-flight connectivity change — the engine's observe() tap must
-                                    // fold this into the SAME trace the DGRAM_* traffic goes to.
+                                    // Mid-flight connectivity changes — the engine's observe() tap must
+                                    // fold these into the SAME trace the DGRAM_* traffic goes to. Awaited
+                                    // one at a time because the monitor's single StateFlow conflates
+                                    // (see awaitNetStateTapped).
                                     monitor.setNetworkId(migratedTo)
-                                    monitor.set(NetworkAvailability.UNAVAILABLE)
+                                    awaitNetStateTapped(lines, "networkId=$migratedTo") { it.networkId == migratedTo }
+                                    monitor.set(NetworkState.Offline)
 
                                     val response = stream.read(5.seconds)
                                     val echoed =
@@ -154,15 +157,15 @@ class JvmQuicTraceCaptureTests {
                                         } else {
                                             "no_data"
                                         }
-                                    // Wait until the engine's connectivity tap has folded BOTH monitor
-                                    // emissions into the trace BEFORE signalling echoResult. The tap's
+                                    // Wait until the engine's connectivity tap has folded the second
+                                    // emission into the trace BEFORE signalling echoResult. The tap's
                                     // observe() collectors run on THIS connection's scope; the main
                                     // coroutine cancels this clientJob as soon as echoResult completes, so
                                     // completing before the tap has recorded lets teardown cancel the
                                     // collectors before they run — on a slow/contended runner they are
                                     // starved and record nothing (the intermittent CI failure). Gating
                                     // completion on the tap makes the teardown order deterministic.
-                                    awaitConnectivityTapped(lines, migratedTo)
+                                    awaitNetStateTapped(lines, "Offline") { it == NetworkState.Offline }
                                     echoResult.complete(echoed)
                                     stream.close()
                                 }
@@ -183,14 +186,16 @@ class JvmQuicTraceCaptureTests {
 
                         val events = TraceEvent.parseAll(snapshot)
                         assertTrue(
-                            events.filterIsInstance<TraceEvent.Net>().any { it.id == migratedTo },
-                            "engine must tap NetworkMonitor.networkId into the trace: $snapshot",
+                            events.filterIsInstance<TraceEvent.Net>().any { it.state.networkId == migratedTo },
+                            "engine must tap the monitor's identity into the trace: $snapshot",
                         )
                         assertTrue(
-                            events.filterIsInstance<TraceEvent.NetAvail>().any {
-                                it.value == NetworkAvailability.UNAVAILABLE
-                            },
-                            "engine must tap NetworkMonitor.availability into the trace: $snapshot",
+                            events.filterIsInstance<TraceEvent.Net>().any { it.state == NetworkState.Offline },
+                            "engine must tap the monitor's reachability into the trace: $snapshot",
+                        )
+                        assertTrue(
+                            events.filterIsInstance<TraceEvent.NetCapability>().isNotEmpty(),
+                            "the tap must record the monitor's declared capability once: $snapshot",
                         )
                     }
                 }

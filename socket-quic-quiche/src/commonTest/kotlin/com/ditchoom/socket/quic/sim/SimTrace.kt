@@ -1,10 +1,9 @@
 package com.ditchoom.socket.quic.sim
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.PathInfo
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.transport.NetworkId
 import kotlin.test.fail
 import kotlin.time.Duration
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
@@ -62,16 +61,13 @@ internal sealed interface Observed {
         val result: TransportLiveness.Result,
     ) : Observed
 
-    /** The scripted monitor emitted a `networkId` change (recorded per RFC §5 item 2). */
+    /**
+     * The scripted monitor emitted a new [NetworkState] (recorded per RFC §5 item 2) — one
+     * observation, because reachability and identity are one value.
+     */
     data class NetworkChanged(
         override val at: Duration,
-        val id: NetworkId,
-    ) : Observed
-
-    /** The scripted monitor emitted an `availability` change (recorded per RFC §5 item 2). */
-    data class AvailabilityChanged(
-        override val at: Duration,
-        val value: NetworkAvailability,
+        val state: NetworkState,
     ) : Observed
 }
 

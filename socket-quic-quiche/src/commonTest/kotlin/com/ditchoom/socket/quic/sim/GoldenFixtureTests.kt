@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.sim
 
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.sim.fixtures.SIM_IDLE_TIMEOUT
@@ -108,7 +110,10 @@ class GoldenFixtureTests {
             Observed.StateChange(Duration.ZERO, QuicConnectionState.Handshaking),
             Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("h3")),
             Observed.DatagramFed(Duration.ZERO, 8),
-            Observed.NetworkChanged(3.seconds, NetworkId.KindOnly(NetworkKind.Cellular)),
+            Observed.NetworkChanged(
+                3.seconds,
+                NetworkState.Routable(NetworkId.KindOnly(NetworkKind.Cellular), InternetAccess.Unobserved),
+            ),
             Observed.DatagramFed(3.seconds + 5.milliseconds, 6),
         )
 

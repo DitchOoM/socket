@@ -2,9 +2,8 @@
 
 package com.ditchoom.socket.transport.sim
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.transport.MockNetworkMonitor
-import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlin.time.Duration
@@ -47,8 +46,7 @@ internal class SimTimeline(
         harness: SimHarness,
     ) {
         when (event) {
-            is SimEvent.Availability -> harness.monitor.set(event.value)
-            is SimEvent.Network -> harness.monitor.setNetworkId(event.id)
+            is SimEvent.Net -> harness.monitor.set(event.state)
             is SimEvent.Liveness -> harness.liveness.script(event.result)
         }
     }
@@ -118,12 +116,8 @@ internal class SimFixtureBuilder {
         private val t: Duration,
         private val builder: SimFixtureBuilder,
     ) {
-        infix fun availability(value: NetworkAvailability) {
-            builder.events += SimEvent.Availability(t, value)
-        }
-
-        infix fun network(id: NetworkId) {
-            builder.events += SimEvent.Network(t, id)
+        infix fun net(state: NetworkState) {
+            builder.events += SimEvent.Net(t, state)
         }
 
         infix fun liveness(result: TransportLiveness.Result) {
