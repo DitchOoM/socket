@@ -37,24 +37,61 @@ class AndroidNetworkMonitor(
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    /** The network currently reflected in the flows, so a stale [onLost][ConnectivityManager.NetworkCallback.onLost] can't clear a newer one. */
+    /**
+     * Whether this monitor tracks the process's **default** network rather than every network matching
+     * an INTERNET request.
+     *
+     * The floor is [O][Build.VERSION_CODES.O], not [N][Build.VERSION_CODES.N] where
+     * `registerDefaultNetworkCallback` was introduced, because O is where the platform *documents* that
+     * `onAvailable` "will always immediately be followed by a call to `onCapabilitiesChanged`". This
+     * class relies on that ordering to publish availability and identity together, and relying on it
+     * below the API level that guarantees it would be relying on an implementation detail.
+     */
+    private val tracksDefaultNetwork = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+
+    /**
+     * The network currently reflected in the flows, so a stale
+     * [onLost][ConnectivityManager.NetworkCallback.onLost] can't clear a newer one.
+     *
+     * Only used on the pre-O request-based path — the default-network callback needs no such guard (see
+     * [onLost][ConnectivityManager.NetworkCallback.onLost] below). Written from the framework's internal
+     * callback Handler and read on the same, but also written by the constructor on the caller's thread,
+     * so it is [Volatile] rather than a plain field.
+     */
+    @Volatile
     private var currentNetwork: Network? = null
 
     private val callback =
         object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                // Deliberately does NOT call getNetworkCapabilities(network). The platform javadoc:
+                // "Do NOT call getNetworkCapabilities(Network) ... in this callback as this is prone to
+                // race conditions ... may return an outdated or even a null object. Instead, wait for a
+                // call to onCapabilitiesChanged ... whose arguments are guaranteed to be well-ordered."
+                // A null there used to degrade the identity to Unidentified while availability said
+                // AVAILABLE.
+                if (tracksDefaultNetwork) {
+                    // onCapabilitiesChanged is guaranteed to follow immediately on O+, and it publishes
+                    // availability and identity together. Doing it here too would open a window where a
+                    // consumer sees the new network's availability beside the old network's identity.
+                    return
+                }
+                currentNetwork = network
                 _availability.value = NetworkAvailability.AVAILABLE
-                // Capabilities arrive in the onCapabilitiesChanged that immediately follows; identify
-                // what we can now so a consumer never sees AVAILABLE with a stale identity.
                 update(network, connectivityManager.getNetworkCapabilities(network))
             }
 
             override fun onLost(network: Network) {
-                if (network == currentNetwork) {
-                    currentNetwork = null
-                    _availability.value = NetworkAvailability.UNAVAILABLE
-                    _networkId.value = NetworkId.Unidentified
+                if (tracksDefaultNetwork) {
+                    // For registerDefaultNetworkCallback the platform "will only be invoked against the
+                    // last network returned by onAvailable() when that network is lost AND no other
+                    // network satisfies the criteria of the request" — so there is genuinely nothing
+                    // left to fall back to and no stale-onLost race to guard against. A handover to a
+                    // better network arrives as onAvailable/onCapabilitiesChanged instead, never here.
+                    clear()
+                    return
                 }
+                if (network == currentNetwork) clear()
             }
 
             override fun onCapabilitiesChanged(
@@ -70,6 +107,12 @@ class AndroidNetworkMonitor(
                 update(network, caps)
             }
         }
+
+    private fun clear() {
+        currentNetwork = null
+        _availability.value = NetworkAvailability.UNAVAILABLE
+        _networkId.value = NetworkId.Unidentified
+    }
 
     private fun update(
         network: Network,
@@ -88,13 +131,24 @@ class AndroidNetworkMonitor(
     }
 
     init {
-        val request =
-            NetworkRequest
-                .Builder()
-                .addCapability(AndroidNetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
+        // Seed BEFORE registering, not after. Callbacks arrive on the framework's own internal Handler
+        // ("The callback is invoked on the default internal Handler"), not this thread, so a seed that
+        // ran afterwards could overwrite a fresher callback value with a staler synchronous read.
+        // Seeding first makes the callback authoritative: registration immediately replays the current
+        // network, so anything this got wrong is corrected within milliseconds.
+        seedInitialState()
+
         try {
-            connectivityManager.registerNetworkCallback(request, callback)
+            if (tracksDefaultNetwork) {
+                connectivityManager.registerDefaultNetworkCallback(callback)
+            } else {
+                val request =
+                    NetworkRequest
+                        .Builder()
+                        .addCapability(AndroidNetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build()
+                connectivityManager.registerNetworkCallback(request, callback)
+            }
         } catch (e: SecurityException) {
             // ACCESS_NETWORK_STATE was stripped from the merged manifest. Without it the callback is
             // registered-but-never-invoked: availability would sit at UNKNOWN forever while `mechanism`
@@ -103,8 +157,15 @@ class AndroidNetworkMonitor(
             // PollingNetworkMonitor, which needs no permission.
             throw NetworkMonitorPermissionException(cause = e)
         }
+    }
 
-        // Seed initial state
+    /**
+     * Resolves availability and identity synchronously so the constructor returns with a real state
+     * rather than [NetworkAvailability.UNKNOWN]. This is the one place a synchronous
+     * `getNetworkCapabilities` is correct: it runs on the constructing thread before any callback is
+     * registered, not inside a callback.
+     */
+    private fun seedInitialState() {
         val activeNetwork = connectivityManager.activeNetwork
         val caps = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
         _availability.value =

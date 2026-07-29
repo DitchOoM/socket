@@ -3,6 +3,7 @@ package com.ditchoom.socket
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import org.junit.Before
@@ -11,6 +12,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNetwork
 import org.robolectric.shadows.ShadowNetworkCapabilities
 import kotlin.test.assertEquals
@@ -153,11 +155,14 @@ class AndroidNetworkMonitorRobolectricTests {
     }
 
     @Test
-    fun aStaleOnLostCannotClearANewerNetwork() {
-        // The race the `network == currentNetwork` guard exists for: Android delivers onLost for the old
-        // network *after* onAvailable for the new one during a Wi-Fi→cellular handoff. Without the
-        // guard the monitor reports UNAVAILABLE while a perfectly good network is up — and QUIC
-        // auto-migration would tear down a connection that had just migrated correctly.
+    @Config(sdk = [Build.VERSION_CODES.N_MR1])
+    fun preOAStaleOnLostCannotClearANewerNetwork() {
+        // Below O the monitor registers an INTERNET NetworkRequest, which per the platform javadoc is
+        // "called for each network which no longer satisfies the criteria of the callback" — so a late
+        // onLost for a superseded network really can arrive after the new one is already current. That
+        // is the race the `network == currentNetwork` guard exists for. Without it the monitor reports
+        // UNAVAILABLE while a perfectly good network is up, and QUIC auto-migration would tear down a
+        // connection that had just migrated correctly.
         withMonitor { monitor, callback ->
             val old = ShadowNetwork.newInstance(NET_ID)
             val new = ShadowNetwork.newInstance(NET_ID + 1)
@@ -174,6 +179,70 @@ class AndroidNetworkMonitorRobolectricTests {
             val id = monitor.networkId.value
             assertIs<NetworkId.Link>(id)
             assertEquals(NetworkKind.Cellular, id.kind)
+        }
+    }
+
+    @Test
+    fun onOPlusAHandoverArrivesAsOnAvailableAndOnLostMeansTotalLoss() {
+        // On O+ the monitor tracks the *default* network, where the platform guarantees onLost "will
+        // only be invoked against the last network returned by onAvailable() when that network is lost
+        // and no other network satisfies the criteria of the request". A handover to a better network
+        // therefore arrives as onAvailable/onCapabilitiesChanged for the newcomer — never as a stale
+        // onLost — so there is no race left to guard, and onLost unambiguously means "nothing left".
+        withMonitor { monitor, callback ->
+            val wifiNetwork = ShadowNetwork.newInstance(NET_ID)
+            val cellular = ShadowNetwork.newInstance(NET_ID + 1)
+
+            callback.onCapabilitiesChanged(wifiNetwork, wifi())
+            // Handover: the framework announces the new best network. No onLost for the old one.
+            callback.onAvailable(cellular)
+            callback.onCapabilitiesChanged(cellular, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR))
+
+            assertEquals(NetworkAvailability.AVAILABLE, monitor.availability.value)
+            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(monitor.networkId.value).kind)
+
+            // Now genuine total loss.
+            callback.onLost(cellular)
+            assertEquals(NetworkAvailability.UNAVAILABLE, monitor.availability.value)
+            assertEquals(NetworkId.Unidentified, monitor.networkId.value)
+        }
+    }
+
+    @Test
+    fun aVpnDisconnectingOverALiveWifiDoesNotStrandTheMonitorOffline() {
+        // Regression test for a real bug found on 2026-07-29. The monitor used to track a single
+        // `currentNetwork` against an INTERNET NetworkRequest. A VPN (which carries
+        // NET_CAPABILITY_INTERNET) became `currentNetwork`; when it dropped, onLost matched and the
+        // monitor published UNAVAILABLE/Unidentified — while the Wi-Fi it tunnelled over was still up
+        // and still satisfied the request, sending no callback of its own because nothing about it had
+        // changed. Every VPN disconnect made the monitor claim the device was offline.
+        //
+        // On the default-network callback the platform resolves this for us: the default reverts to
+        // Wi-Fi and that arrives as onAvailable/onCapabilitiesChanged, not onLost.
+        withMonitor { monitor, callback ->
+            val wifiNetwork = ShadowNetwork.newInstance(NET_ID)
+            val vpn = ShadowNetwork.newInstance(NET_ID + 1)
+
+            callback.onCapabilitiesChanged(wifiNetwork, wifi())
+            callback.onAvailable(vpn)
+            // A VPN's capabilities also list the transport it tunnels over — that is what makes the
+            // identity Vpn(over Wi-Fi) rather than a bare Vpn.
+            callback.onCapabilitiesChanged(
+                vpn,
+                capabilitiesOver(NetworkCapabilities.TRANSPORT_VPN, NetworkCapabilities.TRANSPORT_WIFI),
+            )
+            assertIs<NetworkKind.Vpn>(assertIs<NetworkId.Link>(monitor.networkId.value).kind)
+
+            // VPN drops; the default reverts to the still-live Wi-Fi.
+            callback.onAvailable(wifiNetwork)
+            callback.onCapabilitiesChanged(wifiNetwork, wifi())
+
+            assertEquals(
+                NetworkAvailability.AVAILABLE,
+                monitor.availability.value,
+                "Wi-Fi is still up — the monitor must not report the device offline",
+            )
+            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(monitor.networkId.value).kind)
         }
     }
 
@@ -280,6 +349,13 @@ class AndroidNetworkMonitorRobolectricTests {
     }
 
     private fun wifi(): NetworkCapabilities = capabilities(NetworkCapabilities.TRANSPORT_WIFI)
+
+    /** Capabilities carrying more than one transport, as a VPN over a physical link does. */
+    private fun capabilitiesOver(vararg transports: Int): NetworkCapabilities =
+        ShadowNetworkCapabilities.newInstance().also {
+            transports.forEach { transport -> shadowOf(it).addTransportType(transport) }
+            shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }
 
     private fun capabilities(
         transport: Int,
