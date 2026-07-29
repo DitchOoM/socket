@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
  * Reactive integration test for the **live** [LinuxNetworkMonitor] against a controlled network
  * namespace: unlike [NetnsRouteResolutionTest] (which asserts the one-shot [LinuxNetworkMonitor.primaryNetworkId]
  * seed), this constructs the monitor — starting its `AF_NETLINK` `RTMGRP_LINK`/`RTMGRP_IPV4_IFADDR`
- * event loop — and proves its [NetworkMonitor.networkId] `StateFlow` **re-emits** the new primary link
+ * event loop — and proves its [NetworkMonitor.state] `StateFlow` **re-emits** the new primary link
  * when the kernel's routing state changes, which is the monitor's entire reason to exist (it is what
  * drives QUIC auto-migration). Purely seed-based tests never exercise the event loop.
  *
@@ -47,9 +47,13 @@ class NetnsReactiveChangeTest {
                 // Initial seed: the lower-metric default-route interface is primary.
                 val initial =
                     withTimeout(REACT_TIMEOUT_MS) {
-                        monitor.networkId.first { it is NetworkId.Link && it.handle == primaryIdx }
+                        monitor.state.first { it.networkId.let { id -> id is NetworkId.Link && id.handle == primaryIdx } }
                     }
-                assertEquals(primaryIdx, (initial as NetworkId.Link).handle, "initial primary must be '$primary'")
+                assertEquals(
+                    primaryIdx,
+                    (initial.networkId as NetworkId.Link).handle,
+                    "initial primary must be '$primary'",
+                )
 
                 // Drive the change from within this namespace: a RTMGRP_LINK event that also removes
                 // '$primary's default route, leaving '$after' as the only default.
@@ -59,9 +63,13 @@ class NetnsReactiveChangeTest {
                 // The event loop must react and re-emit the new primary — not a stale cached value.
                 val flipped =
                     withTimeout(REACT_TIMEOUT_MS) {
-                        monitor.networkId.first { it is NetworkId.Link && it.handle == afterIdx }
+                        monitor.state.first { it.networkId.let { id -> id is NetworkId.Link && id.handle == afterIdx } }
                     }
-                assertEquals(afterIdx, (flipped as NetworkId.Link).handle, "networkId must re-emit '$after' after the link-down")
+                assertEquals(
+                    afterIdx,
+                    (flipped.networkId as NetworkId.Link).handle,
+                    "state must re-emit '$after' after the link-down",
+                )
             }
         } finally {
             monitor.close()

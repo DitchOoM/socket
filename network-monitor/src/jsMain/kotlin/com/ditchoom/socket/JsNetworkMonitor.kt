@@ -22,31 +22,38 @@ private val isNodeJs: Boolean = js("global.window") == null
 /**
  * JavaScript [NetworkMonitor].
  *
- * - **Node.js**: polls `os.networkInterfaces()` for non-loopback interfaces. [networkId] stays
+ * - **Node.js**: polls `os.networkInterfaces()` for non-loopback interfaces. Identity stays
  *   [NetworkId.Unidentified] — Node has no link-kind API and interface-name heuristics are wrong
  *   cross-platform.
- * - **Browser**: uses `navigator.onLine` and `online`/`offline` events on `window`; [networkId] is
+ * - **Browser**: uses `navigator.onLine` and `online`/`offline` events on `window`; identity is
  *   the coarse [NetworkId.KindOnly] from `navigator.connection.type` where the Network Information
  *   API exists (Chromium), [NetworkId.Unidentified] elsewhere (Safari/Firefox).
+ *
+ * Both are [ReachResolution.LinkOnly], and neither ever reports [NetworkState.LinkLocal] — see
+ * [jsNetworkState]. `navigator.onLine` and an interface list say a link exists and nothing about routes,
+ * and asserting "there is a link but no route off it" is a claim only a monitor that can *see* routes is
+ * entitled to make (RFC_NETWORK_REACHABILITY §9.2). So an up link is reported optimistically as
+ * `Routable(id, Unobserved)`, and a consumer that needs more learns from [capability] before subscribing.
  *
  * @param interval Polling interval for Node.js (ignored in browser where events are used).
  */
 class JsNetworkMonitor(
     private val interval: Duration = 5.seconds,
 ) : NetworkMonitor {
-    private val _availability = MutableStateFlow(NetworkAvailability.UNKNOWN)
-    override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
-
-    private val _networkId = MutableStateFlow<NetworkId>(NetworkId.Unidentified)
-    override val networkId: StateFlow<NetworkId> = _networkId.asStateFlow()
+    private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
+    override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
     /**
      * Node polls `os.networkInterfaces()`; the browser is pushed `online`/`offline` (plus the Network
-     * Information API's `change` where it exists). Resolved from the same [isNodeJs] check the
-     * constructor branches on, so it can never disagree with what was actually wired.
+     * Information API's `change` where it exists). The mechanism is resolved from the same [isNodeJs]
+     * check the constructor branches on, so it can never disagree with what was actually wired; the
+     * resolution is [ReachResolution.LinkOnly] on both, because neither runtime can see a routing table.
      */
-    override val mechanism: MonitorMechanism =
-        if (isNodeJs) MonitorMechanism.Polled(interval) else MonitorMechanism.PlatformSignalled
+    override val capability: MonitorCapability =
+        MonitorCapability(
+            if (isNodeJs) MonitorMechanism.Polled(interval) else MonitorMechanism.PlatformSignalled,
+            ReachResolution.LinkOnly,
+        )
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -54,7 +61,7 @@ class JsNetworkMonitor(
         if (isNodeJs) {
             scope.launch {
                 while (isActive) {
-                    _availability.value = checkNodeNetwork()
+                    _state.value = checkNodeNetwork()
                     delay(interval)
                 }
             }
@@ -63,55 +70,87 @@ class JsNetworkMonitor(
         }
     }
 
-    private fun checkNodeNetwork(): NetworkAvailability =
+    /**
+     * Node's link observation: `os.networkInterfaces()` names every interface, so a non-loopback key
+     * means a link exists. Node exposes no link *kind*, so identity stays [NetworkId.Unidentified] and
+     * `pathChanges()` is correctly inert here rather than emitting a fabricated change.
+     *
+     * A throw is [NetworkState.Unknown], never [NetworkState.Offline] — "the lookup failed" is not "there
+     * is no network".
+     */
+    private fun checkNodeNetwork(): NetworkState =
         try {
             val interfaces = js("require('os').networkInterfaces()")
             val keys: Array<String> = js("Object.keys")(interfaces) as Array<String>
             val hasNonLoopback = keys.any { name -> name != "lo" && name != "lo0" }
-            if (hasNonLoopback) NetworkAvailability.AVAILABLE else NetworkAvailability.UNAVAILABLE
+            jsNetworkState(hasLink = hasNonLoopback, id = NetworkId.Unidentified)
         } catch (_: Throwable) {
-            NetworkAvailability.UNKNOWN
+            NetworkState.Unknown
         }
 
     private fun initBrowserMonitor() {
-        _availability.value =
-            if (js("navigator.onLine") as Boolean) {
-                NetworkAvailability.AVAILABLE
-            } else {
-                NetworkAvailability.UNAVAILABLE
-            }
-        js("window").addEventListener("online") { _: dynamic ->
-            _availability.value = NetworkAvailability.AVAILABLE
-            refreshBrowserNetworkId()
-        }
-        js("window").addEventListener("offline") { _: dynamic ->
-            _availability.value = NetworkAvailability.UNAVAILABLE
-            refreshBrowserNetworkId()
-        }
-        refreshBrowserNetworkId()
+        refreshBrowserState()
+        // online/offline and the Network Information API's `change` all mutate the SAME value, so every
+        // one of them republishes the whole state — reachability and identity can never be sampled apart.
+        js("window").addEventListener("online") { _: dynamic -> refreshBrowserState() }
+        js("window").addEventListener("offline") { _: dynamic -> refreshBrowserState() }
         // Network Information API (Chromium): fires on connection-type transitions (wifi↔cellular).
         val connection = js("navigator.connection || null")
         if (connection != null) {
-            connection.addEventListener("change") { _: dynamic ->
-                refreshBrowserNetworkId()
-            }
+            connection.addEventListener("change") { _: dynamic -> refreshBrowserState() }
         }
     }
 
-    private fun refreshBrowserNetworkId() {
+    /** Read both browser facts — `navigator.onLine` and the connection type — and publish one state. */
+    private fun refreshBrowserState() {
+        val online =
+            try {
+                js("navigator.onLine") as Boolean
+            } catch (_: Throwable) {
+                // A runtime without navigator.onLine tells us nothing; Unknown, not Offline.
+                _state.value = NetworkState.Unknown
+                return
+            }
         val type =
             try {
                 js("(navigator.connection && navigator.connection.type) || null") as? String
             } catch (_: Throwable) {
                 null
             }
-        _networkId.value = browserConnectionTypeToNetworkId(type)
+        _state.value = jsNetworkState(hasLink = online, id = browserConnectionTypeToNetworkId(type))
     }
 
     override fun close() {
         scope.cancel()
     }
 }
+
+/**
+ * Pure mapper from "is a link up" plus whatever identity the runtime could resolve to a [NetworkState] —
+ * the JS row of RFC_NETWORK_REACHABILITY §4, shared by the Node and browser paths because both observe
+ * exactly the same thing: a link, and nothing about routes.
+ *
+ * | Fact | Result |
+ * |---|---|
+ * | a link exists (`navigator.onLine`, a non-loopback interface) | `Routable(id, Unobserved)` |
+ * | no link | [NetworkState.Offline] |
+ *
+ * The optimistic rung is the point (RFC §9.2). The draft had [ReachResolution.LinkOnly] report
+ * [NetworkState.LinkLocal], which was the one outright contradiction in it: asserting "a link is up but
+ * nothing routes off it" *requires* route visibility, which neither Node nor a browser has — and browsers
+ * route off-link and cannot multicast at all, so `LinkLocal` is precisely the wrong rung for them. Under
+ * that reading an online browser would have reported [canRouteOffLink] `== false` and refused to connect.
+ * [ReachResolution.permits] enforces this, and `jsNetworkStateNeverReportsLinkLocal` proves it.
+ */
+internal fun jsNetworkState(
+    hasLink: Boolean,
+    id: NetworkId,
+): NetworkState =
+    if (hasLink) {
+        NetworkState.Routable(id, InternetAccess.Unobserved)
+    } else {
+        NetworkState.Offline
+    }
 
 /**
  * Pure mapper from the Network Information API's `connection.type` to a typed [NetworkId]. Browsers
