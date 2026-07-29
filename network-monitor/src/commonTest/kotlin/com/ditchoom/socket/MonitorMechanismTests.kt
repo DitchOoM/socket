@@ -17,25 +17,24 @@ class MonitorMechanismTests {
     @Test
     fun alwaysAvailableIsStaticNotSignalled() {
         // The distinction that matters: a consumer gating a feature on "will I be told when the network
-        // changes" must be able to tell AlwaysAvailable apart from a real monitor. Reading only
-        // `availability` cannot — AlwaysAvailable reports AVAILABLE, which looks exactly like a healthy
-        // reactive monitor right up until the network drops and nothing ever fires.
-        assertEquals(MonitorMechanism.Static, NetworkMonitor.AlwaysAvailable.mechanism)
+        // changes" must be able to tell AlwaysAvailable apart from a real monitor. Reading only the
+        // reported state cannot — AlwaysAvailable reports a routable network, which looks exactly like a
+        // healthy reactive monitor right up until the network drops and nothing ever fires.
+        assertEquals(MonitorMechanism.Static, NetworkMonitor.AlwaysAvailable.capability.mechanism)
     }
 
     @Test
     fun aMonitorThatDoesNotDeclareIsUnknownNotStatic() {
-        // Source compatibility: a third-party monitor written before `mechanism` existed still compiles,
+        // Source compatibility: a third-party monitor written before `capability` existed still compiles,
         // and its default must be the explicit "cannot tell you" — never Static, which would assert the
         // false and load-bearing claim that it never changes.
-        val predatingMechanism =
+        val predatingCapability =
             object : NetworkMonitor {
-                override val availability: StateFlow<NetworkAvailability> =
-                    MutableStateFlow(NetworkAvailability.AVAILABLE)
+                override val state: StateFlow<NetworkState> = MutableStateFlow(NetworkState.Unknown)
 
                 override fun close() {}
             }
-        assertEquals(MonitorMechanism.Unknown, predatingMechanism.mechanism)
+        assertEquals(MonitorMechanism.Unknown, predatingCapability.capability.mechanism)
     }
 
     @Test
@@ -46,9 +45,9 @@ class MonitorMechanismTests {
         // and the test would pass while proving nothing.
         val script =
             networkMonitorScript {
-                after(FIVE_SECONDS) { availability(NetworkAvailability.UNAVAILABLE) }
+                after(FIVE_SECONDS) { state(NetworkState.Offline) }
             }
-        assertEquals(MonitorMechanism.PlatformSignalled, ScriptedNetworkMonitor(script).mechanism)
+        assertEquals(MonitorMechanism.PlatformSignalled, ScriptedNetworkMonitor(script).capability.mechanism)
     }
 
     @Test
