@@ -42,6 +42,15 @@ class ScriptedNetworkMonitor(
     override val networkId: StateFlow<NetworkId> = networkIdState.asStateFlow()
 
     /**
+     * [MonitorMechanism.PlatformSignalled] — the script *pushes* each transition at its scheduled
+     * offset, with no polling interval anywhere. Reporting it as such is what lets a consumer that gates
+     * a feature on reactivity (`../webrtc`'s `IceRestartPolicy.OnNetworkChange`) be exercised by this
+     * fake at all: a [MonitorMechanism.Polled] or [MonitorMechanism.Static] answer would make the
+     * feature-under-test disable itself and the scripted timeline would prove nothing.
+     */
+    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+
+    /**
      * Plays [script] to completion on the calling coroutine, suspending between transitions with
      * [delay] (virtual time under `runTest`). Returns once the last transition has fired; a script with
      * no transitions returns immediately. Cancelling the caller stops playback at whatever state was

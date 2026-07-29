@@ -32,6 +32,8 @@ class AndroidNetworkMonitor(
     private val _networkId = MutableStateFlow<NetworkId>(NetworkId.Unidentified)
     override val networkId: StateFlow<NetworkId> = _networkId.asStateFlow()
 
+    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -91,7 +93,16 @@ class AndroidNetworkMonitor(
                 .Builder()
                 .addCapability(AndroidNetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
-        connectivityManager.registerNetworkCallback(request, callback)
+        try {
+            connectivityManager.registerNetworkCallback(request, callback)
+        } catch (e: SecurityException) {
+            // ACCESS_NETWORK_STATE was stripped from the merged manifest. Without it the callback is
+            // registered-but-never-invoked: availability would sit at UNKNOWN forever while `mechanism`
+            // claimed PlatformSignalled. Fail loudly instead — this is the one Android case that is dead
+            // rather than degraded, and a caller who wants to survive it can fall back to
+            // PollingNetworkMonitor, which needs no permission.
+            throw NetworkMonitorPermissionException(cause = e)
+        }
 
         // Seed initial state
         val activeNetwork = connectivityManager.activeNetwork
@@ -150,20 +161,26 @@ internal fun androidNetworkId(
 fun NetworkMonitor.Companion.android(context: Context): NetworkMonitor = AndroidNetworkMonitor(context)
 
 /**
- * Install a `ConnectivityManager`-backed [NetworkMonitor] as the process default, so QUIC
- * auto-migration (and any other [NetworkMonitor.processDefault] consumer) becomes functional on
- * Android. Call once at startup, e.g. from `Application.onCreate()`:
+ * Eagerly install a `ConnectivityManager`-backed [NetworkMonitor] as the process default, so QUIC
+ * auto-migration (and any other [NetworkMonitor.processDefault] consumer) uses it.
  *
  * ```kotlin
  * NetworkMonitor.installAndroidContext(applicationContext)
  * ```
  *
- * This `Context`-typed function is the **only** way to obtain a working Android monitor — the zero-arg
- * [default] cannot, because `ConnectivityManager` needs a [Context]. That makes the Context a hard
- * requirement on Android (enforced by this being the functional entry point) while costing other
- * platforms nothing: they never call this, and their [default] already works. Uses
- * [Context.getApplicationContext] to avoid leaking an Activity.
+ * **Normally unnecessary.** [NetworkMonitorInitializer] hands this module the application `Context` via
+ * androidx.startup before any app code runs, so the zero-arg `NetworkMonitor.default()` already returns
+ * a reactive monitor and `processDefault()` builds one lazily on first use. Call this only to override
+ * that with a monitor built from a specific [Context], or when the initializer was removed from the
+ * merged manifest.
+ *
+ * Unlike App Startup's capture-only path, this constructs the monitor **immediately** — it registers a
+ * `ConnectivityManager.NetworkCallback` at the moment of the call — and the installed instance is
+ * caller-owned: nothing here closes it. Uses [Context.getApplicationContext] to avoid leaking an
+ * Activity, and also records that context for [androidOrNull] so a later `default()` stays reactive.
  */
 fun NetworkMonitor.Companion.installAndroidContext(context: Context) {
-    installProcessDefault(android(context.applicationContext))
+    val application = context.applicationContext
+    installAndroidApplicationContext(application)
+    installProcessDefault(android(application))
 }

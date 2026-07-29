@@ -12,7 +12,7 @@ package com.ditchoom.socket
  * | Desktop JVM, JDK 21+ | FFM routing socket — netlink (Linux) / `PF_ROUTE` (macOS), reactive; polling on Windows |
  * | Desktop JVM, JDK 8–20 | interface polling |
  * | Node.js | interface polling — **browser JS**: `online`/`offline` (reactive) |
- * | Android | [NetworkMonitor.AlwaysAvailable] — reactive monitoring needs a `Context` (use `NetworkMonitor.android(context)`) |
+ * | Android | `ConnectivityManager.NetworkCallback` (reactive) — the `Context` comes from `NetworkMonitorInitializer` (androidx.startup) |
  * | Wasm (browser) | [NetworkMonitor.AlwaysAvailable] |
  *
  * This lives in `:socket` (not the `com.ditchoom:network-monitor` module that owns the [NetworkMonitor]
@@ -37,7 +37,8 @@ private val platformDefault: NetworkMonitor by lazy { NetworkMonitor.default() }
  * installed, else the shared lazily-created platform [default]. Used by QUIC auto-migration and any
  * other process-level network-aware behavior so they share a single monitor.
  *
- * On Android the shared default is functional only if the app installed a `Context` via
- * `NetworkMonitor.installAndroidContext`; without it [default] is [NetworkMonitor.AlwaysAvailable].
+ * On Android this is where the `ConnectivityManager.NetworkCallback` is actually registered — App
+ * Startup only captures the `Context`, so an app that links the library but never reads
+ * [processDefault] pays nothing.
  */
 fun NetworkMonitor.Companion.processDefault(): NetworkMonitor = installedProcessDefaultOrNull() ?: platformDefault

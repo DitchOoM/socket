@@ -34,6 +34,8 @@ class PollingNetworkMonitor(
     private val _networkId = MutableStateFlow<com.ditchoom.socket.transport.NetworkId>(com.ditchoom.socket.transport.NetworkId.Unidentified)
     override val networkId: StateFlow<com.ditchoom.socket.transport.NetworkId> = _networkId.asStateFlow()
 
+    override val mechanism: MonitorMechanism = MonitorMechanism.Polled(interval)
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     init {

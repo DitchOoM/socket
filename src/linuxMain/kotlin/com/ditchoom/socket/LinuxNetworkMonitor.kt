@@ -35,6 +35,10 @@ class LinuxNetworkMonitor : NetworkMonitor {
     override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
     private val _networkId = MutableStateFlow<NetworkId>(NetworkId.Unidentified)
     override val networkId: StateFlow<NetworkId> = _networkId.asStateFlow()
+
+    /** `RTMGRP_LINK`/`RTMGRP_IPV4_IFADDR` netlink multicast — the kernel pushes, we never poll. */
+    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var netlinkFd: Int = -1
 
