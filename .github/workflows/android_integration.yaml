@@ -18,8 +18,17 @@ jobs:
       # Force-kill emulator after 1 second instead of waiting 20 seconds for graceful shutdown
       ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
     strategy:
+      # 29 and 35 are independent signals — an API-35-only regression must not cancel the 29 lane
+      # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
+      fail-fast: false
       matrix:
-        api-level: [29]
+        # 29 = the floor this suite has always run on. 35 = the reactive-monitor ceiling: every
+        # ConnectivityManager tightening that would break AndroidNetworkMonitor landed after 29 —
+        # the API-31 NetworkCapabilities/callback changes and API-34's stricter background-callback
+        # accounting among them — so a lane that stops at 29 cannot observe them. Both use the
+        # `default` (AOSP userdebug) image, which is what makes `adb root` + `su 0 iptables/tc`
+        # work for the QUIC netem suite; `google_apis*` images would break that.
+        api-level: [29, 35]
     steps:
       - name: checkout
         uses: actions/checkout@v6

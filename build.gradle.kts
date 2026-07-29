@@ -471,6 +471,11 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
                 implementation("androidx.test:runner:1.7.0")
                 implementation("androidx.test.ext:junit:1.3.0")
+                // NetworkMonitorRecorder + TraceSink: the device capture lane records a real
+                // AndroidNetworkMonitor's emissions as v1 trace lines, which get committed as a fixture
+                // and replayed hermetically on every platform (see AndroidNetworkMonitorTraceCapture).
+                // Same test→testkit→main chain commonTest already uses, not a cycle.
+                implementation(project(":socket-testkit"))
             }
         }
         val androidUnitTest by getting {

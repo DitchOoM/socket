@@ -43,9 +43,14 @@ class AndroidNetworkMonitorPermissionTests {
 }
 
 /**
- * A `ConnectivityManager` whose `registerNetworkCallback` fails the way the real one does when the app
- * lacks `ACCESS_NETWORK_STATE`. Robolectric's stock shadow always succeeds, so without this the catch
- * block in [AndroidNetworkMonitor]'s init is dead code as far as any test is concerned.
+ * A `ConnectivityManager` whose registration calls fail the way the real one does when the app lacks
+ * `ACCESS_NETWORK_STATE`. Robolectric's stock shadow always succeeds, so without this the catch block in
+ * [AndroidNetworkMonitor]'s init is dead code as far as any test is concerned.
+ *
+ * **Both** entry points are stubbed, because which one the monitor calls depends on the API level:
+ * `registerDefaultNetworkCallback` on O+, `registerNetworkCallback` below it. Stubbing only one would
+ * make this suite silently stop exercising the permission path on the other — which is exactly what
+ * happened when the monitor moved to the default-network callback.
  */
 @Implements(ConnectivityManager::class)
 class PermissionDeniedConnectivityManager : ShadowConnectivityManager() {
@@ -53,8 +58,13 @@ class PermissionDeniedConnectivityManager : ShadowConnectivityManager() {
     override fun registerNetworkCallback(
         request: NetworkRequest?,
         networkCallback: ConnectivityManager.NetworkCallback?,
-    ): Unit =
-        throw SecurityException(
+    ): Unit = throw permissionDenied()
+
+    @Implementation
+    override fun registerDefaultNetworkCallback(networkCallback: ConnectivityManager.NetworkCallback?): Unit = throw permissionDenied()
+
+    private fun permissionDenied() =
+        SecurityException(
             "ConnectivityService: Neither user 10001 nor current process has " +
                 "android.permission.ACCESS_NETWORK_STATE.",
         )
