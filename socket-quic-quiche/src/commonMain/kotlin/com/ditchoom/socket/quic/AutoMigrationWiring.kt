@@ -1,16 +1,16 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.pathChanges
 import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 
 /*
  * Turns the public auto-migration opt-out (QuicOptions.autoMigrateOnNetworkChange, on by default)
- * into a live reactor on the client connection: a NetworkMonitor's networkId changes become
+ * into a live reactor on the client connection: a NetworkMonitor's path changes become
  * QuicScope.migrate() calls, so a Wi-Fi↔cellular handoff re-homes the QUIC connection with no caller
  * code. The mirror of TraceCaptureWiring's wireClientConnectivityTap — same one-hop shape, wired from
  * the three QuicheEngine actuals' connect() paths (never bind(): a server has no local client path).
@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Unless auto-migration is disabled, launch a child of [connection] that observes the resolved
- * [NetworkMonitor]'s [NetworkMonitor.networkId] and actively migrates ([QuicScope.migrate] with
+ * [NetworkMonitor]'s [pathChanges] and actively migrates ([QuicScope.migrate] with
  * defaults — a fresh ephemeral socket on the new default interface) on each change to a new link. The
  * collector is a child of the connection scope, so it stops when the connection closes.
  *
@@ -45,9 +45,13 @@ internal fun wireAutoMigration(
     // nothing to observe, so don't even launch a collector.
     if (monitor === NetworkMonitor.AlwaysAvailable) return
     connection.launch {
-        monitor.networkId
+        // pathChanges() is identity-keyed and already drops the connect-time baseline. That dedupe is
+        // load-bearing here: the monitor's state also changes when reachability firms up, so collecting
+        // it raw would see Android's ~1s Pending → Confirmed window on a single Wi-Fi network as a
+        // handoff and migrate a perfectly good path (RFC_NETWORK_REACHABILITY §5, isTransient).
+        monitor
+            .pathChanges()
             .filter { it != NetworkId.Unidentified } // ignore "no/unknown link" states — nothing to migrate onto
-            .drop(1) // the first identified link is the connect-time baseline, not a change
             .collect {
                 // migrate() defaults (null host, port 0): re-bind to a fresh ephemeral socket on the
                 // new default interface. Succeeded/Failed → keep watching for the next handoff.
