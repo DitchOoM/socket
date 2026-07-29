@@ -1,6 +1,5 @@
 package com.ditchoom.socket
 
-import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -17,10 +16,22 @@ import kotlin.time.Duration
  * `:network-monitor` alongside [NetworkMonitor.AlwaysAvailable] so any consumer of the network-awareness
  * contract can use it without pulling in `:socket`'s TCP/TLS stack.
  *
- * The monitor starts at the script's initial state and stays there until [play] is invoked; [play] then
- * advances [availability] and [networkId] at each scheduled offset by [delay]-ing the caller's
- * coroutine. Under `kotlinx-coroutines-test` that is virtual time, so a full flap timeline resolves
- * instantly and identically every run — the hermetic auto-migration trigger.
+ * The monitor starts at the script's [initialState][NetworkMonitorScript.initialState] and stays there
+ * until [play] is invoked; [play] then advances [state] at each scheduled offset by [delay]-ing the
+ * caller's coroutine. Under `kotlinx-coroutines-test` that is **virtual time**, so a full flap timeline
+ * resolves instantly and identically every run — the hermetic auto-migration trigger.
+ *
+ * It reports the script's declared [NetworkMonitorScript.capability] verbatim, and the script validated
+ * every one of its states against that capability at construction ([ReachResolution.permits]). So this
+ * fake cannot emit a state the monitor it stands in for could not have produced — a consumer test is
+ * always written against a legal timeline, which is the whole reason the capability lives on the script
+ * rather than being passed in here.
+ *
+ * This reports its scripted mechanism even when that is [MonitorMechanism.PlatformSignalled], which is
+ * what lets a consumer that gates a feature on reactivity (`../webrtc`'s
+ * `IceRestartPolicy.OnNetworkChange`) be exercised at all: a [MonitorMechanism.Polled] or
+ * [MonitorMechanism.Static] answer would make the feature-under-test disable itself and the scripted
+ * timeline would prove nothing.
  *
  * Wire it exactly like a real monitor. Subscribe collectors first, then start playback, so no early
  * transition is missed:
@@ -35,26 +46,17 @@ class ScriptedNetworkMonitor(
     /** The timeline this monitor plays. Its initial state is what the monitor reports before [play]. */
     val script: NetworkMonitorScript,
 ) : NetworkMonitor {
-    private val availabilityState = MutableStateFlow(script.initialAvailability)
-    override val availability: StateFlow<NetworkAvailability> = availabilityState.asStateFlow()
+    private val stateFlow = MutableStateFlow(script.initialState)
+    override val state: StateFlow<NetworkState> = stateFlow.asStateFlow()
 
-    private val networkIdState = MutableStateFlow(script.initialNetworkId)
-    override val networkId: StateFlow<NetworkId> = networkIdState.asStateFlow()
-
-    /**
-     * [MonitorMechanism.PlatformSignalled] — the script *pushes* each transition at its scheduled
-     * offset, with no polling interval anywhere. Reporting it as such is what lets a consumer that gates
-     * a feature on reactivity (`../webrtc`'s `IceRestartPolicy.OnNetworkChange`) be exercised by this
-     * fake at all: a [MonitorMechanism.Polled] or [MonitorMechanism.Static] answer would make the
-     * feature-under-test disable itself and the scripted timeline would prove nothing.
-     */
-    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+    /** The script's declared capability, reported verbatim — every scripted state was checked against it. */
+    override val capability: MonitorCapability = script.capability
 
     /**
-     * Plays [script] to completion on the calling coroutine, suspending between transitions with
-     * [delay] (virtual time under `runTest`). Returns once the last transition has fired; a script with
-     * no transitions returns immediately. Cancelling the caller stops playback at whatever state was
-     * last applied. Calling [play] again re-runs the timeline (StateFlow de-dupes the repeated values).
+     * Plays [script] to completion on the calling coroutine, suspending between transitions with [delay]
+     * (virtual time under `runTest`). Returns once the last transition has fired; a script with no
+     * transitions returns immediately. Cancelling the caller stops playback at whatever state was last
+     * applied. Calling [play] again re-runs the timeline (StateFlow de-dupes the repeated values).
      */
     suspend fun play() {
         var elapsed = Duration.ZERO
@@ -62,10 +64,7 @@ class ScriptedNetworkMonitor(
             val wait = transition.at - elapsed
             if (wait > Duration.ZERO) delay(wait)
             elapsed = transition.at
-            when (transition) {
-                is NetworkMonitorScript.Transition.Availability -> availabilityState.value = transition.value
-                is NetworkMonitorScript.Transition.Network -> networkIdState.value = transition.id
-            }
+            stateFlow.value = transition.state
         }
     }
 

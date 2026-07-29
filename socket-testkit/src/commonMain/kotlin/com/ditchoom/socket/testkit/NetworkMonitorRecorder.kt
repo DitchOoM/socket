@@ -1,23 +1,25 @@
 package com.ditchoom.socket.testkit
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.MonitorCapability
+import com.ditchoom.socket.MonitorMechanism
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkMonitorScript
+import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.ScriptedNetworkMonitor
+import com.ditchoom.socket.permits
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
-import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.TimeSource
 
 /**
- * Records a live [NetworkMonitor]'s emissions as replayable [TraceEvent.NetAvail]/[TraceEvent.Net]
- * input events on a neutral [TraceSink] — the capture half of the network-observation record/replay
- * loop (RFC_UNIFIED_NETWORK_TEST_HARNESS §7). The recorded trace round-trips back into a
+ * Records a live [NetworkMonitor]'s emissions as replayable [TraceEvent.Net] input events (preceded by
+ * one [TraceEvent.NetCapability]) on a neutral [TraceSink] — the capture half of the network-observation
+ * record/replay loop (RFC_UNIFIED_NETWORK_TEST_HARNESS §7). The recorded trace round-trips back into a
  * [NetworkMonitorScript] via [networkMonitorScriptFromTrace], so a flap seen once on a real device
  * replays deterministically through a [ScriptedNetworkMonitor] forever after.
  *
@@ -26,10 +28,9 @@ import kotlin.time.TimeSource
  * would force that lean module to depend on the testkit (a dependency cycle). The scripted monitor and
  * the script value type stay upstream so production consumers get the fake without the recorder.
  *
- * All stamps are nanoseconds from the recorder's origin, taken from [clock] — inject
+ * All stamps are offsets from the recorder's origin, taken from [clock] — inject
  * `{ testScheduler.currentTime.milliseconds }` under `runTest` so a recording follows the same virtual
  * clock the rest of the harness runs on; the default is a monotonic wall clock for live capture.
- * [observe] may run its two collectors concurrently, and [TraceSink.emit] tolerates that.
  */
 class NetworkMonitorRecorder(
     private val sink: TraceSink,
@@ -37,30 +38,37 @@ class NetworkMonitorRecorder(
 ) {
     private val origin: Duration = clock()
 
-    private fun nowNanos(): Long = (clock() - origin).inWholeNanoseconds
+    private fun now(): Duration = clock() - origin
 
-    /** Record a `networkId` observation at the current instant. */
-    fun networkId(id: NetworkId) {
-        sink.emit(TraceEvent.Net(nowNanos(), id))
+    /** Record a `NetworkMonitor.state` observation at the current instant. */
+    fun state(state: NetworkState) {
+        sink.emit(TraceEvent.Net(now(), state))
     }
 
-    /** Record an `availability` observation at the current instant. */
-    fun availability(value: NetworkAvailability) {
-        sink.emit(TraceEvent.NetAvail(nowNanos(), value))
+    /** Record the monitor's [MonitorCapability] at the current instant (once — it never changes). */
+    fun capability(capability: MonitorCapability) {
+        sink.emit(TraceEvent.NetCapability(now(), capability))
     }
 
     /**
-     * Collects [monitor]'s `availability` and `networkId` StateFlows in [scope], recording every
-     * emission — including each flow's initial replayed value, which becomes the script's initial
-     * state on replay. Returns the parent [Job]; cancel it (or [scope]) to stop recording.
+     * Records [monitor]'s [capability][NetworkMonitor.capability], then collects its
+     * [state][NetworkMonitor.state] flow in [scope], recording every emission — including the initial
+     * replayed value, which becomes the script's initial state on replay. Returns the [Job]; cancel it
+     * (or [scope]) to stop recording.
+     *
+     * **One collector, deliberately.** The previous two-flow recorder launched one collector per flow,
+     * so two independently-stamped streams interleaved by scheduling rather than by time, and the
+     * 2026-07-29 device capture duly emitted an earlier availability line *after* a later identity line.
+     * A single flow cannot do that: the stream is monotonic by construction, not by discipline
+     * (RFC_NETWORK_REACHABILITY §1.2).
      */
     fun observe(
         monitor: NetworkMonitor,
         scope: CoroutineScope,
     ): Job =
         scope.launch {
-            launch { monitor.availability.collect { availability(it) } }
-            launch { monitor.networkId.collect { networkId(it) } }
+            capability(monitor.capability)
+            monitor.state.collect { state(it) }
         }
 
     companion object {
@@ -75,24 +83,48 @@ class NetworkMonitorRecorder(
  * Rebuilds the [NetworkMonitorScript] that a [NetworkMonitorRecorder] captured from a real monitor —
  * the inverse of recording, closing the record→fixture→replay loop for network observations.
  *
- * Only the network input events ([TraceEvent.NetAvail]/[TraceEvent.Net]) are consulted; any other
- * trace events are ignored, so a mixed QUIC/network trace can be projected straight to a monitor
- * script. Each flow's **first** recorded value is the script's initial state (a monitor reports its
- * current value the moment a recorder subscribes); every later value becomes a transition at its
- * recorded offset. With no recorded availability/networkId the script defaults to
- * `AVAILABLE`/[NetworkId.Unidentified], matching a monitor that never reported.
+ * Only the network input events are consulted ([TraceEvent.Net] and [TraceEvent.NetCapability]); any
+ * other trace events are ignored, so a mixed QUIC/network trace can be projected straight to a monitor
+ * script. The **first** recorded state is the script's initial state (a monitor reports its current
+ * value the moment a recorder subscribes); every later one becomes a transition at its recorded offset.
+ * With no recorded state at all the script sits at [NetworkState.Unknown], matching a monitor that never
+ * reported.
+ *
+ * A trace carrying no [TraceEvent.NetCapability] — a QUIC-only capture, or one taken before that line
+ * existed — gets [weakestCapabilityFor], so replay still validates rather than silently trusting the
+ * fixture author.
  */
 fun networkMonitorScriptFromTrace(events: List<TraceEvent>): NetworkMonitorScript {
-    val avails = events.filterIsInstance<TraceEvent.NetAvail>()
-    val nets = events.filterIsInstance<TraceEvent.Net>()
-    val transitions =
-        buildList {
-            avails.drop(1).forEach { add(NetworkMonitorScript.Transition.Availability(it.atNanos.nanoseconds, it.value)) }
-            nets.drop(1).forEach { add(NetworkMonitorScript.Transition.Network(it.atNanos.nanoseconds, it.id)) }
-        }.sortedBy { it.at }
+    val states = events.filterIsInstance<TraceEvent.Net>()
+    val capability =
+        events.filterIsInstance<TraceEvent.NetCapability>().firstOrNull()?.capability
+            ?: weakestCapabilityFor(states.map { it.state })
     return NetworkMonitorScript(
-        initialAvailability = avails.firstOrNull()?.value ?: NetworkAvailability.AVAILABLE,
-        initialNetworkId = nets.firstOrNull()?.id ?: NetworkId.Unidentified,
-        transitions = transitions,
+        capability = capability,
+        initialState = states.firstOrNull()?.state ?: NetworkState.Unknown,
+        transitions = states.drop(1).map { NetworkMonitorScript.Transition(it.at, it.state) },
     )
+}
+
+/**
+ * The least capable [MonitorCapability] that could have produced every one of [states] — what a trace
+ * with no recorded [TraceEvent.NetCapability] replays as.
+ *
+ * Deriving it beats defaulting to something permissive: the resolution is the weakest of
+ * [ReachResolution.LinkOnly] / [RouteOnly][ReachResolution.RouteOnly] /
+ * [RouteAndInternet][ReachResolution.RouteAndInternet] that [permits] the whole timeline, so the replay
+ * still enforces the pairing rules on states it *can* judge. The mechanism is
+ * [MonitorMechanism.Unknown], because a trace genuinely does not record whether the platform pushed or
+ * the monitor polled. [ReachResolution.Asserted] is the last resort for a timeline no single real
+ * resolution explains (a hand-edited fixture mixing observed and unobserved reachability).
+ */
+fun weakestCapabilityFor(states: List<NetworkState>): MonitorCapability {
+    val resolution =
+        listOf(
+            ReachResolution.LinkOnly,
+            ReachResolution.RouteOnly,
+            ReachResolution.RouteAndInternet,
+        ).firstOrNull { candidate -> states.all { candidate.permits(it) } }
+            ?: ReachResolution.Asserted
+    return MonitorCapability(MonitorMechanism.Unknown, resolution)
 }

@@ -4,32 +4,52 @@ import com.ditchoom.socket.transport.NetworkId
 import kotlin.time.Duration
 
 /**
- * A deterministic timeline of network transitions a [ScriptedNetworkMonitor] plays out — the hermetic
- * substitute for waiting on a real platform monitor's callbacks. It is the input half of the
+ * A deterministic timeline of [NetworkState] transitions a [ScriptedNetworkMonitor] plays out — the
+ * hermetic substitute for waiting on a real platform monitor's callbacks. It is the input half of the
  * network-observation record/replay loop (RFC_UNIFIED_NETWORK_TEST_HARNESS §7): a
  * `com.ditchoom.socket.testkit.NetworkMonitorRecorder` captures a real monitor's emissions as
- * `TraceEvent.NetAvail`/`TraceEvent.Net`, and those replay back through a script built from the same
- * events (`NetworkMonitorScript.fromTrace`, in `:socket-testkit`).
+ * `TraceEvent.Net` + one `TraceEvent.NetCapability`, and those replay back through a script built from
+ * the same events (`networkMonitorScriptFromTrace`, in `:socket-testkit`).
  *
- * A script is a starting state ([initialAvailability] + [initialNetworkId], the values the monitor
- * reports before its first scheduled change) plus an ordered list of timed [Transition]s. Sealed and
- * value-typed with **no bare strings and no nulls** — every state is a distinct [NetworkAvailability]
- * or [NetworkId] the same way the platform monitors report them.
+ * A script is a declared [capability], a starting [initialState], and an ordered list of timed
+ * [Transition]s. Because a state and its identity are now **one value**, a transition is one concept —
+ * there is no `Availability`/`Network` pair that could disagree, and therefore no way to script the
+ * torn read that motivated RFC_NETWORK_REACHABILITY §1.2.
  *
- * Construction enforces the schedule invariants (no impossible states): [Transition.at] offsets are
- * non-negative and non-decreasing, so a built script always plays in the order it reads. Build one
- * with the [networkMonitorScript] DSL, which appends in call order and stamps each transition with
- * the running offset.
+ * Construction enforces every invariant, so an impossible timeline fails at the point it is written
+ * rather than misleading a test that passes:
+ *  - [Transition.at] offsets are non-negative and non-decreasing, so a built script plays in the order
+ *    it reads.
+ *  - Every state — [initialState] included — must be one the declared [capability] could actually have
+ *    produced ([ReachResolution.permits]). Scripting `Routable(_, Confirmed)` against
+ *    [ReachResolution.RouteOnly] is a bug in the fixture, and this is where it surfaces: in
+ *    `commonTest`, under virtual time, on every platform, with no device.
+ *  - A [MonitorMechanism.Static] monitor may not have transitions at all — that is what "static" means.
+ *
+ * Build one with the [networkMonitorScript] DSL, which appends in call order and stamps each transition
+ * with the running offset.
  */
 class NetworkMonitorScript(
-    /** The availability the monitor reports until the first [Transition.Availability] fires. */
-    val initialAvailability: NetworkAvailability,
-    /** The identity the monitor reports until the first [Transition.Network] fires. */
-    val initialNetworkId: NetworkId,
+    /**
+     * What the scripted monitor declares it can observe. Every state in this script is checked against
+     * its [MonitorCapability.resolution], so a consumer test is always written against a timeline some
+     * real monitor could have produced.
+     */
+    val capability: MonitorCapability,
+    /** The state the monitor reports until the first [Transition] fires. */
+    val initialState: NetworkState,
     /** Timed transitions, non-decreasing in [Transition.at]; empty means "never changes". */
     val transitions: List<Transition>,
 ) {
     init {
+        require(capability.resolution.permits(initialState)) {
+            "initial state $initialState is not producible by a monitor declaring ${capability.resolution}"
+        }
+        if (capability.mechanism == MonitorMechanism.Static) {
+            require(transitions.isEmpty()) {
+                "a ${MonitorMechanism.Static} monitor cannot transition, but the script has ${transitions.size}"
+            }
+        }
         var previous = Duration.ZERO
         for ((index, transition) in transitions.withIndex()) {
             require(transition.at >= Duration.ZERO) {
@@ -37,6 +57,9 @@ class NetworkMonitorScript(
             }
             require(transition.at >= previous) {
                 "transition[$index] at ${transition.at} precedes transition[${index - 1}] at $previous; a script must be non-decreasing in time"
+            }
+            require(capability.resolution.permits(transition.state)) {
+                "transition[$index] state ${transition.state} is not producible by a monitor declaring ${capability.resolution}"
             }
             previous = transition.at
         }
@@ -46,55 +69,59 @@ class NetworkMonitorScript(
     val duration: Duration get() = transitions.lastOrNull()?.at ?: Duration.ZERO
 
     /**
-     * One scheduled change, fired at offset [at] from the start of playback. Sealed so the two axes a
-     * monitor exposes — [NetworkAvailability] and [NetworkId] — stay distinct types, never a nullable
-     * pair.
+     * One scheduled change: at offset [at] from the start of playback, the monitor's
+     * [state][NetworkMonitor.state] becomes [state].
+     *
+     * A flat data class rather than a sealed hierarchy, because collapsing availability and identity into
+     * one [NetworkState] left exactly one kind of transition — a single-case sealed interface would be
+     * ceremony with nothing to discriminate.
      */
-    sealed interface Transition {
+    data class Transition(
         /** Offset from the start of playback (not a wall-clock instant). */
-        val at: Duration
-
-        /** At [at], the monitor's `availability` becomes [value]. */
-        data class Availability(
-            override val at: Duration,
-            val value: NetworkAvailability,
-        ) : Transition
-
-        /** At [at], the monitor's `networkId` becomes [id]. */
-        data class Network(
-            override val at: Duration,
-            val id: NetworkId,
-        ) : Transition
-    }
+        val at: Duration,
+        /** The state the monitor reports from [at] onwards. */
+        val state: NetworkState,
+    )
 
     companion object {
-        /** An empty script that reports [availability]/[networkId] forever and never transitions. */
+        /**
+         * A script that reports [state] forever and never transitions. Defaults to the shape
+         * [NetworkMonitor.AlwaysAvailable] reports, capability included, so the common "network is fine,
+         * stop asking" fake is one call.
+         */
         fun steady(
-            availability: NetworkAvailability = NetworkAvailability.AVAILABLE,
-            networkId: NetworkId = NetworkId.Unidentified,
-        ): NetworkMonitorScript = NetworkMonitorScript(availability, networkId, emptyList())
+            state: NetworkState = NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved),
+            capability: MonitorCapability = MonitorCapability(MonitorMechanism.Static, ReachResolution.Asserted),
+        ): NetworkMonitorScript = NetworkMonitorScript(capability, state, emptyList())
     }
 }
 
 /**
  * Builds a [NetworkMonitorScript] in call order. Each `after(delay) { … }` advances the running offset
- * and the enclosed change lands at the accumulated instant, so a script reads as the sequence of
- * events it plays. Absolute offsets are also available via [availabilityAt]/[networkIdAt].
+ * and the enclosed change lands at the accumulated instant, so a script reads as the sequence of events
+ * it plays. Absolute offsets are also available via [NetworkMonitorScriptBuilder.stateAt].
  *
+ * The captive-portal timeline from RFC_NETWORK_REACHABILITY §7.1 — a state no device in this repo's
+ * test fleet can reproduce, and a deterministic `commonTest` here:
  * ```
- * val script = networkMonitorScript(initialNetworkId = wifi) {
- *     after(1.seconds) { networkId(cellular) }   // Wi-Fi → cellular flap at t=1s
- *     after(500.milliseconds) { availability(UNAVAILABLE) }   // then a drop at t=1.5s
+ * val portalThenLogin = networkMonitorScript(
+ *     capability = MonitorCapability(PlatformSignalled, RouteAndInternet),
+ *     initialState = NetworkState.Unknown,
+ * ) {
+ *     after(0.seconds)        { state(Routable(wifi, Pending)) }
+ *     after(800.milliseconds) { state(Routable(wifi, Blocked(CaptivePortal))) }
+ *     after(30.seconds)       { state(Routable(wifi, Confirmed)) }   // user logs in
  * }
  * ```
  */
 fun networkMonitorScript(
-    initialAvailability: NetworkAvailability = NetworkAvailability.AVAILABLE,
-    initialNetworkId: NetworkId = NetworkId.Unidentified,
+    capability: MonitorCapability =
+        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+    initialState: NetworkState = NetworkState.Unknown,
     block: NetworkMonitorScriptBuilder.() -> Unit,
 ): NetworkMonitorScript {
     val builder = NetworkMonitorScriptBuilder().apply(block)
-    return NetworkMonitorScript(initialAvailability, initialNetworkId, builder.build())
+    return NetworkMonitorScript(capability, initialState, builder.build())
 }
 
 /** DSL receiver for [networkMonitorScript]. Not thread-safe; build a script from a single coroutine. */
@@ -103,8 +130,8 @@ class NetworkMonitorScriptBuilder internal constructor() {
     private var cursor: Duration = Duration.ZERO
 
     /**
-     * Advances the running offset by [delay], then records the change(s) in [block] at the new instant.
-     * The window receiver only exposes the two change verbs so a transition can never be scheduled at an
+     * Advances the running offset by [delay], then records the change in [block] at the new instant. The
+     * window receiver exposes only the one change verb, so a transition can never be scheduled at an
      * ambiguous time.
      */
     fun after(
@@ -116,38 +143,24 @@ class NetworkMonitorScriptBuilder internal constructor() {
         TransitionWindow(cursor).apply(block)
     }
 
-    /** Records an availability change at the absolute offset [at]. */
-    fun availabilityAt(
+    /** Records a state change at the absolute offset [at]. */
+    fun stateAt(
         at: Duration,
-        value: NetworkAvailability,
+        state: NetworkState,
     ) {
-        transitions += NetworkMonitorScript.Transition.Availability(at, value)
-        cursor = maxOf(cursor, at)
-    }
-
-    /** Records a networkId change at the absolute offset [at]. */
-    fun networkIdAt(
-        at: Duration,
-        id: NetworkId,
-    ) {
-        transitions += NetworkMonitorScript.Transition.Network(at, id)
+        transitions += NetworkMonitorScript.Transition(at, state)
         cursor = maxOf(cursor, at)
     }
 
     internal fun build(): List<NetworkMonitorScript.Transition> = transitions.sortedBy { it.at }
 
-    /** The change verbs available inside an [after] window, all landing at the window's instant. */
+    /** The change verb available inside an [after] window, landing at the window's instant. */
     inner class TransitionWindow internal constructor(
         private val at: Duration,
     ) {
-        /** At this window's instant, the monitor's `availability` becomes [value]. */
-        fun availability(value: NetworkAvailability) {
-            transitions += NetworkMonitorScript.Transition.Availability(at, value)
-        }
-
-        /** At this window's instant, the monitor's `networkId` becomes [id]. */
-        fun networkId(id: NetworkId) {
-            transitions += NetworkMonitorScript.Transition.Network(at, id)
+        /** At this window's instant, the monitor's [state][NetworkMonitor.state] becomes [state]. */
+        fun state(state: NetworkState) {
+            transitions += NetworkMonitorScript.Transition(at, state)
         }
     }
 }
