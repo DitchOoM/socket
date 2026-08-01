@@ -3,13 +3,13 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.awaitCancellation
 
 /**
- * Adapts a `:socket-udp` buffer-flow [DatagramChannel] to quiche's internal [UdpChannel] seam (Phase 6,
+ * Adapts a `:socket-udp` buffer-flow [ConnectedDatagramChannel] to quiche's internal [UdpChannel] seam (Phase 6,
  * adapter-first cutover). This is the **client / connected** shape shared by every platform: the JVM
  * (NIO), Linux (io_uring), and Apple (NWConnection) client datapaths all now open a `:socket-udp`
  * channel and wrap it here, replacing the three per-platform `*UdpChannel` clients with one common
@@ -30,13 +30,14 @@ import kotlinx.coroutines.awaitCancellation
  *
  * ## Destination
  * The client is a *connected* channel: the driver only supplies a non-null [PathKey] `dest` on the
- * **server** egress path, so this adapter always sends to the channel's fixed peer (`to = null`) and
- * ignores `dest`, exactly as the old connected `NioUdpChannel`/`IoUringUdpChannel` clients did. The
- * server egress adapter is a separate type (per platform), because turning a `PathKey` back into a
- * packed `SocketAddress` needs platform machinery this connected client never touches.
+ * **server** egress path, so this adapter always sends to the channel's fixed peer (the connected
+ * send has no destination parameter) and ignores `dest`, exactly as the old connected
+ * `NioUdpChannel`/`IoUringUdpChannel` clients did. The server egress adapter is a separate type (per
+ * platform), because turning a `PathKey` back into a packed `SocketAddress` needs platform machinery
+ * this connected client never touches.
  */
 internal class DatagramChannelUdpChannel(
-    private val channel: DatagramChannel,
+    private val channel: ConnectedDatagramChannel,
 ) : UdpChannel {
     override val ownsReceiveBuffer: Boolean = true
 
@@ -87,7 +88,7 @@ internal class DatagramChannelUdpChannel(
         // so the driver's reused send buffer is safe. `dest` is always null here (connected client).
         buffer.position(0)
         buffer.setLimit(len)
-        channel.send(buffer, to = null)
+        channel.send(buffer)
     }
 
     override fun close() {

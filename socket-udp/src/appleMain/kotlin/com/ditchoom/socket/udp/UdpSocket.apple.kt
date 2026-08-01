@@ -5,8 +5,10 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.nw.nw_udp_cancel
 import com.ditchoom.socket.udp.nw.nw_udp_copy_local_sockaddr
@@ -69,7 +71,7 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): AddressedDatagramChannel {
         // A wildcard (null host) bind is DUAL-STACK IPv6: bind `::` with IPV6_V6ONLY=0 so the socket
         // receives BOTH ::1 and IPv4 (as ::ffff:a.b.c.d v4-mapped). Apple's NWConnection UDP *client*
         // resolves a name like "localhost" to ::1 by preference on Darwin, so an IPv4-only server would
@@ -83,7 +85,10 @@ actual object UdpSocket {
         setReuseAddr(fd)
         if (wildcard && local.family == AddressFamily.IPv6) setV6Only(fd, false)
         bindTo(fd, local)
-        return PosixUdpDatagramChannel(fd, localAddressOf(fd), receiveBufferSize, bufferFactory)
+        // Fail fast BEFORE constructing the addressed channel: an AddressedDatagramChannel's
+        // localAddress is non-null by construction (getsockname failure is a construct-time error).
+        val boundLocal = localAddressOf(fd) ?: run { close(fd); error("getsockname failed for bound UDP socket") }
+        return PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun connect(
@@ -93,7 +98,7 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): ConnectedDatagramChannel {
         // NWConnection assigns the local endpoint itself; localHost/localPort are advisory here (matching
         // the quiche NW client path, which does not bind a specific local address).
         val conn =
@@ -134,7 +139,13 @@ actual object UdpSocket {
         }
         val peer = copyConnectionSockaddr(conn, local = false) ?: (resolve(remoteHost, remotePort))
         val local = copyConnectionSockaddr(conn, local = true)
-        return NwUdpDatagramChannel(conn, peer, local, receiveBufferSize, bufferFactory)
+        return NwUdpDatagramChannel(
+            conn,
+            peer,
+            local?.let { LocalAddress.of(it) } ?: LocalAddress.Unknown,
+            receiveBufferSize,
+            bufferFactory,
+        )
     }
 
     actual suspend fun bindMulticast(
@@ -155,7 +166,9 @@ actual object UdpSocket {
         val wildcard = if (v6) WILDCARD_V6 else WILDCARD_V4
         val local = AppleSocketAddressResolver.resolve(wildcard, port) as AppleSocketAddress
         bindTo(fd, local)
-        val base = PosixUdpDatagramChannel(fd, localAddressOf(fd), receiveBufferSize, bufferFactory)
+        // Same fail-fast as bind(): the addressed base channel requires a non-null localAddress.
+        val boundLocal = localAddressOf(fd) ?: run { close(fd); error("getsockname failed for bound UDP socket") }
+        val base = PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
         return MulticastPosixUdpDatagramChannel(fd, ipv6 = v6, base = base)
     }
 

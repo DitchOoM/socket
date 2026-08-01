@@ -3,10 +3,13 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
+import com.ditchoom.buffer.flow.EcnPreference
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.OutboundDatagram
 import com.ditchoom.buffer.flow.SocketAddress
@@ -25,11 +28,13 @@ import kotlin.test.assertTrue
 /**
  * The datagram trichotomy conformance contract (buffer-flow's `DatagramChannelConformanceTests`) run
  * against **real** JVM/Android NIO sockets on loopback — RFC Phase 2's "re-run the Phase 1 conformance
- * suite against real sockets." The in-memory baseline is green; this proves the [NioDatagramChannel]
- * actual satisfies the same contract.
+ * suite against real sockets." The in-memory baseline is green; this proves the NIO actuals
+ * ([AddressedNioDatagramChannel] / [ConnectedNioDatagramChannel]) satisfy the same contract.
  *
- * Every channel binds to `127.0.0.1` so its [DatagramChannel.localAddress] is a routable loopback
- * endpoint usable as a send target (a wildcard bind would report `0.0.0.0`, which is not addressable).
+ * Every channel binds to `127.0.0.1` so its `localAddress` is a routable loopback endpoint usable as
+ * a send target (a wildcard bind would report `0.0.0.0`, which is not addressable). The `addr()`
+ * helper is split per addressing mode: an [AddressedDatagramChannel]'s local address is plainly
+ * non-null, a [ConnectedDatagramChannel]'s is the typed maybe-known `LocalAddress`.
  */
 @OptIn(ExperimentalDatagramApi::class)
 class UdpConformanceTests {
@@ -41,9 +46,11 @@ class UdpConformanceTests {
         opened.clear()
     }
 
-    private suspend fun bind(): DatagramChannel = UdpSocket.bind("127.0.0.1", 0).also { opened.add(it) }
+    private suspend fun bind(): AddressedDatagramChannel = UdpSocket.bind("127.0.0.1", 0).also { opened.add(it) }
 
-    private fun DatagramChannel.addr(): SocketAddress = localAddress!!
+    private fun AddressedDatagramChannel.addr(): SocketAddress = localAddress
+
+    private fun ConnectedDatagramChannel.addr(): SocketAddress = localAddress.orNull()!!
 
     private fun payload(text: String): ReadBuffer = BufferFactory.Default.wrap(text.encodeToByteArray())
 
@@ -107,9 +114,9 @@ class UdpConformanceTests {
     fun connectedSendUsesFixedPeerBothDirections() =
         udpTest {
             val server = bind()
-            // Connect a client to the server's address; send(to = null) targets the fixed peer.
+            // Connect a client to the server's address; the destination-free send targets the fixed peer.
             val client = UdpSocket.connect("127.0.0.1", server.addr().port, "127.0.0.1", 0).also { opened.add(it) }
-            client.send(payload("ping")) // to = null → connected peer (server)
+            client.send(payload("ping")) // connected: routes to the fixed peer (server)
             val atServer = assertIs<DatagramReadResult.Received>(server.recv()).datagram
             assertEquals("ping", atServer.payload.readByteArray(atServer.payload.remaining()).decodeToString())
             assertEquals(client.addr(), atServer.peer)
@@ -190,12 +197,12 @@ class UdpConformanceTests {
             b.send(
                 payload("cp"),
                 to = a.addr(),
-                options = DatagramSendOptions(ecn = Ecn.Ect0, hopLimit = 55, fromLocal = b.addr()),
+                options = DatagramSendOptions(ecn = EcnPreference.Ect0, hopLimit = 55, fromLocal = b.addr()),
             )
             val d = assertIs<DatagramReadResult.Received>(a.recv()).datagram
             assertEquals(Ecn.Unknown, d.ecn)
-            assertEquals(-1, d.hopLimit)
-            assertEquals(null, d.localAddress)
+            assertFalse(d.hopLimit.isKnown)
+            assertFalse(d.localAddress.isKnown)
         }
 
     @Test
@@ -208,7 +215,7 @@ class UdpConformanceTests {
             b.send(
                 payload("opts"),
                 to = a.addr(),
-                options = DatagramSendOptions(ecn = Ecn.Ect0, dscp = 46, dontFragment = true, hopLimit = 10),
+                options = DatagramSendOptions(ecn = EcnPreference.Ect0, dscp = 46, dontFragment = true, hopLimit = 10),
             )
             assertEquals("opts", a.recv().text())
         }

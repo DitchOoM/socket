@@ -5,12 +5,15 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
+import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.HopLimit
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.udp.nw.nw_udp_cancel
@@ -30,24 +33,26 @@ import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.resume
 
 /**
- * Apple (K/N) **connected** [DatagramChannel] over an `nw_connection_t` in UDP mode — the lift of the
+ * Apple (K/N) [ConnectedDatagramChannel] over an `nw_connection_t` in UDP mode — the lift of the
  * quiche `AppleNwUdpChannel`, reshaped to the public datagram trichotomy. NWConnection (not a raw POSIX
  * socket) keeps Apple's NWPath awareness (Wi-Fi↔cellular handoff) and a deterministic [close]. The peer
- * is fixed (the connected remote), so [Datagram.peer] is [connectedPeer] and `send(to = null)` targets
- * it.
+ * is fixed at construction (the connected refinement has no destination parameter at all), so
+ * [Datagram.peer] is [peer] and `send(payload)` targets it; [localAddress] is the typed maybe-known
+ * [LocalAddress] (NW may not surface one before traffic flows).
  *
  * The connection must already be `ready` at construction (see `UdpSocket.connect`). Control plane is
  * **managed** by NW — no raw ECN/DF/PKTINFO — so [capabilities] is [DatagramCapabilities.None] (§7.1
- * Apple-NW-client row); send `options` are a documented no-op and read fields are sentinels.
+ * Apple-NW-client row); send `options` are a documented no-op and read fields are the typed absent
+ * states.
  */
 @ExperimentalDatagramApi
 internal class NwUdpDatagramChannel(
     private val conn: nw_connection_t,
-    private val connectedPeer: SocketAddress,
-    override val localAddress: SocketAddress?,
+    override val peer: SocketAddress,
+    override val localAddress: LocalAddress,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
-) : DatagramChannel {
+) : ConnectedDatagramChannel {
     private val closedFlag = AtomicInt(0)
 
     // Completes when NW terminally closed/failed (a receive callback delivered nil content or an error).
@@ -99,18 +104,27 @@ internal class NwUdpDatagramChannel(
         }
         payload.position(0)
         payload.setLimit(n)
-        return DatagramReadResult.Received(Datagram(payload = payload, peer = connectedPeer))
+        // All five args explicit: a defaulted localAddress rides the default-args bridge and boxes the
+        // value class (see LocalAddress's KDoc) — NW reports no per-datagram read control plane anyway.
+        return DatagramReadResult.Received(
+            Datagram(
+                payload = payload,
+                peer = peer,
+                ecn = Ecn.Unknown,
+                localAddress = LocalAddress.Unknown,
+                hopLimit = HopLimit.Unknown,
+            ),
+        )
     }
 
     override suspend fun send(
         payload: ReadBuffer,
-        to: SocketAddress?,
         options: DatagramSendOptions,
     ) {
         check(closedFlag.value == 0) { "sink is closed" }
-        // Connected NW channel: send(to = null) targets the fixed peer; a non-null [to] must be the same
-        // peer (NW is point-to-point). nw_udp_send copies the bytes into a dispatch_data buffer
-        // synchronously, so the caller's buffer is safe the moment the call returns.
+        // Connected NW channel: every send targets the fixed peer (NW is point-to-point). nw_udp_send
+        // copies the bytes into a dispatch_data buffer synchronously, so the caller's buffer is safe the
+        // moment the call returns.
         val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
         val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
         val len = payload.remaining()

@@ -6,13 +6,19 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
 import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.DatagramCloseReason
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
+import com.ditchoom.buffer.flow.EcnPreference
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.HopLimit
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.udp.linux.IPV6_DONTFRAG
@@ -66,10 +72,17 @@ import platform.posix.sockaddr_storage
 import kotlin.concurrent.AtomicInt
 import kotlin.time.Duration.Companion.seconds
 
+/** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
+private const val MAX_UDP_PAYLOAD = 65507
+
+/** Ancillary-data scratch — ample for IP_TOS(1) + IP_TTL(4) + IP_PKTINFO(12) each in a cmsghdr. */
+private const val CONTROL_BUFFER_SIZE = 256
+
 /**
- * Linux [DatagramChannel] backed by io_uring `recvmsg`/`sendmsg` — the real-socket lift of the quiche
- * `IoUringUdpChannel`/`IoUringUdpServerChannel`, reshaped to the public datagram trichotomy (RFC §7)
- * with the **full Linux control plane** (§7.1's richest platform):
+ * Shared core of the Linux io_uring datagram channels — the `recvmsg`/`sendmsg` machinery behind
+ * [ConnectedIoUringDatagramChannel] and [AddressedIoUringDatagramChannel]. The real-socket lift of the
+ * quiche `IoUringUdpChannel`/`IoUringUdpServerChannel`, reshaped to the public datagram trichotomy
+ * (RFC §7) with the **full Linux control plane** (§7.1's richest platform):
  *
  * - **per-packet source exposed** — [receive] decodes the `recvmsg` source into a [LinuxSocketAddress]
  *   as [Datagram.peer]; a **connected** channel uses its fixed [connectedPeer].
@@ -84,22 +97,27 @@ import kotlin.time.Duration.Companion.seconds
  *   [IoUringManager.submitAndWait] drains the kernel before returning even on cancel/close, so a
  *   concurrent [close] closes only the fd and never races a shared buffer.
  *
- * Not thread-safe (buffer-flow contract): confine [receive] and [send] each to one coroutine.
+ * The addressing mode is fixed at construction ([connectedPeer] non-null = connected): the wrappers
+ * add only the mode-specific send arity, so the base type can no longer express "send without knowing
+ * the mode" — the old nullable-`to` conflation is gone.
+ *
+ * Not thread-safe (buffer-flow contract): confine [receive] and the send path each to one coroutine.
  */
 @ExperimentalDatagramApi
-internal class IoUringDatagramChannel(
-    private val fd: Int,
-    private val connected: Boolean,
-    private val connectedPeer: LinuxSocketAddress?,
-    override val localAddress: SocketAddress?,
+internal abstract class IoUringDatagramChannelCore(
+    protected val fd: Int,
+    /** The fixed peer of a connected channel; `null` = addressed mode (per-packet sources). */
+    protected val connectedPeer: LinuxSocketAddress?,
+    /** The bound local port, stamped onto an `IP_PKTINFO`-derived [Datagram.localAddress]. */
+    private val localPort: Int,
     private val ipv6: Boolean,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
 ) : DatagramChannel {
     private val closedFlag = AtomicInt(0)
 
-    /** The bound local port, stamped onto an `IP_PKTINFO`-derived [Datagram.localAddress]. */
-    private val localPort: Int = localAddress?.port ?: 0
+    /** Connected mode: `recvmsg` skips the source sockaddr and `sendmsg` omits `msg_name`. */
+    private val connected get() = connectedPeer != null
 
     init {
         enableReceiveControlPlane()
@@ -162,9 +180,9 @@ internal class IoUringDatagramChannel(
     }
 
     private fun applyControlPlane(options: DatagramSendOptions) {
-        if (options.ecn != Ecn.Unknown || options.dscp >= 0) {
+        if (options.ecn != EcnPreference.OsDefault || options.dscp >= 0) {
             val dscpBits = if (options.dscp >= 0) options.dscp else 0
-            val ecnBits = if (options.ecn != Ecn.Unknown) options.ecn.codepoint else 0
+            val ecnBits = if (options.ecn != EcnPreference.OsDefault) options.ecn.codepoint else 0
             val tos = (dscpBits shl 2) or ecnBits
             if (tos != appliedTos) {
                 setIntOption(if (ipv6) IPPROTO_IPV6 else IPPROTO_IP, if (ipv6) IPV6_TCLASS else IP_TOS, tos)
@@ -185,17 +203,17 @@ internal class IoUringDatagramChannel(
         }
     }
 
-    /** Parsed read-side control plane from a `recvmsg`'s cmsgs. */
+    /** Parsed read-side control plane from a `recvmsg`'s cmsgs — typed absent states, no sentinels. */
     private class ControlPlane(
         val ecn: Ecn,
-        val hopLimit: Int,
-        val localAddress: SocketAddress?,
+        val hopLimit: HopLimit,
+        val localAddress: LocalAddress,
     )
 
     private fun parseControlPlane(msg: CPointer<msghdr>): ControlPlane {
         var ecn = Ecn.Unknown
-        var hopLimit = -1
-        var localAddress: SocketAddress? = null
+        var hopLimit = HopLimit.Unknown
+        var localAddress = LocalAddress.Unknown
         var cmsg: CPointer<cmsghdr>? = cmsg_firsthdr(msg)
         while (cmsg != null) {
             val header = cmsg.pointed
@@ -205,17 +223,20 @@ internal class IoUringDatagramChannel(
             if (data != null) {
                 when {
                     level == IPPROTO_IP && type == IP_TOS -> ecn = Ecn.fromCodepoint(data[0].toInt())
-                    level == IPPROTO_IP && type == IP_TTL -> hopLimit = data.reinterpret<IntVar>().pointed.value
+                    // Kernel-reported TTL / hop limit is always a valid octet — HopLimit.of accepts it.
+                    level == IPPROTO_IP && type == IP_TTL ->
+                        hopLimit = HopLimit.of(data.reinterpret<IntVar>().pointed.value)
                     // struct in_pktinfo { int ipi_ifindex; struct in_addr ipi_spec_dst; struct in_addr ipi_addr; }
                     // ipi_addr (the datagram's destination IP) is at offset 8.
                     level == IPPROTO_IP && type == IP_PKTINFO ->
-                        localAddress = ipv4LocalAddress(data.reinterpret(), 8, localPort)
+                        localAddress = LocalAddress.of(ipv4LocalAddress(data.reinterpret(), 8, localPort))
                     level == IPPROTO_IPV6 && type == IPV6_TCLASS ->
                         ecn = Ecn.fromCodepoint(data.reinterpret<IntVar>().pointed.value)
-                    level == IPPROTO_IPV6 && type == IPV6_HOPLIMIT -> hopLimit = data.reinterpret<IntVar>().pointed.value
+                    level == IPPROTO_IPV6 && type == IPV6_HOPLIMIT ->
+                        hopLimit = HopLimit.of(data.reinterpret<IntVar>().pointed.value)
                     // struct in6_pktinfo { struct in6_addr ipi6_addr; unsigned ipi6_ifindex; } — addr at offset 0.
                     level == IPPROTO_IPV6 && type == IPV6_PKTINFO ->
-                        localAddress = ipv6LocalAddress(data.reinterpret(), 0, localPort)
+                        localAddress = LocalAddress.of(ipv6LocalAddress(data.reinterpret(), 0, localPort))
                 }
             }
             cmsg = cmsg_nxthdr(msg, cmsg)
@@ -279,7 +300,7 @@ internal class IoUringDatagramChannel(
                             // Idle re-arm — the deadline fired with no data; loop and re-submit.
                             n == -ETIMEDOUT || n == -ETIME -> null
                             // Socket closed underneath us (EBADF / ECANCELED) or a hard error.
-                            else -> DatagramReadResult.Closed(reason = n)
+                            else -> DatagramReadResult.Closed(DatagramCloseReason.OsError(n))
                         }
                     }
                 if (outcome is DatagramReadResult.Received) return outcome
@@ -295,9 +316,14 @@ internal class IoUringDatagramChannel(
         }
     }
 
-    override suspend fun send(
+    /**
+     * Shared `sendmsg` path. [target] carries the addressed wrapper's REQUIRED per-send destination;
+     * the connected wrapper passes `null` and the kernel routes to the `connect()`ed peer — so the
+     * null-target branch is only reachable in connected mode by construction (no runtime guard).
+     */
+    protected suspend fun sendDatagram(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        target: SocketAddress?,
         options: DatagramSendOptions,
     ) {
         check(closedFlag.value == 0) { "sink is closed" }
@@ -312,13 +338,13 @@ internal class IoUringDatagramChannel(
             val msg = alloc<msghdr>()
             iov.iov_base = basePtr
             iov.iov_len = len.convert()
-            if (to != null) {
+            if (target != null) {
                 val addr = alloc<sockaddr_storage>()
-                val addrLen = to.writeSockaddr(addr)
+                val addrLen = target.writeSockaddr(addr)
                 msg.msg_name = addr.ptr
                 msg.msg_namelen = addrLen
             } else {
-                check(connected) { "no destination: send(to = null) requires a connected channel" }
+                // Connected mode by construction — omitting msg_name routes to the connect()ed peer.
                 msg.msg_name = null
                 msg.msg_namelen = 0u.convert()
             }
@@ -372,12 +398,48 @@ internal class IoUringDatagramChannel(
         for (i in 0 until 4) groups[4 + i] = ((lo shr (48 - 16 * i)) and 0xFFFF).toInt()
         return LinuxSocketAddress(groups.joinToString(":") { it.toString(16) }, port, AddressFamily.IPv6, hi, lo)
     }
+}
 
-    companion object {
-        /** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
-        private const val MAX_UDP_PAYLOAD = 65507
+/**
+ * Connected mode ([UdpSocket.connect]): one fixed [peer], sends take no destination (the kernel routes
+ * to the `connect()`ed peer), and [localAddress] is the typed maybe-known [LocalAddress] — getsockname
+ * failing does not invalidate an otherwise usable connected socket.
+ */
+@ExperimentalDatagramApi
+internal class ConnectedIoUringDatagramChannel(
+    fd: Int,
+    peer: LinuxSocketAddress,
+    override val localAddress: LocalAddress,
+    ipv6: Boolean,
+    receiveBufferSize: Int = MAX_UDP_PAYLOAD,
+    bufferFactory: BufferFactory = BufferFactory.deterministic(),
+) : IoUringDatagramChannelCore(fd, peer, localAddress.orNull()?.port ?: 0, ipv6, receiveBufferSize, bufferFactory),
+    ConnectedDatagramChannel {
+    override val peer: SocketAddress = peer
 
-        /** Ancillary-data scratch — ample for IP_TOS(1) + IP_TTL(4) + IP_PKTINFO(12) each in a cmsghdr. */
-        private const val CONTROL_BUFFER_SIZE = 256
-    }
+    override suspend fun send(
+        payload: ReadBuffer,
+        options: DatagramSendOptions,
+    ) = sendDatagram(payload, target = null, options)
+}
+
+/**
+ * Addressed mode ([UdpSocket.bind]/[UdpSocket.bindMulticast]): many peers, every send names its
+ * destination, and [localAddress] is plainly non-null — bind fails fast before construction when
+ * getsockname cannot report the bound endpoint.
+ */
+@ExperimentalDatagramApi
+internal class AddressedIoUringDatagramChannel(
+    fd: Int,
+    override val localAddress: SocketAddress,
+    ipv6: Boolean,
+    receiveBufferSize: Int = MAX_UDP_PAYLOAD,
+    bufferFactory: BufferFactory = BufferFactory.deterministic(),
+) : IoUringDatagramChannelCore(fd, null, localAddress.port, ipv6, receiveBufferSize, bufferFactory),
+    AddressedDatagramChannel {
+    override suspend fun send(
+        payload: ReadBuffer,
+        to: SocketAddress,
+        options: DatagramSendOptions,
+    ) = sendDatagram(payload, to, options)
 }

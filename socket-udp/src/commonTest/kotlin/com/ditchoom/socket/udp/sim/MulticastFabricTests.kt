@@ -399,17 +399,6 @@ class MulticastFabricTests {
         }
 
     @Test
-    fun sendWithoutADestinationIsACallerError() =
-        runTest {
-            val fabric = MulticastFabric(BufferFactory.Default, scope = this)
-            val sender = fabric.open(addr(1))
-            val p = payload("no-dest")
-            assertFailsWith<IllegalStateException> { sender.send(p, to = null) }
-            p.freeNativeMemory()
-            fabric.close()
-        }
-
-    @Test
     fun controlKnobsAreRecordedAndAdvertised() =
         runTest {
             val fabric = MulticastFabric(BufferFactory.Default, scope = this)

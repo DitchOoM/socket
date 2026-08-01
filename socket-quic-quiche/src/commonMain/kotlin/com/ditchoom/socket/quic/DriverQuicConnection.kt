@@ -3,7 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.CompletableDeferred
@@ -49,7 +49,7 @@ internal class DriverQuicConnection(
 
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
 
-    override fun datagramChannel(): DatagramChannel = datagramAdapter
+    override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
     override suspend fun close(error: QuicError) {
         try {

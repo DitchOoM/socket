@@ -8,7 +8,10 @@ import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
+import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.HopLimit
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.testkit.fault.ByteEdit
 import com.ditchoom.socket.testkit.fault.FaultSchedule
@@ -107,17 +110,16 @@ class MulticastFabric(
 
         override suspend fun send(
             payload: ReadBuffer,
-            to: SocketAddress?,
+            to: SocketAddress,
             options: DatagramSendOptions,
         ) {
             check(isOpen) { "sink is closed" }
-            // A multicast channel is unconnected: a send with no destination is a caller error, exactly like
-            // the real actuals' send(to = null) on an unconnected channel.
-            val group = checkNotNull(to) { "no destination: a multicast send requires a group address" }
+            // A multicast channel is addressed by type: [to] is the group, required at compile time —
+            // the old "no destination" runtime caller error is now unrepresentable.
             val egress = outboundInterface
             for (member in endpoints) {
                 if (!member.isOpen) continue // a closed endpoint has no live receive link
-                if (!member.receives(group.host, egress)) continue // not joined on a matching interface
+                if (!member.receives(to.host, egress)) continue // not joined on a matching interface
                 if (member === this && !loopback) continue // sender's own copy, loopback disabled
                 when (val decision = member.engine.decide()) {
                     UnitDecision.Dropped -> {} // this member's link dropped it
@@ -164,7 +166,14 @@ class MulticastFabric(
                 }
             }
             payload.resetForRead()
-            val datagram = Datagram(payload = payload, peer = sender)
+            val datagram =
+                Datagram(
+                    payload = payload,
+                    peer = sender,
+                    ecn = Ecn.Unknown,
+                    localAddress = LocalAddress.Unknown,
+                    hopLimit = HopLimit.Unknown,
+                )
             if (after > Duration.ZERO) {
                 scope.launch {
                     delay(after)

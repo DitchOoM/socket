@@ -2,8 +2,8 @@
 
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.socket.udp.nw.socket_if_index
 import com.ditchoom.socket.udp.nw.socket_if_ipv4_be
@@ -24,9 +24,10 @@ import platform.posix.strerror
 
 /**
  * Apple/K-N [MulticastDatagramChannel]. Data plane (`receive`/`send`/`close`/`localAddress`) is delegated
- * to a plain [PosixUdpDatagramChannel] over the same [fd] (`by base`); this class adds the POSIX multicast
- * control plane via the struct-free `socket_mc_*` cinterop shims (see `nw_udp_helpers.h`). Every control
- * op maps a failing `setsockopt` to a typed [MulticastException] carrying `errno`.
+ * to a plain [PosixUdpDatagramChannel] over the same [fd] (`by base` — addressed, so sending to a group is
+ * an ordinary `send(payload, to = groupAddress)`); this class adds the POSIX multicast control plane via
+ * the struct-free `socket_mc_*` cinterop shims (see `nw_udp_helpers.h`). Every control op maps a failing
+ * `setsockopt` to a typed [MulticastException] carrying `errno`.
  */
 @ExperimentalDatagramApi
 internal class MulticastPosixUdpDatagramChannel(
@@ -34,7 +35,7 @@ internal class MulticastPosixUdpDatagramChannel(
     private val ipv6: Boolean,
     private val base: PosixUdpDatagramChannel,
 ) : MulticastDatagramChannel,
-    DatagramChannel by base {
+    AddressedDatagramChannel by base {
     override val capabilities: DatagramCapabilities = base.capabilities.withMulticast()
 
     override suspend fun joinGroup(membership: MulticastMembership) = membership(join = true, membership)

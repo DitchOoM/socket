@@ -70,7 +70,7 @@ internal suspend fun buildLinuxQuicServer(
         val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
         val channel =
             UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE, bufferFactory = recvBufPool)
-        val localAddress = channel.localAddress ?: error("bound server channel has no local address")
+        val localAddress = channel.localAddress
 
         val server =
             SharedQuicheServer(

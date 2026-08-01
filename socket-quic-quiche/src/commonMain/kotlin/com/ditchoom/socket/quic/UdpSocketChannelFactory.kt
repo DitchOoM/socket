@@ -35,7 +35,7 @@ internal class UdpSocketChannelFactory(
         localPort: Int,
     ): NewPath {
         val channel = UdpSocket.connect(peer.host, peer.port, localHost, localPort, receiveBufferSize, recvBufferFactory)
-        val local = channel.localAddress ?: error("connected migration path has no local address")
+        val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
         val encoded = codec.encodeToNative(local, bufferFactory)
         return NewPath(
             channel = DatagramChannelUdpChannel(channel),

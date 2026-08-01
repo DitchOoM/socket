@@ -1,7 +1,7 @@
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import java.net.InetAddress
@@ -13,11 +13,11 @@ import java.nio.channels.DatagramChannel as NioChannel
 
 /**
  * JVM/Android [MulticastDatagramChannel]. The data plane (`receive`/`send`/`close`/`localAddress`) is a
- * plain [NioDatagramChannel] over the same [NioChannel] (delegated via `by base`); this class adds only the
- * NIO multicast control plane — [NioChannel.join] → [MembershipKey] and the `IP_MULTICAST_*` socket
- * options. The channel MUST have been opened with a [java.net.StandardProtocolFamily] (see
- * [UdpSocket.bindMulticast]) or `join` would throw; that is exactly why multicast is a distinct
- * construction, not a flag on an already-open unicast socket.
+ * plain [AddressedNioDatagramChannel] over the same [NioChannel] (delegated via `by base` — multicast is
+ * inherently addressed: sends name the group); this class adds only the NIO multicast control plane —
+ * [NioChannel.join] → [MembershipKey] and the `IP_MULTICAST_*` socket options. The channel MUST have been
+ * opened with a [java.net.StandardProtocolFamily] (see [UdpSocket.bindMulticast]) or `join` would throw;
+ * that is exactly why multicast is a distinct construction, not a flag on an already-open unicast socket.
  *
  * Membership keys are tracked by (group, interface) so [leaveGroup] can drop the right one; [close]
  * (delegated to [base]) closes the channel, which the JDK auto-drops all memberships on.
@@ -25,9 +25,9 @@ import java.nio.channels.DatagramChannel as NioChannel
 @ExperimentalDatagramApi
 internal class MulticastNioDatagramChannel(
     private val channel: NioChannel,
-    private val base: NioDatagramChannel,
+    private val base: AddressedNioDatagramChannel,
 ) : MulticastDatagramChannel,
-    DatagramChannel by base {
+    AddressedDatagramChannel by base {
     /** (group address, interface) → live membership, so a leave targets the exact join. */
     private val memberships = mutableMapOf<MembershipPair, MembershipKey>()
 
