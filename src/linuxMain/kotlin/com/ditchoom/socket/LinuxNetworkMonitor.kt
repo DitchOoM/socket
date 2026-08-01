@@ -23,10 +23,15 @@ import kotlinx.coroutines.launch
 /**
  * Linux [NetworkMonitor] using netlink sockets for event-driven network change detection.
  *
- * Uses `AF_NETLINK` / `NETLINK_ROUTE` with `RTMGRP_LINK | RTMGRP_IPV4_IFADDR` multicast
- * groups to receive kernel notifications when network interfaces change state or gain/lose
- * addresses. On each notification, re-resolves the actual state via an `RTM_GETROUTE` dump plus
- * `getifaddrs()`.
+ * Uses `AF_NETLINK` / `NETLINK_ROUTE` bound to the `RTMGRP_LINK`, `RTMGRP_IPV4_IFADDR`,
+ * `RTMGRP_IPV6_IFADDR`, `RTMGRP_IPV4_ROUTE` and `RTMGRP_IPV6_ROUTE` multicast groups, so the kernel
+ * pushes link, address **and route** changes. The route groups are not completeness — they are
+ * load-bearing for the rung: the default route alone decides [NetworkState.LinkLocal] vs
+ * [NetworkState.Routable] (RFC_NETWORK_REACHABILITY §1.1), and a route can change with no link or
+ * address event at all — `ip route del default` touches nothing else, and the common DHCP sequence
+ * installs the default route *after* the address is already configured. With only the link/ifaddr
+ * groups either transition would go unseen and the monitor would hold the wrong rung indefinitely.
+ * On each notification, re-resolves the actual state via an `RTM_GETROUTE` dump plus `getifaddrs()`.
  *
  * This hybrid approach avoids parsing complex netlink message *attributes* on the notification path
  * while still being event-driven (no polling).
@@ -48,8 +53,9 @@ class LinuxNetworkMonitor : NetworkMonitor {
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
     /**
-     * `RTMGRP_LINK`/`RTMGRP_IPV4_IFADDR` netlink multicast — the kernel pushes, we never poll — and the
-     * kernel resolves routes but never probes the internet (RFC §8.2).
+     * Link, address and route netlink multicast (the five `RTMGRP_*` groups in the class KDoc) — the
+     * kernel pushes, we never poll — and the kernel resolves routes but never probes the internet
+     * (RFC §8.2).
      */
     override val capability: MonitorCapability =
         MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly)
@@ -74,7 +80,14 @@ class LinuxNetworkMonitor : NetworkMonitor {
                             .toCPointer<ByteVar>()!!
                     while (isActive) {
                         val n = recv(netlinkFd, ptr, 4096.toULong(), 0)
-                        if (n <= 0) break
+                        // ENOBUFS is not a dead socket: the kernel dropped notifications because the
+                        // socket's kernel receive queue (SO_RCVBUF — not this 4096-byte scratch buffer)
+                        // overflowed before we drained it (netlink(7) "reliable transmission") — likelier
+                        // now that the route groups multiply the event rate. Dropped *messages* cost nothing
+                        // here, because we never parse them: any wake-up triggers one full re-resolution,
+                        // which observes whatever end state the dropped burst left behind. So re-resolve
+                        // and keep listening; anything else (0 = closed, other errors) ends the loop.
+                        if (n == 0L || (n < 0L && errno != ENOBUFS)) break
                         // One re-resolution, one publication: link, route and identity come from the same
                         // pass, so a collector can never see a new link beside the old route.
                         _state.value = resolveNetworkState()
@@ -180,6 +193,14 @@ class LinuxNetworkMonitor : NetworkMonitor {
     }
 
     companion object {
+        // The full multicast set the rung contract needs. Link + v4/v6 ifaddr wake us for interface and
+        // address changes; the ROUTE groups are load-bearing (see the class KDoc): the default route alone
+        // decides LinkLocal vs Routable, and `ip route del default` — or DHCP installing the default route
+        // after the address is already configured — emits ONLY a route message.
+        private val NETLINK_GROUPS: UInt =
+            (RTMGRP_LINK or RTMGRP_IPV4_IFADDR or RTMGRP_IPV6_IFADDR or RTMGRP_IPV4_ROUTE or RTMGRP_IPV6_ROUTE)
+                .toUInt()
+
         private fun createNetlinkSocket(): Int =
             memScoped {
                 val fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE)
@@ -188,7 +209,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 val addr = alloc<sockaddr_nl>()
                 addr.nl_family = AF_NETLINK.toUShort()
                 addr.nl_pid = 0u
-                addr.nl_groups = (RTMGRP_LINK or RTMGRP_IPV4_IFADDR).toUInt()
+                addr.nl_groups = NETLINK_GROUPS
 
                 val bindResult = socket_bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_nl>().toUInt())
                 if (bindResult < 0) {
