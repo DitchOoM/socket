@@ -23,8 +23,7 @@ The fixture format separates two kinds of recorded data, because they are used d
 |---|---|
 | `DatagramIn(bytes, from: PathKey)` | `UdpChannel` stub |
 | `SocketError(errno/type)` | `UdpChannel` / socket stub |
-| `AvailabilityChanged(AVAILABLE/UNAVAILABLE/UNKNOWN)` | scripted `NetworkMonitor.availability` |
-| `NetworkChanged(NetworkId: Unidentified/KindOnly/Link)` | scripted `NetworkMonitor.networkId` |
+| `NetworkStateChanged(NetworkState: Unknown/Offline/LinkLocal/Routable)` | scripted `NetworkMonitor.state` |
 | `LivenessResult(Alive/Dead/Unknown)` | scripted `Liveness` (#222) |
 | `ClockAdvance(Δt)` | `TestClock` |
 
@@ -59,7 +58,7 @@ fixture / generator
 
 ### 3.1 Seam changes required (nondeterminism audit)
 
-The audit found the timing hot paths largely seamed already: the driver's keepalive/idle timers route through `DriverClock` (default `RealDriverClock`), and the reconnect layer (`ReconnectingConnection`) is *fully* virtual-time-drivable today — its backoff is deterministic exponential with **no jitter or randomness**, its `withTimeoutOrNull(retryDelay)` backoff-vs-networkId race inherits the caller's context, and `NetworkMonitor`/`Liveness`/`ReconnectionClassifier`/`CapabilityCache.timeSource` are all injectable. The remaining production changes (all constructor/param plumbing — no cinterop/JNI work):
+The audit found the timing hot paths largely seamed already: the driver's keepalive/idle timers route through `DriverClock` (default `RealDriverClock`), and the reconnect layer (`ReconnectingConnection`) is *fully* virtual-time-drivable today — its backoff is deterministic exponential with **no jitter or randomness**, its `withTimeoutOrNull(retryDelay)` backoff-vs-path-change race inherits the caller's context, and `NetworkMonitor`/`Liveness`/`ReconnectionClassifier`/`CapabilityCache.timeSource` are all injectable. The remaining production changes (all constructor/param plumbing — no cinterop/JNI work):
 
 1. **Driver loop dispatcher** — `QuicheDriver` launches its control loop with a hardwired `Dispatchers.Default`, overriding the caller's scope. This is *the* blocker: it keeps `DriverClock.armTimeout` wakes off any virtual-time scheduler. Fix: launch in the caller's context (or a `driverDispatcher` param defaulting to `Dispatchers.Default`). The UDP reader loop stays on real I/O — sims replace the channel itself.
 2. **Plumb `DriverClock` to the connect API** — the seam exists but none of the six platform construction sites (apple/linux/jvm × connection/server) forward a clock; all get `RealDriverClock`. Expose it through the internal connection factories.
@@ -78,7 +77,7 @@ The repo already contains most of the engine's parts; audit of the existing test
 | Coroutine virtual time | kotlinx-coroutines-test (`runTest`, `testScheduler`, `currentTime`) — already a dependency of every relevant test source set; `socket-testsuite` exposes it as `api` | **TestClock bridge**: today the driver's `DriverClock` world and the `TestScope` virtual-time world are disjoint (driver tests run real-dispatcher `runQuicTest`; transport tests run `runTest`). The interpreter unifies them behind one clock. |
 | quiche scripting | `StubQuicheApi` (full FFI surface: scripted stream recv/send results, close reasons, datagram queues, writable signals, recording counters) | packet-level inbound scripting: `StubUdpChannel.receive()` currently suspends forever (tests run `clientMode=false`); the interpreter feeds inbound datagrams on schedule with `clientMode=true` |
 | UDP error injection | `StubUdpChannel(sendBehavior)` + the gated-send pinning technique from `ReactiveDriverTests` | — |
-| Connectivity scripting | `MockNetworkMonitor` (`set`/`setNetworkId` over `StateFlow`s), `ScriptedTransport` outcome scripting, `FallbackTransport(networkId = {...})` | promote `MockNetworkMonitor` from root `commonTest` into the published harness |
+| Connectivity scripting | `MockNetworkMonitor` (`set`/`setNetworkId` over the one `StateFlow<NetworkState>`), `ScriptedTransport` outcome scripting, `FallbackTransport(networkId = {...})` | promote `MockNetworkMonitor` from root `commonTest` into the published harness |
 | Connection-surface scripting | `MockQuicConnection` (quiche-free `QuicConnection`: `injectPeerStream`, `transitionTo`) | give it a clock seam (it currently runs on real `Dispatchers.Default`) |
 | Timeline | `QuicheCmd` command channel, `ScriptedTransport.Outcome` per-dimension scripts | **ordered heterogeneous event timeline** — nothing today expresses "a scheduled sequence of events across dimensions"; each harness scripts one dimension independently |
 | Assertions | `TrackingBufferFactory.assertNoLeaks()`, `StateFlow` state assertions, stub recording counters, `currentTime` timing assertions | **trace-oracle**: assert on the ordered emitted-event trace (golden trajectory), not just final scalar state |
@@ -101,7 +100,7 @@ The repo already contains most of the engine's parts; audit of the existing test
 An opt-in tap that records, stamped by one clock:
 
 1. datagram send/recv at the `UdpChannel` seam,
-2. `NetworkMonitor` emissions (`availability` + `networkId`),
+2. `NetworkMonitor.state` emissions (the whole `NetworkState`, identity included) plus the one-shot `MonitorCapability` record,
 3. typed errors at the exception-mapping choke points,
 4. periodic quiche path-stats snapshots + lifecycle state transitions,
 5. qlog attachment (existing `QUIC_QLOG_DIR` support) for human diagnosis — qlog is *not* the replay format; it lacks connectivity/liveness events and platform error surfaces, is file-based on quiche's own clock, and doesn't exist on JS.
@@ -113,7 +112,7 @@ Output is a **versioned fixture bundle**. Consumers enable the recorder in a deb
 All capture lands on existing seams except path stats:
 
 1. **Datagram I/O** — a `UdpChannel` decorator wrapped around the channel passed to `QuicheDriver` (single platform-neutral choke point: one `send` in `flushOutgoing`, one `receive` in `udpReaderLoop`; same wrapper on the server's per-connection channels). Records `(t, dir, len, PathKey)` + payload.
-2. **Connectivity** — collect `NetworkMonitor.availability` + `NetworkMonitor.networkId` (`StateFlow`s; every platform producer writes only these).
+2. **Connectivity** — record the monitor's `MonitorCapability` once, then collect `NetworkMonitor.state` (one `StateFlow<NetworkState>`; every platform producer writes only this). One collector, so the recorded stream is time-ordered rather than interleaved by the scheduling of two independent collectors.
 3. **Typed errors** — the four per-platform mapper funnels (`wrapJvmException`, Linux `mapErrnoToException`, Apple `NWSocketWrapper.mapSocketException`, Node mapping) plus the QUIC close reason at `QuicheDriver.resolveCloseError()`.
 4. **Lifecycle** — collect `QuicheDriver.state` + `QuicheDriver.pathState` (QUIC) and `ReconnectingConnection.state` (transport); reconnect attempts and liveness teardowns already surface there. Probe outcomes via a decorating `Liveness`.
 5. **Path stats — the one gap requiring new native work.** `quiche_conn_stats`/`quiche_conn_path_stats` (RTT, min/max RTT, rttvar, cwnd, delivery rate, lost/retrans, sent/recv bytes, PMTU) are **unbound on all four backends** today. Plan: add `connStats`/`connPathStats` to `QuicheApi`; cinterop targets are near-free (symbols already generated by `Quiche.def`), FFM needs new downcalls, JNI needs a shim addition. The driver polls on its existing timer wake. Until bound, loss/RTT visibility comes from the qlog attachment only.
@@ -131,7 +130,7 @@ One clock: the recorder reads the driver's injected `DriverClock` for QUIC-side 
    - liveness: the connection eventually reconnects or surfaces a typed terminal error — it never hangs.
 3. **Shrinker**: on failure, minimize to the smallest failing timeline prefix/subset and commit it as a fixture — the same discipline as Jazzer crashers becoming `Http3RoundTripCorpusReplayTests` cases. Fuzz findings and field captures feed the *same* corpus.
 
-*W5 implementation note (Tier scoping per the §4 correction):* the seeded generator/invariants/shrinker run over **Tier A** (`StubQuicheApi` + virtual time — Tier A owns timer-dependent orderings; quiche's C FFI is internally real-time-clocked), in `socket-quic-quiche` commonTest `sim/fuzz/`: `SimTimelineGenerator` (datagram bursts, ENETDOWN-class send/recv faults, availability flaps, networkId changes, liveness outcomes, timer-deadline ±1 ms probes), `checkFuzzInvariants` (leaks / state legality / typed errors / termination / replay determinism), `shrinkFuzzCase` (ddmin-lite; failures print a paste-ready `simFixture` block + seed). CI lanes: `SimFuzzSmokeTests` (25 pinned seeds, all platforms, <1 s) and the env-sized JVM deep run — `SIM_FUZZ_ITERATIONS=5000 ./gradlew :socket-quic-quiche:jvmTest --tests '*SimFuzzDeepRunTests*'`. Tier B gets a bounded real-time seed×impairment sweep (`SemanticSimSeedSweepTests`). First fuzz run found (and W5 fixed at the root) two reader-loop buffer leaks — see `ReaderLoopCloseRaceRegressionTests`.
+*W5 implementation note (Tier scoping per the §4 correction):* the seeded generator/invariants/shrinker run over **Tier A** (`StubQuicheApi` + virtual time — Tier A owns timer-dependent orderings; quiche's C FFI is internally real-time-clocked), in `socket-quic-quiche` commonTest `sim/fuzz/`: `SimTimelineGenerator` (datagram bursts, ENETDOWN-class send/recv faults, `NetworkState` transitions — rung flaps and identity changes — liveness outcomes, timer-deadline ±1 ms probes), `checkFuzzInvariants` (leaks / state legality / typed errors / termination / replay determinism), `shrinkFuzzCase` (ddmin-lite; failures print a paste-ready `simFixture` block + seed). CI lanes: `SimFuzzSmokeTests` (25 pinned seeds, all platforms, <1 s) and the env-sized JVM deep run — `SIM_FUZZ_ITERATIONS=5000 ./gradlew :socket-quic-quiche:jvmTest --tests '*SimFuzzDeepRunTests*'`. Tier B gets a bounded real-time seed×impairment sweep (`SemanticSimSeedSweepTests`). First fuzz run found (and W5 fixed at the root) two reader-loop buffer leaks — see `ReaderLoopCloseRaceRegressionTests`.
 
 ## 7. The container harness control plane (integration tier)
 

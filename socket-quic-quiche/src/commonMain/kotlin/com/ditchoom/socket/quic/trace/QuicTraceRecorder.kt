@@ -52,10 +52,14 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  *             | "STATS" SP f1 .. f18                     ; observation: QuicPathStats snapshot, in
  *                                                        ;   declaration order (durations as nanos,
  *                                                        ;   active as 0/1)
- *             | "NET_AVAIL" SP (AVAILABLE|UNAVAILABLE|UNKNOWN)          ; input
- *             | "NET_ID" SP netid                                       ; input
+ *             | "NET" SP netstate                                       ; input: NetworkState rung
+ *             | "NET_CAP" SP mechanism SP resolution                    ; input: MonitorCapability, once
  *             | "LIVENESS" SP (Alive|Dead|Unknown)                      ; input
  * path       := "-" | family ":" port ":" hi-hex ":" lo-hex             ; PathKey
+ * netstate   := "Unknown" | "Offline" | "LinkLocal" SP netid | "Routable" SP netid SP internet
+ * internet   := "Unobserved" | "Confirmed" | "Pending" | "Limited" | "Blocked:CaptivePortal" | "Blocked:Suspended"
+ * mechanism  := "PlatformSignalled" | "Static" | "Unknown" | "Polled(" nanos ")"
+ * resolution := "RouteAndInternet" | "RouteOnly" | "LinkOnly" | "Asserted"
  * netid      := "Unidentified" | "KindOnly:" kind | "Link:" kind ":" handle
  * kind       := "Wifi" | "Cellular" | "Ethernet"
  *             | "Vpn(" [kind ("," kind)*] ")" | "Other(" escaped-label ")"
