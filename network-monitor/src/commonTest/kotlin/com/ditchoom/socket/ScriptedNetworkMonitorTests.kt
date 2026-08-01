@@ -255,24 +255,42 @@ class ScriptedNetworkMonitorTests {
     }
 
     @Test
-    fun dslAccumulatesOffsetsAndSortsTransitions() {
+    fun dslAccumulatesOffsetsInCallOrder() {
         val script =
             networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
                 after(1.seconds) { state(pending(cellular)) }
                 after(500.milliseconds) { state(NetworkState.Offline) }
-                stateAt(200.milliseconds, confirmed(cellular))
+                stateAt(2.seconds, confirmed(cellular))
             }
-        // after() accumulates: pending@1s, Offline@1.5s; the absolute stateAt@0.2s sorts first.
+        // after() accumulates: pending@1s, Offline@1.5s; stateAt() lands at its absolute offset and
+        // advances the cursor — the built list is exactly the call order, never a re-sort of it.
         assertEquals(
             listOf(
-                NetworkMonitorScript.Transition(200.milliseconds, confirmed(cellular)),
                 NetworkMonitorScript.Transition(1.seconds, pending(cellular)),
                 NetworkMonitorScript.Transition(1500.milliseconds, NetworkState.Offline),
+                NetworkMonitorScript.Transition(2.seconds, confirmed(cellular)),
             ),
             script.transitions,
         )
-        assertEquals(1500.milliseconds, script.duration)
+        assertEquals(2.seconds, script.duration)
         assertEquals(Duration.ZERO, NetworkMonitorScript.steady().duration)
+    }
+
+    @Test
+    fun dslRejectsAStateAtBehindTheRunningOffset() {
+        // The DSL enforces ordering at the call site rather than sorting it away, so both construction
+        // paths (DSL and hand-built lists) answer "is out-of-order rejected?" the same way.
+        val failure =
+            assertFailsWith<IllegalArgumentException> {
+                networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                    after(1.seconds) { state(pending(cellular)) }
+                    stateAt(200.milliseconds, confirmed(cellular))
+                }
+            }
+        assertTrue(
+            failure.message!!.contains("non-decreasing"),
+            "the failure must state the ordering rule: ${failure.message}",
+        )
     }
 
     /**

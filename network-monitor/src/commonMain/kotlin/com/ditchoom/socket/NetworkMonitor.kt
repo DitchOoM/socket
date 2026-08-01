@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlin.concurrent.Volatile
 
 /**
  * Observes the platform network and exposes it as a single [StateFlow] of [NetworkState].
@@ -97,7 +98,13 @@ interface NetworkMonitor {
                 override fun close() {}
             }
 
-        /** Process-wide override installed via [installProcessDefault]; null → use the platform default. */
+        /**
+         * Process-wide override installed via [installProcessDefault]; null → use the platform default.
+         * Written once at startup and read from any thread resolving `processDefault()`; [Volatile] is
+         * the memory-visibility guarantee, and no atomicity is needed because installing is a single
+         * reference store.
+         */
+        @Volatile
         private var installed: NetworkMonitor? = null
 
         /**

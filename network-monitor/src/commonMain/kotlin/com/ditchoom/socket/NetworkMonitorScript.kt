@@ -99,7 +99,9 @@ class NetworkMonitorScript(
 /**
  * Builds a [NetworkMonitorScript] in call order. Each `after(delay) { … }` advances the running offset
  * and the enclosed change lands at the accumulated instant, so a script reads as the sequence of events
- * it plays. Absolute offsets are also available via [NetworkMonitorScriptBuilder.stateAt].
+ * it plays. Absolute offsets are also available via [NetworkMonitorScriptBuilder.stateAt], which may
+ * not regress behind the running offset — the builder appends strictly in call order, so the script it
+ * hands the [NetworkMonitorScript] constructor is exactly the timeline as written, never a re-sort of it.
  *
  * The captive-portal timeline from RFC_NETWORK_REACHABILITY §7.1 — a state no device in this repo's
  * test fleet can reproduce, and a deterministic `commonTest` here:
@@ -124,7 +126,13 @@ fun networkMonitorScript(
     return NetworkMonitorScript(capability, initialState, builder.build())
 }
 
-/** DSL receiver for [networkMonitorScript]. Not thread-safe; build a script from a single coroutine. */
+/**
+ * DSL receiver for [networkMonitorScript]. Append order is guaranteed non-decreasing in time — [after]
+ * only ever advances the running offset, and [stateAt] rejects an offset behind it — so [build] hands
+ * the transitions to [NetworkMonitorScript] as written; the constructor's ordering `require` cannot
+ * fire on this path and remains the guarantee for hand-built lists. Not thread-safe; build a script
+ * from a single coroutine.
+ */
 class NetworkMonitorScriptBuilder internal constructor() {
     private val transitions = mutableListOf<NetworkMonitorScript.Transition>()
     private var cursor: Duration = Duration.ZERO
@@ -143,16 +151,26 @@ class NetworkMonitorScriptBuilder internal constructor() {
         TransitionWindow(cursor).apply(block)
     }
 
-    /** Records a state change at the absolute offset [at]. */
+    /**
+     * Records a state change at the absolute offset [at], which must not precede the running offset —
+     * scheduling backwards is rejected here, not silently re-sorted into place. Rejecting in the builder
+     * gives a precise call-site error; the [NetworkMonitorScript] constructor's non-decreasing `require`
+     * never fires on the DSL path and remains the guarantee for hand-built lists. Either way a script
+     * always plays exactly as it reads. Advances the running offset to [at], so a subsequent [after] is
+     * relative to this instant.
+     */
     fun stateAt(
         at: Duration,
         state: NetworkState,
     ) {
+        require(at >= cursor) {
+            "stateAt($at) precedes the running offset $cursor; offsets must be scheduled in non-decreasing order"
+        }
         transitions += NetworkMonitorScript.Transition(at, state)
-        cursor = maxOf(cursor, at)
+        cursor = at
     }
 
-    internal fun build(): List<NetworkMonitorScript.Transition> = transitions.sortedBy { it.at }
+    internal fun build(): List<NetworkMonitorScript.Transition> = transitions.toList()
 
     /** The change verb available inside an [after] window, landing at the window's instant. */
     inner class TransitionWindow internal constructor(
