@@ -284,6 +284,13 @@ val NetworkState.needsUserAction: Boolean
  * (which distinguishes "do not know yet" from [NetworkState.Offline]'s "no network, act now" — Apple's
  * `NWPathMonitor` and the polling JVM monitor are both briefly `Unknown` after construction).
  *
+ * [NetworkState.Unknown] is transient **by assumption**, not by construction: the normal cause is a
+ * just-constructed monitor whose first observation has not landed, but a monitor whose resolution keeps
+ * failing (the JVM resolver maps any throw to `Unknown`) re-lands there on every attempt and never
+ * leaves. A consumer that waits on `Unknown` should therefore pair the wait with its own timeout; only
+ * [Pending][InternetAccess.Observed.Pending] and [Suspended][BlockReason.Suspended] carry the
+ * platform's promise of a follow-up emission.
+ *
  * This is the predicate that pays for the whole RFC: today a validation window, a suspended cellular
  * link and a genuine network change are indistinguishable, so QUIC auto-migration and transport
  * fallback react to all three identically. They should tear down and re-migrate for only one of them.
