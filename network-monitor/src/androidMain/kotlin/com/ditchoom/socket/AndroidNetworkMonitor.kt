@@ -83,6 +83,7 @@ class AndroidNetworkMonitor(
                     // the torn read collapsing to one value was meant to make impossible.
                     return
                 }
+                if (!acceptsUpdateFor(network)) return
                 currentNetwork = network
                 publish(network, connectivityManager.getNetworkCapabilities(network))
             }
@@ -104,9 +105,33 @@ class AndroidNetworkMonitor(
                 network: Network,
                 caps: AndroidNetworkCapabilities,
             ) {
+                if (!acceptsUpdateFor(network)) return
                 publish(network, caps)
             }
         }
+
+    /**
+     * Whether a callback for [network] may reach [publish]. Only the pre-O request-based path ever says
+     * no — see [acceptsNetworkUpdate] for why that path multi-fires and how the gate decides.
+     *
+     * Reading [ConnectivityManager.activeNetwork] *inside* a callback is deliberate, even though the
+     * platform javadoc warns against synchronous `ConnectivityManager` calls in callbacks: the risk
+     * a stale read carries is tolerated by construction. A `null` answer falls back to the tracked
+     * network ([acceptsNetworkUpdate]'s both-null arm accepts the first comer), and the tracked
+     * network is accepted even when a different default is read — so staleness can at worst delay a
+     * switch until the next callback, never wedge the gate. The default is also the same authority
+     * [seedInitialState] already trusts. Handles stand in for the [Network]s ([Network] equality is
+     * its netId, and `networkHandle` is derived from that same netId), keeping the decision itself pure.
+     */
+    private fun acceptsUpdateFor(network: Network): Boolean {
+        if (tracksDefaultNetwork) return true
+        return acceptsNetworkUpdate(
+            tracksDefaultNetwork = false,
+            candidateHandle = network.networkHandle,
+            activeHandle = connectivityManager.activeNetwork?.networkHandle,
+            trackedHandle = currentNetwork?.networkHandle,
+        )
+    }
 
     private fun clear() {
         currentNetwork = null
@@ -218,7 +243,10 @@ class AndroidNetworkMonitor(
  * states that say "do not attempt" ([BlockReason.CaptivePortal] needs a human, [BlockReason.Suspended]
  * needs waiting) are decided before the two that say "attempt". A portal-intercepted network can
  * legitimately also be `VALIDATED` on some builds, and a suspended link keeps `INTERNET` — reading
- * `VALIDATED` first would report both as `Confirmed`, which is the pre-RFC bug.
+ * `VALIDATED` first would report both as `Confirmed`, which is the pre-RFC bug. Within "do not
+ * attempt", `CAPTIVE_PORTAL` is checked before `!NOT_SUSPENDED` deliberately: a suspended link behind
+ * a portal reports [needsUserAction] rather than [isTransient] — when both verdicts apply, the
+ * user-actionable one wins, because waiting cannot clear a portal.
  *
  * [NetworkState.Offline] is not produced here: the absence of a default network is the caller's
  * observation, not a property of a capabilities object.
@@ -272,6 +300,42 @@ internal fun androidNetworkId(
         }
     return NetworkId.Link(kind, handle)
 }
+
+/**
+ * Accept/ignore decision for a network callback, pure so the full matrix is unit-testable without
+ * Robolectric. Handles stand in for [Network] instances: `Network` equality is its netId, and
+ * `networkHandle` is derived from that same netId, so handle equality *is* network equality.
+ *
+ * Why a gate exists at all: below O the monitor registers an `INTERNET` [NetworkRequest], and
+ * `registerNetworkCallback` fires for **every** network satisfying the request — with Wi-Fi associated
+ * and cell data enabled (the ordinary phone state), `onCapabilitiesChanged` interleaves for two live
+ * networks on a completely stable device. Publishing each one flapped [NetworkMonitor.state] between
+ * two [NetworkId.Link]s; on the old two-flow surface that only jittered the identity flow, but now the
+ * same flap drives `pathChanges()` — and QUIC auto-migration — into spurious migrations. The process's
+ * **default** network is the tie-break authority (the same one `seedInitialState` already uses to
+ * answer "which network are we on"), so a non-default network's chatter is ignored.
+ *
+ * [activeHandle] is nullable because `getActiveNetwork()` is transiently null mid-handoff. In that
+ * window the network already reflected in state ([trackedHandle]) is still accepted, so an in-place
+ * capability change on the link we track lands rather than being dropped; when nothing is tracked yet
+ * either, any network is accepted — a wrong first pick is corrected by the next callback once the
+ * default reappears. [trackedHandle] is also accepted when a *different* default exists, for the same
+ * reason: state still names that network, and a stale value is worse than a late switch.
+ *
+ * O+ ([tracksDefaultNetwork]) needs none of this: `registerDefaultNetworkCallback` already scopes every
+ * callback to the single default network, so the decision is constantly `true`.
+ */
+internal fun acceptsNetworkUpdate(
+    tracksDefaultNetwork: Boolean,
+    candidateHandle: Long,
+    activeHandle: Long?,
+    trackedHandle: Long?,
+): Boolean =
+    when {
+        tracksDefaultNetwork -> true
+        activeHandle == null && trackedHandle == null -> true
+        else -> candidateHandle == activeHandle || candidateHandle == trackedHandle
+    }
 
 /**
  * Creates an Android [NetworkMonitor] backed by [ConnectivityManager].
