@@ -4,15 +4,16 @@ import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.flow.first
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
  * Live-path smoke coverage for [AppleNetworkMonitor] — the first test that actually starts
- * `NWPathMonitor` and drives the full chain the pure-mapper [AppleNetworkIdMappingTests] can't reach:
+ * `NWPathMonitor` and drives the full chain the pure-mapper [AppleNetworkStateMappingTests] can't reach:
  * `nw_path_monitor_start` → the Objective-C block on the dispatch queue → the K/N callback → the
- * [availability]/[networkId] StateFlows → [close] (cancel). Until this ran, Network.framework was
+ * [NetworkMonitor.state] StateFlow → [close] (cancel). Until this ran, Network.framework was
  * compiled but never invoked in any Apple test (build-apple was contract-only), so this is also where
  * a K/N thread-confinement / freeze bug on the callback would first surface.
  *
@@ -28,21 +29,30 @@ class AppleNetworkMonitorLiveTests {
             val monitor = AppleNetworkMonitor()
             try {
                 // NWPathMonitor delivers the current path once, promptly, after start. The single thing
-                // every environment must show is that the callback fired at all: availability leaves the
-                // just-started UNKNOWN sentinel. A timeout here is a real failure (monitor never woke).
-                val availability =
-                    monitor.availability.first { it != NetworkAvailability.UNKNOWN }
+                // every environment must show is that the callback fired at all: the state leaves the
+                // just-started Unknown sentinel. A timeout here is a real failure (monitor never woke).
+                val state = monitor.state.first { it != NetworkState.Unknown }
+
+                // Whatever rung the runner lands on, the monitor must not emit a state its own declared
+                // capability forbids — Apple is RouteOnly, so a Routable can only ever carry Unobserved.
+                assertTrue(
+                    monitor.capability.resolution.permits(state),
+                    "monitor declares ${monitor.capability.resolution} but emitted $state",
+                )
+                assertEquals(
+                    MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly),
+                    monitor.capability,
+                )
 
                 // If the runner has a usable path (the normal case — it just cloned the repo), the same
                 // callback must have produced a concrete primary-link identity: a Link with a non-zero OS
-                // interface index and one of the typed kinds. We do NOT require AVAILABLE: an offline or
-                // firewalled runner legitimately reports UNAVAILABLE, and that is still a live callback.
-                when (availability) {
-                    NetworkAvailability.AVAILABLE -> {
-                        val id = monitor.networkId.value
+                // interface index and one of the typed kinds. We do NOT require Routable: an offline or
+                // firewalled runner legitimately reports Offline, and that is still a live callback.
+                when (state) {
+                    is NetworkState.Up -> {
                         val link =
-                            id as? NetworkId.Link
-                                ?: fail("AVAILABLE path must resolve to a NetworkId.Link, was $id")
+                            state.id as? NetworkId.Link
+                                ?: fail("a path with a link must resolve to a NetworkId.Link, was ${state.id}")
                         assertTrue(link.handle > 0, "Link handle must be a real OS interface index, was ${link.handle}")
                         assertTrue(
                             link.kind is NetworkKind.Wifi ||
@@ -52,17 +62,22 @@ class AppleNetworkMonitorLiveTests {
                                 link.kind is NetworkKind.Other,
                             "Link kind must be a known NetworkKind, was ${link.kind}",
                         )
+                        if (state is NetworkState.Routable) {
+                            assertEquals(
+                                InternetAccess.Unobserved,
+                                state.internet,
+                                "NWPath has no validation concept — internet must never be Observed",
+                            )
+                        }
                     }
 
-                    NetworkAvailability.UNAVAILABLE ->
-                        // No usable path — still a live callback; networkId stays Unidentified by contract.
-                        assertTrue(
-                            monitor.networkId.value == NetworkId.Unidentified,
-                            "UNAVAILABLE path must leave networkId Unidentified, was ${monitor.networkId.value}",
-                        )
+                    NetworkState.Offline ->
+                        // No usable path and no link at all — still a live callback; identity is
+                        // Unidentified by contract (Offline carries no id).
+                        assertEquals(NetworkId.Unidentified, state.networkId)
 
-                    NetworkAvailability.UNKNOWN ->
-                        fail("unreachable — awaited a non-UNKNOWN availability")
+                    NetworkState.Unknown ->
+                        fail("unreachable — awaited a non-Unknown state")
                 }
             } finally {
                 // close() must cancel the NWPathMonitor without crashing or hanging.

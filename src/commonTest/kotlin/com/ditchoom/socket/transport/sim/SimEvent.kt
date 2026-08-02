@@ -1,7 +1,6 @@
 package com.ditchoom.socket.transport.sim
 
-import com.ditchoom.socket.NetworkAvailability
-import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.NetworkState
 import kotlin.time.Duration
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
@@ -20,16 +19,17 @@ internal sealed interface SimEvent {
     /** Virtual instant (offset from the timeline's t0) at which the interpreter injects this event. */
     val at: Duration
 
-    /** A scripted `NetworkMonitor.availability` emission. */
-    data class Availability(
+    /**
+     * A scripted `NetworkMonitor.state` emission — the backoff-race trigger.
+     *
+     * One event, because the monitor now has one flow. The former `Availability`/`Network` pair could
+     * script a state no monitor can produce (an unavailable network with a live identity), which is the
+     * torn read RFC_NETWORK_REACHABILITY §1.2 removed from the contract; a fixture that could still
+     * express it would keep testing behaviour against inputs reality cannot deliver.
+     */
+    data class Net(
         override val at: Duration,
-        val value: NetworkAvailability,
-    ) : SimEvent
-
-    /** A scripted `NetworkMonitor.networkId` emission — the backoff-race trigger. */
-    data class Network(
-        override val at: Duration,
-        val id: NetworkId,
+        val state: NetworkState,
     ) : SimEvent
 
     /** Script the outcome of the **next** liveness probe (the #222 seam). */

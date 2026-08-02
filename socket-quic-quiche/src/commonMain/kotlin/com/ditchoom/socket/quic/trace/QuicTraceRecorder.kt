@@ -1,8 +1,9 @@
 package com.ditchoom.socket.quic.trace
 
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.DriverClock
 import com.ditchoom.socket.quic.PathInfo
 import com.ditchoom.socket.quic.PathKey
@@ -15,11 +16,11 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TracePathStats
 import com.ditchoom.socket.testkit.trace.TraceSink
-import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.Duration
 import kotlin.time.TimeMark
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
@@ -51,10 +52,14 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  *             | "STATS" SP f1 .. f18                     ; observation: QuicPathStats snapshot, in
  *                                                        ;   declaration order (durations as nanos,
  *                                                        ;   active as 0/1)
- *             | "NET_AVAIL" SP (AVAILABLE|UNAVAILABLE|UNKNOWN)          ; input
- *             | "NET_ID" SP netid                                       ; input
+ *             | "NET" SP netstate                                       ; input: NetworkState rung
+ *             | "NET_CAP" SP mechanism SP resolution                    ; input: MonitorCapability, once
  *             | "LIVENESS" SP (Alive|Dead|Unknown)                      ; input
  * path       := "-" | family ":" port ":" hi-hex ":" lo-hex             ; PathKey
+ * netstate   := "Unknown" | "Offline" | "LinkLocal" SP netid | "Routable" SP netid SP internet
+ * internet   := "Unobserved" | "Confirmed" | "Pending" | "Limited" | "Blocked:CaptivePortal" | "Blocked:Suspended"
+ * mechanism  := "PlatformSignalled" | "Static" | "Unknown" | "Polled(" nanos ")"
+ * resolution := "RouteAndInternet" | "RouteOnly" | "LinkOnly" | "Asserted"
  * netid      := "Unidentified" | "KindOnly:" kind | "Link:" kind ":" handle
  * kind       := "Wifi" | "Cellular" | "Ethernet"
  *             | "Vpn(" [kind ("," kind)*] ")" | "Other(" escaped-label ")"
@@ -70,7 +75,8 @@ class QuicTraceRecorder(
 ) {
     private val origin: TimeMark = clock.markNow()
 
-    private fun nowNanos(): Long = origin.elapsedNow().inWholeNanoseconds
+    /** Offset from the recorder's single clock origin — a Duration, matching [TraceEvent.at]. */
+    private fun now(): Duration = origin.elapsedNow()
 
     /** Emit one pre-stamped [event] to the sink. The sink owns serialization ([TraceEvent.toString]). */
     fun record(event: TraceEvent) {
@@ -88,12 +94,12 @@ class QuicTraceRecorder(
                 is QuicConnectionState.Closed -> state.error?.describe()
                 else -> null
             }
-        record(TraceEvent.State(nowNanos(), state::class.qualifiedName ?: "Unknown", detail))
+        record(TraceEvent.State(now(), state::class.qualifiedName ?: "Unknown", detail))
     }
 
     /** Record a `PathInfo` (migration) transition (PATH_STATE). */
     fun pathState(info: PathInfo) {
-        record(TraceEvent.PathState(nowNanos(), info.phase.name, info.localHost, info.localPort))
+        record(TraceEvent.PathState(now(), info.phase.name, info.localHost, info.localPort))
     }
 
     /**
@@ -101,32 +107,32 @@ class QuicTraceRecorder(
      * error. The FQN keeps the error type retraceable against R8's `mapping.txt`.
      */
     fun error(error: Throwable) {
-        record(TraceEvent.Error(nowNanos(), error::class.qualifiedName ?: "Throwable", error.message ?: ""))
+        record(TraceEvent.Error(now(), error::class.qualifiedName ?: "Throwable", error.message ?: ""))
     }
 
     /** Record a typed QUIC close reason (ERROR) — the sealed class's **qualified** name + [QuicError.describe]. */
     fun closeError(error: QuicError) {
-        record(TraceEvent.Error(nowNanos(), error::class.qualifiedName ?: "QuicError", error.describe()))
+        record(TraceEvent.Error(now(), error::class.qualifiedName ?: "QuicError", error.describe()))
     }
 
     /** Record a path-stats snapshot (STATS), projecting [QuicPathStats] onto the neutral [TracePathStats]. */
     fun stats(stats: QuicPathStats) {
-        record(TraceEvent.Stats(nowNanos(), stats.toTracePathStats()))
+        record(TraceEvent.Stats(now(), stats.toTracePathStats()))
     }
 
-    /** Record a `NetworkMonitor.availability` emission (NET_AVAIL). */
-    fun networkAvailability(value: NetworkAvailability) {
-        record(TraceEvent.NetAvail(nowNanos(), value))
+    /** Record a `NetworkMonitor.state` emission (NET) — the whole state, identity included. */
+    fun networkState(state: NetworkState) {
+        record(TraceEvent.Net(now(), state))
     }
 
-    /** Record a `NetworkMonitor.networkId` emission (NET_ID). */
-    fun networkId(id: NetworkId) {
-        record(TraceEvent.Net(nowNanos(), id))
+    /** Record the monitor's [MonitorCapability] (NET_CAP), once — it never changes. */
+    fun networkCapability(capability: MonitorCapability) {
+        record(TraceEvent.NetCapability(now(), capability))
     }
 
     /** Record a liveness probe outcome (LIVENESS). */
     fun livenessResult(result: TransportLiveness.Result) {
-        record(TraceEvent.Liveness(nowNanos(), result))
+        record(TraceEvent.Liveness(now(), result))
     }
 
     /**
@@ -147,16 +153,20 @@ class QuicTraceRecorder(
         }
 
     /**
-     * Collect [monitor]'s `availability` + `networkId` flows into the trace (NET_AVAIL / NET_ID),
-     * including their current values, until [scope] is cancelled. Returns the collector [Job].
+     * Record [monitor]'s capability (NET_CAP), then collect its `state` flow into the trace (NET),
+     * including the current value, until [scope] is cancelled. Returns the collector [Job].
+     *
+     * **One collector**, which is what makes the recorded stream monotonic: the two-flow version this
+     * replaced launched a collector per flow, so two independently-stamped streams interleaved by
+     * scheduling rather than by time (RFC_NETWORK_REACHABILITY §1.2).
      */
     fun observe(
         monitor: NetworkMonitor,
         scope: CoroutineScope,
     ): Job =
         scope.launch {
-            launch { monitor.availability.collect { networkAvailability(it) } }
-            launch { monitor.networkId.collect { networkId(it) } }
+            networkCapability(monitor.capability)
+            monitor.state.collect { networkState(it) }
         }
 
     internal fun datagram(
@@ -166,7 +176,7 @@ class QuicTraceRecorder(
         path: PathKey?,
     ) {
         val hex = hexOf(buffer, len)
-        val t = nowNanos()
+        val t = now()
         val tracePath = path?.toTracePath()
         record(
             if (out) {

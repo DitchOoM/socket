@@ -28,10 +28,10 @@ private suspend fun await(
 ) {
     try {
         withTimeout(REACT_TIMEOUT_MS) {
-            monitor.networkId.first { it is NetworkId.Link && it.handle == handle }
+            monitor.state.first { it.networkId.let { id -> id is NetworkId.Link && id.handle == handle } }
         }
     } catch (e: Throwable) {
-        throw IllegalStateException("timed out awaiting networkId=Link($label); had ${monitor.networkId.value}", e)
+        throw IllegalStateException("timed out awaiting networkId=Link($label); had ${monitor.state.value}", e)
     }
 }
 
@@ -64,7 +64,7 @@ fun main() {
         }
         println("JVM reactive probe OK — networkId flipped $primary($primaryIdx) → $after($afterIdx) on link-down")
     } catch (e: Throwable) {
-        System.err.println("JVM reactive probe FAILED (last networkId=${monitor.networkId.value}): ${e.message}")
+        System.err.println("JVM reactive probe FAILED (last state=${monitor.state.value}): ${e.message}")
         exitProcess(1)
     } finally {
         monitor.close()

@@ -20,9 +20,10 @@ internal fun traceRecorderFor(quicOptions: QuicOptions): QuicTraceRecorder? = qu
 
 /**
  * Client-side connectivity tap (RFC §5.1): when the capture opt-in supplied a
- * [com.ditchoom.socket.NetworkMonitor], collect its `availability` + `networkId` flows into
- * [recorder] for the connection's lifetime (NET_AVAIL / NET_ID). [scope] is the connection itself
- * (every `QuicConnection` is a [CoroutineScope]), so the collectors are cancelled when the
+ * [com.ditchoom.socket.NetworkMonitor], record its capability once (NET_CAP), then collect its
+ * single `state` flow into [recorder] for the connection's lifetime (NET — one collector, so the
+ * recorded stream is time-ordered rather than scheduling-interleaved). [scope] is the connection
+ * itself (every `QuicConnection` is a [CoroutineScope]), so the collector is cancelled when the
  * connection closes. No-op when capture is off or no monitor was supplied — the server bind path
  * never calls this (a server has no local client network path to observe).
  */

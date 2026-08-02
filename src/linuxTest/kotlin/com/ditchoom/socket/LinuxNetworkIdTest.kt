@@ -227,3 +227,72 @@ class LinuxNetworkIdTest {
         }
     }
 }
+
+/**
+ * Pure-mapper tests for [LinuxNetworkMonitor.linuxNetworkState] — the Linux rung table of
+ * RFC_NETWORK_REACHABILITY §4, with no kernel involved.
+ */
+class LinuxNetworkStateMappingTests {
+    private val wlan0 = NetworkId.Link(NetworkKind.Wifi, 3)
+
+    @Test
+    fun aDefaultRouteIsRoutableWithUnobservedInternet() {
+        assertEquals(
+            NetworkState.Routable(wlan0, InternetAccess.Unobserved),
+            LinuxNetworkMonitor.linuxNetworkState(LinuxNetworkMonitor.PrimaryLink.Routed(wlan0)),
+        )
+    }
+
+    /**
+     * The §1.1 fix: a link with no default route — a container with only `docker0`, a laptop associated
+     * to Wi-Fi with no DHCP lease — used to report plain `AVAILABLE`.
+     */
+    @Test
+    fun aLinkWithNoDefaultRouteIsLinkLocalNotAvailable() {
+        val state = LinuxNetworkMonitor.linuxNetworkState(LinuxNetworkMonitor.PrimaryLink.Unrouted(wlan0))
+        assertEquals(NetworkState.LinkLocal(wlan0), state)
+        assertTrue(!state.canRouteOffLink, "no default route ⇒ nothing routes off-link")
+        assertTrue(state.supportsLinkLocal, "mDNS/multicast still work on a link-local network")
+    }
+
+    @Test
+    fun noLinkIsOfflineAndAFailedScanIsUnknown() {
+        assertEquals(NetworkState.Offline, LinuxNetworkMonitor.linuxNetworkState(LinuxNetworkMonitor.PrimaryLink.NoLink))
+        // A failed getifaddrs is NOT offline — "we do not know" must stay distinguishable from
+        // "there is no network", or a consumer tears down a working connection on a syscall failure.
+        assertEquals(
+            NetworkState.Unknown,
+            LinuxNetworkMonitor.linuxNetworkState(LinuxNetworkMonitor.PrimaryLink.Undetermined),
+        )
+        assertTrue(NetworkState.Unknown.isTransient)
+    }
+
+    @Test
+    fun everyMappedStateIsPermittedByTheDeclaredResolution() {
+        val links =
+            listOf(
+                LinuxNetworkMonitor.PrimaryLink.Routed(wlan0),
+                LinuxNetworkMonitor.PrimaryLink.Unrouted(wlan0),
+                LinuxNetworkMonitor.PrimaryLink.NoLink,
+                LinuxNetworkMonitor.PrimaryLink.Undetermined,
+            )
+        for (link in links) {
+            val state = LinuxNetworkMonitor.linuxNetworkState(link)
+            assertTrue(
+                ReachResolution.RouteOnly.permits(state),
+                "LinuxNetworkMonitor declares RouteOnly but mapped $link to $state",
+            )
+        }
+    }
+
+    /** Identity is readable off any rung without a `when`, and the two link-less rungs share it. */
+    @Test
+    fun identityProjectsOffEveryRung() {
+        assertEquals(wlan0, LinuxNetworkMonitor.linuxNetworkState(LinuxNetworkMonitor.PrimaryLink.Routed(wlan0)).networkId)
+        assertEquals(wlan0, LinuxNetworkMonitor.linuxNetworkState(LinuxNetworkMonitor.PrimaryLink.Unrouted(wlan0)).networkId)
+        assertEquals(
+            NetworkId.Unidentified,
+            LinuxNetworkMonitor.linuxNetworkState(LinuxNetworkMonitor.PrimaryLink.NoLink).networkId,
+        )
+    }
+}

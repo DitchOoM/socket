@@ -1,7 +1,6 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.transport.NetworkId
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import platform.Foundation.NSProcessInfo
 import kotlin.test.Test
@@ -10,7 +9,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Reactive re-emit coverage for [AppleNetworkMonitor] — the macOS analog of the Linux netns
  * `NetnsReactiveChangeTest`: proves the live `NWPathMonitor` callback re-fires and the
- * [availability]/[networkId] StateFlows RE-EMIT when the machine's primary path actually changes, not
+ * [NetworkMonitor.state] StateFlow RE-EMITS when the machine's primary path actually changes, not
  * just the one-shot first update ([AppleNetworkMonitorLiveTests] covers that).
  *
  * There is no network namespace on macOS, so the path change is driven against the real machine and
@@ -48,11 +47,11 @@ class AppleNetworkMonitorReactiveTest {
             val monitor = AppleNetworkMonitor()
             try {
                 // Establish the baseline: wait for the first resolved, usable path so there is a concrete
-                // (availability, networkId) to observe a change *away from*.
+                // state to observe a change *away from*. One flow, so no combine and no torn read —
+                // reachability and identity arrive together (RFC_NETWORK_REACHABILITY §1.2).
                 val initial =
-                    combine(monitor.availability, monitor.networkId) { a, id -> a to id }
-                        .first { (a, id) -> a == NetworkAvailability.AVAILABLE && id is NetworkId.Link }
-                println("baseline path: availability=${initial.first} networkId=${initial.second}")
+                    monitor.state.first { it.canRouteOffLink && it.networkId is NetworkId.Link }
+                println("baseline path: state=$initial networkId=${initial.networkId}")
 
                 println("========================================================================")
                 println(" DRIVE A PRIMARY-LINK CHANGE NOW — toggle Wi-Fi OFF, wait ~3s, then ON")
@@ -60,15 +59,13 @@ class AppleNetworkMonitorReactiveTest {
                 println(" Waiting up to ~2.5 min for the path to change and NWPathMonitor to react…")
                 println("========================================================================")
 
-                // The callback must re-fire and the flows must re-emit a value distinct from the baseline
-                // (a different availability, or a different link — new index/kind, or Unidentified while
-                // the link is down). A StateFlow keeps no history, so an external driver that flips and
-                // restores the link must overlap this await — start the toggle after the baseline print.
+                // The callback must re-fire and the flow must re-emit a value distinct from the baseline
+                // (a different rung, or a different link — new index/kind, or Unidentified while the link
+                // is down). A StateFlow keeps no history, so an external driver that flips and restores
+                // the link must overlap this await — start the toggle after the baseline print.
                 // A timeout here means the monitor did NOT react to a real change.
-                val changed =
-                    combine(monitor.availability, monitor.networkId) { a, id -> a to id }
-                        .first { it != initial }
-                println("REACTED: path changed to availability=${changed.first} networkId=${changed.second}")
+                val changed = monitor.state.first { it != initial }
+                println("REACTED: path changed to state=$changed networkId=${changed.networkId}")
             } finally {
                 monitor.close()
             }

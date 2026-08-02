@@ -4,7 +4,10 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.canRouteOffLink
+import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.ImpairmentConfig
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.sim.Observed
@@ -32,9 +35,9 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  * through the W2 [runQuicSim] engine — where the connectivity events must drive the sim's
  * `SimNetworkMonitor` / `SimLiveness` seams, not just the datagram path.
  *
- * This closes the loop the base PR left open: NET_AVAIL / NET_ID / LIVENESS existed in the grammar
- * and the parser but nothing emitted them, and no test proved a captured connectivity event
- * survives capture → fixture → replay.
+ * This closes the loop the base PR left open: NET / NET_CAP / LIVENESS existed in the grammar and the
+ * parser but nothing emitted them, and no test proved a captured connectivity event survives
+ * capture → fixture → replay.
  */
 class ConnectivityTraceRoundTripTests {
     @Test
@@ -77,10 +80,11 @@ class ConnectivityTraceRoundTripTests {
                     val response = stream.read(5.seconds)
                     if (response is ReadResult.Data) response.buffer.freeIfNeeded()
 
-                    // --- mid-flight connectivity event: Wi-Fi path returns, then goes unavailable,
-                    // plus a liveness probe — exactly the transport-layer signals a consumer taps. ---
-                    recorder.networkId(migratedTo)
-                    recorder.networkAvailability(NetworkAvailability.UNAVAILABLE)
+                    // --- mid-flight connectivity events: the Wi-Fi path returns, then the link goes
+                    // away entirely, plus a liveness probe — exactly the transport-layer signals a
+                    // consumer taps. One value each, so neither can be recorded torn. ---
+                    recorder.networkState(NetworkState.Routable(migratedTo, InternetAccess.Unobserved))
+                    recorder.networkState(NetworkState.Offline)
                     liveness.probe()
 
                     stream.close()
@@ -93,12 +97,12 @@ class ConnectivityTraceRoundTripTests {
             // --- capture: connectivity events landed in the SAME trace as the QUIC traffic, typed. ---
             val events = TraceEvent.parseAll(lines)
             assertTrue(events.any { it is TraceEvent.DgramIn }, "expected QUIC traffic in the same trace")
+            val capturedNets = events.filterIsInstance<TraceEvent.Net>()
             assertEquals(
-                NetworkAvailability.UNAVAILABLE,
-                events.filterIsInstance<TraceEvent.NetAvail>().single().value,
-                "captured NET_AVAIL",
+                listOf(NetworkState.Routable(migratedTo, InternetAccess.Unobserved), NetworkState.Offline),
+                capturedNets.map { it.state },
+                "captured NET, in order and whole",
             )
-            assertEquals(migratedTo, events.filterIsInstance<TraceEvent.Net>().single().id, "captured NET_ID")
             assertEquals(
                 TransportLiveness.Result.Dead,
                 events.filterIsInstance<TraceEvent.Liveness>().single().result,
@@ -110,18 +114,8 @@ class ConnectivityTraceRoundTripTests {
             val inputs = events.filter { it.isInput }
             val fixture = TraceToFixture.toSimFixture("connectivity-replay", inputs)
             assertEquals(
-                NetworkAvailability.UNAVAILABLE,
-                fixture.events
-                    .filterIsInstance<SimEvent.Availability>()
-                    .single()
-                    .value,
-            )
-            assertEquals(
-                migratedTo,
-                fixture.events
-                    .filterIsInstance<SimEvent.Network>()
-                    .single()
-                    .id,
+                listOf(NetworkState.Routable(migratedTo, InternetAccess.Unobserved), NetworkState.Offline),
+                fixture.events.filterIsInstance<SimEvent.Net>().map { it.state },
             )
             assertEquals(
                 TransportLiveness.Result.Dead,
@@ -138,20 +132,11 @@ class ConnectivityTraceRoundTripTests {
             // above (SimEvent.Liveness present). ---
             val replay = runQuicSim(fixture, clientMode = true)
             assertEquals(
-                migratedTo,
+                listOf(NetworkState.Routable(migratedTo, InternetAccess.Unobserved), NetworkState.Offline),
                 replay.trace.events
                     .filterIsInstance<Observed.NetworkChanged>()
-                    .single()
-                    .id,
-                "captured NET_ID must drive SimNetworkMonitor.networkId on replay:\n${replay.trace.render()}",
-            )
-            assertEquals(
-                NetworkAvailability.UNAVAILABLE,
-                replay.trace.events
-                    .filterIsInstance<Observed.AvailabilityChanged>()
-                    .single()
-                    .value,
-                "captured NET_AVAIL must drive SimNetworkMonitor.availability on replay:\n${replay.trace.render()}",
+                    .map { it.state },
+                "captured NET events must drive SimNetworkMonitor.state on replay:\n${replay.trace.render()}",
             )
         }
 
@@ -166,16 +151,13 @@ class ConnectivityTraceRoundTripTests {
         runTest {
             val lines = mutableListOf<String>()
             val recorder = QuicTraceRecorder({ e -> lines += e.toString() })
-            val monitor =
-                SimNetworkMonitor(
-                    initial = NetworkAvailability.AVAILABLE,
-                    initialNetworkId = NetworkId.Unidentified,
-                )
+            val monitor = SimNetworkMonitor.on(NetworkId.Unidentified)
             val job = recorder.observe(monitor, backgroundScope)
-            runCurrent() // collectors subscribe → current values recorded (AVAILABLE, Unidentified)
+            runCurrent() // the collector subscribes → the current value is recorded
 
             val cellular = NetworkId.Link(NetworkKind.Cellular, 3L)
-            monitor.set(NetworkAvailability.UNAVAILABLE)
+            monitor.set(NetworkState.Offline)
+            runCurrent() // let the collector settle: one StateFlow conflates, so back-to-back sets drop one
             monitor.setNetworkId(cellular)
             runCurrent()
             job.cancel()
@@ -184,16 +166,19 @@ class ConnectivityTraceRoundTripTests {
             assertEquals(TransportLiveness.Result.Alive, wrapped.probe())
 
             val events = TraceEvent.parseAll(lines)
+            val states = events.filterIsInstance<TraceEvent.Net>().map { it.state }
             assertTrue(
-                events
-                    .filterIsInstance<TraceEvent.NetAvail>()
-                    .map { it.value }
-                    .containsAll(listOf(NetworkAvailability.AVAILABLE, NetworkAvailability.UNAVAILABLE)),
-                "observe must record current + changed availability: $lines",
+                states.first().canRouteOffLink && states.contains(NetworkState.Offline),
+                "observe must record the current value and every change: $lines",
             )
             assertTrue(
-                events.filterIsInstance<TraceEvent.Net>().any { it.id == cellular },
-                "observe must record the networkId change: $lines",
+                states.any { it.networkId == cellular },
+                "observe must record the identity change: $lines",
+            )
+            assertEquals(
+                monitor.capability,
+                events.filterIsInstance<TraceEvent.NetCapability>().single().capability,
+                "observe must record the monitor's declared capability once, up front: $lines",
             )
             assertEquals(
                 TransportLiveness.Result.Alive,

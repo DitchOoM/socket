@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.sim.fuzz
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.sim.SimError
 import com.ditchoom.socket.quic.sim.SimEvent
 import com.ditchoom.socket.quic.sim.SimFixture
@@ -25,9 +26,9 @@ internal class EventMix(
     val sendError: Int = 2,
     /** ENETDOWN-class fault surfaced from the parked `receive()`, ordered against queued datagrams. */
     val recvError: Int = 2,
-    /** UNAVAILABLE→AVAILABLE availability flap (0-50 ms apart) — mid-handshake/mid-backoff shapes. */
-    val availabilityFlap: Int = 2,
-    /** `networkId` change (Wi-Fi↔cellular, link-handle churn) — the #222 reconnect-race trigger. */
+    /** Offline→Routable reachability flap (0-50 ms apart) — mid-handshake/mid-backoff shapes. */
+    val reachabilityFlap: Int = 2,
+    /** Identity change (Wi-Fi↔cellular, link-handle churn) — the #222 reconnect-race trigger. */
     val networkChange: Int = 2,
     /** Scripted outcome for the next liveness probe (the #222 seam's scripted queue). */
     val liveness: Int = 1,
@@ -39,7 +40,7 @@ internal class EventMix(
     val deadlineProbe: Int = 3,
 ) {
     internal val total: Int =
-        datagramBurst + sendError + recvError + availabilityFlap + networkChange + liveness + deadlineProbe
+        datagramBurst + sendError + recvError + reachabilityFlap + networkChange + liveness + deadlineProbe
 
     init {
         require(total > 0) { "at least one event family must have a non-zero weight" }
@@ -87,8 +88,8 @@ internal class SimTimelineGenerator(
                 Family.DATAGRAM_BURST -> events += datagramBurst(rng, randomAt(rng, config))
                 Family.SEND_ERROR -> events += SimEvent.SendError(randomAt(rng, config), randomError(rng))
                 Family.RECV_ERROR -> events += SimEvent.RecvError(randomAt(rng, config), randomError(rng))
-                Family.AVAILABILITY_FLAP -> events += availabilityFlap(rng, randomAt(rng, config))
-                Family.NETWORK_CHANGE -> events += SimEvent.Network(randomAt(rng, config), randomNetworkId(rng))
+                Family.REACHABILITY_FLAP -> events += reachabilityFlap(rng, randomAt(rng, config))
+                Family.NETWORK_CHANGE -> events += SimEvent.Net(randomAt(rng, config), randomRoutable(rng))
                 Family.LIVENESS -> events += SimEvent.Liveness(randomAt(rng, config), randomLiveness(rng))
                 Family.DEADLINE_PROBE -> events += deadlineProbe(rng)
             }
@@ -100,7 +101,7 @@ internal class SimTimelineGenerator(
         )
     }
 
-    private enum class Family { DATAGRAM_BURST, SEND_ERROR, RECV_ERROR, AVAILABILITY_FLAP, NETWORK_CHANGE, LIVENESS, DEADLINE_PROBE }
+    private enum class Family { DATAGRAM_BURST, SEND_ERROR, RECV_ERROR, REACHABILITY_FLAP, NETWORK_CHANGE, LIVENESS, DEADLINE_PROBE }
 
     private fun pickFamily(
         rng: Random,
@@ -111,7 +112,7 @@ internal class SimTimelineGenerator(
             Family.DATAGRAM_BURST to mix.datagramBurst,
             Family.SEND_ERROR to mix.sendError,
             Family.RECV_ERROR to mix.recvError,
-            Family.AVAILABILITY_FLAP to mix.availabilityFlap,
+            Family.REACHABILITY_FLAP to mix.reachabilityFlap,
             Family.NETWORK_CHANGE to mix.networkChange,
             Family.LIVENESS to mix.liveness,
             Family.DEADLINE_PROBE to mix.deadlineProbe,
@@ -149,15 +150,21 @@ internal class SimTimelineGenerator(
 
     private fun randomError(rng: Random): SimError = SimError(ERRNO_CLASS_MESSAGES[rng.nextInt(ERRNO_CLASS_MESSAGES.size)])
 
-    /** UNAVAILABLE at t, back to AVAILABLE 0-50 ms later — the flap lands whole even at the horizon edge. */
-    private fun availabilityFlap(
+    /**
+     * Offline at t, back to a routable link 0-50 ms later — the flap lands whole even at the horizon
+     * edge. The link that comes back is drawn, because a real flap rarely returns on the same handle.
+     */
+    private fun reachabilityFlap(
         rng: Random,
         at: Duration,
     ): List<SimEvent> =
         listOf(
-            SimEvent.Availability(at, NetworkAvailability.UNAVAILABLE),
-            SimEvent.Availability(at + rng.nextLong(0, 51).milliseconds, NetworkAvailability.AVAILABLE),
+            SimEvent.Net(at, NetworkState.Offline),
+            SimEvent.Net(at + rng.nextLong(0, 51).milliseconds, randomRoutable(rng)),
         )
+
+    /** A routable rung on a drawn link. `Unobserved` — the fuzzer varies paths, not reachability verdicts. */
+    private fun randomRoutable(rng: Random): NetworkState = NetworkState.Routable(randomNetworkId(rng), InternetAccess.Unobserved)
 
     private fun randomNetworkId(rng: Random): NetworkId = NETWORK_IDS[rng.nextInt(NETWORK_IDS.size)]
 
@@ -170,7 +177,7 @@ internal class SimTimelineGenerator(
         return when (rng.nextInt(3)) {
             0 -> listOf(SimEvent.DatagramIn(at, randomHex(rng)))
             1 -> listOf(SimEvent.SendError(at, randomError(rng)))
-            else -> listOf(SimEvent.Network(at, randomNetworkId(rng)))
+            else -> listOf(SimEvent.Net(at, randomRoutable(rng)))
         }
     }
 

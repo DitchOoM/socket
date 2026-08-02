@@ -4,6 +4,7 @@ import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 
 /**
@@ -12,10 +13,14 @@ import kotlin.test.assertNotEquals
  * is that test — the sibling mappers (`JvmNetworkIdTest`, `BrowserNetworkIdMappingTests`) had one and
  * Android did not.
  *
- * Host JVM, no Robolectric: the function takes booleans and a nullable Long precisely so the branchy
- * part is testable off-device. The emulator lane exercises exactly one point in this space (whatever
- * link the API 29 AVD happens to have), so everything below — VPN transport composition, the
- * precedence order, and the API < 23 degradation — is only covered here.
+ * Host JVM, no Robolectric: the function takes booleans and a Long precisely so the branchy part is
+ * testable off-device. The emulator lane exercises exactly one point in this space (whatever link the
+ * API 29 AVD happens to have), so everything below — VPN transport composition and the precedence
+ * order — is only covered here.
+ *
+ * There is no longer an API < 23 degradation to cover: `minSdk` is 23 (RFC_NETWORK_REACHABILITY §8.1),
+ * which is where `Network.getNetworkHandle()` exists, so [androidNetworkId] takes a non-null handle and
+ * a [NetworkId.KindOnly] result is unreachable on this platform.
  */
 class AndroidNetworkIdTests {
     @Test
@@ -94,33 +99,22 @@ class AndroidNetworkIdTests {
     }
 
     @Test
-    fun noRecognizedTransportIsUnidentifiedEvenWithoutAHandle() {
-        assertEquals(
-            NetworkId.Unidentified,
-            androidNetworkId(hasWifi = false, hasCellular = false, hasEthernet = false, hasVpn = false, handle = null),
-        )
-    }
-
-    @Test
-    fun missingHandleDegradesToKindOnlyNotUnidentified() {
-        // `network.networkHandle` needs API 23; below that AndroidNetworkMonitor passes null. The kind
-        // is still known, so the identity degrades one step — losing per-link identity but keeping the
-        // Wi-Fi↔cellular transition, which is the decisive one. The emulator lane runs API 29 only, so
-        // this branch is exercised nowhere else in the repo.
-        assertEquals(
-            NetworkId.KindOnly(NetworkKind.Wifi),
-            androidNetworkId(hasWifi = true, hasCellular = false, hasEthernet = false, hasVpn = false, handle = null),
-        )
-        assertEquals(
-            NetworkId.KindOnly(NetworkKind.Vpn(setOf(NetworkKind.Cellular))),
-            androidNetworkId(hasWifi = false, hasCellular = true, hasEthernet = false, hasVpn = true, handle = null),
-        )
+    fun everyRecognizedTransportKeepsPerLinkIdentity() {
+        // With minSdk 23 the handle always exists, so a recognized transport is always a full
+        // NetworkId.Link — the KindOnly degradation path is gone, not merely unused.
+        val ids =
+            listOf(
+                androidNetworkId(hasWifi = true, hasCellular = false, hasEthernet = false, hasVpn = false, handle = HANDLE),
+                androidNetworkId(hasWifi = false, hasCellular = true, hasEthernet = false, hasVpn = false, handle = HANDLE),
+                androidNetworkId(hasWifi = false, hasCellular = false, hasEthernet = true, hasVpn = false, handle = HANDLE),
+                androidNetworkId(hasWifi = true, hasCellular = false, hasEthernet = false, hasVpn = true, handle = HANDLE),
+            )
+        ids.forEach { assertIs<NetworkId.Link>(it) }
     }
 
     @Test
     fun handleIsCarriedThroughVerbatimIncludingZero() {
-        // Zero is a legal networkHandle and must not be confused with "absent" — the nullable Long is
-        // the only absence signal.
+        // Zero is a legal networkHandle and must survive the round-trip like any other value.
         assertEquals(
             NetworkId.Link(NetworkKind.Wifi, 0L),
             androidNetworkId(hasWifi = true, hasCellular = false, hasEthernet = false, hasVpn = false, handle = 0L),

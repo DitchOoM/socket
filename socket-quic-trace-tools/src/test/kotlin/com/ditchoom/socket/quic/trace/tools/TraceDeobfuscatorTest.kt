@@ -1,9 +1,11 @@
 package com.ditchoom.socket.quic.trace.tools
 
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.nanoseconds
 
 class TraceDeobfuscatorTest {
     // --- Rewrite logic, R8-free: a fake resolver proves ONLY the STATE/ERROR FQN tokens change. ---
@@ -12,38 +14,38 @@ class TraceDeobfuscatorTest {
 
     @Test
     fun state_name_is_remapped() {
-        val event = TraceDeobfuscator(::deobfIdentityToOriginal).deobfuscate(TraceEvent.State(1L, "a.b.c", "h3"))
-        assertEquals(TraceEvent.State(1L, "com.ditchoom.socket.quic.QuicConnectionState.Established", "h3"), event)
+        val event = TraceDeobfuscator(::deobfIdentityToOriginal).deobfuscate(TraceEvent.State(1L.nanoseconds, "a.b.c", "h3"))
+        assertEquals(TraceEvent.State(1L.nanoseconds, "com.ditchoom.socket.quic.QuicConnectionState.Established", "h3"), event)
     }
 
     @Test
     fun error_type_is_remapped_but_message_untouched() {
-        val event = prefixing.deobfuscate(TraceEvent.Error(2L, "x.y.Z", "ENETDOWN: down"))
-        assertEquals(TraceEvent.Error(2L, "orig.x.y.Z", "ENETDOWN: down"), event)
+        val event = prefixing.deobfuscate(TraceEvent.Error(2L.nanoseconds, "x.y.Z", "ENETDOWN: down"))
+        assertEquals(TraceEvent.Error(2L.nanoseconds, "orig.x.y.Z", "ENETDOWN: down"), event)
     }
 
     @Test
     fun non_class_events_pass_through_untouched() {
-        val dgram = TraceEvent.DgramOut(3L, 3, null, "aabbcc")
+        val dgram = TraceEvent.DgramOut(3L.nanoseconds, 3, null, "aabbcc")
         assertEquals(dgram, prefixing.deobfuscate(dgram))
-        val stats = TraceEvent.NetAvail(4L, com.ditchoom.socket.NetworkAvailability.UNAVAILABLE)
-        assertEquals(stats, prefixing.deobfuscate(stats))
+        val net = TraceEvent.Net(4L.nanoseconds, NetworkState.Offline)
+        assertEquals(net, prefixing.deobfuscate(net))
     }
 
     @Test
     fun deobfuscateAll_rewrites_only_state_and_error_lines_and_preserves_order() {
         val trace =
             listOf(
-                TraceEvent.State(0L, "a.b.c", "h3").toString(),
-                TraceEvent.DgramOut(1L, 2, null, "beef").toString(),
-                TraceEvent.Error(2L, "x.y.Z", "boom").toString(),
+                TraceEvent.State(0L.nanoseconds, "a.b.c", "h3").toString(),
+                TraceEvent.DgramOut(1L.nanoseconds, 2, null, "beef").toString(),
+                TraceEvent.Error(2L.nanoseconds, "x.y.Z", "boom").toString(),
             )
         val out = prefixing.deobfuscateAll(trace)
         assertEquals(
             listOf(
-                TraceEvent.State(0L, "orig.a.b.c", "h3").toString(),
-                TraceEvent.DgramOut(1L, 2, null, "beef").toString(),
-                TraceEvent.Error(2L, "orig.x.y.Z", "boom").toString(),
+                TraceEvent.State(0L.nanoseconds, "orig.a.b.c", "h3").toString(),
+                TraceEvent.DgramOut(1L.nanoseconds, 2, null, "beef").toString(),
+                TraceEvent.Error(2L.nanoseconds, "orig.x.y.Z", "boom").toString(),
             ),
             out,
         )
@@ -60,7 +62,7 @@ class TraceDeobfuscatorTest {
     @Test
     fun r8_resolves_a_mapped_error_type_to_its_original_name() {
         val deobf = TraceDeobfuscator.fromMapping(mapping)
-        val event = deobf.deobfuscate(TraceEvent.Error(1L, "x.y.z", "boom")) as TraceEvent.Error
+        val event = deobf.deobfuscate(TraceEvent.Error(1L.nanoseconds, "x.y.z", "boom")) as TraceEvent.Error
         assertEquals("com.example.MyException", event.type)
         assertEquals("boom", event.message)
     }
@@ -68,7 +70,7 @@ class TraceDeobfuscatorTest {
     @Test
     fun r8_resolves_a_mapped_state_name_even_when_nested() {
         val deobf = TraceDeobfuscator.fromMapping(mapping)
-        val event = deobf.deobfuscate(TraceEvent.State(1L, "a.b", "h3")) as TraceEvent.State
+        val event = deobf.deobfuscate(TraceEvent.State(1L.nanoseconds, "a.b", "h3")) as TraceEvent.State
         // R8 may render the nested class with '.' or '$'; assert the meaningful parts, not the separator.
         assertContains(event.name, "QuicConnectionState")
         assertContains(event.name, "Established")
@@ -77,7 +79,7 @@ class TraceDeobfuscatorTest {
     @Test
     fun r8_passes_through_an_unmapped_name() {
         val deobf = TraceDeobfuscator.fromMapping(mapping)
-        val event = deobf.deobfuscate(TraceEvent.Error(1L, "com.unmapped.Boom", "x")) as TraceEvent.Error
+        val event = deobf.deobfuscate(TraceEvent.Error(1L.nanoseconds, "com.unmapped.Boom", "x")) as TraceEvent.Error
         assertEquals("com.unmapped.Boom", event.type)
     }
 
@@ -96,11 +98,11 @@ class TraceDeobfuscatorTest {
         val deobf = TraceDeobfuscator.fromMapping(proguard)
         assertEquals(
             "com.acme.net.LinkException",
-            (deobf.deobfuscate(TraceEvent.Error(1L, "b.c.d", "down")) as TraceEvent.Error).type,
+            (deobf.deobfuscate(TraceEvent.Error(1L.nanoseconds, "b.c.d", "down")) as TraceEvent.Error).type,
         )
         assertEquals(
             "com.acme.server.QuicHandler",
-            (deobf.deobfuscate(TraceEvent.State(1L, "a.a.a", "h3")) as TraceEvent.State).name,
+            (deobf.deobfuscate(TraceEvent.State(1L.nanoseconds, "a.a.a", "h3")) as TraceEvent.State).name,
         )
     }
 
@@ -108,7 +110,7 @@ class TraceDeobfuscatorTest {
     fun r8_passes_through_the_non_class_fallback_token() {
         val deobf = TraceDeobfuscator.fromMapping(mapping)
         // The recorder's "Unknown" fallback isn't a valid class type name — must not throw, just pass through.
-        val event = deobf.deobfuscate(TraceEvent.State(1L, "Unknown", null)) as TraceEvent.State
+        val event = deobf.deobfuscate(TraceEvent.State(1L.nanoseconds, "Unknown", null)) as TraceEvent.State
         assertEquals("Unknown", event.name)
     }
 

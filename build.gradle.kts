@@ -547,7 +547,10 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 21
+        // 23, following :network-monitor (an `api` dependency, so its floor is ours — a lower value here
+        // is a manifest-merger failure, not a silent downgrade). See that module's build file for why the
+        // monitor cannot usefully support API 21/22: RFC_NETWORK_REACHABILITY §8.1.
+        minSdk = 23
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     namespace = "$group.${rootProject.name}"

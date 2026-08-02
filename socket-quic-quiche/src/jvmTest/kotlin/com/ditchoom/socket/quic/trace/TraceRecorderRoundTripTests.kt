@@ -4,7 +4,12 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.BlockReason
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.MonitorCapability
+import com.ditchoom.socket.MonitorMechanism
+import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.quic.ImpairmentConfig
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.sim.Observed
@@ -20,6 +25,7 @@ import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
@@ -100,7 +106,7 @@ class TraceRecorderRoundTripTests {
 
             // --- 2. One clock: timestamps are monotonically non-decreasing in emit order. ---
             lines
-                .map { TraceEvent.parse(it).atNanos }
+                .map { TraceEvent.parse(it).at }
                 .zipWithNext()
                 .forEach { (a, b) -> assertTrue(b >= a, "timestamps regressed: $a -> $b") }
 
@@ -127,19 +133,53 @@ class TraceRecorderRoundTripTests {
     fun every_input_event_type_roundtrips_through_the_line_format() {
         val events =
             listOf<TraceEvent>(
-                TraceEvent.DgramIn(0L, 4, null, "c0ffee00"),
-                TraceEvent.DgramIn(1_000L, 2, TracePath(4, 4433, 0L, 0x7f000001L), "beef"),
-                TraceEvent.Error(2_000L, "SimIoException", "ENETDOWN: network is down"),
-                TraceEvent.Error(3_000L, "QuicCloseException", ""),
-                TraceEvent.NetAvail(4_000L, NetworkAvailability.UNAVAILABLE),
-                TraceEvent.Net(5_000L, NetworkId.Unidentified),
-                TraceEvent.Net(6_000L, NetworkId.KindOnly(NetworkKind.Cellular)),
-                TraceEvent.Net(7_000L, NetworkId.Link(NetworkKind.Wifi, -42L)),
+                TraceEvent.DgramIn(0L.nanoseconds, 4, null, "c0ffee00"),
+                TraceEvent.DgramIn(1_000L.nanoseconds, 2, TracePath(4, 4433, 0L, 0x7f000001L), "beef"),
+                TraceEvent.Error(2_000L.nanoseconds, "SimIoException", "ENETDOWN: network is down"),
+                TraceEvent.Error(3_000L.nanoseconds, "QuicCloseException", ""),
+                // Every rung of the ladder, and every InternetAccess verdict, through the line format.
+                TraceEvent.Net(4_000L.nanoseconds, NetworkState.Unknown),
+                TraceEvent.Net(5_000L.nanoseconds, NetworkState.Offline),
+                TraceEvent.Net(6_000L.nanoseconds, NetworkState.LinkLocal(NetworkId.Unidentified)),
                 TraceEvent.Net(
-                    8_000L,
-                    NetworkId.Link(NetworkKind.Vpn(setOf(NetworkKind.Cellular, NetworkKind.Other("weird label (x, y): z"))), 7L),
+                    7_000L.nanoseconds,
+                    NetworkState.Routable(NetworkId.KindOnly(NetworkKind.Cellular), InternetAccess.Unobserved),
                 ),
-                TraceEvent.Liveness(9_000L, TransportLiveness.Result.Dead),
+                TraceEvent.Net(
+                    8_000L.nanoseconds,
+                    NetworkState.Routable(NetworkId.Link(NetworkKind.Wifi, -42L), InternetAccess.Observed.Confirmed),
+                ),
+                TraceEvent.Net(9_000L.nanoseconds, NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Observed.Pending)),
+                TraceEvent.Net(10_000L.nanoseconds, NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Observed.Limited)),
+                TraceEvent.Net(
+                    11_000L.nanoseconds,
+                    NetworkState.Routable(
+                        NetworkId.Unidentified,
+                        InternetAccess.Observed.Blocked(BlockReason.CaptivePortal),
+                    ),
+                ),
+                TraceEvent.Net(
+                    12_000L.nanoseconds,
+                    NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Observed.Blocked(BlockReason.Suspended)),
+                ),
+                TraceEvent.Net(
+                    13_000L.nanoseconds,
+                    NetworkState.LinkLocal(
+                        NetworkId.Link(
+                            NetworkKind.Vpn(setOf(NetworkKind.Cellular, NetworkKind.Other("weird label (x, y): z"))),
+                            7L,
+                        ),
+                    ),
+                ),
+                TraceEvent.NetCapability(
+                    14_000L.nanoseconds,
+                    MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+                ),
+                TraceEvent.NetCapability(
+                    15_000L.nanoseconds,
+                    MonitorCapability(MonitorMechanism.Polled(5.seconds), ReachResolution.LinkOnly),
+                ),
+                TraceEvent.Liveness(16_000L.nanoseconds, TransportLiveness.Result.Dead),
             )
         val lines = mutableListOf<String>()
         val recorder = QuicTraceRecorder({ e -> lines += e.toString() })
@@ -148,11 +188,11 @@ class TraceRecorderRoundTripTests {
         // Observation events round-trip too (tooling reads whole traces back).
         val observations =
             listOf<TraceEvent>(
-                TraceEvent.DgramOut(10_000L, 3, null, "aabbcc"),
-                TraceEvent.State(11_000L, "Established", "h3"),
-                TraceEvent.State(12_000L, "Closed", "IdleTimeout (0x-1)"),
-                TraceEvent.PathState(13_000L, "Probing", "10.0.0.2", 4444),
-                TraceEvent.PathState(14_000L, "None", null, 0),
+                TraceEvent.DgramOut(20_000L.nanoseconds, 3, null, "aabbcc"),
+                TraceEvent.State(21_000L.nanoseconds, "Established", "h3"),
+                TraceEvent.State(22_000L.nanoseconds, "Closed", "IdleTimeout (0x-1)"),
+                TraceEvent.PathState(23_000L.nanoseconds, "Probing", "10.0.0.2", 4444),
+                TraceEvent.PathState(24_000L.nanoseconds, "None", null, 0),
             )
         val obsLines = mutableListOf<String>()
         QuicTraceRecorder({ e -> obsLines += e.toString() }).also { r -> observations.forEach { r.record(it) } }
@@ -163,14 +203,23 @@ class TraceRecorderRoundTripTests {
     fun generated_fixture_source_uses_the_simFixture_dsl() {
         val inputs =
             listOf<TraceEvent>(
-                TraceEvent.DgramIn(0L, 3, null, "010203"),
-                TraceEvent.NetAvail(1_000_000L, NetworkAvailability.UNAVAILABLE),
-                TraceEvent.Net(2_000_000L, NetworkId.KindOnly(NetworkKind.Cellular)),
-                TraceEvent.Liveness(3_000_000L, TransportLiveness.Result.Dead),
-                TraceEvent.Error(4_000_000L, "SimIoException", "ENETDOWN"),
+                TraceEvent.DgramIn(0L.nanoseconds, 3, null, "010203"),
+                TraceEvent.Net(1_000_000L.nanoseconds, NetworkState.Offline),
+                TraceEvent.Net(
+                    2_000_000L.nanoseconds,
+                    NetworkState.Routable(NetworkId.KindOnly(NetworkKind.Cellular), InternetAccess.Unobserved),
+                ),
+                TraceEvent.Liveness(3_000_000L.nanoseconds, TransportLiveness.Result.Dead),
+                TraceEvent.Error(4_000_000L.nanoseconds, "SimIoException", "ENETDOWN"),
+                // NET_CAP is an input, but it configures the replay's monitor rather than firing at an
+                // instant, so codegen must drop it too:
+                TraceEvent.NetCapability(
+                    4_500_000L.nanoseconds,
+                    MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly),
+                ),
                 // Observations must be dropped by codegen:
-                TraceEvent.DgramOut(5_000_000L, 1, null, "ff"),
-                TraceEvent.State(6_000_000L, "Closed", null),
+                TraceEvent.DgramOut(5_000_000L.nanoseconds, 1, null, "ff"),
+                TraceEvent.State(6_000_000L.nanoseconds, "Closed", null),
             )
         val source = TraceToFixture.generateKotlin("field-capture-1", "fieldCapture1", inputs)
         val expectedFragments =
@@ -181,8 +230,8 @@ class TraceRecorderRoundTripTests {
                 "internal val fieldCapture1: SimFixture =",
                 "simFixture(\"field-capture-1\") {",
                 "at(0.nanoseconds) datagramIn \"010203\"",
-                "at(1000000.nanoseconds) availability NetworkAvailability.UNAVAILABLE",
-                "at(2000000.nanoseconds) network NetworkId.KindOnly(NetworkKind.Cellular)",
+                "at(1000000.nanoseconds) net NetworkState.Offline",
+                "at(2000000.nanoseconds) net NetworkState.Routable(NetworkId.KindOnly(NetworkKind.Cellular), InternetAccess.Unobserved)",
                 "at(3000000.nanoseconds) liveness Liveness.Result.Dead",
                 "at(4000000.nanoseconds) recvError SimError(\"SimIoException: ENETDOWN\")",
                 "runFor(4000000.nanoseconds)",
@@ -191,6 +240,7 @@ class TraceRecorderRoundTripTests {
             assertTrue(fragment in source, "generated source missing <$fragment>:\n$source")
         }
         assertTrue("DGRAM_OUT" !in source && "datagramOut" !in source && "\"ff\"" !in source, "observations leaked into fixture:\n$source")
-        assertTrue("State" !in source, "STATE observation leaked into fixture:\n$source")
+        assertTrue("TraceEvent.State" !in source, "STATE observation leaked into fixture:\n$source")
+        assertTrue("MonitorCapability" !in source, "NET_CAP is not a timed event and must not be codegen'd:\n$source")
     }
 }

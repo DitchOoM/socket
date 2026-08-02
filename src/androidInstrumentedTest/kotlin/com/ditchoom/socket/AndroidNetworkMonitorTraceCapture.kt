@@ -170,8 +170,7 @@ class AndroidNetworkMonitorTraceCapture {
             Log.i(TAG, "PORTAL hasINTERNET=${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)}")
             Log.i(TAG, "PORTAL hasVALIDATED=${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}")
             Log.i(TAG, "PORTAL hasCAPTIVE_PORTAL=${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)}")
-            Log.i(TAG, "PORTAL monitor.availability=${monitor.availability.value}")
-            Log.i(TAG, "PORTAL monitor.networkId=${monitor.networkId.value}")
+            Log.i(TAG, "PORTAL monitor.state=${monitor.state.value}")
         } finally {
             shell("settings delete global captive_portal_http_url")
             shell("settings delete global captive_portal_https_url")

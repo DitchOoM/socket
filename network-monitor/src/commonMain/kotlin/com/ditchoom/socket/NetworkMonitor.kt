@@ -1,15 +1,21 @@
 package com.ditchoom.socket
 
 import com.ditchoom.socket.transport.NetworkId
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlin.concurrent.Volatile
 
 /**
- * Observes platform network availability and exposes it as a [StateFlow].
+ * Observes the platform network and exposes it as a single [StateFlow] of [NetworkState].
  *
- * Platform-specific implementations use native APIs for best responsiveness. Rather than trusting this
- * list, ask the monitor you were handed: [mechanism] reports [MonitorMechanism.PlatformSignalled] vs
- * [MonitorMechanism.Polled] as a sealed value.
+ * Platform-specific implementations use native APIs for best responsiveness. Rather than trusting the
+ * list below, ask the monitor you were handed: [capability] reports both what pushes changes
+ * ([MonitorMechanism]) and which rungs of the link → route → internet ladder it can ever report
+ * ([ReachResolution]), as sealed values.
  * - **Apple**: `NWPathMonitor` (event-driven)
  * - **Android**: `ConnectivityManager.NetworkCallback` (event-driven); `NetworkInterface` polling if the
  *   app stripped `NetworkMonitorInitializer` (androidx.startup) from its merged manifest
@@ -20,10 +26,10 @@ import kotlinx.coroutines.flow.StateFlow
  * - **Node.js**: `os.networkInterfaces()` polling; **browser JS**: `online`/`offline` (event-driven)
  * - **Linux native**: netlink sockets (event-driven)
  *
- * Scope: this answers *"is the network up, and what link am I on"* ([availability] + [networkId]) and
- * deliberately never *"which local addresses exist"* — no interface enumeration, no `InetAddress`.
- * Address enumeration is a separate concern with a different lifetime and cost (`../webrtc`'s ICE owns
- * its own enumerator); the name is narrower than it reads.
+ * Scope: this answers *"what network am I on, and how far does it reach"* ([state]) and deliberately
+ * never *"which local addresses exist"* — no interface enumeration, no `InetAddress`. Address
+ * enumeration is a separate concern with a different lifetime and cost (`../webrtc`'s ICE owns its own
+ * enumerator); the name is narrower than it reads.
  *
  * The platform's best default is `NetworkMonitor.default()`, and the process-shared instance is
  * `NetworkMonitor.processDefault()` — both `expect`/extension functions provided by the owning
@@ -33,58 +39,72 @@ import kotlinx.coroutines.flow.StateFlow
  * `:socket`. Use [AlwaysAvailable] when monitoring is not needed.
  */
 interface NetworkMonitor {
-    /** Current network availability, updated as the platform detects changes. */
-    val availability: StateFlow<NetworkAvailability>
+    /**
+     * The single source of truth: one value, always coherent, updated as the platform detects changes.
+     *
+     * This replaced separate `availability` and `networkId` flows, which nothing kept coherent —
+     * two flows cannot be sampled atomically, one value can (RFC_NETWORK_REACHABILITY §1.2). Read
+     * identity off it with [NetworkState.networkId] (a total function) and answer the common questions
+     * with [canRouteOffLink] / [supportsLinkLocal] / [needsUserAction] / [isTransient] rather than an
+     * exhaustive `when`.
+     *
+     * A consumer watching for a **path change** (QUIC auto-migration, the transport-selection layer's
+     * per-network [com.ditchoom.socket.transport.CapabilityCache] scope) must key on identity, not on
+     * the whole value:
+     * ```
+     * monitor.state.map { it.networkId }.distinctUntilChanged().drop(1)
+     * ```
+     * Without the [kotlinx.coroutines.flow.distinctUntilChanged] a reachability transition on the *same*
+     * network — the ~1s `Pending` → `Confirmed` window — would read as a migration.
+     */
+    val state: StateFlow<NetworkState>
 
     /**
-     * Typed identity of the current primary network path ([NetworkId], sealed — never a string or
-     * null), updated on the same platform callbacks as [availability]. This is the producer for
-     * [com.ditchoom.socket.TransportConfig.networkId] and the transport-selection layer's
-     * per-network [com.ditchoom.socket.transport.CapabilityCache] scope: wire it as
-     * `FallbackTransport(chain, networkId = { monitor.networkId.value })`.
+     * What this monitor can observe at all — **read once, at configuration time**. Constant for the
+     * monitor's lifetime.
      *
-     * Defaults to a constant [NetworkId.Unidentified] — the explicit "no cheap network identity"
-     * state (RFC_TRANSPORT_FALLBACK §12) — which is what monitors keep on platforms with no reliable
-     * link-kind API (desktop JVM, Linux native, Node.js, Wasm). Overridden with real identity by:
-     * - **Apple** — `NWPathMonitor` primary interface type + index → [NetworkId.Link]
-     * - **Android** — `ConnectivityManager` transports + `networkHandle` → [NetworkId.Link]
-     * - **Browser JS** — `navigator.connection.type` → [NetworkId.KindOnly] (Chromium-only;
-     *   [NetworkId.Unidentified] elsewhere)
+     * Read this instead of reflecting on the concrete class or re-deriving the answer from `os.name` and
+     * the JDK version: on the JVM alone the resolved monitor is a 2×3 matrix (multi-release JAR — JDK
+     * 8–20 polling vs JDK 21+ FFM — crossed with Linux / macOS / Windows), and a re-derivation drifts
+     * silently from what this library actually picked.
+     *
+     * Defaults to `MonitorCapability(MonitorMechanism.Unknown, ReachResolution.LinkOnly)` so
+     * third-party monitors written before this property still compile — the same explicit-unknown stance
+     * [NetworkId.Unidentified] takes for identity, and deliberately the *least* capable resolution so an
+     * undeclared monitor is never over-trusted. Every monitor in this library overrides it.
      */
-    val networkId: StateFlow<NetworkId> get() = UnidentifiedNetworkId
-
-    /**
-     * How this monitor learns about changes — pushed by the OS ([MonitorMechanism.PlatformSignalled]),
-     * re-read on an interval ([MonitorMechanism.Polled]), or never changing at all
-     * ([MonitorMechanism.Static]). Constant for the monitor's lifetime.
-     *
-     * Read this instead of reflecting on the concrete class or re-deriving the answer from `os.name`
-     * and the JDK version: on the JVM alone the resolved monitor is a 2×3 matrix (multi-release JAR —
-     * JDK 8–20 polling vs JDK 21+ FFM — crossed with Linux / macOS / Windows), and a re-derivation
-     * drifts silently from what this library actually picked.
-     *
-     * Defaults to [MonitorMechanism.Unknown] so third-party monitors written before this property still
-     * compile — the same explicit-unknown default [networkId] takes. Every monitor in this library
-     * overrides it.
-     */
-    val mechanism: MonitorMechanism get() = MonitorMechanism.Unknown
+    val capability: MonitorCapability get() = UndeclaredCapability
 
     /** Releases platform resources (unregisters callbacks, closes sockets, cancels polling). */
     fun close()
 
     companion object {
-        /** A no-op monitor that always reports [NetworkAvailability.AVAILABLE]. */
+        /**
+         * A no-op monitor that reports `Routable(Unidentified, Unobserved)` forever.
+         *
+         * Its capability is `(Static, Asserted)`, which is the point: it **declares that it never looked**
+         * ([ReachResolution.Asserted]), so a consumer gating on reachability can refuse to trust it —
+         * which it could not detect while this claimed plain availability. A consumer that just wants to
+         * opt out of monitoring still gets [canRouteOffLink] `== true` and proceeds.
+         */
         val AlwaysAvailable: NetworkMonitor =
             object : NetworkMonitor {
-                override val availability: StateFlow<NetworkAvailability> =
-                    MutableStateFlow(NetworkAvailability.AVAILABLE)
+                override val state: StateFlow<NetworkState> =
+                    MutableStateFlow(NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved))
 
-                override val mechanism: MonitorMechanism = MonitorMechanism.Static
+                override val capability: MonitorCapability =
+                    MonitorCapability(MonitorMechanism.Static, ReachResolution.Asserted)
 
                 override fun close() {}
             }
 
-        /** Process-wide override installed via [installProcessDefault]; null → use the platform default. */
+        /**
+         * Process-wide override installed via [installProcessDefault]; null → use the platform default.
+         * Written once at startup and read from any thread resolving `processDefault()`; [Volatile] is
+         * the memory-visibility guarantee, and no atomicity is needed because installing is a single
+         * reference store.
+         */
+        @Volatile
         private var installed: NetworkMonitor? = null
 
         /**
@@ -131,5 +151,35 @@ interface NetworkMonitor {
     }
 }
 
-/** Shared constant flow for monitors that cannot identify the network (the [NetworkMonitor.networkId] default). */
-private val UnidentifiedNetworkId: StateFlow<NetworkId> = MutableStateFlow(NetworkId.Unidentified)
+/**
+ * The [NetworkMonitor.capability] default for a monitor that does not declare one — unknown mechanism
+ * paired with the least capable resolution, so an undeclared monitor is never over-trusted.
+ */
+private val UndeclaredCapability = MonitorCapability(MonitorMechanism.Unknown, ReachResolution.LinkOnly)
+
+/**
+ * Changes of the **network path itself** — the identity-keyed projection of [NetworkMonitor.state], with
+ * the current value dropped so only genuine changes arrive.
+ *
+ * This is the flow QUIC auto-migration, the per-network
+ * [CapabilityCache][com.ditchoom.socket.transport.CapabilityCache] scope, a reconnect-backoff race, and
+ * `../webrtc`'s ICE restart policy all actually want. It exists as one function because collapsing
+ * availability and identity into a single [NetworkState] made the naive reading *wrong* in a new way: the
+ * whole state now changes on reachability transitions too, so a consumer collecting `state` directly
+ * would see the ~1s [InternetAccess.Observed.Pending] → [InternetAccess.Observed.Confirmed] window on a
+ * single Wi-Fi network as a **migration**, and tear down a perfectly good path. The
+ * [kotlinx.coroutines.flow.distinctUntilChanged] on identity is what prevents that, and it should be
+ * written once rather than in every consumer.
+ *
+ * A monitor that cannot identify links reports a constant [NetworkId.Unidentified], so this never emits
+ * and every path-change behaviour is inert — the same "no cheap identity" degradation
+ * RFC_TRANSPORT_FALLBACK §12 already defines, not a special case.
+ *
+ * To react to *reachability* rather than identity — waiting out a validation window, surfacing a captive
+ * portal — collect [state][NetworkMonitor.state] and branch on [isTransient] / [needsUserAction] instead.
+ */
+fun NetworkMonitor.pathChanges(): Flow<NetworkId> =
+    state
+        .map { it.networkId }
+        .distinctUntilChanged()
+        .drop(1)

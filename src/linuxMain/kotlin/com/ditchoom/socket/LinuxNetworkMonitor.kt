@@ -23,29 +23,49 @@ import kotlinx.coroutines.launch
 /**
  * Linux [NetworkMonitor] using netlink sockets for event-driven network change detection.
  *
- * Uses `AF_NETLINK` / `NETLINK_ROUTE` with `RTMGRP_LINK | RTMGRP_IPV4_IFADDR` multicast
- * groups to receive kernel notifications when network interfaces change state or gain/lose
- * addresses. On each notification, re-checks actual state via `getifaddrs()`.
+ * Uses `AF_NETLINK` / `NETLINK_ROUTE` bound to the `RTMGRP_LINK`, `RTMGRP_IPV4_IFADDR`,
+ * `RTMGRP_IPV6_IFADDR`, `RTMGRP_IPV4_ROUTE` and `RTMGRP_IPV6_ROUTE` multicast groups, so the kernel
+ * pushes link, address **and route** changes. The route groups are not completeness — they are
+ * load-bearing for the rung: the default route alone decides [NetworkState.LinkLocal] vs
+ * [NetworkState.Routable] (RFC_NETWORK_REACHABILITY §1.1), and a route can change with no link or
+ * address event at all — `ip route del default` touches nothing else, and the common DHCP sequence
+ * installs the default route *after* the address is already configured. With only the link/ifaddr
+ * groups either transition would go unseen and the monitor would hold the wrong rung indefinitely.
+ * On each notification, re-resolves the actual state via an `RTM_GETROUTE` dump plus `getifaddrs()`.
  *
- * This hybrid approach avoids parsing complex netlink message attributes while still
- * being event-driven (no polling).
+ * This hybrid approach avoids parsing complex netlink message *attributes* on the notification path
+ * while still being event-driven (no polling).
+ *
+ * Its capability is [ReachResolution.RouteOnly]: the kernel knows about links and routes and nothing
+ * about whether traffic reaches the internet, so every [NetworkState.Routable] carries
+ * [InternetAccess.Unobserved]. The top rung needs NetworkManager's `NMConnectivityState` over D-Bus,
+ * deferred by RFC_NETWORK_REACHABILITY §8.2 — and deferrable precisely because [capability] is a value
+ * read at construction, so upgrading this to [ReachResolution.RouteAndInternet] later is
+ * source-compatible.
+ *
+ * The route half is the §1.1 fix: the pre-RFC monitor reported plain `AVAILABLE` whenever any
+ * non-loopback interface was up, so a container with only `docker0` and no default route looked
+ * identical to a working uplink. It now reports [NetworkState.LinkLocal] there — which is honest, and
+ * still useful, since mDNS and multicast work on it.
  */
 class LinuxNetworkMonitor : NetworkMonitor {
-    private val _availability = MutableStateFlow(NetworkAvailability.UNKNOWN)
-    override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
-    private val _networkId = MutableStateFlow<NetworkId>(NetworkId.Unidentified)
-    override val networkId: StateFlow<NetworkId> = _networkId.asStateFlow()
+    private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
+    override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
-    /** `RTMGRP_LINK`/`RTMGRP_IPV4_IFADDR` netlink multicast — the kernel pushes, we never poll. */
-    override val mechanism: MonitorMechanism = MonitorMechanism.PlatformSignalled
+    /**
+     * Link, address and route netlink multicast (the five `RTMGRP_*` groups in the class KDoc) — the
+     * kernel pushes, we never poll — and the kernel resolves routes but never probes the internet
+     * (RFC §8.2).
+     */
+    override val capability: MonitorCapability =
+        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly)
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var netlinkFd: Int = -1
 
     init {
         netlinkFd = createNetlinkSocket()
-        _availability.value = checkInterfaces()
-        _networkId.value = primaryNetworkId()
+        _state.value = resolveNetworkState()
 
         if (netlinkFd >= 0) {
             scope.launch {
@@ -60,9 +80,17 @@ class LinuxNetworkMonitor : NetworkMonitor {
                             .toCPointer<ByteVar>()!!
                     while (isActive) {
                         val n = recv(netlinkFd, ptr, 4096.toULong(), 0)
-                        if (n <= 0) break
-                        _availability.value = checkInterfaces()
-                        _networkId.value = primaryNetworkId()
+                        // ENOBUFS is not a dead socket: the kernel dropped notifications because the
+                        // socket's kernel receive queue (SO_RCVBUF — not this 4096-byte scratch buffer)
+                        // overflowed before we drained it (netlink(7) "reliable transmission") — likelier
+                        // now that the route groups multiply the event rate. Dropped *messages* cost nothing
+                        // here, because we never parse them: any wake-up triggers one full re-resolution,
+                        // which observes whatever end state the dropped burst left behind. So re-resolve
+                        // and keep listening; anything else (0 = closed, other errors) ends the loop.
+                        if (n == 0L || (n < 0L && errno != ENOBUFS)) break
+                        // One re-resolution, one publication: link, route and identity come from the same
+                        // pass, so a collector can never see a new link beside the old route.
+                        _state.value = resolveNetworkState()
                     }
                 } finally {
                     scratch.freeNativeMemory()
@@ -96,6 +124,57 @@ class LinuxNetworkMonitor : NetworkMonitor {
     }
 
     /**
+     * The host's primary link, carrying **why** it is primary — which is the whole point: an interface
+     * that owns the default route and one that merely happens to be up are different rungs of the ladder
+     * ([NetworkState.Routable] vs [NetworkState.LinkLocal]), and the pre-RFC monitor lost that
+     * distinction by returning only a [NetworkId].
+     *
+     * [id] is on the interface so a caller wanting identity alone (`primaryNetworkId`, the netns harness)
+     * needs no `when`, exactly as [NetworkState.Up] does it.
+     */
+    internal sealed interface PrimaryLink {
+        val id: NetworkId
+
+        /** A default route resolved; new connections leave the host through this link. */
+        data class Routed(
+            override val id: NetworkId,
+        ) : PrimaryLink
+
+        /** A non-loopback link is up but no default route resolves — link-local reach only. */
+        data class Unrouted(
+            override val id: NetworkId,
+        ) : PrimaryLink
+
+        /** No non-loopback link is up. */
+        data object NoLink : PrimaryLink {
+            override val id: NetworkId get() = NetworkId.Unidentified
+        }
+
+        /** `getifaddrs` itself failed — we do not know, which is not the same as knowing there is nothing. */
+        data object Undetermined : PrimaryLink {
+            override val id: NetworkId get() = NetworkId.Unidentified
+        }
+    }
+
+    /**
+     * Outcome of the `getifaddrs` link scan. Sealed rather than a `String?` because "the scan failed" and
+     * "the scan found nothing" map to different rungs ([NetworkState.Unknown] vs [NetworkState.Offline])
+     * and a null would fuse them — the §1.1 class of bug, one level down.
+     */
+    internal sealed interface LinkScan {
+        /** The first up, non-loopback interface. */
+        data class Up(
+            val iface: String,
+        ) : LinkScan
+
+        /** The scan succeeded and nothing non-loopback is up. */
+        data object NoLink : LinkScan
+
+        /** `getifaddrs` failed (or named nothing usable) — no answer either way. */
+        data object Unavailable : LinkScan
+    }
+
+    /**
      * Outcome of scanning one netlink reply chunk: the best [route] found in it, plus whether the dump
      * has ended. [End] vs [More] replaces a `done: Boolean` so the terminator is a state, not a flag.
      */
@@ -114,6 +193,14 @@ class LinuxNetworkMonitor : NetworkMonitor {
     }
 
     companion object {
+        // The full multicast set the rung contract needs. Link + v4/v6 ifaddr wake us for interface and
+        // address changes; the ROUTE groups are load-bearing (see the class KDoc): the default route alone
+        // decides LinkLocal vs Routable, and `ip route del default` — or DHCP installing the default route
+        // after the address is already configured — emits ONLY a route message.
+        private val NETLINK_GROUPS: UInt =
+            (RTMGRP_LINK or RTMGRP_IPV4_IFADDR or RTMGRP_IPV6_IFADDR or RTMGRP_IPV4_ROUTE or RTMGRP_IPV6_ROUTE)
+                .toUInt()
+
         private fun createNetlinkSocket(): Int =
             memScoped {
                 val fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE)
@@ -122,7 +209,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 val addr = alloc<sockaddr_nl>()
                 addr.nl_family = AF_NETLINK.toUShort()
                 addr.nl_pid = 0u
-                addr.nl_groups = (RTMGRP_LINK or RTMGRP_IPV4_IFADDR).toUInt()
+                addr.nl_groups = NETLINK_GROUPS
 
                 val bindResult = socket_bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_nl>().toUInt())
                 if (bindResult < 0) {
@@ -132,27 +219,30 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 fd
             }
 
-        internal fun checkInterfaces(): NetworkAvailability =
-            memScoped {
-                val ifaddrsPtr = allocPointerTo<ifaddrs>()
-                if (getifaddrs(ifaddrsPtr.ptr) != 0) return NetworkAvailability.UNKNOWN
-
-                var current = ifaddrsPtr.value
-                var hasNonLoopback = false
-                while (current != null) {
-                    val flags = current.pointed.ifa_flags.toInt()
-                    val isUp = (flags and IFF_UP) != 0
-                    val isLoopback = (flags and IFF_LOOPBACK) != 0
-                    if (isUp && !isLoopback) {
-                        hasNonLoopback = true
-                        break
-                    }
-                    current = current.pointed.ifa_next
-                }
-                freeifaddrs(ifaddrsPtr.value)
-
-                if (hasNonLoopback) NetworkAvailability.AVAILABLE else NetworkAvailability.UNAVAILABLE
+        /**
+         * Pure mapper from the resolved [PrimaryLink] to a [NetworkState] — the Linux rung table of
+         * RFC_NETWORK_REACHABILITY §4, unit-testable with no kernel at all.
+         *
+         * | [PrimaryLink] | Result |
+         * |---|---|
+         * | [Routed][PrimaryLink.Routed] | `Routable(id, Unobserved)` |
+         * | [Unrouted][PrimaryLink.Unrouted] | [NetworkState.LinkLocal] — the §1.1 fix |
+         * | [NoLink][PrimaryLink.NoLink] | [NetworkState.Offline] |
+         * | [Undetermined][PrimaryLink.Undetermined] | [NetworkState.Unknown] — never a silent "offline" |
+         *
+         * [InternetAccess.Unobserved] is unconditional: the kernel has no reachability verdict to give,
+         * and [capability] declares [ReachResolution.RouteOnly] so no consumer waits for one.
+         */
+        internal fun linuxNetworkState(link: PrimaryLink): NetworkState =
+            when (link) {
+                is PrimaryLink.Routed -> NetworkState.Routable(link.id, InternetAccess.Unobserved)
+                is PrimaryLink.Unrouted -> NetworkState.LinkLocal(link.id)
+                PrimaryLink.NoLink -> NetworkState.Offline
+                PrimaryLink.Undetermined -> NetworkState.Unknown
             }
+
+        /** Resolve the current [NetworkState] from the kernel: [primaryLink] through [linuxNetworkState]. */
+        internal fun resolveNetworkState(): NetworkState = linuxNetworkState(primaryLink())
 
         /**
          * Route-aware primary-link identity — the Linux answer to Apple's `NWPathMonitor` primary
@@ -178,34 +268,65 @@ class LinuxNetworkMonitor : NetworkMonitor {
          *    auto-migration reacts to (the netlink path already yields the index; the text/scan fallbacks
          *    resolve it with `if_nametoindex`).
          *
-         * [NetworkId.Unidentified] when nothing qualifies.
+         * [PrimaryLink.NoLink] when nothing qualifies — and [PrimaryLink.Routed] vs
+         * [PrimaryLink.Unrouted] records *which* of the tiers above answered, because that is exactly the
+         * `Routable`-vs-`LinkLocal` distinction [linuxNetworkState] needs and the pre-RFC
+         * `NetworkId`-only return threw away.
          */
-        internal fun primaryNetworkId(): NetworkId {
+        internal fun primaryLink(): PrimaryLink {
             // Authoritative kernel query first (netns/container-safe, IPv4+IPv6).
             when (val route = queryDefaultRoute()) {
-                is DefaultRoute.Via -> return NetworkId.Link(classifyOif(route.oif), route.oif.value)
+                is DefaultRoute.Via -> return PrimaryLink.Routed(NetworkId.Link(classifyOif(route.oif), route.oif.value))
                 DefaultRoute.None -> Unit // no kernel default route — fall through to the /proc + scan fallbacks
             }
-            return primaryNetworkIdFromProcFallback()
+            return primaryLinkFromProcFallback()
         }
 
         /**
-         * The non-netlink fallback tier of [primaryNetworkId], split out so it is directly reachable by
+         * Route-aware primary-link **identity** — [primaryLink] with the reason dropped. Kept as its own
+         * function because the netns integration harness and the transport layer both want just the
+         * identity, and [PrimaryLink.id] gives it without a `when`.
+         */
+        internal fun primaryNetworkId(): NetworkId = primaryLink().id
+
+        /**
+         * The non-netlink fallback tier of [primaryLink], split out so it is directly reachable by
          * the netns integration harness (`test-harness/netns`). netlink is available on any normal test
          * host, so [queryDefaultRoute] short-circuits and this branch would otherwise never execute at
          * runtime — the harness calls it directly against a namespace's real `/proc` + `/sys` to prove it.
          *
          * Resolves the default-route interface from the IPv4 `/proc/net/route` text table, then its IPv6
-         * companion `/proc/net/ipv6_route` (so an IPv6-only host stays route-aware), then the first up
-         * non-loopback interface from the `getifaddrs` scan; classifies it from `/sys/class/net`.
-         * [NetworkId.Unidentified] when nothing qualifies.
+         * companion `/proc/net/ipv6_route` (so an IPv6-only host stays route-aware) — either of which is
+         * a [PrimaryLink.Routed]. Only if neither names a route does it fall back to the first up
+         * non-loopback interface from the `getifaddrs` scan, which is [PrimaryLink.Unrouted]: a link with
+         * no default route behind it. Kind comes from `/sys/class/net` in every case.
          */
-        internal fun primaryNetworkIdFromProcFallback(): NetworkId {
-            val iface =
+        internal fun primaryLinkFromProcFallback(): PrimaryLink {
+            val routedIface =
                 readFileOrNull("/proc/net/route")?.let { parseDefaultRouteInterface(it) }
                     ?: readFileOrNull("/proc/net/ipv6_route")?.let { parseDefaultRouteInterfaceV6(it) }
-                    ?: firstUpNonLoopbackInterface()
-                    ?: return NetworkId.Unidentified
+            if (routedIface != null) {
+                return when (val id = linkIdFor(routedIface)) {
+                    NetworkId.Unidentified -> PrimaryLink.Undetermined // named a route we cannot resolve
+                    else -> PrimaryLink.Routed(id)
+                }
+            }
+            return when (val scan = scanFirstUpNonLoopbackInterface()) {
+                is LinkScan.Up ->
+                    when (val id = linkIdFor(scan.iface)) {
+                        NetworkId.Unidentified -> PrimaryLink.Undetermined
+                        else -> PrimaryLink.Unrouted(id)
+                    }
+                LinkScan.NoLink -> PrimaryLink.NoLink
+                LinkScan.Unavailable -> PrimaryLink.Undetermined
+            }
+        }
+
+        /** [primaryLinkFromProcFallback]'s identity, for the netns harness that only wants the [NetworkId]. */
+        internal fun primaryNetworkIdFromProcFallback(): NetworkId = primaryLinkFromProcFallback().id
+
+        /** Typed identity of a named interface: its OS index plus `/sys`-derived kind, or Unidentified. */
+        private fun linkIdFor(iface: String): NetworkId {
             val idx = if_nametoindex(iface).toLong()
             if (idx <= 0L) return NetworkId.Unidentified
             return NetworkId.Link(classifyLinkKind(iface), idx)
@@ -263,11 +384,19 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 }.minByOrNull { it.second }
                 ?.first
 
-        /** First up, non-loopback interface from `getifaddrs` — the fallback when there is no default route. */
-        private fun firstUpNonLoopbackInterface(): String? =
+        /**
+         * First up, non-loopback interface from `getifaddrs` — the fallback when there is no default
+         * route, and the sole source of "is there any link at all".
+         *
+         * Returns a [LinkScan] rather than a `String?` so a failed `getifaddrs` ([LinkScan.Unavailable] →
+         * [NetworkState.Unknown]) stays distinguishable from a successful scan that found nothing
+         * ([LinkScan.NoLink] → [NetworkState.Offline]). Reporting a host as offline because the syscall
+         * failed is the mistake this whole RFC is about.
+         */
+        private fun scanFirstUpNonLoopbackInterface(): LinkScan =
             memScoped {
                 val ifaddrsPtr = allocPointerTo<ifaddrs>()
-                if (getifaddrs(ifaddrsPtr.ptr) != 0) return null
+                if (getifaddrs(ifaddrsPtr.ptr) != 0) return LinkScan.Unavailable
 
                 var current = ifaddrsPtr.value
                 var name: String? = null
@@ -280,7 +409,8 @@ class LinuxNetworkMonitor : NetworkMonitor {
                     current = current.pointed.ifa_next
                 }
                 freeifaddrs(ifaddrsPtr.value)
-                name?.takeIf { it.isNotEmpty() }
+                val iface = name?.takeIf { it.isNotEmpty() }
+                if (iface != null) LinkScan.Up(iface) else LinkScan.NoLink
             }
 
         /** Classify a link kind from the kernel's `/sys/class/net/<iface>/` view (see [primaryNetworkId]). */

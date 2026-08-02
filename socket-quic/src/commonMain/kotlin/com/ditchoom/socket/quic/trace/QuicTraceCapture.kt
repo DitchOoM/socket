@@ -38,8 +38,9 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  *   owns IO (append to a file, ship over the network, buffer in memory) so capture stays platform-free.
  *   Each returned sink may be called from several coroutines concurrently — treat it like a log sink.
  * @property networkMonitor optional connectivity tap. When supplied, a **client** connection also
- *   collects the monitor's `availability` + `networkId` flows into the trace (NET_AVAIL / NET_ID),
- *   so captured traces carry connectivity state — the airplane-mode toggle / Wi-Fi↔cellular handoff
+ *   records the monitor's `MonitorCapability` once (NET_CAP) and then collects its single `state`
+ *   flow into the trace (NET — the whole `NetworkState`, identity included), so captured traces
+ *   carry connectivity — the airplane-mode toggle / Wi-Fi↔cellular handoff
  *   that drives the transport layer's reconnection — not just QUIC-level traffic. Ignored on a
  *   server [bind][com.ditchoom.socket.quic.QuicEngine.bind] (a server has no local client network
  *   path to observe). Liveness (LIVENESS) is captured separately via

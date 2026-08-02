@@ -4,7 +4,6 @@ package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.socket.NetworkAvailability
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheDriver
@@ -63,7 +62,7 @@ internal suspend fun TestScope.runQuicSim(
         configuredRecvHook?.invoke(len)
     }
     val udp = TimelineUdpChannel(trace)
-    val monitor = SimNetworkMonitor(initial = NetworkAvailability.AVAILABLE)
+    val monitor = SimNetworkMonitor()
     val liveness = SimLiveness(trace)
     val clock = SimClock(testScheduler)
     val driver =
@@ -97,10 +96,9 @@ internal suspend fun TestScope.runQuicSim(
         driver.pathState.drop(1).collect { trace.record(Observed.PathStateChange(trace.now(), it)) }
     }
     simScope.launch {
-        monitor.networkId.drop(1).collect { trace.record(Observed.NetworkChanged(trace.now(), it)) }
-    }
-    simScope.launch {
-        monitor.availability.drop(1).collect { trace.record(Observed.AvailabilityChanged(trace.now(), it)) }
+        // One collector, because there is one flow: a torn (availability, identity) pair can no longer
+        // be recorded, so the trace order is monotonic by construction (RFC_NETWORK_REACHABILITY §1.2).
+        monitor.state.drop(1).collect { trace.record(Observed.NetworkChanged(trace.now(), it)) }
     }
     testScheduler.runCurrent() // collectors subscribed (initial StateChange recorded) before the driver starts
 

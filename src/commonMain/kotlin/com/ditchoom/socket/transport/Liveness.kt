@@ -5,7 +5,7 @@ package com.ditchoom.socket.transport
  * is still alive — faster than transport keepalive or the OS TCP timeout alone.
  *
  * [ReconnectingConnection] drives [probe] on a network-path change (a
- * [NetworkMonitor.networkId][com.ditchoom.socket.NetworkMonitor.networkId] change). A path change
+ * [pathChanges][com.ditchoom.socket.pathChanges] emission). A path change
  * — airplane-mode toggle, Wi‑Fi↔cellular handoff, a transport swap — is the strongest signal that
  * a previously-live connection may now be half-open. If the probe returns [Result.Dead], the
  * current connection is torn down and reconnection begins immediately, instead of lingering until

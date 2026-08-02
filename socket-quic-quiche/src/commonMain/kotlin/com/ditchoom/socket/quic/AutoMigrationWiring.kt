@@ -1,16 +1,20 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.networkId
+import com.ditchoom.socket.pathChanges
 import com.ditchoom.socket.processDefault
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /*
  * Turns the public auto-migration opt-out (QuicOptions.autoMigrateOnNetworkChange, on by default)
- * into a live reactor on the client connection: a NetworkMonitor's networkId changes become
+ * into a live reactor on the client connection: a NetworkMonitor's path changes become
  * QuicScope.migrate() calls, so a Wi-Fi↔cellular handoff re-homes the QUIC connection with no caller
  * code. The mirror of TraceCaptureWiring's wireClientConnectivityTap — same one-hop shape, wired from
  * the three QuicheEngine actuals' connect() paths (never bind(): a server has no local client path).
@@ -18,9 +22,10 @@ import kotlinx.coroutines.launch
 
 /**
  * Unless auto-migration is disabled, launch a child of [connection] that observes the resolved
- * [NetworkMonitor]'s [NetworkMonitor.networkId] and actively migrates ([QuicScope.migrate] with
- * defaults — a fresh ephemeral socket on the new default interface) on each change to a new link. The
- * collector is a child of the connection scope, so it stops when the connection closes.
+ * [NetworkMonitor]'s identity-keyed path changes — [pathChanges] with the Unidentified filter applied
+ * *before* the baseline drop, see the body — and actively migrates ([QuicScope.migrate] with defaults —
+ * a fresh ephemeral socket on the new default interface) on each change to a new link. The collector is
+ * a child of the connection scope, so it stops when the connection closes.
  *
  * The monitor is [QuicOptions.networkMonitor] when supplied (caller-owned), else the process-shared
  * [NetworkMonitor.processDefault] (owned by whoever installed/created it) — this function never closes
@@ -45,8 +50,23 @@ internal fun wireAutoMigration(
     // nothing to observe, so don't even launch a collector.
     if (monitor === NetworkMonitor.AlwaysAvailable) return
     connection.launch {
-        monitor.networkId
+        // Identity-keyed, exactly like pathChanges() — the dedupe is load-bearing, because the monitor's
+        // state also changes when reachability firms up, so collecting it raw would see Android's ~1s
+        // Pending → Confirmed window on a single Wi-Fi network as a handoff and migrate a perfectly good
+        // path (RFC_NETWORK_REACHABILITY §5, isTransient).
+        //
+        // Written out rather than reusing pathChanges() for one reason: the filter must come BEFORE the
+        // baseline drop. pathChanges() drops the first value it sees, whatever it is; a monitor that has
+        // not identified the link yet reports Unidentified first (Apple's NWPathMonitor and the polling
+        // JVM monitor are both briefly Unknown after construction — RFC §5), so the baseline drop would
+        // be spent on Unidentified and the *first real link* would read as a handoff. A connection
+        // opened in that window would migrate itself the instant identity resolved. Filtering first
+        // makes the dropped baseline the first **identified** link, which is what this reactor's
+        // contract says and what a connect-time baseline actually means.
+        monitor.state
+            .map { it.networkId }
             .filter { it != NetworkId.Unidentified } // ignore "no/unknown link" states — nothing to migrate onto
+            .distinctUntilChanged()
             .drop(1) // the first identified link is the connect-time baseline, not a change
             .collect {
                 // migrate() defaults (null host, port 0): re-bind to a fresh ephemeral socket on the

@@ -20,21 +20,32 @@ class ScriptedNetworkMonitorTests {
     private val wifi: NetworkId = NetworkId.Link(NetworkKind.Wifi, handle = 1)
     private val cellular: NetworkId = NetworkId.Link(NetworkKind.Cellular, handle = 2)
 
+    private val fullLadder = MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet)
+    private val routeOnly = MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly)
+
+    private fun confirmed(id: NetworkId) = NetworkState.Routable(id, InternetAccess.Observed.Confirmed)
+
+    private fun pending(id: NetworkId) = NetworkState.Routable(id, InternetAccess.Observed.Pending)
+
     @Test
     fun reportsInitialStateBeforePlay() =
         runTest {
             val monitor =
                 ScriptedNetworkMonitor(
-                    networkMonitorScript(
-                        initialAvailability = NetworkAvailability.UNAVAILABLE,
-                        initialNetworkId = wifi,
-                    ) {
-                        after(1.seconds) { networkId(cellular) }
+                    networkMonitorScript(fullLadder, initialState = NetworkState.Offline) {
+                        after(1.seconds) { state(confirmed(cellular)) }
                     },
                 )
             // Nothing played yet — the monitor sits at its initial state.
-            assertEquals(NetworkAvailability.UNAVAILABLE, monitor.availability.value)
-            assertEquals(wifi, monitor.networkId.value)
+            assertEquals(NetworkState.Offline, monitor.state.value)
+            assertEquals(NetworkId.Unidentified, monitor.state.value.networkId)
+        }
+
+    @Test
+    fun reportsTheScriptsDeclaredCapability() =
+        runTest {
+            val monitor = ScriptedNetworkMonitor(NetworkMonitorScript.steady(NetworkState.Offline, routeOnly))
+            assertEquals(routeOnly, monitor.capability)
         }
 
     @Test
@@ -42,56 +53,77 @@ class ScriptedNetworkMonitorTests {
         runTest {
             val monitor =
                 ScriptedNetworkMonitor(
-                    networkMonitorScript(
-                        initialAvailability = NetworkAvailability.AVAILABLE,
-                        initialNetworkId = wifi,
-                    ) {
-                        after(1.seconds) { networkId(cellular) }
-                        after(500.milliseconds) { availability(NetworkAvailability.UNAVAILABLE) }
+                    networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                        after(1.seconds) { state(confirmed(cellular)) }
+                        after(500.milliseconds) { state(NetworkState.Offline) }
                     },
                 )
 
             val t0 = testScheduler.currentTime
-            val idChanges = mutableListOf<Pair<Long, NetworkId>>()
-            val availChanges = mutableListOf<Pair<Long, NetworkAvailability>>()
-            backgroundScope.launch { monitor.networkId.collect { idChanges += (testScheduler.currentTime - t0) to it } }
-            backgroundScope.launch { monitor.availability.collect { availChanges += (testScheduler.currentTime - t0) to it } }
-            runCurrent() // collectors subscribed; both receive the initial value at t=0
+            val seen = mutableListOf<Pair<Long, NetworkState>>()
+            backgroundScope.launch { monitor.state.collect { seen += (testScheduler.currentTime - t0) to it } }
+            runCurrent() // collector subscribed; receives the initial value at t=0
 
             monitor.play()
-            runCurrent() // flush the final transition's emission to the collectors
+            runCurrent() // flush the final transition's emission to the collector
 
-            // networkId: wifi@0, cellular@1s. availability: AVAILABLE@0, UNAVAILABLE@1.5s.
-            assertEquals(listOf(0L to wifi, 1000L to cellular), idChanges.toList())
             assertEquals(
-                listOf(0L to NetworkAvailability.AVAILABLE, 1500L to NetworkAvailability.UNAVAILABLE),
-                availChanges.toList(),
+                listOf(
+                    0L to confirmed(wifi),
+                    1000L to confirmed(cellular),
+                    1500L to NetworkState.Offline,
+                ),
+                seen.toList(),
             )
-            assertEquals(cellular, monitor.networkId.value)
-            assertEquals(NetworkAvailability.UNAVAILABLE, monitor.availability.value)
+            assertEquals(NetworkState.Offline, monitor.state.value)
+        }
+
+    /**
+     * The one flow is why a recording cannot interleave out of order any more: a state and its identity
+     * arrive as a single emission, so there is no second stream to race (RFC_NETWORK_REACHABILITY §1.2).
+     */
+    @Test
+    fun stateAndIdentityAlwaysArriveTogether() =
+        runTest {
+            val monitor =
+                ScriptedNetworkMonitor(
+                    networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                        after(1.seconds) { state(NetworkState.Offline) }
+                        after(1.seconds) { state(confirmed(cellular)) }
+                    },
+                )
+            val pairs = mutableListOf<Pair<Boolean, NetworkId>>()
+            backgroundScope.launch { monitor.state.collect { pairs += it.canRouteOffLink to it.networkId } }
+            runCurrent()
+            monitor.play()
+            runCurrent()
+
+            // Offline can never be seen beside a live identity, and a routable state can never be seen
+            // beside Unidentified on a monitor that identifies its links.
+            assertEquals(
+                listOf(
+                    true to wifi,
+                    false to NetworkId.Unidentified,
+                    true to cellular,
+                ),
+                pairs.toList(),
+            )
         }
 
     @Test
     fun deterministic50x() =
         runTest {
             val script =
-                networkMonitorScript(initialNetworkId = wifi) {
-                    after(1.seconds) { networkId(cellular) }
-                    after(1.seconds) {
-                        availability(NetworkAvailability.UNAVAILABLE)
-                        networkId(wifi)
-                    }
+                networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                    after(1.seconds) { state(pending(cellular)) }
+                    after(1.seconds) { state(NetworkState.Offline) }
                 }
             var golden: List<Pair<Long, String>>? = null
             repeat(50) {
                 val trace = mutableListOf<Pair<Long, String>>()
                 val monitor = ScriptedNetworkMonitor(script)
                 val t0 = testScheduler.currentTime
-                val job =
-                    launch {
-                        launch { monitor.networkId.collect { trace += (testScheduler.currentTime - t0) to "id=$it" } }
-                        launch { monitor.availability.collect { trace += (testScheduler.currentTime - t0) to "avail=$it" } }
-                    }
+                val job = launch { monitor.state.collect { trace += (testScheduler.currentTime - t0) to "$it" } }
                 runCurrent()
                 monitor.play()
                 runCurrent() // flush the final transition before snapshotting the trace
@@ -108,12 +140,14 @@ class ScriptedNetworkMonitorTests {
     @Test
     fun emptyScriptNeverChangesAndPlayReturnsImmediately() =
         runTest {
-            val monitor = ScriptedNetworkMonitor(NetworkMonitorScript.steady(networkId = wifi))
+            val monitor = ScriptedNetworkMonitor(NetworkMonitorScript.steady())
             val before = testScheduler.currentTime
             monitor.play()
             assertEquals(before, testScheduler.currentTime, "an empty script must not advance virtual time")
-            assertEquals(wifi, monitor.networkId.value)
-            assertEquals(NetworkAvailability.AVAILABLE, monitor.availability.value)
+            assertEquals(
+                NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved),
+                monitor.state.value,
+            )
         }
 
     @Test
@@ -121,12 +155,14 @@ class ScriptedNetworkMonitorTests {
         runTest {
             val monitor =
                 ScriptedNetworkMonitor(
-                    networkMonitorScript(initialNetworkId = wifi) { after(1.seconds) { networkId(cellular) } },
+                    networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                        after(1.seconds) { state(confirmed(cellular)) }
+                    },
                 )
             val job = monitor.playIn(this)
             testScheduler.advanceTimeBy(1.seconds)
             runCurrent()
-            assertEquals(cellular, monitor.networkId.value)
+            assertEquals(confirmed(cellular), monitor.state.value)
             assertTrue(job.isCompleted, "playback job completes once the script is exhausted")
         }
 
@@ -134,11 +170,11 @@ class ScriptedNetworkMonitorTests {
     fun rejectsNonDecreasingSchedule() {
         assertFailsWith<IllegalArgumentException> {
             NetworkMonitorScript(
-                NetworkAvailability.AVAILABLE,
-                NetworkId.Unidentified,
+                fullLadder,
+                NetworkState.Offline,
                 listOf(
-                    NetworkMonitorScript.Transition.Network(2.seconds, cellular),
-                    NetworkMonitorScript.Transition.Network(1.seconds, wifi),
+                    NetworkMonitorScript.Transition(2.seconds, confirmed(cellular)),
+                    NetworkMonitorScript.Transition(1.seconds, confirmed(wifi)),
                 ),
             )
         }
@@ -148,31 +184,161 @@ class ScriptedNetworkMonitorTests {
     fun rejectsNegativeOffset() {
         assertFailsWith<IllegalArgumentException> {
             NetworkMonitorScript(
-                NetworkAvailability.AVAILABLE,
-                NetworkId.Unidentified,
-                listOf(NetworkMonitorScript.Transition.Network(-(1.seconds), cellular)),
+                fullLadder,
+                NetworkState.Offline,
+                listOf(NetworkMonitorScript.Transition(-(1.seconds), confirmed(cellular))),
             )
         }
     }
 
+    // --- the capability pairing rules, enforced where they fail cheapest -------------------------
+
     @Test
-    fun dslAccumulatesOffsetsAndSortsTransitions() {
-        val script =
-            networkMonitorScript(initialNetworkId = wifi) {
-                after(1.seconds) { networkId(cellular) }
-                after(500.milliseconds) { availability(NetworkAvailability.UNAVAILABLE) }
-                availabilityAt(200.milliseconds, NetworkAvailability.AVAILABLE)
+    fun rejectsAnObservedVerdictFromARouteOnlyMonitor() {
+        // Apple/JVM/kernel-Linux never probe reachability. A fixture claiming they reported VALIDATED is
+        // a bug in the fixture, and this is where it surfaces — no device required.
+        val failure =
+            assertFailsWith<IllegalArgumentException> {
+                networkMonitorScript(routeOnly, initialState = NetworkState.Offline) {
+                    after(1.seconds) { state(confirmed(wifi)) }
+                }
             }
-        // after() accumulates: cellular@1s, UNAVAILABLE@1.5s; the absolute availabilityAt@0.2s sorts first.
+        assertTrue(
+            failure.message!!.contains("RouteOnly"),
+            "the failure must name the resolution that could not have produced it: ${failure.message}",
+        )
+    }
+
+    @Test
+    fun rejectsUnobservedFromAFullLadderMonitor() {
+        // The converse: Android always has a verdict, so Unobserved is equally unproducible there.
+        assertFailsWith<IllegalArgumentException> {
+            networkMonitorScript(fullLadder, initialState = NetworkState.Offline) {
+                after(1.seconds) { state(NetworkState.Routable(wifi, InternetAccess.Unobserved)) }
+            }
+        }
+    }
+
+    @Test
+    fun rejectsRoutableAndLinkLocalFromALinkOnlyMonitor() {
+        val linkOnly = MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.LinkOnly)
+        // Asserting LinkLocal requires route visibility, which a browser/Node monitor does not have.
+        assertFailsWith<IllegalArgumentException> {
+            networkMonitorScript(linkOnly, initialState = NetworkState.LinkLocal(wifi)) {}
+        }
+        // But the optimistic rung with no verdict is exactly what it does report.
+        val ok =
+            networkMonitorScript(linkOnly, initialState = NetworkState.Offline) {
+                after(1.seconds) { state(NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved)) }
+            }
+        assertEquals(1, ok.transitions.size)
+    }
+
+    @Test
+    fun rejectsTransitionsOnAStaticMonitor() {
+        // AlwaysAvailable's shape: it asserts one value and never looks again.
+        assertFailsWith<IllegalArgumentException> {
+            networkMonitorScript(
+                MonitorCapability(MonitorMechanism.Static, ReachResolution.Asserted),
+                initialState = NetworkState.Offline,
+            ) {
+                after(1.seconds) { state(confirmed(wifi)) }
+            }
+        }
+    }
+
+    @Test
+    fun rejectsAnInitialStateTheCapabilityCannotProduce() {
+        assertFailsWith<IllegalArgumentException> {
+            NetworkMonitorScript(routeOnly, confirmed(wifi), emptyList())
+        }
+    }
+
+    @Test
+    fun dslAccumulatesOffsetsInCallOrder() {
+        val script =
+            networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                after(1.seconds) { state(pending(cellular)) }
+                after(500.milliseconds) { state(NetworkState.Offline) }
+                stateAt(2.seconds, confirmed(cellular))
+            }
+        // after() accumulates: pending@1s, Offline@1.5s; stateAt() lands at its absolute offset and
+        // advances the cursor — the built list is exactly the call order, never a re-sort of it.
         assertEquals(
-            listOf<NetworkMonitorScript.Transition>(
-                NetworkMonitorScript.Transition.Availability(200.milliseconds, NetworkAvailability.AVAILABLE),
-                NetworkMonitorScript.Transition.Network(1.seconds, cellular),
-                NetworkMonitorScript.Transition.Availability(1500.milliseconds, NetworkAvailability.UNAVAILABLE),
+            listOf(
+                NetworkMonitorScript.Transition(1.seconds, pending(cellular)),
+                NetworkMonitorScript.Transition(1500.milliseconds, NetworkState.Offline),
+                NetworkMonitorScript.Transition(2.seconds, confirmed(cellular)),
             ),
             script.transitions,
         )
-        assertEquals(1500.milliseconds, script.duration)
+        assertEquals(2.seconds, script.duration)
         assertEquals(Duration.ZERO, NetworkMonitorScript.steady().duration)
     }
+
+    @Test
+    fun dslRejectsAStateAtBehindTheRunningOffset() {
+        // The DSL enforces ordering at the call site rather than sorting it away, so both construction
+        // paths (DSL and hand-built lists) answer "is out-of-order rejected?" the same way.
+        val failure =
+            assertFailsWith<IllegalArgumentException> {
+                networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                    after(1.seconds) { state(pending(cellular)) }
+                    stateAt(200.milliseconds, confirmed(cellular))
+                }
+            }
+        assertTrue(
+            failure.message!!.contains("non-decreasing"),
+            "the failure must state the ordering rule: ${failure.message}",
+        )
+    }
+
+    /**
+     * RFC_NETWORK_REACHABILITY §7.1 — the captive-portal timeline the device capture could **not**
+     * reproduce (Realme overrides the connectivity-probe URLs; blackholed URLs still validated), and a
+     * deterministic virtual-time test here.
+     */
+    @Test
+    fun portalThenLoginIsReachableWithoutHardware() =
+        runTest {
+            val portal = NetworkState.Routable(wifi, InternetAccess.Observed.Blocked(BlockReason.CaptivePortal))
+            val monitor =
+                ScriptedNetworkMonitor(
+                    networkMonitorScript(fullLadder, initialState = NetworkState.Unknown) {
+                        after(Duration.ZERO) { state(pending(wifi)) }
+                        after(800.milliseconds) { state(portal) }
+                        after(30.seconds) { state(confirmed(wifi)) }
+                    },
+                )
+            val seen = mutableListOf<Pair<Long, NetworkState>>()
+            val t0 = testScheduler.currentTime
+            backgroundScope.launch { monitor.state.collect { seen += (testScheduler.currentTime - t0) to it } }
+            runCurrent()
+            monitor.play()
+            runCurrent()
+
+            assertEquals(
+                listOf(
+                    0L to NetworkState.Unknown,
+                    0L to pending(wifi),
+                    800L to portal,
+                    30_800L to confirmed(wifi),
+                ),
+                seen.toList(),
+            )
+            // The predicates a consumer actually branches on, over that timeline.
+            assertEquals(
+                listOf(
+                    // Unknown: don't know yet — wait rather than declare failure.
+                    Triple(false, false, true),
+                    // Pending: attempt, and expect it to resolve on its own.
+                    Triple(true, false, true),
+                    // Blocked(CaptivePortal): retrying is futile; a human must intervene.
+                    Triple(false, true, false),
+                    // Confirmed.
+                    Triple(true, false, false),
+                ),
+                seen.map { (_, s) -> Triple(s.canRouteOffLink, s.needsUserAction, s.isTransient) },
+            )
+        }
 }

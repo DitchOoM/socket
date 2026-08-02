@@ -4,12 +4,17 @@ import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.ConnectionState
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.MonitorCapability
+import com.ditchoom.socket.MonitorMechanism
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.ReconnectDecision
 import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.canRouteOffLink
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,23 +32,39 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-/** Controllable [NetworkMonitor] for testing. */
+/**
+ * Controllable [NetworkMonitor] for testing — one settable [NetworkState], as the contract now has.
+ *
+ * Prefer [ScriptedNetworkMonitor][com.ditchoom.socket.ScriptedNetworkMonitor] for a *timeline*: it
+ * validates every state against a declared capability. This is the imperative counterpart, for tests
+ * that need to poke a transition at an exact point in the middle of another assertion.
+ */
 class MockNetworkMonitor(
-    initial: NetworkAvailability = NetworkAvailability.AVAILABLE,
-    initialNetworkId: NetworkId = NetworkId.Unidentified,
+    initial: NetworkState = NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved),
+    override val capability: MonitorCapability =
+        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
 ) : NetworkMonitor {
-    private val _availability = MutableStateFlow(initial)
-    override val availability: StateFlow<NetworkAvailability> = _availability.asStateFlow()
+    private val _state = MutableStateFlow(initial)
+    override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
-    private val _networkId = MutableStateFlow(initialNetworkId)
-    override val networkId: StateFlow<NetworkId> = _networkId.asStateFlow()
-
-    fun set(value: NetworkAvailability) {
-        _availability.value = value
+    /** Publish an arbitrary state. */
+    fun set(value: NetworkState) {
+        _state.value = value
     }
 
+    /**
+     * Swap identity, keeping the current rung — "the platform handed us a different link". From a rung
+     * with no link ([NetworkState.Offline] / [NetworkState.Unknown]) a link appearing is
+     * `Routable(id, Unobserved)`, since that is what "a link showed up and we did not probe" means.
+     */
     fun setNetworkId(value: NetworkId) {
-        _networkId.value = value
+        _state.value =
+            when (val current = _state.value) {
+                is NetworkState.LinkLocal -> NetworkState.LinkLocal(value)
+                is NetworkState.Routable -> current.copy(id = value)
+                NetworkState.Offline, NetworkState.Unknown ->
+                    NetworkState.Routable(value, InternetAccess.Unobserved)
+            }
     }
 
     override fun close() {}
@@ -81,7 +102,7 @@ class ReconnectingConnectionNetworkTests {
     fun networkAvailableResetsBackoff() =
         runTest {
             var connectCount = 0
-            val monitor = MockNetworkMonitor(NetworkAvailability.UNAVAILABLE)
+            val monitor = MockNetworkMonitor(NetworkState.Offline)
 
             val conn =
                 ReconnectingConnection(
@@ -111,8 +132,8 @@ class ReconnectingConnectionNetworkTests {
             // Give the first connect attempt time to fail and enter backoff
             testScheduler.advanceTimeBy(100.milliseconds)
 
-            // Simulate network becoming available — should reset backoff
-            monitor.set(NetworkAvailability.AVAILABLE)
+            // Simulate the network becoming routable again — should reset backoff
+            monitor.set(NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Observed.Confirmed))
 
             job.join()
             assertEquals(2, connectCount)
@@ -150,9 +171,10 @@ class ReconnectingConnectionNetworkTests {
     fun networkIdChangeCutsBackoffShort() =
         runTest {
             var connectCount = 0
-            // Availability stays UNAVAILABLE so the availability→resetBackoff path never fires;
-            // the only thing that can cut the 60s backoff short is a networkId change.
-            val monitor = MockNetworkMonitor(NetworkAvailability.UNAVAILABLE)
+            // The rung stays LinkLocal (canRouteOffLink == false) throughout, so the reachability→
+            // resetBackoff path never fires; the only thing that can cut the 60s backoff short is an
+            // identity change. setNetworkId keeps the rung, which is exactly what makes that separable.
+            val monitor = MockNetworkMonitor(NetworkState.LinkLocal(NetworkId.Unidentified))
 
             val conn =
                 ReconnectingConnection(
@@ -201,7 +223,8 @@ class ReconnectingConnectionNetworkTests {
         runTest {
             var connectCount = 0
             var probeCount = 0
-            val monitor = MockNetworkMonitor(NetworkAvailability.UNAVAILABLE)
+            // LinkLocal throughout: the liveness probe must be driven by the identity change alone.
+            val monitor = MockNetworkMonitor(NetworkState.LinkLocal(NetworkId.Unidentified))
 
             val conn =
                 ReconnectingConnection(
@@ -252,7 +275,8 @@ class ReconnectingConnectionNetworkTests {
         runTest {
             var connectCount = 0
             var probeCount = 0
-            val monitor = MockNetworkMonitor(NetworkAvailability.UNAVAILABLE)
+            // LinkLocal throughout: the liveness probe must be driven by the identity change alone.
+            val monitor = MockNetworkMonitor(NetworkState.LinkLocal(NetworkId.Unidentified))
             var openServer: CodecConnection<String>? = null
 
             val conn =
@@ -425,8 +449,15 @@ class ReconnectingConnectionNetworkTests {
     // ── NetworkMonitor.AlwaysAvailable ──
 
     @Test
-    fun alwaysAvailableReportsAvailable() {
-        assertEquals(NetworkAvailability.AVAILABLE, NetworkMonitor.AlwaysAvailable.availability.value)
+    fun alwaysAvailableReportsAnAssertedRoutableNetwork() {
+        val state = NetworkMonitor.AlwaysAvailable.state.value
+        assertEquals(NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved), state)
+        assertTrue(state.canRouteOffLink, "opting out of monitoring must not block connections")
+        // It declares that it never looked, so a consumer gating on reachability can refuse to trust it.
+        assertEquals(
+            MonitorCapability(MonitorMechanism.Static, ReachResolution.Asserted),
+            NetworkMonitor.AlwaysAvailable.capability,
+        )
     }
 
     @Test

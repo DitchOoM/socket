@@ -16,8 +16,8 @@ import kotlin.time.Duration
  * The distinction is deliberately about the *signal*, not the quality of the identity — a monitor can be
  * [PlatformSignalled] and still report [com.ditchoom.socket.transport.NetworkId.Unidentified] (browser
  * `online`/`offline` without the Network Information API), and [Polled] monitors on desktop JVM resolve
- * a real [com.ditchoom.socket.transport.NetworkId.Link]. Ask [NetworkMonitor.networkId] about identity
- * and this about latency.
+ * a real [com.ditchoom.socket.transport.NetworkId.Link]. Ask [NetworkState.networkId] (via
+ * [NetworkMonitor.state]) about identity and this about latency.
  */
 sealed interface MonitorMechanism {
     /**

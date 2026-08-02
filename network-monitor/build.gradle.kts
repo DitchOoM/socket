@@ -234,7 +234,15 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 21
+        // 23 (M), not 21. AndroidNetworkMonitor needs ConnectivityManager.getActiveNetwork() (API 23) to
+        // seed its state, and Network.getNetworkHandle() (also 23) to give a NetworkId.Link a real
+        // per-link identity. Declaring 21 while calling both was simply a latent NoSuchMethodError on
+        // API 21/22, and the obvious guarded fallback onto the deprecated activeNetworkInfo is untestable
+        // with any infrastructure this repo has: Robolectric 4.16.1 rejects @Config(sdk = 21) and 22 with
+        // "API level N is not available", and the emulator lanes run 29 and 35. Below 23 a NetworkState
+        // could never carry a real identity anyway, so an untestable branch would buy a configuration
+        // that cannot produce a useful answer (RFC_NETWORK_REACHABILITY §8.1).
+        minSdk = 23
     }
     namespace = "com.ditchoom.networkmonitor"
 

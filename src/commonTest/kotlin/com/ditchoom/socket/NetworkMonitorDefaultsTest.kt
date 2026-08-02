@@ -6,13 +6,36 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class NetworkMonitorDefaultsTest {
     @Test
-    fun networkIdDefaultsToUnidentifiedForMonitorsThatDoNotOverrideIt() {
-        // AlwaysAvailable (and any third-party monitor predating the property) inherits the default:
-        // the explicit "no cheap network identity" state, never null (RFC_TRANSPORT_FALLBACK §12).
-        assertEquals(NetworkId.Unidentified, NetworkMonitor.AlwaysAvailable.networkId.value)
+    fun alwaysAvailableAssertsRoutabilityAndDeclaresThatItNeverLooked() {
+        // It reports the optimistic rung so a consumer that just wants to opt out of monitoring proceeds…
+        val state = NetworkMonitor.AlwaysAvailable.state.value
+        assertEquals(NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved), state)
+        assertTrue(state.canRouteOffLink, "opting out of monitoring must not block connections")
+        // …identity is the explicit "no cheap network identity" state, never null (RFC_TRANSPORT_FALLBACK §12)…
+        assertEquals(NetworkId.Unidentified, state.networkId)
+        // …and `Asserted` is how a consumer gating on reachability detects that it never measured anything.
+        assertEquals(
+            MonitorCapability(MonitorMechanism.Static, ReachResolution.Asserted),
+            NetworkMonitor.AlwaysAvailable.capability,
+        )
+    }
+
+    @Test
+    fun anUndeclaredMonitorIsNeverOverTrusted() {
+        // A third-party monitor written before `capability` existed still compiles, and inherits the
+        // least capable resolution rather than being taken at face value.
+        val undeclared =
+            object : NetworkMonitor {
+                override val state: StateFlow<NetworkState> = MutableStateFlow(NetworkState.Unknown)
+
+                override fun close() {}
+            }
+        assertEquals(MonitorMechanism.Unknown, undeclared.capability.mechanism)
+        assertEquals(ReachResolution.LinkOnly, undeclared.capability.resolution)
     }
 
     @Test
@@ -24,8 +47,8 @@ class NetworkMonitorDefaultsTest {
         // default() is already reactive there via androidx.startup.
         val marker =
             object : NetworkMonitor {
-                override val availability: StateFlow<NetworkAvailability> =
-                    MutableStateFlow(NetworkAvailability.AVAILABLE)
+                override val state: StateFlow<NetworkState> =
+                    MutableStateFlow(NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved))
 
                 override fun close() {}
             }

@@ -25,15 +25,21 @@ class NetlinkNetworkMonitorTest {
             .contains("linux")
 
     @Test
-    fun opensNetlinkSocketAndReportsAvailability() {
+    fun opensNetlinkSocketAndReportsARoutableState() {
         if (!isLinux) return
         val monitor = NetlinkNetworkMonitor()
         try {
-            // Constructing the monitor runs socket()/bind() via FFM and seeds the
-            // availability from getNetworkInterfaces(). This dev/CI box always has a
-            // non-loopback interface up, so the seed must be a resolved (non-UNKNOWN) state.
-            assertNotEquals(NetworkAvailability.UNKNOWN, monitor.availability.value)
-            assertEquals(NetworkAvailability.AVAILABLE, monitor.availability.value)
+            // Constructing the monitor runs socket()/bind() via FFM and seeds the state from
+            // resolveJvmNetworkState(). This dev/CI box always has a non-loopback interface up AND a
+            // default route, so the seed must be Routable — not merely "not Unknown", which the old
+            // any-interface-is-up check would have satisfied even inside a routeless container.
+            assertNotEquals(NetworkState.Unknown, monitor.state.value)
+            val state = monitor.state.value
+            assertTrue(state is NetworkState.Routable, "a CI/dev host with a default route is Routable, got $state")
+            // RouteOnly: the routing socket says which link carries the route and nothing about the
+            // internet, so reachability must be Unobserved rather than an invented verdict.
+            assertEquals(InternetAccess.Unobserved, state.internet)
+            assertTrue(monitor.capability.resolution == ReachResolution.RouteOnly)
         } finally {
             monitor.close()
         }
@@ -44,13 +50,13 @@ class NetlinkNetworkMonitorTest {
         if (!isLinux) return
         val monitor = NetlinkNetworkMonitor()
         try {
-            // The FFM companion's route-aware currentPrimaryNetworkId (item c) seeds networkId from the
-            // /proc/net/route default-route interface. Host-independent invariant: a Link with a
-            // non-zero index handle, or Unidentified — never a bare string/null, never KindOnly.
-            when (val id = monitor.networkId.value) {
+            // State resolution seeds identity from the /proc/net/route default-route interface.
+            // Host-independent invariant: a Link with a non-zero index handle, or Unidentified — never a
+            // bare string/null, never KindOnly.
+            when (val id = monitor.state.value.networkId) {
                 is NetworkId.Link -> assertTrue(id.handle != 0L, "a real link carries a non-zero interface handle")
                 NetworkId.Unidentified -> Unit
-                is NetworkId.KindOnly -> throw AssertionError("the JVM raw-scan companion never produces KindOnly")
+                is NetworkId.KindOnly -> throw AssertionError("the JVM raw-scan resolver never produces KindOnly")
             }
         } finally {
             monitor.close()
@@ -68,13 +74,31 @@ class NetlinkNetworkMonitorTest {
     }
 
     @Test
-    fun availabilityFlowEmitsInitialValue() =
+    fun stateFlowEmitsInitialValue() =
         runTest {
             if (!isLinux) return@runTest
             val monitor = NetlinkNetworkMonitor()
             try {
-                val value = withTimeout(2_000) { monitor.availability.first() }
-                assertNotEquals(NetworkAvailability.UNKNOWN, value)
+                val value = withTimeout(2_000) { monitor.state.first() }
+                assertNotEquals(NetworkState.Unknown, value)
+            } finally {
+                monitor.close()
+            }
+        }
+
+    @Test
+    fun everyEmittedStateMatchesTheDeclaredCapability() =
+        runTest {
+            if (!isLinux) return@runTest
+            val monitor = NetlinkNetworkMonitor()
+            try {
+                // The pairing rule, checked against a real monitor rather than a fixture: whatever this
+                // actually emits must be something its declared RouteOnly resolution could produce.
+                val value = withTimeout(2_000) { monitor.state.first() }
+                assertTrue(
+                    monitor.capability.resolution.permits(value),
+                    "emitted $value but declares ${monitor.capability.resolution}",
+                )
             } finally {
                 monitor.close()
             }

@@ -1,6 +1,8 @@
 package com.ditchoom.socket.quic.trace
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.BlockReason
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.sim.SimError
 import com.ditchoom.socket.quic.sim.SimEvent
 import com.ditchoom.socket.quic.sim.SimFixture
@@ -8,12 +10,11 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.nanoseconds
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
 /**
  * W3 fixture codegen (RFC_DETERMINISTIC_SIMULATION.md §3.2 "fixture codegen" + §5): converts the
- * **input-event** subset of a recorded trace ([TraceEvent.isInput] — DGRAM_IN, ERROR, NET_*,
+ * **input-event** subset of a recorded trace ([TraceEvent.isInput] — DGRAM_IN, ERROR, NET, NET_CAP,
  * LIVENESS) into
  *
  *  1. an in-memory [SimFixture] ([toSimFixture]) replayable through the W2 `SimTimeline` engine, and
@@ -28,17 +29,22 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  * directions (Tier A: structural, not byte-exact — see RFC §4).
  */
 internal object TraceToFixture {
-    /** Map the replayable input events of [events] onto the W2 [SimEvent] model, in order. */
+    /**
+     * Map the replayable input events of [events] onto the W2 [SimEvent] model, in order.
+     *
+     * `NET_CAP` is an input but not a **timed** one: a monitor's [com.ditchoom.socket.MonitorCapability]
+     * is constant for its lifetime, so it configures the replay's `SimNetworkMonitor` rather than firing
+     * at an instant. It is dropped here and read separately by whoever builds the monitor.
+     */
     fun toSimEvents(events: List<TraceEvent>): List<SimEvent> =
-        events.filter { it.isInput }.map { event ->
-            val at = event.atNanos.nanoseconds
+        events.filter { it.isInput && it !is TraceEvent.NetCapability }.map { event ->
+            val at = event.at
             when (event) {
                 is TraceEvent.DgramIn -> SimEvent.DatagramIn(at, event.payloadHex)
                 is TraceEvent.Error -> SimEvent.RecvError(at, SimError("${event.type}: ${event.message}"))
-                is TraceEvent.NetAvail -> SimEvent.Availability(at, event.value)
-                is TraceEvent.Net -> SimEvent.Network(at, event.id)
+                is TraceEvent.Net -> SimEvent.Net(at, event.state)
                 is TraceEvent.Liveness -> SimEvent.Liveness(at, event.result)
-                else -> error("not an input event: $event")
+                else -> error("not a timed input event: $event")
             }
         }
 
@@ -83,14 +89,22 @@ internal object TraceToFixture {
                     imports += "com.ditchoom.socket.quic.sim.SimError"
                     body.appendLine("        at($at) sendError SimError(${literal(event.error.message)})")
                 }
-                is SimEvent.Availability -> {
-                    imports += "com.ditchoom.socket.NetworkAvailability"
-                    body.appendLine("        at($at) availability ${render(event.value)}")
-                }
-                is SimEvent.Network -> {
-                    imports += "com.ditchoom.socket.transport.NetworkId"
-                    if (event.id !is NetworkId.Unidentified) imports += "com.ditchoom.socket.transport.NetworkKind"
-                    body.appendLine("        at($at) network ${render(event.id)}")
+                is SimEvent.Net -> {
+                    imports += "com.ditchoom.socket.NetworkState"
+                    // Exhaustive over the rungs rather than `as?` + a null check: only the rungs that
+                    // carry a link need the NetworkId imports, and only Routable needs InternetAccess.
+                    when (val state = event.state) {
+                        NetworkState.Unknown, NetworkState.Offline -> Unit
+                        is NetworkState.LinkLocal -> imports += importsFor(state.id)
+                        is NetworkState.Routable -> {
+                            imports += importsFor(state.id)
+                            imports += "com.ditchoom.socket.InternetAccess"
+                            if (state.internet is InternetAccess.Observed.Blocked) {
+                                imports += "com.ditchoom.socket.BlockReason"
+                            }
+                        }
+                    }
+                    body.appendLine("        at($at) net ${render(event.state)}")
                 }
                 is SimEvent.Liveness -> {
                     imports += "com.ditchoom.socket.transport.Liveness"
@@ -116,7 +130,35 @@ internal object TraceToFixture {
         }
     }
 
-    private fun render(value: NetworkAvailability): String = "NetworkAvailability.${value.name}"
+    /** The imports a rendered [NetworkId] literal needs — [NetworkKind] only when there is a kind to name. */
+    private fun importsFor(id: NetworkId): Set<String> =
+        buildSet {
+            add("com.ditchoom.socket.transport.NetworkId")
+            if (id !is NetworkId.Unidentified) add("com.ditchoom.socket.transport.NetworkKind")
+        }
+
+    private fun render(state: NetworkState): String =
+        when (state) {
+            NetworkState.Unknown -> "NetworkState.Unknown"
+            NetworkState.Offline -> "NetworkState.Offline"
+            is NetworkState.LinkLocal -> "NetworkState.LinkLocal(${render(state.id)})"
+            is NetworkState.Routable -> "NetworkState.Routable(${render(state.id)}, ${render(state.internet)})"
+        }
+
+    private fun render(access: InternetAccess): String =
+        when (access) {
+            InternetAccess.Unobserved -> "InternetAccess.Unobserved"
+            InternetAccess.Observed.Confirmed -> "InternetAccess.Observed.Confirmed"
+            InternetAccess.Observed.Pending -> "InternetAccess.Observed.Pending"
+            InternetAccess.Observed.Limited -> "InternetAccess.Observed.Limited"
+            is InternetAccess.Observed.Blocked -> "InternetAccess.Observed.Blocked(${render(access.reason)})"
+        }
+
+    private fun render(reason: BlockReason): String =
+        when (reason) {
+            BlockReason.CaptivePortal -> "BlockReason.CaptivePortal"
+            BlockReason.Suspended -> "BlockReason.Suspended"
+        }
 
     private fun render(result: TransportLiveness.Result): String = "Liveness.Result.${result.name}"
 

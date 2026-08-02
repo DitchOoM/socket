@@ -13,11 +13,13 @@ package com.ditchoom.socket
  *
  * This is deliberately loud, unlike the missing-`Context` case (which degrades to
  * [PollingNetworkMonitor], see the Android `NetworkMonitor.default()`). Without the permission the
- * callback is registered-but-never-invoked: [NetworkMonitor.availability] would sit at
- * [NetworkAvailability.UNKNOWN] forever while [NetworkMonitor.mechanism] advertised
- * [MonitorMechanism.PlatformSignalled] — a monitor claiming push while nothing can ever push. A caller
- * that would rather be late than absent can catch this and use [PollingNetworkMonitor], which reads
- * `java.net.NetworkInterface` and needs no permission.
+ * callback is registered-but-never-invoked: [NetworkMonitor.state] would sit at
+ * [NetworkState.Unknown] forever while [NetworkMonitor.capability] advertised
+ * [MonitorMechanism.PlatformSignalled] and [ReachResolution.RouteAndInternet] — a monitor claiming push
+ * and the full ladder while nothing can ever push. And `Unknown` is [isTransient], so a well-behaved
+ * consumer would wait for it to resolve, forever. A caller that would rather be late than absent can
+ * catch this and use [PollingNetworkMonitor], which reads `java.net.NetworkInterface` and needs no
+ * permission.
  *
  * `ACCESS_NETWORK_STATE` is a `normal` permission: it is granted at install time and cannot be revoked
  * at runtime, so this either always throws for a given app or never does.

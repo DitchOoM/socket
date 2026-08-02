@@ -54,8 +54,9 @@ import kotlin.time.Duration.Companion.seconds
 val out = File("captured.trace").bufferedWriter()
 val capture = QuicTraceCapture(
     sink = TraceSink { event -> synchronized(out) { out.appendLine(event.toString()) } },
-    // Optional: also fold connectivity state (NET_AVAIL / NET_ID) into the SAME trace — the
-    // airplane-mode toggle / Wi-Fi↔cellular handoff, not just QUIC traffic. Client-only.
+    // Optional: also fold connectivity into the SAME trace — the monitor's capability once
+    // (NET_CAP), then every NetworkState emission (NET): the airplane-mode toggle /
+    // Wi-Fi↔cellular handoff, not just QUIC traffic. Client-only.
     networkMonitor = NetworkMonitor.default(),
 )
 
@@ -120,9 +121,19 @@ Each `TraceEvent` is either a replayable **input** or an observed **observation*
 | `PathState` | `PATH_STATE` | observation | migration phase + local host/port |
 | `Error` | `ERROR` | input | typed error (**qualified** class name + message) |
 | `Stats` | `STATS` | observation | quiche path-stats snapshot |
-| `NetAvail` | `NET_AVAIL` | input | `NetworkMonitor.availability` emission |
-| `Net` | `NET_ID` | input | `NetworkMonitor.networkId` emission |
+| `Net` | `NET` | input | `NetworkMonitor.state` emission — the whole `NetworkState`, identity included |
+| `NetCapability` | `NET_CAP` | input | the monitor's `MonitorCapability` (mechanism + resolution), emitted once at subscribe |
 | `Liveness` | `LIVENESS` | input | liveness probe outcome |
+
+On the wire, `NET` is `NET <rung> [<id> [<internet>]]` — only the rungs that carry a link spend
+fields on identity, so an `Offline` line is just `NET Offline` while a full line reads
+`NET Routable Link:Wifi:441492361229 Confirmed`. `NET_CAP` is `NET_CAP <mechanism> <resolution>`,
+e.g. `NET_CAP PlatformSignalled RouteAndInternet`.
+
+> **Migration note.** Traces recorded before the single-`NetworkState`-flow migration contain
+> `NET_AVAIL` / `NET_ID` lines. Those tags no longer exist, and `TraceEvent.parse` **throws** on an
+> unknown tag rather than skipping it — a silently-dropped input event would make a replay lie — so
+> old traces are not parseable and must be re-captured.
 
 `State.name` and `Error.type` are captured as **qualified** class names (`::class.qualifiedName`),
 never `simpleName`. That's what makes the next section work.

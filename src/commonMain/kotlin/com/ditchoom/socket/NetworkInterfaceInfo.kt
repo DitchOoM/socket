@@ -36,8 +36,9 @@ data class NetworkInterfaceInfo(
 
 /**
  * Enumerate the host's network interfaces and their assigned IP addresses — a synchronous,
- * point-in-time snapshot. Contrast the reactive [NetworkMonitor.networkId], which tracks only the
- * single *primary* link over time; this returns *every* interface at once.
+ * point-in-time snapshot. Contrast the reactive [NetworkMonitor.state] (identity via
+ * [NetworkState.networkId]), which tracks only the single *primary* link over time; this returns
+ * *every* interface at once.
  *
  * Intended for ICE host-candidate gathering and network diagnostics. Includes down and loopback
  * interfaces (filter with [NetworkInterfaceInfo.isUp] / [NetworkInterfaceInfo.isLoopback] as the use

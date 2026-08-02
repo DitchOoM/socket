@@ -1,6 +1,11 @@
 package com.ditchoom.socket.testkit.trace
 
-import com.ditchoom.socket.NetworkAvailability
+import com.ditchoom.socket.BlockReason
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.MonitorCapability
+import com.ditchoom.socket.MonitorMechanism
+import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration.Companion.nanoseconds
@@ -15,7 +20,7 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
 internal fun encodeTraceLine(event: TraceEvent): String =
     buildString {
         append("v1 ")
-        append(event.atNanos)
+        append(event.at.inWholeNanoseconds)
         append(' ')
         when (event) {
             is TraceEvent.DgramOut -> {
@@ -78,13 +83,15 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append(s.pmtu).append(' ')
                 append(s.deliveryRate)
             }
-            is TraceEvent.NetAvail -> {
-                append("NET_AVAIL ")
-                append(event.value.name)
-            }
             is TraceEvent.Net -> {
-                append("NET_ID ")
-                append(encodeNetworkId(event.id))
+                append("NET ")
+                append(encodeNetworkState(event.state))
+            }
+            is TraceEvent.NetCapability -> {
+                append("NET_CAP ")
+                append(encodeMechanism(event.capability.mechanism))
+                append(' ')
+                append(encodeResolution(event.capability.resolution))
             }
             is TraceEvent.Liveness -> {
                 append("LIVENESS ")
@@ -100,7 +107,7 @@ internal fun decodeTraceLine(line: String): TraceEvent {
         }
     val tEnd = afterVersion.indexOf(' ')
     require(tEnd > 0) { "malformed trace line (no timestamp): $line" }
-    val at = afterVersion.substring(0, tEnd).toLong()
+    val at = afterVersion.substring(0, tEnd).toLong().nanoseconds
     val rest = afterVersion.substring(tEnd + 1)
     val evEnd = rest.indexOf(' ')
     val eventName = if (evEnd < 0) rest else rest.substring(0, evEnd)
@@ -164,8 +171,11 @@ internal fun decodeTraceLine(line: String): TraceEvent {
                 ),
             )
         }
-        "NET_AVAIL" -> TraceEvent.NetAvail(at, NetworkAvailability.valueOf(fields))
-        "NET_ID" -> TraceEvent.Net(at, decodeNetworkId(fields))
+        "NET" -> TraceEvent.Net(at, decodeNetworkState(fields))
+        "NET_CAP" -> {
+            val (mechanism, resolution) = fields.split(' ', limit = 2)
+            TraceEvent.NetCapability(at, MonitorCapability(decodeMechanism(mechanism), decodeResolution(resolution)))
+        }
         "LIVENESS" -> TraceEvent.Liveness(at, TransportLiveness.Result.valueOf(fields))
         else -> throw IllegalArgumentException("unknown trace event '$eventName': $line")
     }
@@ -189,6 +199,99 @@ internal fun decodeTracePath(s: String): TracePath? {
     require(p.size == 4) { "malformed TracePath '$s'" }
     return TracePath(p[0].toInt(), p[1].toInt(), p[2].toULong(16).toLong(), p[3].toULong(16).toLong())
 }
+
+// --- NetworkState: Unknown | Offline | LinkLocal <id> | Routable <id> <internet> ---
+// <internet> := Confirmed | Pending | Limited | Unobserved | Blocked:CaptivePortal | Blocked:Suspended
+// The rung name comes first so a trace is greppable by rung, and only the rungs that carry a link
+// spend fields on identity — an Offline line is three tokens, exactly as it was.
+
+internal fun encodeNetworkState(state: NetworkState): String =
+    when (state) {
+        NetworkState.Unknown -> "Unknown"
+        NetworkState.Offline -> "Offline"
+        is NetworkState.LinkLocal -> "LinkLocal ${encodeNetworkId(state.id)}"
+        is NetworkState.Routable -> "Routable ${encodeNetworkId(state.id)} ${encodeInternetAccess(state.internet)}"
+    }
+
+internal fun decodeNetworkState(s: String): NetworkState {
+    val f = s.split(' ')
+    return when (f[0]) {
+        "Unknown" -> NetworkState.Unknown
+        "Offline" -> NetworkState.Offline
+        "LinkLocal" -> {
+            require(f.size == 2) { "LinkLocal expects 1 field (id), got ${f.size - 1}: '$s'" }
+            NetworkState.LinkLocal(decodeNetworkId(f[1]))
+        }
+        "Routable" -> {
+            require(f.size == 3) { "Routable expects 2 fields (id, internet), got ${f.size - 1}: '$s'" }
+            NetworkState.Routable(decodeNetworkId(f[1]), decodeInternetAccess(f[2]))
+        }
+        else -> throw IllegalArgumentException("malformed NetworkState '$s'")
+    }
+}
+
+private fun encodeInternetAccess(access: InternetAccess): String =
+    when (access) {
+        InternetAccess.Unobserved -> "Unobserved"
+        InternetAccess.Observed.Confirmed -> "Confirmed"
+        InternetAccess.Observed.Pending -> "Pending"
+        InternetAccess.Observed.Limited -> "Limited"
+        is InternetAccess.Observed.Blocked ->
+            when (access.reason) {
+                BlockReason.CaptivePortal -> "Blocked:CaptivePortal"
+                BlockReason.Suspended -> "Blocked:Suspended"
+            }
+    }
+
+private fun decodeInternetAccess(s: String): InternetAccess =
+    when (s) {
+        "Unobserved" -> InternetAccess.Unobserved
+        "Confirmed" -> InternetAccess.Observed.Confirmed
+        "Pending" -> InternetAccess.Observed.Pending
+        "Limited" -> InternetAccess.Observed.Limited
+        "Blocked:CaptivePortal" -> InternetAccess.Observed.Blocked(BlockReason.CaptivePortal)
+        "Blocked:Suspended" -> InternetAccess.Observed.Blocked(BlockReason.Suspended)
+        else -> throw IllegalArgumentException("malformed InternetAccess '$s'")
+    }
+
+// --- MonitorCapability: <mechanism> <resolution> ---
+// <mechanism>  := PlatformSignalled | Static | Unknown | Polled(<nanos>)
+// <resolution> := RouteAndInternet | RouteOnly | LinkOnly | Asserted
+
+private fun encodeMechanism(mechanism: MonitorMechanism): String =
+    when (mechanism) {
+        MonitorMechanism.PlatformSignalled -> "PlatformSignalled"
+        MonitorMechanism.Static -> "Static"
+        MonitorMechanism.Unknown -> "Unknown"
+        is MonitorMechanism.Polled -> "Polled(${mechanism.interval.inWholeNanoseconds})"
+    }
+
+private fun decodeMechanism(s: String): MonitorMechanism =
+    when {
+        s == "PlatformSignalled" -> MonitorMechanism.PlatformSignalled
+        s == "Static" -> MonitorMechanism.Static
+        s == "Unknown" -> MonitorMechanism.Unknown
+        s.startsWith("Polled(") && s.endsWith(")") ->
+            MonitorMechanism.Polled(s.substring(7, s.length - 1).toLong().nanoseconds)
+        else -> throw IllegalArgumentException("malformed MonitorMechanism '$s'")
+    }
+
+private fun encodeResolution(resolution: ReachResolution): String =
+    when (resolution) {
+        ReachResolution.RouteAndInternet -> "RouteAndInternet"
+        ReachResolution.RouteOnly -> "RouteOnly"
+        ReachResolution.LinkOnly -> "LinkOnly"
+        ReachResolution.Asserted -> "Asserted"
+    }
+
+private fun decodeResolution(s: String): ReachResolution =
+    when (s) {
+        "RouteAndInternet" -> ReachResolution.RouteAndInternet
+        "RouteOnly" -> ReachResolution.RouteOnly
+        "LinkOnly" -> ReachResolution.LinkOnly
+        "Asserted" -> ReachResolution.Asserted
+        else -> throw IllegalArgumentException("malformed ReachResolution '$s'")
+    }
 
 // --- NetworkId: Unidentified | KindOnly:<kind> | Link:<kind>:<handle> ---
 // <kind> := Wifi | Cellular | Ethernet | Vpn(<kind>,<kind>,...) | Other(<escaped>)

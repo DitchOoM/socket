@@ -1,8 +1,7 @@
 package com.ditchoom.socket.transport.sim
 
 import com.ditchoom.socket.ConnectionState
-import com.ditchoom.socket.NetworkAvailability
-import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.NetworkState
 import kotlin.test.fail
 import kotlin.time.Duration
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
@@ -39,16 +38,13 @@ internal sealed interface Observed {
         val result: TransportLiveness.Result,
     ) : Observed
 
-    /** The scripted monitor emitted a `networkId` change. */
+    /**
+     * The scripted monitor emitted a new [NetworkState] — one observation, because reachability and
+     * identity are one value and a trace recording them separately could interleave them wrongly.
+     */
     data class NetworkChanged(
         override val at: Duration,
-        val id: NetworkId,
-    ) : Observed
-
-    /** The scripted monitor emitted an `availability` change. */
-    data class AvailabilityChanged(
-        override val at: Duration,
-        val value: NetworkAvailability,
+        val state: NetworkState,
     ) : Observed
 }
 

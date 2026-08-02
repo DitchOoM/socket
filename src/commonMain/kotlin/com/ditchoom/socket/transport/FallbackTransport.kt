@@ -56,8 +56,9 @@ data class TransportFailure(
  * rungs are recorded as unsupported at [CacheScope.PerNetwork], keyed on [TransportConfig.networkId].
  * The next connect on the same network starts on the TCP lane; a network change (a different
  * `NetworkId`) or the cache TTL re-probes UDP automatically. [networkId] supplies the identity at
- * connect time (typically `{ monitor.networkId.value }` from a platform `NetworkMonitor`); a config
- * that already carries an explicit identity wins over the producer.
+ * connect time (typically `{ monitor.state.value.networkId }` from a platform `NetworkMonitor` — the
+ * total `NetworkState.networkId` projection); a config that already carries an explicit identity
+ * wins over the producer.
  */
 class FallbackTransport(
     private val chain: List<Transport>,

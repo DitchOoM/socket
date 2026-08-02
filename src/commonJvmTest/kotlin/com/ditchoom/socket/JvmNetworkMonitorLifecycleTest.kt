@@ -14,10 +14,11 @@ import kotlin.time.Duration.Companion.seconds
  * Lifecycle smoke for the JVM (and Android) [NetworkMonitor]s reachable from the test classpath —
  * [PollingNetworkMonitor] and whatever [NetworkMonitor.default] resolves to here.
  *
- * These assert the boring-but-load-bearing invariants: the monitor *seeds* both flows from a real
- * interface scan on startup, its [NetworkId] respects the sealed contract (never a bare string/null;
- * only [NetworkId.Link] or [NetworkId.Unidentified] on a raw-scan platform), and [close] tears the
- * polling scope down without throwing. Host-independent — a link may or may not exist on the runner.
+ * These assert the boring-but-load-bearing invariants: the monitor *seeds* [NetworkMonitor.state] from a
+ * real interface scan on startup, its [NetworkId] respects the sealed contract (never a bare string/null;
+ * only [NetworkId.Link] or [NetworkId.Unidentified] on a raw-scan platform), the state it publishes is one
+ * its own declared [MonitorCapability] permits, and [close] tears the polling scope down without throwing.
+ * Host-independent — a link may or may not exist on the runner.
  *
  * Note: [NetworkMonitor.default] here returns the polling base — this `:socket` jvmTest classpath sees
  * only the base (JDK 8) compilation of the `com.ditchoom:network-monitor` dependency, whose reactive FFM
@@ -36,17 +37,18 @@ class JvmNetworkMonitorLifecycleTest {
     }
 
     @Test
-    fun pollingMonitorSeedsBothFlowsThenClosesCleanly() =
+    fun pollingMonitorSeedsItsStateThenClosesCleanly() =
         runBlocking(Dispatchers.IO) {
             val monitor = PollingNetworkMonitor(interval = 50.milliseconds)
             try {
-                // The first poll iteration runs before the first delay, so both flows settle promptly.
-                val availability = withTimeout(5.seconds) { monitor.availability.first { it != NetworkAvailability.UNKNOWN } }
+                // The first poll iteration runs before the first delay, so the state settles promptly.
+                val state = withTimeout(5.seconds) { monitor.state.first { it != NetworkState.Unknown } }
                 assertTrue(
-                    availability == NetworkAvailability.AVAILABLE || availability == NetworkAvailability.UNAVAILABLE,
-                    "availability must settle to a definite value from the interface scan",
+                    state == NetworkState.Offline || state is NetworkState.Up,
+                    "the state must settle to a definite rung from the interface scan, was $state",
                 )
-                assertNetworkIdInvariant(monitor.networkId.value)
+                assertNetworkIdInvariant(state.networkId)
+                assertCapabilityHonoured(monitor, state)
             } finally {
                 monitor.close()
             }
@@ -58,9 +60,22 @@ class JvmNetworkMonitorLifecycleTest {
             val monitor = NetworkMonitor.default()
             try {
                 // Whatever the platform default is, it must expose the contract without throwing.
-                assertNetworkIdInvariant(monitor.networkId.value)
+                assertNetworkIdInvariant(monitor.state.value.networkId)
+                assertCapabilityHonoured(monitor, monitor.state.value)
             } finally {
                 monitor.close()
             }
         }
+
+    /**
+     * A monitor must never publish a state its own [MonitorCapability] forbids — the pairing rules of
+     * [ReachResolution] are enforced here, not merely documented (RFC_NETWORK_REACHABILITY §3.2).
+     */
+    private fun assertCapabilityHonoured(
+        monitor: NetworkMonitor,
+        state: NetworkState,
+    ) = assertTrue(
+        monitor.capability.resolution.permits(state),
+        "${monitor::class.simpleName} declares ${monitor.capability.resolution} but published $state",
+    )
 }
