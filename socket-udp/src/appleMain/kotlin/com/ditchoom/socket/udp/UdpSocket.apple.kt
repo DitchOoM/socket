@@ -87,7 +87,11 @@ actual object UdpSocket {
         bindTo(fd, local)
         // Fail fast BEFORE constructing the addressed channel: an AddressedDatagramChannel's
         // localAddress is non-null by construction (getsockname failure is a construct-time error).
-        val boundLocal = localAddressOf(fd) ?: run { close(fd); error("getsockname failed for bound UDP socket") }
+        val boundLocal =
+            localAddressOf(fd) ?: run {
+                close(fd)
+                error("getsockname failed for bound UDP socket")
+            }
         return PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
     }
 
@@ -167,7 +171,11 @@ actual object UdpSocket {
         val local = AppleSocketAddressResolver.resolve(wildcard, port) as AppleSocketAddress
         bindTo(fd, local)
         // Same fail-fast as bind(): the addressed base channel requires a non-null localAddress.
-        val boundLocal = localAddressOf(fd) ?: run { close(fd); error("getsockname failed for bound UDP socket") }
+        val boundLocal =
+            localAddressOf(fd) ?: run {
+                close(fd)
+                error("getsockname failed for bound UDP socket")
+            }
         val base = PosixUdpDatagramChannel(fd, boundLocal, receiveBufferSize, bufferFactory)
         return MulticastPosixUdpDatagramChannel(fd, ipv6 = v6, base = base)
     }
