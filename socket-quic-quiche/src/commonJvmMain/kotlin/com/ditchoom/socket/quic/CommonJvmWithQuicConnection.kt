@@ -2,7 +2,7 @@
 
 package com.ditchoom.socket.quic
 
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
@@ -27,7 +27,7 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 private const val MAX_EPHEMERAL_BIND_ATTEMPTS = 8
 
 /**
- * Shared JVM/Android [withQuicConnection] test seam backed by quiche + [DatagramChannel].
+ * Shared JVM/Android [withQuicConnection] test seam backed by quiche + [ConnectedDatagramChannel].
  * Owns the per-call lifecycle for the duration of [block]; releases everything before returning.
  *
  * Production code reaches the same path via [QuicheEngine.connect] → [buildJvmQuicConnection];
@@ -129,7 +129,7 @@ internal suspend fun buildJvmQuicConnection(
         // ephemeral-port collision instead of letting it surface as a flake.
         val peer = UdpSocket.resolve(hostname, port)
         val channel = openConnectedDatagramChannel(peer, recvBufPool)
-        val localAddress = channel.localAddress ?: error("connected UDP channel has no local address")
+        val localAddress = channel.localAddress.orNull() ?: error("connected UDP channel has no local address")
 
         // 3. Server name — null-terminated UTF-8 in buffer
         val serverNameBuf = bufferFactory.allocate(hostname.length + 1)
@@ -269,7 +269,7 @@ internal suspend fun buildJvmQuicConnection(
 }
 
 /**
- * Open a connected `:socket-udp` [DatagramChannel] to the already-resolved [peer] (bound to an
+ * Open a connected `:socket-udp` [ConnectedDatagramChannel] to the already-resolved [peer] (bound to an
  * ephemeral local port), retrying the rare ephemeral-port collision. The channel allocates each datagram
  * from [recvBufPool] (the driver's recv pool) at a QUIC-sized ([QuicheDriver.MAX_DATAGRAM_SIZE]) staging
  * size, so a received datagram is handed to the driver already pooled — no copy, no 64 KB allocation.
@@ -295,7 +295,7 @@ internal suspend fun buildJvmQuicConnection(
 private suspend fun openConnectedDatagramChannel(
     peer: SocketAddress,
     recvBufPool: BufferPool,
-): DatagramChannel {
+): ConnectedDatagramChannel {
     var lastFailure: BindException? = null
     repeat(MAX_EPHEMERAL_BIND_ATTEMPTS) {
         try {

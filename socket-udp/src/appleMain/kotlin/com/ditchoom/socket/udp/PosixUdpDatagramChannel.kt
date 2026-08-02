@@ -5,12 +5,16 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.DatagramCloseReason
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
+import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.HopLimit
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import kotlinx.cinterop.ByteVar
@@ -34,10 +38,13 @@ import platform.posix.sockaddr_storage
 import kotlin.concurrent.AtomicInt
 
 /**
- * Apple (K/N) **unconnected** [DatagramChannel] backed by blocking POSIX `recvfrom`/`sendto` — the lift
+ * Apple (K/N) [AddressedDatagramChannel] backed by blocking POSIX `recvfrom`/`sendto` — the lift
  * of the quiche `AppleUdpServerChannel`, reshaped to the public datagram trichotomy. Per-packet source
- * is recovered from `recvfrom` and surfaced as [Datagram.peer]; the quiche `lastDest` cache is dropped
- * (the send target materializes from [SocketAddress] primitives into a `memScoped` scratch, RFC §4).
+ * is recovered from `recvfrom` and surfaced as [Datagram.peer]; every send names its destination (the
+ * addressed refinement requires `to`, so a destination-less send is unrepresentable); the quiche
+ * `lastDest` cache is dropped (the send target materializes from [SocketAddress] primitives into a
+ * `memScoped` scratch, RFC §4). [localAddress] is plainly non-null: `UdpSocket.bind` fails fast on a
+ * getsockname failure before constructing this channel.
  *
  * `recvfrom` blocks, so it runs on a dedicated single-thread dispatcher; [close] closes the fd (which
  * unblocks any in-flight `recvfrom`). The recv sockaddr scratch is per-call (`memScoped`), so a
@@ -46,16 +53,16 @@ import kotlin.concurrent.AtomicInt
  *
  * Control plane: the rich Darwin POSIX ceiling (`IP_TOS`/`IP_DONTFRAG`/`IP_RECVTOS`/`IP_PKTINFO`) is a
  * labeled follow-up; this first landing advertises [DatagramCapabilities.None] (honest — the datapath
- * uses plain `recvfrom`/`sendto` with no ancillary data), so every read field is a sentinel and every
- * advisory send field a no-op.
+ * uses plain `recvfrom`/`sendto` with no ancillary data), so every read field is its typed absent
+ * state and every advisory send field a no-op.
  */
 @ExperimentalDatagramApi
 internal class PosixUdpDatagramChannel(
     private val fd: Int,
-    override val localAddress: SocketAddress?,
+    override val localAddress: SocketAddress,
     private val receiveBufferSize: Int = MAX_UDP_PAYLOAD,
     private val bufferFactory: BufferFactory = BufferFactory.deterministic(),
-) : DatagramChannel {
+) : AddressedDatagramChannel {
     private val closedFlag = AtomicInt(0)
     private val recvDispatcher = newSingleThreadContext("apple-udp-recv-$fd")
 
@@ -94,10 +101,21 @@ internal class PosixUdpDatagramChannel(
                                 } else {
                                     payload.position(0)
                                     payload.setLimit(n)
-                                    DatagramReadResult.Received(Datagram(payload = payload, peer = peer))
+                                    // All five args explicit: a defaulted localAddress rides the
+                                    // default-args bridge and boxes the value class (LocalAddress KDoc);
+                                    // no ancillary data on this datapath, so all typed absent states.
+                                    DatagramReadResult.Received(
+                                        Datagram(
+                                            payload = payload,
+                                            peer = peer,
+                                            ecn = Ecn.Unknown,
+                                            localAddress = LocalAddress.Unknown,
+                                            hopLimit = HopLimit.Unknown,
+                                        ),
+                                    )
                                 }
                             }
-                            else -> DatagramReadResult.Closed(reason = n)
+                            else -> DatagramReadResult.Closed(DatagramCloseReason.OsError(n))
                         }
                     }
                 if (outcome is DatagramReadResult.Received) return outcome
@@ -115,11 +133,10 @@ internal class PosixUdpDatagramChannel(
 
     override suspend fun send(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        to: SocketAddress,
         options: DatagramSendOptions,
     ) {
         check(closedFlag.value == 0) { "sink is closed" }
-        checkNotNull(to) { "no destination: an unconnected UDP channel requires a non-null `to`" }
         val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
         val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
         val len = payload.remaining()

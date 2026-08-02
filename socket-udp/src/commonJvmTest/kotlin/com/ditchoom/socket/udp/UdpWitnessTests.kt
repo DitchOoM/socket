@@ -59,7 +59,7 @@ class UdpWitnessTests {
             val server = UdpSocket.bind("127.0.0.1", 0)
             val client = UdpSocket.bind("127.0.0.1", 0)
             try {
-                val serverAddr = server.localAddress!!
+                val serverAddr = server.localAddress
                 val txId = ByteArray(12) { (it + 1).toByte() }
 
                 // Fake STUN server: one-shot — receive a Binding Request, reflect the peer's address back
@@ -80,7 +80,7 @@ class UdpWitnessTests {
 
                 // The server observed the client's real source — its mapped address is the client's own.
                 assertEquals("127.0.0.1", mappedHost)
-                assertEquals(client.localAddress!!.port, mappedPort)
+                assertEquals(client.localAddress.port, mappedPort)
                 assertEquals(serverAddr, resp.peer)
                 serverJob.join()
             } finally {

@@ -2,10 +2,13 @@ package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
+import com.ditchoom.buffer.flow.EcnPreference
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.OutboundDatagram
 import com.ditchoom.buffer.flow.SocketAddress
@@ -26,7 +29,7 @@ import kotlin.test.assertTrue
  * conformance suite against real native sockets." Mirrors the JVM `UdpConformanceTests`, restricted to
  * the platform-neutral contract (no `java.net`, no JVM-specific [SocketAddress] subtype assertions).
  *
- * Every channel binds `127.0.0.1` so its [DatagramChannel.localAddress] is a routable loopback
+ * Every channel binds `127.0.0.1` so its [AddressedDatagramChannel.localAddress] is a routable loopback
  * endpoint usable as a send target.
  */
 @OptIn(ExperimentalDatagramApi::class)
@@ -39,9 +42,13 @@ class UdpNativeConformanceTests {
         opened.clear()
     }
 
-    private suspend fun bind(): DatagramChannel = UdpSocket.bind("127.0.0.1", 0).also { opened.add(it) }
+    private suspend fun bind(): AddressedDatagramChannel = UdpSocket.bind("127.0.0.1", 0).also { opened.add(it) }
 
-    private fun DatagramChannel.addr(): SocketAddress = localAddress!!
+    // Per-mode addr(): the addressed refinement's localAddress is plainly non-null; the connected
+    // refinement's is the typed maybe-known LocalAddress (known here — every test binds loopback).
+    private fun AddressedDatagramChannel.addr(): SocketAddress = localAddress
+
+    private fun ConnectedDatagramChannel.addr(): SocketAddress = localAddress.orNull()!!
 
     private fun payload(text: String): PlatformBuffer {
         val bytes = text.encodeToByteArray()
@@ -108,7 +115,7 @@ class UdpNativeConformanceTests {
         udpTest {
             val server = bind()
             val client = UdpSocket.connect("127.0.0.1", server.addr().port, "127.0.0.1", 0).also { opened.add(it) }
-            client.send(payload("ping")) // to = null → connected peer (server)
+            client.send(payload("ping")) // connected: no destination parameter — targets the fixed peer (server)
             val atServer = assertIs<DatagramReadResult.Received>(server.recv()).datagram
             assertEquals("ping", atServer.payload.readByteArray(atServer.payload.remaining()).decodeToString())
             assertEquals(client.addr(), atServer.peer)
@@ -171,13 +178,13 @@ class UdpNativeConformanceTests {
             b.send(
                 payload("cp"),
                 to = a.addr(),
-                options = DatagramSendOptions(ecn = Ecn.Ect0, hopLimit = 55, fromLocal = b.addr()),
+                options = DatagramSendOptions(ecn = EcnPreference.Ect0, hopLimit = 55, fromLocal = b.addr()),
             )
             val caps = a.capabilities
             val d = assertIs<DatagramReadResult.Received>(a.recv()).datagram
             if (!caps.ecnReceive) assertEquals(Ecn.Unknown, d.ecn)
-            if (!caps.hopLimitReceive) assertEquals(-1, d.hopLimit)
-            if (!caps.localAddressReceive) assertEquals(null, d.localAddress)
+            if (!caps.hopLimitReceive) assertFalse(d.hopLimit.isKnown)
+            if (!caps.localAddressReceive) assertFalse(d.localAddress.isKnown)
         }
 
     @Test
@@ -188,7 +195,7 @@ class UdpNativeConformanceTests {
             b.send(
                 payload("opts"),
                 to = a.addr(),
-                options = DatagramSendOptions(ecn = Ecn.Ect0, dscp = 46, dontFragment = true, hopLimit = 10),
+                options = DatagramSendOptions(ecn = EcnPreference.Ect0, dscp = 46, dontFragment = true, hopLimit = 10),
             )
             assertEquals("opts", a.recv().text())
         }

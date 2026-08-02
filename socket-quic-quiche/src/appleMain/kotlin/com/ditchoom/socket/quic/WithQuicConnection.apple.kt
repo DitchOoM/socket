@@ -7,7 +7,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketConnectionException
@@ -146,7 +146,7 @@ internal suspend fun buildAppleQuicConnection(
                     throw t
                 }
             val local =
-                channel.localAddress ?: run {
+                channel.localAddress.orNull() ?: run {
                     runCatching { channel.close() }
                     quiche_config_free(config)
                     throw SocketConnectionException.Refused(
@@ -328,7 +328,7 @@ internal class AppleQuicConnection(
         return deferred.await()
     }
 
-    override fun datagramChannel(): DatagramChannel = datagramAdapter
+    override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
     override val pathState: StateFlow<PathInfo> = driver.pathState
 

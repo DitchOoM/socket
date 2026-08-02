@@ -2,7 +2,8 @@ package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.AddressFamily
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 
@@ -20,17 +21,20 @@ const val MAX_UDP_DATAGRAM_SIZE: Int = 65507
 internal expect val defaultDatagramBufferFactory: BufferFactory
 
 /**
- * The `:socket-udp` entry point — opens real UDP [DatagramChannel]s and resolves addresses.
+ * The `:socket-udp` entry point — opens real UDP datagram channels and resolves addresses.
  *
  * This is the substrate below `Transport` (RFC §5.1): raw UDP is *addressed, unreliable, pre-framed*
  * messages, not a reliable byte stream, so it deliberately does NOT implement the reliable-stream
- * establishment SPI. What it hands back is the buffer-flow datagram trichotomy on real sockets.
+ * establishment SPI. What it hands back is the buffer-flow datagram trichotomy on real sockets, with
+ * the addressing mode fixed in the return *type* — no nullable destination, no runtime mode checks.
  *
- * - [bind] opens an **unconnected** channel (many peers): the SFU/TURN/ICE/DNS/STUN shape, where every
- *   received [com.ditchoom.buffer.flow.Datagram] carries its per-packet source and each send names a
- *   destination.
- * - [connect] opens a **connected** channel (single fixed peer): the QUIC-datagram / `connect()`ed-UDP
- *   shape, where `send(payload, to = null)` targets the fixed peer.
+ * - [bind] opens an **addressed** channel (many peers) — an [AddressedDatagramChannel]: the
+ *   SFU/TURN/ICE/DNS/STUN shape, where every received [com.ditchoom.buffer.flow.Datagram] carries its
+ *   per-packet source, every send names its destination, and `localAddress` is plainly non-null
+ *   (bind fails fast if getsockname cannot report it).
+ * - [connect] opens a **connected** channel (single fixed peer) — a [ConnectedDatagramChannel]: the
+ *   QUIC-datagram / `connect()`ed-UDP shape, where `send(payload)` targets the fixed peer and
+ *   `localAddress` is the typed maybe-known [com.ditchoom.buffer.flow.LocalAddress].
  * - [resolve] is the DNS entry point; it also installs a platform hostname resolver into buffer-flow so
  *   [SocketAddress.resolve] works process-wide (resolved-only model, RFC §10.1).
  *
@@ -40,8 +44,10 @@ internal expect val defaultDatagramBufferFactory: BufferFactory
 @ExperimentalDatagramApi
 expect object UdpSocket {
     /**
-     * Open an **unconnected** UDP channel bound to [localHost]:[localPort]. A `null` [localHost] binds
-     * the wildcard address; a [localPort] of `0` picks an ephemeral port. Sends must name a destination.
+     * Open an **addressed** UDP channel bound to [localHost]:[localPort]. A `null` [localHost] binds
+     * the wildcard address; a [localPort] of `0` picks an ephemeral port. Every send names its
+     * destination, and the channel's `localAddress` is plainly non-null — bind fails fast (before any
+     * channel is constructed) if the platform cannot report the bound address via getsockname.
      *
      * [receiveBufferSize] bounds the per-datagram staging buffer each `receive()` allocates (the largest
      * datagram delivered without truncation). It defaults to the UDP payload ceiling; a caller that knows
@@ -60,12 +66,14 @@ expect object UdpSocket {
         localPort: Int = 0,
         receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
         bufferFactory: BufferFactory = defaultDatagramBufferFactory,
-    ): DatagramChannel
+    ): AddressedDatagramChannel
 
     /**
      * Open a **connected** UDP channel to [remoteHost]:[remotePort] (resolved via [resolve]), bound to
-     * [localHost]:[localPort]. `send(payload, to = null)` then targets the fixed peer; only datagrams
-     * from that peer are received. [receiveBufferSize] and [bufferFactory] behave as in [bind].
+     * [localHost]:[localPort]. `send(payload)` then targets the fixed peer — the connected refinement
+     * has no destination parameter at all — and only datagrams from that peer are received. The
+     * channel's `localAddress` is the typed maybe-known [com.ditchoom.buffer.flow.LocalAddress].
+     * [receiveBufferSize] and [bufferFactory] behave as in [bind].
      */
     suspend fun connect(
         remoteHost: String,
@@ -74,7 +82,7 @@ expect object UdpSocket {
         localPort: Int = 0,
         receiveBufferSize: Int = MAX_UDP_DATAGRAM_SIZE,
         bufferFactory: BufferFactory = defaultDatagramBufferFactory,
-    ): DatagramChannel
+    ): ConnectedDatagramChannel
 
     /**
      * Open a **multicast-capable** UDP channel bound to the wildcard address of [family] on [port] (`0`

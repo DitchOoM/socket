@@ -3,8 +3,10 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.AddressFamily
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
@@ -14,7 +16,7 @@ import java.nio.channels.DatagramChannel as NioChannel
 /**
  * The JVM/Android default: [BufferFactory.Default] hands out a NIO-writable direct buffer (a
  * [com.ditchoom.buffer.BaseJvmBuffer] whose `byteBuffer` the channel receives into, and whose
- * `nativeAddress` downstream FFI reads) — the exact strategy [NioDatagramChannel] has always used.
+ * `nativeAddress` downstream FFI reads) — the exact strategy [NioDatagramChannelCore] has always used.
  */
 internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.Default
 
@@ -35,11 +37,19 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): AddressedDatagramChannel {
         val channel = NioChannel.open()
         channel.configureBlocking(false)
         channel.bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
-        return NioDatagramChannel(channel, receiveBufferSize, bufferFactory)
+        // An addressed channel's localAddress is non-null by construction (buffer-flow contract): if
+        // getsockname cannot report the bound address, fail fast HERE, before any channel exists.
+        val local =
+            (channel.localAddress as? InetSocketAddress)?.let { InternedJvmSocketAddress(it) }
+                ?: run {
+                    channel.close()
+                    error("bound UDP socket reports no local address (getsockname)")
+                }
+        return AddressedNioDatagramChannel(channel, local, receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun connect(
@@ -49,15 +59,19 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): ConnectedDatagramChannel {
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed
         // peer. A `connect()`ed UDP socket only receives from — and `write()`s to — this address.
-        val peer = resolve(remoteHost, remotePort).toInetSocketAddress()
+        val peer = resolve(remoteHost, remotePort)
         val channel = NioChannel.open()
         channel.configureBlocking(false)
         channel.bind(InetSocketAddress(localHost ?: WILDCARD, localPort))
-        channel.connect(peer)
-        return NioDatagramChannel(channel, receiveBufferSize, bufferFactory)
+        channel.connect(peer.toInetSocketAddress())
+        // Connected mode reports the typed maybe-known LocalAddress (no fail-fast contract here).
+        val local =
+            (channel.localAddress as? InetSocketAddress)
+                ?.let { LocalAddress.of(InternedJvmSocketAddress(it)) } ?: LocalAddress.Unknown
+        return ConnectedNioDatagramChannel(channel, peer, local, receiveBufferSize, bufferFactory)
     }
 
     actual suspend fun bindMulticast(
@@ -73,7 +87,14 @@ actual object UdpSocket {
         channel.setOption(StandardSocketOptions.SO_REUSEADDR, true)
         channel.configureBlocking(false)
         channel.bind(InetSocketAddress(if (v6) WILDCARD_V6 else WILDCARD, port))
-        val base = NioDatagramChannel(channel, receiveBufferSize, bufferFactory)
+        // Same fail-fast-before-construction contract as bind(): multicast is an addressed channel.
+        val local =
+            (channel.localAddress as? InetSocketAddress)?.let { InternedJvmSocketAddress(it) }
+                ?: run {
+                    channel.close()
+                    error("bound UDP socket reports no local address (getsockname)")
+                }
+        val base = AddressedNioDatagramChannel(channel, local, receiveBufferSize, bufferFactory)
         return MulticastNioDatagramChannel(channel, base)
     }
 

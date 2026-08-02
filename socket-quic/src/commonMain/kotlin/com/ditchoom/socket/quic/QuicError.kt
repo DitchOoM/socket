@@ -1,11 +1,17 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.flow.DatagramCloseReason
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+
 /**
  * All possible QUIC errors modeled as a sealed hierarchy.
  * No stringly-typed errors — every error has a concrete type.
  * Maps to RFC 9000 §20 transport error codes and application/platform errors.
+ * Participates in buffer-flow's open [DatagramCloseReason] so a QUIC datagram flow's
+ * `Closed.reason` IS the structured close error and `reason as? QuicError` is the downcast.
  */
-sealed interface QuicError {
+@OptIn(ExperimentalDatagramApi::class) // OptIn (not propagate) so QuicError use sites stay non-experimental
+sealed interface QuicError : DatagramCloseReason {
     /** The error code as defined by RFC 9000, or -1 for non-transport errors. */
     val code: Long
 

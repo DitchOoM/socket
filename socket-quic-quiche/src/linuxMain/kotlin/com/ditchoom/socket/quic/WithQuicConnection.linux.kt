@@ -3,7 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
@@ -131,7 +131,7 @@ internal suspend fun buildLinuxQuicConnection(
                     bufferFactory = recvBufPool,
                 )
             val local =
-                channel.localAddress
+                channel.localAddress.orNull()
                     ?: throw SocketConnectionException.Refused(hostname, port, platformError = "connected UDP channel has no local address")
 
             // Encode the peer + local sockaddrs via the one differential-tested SocketAddressCodec (Phase 6
@@ -304,7 +304,7 @@ internal class LinuxQuicConnection(
         return deferred.await()
     }
 
-    override fun datagramChannel(): DatagramChannel = datagramAdapter
+    override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
     override val pathState: StateFlow<PathInfo> = driver.pathState
 

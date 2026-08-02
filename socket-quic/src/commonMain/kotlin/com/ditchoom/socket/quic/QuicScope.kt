@@ -2,8 +2,8 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -100,7 +100,7 @@ interface QuicScope : CoroutineScope {
 
     // --- Unreliable datagrams (RFC 9221) ---
     // Folded onto the buffer-flow datagram trichotomy: [datagramChannel] is this connection's
-    // connected (single-peer) DatagramChannel over its RFC-9221 datagrams, and the four legacy methods
+    // [ConnectedDatagramChannel] over its RFC-9221 datagrams, and the four legacy methods
     // below are deprecated delegating shims over it. Available only when [QuicOptions.datagrams] was
     // set; the defaults make a non-datagram connection behave correctly (channel access throws,
     // maxWritableSize is 0). Platforms that support datagrams override [remoteAddress] + [datagramChannel].
@@ -117,19 +117,21 @@ interface QuicScope : CoroutineScope {
         get() = throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
 
     /**
-     * This connection's RFC-9221 unreliable datagrams as a buffer-flow [DatagramChannel] — the
+     * This connection's RFC-9221 unreliable datagrams as a buffer-flow [ConnectedDatagramChannel] — the
      * connected, single-peer datagram endpoint (the datagram analogue of [openStream] / [streams] over
      * the shared datagram trichotomy). Every received [Datagram]'s peer is [remoteAddress];
      * [com.ditchoom.buffer.flow.DatagramSink.maxWritableSize] tracks the current path MTU and is `0`
      * when datagrams are not enabled (not set locally, or the peer never advertised
      * `max_datagram_frame_size`). Sends read the payload zero-copy (the caller retains ownership); the
-     * `to` / `options` send arguments are ignored — a QUIC datagram flow has one implicit peer and no
-     * per-datagram IP control plane. The returned instance is stable for the connection's life.
+     * connected refinement has no destination parameter at all — a QUIC datagram flow has one implicit
+     * peer — and the IP control-plane `options` do not apply. The returned instance is stable for the
+     * connection's life.
      *
      * Defaults to [UnsupportedOperationException]; platforms that support datagrams override this.
      */
     @ExperimentalDatagramApi
-    fun datagramChannel(): DatagramChannel = throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
+    fun datagramChannel(): ConnectedDatagramChannel =
+        throw UnsupportedOperationException("QUIC datagrams are not supported on this platform")
 
     /**
      * Send one unreliable datagram (RFC 9221). The whole [buffer] is one datagram; it is delivered
