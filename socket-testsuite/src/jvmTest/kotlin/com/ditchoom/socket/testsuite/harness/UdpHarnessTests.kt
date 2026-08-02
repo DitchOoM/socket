@@ -4,6 +4,7 @@ package com.ditchoom.socket.testsuite.harness
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -36,9 +37,8 @@ import kotlin.test.assertTrue
  * contract is met — an expression body would return [withNetworkHarness]'s `Boolean`.
  */
 class UdpHarnessTests {
-    private suspend fun DatagramChannel.sendText(text: String) {
-        // Connected channel — to = null targets the fixed peer this channel connect()ed to.
-        send(BufferFactory.Default.wrap(text.encodeToByteArray()), to = null)
+    private suspend fun ConnectedDatagramChannel.sendText(text: String) {
+        send(BufferFactory.Default.wrap(text.encodeToByteArray()))
     }
 
     private suspend fun DatagramChannel.recvText(timeoutMs: Long): String {

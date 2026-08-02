@@ -3,12 +3,12 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 
 /**
- * Server egress over the shared unconnected `:socket-udp` [DatagramChannel] (Phase 6, adapter-first).
+ * Server egress over the shared `:socket-udp` [AddressedDatagramChannel] (Phase 6, adapter-first).
  * One instance per accepted connection wraps the single bound server socket and sends each of that
  * connection's datagrams to the address quiche chose (`sendInfo.to`, decoded to a [PathKey] by the
  * driver). Replaces the per-platform server-mode `NioUdpChannel(channel, peerAddr)` /
@@ -26,7 +26,7 @@ import com.ditchoom.buffer.flow.SocketAddress
  * A `null` `dest`, or a lookup miss, falls back to [fixedPeer].
  */
 internal class ServerConnectionUdpChannel(
-    private val channel: DatagramChannel,
+    private val channel: AddressedDatagramChannel,
     private val fixedPeer: SocketAddress,
     private val fixedPeerKey: PathKey,
     private val peerFor: (PathKey) -> SocketAddress?,

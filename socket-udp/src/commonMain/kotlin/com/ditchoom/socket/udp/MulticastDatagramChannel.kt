@@ -1,21 +1,21 @@
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 
 /**
- * A UDP [DatagramChannel] that additionally exposes IP **multicast** group control (RFC 1112 / RFC 2710
- * any-source multicast). Produced only by [UdpSocket.bindMulticast] — a plain [UdpSocket.bind] channel is
- * a bare [DatagramChannel] with no membership surface, so a socket that was never opened for multicast can
- * never be asked to join a group (no impossible states). Its [capabilities] report
- * [DatagramCapabilities.multicast] == `true`.
+ * A UDP [AddressedDatagramChannel] that additionally exposes IP **multicast** group control (RFC 1112 /
+ * RFC 2710 any-source multicast). Produced only by [UdpSocket.bindMulticast] — a plain [UdpSocket.bind]
+ * channel is a bare [AddressedDatagramChannel] with no membership surface, so a socket that was never
+ * opened for multicast can never be asked to join a group (no impossible states). Its [capabilities]
+ * report [DatagramCapabilities.multicast] == `true`.
  *
- * The data plane (`receive`/`send`/`close`) is exactly a [DatagramChannel]'s: a received multicast
- * [com.ditchoom.buffer.flow.Datagram] carries the *sender's* unicast address as its `peer`, and sending to
- * a group is an ordinary `send(payload, to = groupAddress)`. This interface adds only the socket-lifetime
- * control plane that unicast UDP lacks:
+ * The data plane (`receive`/`send`/`close`) is exactly an [AddressedDatagramChannel]'s: a received
+ * multicast [com.ditchoom.buffer.flow.Datagram] carries the *sender's* unicast address as its `peer`, and
+ * sending to a group is an ordinary `send(payload, to = groupAddress)`. This interface adds only the
+ * socket-lifetime control plane that unicast UDP lacks:
  *
  * - [joinGroup] / [leaveGroup] — start / stop receiving a group's datagrams on an interface.
  * - [setTimeToLive] — bound how many hops *outbound* multicast may travel (`IP_MULTICAST_TTL` /
@@ -26,13 +26,13 @@ import com.ditchoom.buffer.flow.SocketAddress
  *
  * Source-specific multicast (SSM, RFC 4607) is a deliberate follow-up; this first landing is any-source.
  *
- * Threading matches [DatagramChannel]: confine `receive` and `send` each to one coroutine. The control
- * operations are `suspend` so a platform that must hop to a socket-owning dispatcher (Apple) can, but they
- * are cheap `setsockopt`-class calls, not blocking I/O. Every control operation throws
+ * Threading matches [AddressedDatagramChannel]: confine `receive` and `send` each to one coroutine. The
+ * control operations are `suspend` so a platform that must hop to a socket-owning dispatcher (Apple) can,
+ * but they are cheap `setsockopt`-class calls, not blocking I/O. Every control operation throws
  * [MulticastException] on failure — never a bare platform error string.
  */
 @ExperimentalDatagramApi
-interface MulticastDatagramChannel : DatagramChannel {
+interface MulticastDatagramChannel : AddressedDatagramChannel {
     /**
      * Begin receiving datagrams sent to [membership]'s group on its interface (`IP_ADD_MEMBERSHIP` /
      * `IPV6_JOIN_GROUP`). Joining a group already joined on the same interface is a no-op-or-error at the

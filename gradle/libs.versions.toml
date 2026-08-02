@@ -48,7 +48,12 @@ kotlinWrappers = "2026.6.0"
 # (#315). Those tighten the generated-codec decode path :socket-http3 rides, so the H3/QPACK
 # conformance suites are the gate on this bump. Rest is buffer-crypto hardware-key work socket does
 # not consume (Android Keystore / Secure Enclave / TPM ECDH: #316, #317, #319, #320, #321, #322).
-buffer = "6.22.0"
+# 6.23.0 (buffer #325): datagram addressing-mode de-null — the experimental datagram surface splits
+# into Connected/Addressed source/sink/channel refinements (send arity per mode; no nullable `to`),
+# typed absent states (LocalAddress/HopLimit + read-side Ecn.Unknown), send-side EcnPreference, and a
+# non-null typed DatagramReadResult.Closed(reason: DatagramCloseReason). Breaking only inside
+# @ExperimentalDatagramApi; :socket-udp and :socket-quic-quiche migrate in lockstep in this PR.
+buffer = "6.23.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"

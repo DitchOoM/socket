@@ -3,7 +3,8 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.AddressFamily
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -12,7 +13,7 @@ import kotlin.coroutines.resumeWithException
 
 /**
  * The Node default. Note that `dgram` delivers each datagram as its own Node `Buffer` (copied out in
- * [NodeDatagramChannel]), so — like [receiveBufferSize] — an injected [BufferFactory] has no staging
+ * [NodeDatagramChannelCore]), so — like [receiveBufferSize] — an injected [BufferFactory] has no staging
  * buffer to allocate and is not consulted; this value only satisfies the common default.
  */
 internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.Default
@@ -35,14 +36,15 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): AddressedDatagramChannel {
         // receiveBufferSize and bufferFactory are ignored on Node: `dgram` delivers each datagram as its
-        // own Node Buffer (copied out in NodeDatagramChannel), so there is no staging buffer to size or
-        // allocate from an injected factory.
+        // own Node Buffer (copied out in NodeDatagramChannelCore), so there is no staging buffer to size
+        // or allocate from an injected factory.
         ensureNode()
         val socket = createDgramSocket(if (isIpv6(localHost)) UDP6 else UDP4)
         awaitBind(socket, localPort, localHost)
-        return NodeDatagramChannel(socket, connectedPeer = null)
+        // Addressed by construction: the wrapper reads socket.address() (non-null once bound) eagerly.
+        return AddressedNodeDatagramChannel(socket)
     }
 
     actual suspend fun connect(
@@ -52,7 +54,7 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): ConnectedDatagramChannel {
         ensureNode()
         // Resolve the peer out of band (numeric literal → no DNS), then pin it as the channel's fixed
         // peer. The socket family follows the resolved remote, so a v6 peer opens a udp6 socket.
@@ -60,7 +62,7 @@ actual object UdpSocket {
         val socket = createDgramSocket(if (peer.family == AddressFamily.IPv6) UDP6 else UDP4)
         awaitBind(socket, localPort, localHost)
         awaitConnect(socket, peer.port, peer.host)
-        return NodeDatagramChannel(socket, connectedPeer = peer)
+        return ConnectedNodeDatagramChannel(socket, peer)
     }
 
     actual suspend fun bindMulticast(
@@ -75,7 +77,7 @@ actual object UdpSocket {
         // Bind the wildcard of the family so joined groups on any interface are received.
         val socket = createDgramMulticastSocket(if (v6) UDP6 else UDP4)
         awaitBind(socket, port, null)
-        val base = NodeDatagramChannel(socket, connectedPeer = null)
+        val base = AddressedNodeDatagramChannel(socket)
         return MulticastNodeDatagramChannel(socket, base, ipv6 = v6)
     }
 

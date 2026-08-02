@@ -2,6 +2,8 @@ package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.JsBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
 import com.ditchoom.buffer.flow.DatagramChannel
@@ -9,6 +11,8 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.HopLimit
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
@@ -16,8 +20,11 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+/** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
+private const val MAX_UDP_PAYLOAD = 65507
+
 /**
- * Node.js [DatagramChannel] backed by a `dgram.Socket` — the RFC Phase 4 net-new actual (nothing to
+ * Shared Node.js datagram machinery over a `dgram.Socket` — the RFC Phase 4 net-new actual (nothing to
  * lift; `dgram` is the only backend with no quiche ancestor). Cleaned to the public datagram shape:
  *
  * - **per-packet source exposed** — the `message` event carries `rinfo`, surfaced as [Datagram.peer].
@@ -26,16 +33,18 @@ import kotlin.coroutines.resumeWithException
  *   the socket, matching the JVM/native cancel≠close contract.
  * - **control plane at the Node ceiling (§7.1 Node row)** — `dgram` exposes only `setTTL`, so
  *   [capabilities] advertises `hopLimitSend` alone; every other send field is a no-op and every
- *   read-side field degrades to its §7.2 sentinel ([Ecn.Unknown] / `-1` / `null`).
+ *   read-side field degrades to its §7.2 typed absent state ([Ecn.Unknown] / [HopLimit.Unknown] /
+ *   [LocalAddress.Unknown]).
  *
- * Not thread-safe (Node is single-threaded anyway); confine [receive] and [send] each to one coroutine,
- * per the buffer-flow contract. [connectedPeer] is non-null iff this channel was opened via
- * [UdpSocket.connect]; then `send(to = null)` is legal and targets the fixed peer.
+ * Not thread-safe (Node is single-threaded anyway); confine [receive] and sends each to one coroutine,
+ * per the buffer-flow contract. The addressing mode is fixed at construction by the final wrapper —
+ * [ConnectedNodeDatagramChannel] (send targets the `dgram` connected peer) or
+ * [AddressedNodeDatagramChannel] (every send names its destination) — so a destination-less send on an
+ * unconnected socket is unrepresentable, not a runtime error.
  */
 @ExperimentalDatagramApi
-internal class NodeDatagramChannel(
-    private val socket: DgramSocket,
-    private val connectedPeer: SocketAddress?,
+internal abstract class NodeDatagramChannelCore(
+    protected val socket: DgramSocket,
 ) : DatagramChannel {
     private var closed = false
 
@@ -43,9 +52,6 @@ internal class NodeDatagramChannel(
     private val incoming = Channel<DatagramReadResult>(Channel.UNLIMITED)
 
     override val isOpen: Boolean get() = !closed
-
-    override val localAddress: SocketAddress =
-        socket.address().let { SocketAddress.ofLiteral(it.address, it.port) }
 
     /** The classic UDP payload ceiling (65535 − 8 UDP − 20 IP). Path-MTU/PMTUD is a consumer concern. */
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
@@ -74,12 +80,14 @@ internal class NodeDatagramChannel(
                 payload.resetForRead()
                 incoming.trySend(
                     DatagramReadResult.Received(
+                        // All five args explicit: a defaulted localAddress rides the default-args
+                        // bridge and boxes the value class (see LocalAddress's KDoc).
                         Datagram(
                             payload = payload,
                             peer = SocketAddress.ofLiteral(rinfo.address, rinfo.port),
                             ecn = Ecn.Unknown,
-                            localAddress = null,
-                            hopLimit = -1,
+                            localAddress = LocalAddress.Unknown,
+                            hopLimit = HopLimit.Unknown,
                         ),
                     ),
                 )
@@ -114,9 +122,13 @@ internal class NodeDatagramChannel(
         }
     }
 
-    override suspend fun send(
+    /**
+     * Shared send path: [target] is the wire destination for the addressed wrapper, or `null` for the
+     * connected wrapper (the destination-less `dgram.send` overload routes to the connected peer).
+     */
+    protected suspend fun sendPayload(
         payload: ReadBuffer,
-        to: SocketAddress?,
+        target: SocketAddress?,
         options: DatagramSendOptions,
     ) {
         check(!closed) { "sink is closed" }
@@ -136,10 +148,10 @@ internal class NodeDatagramChannel(
                     }
                 }
             }
-            if (to != null) {
-                socket.send(msg, 0, length, to.port, to.host, callback)
+            if (target != null) {
+                socket.send(msg, 0, length, target.port, target.host, callback)
             } else {
-                check(connectedPeer != null) { "no destination: send(to = null) requires a connected channel" }
+                // Connected wrapper only, by construction — the base type cannot reach this path.
                 socket.send(msg, 0, length, callback)
             }
         }
@@ -153,11 +165,46 @@ internal class NodeDatagramChannel(
         runCatching { socket.close { } }
         runCatching { socket.unref() }
     }
+}
 
-    companion object {
-        /** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
-        private const val MAX_UDP_PAYLOAD = 65507
-    }
+/**
+ * The **connected** (one fixed [peer]) Node channel — what `UdpSocket.connect()` returns. Sends have no
+ * destination parameter; the destination-less `dgram.send` overload routes to the `connect()`ed peer.
+ */
+@ExperimentalDatagramApi
+internal class ConnectedNodeDatagramChannel(
+    socket: DgramSocket,
+    override val peer: SocketAddress,
+) : NodeDatagramChannelCore(socket),
+    ConnectedDatagramChannel {
+    // socket.address() throws if the socket is unbound — failing here IS the construct-time contract.
+    override val localAddress: LocalAddress =
+        LocalAddress.of(socket.address().let { SocketAddress.ofLiteral(it.address, it.port) })
+
+    override suspend fun send(
+        payload: ReadBuffer,
+        options: DatagramSendOptions,
+    ) = sendPayload(payload, target = null, options)
+}
+
+/**
+ * The **addressed** (many peers) Node channel — what `UdpSocket.bind()` returns. Every send names its
+ * destination; [localAddress] is plainly non-null (a bound `dgram` socket always reports it).
+ */
+@ExperimentalDatagramApi
+internal class AddressedNodeDatagramChannel(
+    socket: DgramSocket,
+) : NodeDatagramChannelCore(socket),
+    AddressedDatagramChannel {
+    // socket.address() throws if the socket is unbound — failing here IS the construct-time contract.
+    override val localAddress: SocketAddress =
+        socket.address().let { SocketAddress.ofLiteral(it.address, it.port) }
+
+    override suspend fun send(
+        payload: ReadBuffer,
+        to: SocketAddress,
+        options: DatagramSendOptions,
+    ) = sendPayload(payload, to, options)
 }
 
 /** A `dgram.send` callback surfaced a non-null error (the send itself failed, not an unreachable peer). */

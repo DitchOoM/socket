@@ -7,6 +7,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
@@ -271,8 +272,8 @@ private class Outgoing(
 @OptIn(ExperimentalDatagramApi::class)
 private class Relay private constructor(
     private val name: String,
-    private val clientFacing: DatagramChannel,
-    private val upstreamSocket: DatagramChannel,
+    private val clientFacing: AddressedDatagramChannel,
+    private val upstreamSocket: AddressedDatagramChannel,
     private val upstreamAddress: SocketAddress,
     private val scope: CoroutineScope,
 ) {
@@ -365,7 +366,7 @@ private class Relay private constructor(
 
     private suspend fun drain(
         mailbox: Channel<Outgoing>,
-        channel: DatagramChannel,
+        channel: AddressedDatagramChannel,
     ) {
         for (out in mailbox) {
             runCatching { channel.send(out.payload, to = out.peer) }

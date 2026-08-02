@@ -4,7 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -37,7 +37,7 @@ internal class AcceptedConnection(
 /**
  * The one QUIC server implementation, shared by every platform (JVM/Android via `buildJvmQuicServer`,
  * Linux via `buildLinuxQuicServer`, Apple via `buildAppleQuicServer`). It binds over a `:socket-udp`
- * [DatagramChannel]: a dedicated reader coroutine confines the channel's `receive()` (the buffer-flow
+ * [AddressedDatagramChannel]: a dedicated reader coroutine confines the channel's `receive()` (the buffer-flow
  * single-consumer contract) and feeds a central [receiveLoop] that parses each datagram's DCID to route
  * it to its [QuicheDriver] — or [acceptNewConnection]s a new one. All connection-lifecycle bookkeeping
  * (routing table, live-driver ledger, per-source recv_info cache, close sweep — the #179 recv_info-UAF
@@ -53,7 +53,7 @@ internal class AcceptedConnection(
 internal class SharedQuicheServer(
     private val api: QuicheApi,
     private val config: QuicheConfig,
-    private val channel: DatagramChannel,
+    private val channel: AddressedDatagramChannel,
     private val localAddress: SocketAddress,
     private val codec: SocketAddressCodec,
     private val bufferFactory: BufferFactory,

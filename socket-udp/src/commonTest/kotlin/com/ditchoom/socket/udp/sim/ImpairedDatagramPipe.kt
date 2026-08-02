@@ -6,12 +6,16 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
+import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.HopLimit
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.testkit.fault.ByteEdit
 import com.ditchoom.socket.testkit.fault.FaultSchedule
@@ -26,7 +30,8 @@ import kotlin.time.Duration
 
 /**
  * The UDP Tier-A substrate (RFC_UNIFIED_NETWORK_TEST_HARNESS.md §2, P1): a pair of in-memory
- * [DatagramChannel] endpoints — [clientEndpoint] and [serverEndpoint] — joined through a testkit
+ * [ConnectedDatagramChannel] endpoints — [clientEndpoint] and [serverEndpoint], each end's fixed
+ * `peer` being the other end — joined through a testkit
  * [ImpairmentEngine], with **no OS sockets anywhere**. Each datagram a side sends is a transport
  * *unit*; the engine decides its fate (drop / delay / duplicate / corrupt / reorder) from the
  * [FaultSchedule] for that direction, and delivery is scheduled on [scope]'s dispatcher so that under
@@ -96,7 +101,7 @@ class ImpairedDatagramPipe(
     private val toServer = Channel<PlatformBuffer>(Channel.UNLIMITED)
     private val toClient = Channel<PlatformBuffer>(Channel.UNLIMITED)
 
-    val clientEndpoint: DatagramChannel =
+    val clientEndpoint: ConnectedDatagramChannel =
         Endpoint(
             inbound = toClient,
             outbound = toServer,
@@ -105,7 +110,7 @@ class ImpairedDatagramPipe(
             peer = serverAddress,
         )
 
-    val serverEndpoint: DatagramChannel =
+    val serverEndpoint: ConnectedDatagramChannel =
         Endpoint(
             inbound = toServer,
             outbound = toClient,
@@ -125,22 +130,29 @@ class ImpairedDatagramPipe(
         private val outbound: Channel<PlatformBuffer>,
         private val engine: ImpairmentEngine,
         private val stats: DirectionStats,
-        private val peer: SocketAddress,
-    ) : DatagramChannel {
+        override val peer: SocketAddress,
+    ) : ConnectedDatagramChannel {
         override val isOpen: Boolean get() = !outbound.isClosedForSend
-        override val localAddress: SocketAddress? = null
+        override val localAddress: LocalAddress = LocalAddress.Unknown
         override val maxWritableSize: Int = MAX_UDP_PAYLOAD
         override val capabilities: DatagramCapabilities = DatagramCapabilities.None
 
         override suspend fun receive(): DatagramReadResult {
             val result = inbound.receiveCatching()
             val payload = result.getOrNull() ?: return DatagramReadResult.Closed()
-            return DatagramReadResult.Received(Datagram(payload = payload, peer = peer))
+            return DatagramReadResult.Received(
+                Datagram(
+                    payload = payload,
+                    peer = peer,
+                    ecn = Ecn.Unknown,
+                    localAddress = LocalAddress.Unknown,
+                    hopLimit = HopLimit.Unknown,
+                ),
+            )
         }
 
         override suspend fun send(
             payload: ReadBuffer,
-            to: SocketAddress?,
             options: DatagramSendOptions,
         ) {
             // slice(): a non-consuming view (buffer-flow's send-does-not-consume contract), copied out so

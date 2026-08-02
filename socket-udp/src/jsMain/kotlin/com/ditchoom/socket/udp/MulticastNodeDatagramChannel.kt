@@ -1,13 +1,14 @@
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramCapabilities
-import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 
 /**
  * Node.js [MulticastDatagramChannel]. Data plane (`receive`/`send`/`close`/`localAddress`) delegates to a
- * plain [NodeDatagramChannel] over the same `dgram` socket (`by base`); this class adds Node's
- * first-class multicast control (`addMembership` / `setMulticastTTL` / `setMulticastLoopback` /
+ * plain [AddressedNodeDatagramChannel] over the same `dgram` socket (`by base` — addressed, so sending to
+ * a group is an ordinary `send(payload, to = groupAddress)`); this class adds Node's first-class
+ * multicast control (`addMembership` / `setMulticastTTL` / `setMulticastLoopback` /
  * `setMulticastInterface`).
  *
  * Node names an interface by its **address string**, not by OS name/index — so [MulticastInterface.ByName]
@@ -18,10 +19,10 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 @ExperimentalDatagramApi
 internal class MulticastNodeDatagramChannel(
     private val socket: DgramSocket,
-    private val base: NodeDatagramChannel,
+    private val base: AddressedNodeDatagramChannel,
     private val ipv6: Boolean,
 ) : MulticastDatagramChannel,
-    DatagramChannel by base {
+    AddressedDatagramChannel by base {
     override val capabilities: DatagramCapabilities = base.capabilities.withMulticast()
 
     override suspend fun joinGroup(membership: MulticastMembership) {

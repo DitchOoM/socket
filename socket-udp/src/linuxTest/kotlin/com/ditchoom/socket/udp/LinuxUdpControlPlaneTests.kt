@@ -2,10 +2,12 @@ package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.Ecn
+import com.ditchoom.buffer.flow.EcnPreference
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
@@ -33,7 +35,7 @@ class LinuxUdpControlPlaneTests {
         opened.clear()
     }
 
-    private suspend fun bind(): DatagramChannel = UdpSocket.bind("127.0.0.1", 0).also { opened.add(it) }
+    private suspend fun bind(): AddressedDatagramChannel = UdpSocket.bind("127.0.0.1", 0).also { opened.add(it) }
 
     private fun payload(text: String): PlatformBuffer {
         val bytes = text.encodeToByteArray()
@@ -70,7 +72,7 @@ class LinuxUdpControlPlaneTests {
             val a = bind()
             val b = bind()
             // b stamps ECT(0) via IP_TOS; loopback preserves the TOS octet, and a's IP_RECVTOS reports it.
-            b.send(payload("ecn"), to = a.localAddress!!, options = DatagramSendOptions(ecn = Ecn.Ect0))
+            b.send(payload("ecn"), to = a.localAddress, options = DatagramSendOptions(ecn = EcnPreference.Ect0))
             assertEquals(Ecn.Ect0, a.recvDatagram().ecn)
         }
 
@@ -80,8 +82,8 @@ class LinuxUdpControlPlaneTests {
             val a = bind()
             val b = bind()
             // Loopback does not decrement TTL, so the received hop limit equals what b set.
-            b.send(payload("ttl"), to = a.localAddress!!, options = DatagramSendOptions(hopLimit = 7))
-            assertEquals(7, a.recvDatagram().hopLimit)
+            b.send(payload("ttl"), to = a.localAddress, options = DatagramSendOptions(hopLimit = 7))
+            assertEquals(7, a.recvDatagram().hopLimit.value)
         }
 
     @Test
@@ -89,9 +91,9 @@ class LinuxUdpControlPlaneTests {
         udpTest {
             val a = bind()
             val b = bind()
-            b.send(payload("dst"), to = a.localAddress!!)
+            b.send(payload("dst"), to = a.localAddress)
             val d = a.recvDatagram()
             // IP_PKTINFO reports the datagram's destination IP — the loopback address a is bound to.
-            assertEquals("127.0.0.1", d.localAddress?.host)
+            assertEquals("127.0.0.1", d.localAddress.orNull()?.host)
         }
 }

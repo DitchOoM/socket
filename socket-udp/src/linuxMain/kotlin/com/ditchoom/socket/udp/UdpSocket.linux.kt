@@ -5,8 +5,10 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
-import com.ditchoom.buffer.flow.DatagramChannel
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.udp.linux.socket_bind
 import com.ditchoom.socket.udp.linux.socket_connect
@@ -37,14 +39,16 @@ import platform.posix.socklen_tVar
  * The Linux/K-N default: a native deterministic factory (`malloc`/`free` `NativeBuffer`). io_uring
  * `recvmsg` writes into the payload's raw native memory, so — unlike the JVM — `BufferFactory.Default`
  * (a GC `ByteArrayBuffer` with no native address) is *not* usable here; this is the exact strategy
- * [IoUringDatagramChannel] has always used (formerly `PlatformBuffer.allocateNative`).
+ * [IoUringDatagramChannelCore] has always used (formerly `PlatformBuffer.allocateNative`).
  */
 internal actual val defaultDatagramBufferFactory: BufferFactory = BufferFactory.deterministic()
 
 /**
- * Linux/K-N [UdpSocket] over io_uring (see [IoUringDatagramChannel]). Sockets match the family of the
- * bind/connect address (an IPv4 literal → `AF_INET`, matching the JVM actual's family-follows-address
- * behavior), so the conformance suite's `127.0.0.1` binds report an IPv4 [SocketAddress.localAddress].
+ * Linux/K-N [UdpSocket] over io_uring (see [IoUringDatagramChannelCore]). Sockets match the family of
+ * the bind/connect address (an IPv4 literal → `AF_INET`, matching the JVM actual's family-follows-address
+ * behavior), so the conformance suite's `127.0.0.1` binds report an IPv4 local address. The addressing
+ * mode is fixed here: [bind]/[bindMulticast] construct the addressed channel (non-null `localAddress`,
+ * failing fast on getsockname) and [connect] the connected one (typed maybe-known [LocalAddress]).
  */
 @ExperimentalDatagramApi
 actual object UdpSocket {
@@ -58,16 +62,21 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): AddressedDatagramChannel {
         val local = LinuxSocketAddressResolver.resolve(localHost ?: WILDCARD_V4, localPort) as LinuxSocketAddress
         val fd = openDatagramSocket(local.family)
         setReuseAddr(fd)
         bindTo(fd, local)
-        return IoUringDatagramChannel(
+        // Addressed contract: localAddress is non-null by construction, so an unreportable getsockname
+        // fails fast HERE — before the channel exists and before IoUringManager counts the socket.
+        val boundLocal =
+            localAddressOf(fd) ?: run {
+                close(fd)
+                error("getsockname failed for bound UDP socket")
+            }
+        return AddressedIoUringDatagramChannel(
             fd = fd,
-            connected = false,
-            connectedPeer = null,
-            localAddress = localAddressOf(fd),
+            localAddress = boundLocal,
             ipv6 = local.family == AddressFamily.IPv6,
             receiveBufferSize = receiveBufferSize,
             bufferFactory = bufferFactory,
@@ -81,7 +90,7 @@ actual object UdpSocket {
         localPort: Int,
         receiveBufferSize: Int,
         bufferFactory: BufferFactory,
-    ): DatagramChannel {
+    ): ConnectedDatagramChannel {
         val peer = resolve(remoteHost, remotePort) as LinuxSocketAddress
         val fd = openDatagramSocket(peer.family)
         setReuseAddr(fd)
@@ -99,11 +108,13 @@ actual object UdpSocket {
                 throw IllegalStateException("connect to ${peer.host}:${peer.port} failed")
             }
         }
-        return IoUringDatagramChannel(
+        // Connected contract: localAddress is the typed maybe-known state — a failing getsockname
+        // degrades to LocalAddress.Unknown rather than aborting a perfectly usable connected socket.
+        val local = localAddressOf(fd)?.let { LocalAddress.of(it) } ?: LocalAddress.Unknown
+        return ConnectedIoUringDatagramChannel(
             fd = fd,
-            connected = true,
-            connectedPeer = peer,
-            localAddress = localAddressOf(fd),
+            peer = peer,
+            localAddress = local,
             ipv6 = peer.family == AddressFamily.IPv6,
             receiveBufferSize = receiveBufferSize,
             bufferFactory = bufferFactory,
@@ -124,12 +135,16 @@ actual object UdpSocket {
         setReuseAddr(fd)
         setReusePort(fd)
         bindTo(fd, local)
+        // Same addressed fail-fast as bind(): no channel exists until the bound endpoint is known.
+        val boundLocal =
+            localAddressOf(fd) ?: run {
+                close(fd)
+                error("getsockname failed for bound UDP socket")
+            }
         val base =
-            IoUringDatagramChannel(
+            AddressedIoUringDatagramChannel(
                 fd = fd,
-                connected = false,
-                connectedPeer = null,
-                localAddress = localAddressOf(fd),
+                localAddress = boundLocal,
                 ipv6 = v6,
                 receiveBufferSize = receiveBufferSize,
                 bufferFactory = bufferFactory,
