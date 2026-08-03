@@ -11,7 +11,7 @@ import com.ditchoom.socket.transport.NetworkKind
  * - **Browser**: no interface list exists in a page — returns an empty list.
  */
 actual fun enumerateNetworkInterfaces(): List<NetworkInterfaceInfo> {
-    if (!isNodeJs) return emptyList()
+    if (!isNodeJsRuntime) return emptyList()
     return try {
         val interfaces = js("require('os').networkInterfaces()")
         val names: Array<String> = js("Object.keys")(interfaces) as Array<String>

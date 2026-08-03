@@ -15,12 +15,6 @@ import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
-// Node-vs-browser detection, module-local to :network-monitor (root :socket has its own copy in
-// Socket.kt, which this module does not depend on): the browser has `window`, Node does not.
-// `internal`, not private: [enumerateNetworkInterfaces] needs the same answer — `os.networkInterfaces()`
-// exists only under Node — and the two must never disagree about which runtime this is.
-internal val isNodeJs: Boolean = js("global.window") == null
-
 /**
  * JavaScript [NetworkMonitor].
  *
@@ -47,20 +41,20 @@ class JsNetworkMonitor(
 
     /**
      * Node polls `os.networkInterfaces()`; the browser is pushed `online`/`offline` (plus the Network
-     * Information API's `change` where it exists). The mechanism is resolved from the same [isNodeJs]
+     * Information API's `change` where it exists). The mechanism is resolved from the same [isNodeJsRuntime]
      * check the constructor branches on, so it can never disagree with what was actually wired; the
      * resolution is [ReachResolution.LinkOnly] on both, because neither runtime can see a routing table.
      */
     override val capability: MonitorCapability =
         MonitorCapability(
-            if (isNodeJs) MonitorMechanism.Polled(interval) else MonitorMechanism.PlatformSignalled,
+            if (isNodeJsRuntime) MonitorMechanism.Polled(interval) else MonitorMechanism.PlatformSignalled,
             ReachResolution.LinkOnly,
         )
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     init {
-        if (isNodeJs) {
+        if (isNodeJsRuntime) {
             scope.launch {
                 while (isActive) {
                     _state.value = checkNodeNetwork()
