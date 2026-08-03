@@ -7,7 +7,7 @@ live/reactive validation work.
 
 | Target | Backend | Reactive? | `networkId` kind |
 |---|---|---|---|
-| Apple K/N (`:socket`) | `AppleNetworkMonitor` → `NWPathMonitor` | yes | **typed**: `Wifi`/`Cellular`/`Ethernet`/`Vpn`/`Other` |
+| Apple K/N (`:network-monitor`) | `AppleNetworkMonitor` → `NWPathMonitor` | yes | **typed**: `Wifi`/`Cellular`/`Ethernet`/`Vpn`/`Other` |
 | JVM-on-macOS, JDK 21+ | `RouteNetworkMonitor` → `PF_ROUTE` route socket (FFM) | **yes** | `Other(ifName)` only |
 | JVM-on-macOS, JDK 8–20 | `PollingNetworkMonitor` (interface poll) | no | `Other(ifName)` only |
 
@@ -53,7 +53,7 @@ Apple monitor**, not reactivity. That is exactly why the native Apple side uses
 - **Code-signing / notarization**: an unsigned dylib loaded into a hardened-runtime JVM
   process (or one with library-validation) can be killed. Needs a signing story for the
   published artifact.
-- **Build wiring**: a new native compile step in the `:network-monitor` (or `:socket`) build
+- **Build wiring**: a new native compile step in the `:network-monitor` build
   producing the universal dylib, plus the MR-JAR packaging. This is the bulk of the work.
 
 ## Testing story (mirrors this PR)

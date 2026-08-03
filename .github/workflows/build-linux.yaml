@@ -524,12 +524,19 @@ jobs:
       # in each namespace: the native LinuxNetworkMonitor (netlink RTM_GETROUTE, the /proc/net/{route,
       # ipv6_route} fallbacks, the getifaddrs scan, /sys link-kind classification) via the .kexe, and the
       # desktop-JVM :network-monitor resolvers (commonJvmMain JvmNetworkId + jvm21 FFM NetlinkNetworkMonitor)
-      # via NetnsJvmProbe. Rootless via `unshare -rnm`; :linuxX64Test above linked the .kexe and
-      # :network-monitor:netnsJvmProbeClasspath dumped the JVM classpath + JDK21 launcher the harness reads.
+      # via NetnsJvmProbe. Rootless via `unshare -rnm`; the two :linuxX64Test tasks above linked both
+      # .kexe and :network-monitor:netnsJvmProbeClasspath dumped the JVM classpath + JDK21 launcher the
+      # harness reads.
+      #
+      # TWO native binaries since issue #269: LinuxNetworkMonitor lives in :network-monitor and
+      # enumerateNetworkInterfaces() in :socket, so the assertions split with the code. Both run in the
+      # same namespace per scenario — :network-monitor's first, since it is the one under test.
       - name: NetworkMonitor route resolution — netns integration (Linux)
         run: |
           chmod +x test-harness/netns/run-netns-tests.sh
-          ./test-harness/netns/run-netns-tests.sh build/bin/linuxX64/debugTest/test.kexe
+          ./test-harness/netns/run-netns-tests.sh \
+            network-monitor/build/bin/linuxX64/debugTest/test.kexe \
+            build/bin/linuxX64/debugTest/test.kexe
 
       # The one NetworkKind branch the rootless route harness can't reach: Wi-Fi (classifyLinkKind keys it
       # on a /sys phy80211 entry that dummy/tun devices never have). Load mac80211_hwsim to get a real
@@ -538,7 +545,9 @@ jobs:
       - name: Wi-Fi link-kind classification — mac80211_hwsim (Linux, best-effort)
         run: |
           chmod +x test-harness/netns/run-wifi-classify.sh
-          ./test-harness/netns/run-wifi-classify.sh build/bin/linuxX64/debugTest/test.kexe
+          ./test-harness/netns/run-wifi-classify.sh \
+            network-monitor/build/bin/linuxX64/debugTest/test.kexe \
+            build/bin/linuxX64/debugTest/test.kexe
 
       - name: Stop HTTP/3 QPACK interop server
         if: always()

@@ -346,8 +346,9 @@ kotlin {
     jvm {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
         // The JDK 21 FFM reactive network monitor (multi-release JAR under META-INF/versions/21) moved
-        // to the cinterop-free com.ditchoom:network-monitor module along with the rest of the portable
-        // NetworkMonitor implementation; :socket keeps only the native Linux/Apple monitors + default().
+        // to the com.ditchoom:network-monitor module along with the rest of the NetworkMonitor
+        // implementation — including, since issue #269, the native Linux (netlink) and Apple
+        // (NWPathMonitor) monitors and `NetworkMonitor.default()`. :socket keeps no monitor of its own.
     }
     js {
         browser {
@@ -436,10 +437,13 @@ kotlin {
     applyDefaultHierarchyTemplate()
     sourceSets {
         commonMain.dependencies {
-            // Network-awareness (NetworkMonitor / NetworkId) extracted to its own published, cinterop-free
-            // module (cinterop-issues/06) so ../webrtc and other consumers can use it standalone. api: it
-            // is part of :socket's public surface (TransportConfig.networkId, ReconnectingConnection,
-            // NetworkMonitor.default()/processDefault()). The native Linux/Apple monitors stay here.
+            // Network-awareness (NetworkMonitor / NetworkId) extracted to its own published module so
+            // ../webrtc and other consumers can use it standalone. Since issue #269 that module owns
+            // EVERY monitor — including the native Linux netlink and Apple NWPathMonitor ones, each with
+            // its own cinterop — plus `NetworkMonitor.default()`, because expect/actual cannot span a
+            // module boundary. api, not implementation: all of it is part of :socket's public surface
+            // (TransportConfig.networkId, ReconnectingConnection, NetworkMonitor.default()/
+            // processDefault(), InterfaceIndex), re-exported from the same packages as before.
             api(project(":network-monitor"))
             implementation(libs.buffer)
             api(libs.buffer.flow)

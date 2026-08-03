@@ -43,7 +43,7 @@ class AppleNetworkMonitorReactiveTest {
             return
         }
 
-        runTestNoTimeSkipping(timeout = 180.seconds) {
+        runOnRealTime(timeout = 180.seconds) {
             val monitor = AppleNetworkMonitor()
             try {
                 // Establish the baseline: wait for the first resolved, usable path so there is a concrete

@@ -2,10 +2,7 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.deterministic
-import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.socket.linux.*
+import com.ditchoom.networkmonitor.netlink.*
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.cinterop.*
@@ -19,6 +16,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import platform.linux.freeifaddrs
+import platform.linux.getifaddrs
+import platform.linux.ifaddrs
+import platform.posix.*
 
 /**
  * Linux [NetworkMonitor] using netlink sockets for event-driven network change detection.
@@ -69,17 +70,15 @@ class LinuxNetworkMonitor : NetworkMonitor {
 
         if (netlinkFd >= 0) {
             scope.launch {
-                // Allocate a native scratch buffer once, reuse across netlink recvs.
-                // Deterministic (malloc/free) so it's freed when the coroutine exits —
-                // no GC-managed ByteArray, no per-iteration pin/unpin.
-                val scratch = BufferFactory.deterministic().allocate(4096)
+                // Allocate a native scratch buffer once, reuse across netlink recvs. A raw malloc/free
+                // off nativeHeap, so it is released when the coroutine exits — no GC-managed ByteArray
+                // and no per-iteration pin/unpin. (This used to allocate a deterministic PlatformBuffer;
+                // a plain allocArray is the same malloc without making the whole com.ditchoom:buffer
+                // dependency part of this module's surface, which the extraction is meant to keep small.)
+                val scratch = nativeHeap.allocArray<ByteVar>(SCRATCH_BYTES)
                 try {
-                    val ptr =
-                        scratch.nativeMemoryAccess!!
-                            .nativeAddress
-                            .toCPointer<ByteVar>()!!
                     while (isActive) {
-                        val n = recv(netlinkFd, ptr, 4096.toULong(), 0)
+                        val n = recv(netlinkFd, scratch, SCRATCH_BYTES.convert(), 0)
                         // ENOBUFS is not a dead socket: the kernel dropped notifications because the
                         // socket's kernel receive queue (SO_RCVBUF — not this 4096-byte scratch buffer)
                         // overflowed before we drained it (netlink(7) "reliable transmission") — likelier
@@ -93,7 +92,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
                         _state.value = resolveNetworkState()
                     }
                 } finally {
-                    scratch.freeNativeMemory()
+                    nativeHeap.free(scratch)
                 }
             }
         }
@@ -211,7 +210,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 addr.nl_pid = 0u
                 addr.nl_groups = NETLINK_GROUPS
 
-                val bindResult = socket_bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_nl>().toUInt())
+                val bindResult = nm_netlink_bind(fd, addr.ptr)
                 if (bindResult < 0) {
                     close(fd)
                     return -1
@@ -413,8 +412,17 @@ class LinuxNetworkMonitor : NetworkMonitor {
                 if (iface != null) LinkScan.Up(iface) else LinkScan.NoLink
             }
 
-        /** Classify a link kind from the kernel's `/sys/class/net/<iface>/` view (see [primaryNetworkId]). */
-        internal fun classifyLinkKind(iface: String): NetworkKind {
+        /**
+         * Classify a link kind from the kernel's `/sys/class/net/<iface>/` view (see [primaryNetworkId]).
+         *
+         * Public because it is the one piece of this monitor that is useful without the monitor: it is
+         * the sole Linux source of a semantic [NetworkKind] for an interface *name*, and `:socket`'s
+         * `enumerateNetworkInterfaces()` — a different module since the #269 extraction — classifies
+         * every interface it enumerates through it, so an ICE host candidate and the primary link agree
+         * on what kind of network they are on. The pure [overload][classifyLinkKind] taking the raw
+         * `/sys` facts stays internal; this one reads them itself.
+         */
+        fun classifyLinkKind(iface: String): NetworkKind {
             val base = "/sys/class/net/$iface"
             return classifyLinkKind(
                 iface = iface,
@@ -620,6 +628,10 @@ class LinuxNetworkMonitor : NetworkMonitor {
         private const val RTMSG_SIZE = 12
         private const val RTATTR_SIZE = 4
         private const val IF_NAMESIZE = 16
+
+        // Scratch for the notification recv loop. Its size does not bound anything we parse — a
+        // wake-up is the whole signal, the message body is discarded — so one page is ample.
+        private const val SCRATCH_BYTES = 4096
 
         // Netlink recv guards (see queryDefaultRoute): a real RTM_GETROUTE reply lands in microseconds,
         // so 250ms is generous; the iteration cap bounds even a pathological stream of non-terminating

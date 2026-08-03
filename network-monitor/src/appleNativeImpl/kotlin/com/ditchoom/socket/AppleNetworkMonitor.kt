@@ -2,10 +2,10 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.socket.nwhelpers.nw_helper_create_path_monitor
-import com.ditchoom.socket.nwhelpers.nw_helper_path_monitor_cancel
-import com.ditchoom.socket.nwhelpers.nw_helper_path_monitor_set_update_handler
-import com.ditchoom.socket.nwhelpers.nw_helper_path_monitor_start
+import com.ditchoom.networkmonitor.nwpath.nm_create_path_monitor
+import com.ditchoom.networkmonitor.nwpath.nm_path_monitor_cancel
+import com.ditchoom.networkmonitor.nwpath.nm_path_monitor_set_update_handler
+import com.ditchoom.networkmonitor.nwpath.nm_path_monitor_start
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,19 +38,19 @@ class AppleNetworkMonitor : NetworkMonitor {
     override val capability: MonitorCapability =
         MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly)
 
-    private val monitor = nw_helper_create_path_monitor()
+    private val monitor = nm_create_path_monitor()
 
     init {
-        nw_helper_path_monitor_set_update_handler(monitor) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
+        nm_path_monitor_set_update_handler(monitor) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
             // Decode the C enum ONCE, here at the boundary, so nothing downstream branches on a raw Int.
             _state.value =
                 appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)
         }
-        nw_helper_path_monitor_start(monitor)
+        nm_path_monitor_start(monitor)
     }
 
     override fun close() {
-        nw_helper_path_monitor_cancel(monitor)
+        nm_path_monitor_cancel(monitor)
     }
 }
 

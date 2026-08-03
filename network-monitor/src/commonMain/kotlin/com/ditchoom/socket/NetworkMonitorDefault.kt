@@ -15,10 +15,12 @@ package com.ditchoom.socket
  * | Android | `ConnectivityManager.NetworkCallback` (reactive) — the `Context` comes from `NetworkMonitorInitializer` (androidx.startup) |
  * | Wasm (browser) | [NetworkMonitor.AlwaysAvailable] |
  *
- * This lives in `:socket` (not the `com.ditchoom:network-monitor` module that owns the [NetworkMonitor]
- * contract) because the native Linux/Apple monitors need the same platform interop (`LinuxSockets` /
- * `NWHelpers` cinterop) as `:socket`'s sockets, so they stay here and `default()` can construct them
- * directly on every platform.
+ * This lives in `com.ditchoom:network-monitor`, the module that also owns the [NetworkMonitor] contract
+ * and every implementation of it. That is not tidiness — `expect`/`actual` cannot span a module
+ * boundary, so as long as any monitor lived elsewhere this declaration and its actuals were split in
+ * two and the native monitors could not be reached without depending on `:socket`. Issue #269 gave this
+ * module its own netlink and `NWPathMonitor` cinterops so the Linux and Apple monitors could come home;
+ * `:socket` re-exports all of it via `api(project(":network-monitor"))`.
  *
  * The returned monitor owns platform resources; call [NetworkMonitor.close] when finished.
  */

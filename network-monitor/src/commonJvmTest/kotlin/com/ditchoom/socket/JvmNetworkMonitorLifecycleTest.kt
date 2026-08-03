@@ -20,12 +20,14 @@ import kotlin.time.Duration.Companion.seconds
  * its own declared [MonitorCapability] permits, and [close] tears the polling scope down without throwing.
  * Host-independent — a link may or may not exist on the runner.
  *
- * Note: [NetworkMonitor.default] here returns the polling base — this `:socket` jvmTest classpath sees
- * only the base (JDK 8) compilation of the `com.ditchoom:network-monitor` dependency, whose reactive FFM
- * routing-socket monitors (`NetlinkNetworkMonitor`/`RouteNetworkMonitor`) ship shadowed under the
- * multi-release JAR's `META-INF/versions/21` and only load from the *assembled* JAR at runtime. Those
- * monitors are exercised directly by that module's own `NetlinkNetworkMonitorTest`, whose `jvmTest`
- * classpath the network-monitor build augments with the `java21` compilation output.
+ * Note: which monitor [NetworkMonitor.default] returns here is deliberately NOT asserted. The reactive
+ * FFM routing-socket monitors (`NetlinkNetworkMonitor`/`RouteNetworkMonitor`) are compiled by the
+ * `java21` compilation and ship shadowed under the multi-release JAR's `META-INF/versions/21`, so which
+ * one `defaultJvmNetworkMonitor()` selects depends on whether the run resolves the *assembled* JAR or
+ * loose class directories — a packaging fact, not a contract. What every arrangement must satisfy is
+ * what this asserts: the returned monitor works and honours its own declared capability. The FFM
+ * monitors are exercised directly by `NetlinkNetworkMonitorTest`, whose `jvmTest` classpath this
+ * module's build augments with the `java21` output.
  */
 class JvmNetworkMonitorLifecycleTest {
     private fun assertNetworkIdInvariant(id: NetworkId) {

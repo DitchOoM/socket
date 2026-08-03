@@ -13,17 +13,24 @@
 # table is whatever the host has, so the actual netlink + /proc + /sys code path,
 # and the fallback tier, are never EXERCISED against a known input. This builds
 # controlled network namespaces with a known interface + default route and runs the
-# native NetnsRouteResolutionTest AND (when built) the JVM NetnsJvmProbe INSIDE each
-# one, so the monitors read that namespace's real kernel state and we assert they
-# pick the right interface + kind.
+# native NetnsRouteResolutionTest + NetnsInterfaceEnumerationTest AND (when built) the
+# JVM NetnsJvmProbe INSIDE each one, so the monitors read that namespace's real kernel
+# state and we assert they pick the right interface + kind.
 #
 # HOW: rootless via `unshare -rnm` (user+net+mount namespaces — NO sudo/root). A
 # sysfs remount makes /sys/class/net reflect the namespace so classifyLinkKind sees
 # only the harness interface. /proc/net/* is already per-netns via /proc/self/net.
 # The native .kexe and the JVM probe run in the SAME namespace per scenario.
 #
-# USAGE: ./run-netns-tests.sh [path/to/test.kexe]
-#   default binary: build/bin/linuxX64/debugTest/test.kexe (linkDebugTestLinuxX64)
+# TWO NATIVE BINARIES: issue #269 moved LinuxNetworkMonitor into :network-monitor and left
+# enumerateNetworkInterfaces() in :socket, so the assertions split across modules with the code
+# (expect/actual cannot span a module boundary, and neither can `internal`). Both .kexe run in the SAME
+# namespace per scenario, gated on the same env vars, each self-skipping when unset.
+#
+# USAGE: ./run-netns-tests.sh [path/to/network-monitor-test.kexe] [path/to/socket-test.kexe]
+#   default binaries: network-monitor/build/bin/linuxX64/debugTest/test.kexe
+#                     build/bin/linuxX64/debugTest/test.kexe
+#   build them with: ./gradlew :network-monitor:linkDebugTestLinuxX64 :linkDebugTestLinuxX64
 #   JVM leg (optional): ./gradlew :network-monitor:netnsJvmProbeClasspath first, or
 #   set NETNS_JVM_CLASSPATH / NETNS_JVM_JAVA to the dump files; absent → native-only.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,13 +39,21 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUN_ATTACH="$SCRIPT_DIR/tun-attach.py"
 
-KEXE="${1:-build/bin/linuxX64/debugTest/test.kexe}"
-if [ ! -x "$KEXE" ]; then
-    echo "ERROR: linuxX64 test binary not found/executable: $KEXE" >&2
-    echo "       build it with: ./gradlew :linkDebugTestLinuxX64" >&2
-    exit 2
-fi
-KEXE="$(cd "$(dirname "$KEXE")" && pwd)/$(basename "$KEXE")" # absolutize (cwd changes under unshare)
+# absolutize (cwd changes under unshare) + fail loud if a binary is missing.
+require_kexe() {
+    local path="$1" gradle_task="$2"
+    if [ ! -x "$path" ]; then
+        echo "ERROR: linuxX64 test binary not found/executable: $path" >&2
+        echo "       build it with: ./gradlew $gradle_task" >&2
+        exit 2
+    fi
+    echo "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
+}
+
+NM_KEXE="$(require_kexe "${1:-network-monitor/build/bin/linuxX64/debugTest/test.kexe}" \
+    ":network-monitor:linkDebugTestLinuxX64")" || exit 2
+KEXE="$(require_kexe "${2:-build/bin/linuxX64/debugTest/test.kexe}" \
+    ":linkDebugTestLinuxX64")" || exit 2
 
 # ── Optional JVM leg ─────────────────────────────────────────────────────────
 # Alongside the native .kexe, exercise the desktop-JVM Linux route resolution in the SAME namespace:
@@ -78,7 +93,12 @@ if ! unshare -rnm true 2>/dev/null; then
     exit 2
 fi
 
-FILTER="*NetnsRouteResolutionTest*"
+# One filter for both binaries: :network-monitor has NetnsRouteResolutionTest (netlink + /proc route
+# resolution), :socket has NetnsInterfaceEnumerationTest (getifaddrs + /sys classification). A filter
+# matching neither in a given binary runs nothing there, which is why "*Netns*" is not used — it would
+# also pull in NetnsReactiveChangeTest, which MUTATES the namespace and has its own scenario below.
+NM_FILTER="*NetnsRouteResolutionTest*"
+FILTER="*NetnsInterfaceEnumerationTest*"
 pass=0
 fail=0
 failed=()
@@ -111,6 +131,7 @@ run_scenario() {
             ip link set lo up
             $daemon_cmd
             $setup
+            '$NM_KEXE' --ktest_filter='$NM_FILTER'
             '$KEXE' --ktest_filter='$FILTER'
             $jvm_cmd
         " >/tmp/netns-$name.log 2>&1; then
@@ -145,7 +166,7 @@ run_reactive_scenario() {
         ip addr add 198.51.100.2/24 dev $after; ip route add default via 198.51.100.1 dev $after metric 200"
     local ok=1
     unshare -rnm sh -c "set -e; $setup
-            '$KEXE' --ktest_filter='*NetnsReactiveChangeTest*'" >/tmp/netns-$name-native.log 2>&1 || ok=0
+            '$NM_KEXE' --ktest_filter='*NetnsReactiveChangeTest*'" >/tmp/netns-$name-native.log 2>&1 || ok=0
     if [ -n "$JVM_JAVA" ]; then
         unshare -rnm sh -c "set -e; $setup
             '$JVM_JAVA' --enable-native-access=ALL-UNNAMED -cp '$JVM_CP' com.ditchoom.socket.NetnsReactiveProbeKt" \

@@ -2,13 +2,13 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.socket.linux.if_nametoindex
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.getenv
+import platform.posix.if_nametoindex
 import platform.posix.system
 import kotlin.test.Test
 import kotlin.test.assertEquals

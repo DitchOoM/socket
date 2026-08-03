@@ -25,7 +25,7 @@ import kotlin.time.Duration.Companion.seconds
 class AppleNetworkMonitorLiveTests {
     @Test
     fun pathMonitorDeliversAFirstUpdateAndResolvesTheNetwork() =
-        runTestNoTimeSkipping(timeout = 30.seconds) {
+        runOnRealTime(timeout = 30.seconds) {
             val monitor = AppleNetworkMonitor()
             try {
                 // NWPathMonitor delivers the current path once, promptly, after start. The single thing
