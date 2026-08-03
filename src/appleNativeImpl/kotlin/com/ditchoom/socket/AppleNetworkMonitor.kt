@@ -69,11 +69,18 @@ internal sealed interface NwPathStatus {
     /** 1 — the path can be used to send and receive data. */
     data object Satisfied : NwPathStatus
 
-    /** 2 — the path is not available for use. */
+    /** 2 — `nw_path_status_unsatisfied`: no usable route (interface down, or system policy). */
     data object Unsatisfied : NwPathStatus
 
-    /** 3 — the path is not currently available, but establishing a connection may make it so. */
-    data object RequiresConnection : NwPathStatus
+    /**
+     * 3 — `nw_path_status_satisfiable`: *"The path does not currently have a usable route, but a
+     * connection attempt will trigger network attachment"* (`Network.framework/path.h`).
+     *
+     * Named for the **C** constant, not for Swift's `NWPath.Status.requiresConnection` alias, which
+     * reads as "unusable" and is what led RFC §8.3 to fold this in with [Unsatisfied]. Observed
+     * behaviour says otherwise — see [appleNetworkState].
+     */
+    data object Satisfiable : NwPathStatus
 
     /** A status this build of the library does not know, carried verbatim for diagnostics. */
     data class Unrecognized(
@@ -87,7 +94,7 @@ internal fun nwPathStatus(raw: Int): NwPathStatus =
         0 -> NwPathStatus.Invalid
         1 -> NwPathStatus.Satisfied
         2 -> NwPathStatus.Unsatisfied
-        3 -> NwPathStatus.RequiresConnection
+        3 -> NwPathStatus.Satisfiable
         else -> NwPathStatus.Unrecognized(raw)
     }
 
@@ -98,8 +105,10 @@ internal fun nwPathStatus(raw: Int): NwPathStatus =
  * | [NwPathStatus] | primary interface | Result |
  * |---|---|---|
  * | [Satisfied][NwPathStatus.Satisfied] | any | `Routable(id, Unobserved)` |
- * | [Unsatisfied][NwPathStatus.Unsatisfied] / [RequiresConnection][NwPathStatus.RequiresConnection] | present | [NetworkState.LinkLocal] |
- * | [Unsatisfied][NwPathStatus.Unsatisfied] / [RequiresConnection][NwPathStatus.RequiresConnection] | none | [NetworkState.Offline] |
+ * | [Satisfiable][NwPathStatus.Satisfiable] | present | `Routable(id, Unobserved)` |
+ * | [Satisfiable][NwPathStatus.Satisfiable] | none | [NetworkState.Offline] |
+ * | [Unsatisfied][NwPathStatus.Unsatisfied] | present | [NetworkState.LinkLocal] |
+ * | [Unsatisfied][NwPathStatus.Unsatisfied] | none | [NetworkState.Offline] |
  * | [Invalid][NwPathStatus.Invalid] / [Unrecognized][NwPathStatus.Unrecognized] | any | [NetworkState.Unknown] |
  *
  * `satisfied` *is* the routing answer — "this path can be used to send and receive data" — so it maps to
@@ -112,12 +121,25 @@ internal fun nwPathStatus(raw: Int): NwPathStatus =
  * work. `nw_path_enumerate_interfaces` normally yields nothing on an unsatisfied path, so [NetworkState.Offline]
  * stays the common case; this rung is reached only when the OS does report a link.
  *
- * [RequiresConnection][NwPathStatus.RequiresConnection] is folded in with
- * [Unsatisfied][NwPathStatus.Unsatisfied] because that is where the pre-RFC monitor put it and the
- * meaning — not usable as it stands — is the same for a consumer. Whether an on-demand VPN path deserves
- * its own rung is RFC §8.3, still open pending a device check. An
- * [Unrecognized][NwPathStatus.Unrecognized] status is [NetworkState.Unknown] rather than any rung: we do
- * not know what it means, and `Unknown` is exactly "do not know yet" (and [isTransient], so a consumer
+ * [Satisfiable][NwPathStatus.Satisfiable] is [NetworkState.Routable] — the **same rung as
+ * [Satisfied][NwPathStatus.Satisfied]** — because that is what it was measured to be (RFC §8.3, now
+ * closed). An on-demand VPN (`NEOnDemandRuleConnect`) puts the path here whenever the tunnel is not
+ * attached, and a capture on a Mac with Tailscale on-demand shows the primary interface is a **fully
+ * routed Wi-Fi link with working internet** — `en0`, byte-identical [NetworkId] to the `satisfied`
+ * emissions either side of it. What is unattached is the tunnel, not the route. Folding it in with
+ * [Unsatisfied][NwPathStatus.Unsatisfied] therefore reported [NetworkState.LinkLocal] — "mDNS only, no
+ * route off-link" — on a machine that was online the whole time, dropping
+ * [canRouteOffLink] to `false` for the duration of every on-demand transition.
+ *
+ * It is also self-defeating: the header defines this status as *"a connection attempt will trigger
+ * network attachment"*, so a consumer that declines to attempt is exactly what prevents the attachment,
+ * and — unlike [InternetAccess.Observed.Pending] — nothing resolves it on its own. That makes the
+ * optimistic rung the same call already made for a blind JVM route probe and for
+ * [ReachResolution.LinkOnly]. With no interface at all there is nothing to be optimistic *about*, so
+ * that stays [NetworkState.Offline].
+ *
+ * An [Unrecognized][NwPathStatus.Unrecognized] status is [NetworkState.Unknown] rather than any rung: we
+ * do not know what it means, and `Unknown` is exactly "do not know yet" (and [isTransient], so a consumer
  * waits rather than tearing down).
  */
 internal fun appleNetworkState(
@@ -130,7 +152,9 @@ internal fun appleNetworkState(
     val id = appleNetworkId(interfaceType, interfaceIndex, interfaceName, usesTypes)
     return when (status) {
         NwPathStatus.Satisfied -> NetworkState.Routable(id, InternetAccess.Unobserved)
-        NwPathStatus.Unsatisfied, NwPathStatus.RequiresConnection ->
+        NwPathStatus.Satisfiable ->
+            if (interfaceIndex == 0u) NetworkState.Offline else NetworkState.Routable(id, InternetAccess.Unobserved)
+        NwPathStatus.Unsatisfied ->
             if (interfaceIndex == 0u) NetworkState.Offline else NetworkState.LinkLocal(id)
         NwPathStatus.Invalid, is NwPathStatus.Unrecognized -> NetworkState.Unknown
     }

@@ -126,13 +126,50 @@ class AppleNetworkStateMappingTests {
         )
     }
 
-    /** RFC §8.3: `requiresConnection` stays folded in with `unsatisfied` until a device check says otherwise. */
+    /**
+     * RFC §8.3, closed by measurement: `nw_path_status_satisfiable` is the **same rung** as `satisfied`,
+     * not as `unsatisfied`.
+     *
+     * Captured on a Mac whose Tailscale VPN declares `OnDemandEnabled` + `NEOnDemandRuleConnect`; each
+     * on-demand transition emits, from the same `nw_path_monitor` this class maps:
+     *
+     * ```
+     * status=1(satisfied)   ifType=1 ifIndex=15 ifName=en0
+     * status=3(satisfiable) ifType=1 ifIndex=15 ifName=en0   <- online the whole time
+     * status=1(satisfied)   ifType=1 ifIndex=15 ifName=en0
+     * ```
+     *
+     * Identical interface identity on all three, on a machine with a working default route: the tunnel
+     * is unattached, the route is not. Mapping it to `LinkLocal` claimed "mDNS only" about a fully
+     * online link.
+     */
     @Test
-    fun requiresConnectionMatchesUnsatisfied() {
-        assertEquals(state(status = NwPathStatus.Unsatisfied), state(status = NwPathStatus.RequiresConnection))
+    fun satisfiablePathIsRoutableLikeSatisfiedNotLinkLocal() {
+        assertEquals(state(status = NwPathStatus.Satisfied), state(status = NwPathStatus.Satisfiable))
         assertEquals(
-            state(status = NwPathStatus.Unsatisfied, interfaceType = -1, interfaceIndex = 0u, interfaceName = null, usesTypes = 0),
-            state(status = NwPathStatus.RequiresConnection, interfaceType = -1, interfaceIndex = 0u, interfaceName = null, usesTypes = 0),
+            NetworkState.Routable(NetworkId.Link(NetworkKind.Wifi, 5), InternetAccess.Unobserved),
+            state(status = NwPathStatus.Satisfiable),
+        )
+    }
+
+    /**
+     * The header defines `satisfiable` as "a connection attempt will trigger network attachment", so a
+     * consumer that declines to attempt is what prevents the attachment — and unlike `Pending`, nothing
+     * resolves it on its own. Attempting must therefore be worth it.
+     */
+    @Test
+    fun aSatisfiablePathIsWorthAttempting() {
+        val s = state(status = NwPathStatus.Satisfiable)
+        assertTrue(s.canRouteOffLink, "declining to attempt is what stops the path from ever attaching")
+        assertTrue(!s.isTransient, "nothing resolves satisfiable on its own — waiting it out never ends")
+    }
+
+    /** With no interface there is nothing to be optimistic about, so this rung stays [NetworkState.Offline]. */
+    @Test
+    fun satisfiableWithNoInterfaceIsStillOffline() {
+        assertEquals(
+            NetworkState.Offline,
+            state(status = NwPathStatus.Satisfiable, interfaceType = -1, interfaceIndex = 0u, interfaceName = null, usesTypes = 0),
         )
     }
 
@@ -149,7 +186,7 @@ class AppleNetworkStateMappingTests {
         assertEquals(NwPathStatus.Invalid, nwPathStatus(0))
         assertEquals(NwPathStatus.Satisfied, nwPathStatus(1))
         assertEquals(NwPathStatus.Unsatisfied, nwPathStatus(2))
-        assertEquals(NwPathStatus.RequiresConnection, nwPathStatus(3))
+        assertEquals(NwPathStatus.Satisfiable, nwPathStatus(3))
     }
 
     @Test
@@ -166,7 +203,8 @@ class AppleNetworkStateMappingTests {
                 state(status = NwPathStatus.Unrecognized(9)),
                 state(status = NwPathStatus.Satisfied),
                 state(status = NwPathStatus.Unsatisfied),
-                state(status = NwPathStatus.RequiresConnection),
+                state(status = NwPathStatus.Satisfiable),
+                state(status = NwPathStatus.Satisfiable, interfaceType = -1, interfaceIndex = 0u, interfaceName = null, usesTypes = 0),
                 state(status = NwPathStatus.Unsatisfied, interfaceType = -1, interfaceIndex = 0u, interfaceName = null, usesTypes = 0),
             )
         for (s in states) {
