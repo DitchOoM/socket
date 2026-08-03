@@ -199,38 +199,17 @@ void nw_helper_ws_send(
 NSNumber * _Nonnull nw_helper_is_port_available(int32_t port);
 
 // ============================================================
-// Network path monitor — MOVED OUT (issue #269)
+// Network awareness — MOVED OUT (issue #269)
 // ============================================================
 //
-// The NWPathMonitor bridge (nw_helper_create_path_monitor + set_update_handler/start/cancel and their
-// handler typedef) now lives in network-monitor/src/nativeInterop/cinterop/nm_path_monitor.h, alongside
-// the AppleNetworkMonitor that is its only caller. Two cinterops on one classpath must not both declare
-// the same helper, so it is declared THERE and not here. :socket reaches AppleNetworkMonitor and
-// NetworkMonitor.default() through its `api(project(":network-monitor"))` dependency.
+// The NWPathMonitor bridge (nw_helper_create_path_monitor + set_update_handler/start/cancel) and the
+// getifaddrs scan (nw_helper_enumerate_interfaces), with their block typedefs, now live in
+// network-monitor/src/nativeInterop/cinterop/nm_network_helpers.h alongside their only callers —
+// AppleNetworkMonitor and enumerateNetworkInterfaces(), which moved to :network-monitor together so
+// they can share LinuxNetworkMonitor.classifyLinkKind without it becoming public API.
 //
-// Everything below stayed: nw_helper_enumerate_interfaces still backs :socket's own
-// enumerateNetworkInterfaces() actual.
-
-// ============================================================
-// Network interface enumeration (getifaddrs) — ICE / WebRTC host candidates
-// ============================================================
-
-// Per-address callback, invoked synchronously once per getifaddrs record:
-//   name: BSD interface name (e.g. "en0"); index: OS interface index;
-//   is_up / is_loopback: interface flags as 0/1; address: numeric IP literal
-//   (NI_NUMERICHOST), or nil when the record carries no address.
-// Uses NSString*/int32_t params (K/N-safe, same as the path handler) because
-// getifaddrs / struct ifaddrs are NOT exposed by platform.posix on Apple K/N —
-// the whole scan therefore lives in C and only scalars/strings cross to Kotlin.
-typedef void (^nw_helper_iface_block)(
-    NSString * _Nullable name,
-    uint32_t index,
-    int32_t is_up,
-    int32_t is_loopback,
-    NSString * _Nullable address);
-
-// Enumerates every local interface address via getifaddrs, invoking [cb] once per
-// (interface, address) record. A no-op if getifaddrs fails.
-void nw_helper_enumerate_interfaces(nw_helper_iface_block _Nonnull cb);
+// Two cinterops on one classpath must not both declare the same helper, so they are declared THERE and
+// not here. :socket reaches all of it through `api(project(":network-monitor"))`. What remains in this
+// header is exactly what :socket still calls: TCP/TLS connections, WebSocket, and the listener.
 
 #endif /* NW_HELPERS_H */

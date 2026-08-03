@@ -415,14 +415,12 @@ class LinuxNetworkMonitor : NetworkMonitor {
         /**
          * Classify a link kind from the kernel's `/sys/class/net/<iface>/` view (see [primaryNetworkId]).
          *
-         * Public because it is the one piece of this monitor that is useful without the monitor: it is
-         * the sole Linux source of a semantic [NetworkKind] for an interface *name*, and `:socket`'s
-         * `enumerateNetworkInterfaces()` — a different module since the #269 extraction — classifies
-         * every interface it enumerates through it, so an ICE host candidate and the primary link agree
-         * on what kind of network they are on. The pure [overload][classifyLinkKind] taking the raw
-         * `/sys` facts stays internal; this one reads them itself.
+         * Shared with [enumerateNetworkInterfaces] — which lives in this module for exactly that reason
+         * — so an ICE host candidate and the primary link agree on what kind of network they are on.
+         * Takes the interface *name* because that is the sysfs key: the index path
+         * ([classifyOif]) resolves a name via `if_indextoname` before it can get here.
          */
-        fun classifyLinkKind(iface: String): NetworkKind {
+        internal fun classifyLinkKind(iface: String): NetworkKind {
             val base = "/sys/class/net/$iface"
             return classifyLinkKind(
                 iface = iface,

@@ -21,10 +21,11 @@ repositories {
 
 // com.ditchoom:network-monitor — the whole of network awareness, standalone: the NetworkMonitor /
 // NetworkState / NetworkId contract, EVERY implementation of it (JVM FFM routing socket, Android
-// ConnectivityManager, JS, Linux netlink, Apple NWPathMonitor), and `NetworkMonitor.default()` /
-// `.processDefault()`. Extracted from root :socket so consumers (../webrtc ICE/WebRTC, QUIC
-// auto-migration) can depend on network-awareness without TCP + TLS. :socket re-exports all of it
-// through `api(project(":network-monitor"))`, so nothing downstream moved packages.
+// ConnectivityManager, JS, Linux netlink, Apple NWPathMonitor), `NetworkMonitor.default()` /
+// `.processDefault()`, and the point-in-time `enumerateNetworkInterfaces()` scan that ICE host-candidate
+// gathering reads. Extracted from root :socket so consumers (../webrtc ICE/WebRTC, QUIC auto-migration)
+// can depend on network-awareness without TCP + TLS. :socket re-exports all of it through
+// `api(project(":network-monitor"))`, so nothing downstream moved packages.
 //
 // WHY ONE MODULE AND NOT TWO (issue #269 proposed a third, native-only module): `expect`/`actual`
 // cannot span a module boundary. Leaving the native monitors anywhere else leaves `default()` split
@@ -57,20 +58,21 @@ repositories {
 //           headerFilter admits nothing else; everything non-netlink the monitor needs (socket(2),
 //           getifaddrs, if_nametoindex, IFF_UP) comes from Kotlin/Native's own platform.posix /
 //           platform.linux klibs, which are not cinterops of ours.
-//   Apple — never overlapped (third probe above). NWPathMonitor.def declares only our four
-//           nm_path_monitor_* helpers; :socket's NWHelpers.def dropped the four nw_helper_path_monitor_*
-//           it used to own and keeps the rest, including nw_helper_enumerate_interfaces, which still
-//           backs :socket's own enumerateNetworkInterfaces().
+//   Apple — never overlapped (third probe above), but the split is still clean by ownership:
+//           NetworkHelpers.def declares only our own nm_* helpers, and :socket's NWHelpers.def dropped
+//           every one it used to own on this side (the four nw_helper_path_monitor_* AND
+//           nw_helper_enumerate_interfaces) because it no longer has a caller for any of them.
 //
 // Before adding a header to either .def here, check it is not already declared by LinuxSockets.def or
 // NWHelpers.def — and re-run those probes rather than citing this comment.
 
-// NWPathMonitor bridge for AppleNetworkMonitor. Header-only + framework linkage — no archive to build,
-// so unlike :socket's Apple cinterop there is nothing to sequence against.
-fun KotlinNativeTarget.configureNWPathMonitorCinterop() {
+// Apple C bridge: the NWPathMonitor behind AppleNetworkMonitor and the getifaddrs scan behind
+// enumerateNetworkInterfaces(). Header-only + framework linkage — no archive to build, so unlike
+// :socket's Apple cinterop there is nothing to sequence against.
+fun KotlinNativeTarget.configureNetworkHelpersCinterop() {
     compilations["main"].cinterops {
-        create("NWPathMonitor") {
-            defFile("src/nativeInterop/cinterop/NWPathMonitor.def")
+        create("NetworkHelpers") {
+            defFile("src/nativeInterop/cinterop/NetworkHelpers.def")
             includeDirs("src/nativeInterop/cinterop")
         }
     }
@@ -152,20 +154,21 @@ kotlin {
         nodejs()
     }
 
-    // Apple targets — AppleNetworkMonitor over NWPathMonitor, via this module's own NWPathMonitor
-    // cinterop. Registered on macOS hosts so :socket's Apple compilations resolve this dep.
+    // Apple targets — AppleNetworkMonitor over NWPathMonitor plus the getifaddrs interface scan, via
+    // this module's own NetworkHelpers cinterop. Registered on macOS hosts so :socket's Apple
+    // compilations resolve this dep.
     if (isMacOS) {
-        macosArm64 { configureNWPathMonitorCinterop() }
-        macosX64 { configureNWPathMonitorCinterop() }
-        iosArm64 { configureNWPathMonitorCinterop() }
-        iosSimulatorArm64 { configureNWPathMonitorCinterop() }
-        iosX64 { configureNWPathMonitorCinterop() }
-        tvosArm64 { configureNWPathMonitorCinterop() }
-        tvosSimulatorArm64 { configureNWPathMonitorCinterop() }
-        tvosX64 { configureNWPathMonitorCinterop() }
-        watchosArm64 { configureNWPathMonitorCinterop() }
-        watchosSimulatorArm64 { configureNWPathMonitorCinterop() }
-        watchosX64 { configureNWPathMonitorCinterop() }
+        macosArm64 { configureNetworkHelpersCinterop() }
+        macosX64 { configureNetworkHelpersCinterop() }
+        iosArm64 { configureNetworkHelpersCinterop() }
+        iosSimulatorArm64 { configureNetworkHelpersCinterop() }
+        iosX64 { configureNetworkHelpersCinterop() }
+        tvosArm64 { configureNetworkHelpersCinterop() }
+        tvosSimulatorArm64 { configureNetworkHelpersCinterop() }
+        tvosX64 { configureNetworkHelpersCinterop() }
+        watchosArm64 { configureNetworkHelpersCinterop() }
+        watchosSimulatorArm64 { configureNetworkHelpersCinterop() }
+        watchosX64 { configureNetworkHelpersCinterop() }
     }
 
     // Linux targets — LinuxNetworkMonitor over netlink, via this module's own Netlink cinterop.

@@ -2,10 +2,10 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.networkmonitor.nwpath.nm_create_path_monitor
-import com.ditchoom.networkmonitor.nwpath.nm_path_monitor_cancel
-import com.ditchoom.networkmonitor.nwpath.nm_path_monitor_set_update_handler
-import com.ditchoom.networkmonitor.nwpath.nm_path_monitor_start
+import com.ditchoom.networkmonitor.nw.nm_create_path_monitor
+import com.ditchoom.networkmonitor.nw.nm_path_monitor_cancel
+import com.ditchoom.networkmonitor.nw.nm_path_monitor_set_update_handler
+import com.ditchoom.networkmonitor.nw.nm_path_monitor_start
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.flow.MutableStateFlow

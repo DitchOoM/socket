@@ -27,10 +27,6 @@ import kotlin.test.assertTrue
  * ```
  * so the monitor reads the namespace's real kernel state. Both the netlink path and the forced
  * `/proc`-fallback path are asserted, so each scenario proves both tiers pick the same real interface.
- *
- * The companion assertion — that `:socket`'s `enumerateNetworkInterfaces()` sees the same namespace —
- * is `NetnsInterfaceEnumerationTest`, which stayed in `:socket` when the monitors moved here (issue
- * #269) because that function did. The harness runs BOTH modules' `.kexe` inside each namespace.
  */
 class NetnsRouteResolutionTest {
     private fun env(name: String): String? = getenv(name)?.toKString()?.takeIf { it.isNotEmpty() }
@@ -58,6 +54,32 @@ class NetnsRouteResolutionTest {
             expectIdx,
             via = "primaryNetworkIdFromProcFallback (/proc + scan)",
         )
+    }
+
+    @Test
+    fun enumerateNetworkInterfacesReportsTheControlledNamespaceInterfaces() {
+        val iface = env("NETMON_EXPECT_IFACE") ?: return // not under the netns harness — skip
+        val expectIdx = if_nametoindex(iface).toLong()
+
+        // enumerateNetworkInterfaces() (the ICE/WebRTC host-candidate source) reads getifaddrs + the
+        // same /sys classification — a real integration path its host-live test can only shape-check.
+        // Here the namespace has a KNOWN interface set, so assert the exact fields.
+        val interfaces = enumerateNetworkInterfaces()
+        val names = interfaces.map { it.name }
+
+        val loopback = interfaces.firstOrNull { it.isLoopback }
+        assertTrue(loopback != null, "enumerate must expose the loopback interface; got $names")
+
+        val nif = interfaces.firstOrNull { it.name == iface }
+        assertTrue(nif != null, "enumerate must include the harness interface '$iface'; got $names")
+        nif!!
+        assertEquals(expectIdx, nif.index.value, "'$iface' index must match if_nametoindex")
+        assertTrue(nif.isUp, "'$iface' is up in the namespace but enumerate reported it down")
+        assertTrue(!nif.isLoopback, "'$iface' must not be flagged loopback")
+        assertTrue(nif.addresses.isNotEmpty(), "'$iface' must carry at least one address, had ${nif.addresses}")
+        env("NETMON_EXPECT_KIND")?.let { expectKind ->
+            assertEquals(expectKind, nif.kind::class.simpleName, "enumerate: classified kind for '$iface'")
+        }
     }
 
     private fun assertResolvesTo(

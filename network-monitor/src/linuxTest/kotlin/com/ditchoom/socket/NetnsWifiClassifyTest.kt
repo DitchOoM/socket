@@ -6,6 +6,7 @@ import kotlinx.cinterop.toKString
 import platform.posix.getenv
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Integration test for the one [NetworkKind][com.ditchoom.socket.transport.NetworkKind] branch the
@@ -22,11 +23,6 @@ import kotlin.test.assertEquals
  * a no-op. The `test-harness/netns/run-wifi-classify.sh` runner sets it after `modprobe
  * mac80211_hwsim`; when the module is unavailable (e.g. the WSL2 kernel) that runner skips gracefully
  * and this never executes.
- *
- * The companion assertion — that the same classification flows through `:socket`'s
- * `enumerateNetworkInterfaces()`, the ICE/WebRTC host-candidate source — is
- * `NetnsInterfaceEnumerationTest` over in `:socket`, which the same runner executes against the same
- * `wlan` (issue #269 left that function there while the monitor moved here).
  */
 class NetnsWifiClassifyTest {
     private fun env(name: String): String? = getenv(name)?.toKString()?.takeIf { it.isNotEmpty() }
@@ -38,5 +34,10 @@ class NetnsWifiClassifyTest {
         // Direct classification: the phy80211 /sys entry the simulated wlan carries ⇒ Wifi.
         val kind = LinuxNetworkMonitor.classifyLinkKind(iface)
         assertEquals("Wifi", kind::class.simpleName, "classifyLinkKind('$iface') must be Wifi (has /sys phy80211)")
+
+        // The same classification must flow through the enumerate path (ICE/WebRTC host candidates).
+        val nif = enumerateNetworkInterfaces().firstOrNull { it.name == iface }
+        assertTrue(nif != null, "enumerate must include the wireless interface '$iface'")
+        assertEquals("Wifi", nif!!.kind::class.simpleName, "enumerate: classified kind for '$iface'")
     }
 }

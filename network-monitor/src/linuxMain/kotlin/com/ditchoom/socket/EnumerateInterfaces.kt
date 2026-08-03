@@ -2,8 +2,11 @@
 
 package com.ditchoom.socket
 
-import com.ditchoom.socket.linux.*
 import kotlinx.cinterop.*
+import platform.linux.freeifaddrs
+import platform.linux.getifaddrs
+import platform.linux.ifaddrs
+import platform.posix.*
 
 /**
  * Linux actual for [enumerateNetworkInterfaces], from `getifaddrs`. Each interface's addresses are the

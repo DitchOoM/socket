@@ -16,28 +16,18 @@
 # WSL2 kernel, or a runner without linux-modules-extra) it SKIPS (exit 0) rather than
 # failing — the Wi-Fi branch is also covered by the pure classifyLinkKind unit tests.
 #
-# TWO NATIVE BINARIES, as in run-netns-tests.sh: :network-monitor owns classifyLinkKind (and asserts it
-# directly), :socket owns enumerateNetworkInterfaces (and asserts the same kind survives that path) —
-# issue #269 split them across modules. Both read the SAME host wlan; neither mutates anything.
-#
-# USAGE: ./run-wifi-classify.sh [path/to/network-monitor-test.kexe] [path/to/socket-test.kexe]
+# USAGE: ./run-wifi-classify.sh [path/to/test.kexe]
+#   default binary: network-monitor/build/bin/linuxX64/debugTest/test.kexe (see run-netns-tests.sh)
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
-require_kexe() {
-    local path="$1" gradle_task="$2"
-    if [ ! -x "$path" ]; then
-        echo "ERROR: linuxX64 test binary not found/executable: $path" >&2
-        echo "       build it with: ./gradlew $gradle_task" >&2
-        exit 2
-    fi
-    echo "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
-}
-
-NM_KEXE="$(require_kexe "${1:-network-monitor/build/bin/linuxX64/debugTest/test.kexe}" \
-    ":network-monitor:linkDebugTestLinuxX64")" || exit 2
-KEXE="$(require_kexe "${2:-build/bin/linuxX64/debugTest/test.kexe}" \
-    ":linkDebugTestLinuxX64")" || exit 2
+KEXE="${1:-network-monitor/build/bin/linuxX64/debugTest/test.kexe}"
+if [ ! -x "$KEXE" ]; then
+    echo "ERROR: linuxX64 test binary not found/executable: $KEXE" >&2
+    echo "       build it with: ./gradlew :network-monitor:linkDebugTestLinuxX64" >&2
+    exit 2
+fi
+KEXE="$(cd "$(dirname "$KEXE")" && pwd)/$(basename "$KEXE")"
 
 # sudo only if we are not already root (CI runners have passwordless sudo).
 SUDO=""
@@ -91,19 +81,13 @@ done
 $SUDO ip link set "$WLAN" up 2>/dev/null || true
 echo "── Wi-Fi classify: $WLAN (phy80211 present) ⇒ expect NetworkKind.Wifi"
 
-# Read-only /sys classification — no namespace needed; the wlan lives in the host netns.
-# Leg 1: classifyLinkKind directly (:network-monitor). Leg 2: the same kind via the enumerate path
-# an ICE agent actually reads (:socket). Both must pass; report which one failed.
-if ! NETMON_WIFI_IFACE="$WLAN" "$NM_KEXE" --ktest_filter='*NetnsWifiClassifyTest*' \
-        >/tmp/wifi-classify.log 2>&1; then
-    echo "   ✗ FAIL (classifyLinkKind, :network-monitor) — output:"
+# Read-only /sys classification — no namespace needed; the wlan lives in the host netns. The test
+# asserts both classifyLinkKind directly and the same kind surviving the enumerate path an ICE agent
+# reads — both live in :network-monitor since issue #269.
+if NETMON_WIFI_IFACE="$WLAN" "$KEXE" --ktest_filter='*NetnsWifiClassifyTest*' >/tmp/wifi-classify.log 2>&1; then
+    echo "   ✓ PASS — '$WLAN' classified Wifi"
+else
+    echo "   ✗ FAIL — output:"
     sed 's/^/     /' /tmp/wifi-classify.log
     exit 1
 fi
-if ! NETMON_WIFI_IFACE="$WLAN" "$KEXE" --ktest_filter='*NetnsInterfaceEnumerationTest*' \
-        >/tmp/wifi-classify-enumerate.log 2>&1; then
-    echo "   ✗ FAIL (enumerateNetworkInterfaces, :socket) — output:"
-    sed 's/^/     /' /tmp/wifi-classify-enumerate.log
-    exit 1
-fi
-echo "   ✓ PASS — '$WLAN' classified Wifi (direct + via enumerate)"

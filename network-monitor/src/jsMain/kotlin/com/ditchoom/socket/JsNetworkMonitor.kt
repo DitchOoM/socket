@@ -17,7 +17,9 @@ import kotlin.time.Duration.Companion.seconds
 
 // Node-vs-browser detection, module-local to :network-monitor (root :socket has its own copy in
 // Socket.kt, which this module does not depend on): the browser has `window`, Node does not.
-private val isNodeJs: Boolean = js("global.window") == null
+// `internal`, not private: [enumerateNetworkInterfaces] needs the same answer — `os.networkInterfaces()`
+// exists only under Node — and the two must never disagree about which runtime this is.
+internal val isNodeJs: Boolean = js("global.window") == null
 
 /**
  * JavaScript [NetworkMonitor].
