@@ -22,13 +22,35 @@ repositories {
 // consumers (../webrtc ICE/WebRTC, QUIC auto-migration) can depend on network-awareness without
 // TCP + TLS.
 //
-// Deliberately CINTEROP-FREE (cinterop-issues/06): the native Linux (netlink) and Apple (NWPathMonitor)
-// monitors stay in :socket, reusing :socket's own LinuxSockets / NWHelpers cinterop. Adding a second
-// cinterop-bearing project dependency to :socket evicts :socket's own commonized LinuxSockets klib
-// (memset/errno unresolved on linuxX64). Keeping this module cinterop-free never perturbs the
-// commonizer. `NetworkMonitor.default()` / `.processDefault()` therefore live in :socket (extensions on
-// the companion), where the native monitors can be constructed directly; this module keeps only the
-// contract, the process-default override seam (installProcessDefault), and the portable monitors.
+// Currently CINTEROP-FREE: the native Linux (netlink) and Apple (NWPathMonitor) monitors stay in
+// :socket, reusing :socket's own LinuxSockets / NWHelpers cinterop. `NetworkMonitor.default()` /
+// `.processDefault()` therefore live in :socket (extensions on the companion), where the native monitors
+// can be constructed directly; this module keeps only the contract, the process-default override seam
+// (installProcessDefault), and the portable monitors. That gap is issue #269.
+//
+// ⚠️ This comment used to assert, citing cinterop-issues/06, that "adding a second cinterop-bearing
+// project dependency to :socket evicts :socket's own commonized LinuxSockets klib". **Measured on
+// Kotlin 2.4.0, that is not the rule.** Two probe modules, each a cinterop-bearing project dependency
+// added to :socket's SHARED linuxMain / appleMain, differing only in which C headers their .def
+// declares:
+//
+//   linux/netlink.h + linux/rtnetlink.h  (ALSO declared by LinuxSockets.def)
+//       -> :compileKotlinLinuxX64 FAILS — socket's own NLM_F_DUMP / NLMSG_DONE / RTM_NEWROUTE /
+//          RTN_UNICAST go unresolved in LinuxNetworkMonitor.kt
+//   sys/utsname.h                        (declared by nobody else)
+//       -> :linkDebugTestLinuxX64 SUCCEEDS
+//   Objective-C header transitively re-declaring <Network/Network.h> (as nw_helpers.h does)
+//       -> :compileKotlinMacosArm64 and :linkDebugTestMacosArm64 both SUCCEED
+//
+// So the real constraint is HEADER OVERLAP between two cinterops on one classpath, not
+// cinterop-bearing-ness, and not project-vs-external (this module already ships next to the
+// cinterop-bearing external boringssl-canonical klib on linuxMain). Differing `package =` names do not
+// help — the failing probe used its own package.
+//
+// That matters for #269: LinuxNetworkMonitor.kt is the ONLY file in :socket that touches netlink, so
+// moving it into a native module lets LinuxSockets.def drop linux/netlink.h + linux/rtnetlink.h and the
+// overlap disappears by construction. Apple has no overlap to begin with. Before reinstating any
+// "cinterop-free" rule here, re-run those probes rather than citing this comment.
 kotlin {
     // Match the target set of :socket exactly — :socket depends on this module and compiles every one
     // of these targets, so the dependency must publish an artifact for each.
