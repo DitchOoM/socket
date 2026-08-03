@@ -1,10 +1,10 @@
 package consumer.smoke
 
 import com.ditchoom.socket.NetworkMonitor
-import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.default
 import com.ditchoom.socket.enumerateNetworkInterfaces
 import com.ditchoom.socket.networkId
+import com.ditchoom.socket.permits
 import com.ditchoom.socket.transport.NetworkId
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -49,7 +49,6 @@ class NetworkAwarenessSmokeTest {
                 id is NetworkId.Link || id is NetworkId.KindOnly || id == NetworkId.Unidentified,
                 "networkId must be a sealed NetworkId, was $id",
             )
-            assertTrue(state is NetworkState, "state must be a sealed NetworkState, was $state")
             println("consumer-smoke: network awareness OK — ${Smoke.networkAwareness()}")
         } finally {
             monitor.close()
