@@ -15,6 +15,9 @@ import com.ditchoom.socket.http3.withHttp3Server
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -23,6 +26,8 @@ import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -67,15 +72,28 @@ abstract class WebTransportTestSuite {
     /** Multiplexed counterpart of [openSingleSession]: a held connection dialed with the loopback trust. */
     protected abstract suspend fun openMultiplexed(url: String): MultiplexedWebTransport
 
+    /**
+     * Per-test failure diagnostics. Fresh per test instance, dumped by [runWebTransportTest] on any
+     * failure and silent otherwise — see [WebTransportDiagnostics] for why this exists.
+     */
+    internal val diagnostics = WebTransportDiagnostics()
+
     // Datagrams enabled on the server so WebTransport datagrams (RFC 9297) are negotiable; the neutral
     // client's connectMultiplexed/connect already enable them client-side. verifyPeer=false because the
     // loopback cert is self-signed; the suite is about WebTransport, not cert validation.
+    //
+    // trace: server-side deterministic-replay capture (RFC_DETERMINISTIC_SIMULATION.md §5) into an
+    // in-memory buffer. The single-sink convenience constructor is deliberate — every accepted
+    // connection interleaves onto one buffer, which is aggregate DIAGNOSTICS rather than per-connection
+    // replay, and interleaving is exactly what we want when the question is "which of two concurrent
+    // connections stopped making progress".
     private val serverQuicOptions =
         QuicOptions(
             alpnProtocols = listOf(HTTP3_ALPN),
             verifyPeer = false,
             idleTimeout = 10.seconds,
             datagrams = DatagramOptions(),
+            trace = QuicTraceCapture(diagnostics.sink),
         )
 
     // QUIC stream I/O is zero-copy: it reads each buffer's native address. On Kotlin/Native,
@@ -238,6 +256,7 @@ abstract class WebTransportTestSuite {
                     onRequest = { response.send(404) },
                 ) {
                     delay(SETTLE)
+                    diagnostics.mark("settled; dialing first")
                     // Two separate connect() calls to the SAME authority. On native each dials a DEDICATED
                     // HTTP/3 connection — WebTransportOptions.allowPooling is a documented no-op here (never
                     // mapped in WebTransportSupportHttp3.connectInternal); transparent pooling is browser-only.
@@ -246,11 +265,15 @@ abstract class WebTransportTestSuite {
                     // leave the second fully usable. (If they shared one pooled connection, the second
                     // round-trip below would fail after the first close.)
                     val first = openSingleSession("https://localhost:$port/wt")
+                    diagnostics.mark("first connected; dialing second")
                     val second = openSingleSession("https://localhost:$port/wt")
                     try {
-                        assertEquals("echo:one", first.roundTripBidi("one"))
+                        assertEquals("echo:one", first.roundTripBidi("one", diagnostics))
+                        diagnostics.mark("first round-trip ok; closing first")
                         first.close()
-                        assertEquals("echo:two", second.roundTripBidi("two"))
+                        diagnostics.mark("first closed; round-tripping second")
+                        assertEquals("echo:two", second.roundTripBidi("two", diagnostics))
+                        diagnostics.mark("both round-trips ok")
                     } finally {
                         first.close()
                         second.close()
@@ -270,12 +293,19 @@ private suspend fun com.ditchoom.socket.http3.WebTransportServerExchange.echoFir
 }
 
 /** Client-side: open a bidi stream, send [msg], half-close the send side, read the echoed reply. */
-private suspend fun WebTransportSession.roundTripBidi(msg: String): String {
+private suspend fun WebTransportSession.roundTripBidi(
+    msg: String,
+    diagnostics: WebTransportDiagnostics? = null,
+): String {
+    diagnostics?.mark("rt[$msg]: openBidiStream")
     val stream = openBidiStream()
+    diagnostics?.mark("rt[$msg]: write")
     stream.write(textBuffer(msg))
     // The send-side FIN tells the server "end of request" while keeping the read side open for the echo
     // (RFC 9114 §4 half-close). Native WebTransport bidi streams are HalfCloseable (Phase-3a / A2).
+    diagnostics?.mark("rt[$msg]: shutdownSend")
     (stream as HalfCloseable).shutdownSend()
+    diagnostics?.mark("rt[$msg]: awaiting echo")
     return withTimeout(5.seconds) { stream.readUtf8() }
 }
 
@@ -304,16 +334,91 @@ private fun textBuffer(s: String): PlatformBuffer =
         resetForRead()
     }
 
-/** Wall-clock-timed runner on a real dispatcher (no virtual time), mirroring the QUIC suites' runQuicTest. */
-private fun runWebTransportTest(
+/**
+ * Wall-clock-timed runner on a real dispatcher (no virtual time), mirroring the QUIC suites' runQuicTest.
+ *
+ * On ANY failure it prints [WebTransportDiagnostics.report] before rethrowing, so a failure carries the
+ * step it reached and the server's QUIC trace instead of a bare `Timed out waiting for 30000 ms`. That
+ * output lands in the test XML's `system-out`, which CI already uploads (`test-reports-linux`), so a
+ * rare CI-only failure is diagnosable from its FIRST occurrence rather than needing a reproduction.
+ */
+private fun WebTransportTestSuite.runWebTransportTest(
     timeout: Duration = 30.seconds,
     block: suspend CoroutineScope.() -> Unit,
 ): TestResult =
     runTest(timeout = timeout + 15.seconds) {
         withContext(Dispatchers.Default) {
-            withTimeout(timeout) { block() }
+            try {
+                withTimeout(timeout) { block() }
+            } catch (t: Throwable) {
+                println(diagnostics.report(t))
+                throw t
+            }
         }
     }
+
+/**
+ * Failure diagnostics for this suite: the last step the test body reached, plus the tail of the
+ * server's QUIC trace.
+ *
+ * WHY: `connect_twoSessions_areDedicatedConnections_notTransparentlyPooled[linuxX64]` has failed on CI
+ * as an opaque `TimeoutCancellationException: Timed out waiting for 30000 ms`. Only the echo read is
+ * bounded (`withTimeout(5.seconds)`), so a 30 s failure proves the stall is in one of the UNBOUNDED
+ * calls — connect, openBidiStream, write, shutdownSend, close — and the bare exception cannot say
+ * which. It reproduces roughly never (once in ~120 local runs), so waiting for a local repro is not a
+ * strategy; capturing on the failure we DO get is.
+ *
+ * [mark] is a plain atomic store on the happy path — deliberately not `println`, which serialises on
+ * IO and was measured to perturb this race away entirely.
+ */
+@OptIn(ExperimentalAtomicApi::class)
+class WebTransportDiagnostics {
+    private val lastStep = AtomicReference("(not started)")
+    private val events = AtomicReference(emptyList<String>())
+
+    /** Records the step the test body is about to attempt. Cheap enough to leave on always. */
+    fun mark(step: String) {
+        lastStep.store(step)
+    }
+
+    /**
+     * The server-side capture sink. Bounded to [MAX_EVENTS] most-recent lines: a stalled connection can
+     * emit steadily (timer wakes, path polls) and the TAIL is what shows where progress stopped, so an
+     * unbounded buffer would only risk memory for older, less useful lines.
+     */
+    val sink: TraceSink =
+        TraceSink { event: TraceEvent ->
+            // Truncated: a DGRAM line carries the full packet hex (~2400 chars for a 1200-byte
+            // datagram), and hundreds of those would bury the report in CI. The prefix keeps everything
+            // that localises a stall — timestamp, kind, direction, size, 4-tuple — and STATE /
+            // PATH_STATE lines are far shorter than the cap, so they survive intact. Full payloads are a
+            // replay concern, and replay wants a real per-connection sink, not this aggregate one.
+            val rendered = event.toString()
+            val line =
+                if (rendered.length > MAX_LINE) rendered.take(MAX_LINE) + "…(+${rendered.length - MAX_LINE} chars)" else rendered
+            while (true) {
+                val current = events.load()
+                val next = if (current.size >= MAX_EVENTS) current.subList(1, current.size) + line else current + line
+                if (events.compareAndSet(current, next)) return@TraceSink
+            }
+        }
+
+    fun report(cause: Throwable): String =
+        buildString {
+            appendLine("=== WebTransport failure diagnostics ===")
+            appendLine("cause: ${cause::class.simpleName}: ${cause.message}")
+            appendLine("last step reached: ${lastStep.load()}")
+            val captured = events.load()
+            appendLine("server QUIC trace (${captured.size} most recent events):")
+            captured.forEach { appendLine("  $it") }
+            appendLine("=== end diagnostics ===")
+        }
+
+    private companion object {
+        const val MAX_EVENTS = 250
+        const val MAX_LINE = 180
+    }
+}
 
 /** Settle time for the server's control stream + SETTINGS to be sent before a client dials. */
 private const val SETTLE = 100L
