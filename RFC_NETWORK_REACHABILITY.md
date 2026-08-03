@@ -464,8 +464,28 @@ the script covers what it *can* emit, and `permits()` keeps the two honest about
    A *new rung* was considered and rejected on the evidence: it would have asserted "no route yet", which
    the capture shows is false, and it would answer all four §5 predicates identically to
    `Routable(id, Unobserved)` — a rung consumers must branch on with no behaviour behind the branch.
-4. **Does `LinkLocal` need the multicast scope?** mDNS works per-interface; `NetworkId` identifies the
-   primary link only. A multi-homed host may need more, which would be a follow-up, not this RFC.
+4. **Does `LinkLocal` need the multicast scope?** ✅ **No — and adding it would be the wrong seam.**
+   `supportsLinkLocal` is a **gate**, not a selector: it answers *whether* link-local traffic is worth
+   attempting, never *which* interface to send it on.
+
+   The two are different questions with different cardinality. Identity is one per host — *the* primary
+   link, which is all `NetworkId` claims to be — while a multi-homed host joins a group on *every*
+   eligible interface. Selection already has its own complete seam in `:socket-udp`,
+   `MulticastInterface { Default | ByName | ByIndex }`, reached per-`joinGroup` via
+   `MulticastMembership`; and the one real multi-homed mDNS consumer, `webrtc-ice`, does not consult
+   `NetworkMonitor` at all — it owns an all-interfaces enumeration seam of its own.
+
+   Worse, the bridge someone would reach for is **unsound**. `NetworkId.Link.handle` is documented
+   opaque, and it means it: an OS interface index on Linux (`rtnl` `oif`) and Apple
+   (`nw_interface_get_index`), but a `Network.networkHandle` on Android — a 64-bit token unrelated to
+   `if_nametoindex` — and `name.hashCode()` on the JVM whenever `NetworkInterface.getIndex()` is
+   unavailable. `MulticastInterface.ByIndex(state.networkId.handle.toInt())` compiles on all five
+   platforms and silently joins the wrong interface, or none, on two of them. Both KDocs now say so at
+   the point of temptation.
+
+   So a multi-homed consumer enumerates interfaces and joins each; the monitor tells it *when*, not
+   *where*. If a future consumer genuinely needs "which links are up" as a list, that is a **new
+   enumeration API** — plural by construction — not scope bolted onto a singular identity.
 
 ## 9. Amendments, and why
 

@@ -78,6 +78,18 @@ sealed interface NetworkId {
      * Link [kind] plus a stable numeric [handle] distinguishing two links of the same kind (Android
      * `networkHandle`, OS interface index). [handle] is opaque — compared only for equality, never
      * parsed.
+     *
+     * **Opaque means opaque: [handle] is not an interface index.** It is one on Linux (`rtnl` `oif`) and
+     * Apple (`nw_interface_get_index`), but on Android it is a `Network.networkHandle` — a 64-bit token
+     * with no relation to `if_nametoindex` — and on the JVM it falls back to `name.hashCode()` when
+     * `NetworkInterface.getIndex()` is unavailable. Converting it to a
+     * `MulticastInterface.ByIndex` therefore compiles everywhere and is wrong on two platforms out of
+     * five, silently joining the wrong interface or none.
+     *
+     * Selecting an interface is a **different question** with different cardinality: identity is one per
+     * host (*the* primary link), selection is N per host (*every* interface worth joining). Use
+     * `MulticastInterface` for the latter — the monitor tells you *when* link-local traffic is viable
+     * ([supportsLinkLocal][com.ditchoom.socket.supportsLinkLocal]), not *where* to send it.
      */
     data class Link(
         val kind: NetworkKind,
