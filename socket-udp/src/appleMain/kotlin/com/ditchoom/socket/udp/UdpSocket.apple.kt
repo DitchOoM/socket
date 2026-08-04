@@ -35,6 +35,7 @@ import platform.posix.SOCK_DGRAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_REUSEADDR
 import platform.posix.SO_REUSEPORT
+import platform.posix.SO_SNDBUF
 import platform.posix.bind
 import platform.posix.close
 import platform.posix.getsockname
@@ -83,6 +84,7 @@ actual object UdpSocket {
         val fd = socket(af, SOCK_DGRAM, IPPROTO_UDP)
         check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
         setReuseAddr(fd)
+        widenSendBuffer(fd)
         if (wildcard && local.family == AddressFamily.IPv6) setV6Only(fd, false)
         bindTo(fd, local)
         // Fail fast BEFORE constructing the addressed channel: an AddressedDatagramChannel's
@@ -166,6 +168,7 @@ actual object UdpSocket {
         // group's well-known port on one host. A v6 multicast socket is kept v6-only for a clean join family.
         setReuseAddr(fd)
         setReusePort(fd)
+        widenSendBuffer(fd)
         if (v6) setV6Only(fd, true)
         val wildcard = if (v6) WILDCARD_V6 else WILDCARD_V4
         val local = AppleSocketAddressResolver.resolve(wildcard, port) as AppleSocketAddress
@@ -190,6 +193,26 @@ actual object UdpSocket {
             val v = alloc<IntVar>()
             v.value = 1
             setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, v.ptr, sizeOf<IntVar>().convert())
+        }
+    }
+
+    /**
+     * Raise `SO_SNDBUF` to the UDP payload ceiling so the socket can actually transmit a datagram of
+     * the [DatagramSink.maxWritableSize] this module advertises.
+     *
+     * Darwin's default `net.inet.udp.maxdgram` is 9216, so without this a send larger than ~9 KB fails
+     * `EMSGSIZE` even though the API promises 65507 — measured on macosArm64 as a *silent* drop before
+     * the send result was checked. The JDK does the same widening internally, which is why the JVM
+     * backend delivers 65507 on the same host; this is what puts the native backends at parity.
+     *
+     * Best-effort: a kernel that refuses the size leaves the smaller buffer in place, and an oversized
+     * send then reports [DatagramSendError.TooLarge] rather than vanishing.
+     */
+    private fun widenSendBuffer(fd: Int) {
+        memScoped {
+            val v = alloc<IntVar>()
+            v.value = MAX_UDP_DATAGRAM_SIZE
+            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, v.ptr, sizeOf<IntVar>().convert())
         }
     }
 

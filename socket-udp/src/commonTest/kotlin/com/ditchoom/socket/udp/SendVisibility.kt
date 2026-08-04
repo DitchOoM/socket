@@ -64,14 +64,22 @@ internal suspend fun assertSendNeverSilentlyDrops(scope: CoroutineScope) {
         a.close()
         reader.cancel()
 
-        if (reported == null && delivered == null) {
-            fail(
-                "send of $size bytes (maxWritableSize=$ceiling) returned normally but nothing was " +
-                    "delivered — a silent drop. A send must either deliver or report.",
-            )
-        }
-        if (delivered != null && delivered != size) {
-            fail("send of $size bytes delivered $delivered bytes")
+        // Every size here is within the sink's own advertised ceiling, so delivery is the only correct
+        // outcome — "report an error" is not an escape hatch for a size the API says it supports.
+        // Reporting is merely the floor: it is what a size *beyond* the ceiling must do instead of
+        // vanishing. Asserting delivery here is what stops "throw unconditionally" from passing.
+        when {
+            reported == null && delivered == null ->
+                fail(
+                    "send of $size bytes (maxWritableSize=$ceiling) returned normally but nothing was " +
+                        "delivered — a silent drop. A send must either deliver or report.",
+                )
+            reported != null ->
+                fail(
+                    "send of $size bytes failed with $reported, but $size is within the advertised " +
+                        "maxWritableSize=$ceiling — everything advertised must actually be sendable.",
+                )
+            delivered != size -> fail("send of $size bytes delivered $delivered bytes")
         }
     }
 }

@@ -143,7 +143,11 @@ internal class PosixUdpDatagramChannel(
         memScoped {
             val addr = alloc<sockaddr_storage>()
             val addrLen = to.writeSockaddr(addr)
-            sendto(fd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen)
+            // Check the result. A discarded `sendto` return is a datagram that vanishes between a
+            // clean return and the wire — for quiche, a packet its congestion controller counts as
+            // in flight but which never left the host.
+            val sent = sendto(fd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen).toLong()
+            if (sent < 0) throw DatagramSendException(sendErrnoToError(attempted = len, limit = maxWritableSize))
         }
     }
 

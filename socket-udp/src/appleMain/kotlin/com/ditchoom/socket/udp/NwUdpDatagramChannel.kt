@@ -31,6 +31,7 @@ import platform.Network.nw_connection_t
 import platform.posix.memcpy
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Apple (K/N) [ConnectedDatagramChannel] over an `nw_connection_t` in UDP mode — the lift of the
@@ -129,9 +130,18 @@ internal class NwUdpDatagramChannel(
         val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
         val len = payload.remaining()
         suspendCancellableCoroutine<Unit> { continuation ->
-            nw_udp_send(conn, ptr, len) { _, _ ->
-                // Best-effort UDP send: a transient NW failure is non-fatal. Resume unconditionally.
-                continuation.resume(Unit)
+            nw_udp_send(conn, ptr, len) { errorDomain, errorCode ->
+                // The completion carries (domain, code) and used to be discarded on the theory that a
+                // transient NW failure is non-fatal. It is not the sink's call to make: resuming as if
+                // the datagram went out tells quiche's congestion controller a packet is in flight that
+                // never left the host. Report it and let the consumer decide.
+                if (errorCode == 0) {
+                    continuation.resume(Unit)
+                } else {
+                    continuation.resumeWithException(
+                        DatagramSendException(DatagramSendError.PlatformError(errorDomain, errorCode)),
+                    )
+                }
             }
         }
     }

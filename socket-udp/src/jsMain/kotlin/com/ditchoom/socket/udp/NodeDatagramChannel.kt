@@ -143,7 +143,7 @@ internal abstract class NodeDatagramChannelCore(
             val callback: (Any?) -> Unit = { error ->
                 if (!cont.isCompleted) {
                     if (error != null) {
-                        cont.resumeWithException(SendFailedException(error.toString()))
+                        cont.resumeWithException(DatagramSendException(nodeSendError(error, length)))
                     } else {
                         cont.resume(Unit)
                     }
@@ -208,7 +208,27 @@ internal class AddressedNodeDatagramChannel(
     ) = sendPayload(payload, to, options)
 }
 
-/** A `dgram.send` callback surfaced a non-null error (the send itself failed, not an unreachable peer). */
-internal class SendFailedException(
+/**
+ * Convert a `dgram.send` callback error into the typed [DatagramSendError] set.
+ *
+ * Node reports the POSIX condition as a string `code` on the error object. Reading that at the platform
+ * boundary is a conversion, not stringly-typed error handling — the string dies here and a typed value
+ * leaves. Anything unrecognized keeps the original error as the cause rather than being flattened into
+ * a message.
+ */
+private fun nodeSendError(
+    error: Any?,
+    attempted: Int,
+): DatagramSendError =
+    when (error.asDynamic().code as? String) {
+        "EMSGSIZE" -> DatagramSendError.TooLarge(attempted, MAX_UDP_PAYLOAD)
+        "EHOSTUNREACH", "ENETUNREACH", "EAFNOSUPPORT" -> DatagramSendError.Unreachable(errno = 0)
+        "EACCES" -> DatagramSendError.NotPermitted(errno = 0)
+        "EAGAIN", "ENOBUFS" -> DatagramSendError.WouldBlock
+        else -> DatagramSendError.Transport(NodeSendFailure(error.toString()))
+    }
+
+/** Carrier for a `dgram.send` error that is not one of the recognized POSIX conditions. */
+internal class NodeSendFailure(
     message: String,
 ) : RuntimeException(message)

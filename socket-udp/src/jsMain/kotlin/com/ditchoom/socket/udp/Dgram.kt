@@ -111,8 +111,16 @@ internal external interface RInfo {
     val port: Int
 }
 
-/** Create a `dgram` socket of [type] (`"udp4"` / `"udp6"`) via a runtime-only require. */
-internal fun createDgramSocket(type: String): DgramSocket = js("require('dgram').createSocket({ type: type })").unsafeCast<DgramSocket>()
+/**
+ * Create a `dgram` socket of [type] (`"udp4"` / `"udp6"`) via a runtime-only require.
+ *
+ * `sendBufferSize` is set explicitly to the UDP payload ceiling so the socket can actually transmit a
+ * datagram of the `maxWritableSize` this module advertises. Node otherwise inherits the OS default
+ * `SO_SNDBUF` — 9216 on Darwin — and a send at the advertised size fails `EMSGSIZE`. The JVM backend
+ * gets the same widening from the JDK internally; this is what puts Node at parity.
+ */
+internal fun createDgramSocket(type: String): DgramSocket =
+    js("require('dgram').createSocket({ type: type, sendBufferSize: 65507 })").unsafeCast<DgramSocket>()
 
 /**
  * Create a `dgram` socket of [type] with `reuseAddr: true` — the multicast-listener arrangement so several
@@ -120,7 +128,7 @@ internal fun createDgramSocket(type: String): DgramSocket = js("require('dgram')
  * it). Runtime-only require, like [createDgramSocket].
  */
 internal fun createDgramMulticastSocket(type: String): DgramSocket =
-    js("require('dgram').createSocket({ type: type, reuseAddr: true })").unsafeCast<DgramSocket>()
+    js("require('dgram').createSocket({ type: type, reuseAddr: true, sendBufferSize: 65507 })").unsafeCast<DgramSocket>()
 
 /**
  * The first address of interface [name] in [os.networkInterfaces()] matching the wanted family

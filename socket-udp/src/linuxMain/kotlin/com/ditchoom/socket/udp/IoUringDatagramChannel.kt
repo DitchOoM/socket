@@ -353,9 +353,14 @@ internal abstract class IoUringDatagramChannelCore(
             msg.msg_control = null
             msg.msg_controllen = 0u.convert()
 
-            IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
-                io_uring_prep_sendmsg(sqe, fd, msg.ptr, 0u)
-            }
+            // Check the CQE result. io_uring reports failure as a negative `res` carrying -errno, and
+            // discarding it made a failed sendmsg indistinguishable from a delivered datagram — which
+            // for quiche means a packet counted as in flight that never left the host.
+            val res =
+                IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
+                    io_uring_prep_sendmsg(sqe, fd, msg.ptr, 0u)
+                }
+            if (res < 0) throw DatagramSendException(sendErrnoToError(-res, attempted = len, limit = maxWritableSize))
         }
     }
 
