@@ -209,7 +209,14 @@ class MulticastNativeConformanceTests {
                         got.complete(null)
                     }
                 }
-            sender.send(payload("mc-native"), to = group)
+            sender.sendForMulticastE2e(payload("mc-native"), group)?.let { refusal ->
+                // Same "this host cannot do multicast" signal joinGroup yields above, arriving as a send
+                // failure because the join succeeded and the transmit did not. Loud, then next candidate.
+                println("[MulticastNativeConformanceTests] SKIP e2e on $iface: $refusal")
+                receiver.close()
+                job.cancel()
+                return null
+            }
             val text = withTimeoutOrNull(3_000) { got.await() }
             receiver.close() // unblock a still-parked recvfrom so the child job finishes
             job.cancel()

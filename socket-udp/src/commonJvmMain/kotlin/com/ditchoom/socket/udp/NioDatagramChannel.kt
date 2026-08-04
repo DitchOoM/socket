@@ -3,6 +3,7 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
@@ -19,16 +20,65 @@ import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runInterruptible
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.SocketOption
 import java.nio.ByteBuffer
+import java.nio.channels.ClosedChannelException
+import java.nio.channels.ClosedSelectorException
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.microseconds
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import java.nio.channels.DatagramChannel as NioChannel
 
 /** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
 private const val MAX_UDP_PAYLOAD = 65507
+
+/** How long a send waits out a full output buffer before reporting [DatagramSendError.WouldBlock]. */
+private val SEND_BACKPRESSURE_BUDGET = 1.seconds
+private val SEND_BACKPRESSURE_FIRST_WAIT = 50.microseconds
+private val SEND_BACKPRESSURE_MAX_WAIT = 5.milliseconds
+
+/**
+ * Write [view] with [write], treating a zero return as backpressure rather than as a drop.
+ *
+ * Extracted from the channel — and taking the writer as a parameter — so the retry, give-up and
+ * error-mapping paths are reachable from a test with a stub writer. A real socket cannot be asked to
+ * refuse a datagram on demand: on loopback the sender's queue never fills, because packets move
+ * straight to the receiver. Forcing it would need a rate-limited link in a network namespace, which
+ * would test the kernel rather than this loop, only on Linux, and only with privileges.
+ *
+ * [budget] is a parameter for the same reason: a test can exercise the give-up path in microseconds
+ * instead of waiting out the production second.
+ */
+internal suspend fun writeAbsorbingBackpressure(
+    view: ByteBuffer,
+    write: (ByteBuffer) -> Int,
+    budget: Duration = SEND_BACKPRESSURE_BUDGET,
+) {
+    val length = view.remaining()
+    var waited = Duration.ZERO
+    var backoff = SEND_BACKPRESSURE_FIRST_WAIT
+    while (true) {
+        val written =
+            try {
+                write(view)
+            } catch (e: IOException) {
+                throw DatagramSendException(DatagramSendError.Transport(e))
+            }
+        if (written > 0) return
+        if (waited >= budget) throw DatagramSendException(DatagramSendError.WouldBlock)
+        delay(backoff)
+        waited += backoff
+        backoff = minOf(backoff * 2, SEND_BACKPRESSURE_MAX_WAIT)
+        check(view.remaining() == length) { "a zero-length datagram write must not consume the view" }
+    }
+}
 
 /**
  * JVM/Android [DatagramChannel] machinery backed by a NIO [NioChannel] + [Selector] — the real-socket
@@ -121,31 +171,57 @@ internal abstract class NioDatagramChannelCore(
     override suspend fun receive(): DatagramReadResult {
         while (true) {
             if (closed) return DatagramReadResult.Closed()
-            // select() is the only blocking call; runInterruptible makes a cancelled receive interrupt
-            // the select (which returns) without closing the underlying socket.
-            runInterruptible(Dispatchers.IO) { selector.select() }
-            selector.selectedKeys().clear()
-            if (closed) return DatagramReadResult.Closed()
+            var payload: PlatformBuffer? = null
+            try {
+                // select() is the only blocking call; runInterruptible makes a cancelled receive
+                // interrupt the select (which returns) without closing the underlying socket.
+                runInterruptible(Dispatchers.IO) { selector.select() }
+                selector.selectedKeys().clear()
+                if (closed) return DatagramReadResult.Closed()
 
-            val payload = bufferFactory.allocate(receiveBufferSize)
-            val byteBuffer = (payload.unwrapFully() as BaseJvmBuffer).byteBuffer
-            byteBuffer.clear()
-            // Both modes receive via channel.receive(): on a connected socket the reported sender IS the
-            // connected peer (value-equal via InternedJvmSocketAddress).
-            val sender = channel.receive(byteBuffer) as InetSocketAddress? ?: continue // spurious wakeup
-            val length = byteBuffer.position()
-            // Expose exactly the received datagram as the readable window [0, length).
-            payload.position(0)
-            payload.setLimit(length)
-            return DatagramReadResult.Received(
-                Datagram(
-                    payload = payload,
-                    peer = InternedJvmSocketAddress(sender),
-                    ecn = Ecn.Unknown,
-                    localAddress = LocalAddress.Unknown,
-                    hopLimit = HopLimit.Unknown,
-                ),
-            )
+                val buffer = bufferFactory.allocate(receiveBufferSize)
+                payload = buffer
+                val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
+                byteBuffer.clear()
+                // Both modes receive via channel.receive(): on a connected socket the reported sender IS
+                // the connected peer (value-equal via InternedJvmSocketAddress).
+                val sender =
+                    channel.receive(byteBuffer) as InetSocketAddress?
+                        ?: run {
+                            buffer.freeNativeMemory() // spurious wakeup — do not leak the staging buffer
+                            payload = null
+                            null
+                        }
+                        ?: continue
+                val length = byteBuffer.position()
+                // Expose exactly the received datagram as the readable window [0, length).
+                buffer.position(0)
+                buffer.setLimit(length)
+                return DatagramReadResult.Received(
+                    Datagram(
+                        payload = buffer,
+                        peer = InternedJvmSocketAddress(sender),
+                        ecn = Ecn.Unknown,
+                        localAddress = LocalAddress.Unknown,
+                        hopLimit = HopLimit.Unknown,
+                    ),
+                )
+            } catch (_: ClosedSelectorException) {
+                // close() sets `closed`, wakes the selector and then closes it, so a receive parked in
+                // select() — or between select() returning and reading selectedKeys() — races that
+                // close and sees the selector already gone. The contract is that a receive on a closed
+                // channel *yields* Closed, so this must not escape as an exception: a caller draining
+                // in a loop would take a spurious failure purely from shutdown ordering.
+                payload?.freeNativeMemory()
+                return DatagramReadResult.Closed()
+            } catch (_: ClosedChannelException) {
+                // Same shutdown race, one layer down: close() closes the channel after the selector, so
+                // an in-flight receive() can find the channel gone. (ClosedByInterruptException is a
+                // subtype, but a cancelled receive unwinds through runInterruptible before reaching
+                // here, so cancellation still propagates as cancellation rather than as Closed.)
+                payload?.freeNativeMemory()
+                return DatagramReadResult.Closed()
+            }
         }
     }
 
@@ -163,6 +239,43 @@ internal abstract class NioDatagramChannelCore(
         // nowhere to release, pinning one chunk out of the pool per send (#277). Linux and Apple take
         // the same no-reference route via nativeAddress + position().
         return (payload.unwrapFully() as BaseJvmBuffer).byteBuffer.slice()
+    }
+
+    /**
+     * Stage [payload] and transmit it with [write], which must return the NIO send/write result.
+     *
+     * The result is the point. This channel is non-blocking, and `DatagramChannel.write`/`send` are
+     * documented to return "zero if there was insufficient room for the datagram in the underlying
+     * output buffer" — so discarding the result turns local send-buffer pressure into an invisible
+     * drop. That is not merely lossy: `QuicheDriver.flushOutgoing` counts a returned send as a
+     * transmitted packet, so a dropped datagram inflates bytes-in-flight and is only discovered later
+     * as spurious loss detection.
+     *
+     * A zero is therefore treated as backpressure, not as failure: wait briefly and retry the same
+     * view (a datagram write is all-or-nothing, so a zero leaves the cursor untouched). Only when the
+     * socket will not accept it within [SEND_BACKPRESSURE_BUDGET] does it become a reported
+     * [DatagramSendError.WouldBlock]. Surfacing backpressure any earlier would be actively harmful —
+     * quiche treats any exception from a send as fatal and would tear down a live connection over a
+     * momentary full buffer.
+     *
+     * Backoff rather than an `OP_WRITE` registration: the channel's selector belongs to the receive
+     * coroutine, and a second selector per channel is a heavier standing cost than a bounded sleep for
+     * a condition that normally clears in microseconds.
+     */
+    protected suspend fun transmit(
+        payload: ReadBuffer,
+        options: DatagramSendOptions,
+        write: (ByteBuffer) -> Int,
+    ) {
+        val view = stage(payload, options)
+        val length = view.remaining()
+        // Parity guard. NIO reports an oversized datagram as an IOException carrying no errno, so
+        // without this the JVM would report Transport where every other backend reports TooLarge —
+        // and a consumer branching on the reason (ICE failing a candidate pair) could not rely on it.
+        if (length > maxWritableSize) {
+            throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
+        }
+        writeAbsorbingBackpressure(view, write)
     }
 
     override fun close() {
@@ -192,7 +305,8 @@ internal class ConnectedNioDatagramChannel(
         payload: ReadBuffer,
         options: DatagramSendOptions,
     ) {
-        channel.write(stage(payload, options)) // connected: kernel routes to the fixed peer
+        // connected: the kernel routes to the fixed peer, so the write needs no destination
+        transmit(payload, options) { channel.write(it) }
     }
 }
 
@@ -213,6 +327,7 @@ internal class AddressedNioDatagramChannel(
         to: SocketAddress,
         options: DatagramSendOptions,
     ) {
-        channel.send(stage(payload, options), to.toInetSocketAddress())
+        val dest = to.toInetSocketAddress()
+        transmit(payload, options) { channel.send(it, dest) }
     }
 }

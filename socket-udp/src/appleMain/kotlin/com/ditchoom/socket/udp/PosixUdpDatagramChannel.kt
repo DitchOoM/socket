@@ -140,10 +140,16 @@ internal class PosixUdpDatagramChannel(
         val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
         val ptr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
         val len = payload.remaining()
+        // Parity guard: the same condition reports the same typed reason on every backend.
+        if (len > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(len, maxWritableSize))
         memScoped {
             val addr = alloc<sockaddr_storage>()
             val addrLen = to.writeSockaddr(addr)
-            sendto(fd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen)
+            // Check the result. A discarded `sendto` return is a datagram that vanishes between a
+            // clean return and the wire — for quiche, a packet its congestion controller counts as
+            // in flight but which never left the host.
+            val sent = sendto(fd, ptr, len.convert(), 0, addr.ptr.reinterpret(), addrLen).toLong()
+            if (sent < 0) throw DatagramSendException(sendErrnoToError(attempted = len, limit = maxWritableSize))
         }
     }
 
