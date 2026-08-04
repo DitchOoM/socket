@@ -16,7 +16,7 @@ class SendVisibilityTests {
     @Test
     fun sendNeverSilentlyDrops() =
         GlobalScope.promise {
-            withTimeout(60_000) { assertSendNeverSilentlyDrops(this) }
+            withTimeout(60_000) { assertSendNeverSilentlyDrops(this, hostLoopback) }
         }
 
     @Test

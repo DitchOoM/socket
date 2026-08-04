@@ -13,7 +13,7 @@ class SendVisibilityTests {
     @Test
     fun sendNeverSilentlyDrops() =
         runBlocking {
-            withTimeout(60_000) { assertSendNeverSilentlyDrops(this) }
+            withTimeout(60_000) { assertSendNeverSilentlyDrops(this, hostLoopback) }
         }
 
     @Test

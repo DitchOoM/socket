@@ -42,12 +42,35 @@ import kotlin.test.fail
  * Sizes are relative to the sink's own advertised ceiling, so this stays fix-agnostic: whether a
  * backend is fixed by raising `SO_SNDBUF` to honor `maxWritableSize` or by lowering `maxWritableSize`
  * to the truth, "everything you advertise, you can actually send" holds either way.
+ *
+ * ## Differential against the host
+ *
+ * A size is only asserted when [host] — a bare socket, no library involved — can carry it over loopback
+ * on this machine. See [HostLoopback] for why that is not paranoia: WSL2 silently drops every loopback
+ * datagram from 1473 bytes up while presenting a healthy kernel's MTU and sysctls, which is
+ * indistinguishable from this suite's target bug when viewed from the sending side. Skipping is
+ * narrowly scoped and announced — a host that carries the size still holds the library to it, so a real
+ * regression fails everywhere it can be observed.
  */
 @OptIn(ExperimentalDatagramApi::class)
-internal suspend fun assertSendNeverSilentlyDrops(scope: CoroutineScope) {
+internal suspend fun assertSendNeverSilentlyDrops(
+    scope: CoroutineScope,
+    host: HostLoopback,
+) {
+    val loopback = MeasuredHostLoopback(host)
+    // A probe that cannot carry one byte is a broken probe, not a limited host, and would silently
+    // reduce this test to nothing. Fail loudly rather than skip everything.
+    if (!loopback.carries(1)) {
+        fail("the raw-socket host probe could not carry a 1-byte loopback datagram — the probe is broken, not the host")
+    }
+    val skipped = mutableListOf<String>()
     for (mode in SendMode.entries) {
         val ceiling = ceilingFor(mode)
         for (size in listOf(1, 1200, 9000, ceiling)) {
+            if (!loopback.carries(size)) {
+                skipped += "$mode/$size"
+                continue
+            }
             val outcome = probeSend(scope, size, mode)
             // Every size here is within the sink's own advertised ceiling, so delivery is the only
             // correct outcome — "report an error" is not an escape hatch for a size the API says it
@@ -68,6 +91,32 @@ internal suspend fun assertSendNeverSilentlyDrops(scope: CoroutineScope) {
             }
         }
     }
+    if (skipped.isNotEmpty()) {
+        // Loud on purpose: a skip that reads as a pass is how a suite quietly stops covering anything.
+        println(
+            "[SendVisibility] SKIPPED $skipped — a plain socket cannot carry those sizes over this host's " +
+                "loopback either (largest size carried: ${loopback.largestCarried}). Host limit, not a library " +
+                "result. Every size this host can carry was asserted.",
+        )
+    }
+}
+
+/**
+ * [HostLoopback] measured once per size and remembered, so the two refinements share one answer per
+ * size and the report can name the largest size this host was actually seen to carry.
+ */
+private class MeasuredHostLoopback(
+    private val host: HostLoopback,
+) {
+    private val answers = mutableMapOf<Int, Boolean>()
+
+    var largestCarried: Int = 0
+        private set
+
+    suspend fun carries(size: Int): Boolean =
+        answers.getOrPut(size) {
+            host.carries(size).also { if (it && size > largestCarried) largestCarried = size }
+        }
 }
 
 /**
