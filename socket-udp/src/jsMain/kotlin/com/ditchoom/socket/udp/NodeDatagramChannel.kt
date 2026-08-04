@@ -133,11 +133,12 @@ internal abstract class NodeDatagramChannelCore(
     ) {
         check(!closed) { "sink is closed" }
         applyControlPlane(options)
-        // slice() is an independent view over the remaining bytes, so the caller's buffer is not
-        // consumed (send-does-not-consume). No extra copy for the concrete JsBuffer.
-        val slice = payload.slice()
-        val length = slice.remaining()
-        val msg = slice.asUint8ArrayForSend()
+        // asUint8ArrayForSend() views the remaining bytes without consuming them, so no slice() is
+        // needed to honor send-does-not-consume — and taking one would be a leak: on a pooled payload
+        // ReadBuffer.slice() returns a TrackedSlice holding a reference on the chunk, which this path
+        // has nowhere to release, pinning one chunk out of the pool per send (#277).
+        val length = payload.remaining()
+        val msg = payload.asUint8ArrayForSend()
         suspendCancellableCoroutine { cont ->
             val callback: (Any?) -> Unit = { error ->
                 if (!cont.isCompleted) {

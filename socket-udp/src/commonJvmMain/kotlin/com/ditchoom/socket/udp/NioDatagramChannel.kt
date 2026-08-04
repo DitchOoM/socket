@@ -156,8 +156,13 @@ internal abstract class NioDatagramChannelCore(
     ): ByteBuffer {
         check(!closed) { "sink is closed" }
         applyControlPlane(options)
-        // slice(): independent view over the remaining bytes — send-does-not-consume, no copy.
-        return (payload.slice().unwrapFully() as BaseJvmBuffer).byteBuffer
+        // Resolve to the raw buffer and take a java.nio slice over its readable window: the send
+        // advances the slice's cursor, never the payload's (send-does-not-consume), and it is still a
+        // view over the same memory (no copy). Deliberately NOT ReadBuffer.slice() — on a pooled
+        // payload that returns a TrackedSlice holding a reference on the chunk, which this path has
+        // nowhere to release, pinning one chunk out of the pool per send (#277). Linux and Apple take
+        // the same no-reference route via nativeAddress + position().
+        return (payload.unwrapFully() as BaseJvmBuffer).byteBuffer.slice()
     }
 
     override fun close() {
