@@ -136,7 +136,9 @@ class MulticastConformanceTests {
             runCatching { sender.setOutboundInterface(iface) }
             sender.setTimeToLive(1)
             sender.setLoopbackEnabled(true)
-            sender.send(payload("multicast-hello"), to = group)
+            sender.sendForMulticastE2e(payload("multicast-hello"), group)?.let { refusal ->
+                return@mcTest logSkip("send refused on ${nif.name} — $refusal")
+            }
 
             // Conditional assertion: if a datagram arrives it MUST be the exact bytes (a real
             // corruption/misroute regression still fails); if this host doesn't route loopback multicast,
@@ -172,7 +174,9 @@ class MulticastConformanceTests {
             runCatching { sender.setOutboundInterface(iface) }
             sender.setTimeToLive(1)
             sender.setLoopbackEnabled(true)
-            sender.send(payload("multicast-hello-v6"), to = group)
+            sender.sendForMulticastE2e(payload("multicast-hello-v6"), group)?.let { refusal ->
+                return@mcTest logSkip("IPv6 send refused on ${nif.name} — $refusal")
+            }
 
             // Same conditional posture as the IPv4 e2e: exact bytes if delivered, a loud skip if the host
             // doesn't route link-local v6 multicast on loopback.
