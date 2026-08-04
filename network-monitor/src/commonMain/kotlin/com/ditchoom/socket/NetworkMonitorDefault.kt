@@ -1,0 +1,46 @@
+package com.ditchoom.socket
+
+/**
+ * Returns the platform's best default [NetworkMonitor]: reactive and event-driven where a
+ * zero-argument construction is possible, and a polling or no-op ([NetworkMonitor.AlwaysAvailable])
+ * monitor otherwise.
+ *
+ * | Platform | Default |
+ * |----------|---------|
+ * | Apple (iOS/macOS/tvOS/watchOS) | `NWPathMonitor` (reactive) |
+ * | Linux native | netlink socket (reactive) |
+ * | Desktop JVM, JDK 21+ | FFM routing socket — netlink (Linux) / `PF_ROUTE` (macOS), reactive; polling on Windows |
+ * | Desktop JVM, JDK 8–20 | interface polling |
+ * | Node.js | interface polling — **browser JS**: `online`/`offline` (reactive) |
+ * | Android | `ConnectivityManager.NetworkCallback` (reactive) — the `Context` comes from `NetworkMonitorInitializer` (androidx.startup) |
+ * | Wasm (browser) | [NetworkMonitor.AlwaysAvailable] |
+ *
+ * This lives in `com.ditchoom:network-monitor`, the module that also owns the [NetworkMonitor] contract
+ * and every implementation of it. That is not tidiness — `expect`/`actual` cannot span a module
+ * boundary, so as long as any monitor lived elsewhere this declaration and its actuals were split in
+ * two and the native monitors could not be reached without depending on `:socket`. Issue #269 gave this
+ * module its own netlink and `NWPathMonitor` cinterops so the Linux and Apple monitors could come home;
+ * `:socket` re-exports all of it via `api(project(":network-monitor"))`.
+ *
+ * The returned monitor owns platform resources; call [NetworkMonitor.close] when finished.
+ */
+expect fun NetworkMonitor.Companion.default(): NetworkMonitor
+
+/**
+ * The one platform [default] monitor for the whole process, created lazily on first [processDefault]
+ * use. A path monitor answers a process-wide question ("what's my network?"), so a single shared
+ * instance is all any number of connections need — and it is untouched (zero cost) unless something
+ * actually reads [processDefault].
+ */
+private val platformDefault: NetworkMonitor by lazy { NetworkMonitor.default() }
+
+/**
+ * The process default monitor: the [NetworkMonitor.installProcessDefault] override if one was
+ * installed, else the shared lazily-created platform [default]. Used by QUIC auto-migration and any
+ * other process-level network-aware behavior so they share a single monitor.
+ *
+ * On Android this is where the `ConnectivityManager.NetworkCallback` is actually registered — App
+ * Startup only captures the `Context`, so an app that links the library but never reads
+ * [processDefault] pays nothing.
+ */
+fun NetworkMonitor.Companion.processDefault(): NetworkMonitor = installedProcessDefaultOrNull() ?: platformDefault

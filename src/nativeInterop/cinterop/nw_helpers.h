@@ -199,53 +199,17 @@ void nw_helper_ws_send(
 NSNumber * _Nonnull nw_helper_is_port_available(int32_t port);
 
 // ============================================================
-// Network path monitor
+// Network awareness — MOVED OUT (issue #269)
 // ============================================================
-
-// Path update handler — receives nw_path_status_t plus the path's primary-interface identity.
-// status: 0=invalid, 1=satisfied, 2=unsatisfied, 3=requiresConnection
-// interface_type (nw_interface_type_t of the first/primary interface): 0=other, 1=wifi, 2=cellular,
-//   3=wired, 4=loopback; -1 when the path has no interface.
-// interface_index: OS interface index of the primary interface; 0 when the path has no interface.
-// interface_name: BSD name of the primary interface (e.g. "en0", "utun3"); nil when none.
-// uses_interface_types: bitmask of nw_path_uses_interface_type over the whole path —
-//   1=wifi, 2=cellular, 4=wired (identifies what a VPN tunnels over).
-typedef void (^nw_helper_path_update_handler_t)(
-    int32_t status,
-    int32_t interface_type,
-    uint32_t interface_index,
-    NSString * _Nullable interface_name,
-    int32_t uses_interface_types);
-
-nw_path_monitor_t _Nonnull nw_helper_create_path_monitor(void);
-
-void nw_helper_path_monitor_set_update_handler(
-    nw_path_monitor_t _Nonnull monitor,
-    nw_helper_path_update_handler_t _Nonnull handler);
-
-void nw_helper_path_monitor_start(nw_path_monitor_t _Nonnull monitor);
-void nw_helper_path_monitor_cancel(nw_path_monitor_t _Nonnull monitor);
-
-// ============================================================
-// Network interface enumeration (getifaddrs) — ICE / WebRTC host candidates
-// ============================================================
-
-// Per-address callback, invoked synchronously once per getifaddrs record:
-//   name: BSD interface name (e.g. "en0"); index: OS interface index;
-//   is_up / is_loopback: interface flags as 0/1; address: numeric IP literal
-//   (NI_NUMERICHOST), or nil when the record carries no address.
-// Uses NSString*/int32_t params (K/N-safe, same as the path handler) because
-// getifaddrs / struct ifaddrs are NOT exposed by platform.posix on Apple K/N —
-// the whole scan therefore lives in C and only scalars/strings cross to Kotlin.
-typedef void (^nw_helper_iface_block)(
-    NSString * _Nullable name,
-    uint32_t index,
-    int32_t is_up,
-    int32_t is_loopback,
-    NSString * _Nullable address);
-
-// Enumerates every local interface address via getifaddrs, invoking [cb] once per
-// (interface, address) record. A no-op if getifaddrs fails.
-void nw_helper_enumerate_interfaces(nw_helper_iface_block _Nonnull cb);
+//
+// The NWPathMonitor bridge (nw_helper_create_path_monitor + set_update_handler/start/cancel) and the
+// getifaddrs scan (nw_helper_enumerate_interfaces), with their block typedefs, now live in
+// network-monitor/src/nativeInterop/cinterop/nm_network_helpers.h alongside their only callers —
+// AppleNetworkMonitor and enumerateNetworkInterfaces(), which moved to :network-monitor together so
+// they can share LinuxNetworkMonitor.classifyLinkKind without it becoming public API.
+//
+// Two cinterops on one classpath must not both declare the same helper, so they are declared THERE and
+// not here. :socket reaches all of it through `api(project(":network-monitor"))`. What remains in this
+// header is exactly what :socket still calls: TCP/TLS connections, WebSocket, and the listener.
 
 #endif /* NW_HELPERS_H */

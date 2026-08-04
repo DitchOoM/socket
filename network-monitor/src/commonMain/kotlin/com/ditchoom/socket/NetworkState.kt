@@ -269,6 +269,12 @@ val NetworkState.canRouteOffLink: Boolean
 /**
  * mDNS / multicast are viable — true for [NetworkState.LinkLocal] as well as every
  * [NetworkState.Routable], i.e. exactly "there is a link up".
+ *
+ * A **gate, not a selector** (RFC §8.4): it answers *whether* link-local traffic is worth attempting,
+ * never *which* interface to send it on. Those are different questions with different cardinality —
+ * [networkId] is one identity per host (the primary link), while a multi-homed host joins a group on
+ * *every* eligible interface. Enumerate and select with `MulticastInterface`, and do not try to derive
+ * one from [NetworkId.Link.handle]: it is opaque and is not an interface index on every platform.
  */
 val NetworkState.supportsLinkLocal: Boolean
     get() = this is NetworkState.Up

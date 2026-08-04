@@ -431,10 +431,61 @@ the script covers what it *can* emit, and `permits()` keeps the two honest about
    `resolution` is resolved at construction and read as a value, upgrading Linux from `RouteOnly` to
    `RouteAndInternet` later is source-compatible. Until then nothing produces
    `InternetAccess.Observed.Limited` outside a fixture.
-3. **Apple `requiresConnection`** (`nw_path_status == 3`) mapped to `UNAVAILABLE`; it may be closer to
-   `Routable(_, Blocked(…))` — still needs a device check on the paired iPhone. Pending.
-4. **Does `LinkLocal` need the multicast scope?** mDNS works per-interface; `NetworkId` identifies the
-   primary link only. A multi-homed host may need more, which would be a follow-up, not this RFC.
+3. **Apple `requiresConnection`** (`nw_path_status == 3`). ✅ **Done — it is `Routable`, the same rung as
+   `satisfied`.** The proposed `Routable(_, Blocked(…))` was doubly wrong. It is *unrepresentable*:
+   `permits()` forbids any `InternetAccess.Observed` verdict from a `RouteOnly` monitor, and
+   Network.framework has no validation concept to produce one with. And it is *backwards*: the C constant
+   is `nw_path_status_satisfiable`, defined in `Network.framework/path.h` as **"the path does not
+   currently have a usable route, but a connection attempt will trigger network attachment"** — Swift's
+   `requiresConnection` alias, which reads as "unusable", is what misled this entry.
+
+   Captured live on a Mac whose Tailscale VPN declares `OnDemandEnabled` + `NEOnDemandRuleConnect`
+   (the configuration this status exists for), from the same `nw_path_monitor` `AppleNetworkMonitor`
+   maps:
+
+   ```
+   status=1(satisfied)   ifType=1 ifIndex=15 ifName=en0
+   status=3(satisfiable) ifType=1 ifIndex=15 ifName=en0   <- online throughout
+   status=1(satisfied)   ifType=1 ifIndex=15 ifName=en0
+   ```
+
+   Identical `NetworkId` on all three, on a host with a working default route and reachable internet:
+   what is unattached is the **tunnel**, not the route. Folding it in with `unsatisfied` therefore
+   reported `LinkLocal` — "mDNS only, nothing routes off-link" — about a fully online machine, dropping
+   `canRouteOffLink` to `false` for ~0.3–1.5 s on **every** on-demand VPN transition.
+
+   The mapping is also self-defeating in a way `Pending` is not: if "a connection attempt triggers
+   attachment", then a consumer that declines to attempt is precisely what prevents the attachment, and
+   nothing else resolves the state. So `satisfiable` with an interface is `Routable(id, Unobserved)` —
+   the same optimistic call already made for a blind JVM route probe ("must not fail closed") and for
+   `ReachResolution.LinkOnly`. With no interface there is nothing to be optimistic about, and it stays
+   `Offline`.
+
+   A *new rung* was considered and rejected on the evidence: it would have asserted "no route yet", which
+   the capture shows is false, and it would answer all four §5 predicates identically to
+   `Routable(id, Unobserved)` — a rung consumers must branch on with no behaviour behind the branch.
+4. **Does `LinkLocal` need the multicast scope?** ✅ **No — and adding it would be the wrong seam.**
+   `supportsLinkLocal` is a **gate**, not a selector: it answers *whether* link-local traffic is worth
+   attempting, never *which* interface to send it on.
+
+   The two are different questions with different cardinality. Identity is one per host — *the* primary
+   link, which is all `NetworkId` claims to be — while a multi-homed host joins a group on *every*
+   eligible interface. Selection already has its own complete seam in `:socket-udp`,
+   `MulticastInterface { Default | ByName | ByIndex }`, reached per-`joinGroup` via
+   `MulticastMembership`; and the one real multi-homed mDNS consumer, `webrtc-ice`, does not consult
+   `NetworkMonitor` at all — it owns an all-interfaces enumeration seam of its own.
+
+   Worse, the bridge someone would reach for is **unsound**. `NetworkId.Link.handle` is documented
+   opaque, and it means it: an OS interface index on Linux (`rtnl` `oif`) and Apple
+   (`nw_interface_get_index`), but a `Network.networkHandle` on Android — a 64-bit token unrelated to
+   `if_nametoindex` — and `name.hashCode()` on the JVM whenever `NetworkInterface.getIndex()` is
+   unavailable. `MulticastInterface.ByIndex(state.networkId.handle.toInt())` compiles on all five
+   platforms and silently joins the wrong interface, or none, on two of them. Both KDocs now say so at
+   the point of temptation.
+
+   So a multi-homed consumer enumerates interfaces and joins each; the monitor tells it *when*, not
+   *where*. If a future consumer genuinely needs "which links are up" as a list, that is a **new
+   enumeration API** — plural by construction — not scope bolted onto a singular identity.
 
 ## 9. Amendments, and why
 

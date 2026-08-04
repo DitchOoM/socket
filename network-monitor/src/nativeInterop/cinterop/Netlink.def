@@ -1,0 +1,20 @@
+language = C
+package = com.ditchoom.networkmonitor.netlink
+
+# The Linux netlink surface for LinuxNetworkMonitor — AF_NETLINK/NETLINK_ROUTE, the RTMGRP_* multicast
+# groups, the RTM_*/NLM_*/NLMSG_* message vocabulary and `struct sockaddr_nl`.
+#
+# NETLINK-ONLY BY CONSTRUCTION. headerFilter admits exactly the two UAPI netlink headers plus our own
+# bind shim; <sys/socket.h> (pulled in by netlink_helpers.h to type that shim) is filtered out. Two
+# cinterops on one Kotlin/Native classpath must not declare the same C header — when this module's .def
+# also declared linux/netlink.h while :socket's LinuxSockets.def did, :socket's OWN NLM_F_DUMP /
+# NLMSG_DONE / RTM_NEWROUTE / RTN_UNICAST went unresolved. :socket dropped both headers when
+# LinuxNetworkMonitor moved here, so this def is their sole declarer. Keep it that way: anything else
+# the monitor needs is available from Kotlin/Native's platform.posix / platform.linux klibs.
+#
+# No linkerOpts: netlink is plain socket(2) — nothing to link beyond libc.
+
+headers = netlink_helpers.h
+headerFilter = netlink_helpers.h linux/netlink.h linux/rtnetlink.h
+
+compilerOpts.linux = -D_GNU_SOURCE

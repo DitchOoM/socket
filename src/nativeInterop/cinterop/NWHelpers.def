@@ -10,9 +10,6 @@ linkerOpts = -framework Network -framework Foundation -framework Security
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <netdb.h>
 
 // ============================================================
 // TCP receive/send helpers
@@ -519,77 +516,6 @@ NSNumber * _Nonnull nw_helper_is_port_available(int32_t port)
     return @(result != -1);
 }
 
-// ============================================================
-// Network path monitor
-// ============================================================
-
-nw_path_monitor_t _Nonnull nw_helper_create_path_monitor(void)
-{
-    return nw_path_monitor_create();
-}
-
-void nw_helper_path_monitor_set_update_handler(
-    nw_path_monitor_t _Nonnull monitor,
-    nw_helper_path_update_handler_t _Nonnull handler)
-{
-    nw_path_monitor_set_update_handler(monitor, ^(nw_path_t _Nonnull path) {
-        __block int32_t ifType = -1;
-        __block uint32_t ifIndex = 0;
-        __block NSString *ifName = nil;
-        nw_path_enumerate_interfaces(path, ^bool(nw_interface_t _Nonnull interface) {
-            ifType = (int32_t)nw_interface_get_type(interface);
-            ifIndex = nw_interface_get_index(interface);
-            const char *name = nw_interface_get_name(interface);
-            ifName = name ? [NSString stringWithUTF8String:name] : nil;
-            return false; // primary (first-enumerated) interface only
-        });
-        int32_t uses = 0;
-        if (nw_path_uses_interface_type(path, nw_interface_type_wifi))     uses |= 1;
-        if (nw_path_uses_interface_type(path, nw_interface_type_cellular)) uses |= 2;
-        if (nw_path_uses_interface_type(path, nw_interface_type_wired))    uses |= 4;
-        handler((int32_t)nw_path_get_status(path), ifType, ifIndex, ifName, uses);
-    });
-}
-
-void nw_helper_path_monitor_start(nw_path_monitor_t _Nonnull monitor)
-{
-    nw_path_monitor_set_queue(monitor,
-        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
-    nw_path_monitor_start(monitor);
-}
-
-void nw_helper_path_monitor_cancel(nw_path_monitor_t _Nonnull monitor)
-{
-    nw_path_monitor_cancel(monitor);
-}
-
-// ============================================================
-// Network interface enumeration
-// ============================================================
-
-void nw_helper_enumerate_interfaces(nw_helper_iface_block _Nonnull cb)
-{
-    struct ifaddrs *head = NULL;
-    if (getifaddrs(&head) != 0) return;
-    for (struct ifaddrs *ifa = head; ifa != NULL; ifa = ifa->ifa_next) {
-        if (ifa->ifa_name == NULL) continue;
-        NSString *address = nil;
-        if (ifa->ifa_addr != NULL) {
-            int family = ifa->ifa_addr->sa_family;
-            socklen_t salen = (family == AF_INET) ? sizeof(struct sockaddr_in)
-                            : (family == AF_INET6) ? sizeof(struct sockaddr_in6) : 0;
-            if (salen > 0) {
-                char host[1025];
-                if (getnameinfo(ifa->ifa_addr, salen, host, sizeof(host), NULL, 0, NI_NUMERICHOST) == 0) {
-                    address = [NSString stringWithUTF8String:host];
-                }
-            }
-        }
-        cb([NSString stringWithUTF8String:ifa->ifa_name],
-           if_nametoindex(ifa->ifa_name),
-           (ifa->ifa_flags & IFF_UP) != 0 ? 1 : 0,
-           (ifa->ifa_flags & IFF_LOOPBACK) != 0 ? 1 : 0,
-           address);
-    }
-    freeifaddrs(head);
-}
+// The NWPathMonitor bridge and the getifaddrs interface scan that used to live here moved to
+// :network-monitor's own NetworkHelpers.def, with AppleNetworkMonitor and
+// enumerateNetworkInterfaces() (issue #269) — see the note in nw_helpers.h.

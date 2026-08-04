@@ -17,13 +17,14 @@
 # failing — the Wi-Fi branch is also covered by the pure classifyLinkKind unit tests.
 #
 # USAGE: ./run-wifi-classify.sh [path/to/test.kexe]
+#   default binary: network-monitor/build/bin/linuxX64/debugTest/test.kexe (see run-netns-tests.sh)
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
-KEXE="${1:-build/bin/linuxX64/debugTest/test.kexe}"
+KEXE="${1:-network-monitor/build/bin/linuxX64/debugTest/test.kexe}"
 if [ ! -x "$KEXE" ]; then
     echo "ERROR: linuxX64 test binary not found/executable: $KEXE" >&2
-    echo "       build it with: ./gradlew :linkDebugTestLinuxX64" >&2
+    echo "       build it with: ./gradlew :network-monitor:linkDebugTestLinuxX64" >&2
     exit 2
 fi
 KEXE="$(cd "$(dirname "$KEXE")" && pwd)/$(basename "$KEXE")"
@@ -80,7 +81,9 @@ done
 $SUDO ip link set "$WLAN" up 2>/dev/null || true
 echo "── Wi-Fi classify: $WLAN (phy80211 present) ⇒ expect NetworkKind.Wifi"
 
-# Read-only /sys classification — no namespace needed; the wlan lives in the host netns.
+# Read-only /sys classification — no namespace needed; the wlan lives in the host netns. The test
+# asserts both classifyLinkKind directly and the same kind surviving the enumerate path an ICE agent
+# reads — both live in :network-monitor since issue #269.
 if NETMON_WIFI_IFACE="$WLAN" "$KEXE" --ktest_filter='*NetnsWifiClassifyTest*' >/tmp/wifi-classify.log 2>&1; then
     echo "   ✓ PASS — '$WLAN' classified Wifi"
 else

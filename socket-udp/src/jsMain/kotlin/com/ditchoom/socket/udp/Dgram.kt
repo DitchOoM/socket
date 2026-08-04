@@ -187,7 +187,8 @@ internal fun nodeBufferToInt8Array(obj: Any?): Int8Array =
  * A [Uint8Array] over exactly the remaining bytes, for `dgram.send`. Zero-copy for the concrete
  * [JsBuffer] (a typed-array view over its backing `ArrayBuffer`); a composite/decorated [ReadBuffer]
  * falls back to a one-shot materialize (the only allocation), the same as root `:socket`'s write path.
- * Call this on a `slice()` so the caller's payload buffer is not consumed (send-does-not-consume).
+ * Callable straight on the caller's payload: neither branch leaves the cursor moved, so the payload is
+ * not consumed (send-does-not-consume) and no reference is taken on it (#277).
  */
 internal fun ReadBuffer.asUint8ArrayForSend(): Uint8Array {
     val length = remaining()
@@ -200,7 +201,7 @@ internal fun ReadBuffer.asUint8ArrayForSend(): Uint8Array {
         // Int8Array at runtime on Kotlin/JS, so the unsafeCast is zero-copy; only readByteArray allocates.
         @Suppress("NoByteArrayInProd") // JS dgram.send boundary — no zero-copy path for composite buffers
         val bytes = readByteArray(length)
-        position(position() - length) // undo the read advance (this is a throwaway slice, but stay honest)
+        position(position() - length) // undo the read advance — this IS the caller's payload
         Uint8Array(bytes.unsafeCast<Int8Array>().buffer, 0, length)
     }
 }

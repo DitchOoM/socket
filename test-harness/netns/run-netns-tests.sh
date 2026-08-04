@@ -23,7 +23,10 @@
 # The native .kexe and the JVM probe run in the SAME namespace per scenario.
 #
 # USAGE: ./run-netns-tests.sh [path/to/test.kexe]
-#   default binary: build/bin/linuxX64/debugTest/test.kexe (linkDebugTestLinuxX64)
+#   default binary: network-monitor/build/bin/linuxX64/debugTest/test.kexe
+#     (issue #269 moved LinuxNetworkMonitor AND enumerateNetworkInterfaces into
+#      :network-monitor, so this is that module's binary, not the root project's)
+#   build it with: ./gradlew :network-monitor:linkDebugTestLinuxX64
 #   JVM leg (optional): ./gradlew :network-monitor:netnsJvmProbeClasspath first, or
 #   set NETNS_JVM_CLASSPATH / NETNS_JVM_JAVA to the dump files; absent → native-only.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,10 +35,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUN_ATTACH="$SCRIPT_DIR/tun-attach.py"
 
-KEXE="${1:-build/bin/linuxX64/debugTest/test.kexe}"
+KEXE="${1:-network-monitor/build/bin/linuxX64/debugTest/test.kexe}"
 if [ ! -x "$KEXE" ]; then
     echo "ERROR: linuxX64 test binary not found/executable: $KEXE" >&2
-    echo "       build it with: ./gradlew :linkDebugTestLinuxX64" >&2
+    echo "       build it with: ./gradlew :network-monitor:linkDebugTestLinuxX64" >&2
     exit 2
 fi
 KEXE="$(cd "$(dirname "$KEXE")" && pwd)/$(basename "$KEXE")" # absolutize (cwd changes under unshare)

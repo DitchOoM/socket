@@ -1,4 +1,6 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import java.io.File
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -17,18 +19,92 @@ repositories {
     mavenCentral()
 }
 
-// com.ditchoom:network-monitor — the portable NetworkMonitor / NetworkId contract plus the JVM
-// (FFM routing socket), Android (ConnectivityManager) and JS monitors, extracted from root :socket so
-// consumers (../webrtc ICE/WebRTC, QUIC auto-migration) can depend on network-awareness without
-// TCP + TLS.
+// com.ditchoom:network-monitor — the whole of network awareness, standalone: the NetworkMonitor /
+// NetworkState / NetworkId contract, EVERY implementation of it (JVM FFM routing socket, Android
+// ConnectivityManager, JS, Linux netlink, Apple NWPathMonitor), `NetworkMonitor.default()` /
+// `.processDefault()`, and the point-in-time `enumerateNetworkInterfaces()` scan that ICE host-candidate
+// gathering reads. Extracted from root :socket so consumers (../webrtc ICE/WebRTC, QUIC auto-migration)
+// can depend on network-awareness without TCP + TLS. :socket re-exports all of it through
+// `api(project(":network-monitor"))`, so nothing downstream moved packages.
 //
-// Deliberately CINTEROP-FREE (cinterop-issues/06): the native Linux (netlink) and Apple (NWPathMonitor)
-// monitors stay in :socket, reusing :socket's own LinuxSockets / NWHelpers cinterop. Adding a second
-// cinterop-bearing project dependency to :socket evicts :socket's own commonized LinuxSockets klib
-// (memset/errno unresolved on linuxX64). Keeping this module cinterop-free never perturbs the
-// commonizer. `NetworkMonitor.default()` / `.processDefault()` therefore live in :socket (extensions on
-// the companion), where the native monitors can be constructed directly; this module keeps only the
-// contract, the process-default override seam (installProcessDefault), and the portable monitors.
+// WHY ONE MODULE AND NOT TWO (issue #269 proposed a third, native-only module): `expect`/`actual`
+// cannot span a module boundary. Leaving the native monitors anywhere else leaves `default()` split
+// from half its actuals and forces the monitors to be duplicated. Since the native monitors have to be
+// wherever `default()` is, and `default()` has to be wherever the contract is, there is exactly one
+// module.
+//
+// THE CINTEROP CONSTRAINT (this comment used to assert the wrong rule; the measurement below is what
+// actually holds on Kotlin 2.4.0). It is NOT "a second cinterop-bearing project dependency to :socket
+// evicts :socket's commonized LinuxSockets klib". Two probe modules, each a cinterop-bearing project
+// dependency added to :socket's SHARED linuxMain / appleMain, differing ONLY in which C headers their
+// .def declares:
+//
+//   linux/netlink.h + linux/rtnetlink.h  (ALSO declared by LinuxSockets.def)
+//       -> :compileKotlinLinuxX64 FAILS — socket's own NLM_F_DUMP / NLMSG_DONE / RTM_NEWROUTE /
+//          RTN_UNICAST go unresolved in LinuxNetworkMonitor.kt
+//   sys/utsname.h                        (declared by nobody else)
+//       -> :linkDebugTestLinuxX64 SUCCEEDS
+//   Objective-C header transitively re-declaring <Network/Network.h> (as nw_helpers.h does)
+//       -> :compileKotlinMacosArm64 and :linkDebugTestMacosArm64 both SUCCEED
+//
+// So the real constraint is HEADER OVERLAP between two cinterops on one classpath — not
+// cinterop-bearing-ness, and not project-vs-external (this module already ships next to the
+// cinterop-bearing external boringssl-canonical klib on linuxMain). Differing `package =` names do not
+// help; the failing probe used its own package.
+//
+// The extraction satisfies that constraint BY CONSTRUCTION rather than by luck:
+//   Linux — LinuxNetworkMonitor.kt was the only netlink user in :socket, so LinuxSockets.def dropped
+//           linux/netlink.h + linux/rtnetlink.h and Netlink.def here is now their sole declarer. Its
+//           headerFilter admits nothing else; everything non-netlink the monitor needs (socket(2),
+//           getifaddrs, if_nametoindex, IFF_UP) comes from Kotlin/Native's own platform.posix /
+//           platform.linux klibs, which are not cinterops of ours.
+//   Apple — never overlapped (third probe above), but the split is still clean by ownership:
+//           NetworkHelpers.def declares only our own nm_* helpers, and :socket's NWHelpers.def dropped
+//           every one it used to own on this side (the four nw_helper_path_monitor_* AND
+//           nw_helper_enumerate_interfaces) because it no longer has a caller for any of them.
+//
+// Before adding a header to either .def here, check it is not already declared by LinuxSockets.def or
+// NWHelpers.def — and re-run those probes rather than citing this comment.
+
+// Apple C bridge: the NWPathMonitor behind AppleNetworkMonitor and the getifaddrs scan behind
+// enumerateNetworkInterfaces(). Header-only + framework linkage — no archive to build, so unlike
+// :socket's Apple cinterop there is nothing to sequence against.
+fun KotlinNativeTarget.configureNetworkHelpersCinterop() {
+    compilations["main"].cinterops {
+        create("NetworkHelpers") {
+            defFile("src/nativeInterop/cinterop/NetworkHelpers.def")
+            includeDirs("src/nativeInterop/cinterop")
+        }
+    }
+}
+
+// Netlink (linux/netlink.h + linux/rtnetlink.h) bridge for LinuxNetworkMonitor. Pure UAPI headers plus
+// one static-inline bind shim — no libraries to link, no archives to build.
+//
+// The system include dirs mirror :socket's configureLinuxCinterop: the netlink UAPI headers ship in
+// linux-libc-dev under /usr/include, and linuxArm64 is CROSS-compiled from x64 (Kotlin/Native has no
+// linux-aarch64 compiler), so on that target they must be read from the aarch64 sysroot instead.
+fun KotlinNativeTarget.configureNetlinkCinterop(arch: String) {
+    val systemIncludeDirs =
+        if (arch == "x64") {
+            listOf("/usr/include", "/usr/include/x86_64-linux-gnu")
+        } else {
+            val crossRoot = "/usr/aarch64-linux-gnu"
+            val crossInclude = "/usr/include/aarch64-linux-gnu"
+            when {
+                File(crossRoot).exists() -> listOf("$crossRoot/include")
+                File(crossInclude).exists() -> listOf(crossInclude)
+                else -> listOf("/usr/include/aarch64-linux-gnu")
+            }
+        }
+    compilations["main"].cinterops {
+        create("Netlink") {
+            defFile("src/nativeInterop/cinterop/Netlink.def")
+            includeDirs(*(listOf("src/nativeInterop/cinterop") + systemIncludeDirs).toTypedArray())
+        }
+    }
+}
+
 kotlin {
     // Match the target set of :socket exactly — :socket depends on this module and compiles every one
     // of these targets, so the dependency must publish an artifact for each.
@@ -78,27 +154,28 @@ kotlin {
         nodejs()
     }
 
-    // Apple targets — pure-Kotlin contract only (no NWHelpers cinterop; the native AppleNetworkMonitor
-    // stays in :socket). Registered on macOS hosts so :socket's Apple compilations resolve this dep.
+    // Apple targets — AppleNetworkMonitor over NWPathMonitor plus the getifaddrs interface scan, via
+    // this module's own NetworkHelpers cinterop. Registered on macOS hosts so :socket's Apple
+    // compilations resolve this dep.
     if (isMacOS) {
-        macosArm64()
-        macosX64()
-        iosArm64()
-        iosSimulatorArm64()
-        iosX64()
-        tvosArm64()
-        tvosSimulatorArm64()
-        tvosX64()
-        watchosArm64()
-        watchosSimulatorArm64()
-        watchosX64()
+        macosArm64 { configureNetworkHelpersCinterop() }
+        macosX64 { configureNetworkHelpersCinterop() }
+        iosArm64 { configureNetworkHelpersCinterop() }
+        iosSimulatorArm64 { configureNetworkHelpersCinterop() }
+        iosX64 { configureNetworkHelpersCinterop() }
+        tvosArm64 { configureNetworkHelpersCinterop() }
+        tvosSimulatorArm64 { configureNetworkHelpersCinterop() }
+        tvosX64 { configureNetworkHelpersCinterop() }
+        watchosArm64 { configureNetworkHelpersCinterop() }
+        watchosSimulatorArm64 { configureNetworkHelpersCinterop() }
+        watchosX64 { configureNetworkHelpersCinterop() }
     }
 
-    // Linux targets — pure-Kotlin contract only (no LinuxSockets cinterop; the native
-    // LinuxNetworkMonitor stays in :socket). ARM64 is cross-registered on x64 for source-set resolution.
+    // Linux targets — LinuxNetworkMonitor over netlink, via this module's own Netlink cinterop.
+    // ARM64 is cross-registered on x64 for source-set resolution.
     if (isLinux) {
-        linuxX64()
-        linuxArm64()
+        linuxX64 { configureNetlinkCinterop("x64") }
+        linuxArm64 { configureNetlinkCinterop("arm64") }
     }
 
     applyDefaultHierarchyTemplate()
@@ -151,6 +228,37 @@ kotlin {
             // that cannot reach the API<23 networkHandle branch or the stripped-permission path at all.
             implementation(libs.robolectric)
         }
+
+        // Apple implementation, added to every Apple target's MAIN source set by srcDir rather than
+        // written into the shared appleMain — exactly as root :socket does it, and for the same reason:
+        // appleMain is also compiled as common metadata (compileAppleMainKotlinMetadata), which cannot
+        // resolve the per-target NWPathMonitor cinterop. Per-target srcDirs are only ever compiled by a
+        // real target, where the cinterop klib exists.
+        //
+        // appleTest needs no such treatment: it is compiled once per target (never as metadata) and is
+        // associated with that target's main compilation, so it sees both the cinterop and the
+        // `internal` mappers (appleNetworkState / appleNetworkId) it asserts on.
+        if (isMacOS) {
+            val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
+            listOf(
+                "macosArm64Main",
+                "macosX64Main",
+                "iosArm64Main",
+                "iosSimulatorArm64Main",
+                "iosX64Main",
+                "tvosArm64Main",
+                "tvosSimulatorArm64Main",
+                "tvosX64Main",
+                "watchosArm64Main",
+                "watchosSimulatorArm64Main",
+                "watchosX64Main",
+            ).forEach { sourceSetName ->
+                findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
+            }
+        }
+
+        // Linux uses the standard KMP hierarchy: src/linuxMain / src/linuxTest are shared by linuxX64
+        // and linuxArm64 with no extra wiring.
     }
 }
 
