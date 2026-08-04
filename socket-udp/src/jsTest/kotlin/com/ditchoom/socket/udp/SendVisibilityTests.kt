@@ -18,4 +18,10 @@ class SendVisibilityTests {
         GlobalScope.promise {
             withTimeout(60_000) { assertSendNeverSilentlyDrops(this) }
         }
+
+    @Test
+    fun oversizedSendReportsTooLarge() =
+        GlobalScope.promise {
+            withTimeout(60_000) { assertOversizedSendReportsTooLarge(this) }
+        }
 }

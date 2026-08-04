@@ -138,6 +138,9 @@ internal abstract class NodeDatagramChannelCore(
         // ReadBuffer.slice() returns a TrackedSlice holding a reference on the chunk, which this path
         // has nowhere to release, pinning one chunk out of the pool per send (#277).
         val length = payload.remaining()
+        // Parity guard: Node reports EMSGSIZE only after the async callback, and only for some sizes;
+        // the same condition reports the same typed reason on every backend.
+        if (length > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
         val msg = payload.asUint8ArrayForSend()
         suspendCancellableCoroutine { cont ->
             val callback: (Any?) -> Unit = { error ->

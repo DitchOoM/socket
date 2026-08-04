@@ -333,6 +333,8 @@ internal abstract class IoUringDatagramChannelCore(
         val access = payload.nativeMemoryAccess ?: error("send requires a native-memory buffer")
         val basePtr = (access.nativeAddress + payload.position()).toCPointer<ByteVar>()!!
         val len = payload.remaining()
+        // Parity guard: the same condition reports the same typed reason on every backend.
+        if (len > maxWritableSize) throw DatagramSendException(DatagramSendError.TooLarge(len, maxWritableSize))
         memScoped {
             val iov = alloc<iovec>()
             val msg = alloc<msghdr>()

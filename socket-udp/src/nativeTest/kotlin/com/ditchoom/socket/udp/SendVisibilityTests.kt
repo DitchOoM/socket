@@ -15,4 +15,10 @@ class SendVisibilityTests {
         runBlocking {
             withTimeout(60_000) { assertSendNeverSilentlyDrops(this) }
         }
+
+    @Test
+    fun oversizedSendReportsTooLarge() =
+        runBlocking {
+            withTimeout(60_000) { assertOversizedSendReportsTooLarge(this) }
+        }
 }

@@ -1,6 +1,7 @@
 package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.allocateNative
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
@@ -9,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -17,77 +19,180 @@ import kotlin.test.fail
  * The invariant this module had no test for, and consequently broke on four of five backends: JVM/NIO
  * discarded `channel.write`/`send`'s return (a non-blocking channel returns 0 when the output buffer is
  * full), Apple's POSIX path discarded `sendto`'s, Apple's NW path resumed unconditionally on the send
- * completion, and Linux discarded the io_uring CQE `res`. Only Node surfaced anything. The observable
- * result on Apple was `send()` returning cleanly while nothing left the host — measured at 20000 and
- * 65507 bytes against an advertised [maxWritableSize] of 65507.
+ * completion, and Linux discarded the io_uring CQE `res`. Only Node surfaced anything.
  *
  * Why it matters is a consumer fact, not an aesthetic one: `QuicheDriver.flushOutgoing` feeds quiche's
  * congestion controller on the assumption that a returned send means a transmitted packet. A silent
  * drop makes bytes-in-flight and the congestion window count packets that never existed, and the lie is
  * only discovered later as spurious loss detection.
  *
+ * ## Both refinements, deliberately
+ *
+ * Every case runs against the **addressed** channel (`bind`) and the **connected** channel (`connect`),
+ * because they are different code on every platform and on Apple they are different *stacks*: `bind`
+ * is POSIX `sendto` while `connect` is Network.framework. Covering only `bind` — as the first version
+ * of this file did — leaves `NwUdpDatagramChannel` and `ConnectedNioDatagramChannel` untested.
+ *
  * ## Hermetic and deterministic
  *
- * Loopback only, no external network, no impairment, fixed payload sizes — the same sizes on every run.
- * The wait is a bound, not a race: the deferred completes the instant the datagram lands, so the green
- * path never approaches the timeout and only a genuine non-delivery spends it.
+ * Loopback only, no external network, no impairment, no privileges, fixed payload sizes — the same
+ * sizes on every run. The wait is a bound, not a race: the deferred completes the instant the datagram
+ * lands, so the green path never approaches the timeout and only a genuine non-delivery spends it.
  *
- * Sizes are chosen relative to the sink's own advertised ceiling, so this stays fix-agnostic: whether
- * the backend is fixed by raising `SO_SNDBUF` to honor [maxWritableSize] or by lowering
- * [maxWritableSize] to the truth, "everything you advertise, you can actually send" holds either way.
- *
- * Each size gets a fresh socket pair because closing the receiver is the only way to release a parked
- * native `recvfrom` — a cancelled receive does not unblock it on the Apple POSIX path.
+ * Sizes are relative to the sink's own advertised ceiling, so this stays fix-agnostic: whether a
+ * backend is fixed by raising `SO_SNDBUF` to honor `maxWritableSize` or by lowering `maxWritableSize`
+ * to the truth, "everything you advertise, you can actually send" holds either way.
  */
 @OptIn(ExperimentalDatagramApi::class)
 internal suspend fun assertSendNeverSilentlyDrops(scope: CoroutineScope) {
-    val ceiling = UdpSocket.bind("127.0.0.1", 0).use { it.maxWritableSize }
-    for (size in listOf(1, 1200, 9000, ceiling)) {
-        val a = UdpSocket.bind("127.0.0.1", 0)
-        val b = UdpSocket.bind("127.0.0.1", 0)
-
-        val landed = CompletableDeferred<Int>()
-        val reader =
-            scope.launch(Dispatchers.Default) {
-                val r = b.receive()
-                if (r is DatagramReadResult.Received) landed.complete(r.datagram.payload.remaining())
+    for (mode in SendMode.entries) {
+        val ceiling = ceilingFor(mode)
+        for (size in listOf(1, 1200, 9000, ceiling)) {
+            val outcome = probeSend(scope, size, mode)
+            // Every size here is within the sink's own advertised ceiling, so delivery is the only
+            // correct outcome — "report an error" is not an escape hatch for a size the API says it
+            // supports. Asserting delivery is what stops "throw unconditionally" from passing.
+            when {
+                outcome.reported == null && outcome.delivered == null ->
+                    fail(
+                        "[$mode] send of $size bytes (maxWritableSize=$ceiling) returned normally but " +
+                            "nothing was delivered — a silent drop. A send must either deliver or report.",
+                    )
+                outcome.reported != null ->
+                    fail(
+                        "[$mode] send of $size bytes failed with ${outcome.reported}, but $size is within " +
+                            "the advertised maxWritableSize=$ceiling — everything advertised must be sendable.",
+                    )
+                outcome.delivered != size ->
+                    fail("[$mode] send of $size bytes delivered ${outcome.delivered} bytes")
             }
-
-        val payload = PlatformBuffer.allocateNative(size)
-        repeat(size) { payload.writeByte(0x41) }
-        payload.resetForRead()
-
-        val reported = runCatching { a.send(payload, to = b.localAddress) }.exceptionOrNull()
-        val delivered = if (reported == null) withTimeoutOrNull(2_000) { landed.await() } else null
-
-        b.close() // releases the parked native recvfrom
-        a.close()
-        reader.cancel()
-
-        // Every size here is within the sink's own advertised ceiling, so delivery is the only correct
-        // outcome — "report an error" is not an escape hatch for a size the API says it supports.
-        // Reporting is merely the floor: it is what a size *beyond* the ceiling must do instead of
-        // vanishing. Asserting delivery here is what stops "throw unconditionally" from passing.
-        when {
-            reported == null && delivered == null ->
-                fail(
-                    "send of $size bytes (maxWritableSize=$ceiling) returned normally but nothing was " +
-                        "delivered — a silent drop. A send must either deliver or report.",
-                )
-            reported != null ->
-                fail(
-                    "send of $size bytes failed with $reported, but $size is within the advertised " +
-                        "maxWritableSize=$ceiling — everything advertised must actually be sendable.",
-                )
-            delivered != size -> fail("send of $size bytes delivered $delivered bytes")
         }
     }
 }
 
+/**
+ * The complement: a payload **beyond** the advertised ceiling must report, and must report the *same*
+ * typed reason on every platform.
+ *
+ * Parity is the point, not merely "it throws". A consumer branching on the error — ICE marking a
+ * candidate pair unusable on [DatagramSendError.TooLarge] — is only able to do so if every backend
+ * agrees on the reason. The backends derive their errors from different sources (`errno`, a
+ * Network.framework `(domain, code)`, a Node error `code`, a JVM `IOException` that carries no errno at
+ * all), so without an explicit contract they would each report something different for the same
+ * condition, and the typed error would be barely better than an untyped one.
+ */
 @OptIn(ExperimentalDatagramApi::class)
-private inline fun <T : com.ditchoom.buffer.flow.DatagramChannel, R> T.use(block: (T) -> R): R =
-    try {
-        block(this)
-    } finally {
-        close()
+internal suspend fun assertOversizedSendReportsTooLarge(scope: CoroutineScope) {
+    for (mode in SendMode.entries) {
+        val ceiling = ceilingFor(mode)
+        val outcome = probeSend(scope, ceiling + 1, mode)
+        val reported = outcome.reported ?: fail("[$mode] a payload of ${ceiling + 1} bytes must not be accepted silently")
+        val error =
+            (reported as? DatagramSendException)?.error
+                ?: fail("[$mode] expected a DatagramSendException, got $reported")
+        assertTrue(
+            error is DatagramSendError.TooLarge,
+            "[$mode] a payload past maxWritableSize=$ceiling must report TooLarge on every platform, got $error",
+        )
+        assertTrue(outcome.delivered == null, "[$mode] an oversized payload must not be delivered")
     }
+}
+
+/** Which refinement a probe drives. They are separate implementations on every platform. */
+internal enum class SendMode { Addressed, Connected }
+
+/**
+ * The advertised ceiling **of the refinement under test**, read from a real channel of that mode.
+ *
+ * Deliberately not one number for the module: on Apple the two refinements are different stacks with
+ * genuinely different limits — `bind` is a POSIX socket whose `SO_SNDBUF` this module widens to the
+ * protocol ceiling, while `connect` is Network.framework, which exposes no socket to widen and is held
+ * to Darwin's default UDP datagram size. Each channel advertises its own truth, so the contract is
+ * checked against the truth the caller would actually read.
+ */
+@OptIn(ExperimentalDatagramApi::class)
+private suspend fun ceilingFor(mode: SendMode): Int =
+    when (mode) {
+        SendMode.Addressed -> UdpSocket.bind("127.0.0.1", 0).let { it.maxWritableSize.also { _ -> it.close() } }
+        SendMode.Connected -> {
+            val receiver = UdpSocket.bind("127.0.0.1", 0)
+            val sender = UdpSocket.connect("127.0.0.1", receiver.localAddress.port)
+            sender.maxWritableSize.also {
+                sender.close()
+                receiver.close()
+            }
+        }
+    }
+
+private class SendOutcomeProbe(
+    val reported: Throwable?,
+    val delivered: Int?,
+)
+
+/**
+ * Send [size] bytes over a fresh loopback pair and report both halves of the outcome: what the send
+ * itself said, and what actually arrived.
+ *
+ * A fresh pair per probe because closing the receiver is the only way to release a parked native
+ * `recvfrom` — a cancelled receive does not unblock it on the Apple POSIX path. The sender is closed
+ * only after delivery has been observed, so a close can never race an in-flight send.
+ */
+@OptIn(ExperimentalDatagramApi::class)
+private suspend fun probeSend(
+    scope: CoroutineScope,
+    size: Int,
+    mode: SendMode,
+): SendOutcomeProbe {
+    val receiver = UdpSocket.bind("127.0.0.1", 0)
+    val landed = CompletableDeferred<Int>()
+    // runCatching inside the coroutine: closing a channel with a parked receive is not uniformly
+    // clean across backends (the JVM selector path can surface ClosedSelectorException out of a parked
+    // select rather than returning Closed), and this probe must report on the *send*, not fail on how
+    // teardown happens to unwind.
+    val reader =
+        scope.launch(Dispatchers.Default) {
+            runCatching {
+                val r = receiver.receive()
+                if (r is DatagramReadResult.Received) landed.complete(r.datagram.payload.remaining())
+            }
+        }
+
+    val payload = filled(size)
+    val reported: Throwable?
+    val sender: AutoCloseableChannel =
+        when (mode) {
+            SendMode.Addressed -> {
+                val s = UdpSocket.bind("127.0.0.1", 0)
+                reported = runCatching { s.send(payload, to = receiver.localAddress) }.exceptionOrNull()
+                AutoCloseableChannel { s.close() }
+            }
+            SendMode.Connected -> {
+                val s = UdpSocket.connect("127.0.0.1", receiver.localAddress.port)
+                reported = runCatching { s.send(payload) }.exceptionOrNull()
+                AutoCloseableChannel { s.close() }
+            }
+        }
+
+    // Wait either way. When the send reported, the wait is what proves nothing was *also* delivered —
+    // shorter, because the expectation is silence rather than arrival.
+    val delivered = withTimeoutOrNull(if (reported == null) 2_000 else 300) { landed.await() }
+
+    sender.close()
+    receiver.close() // releases the parked native recvfrom
+    reader.cancel()
+    return SendOutcomeProbe(reported, delivered)
+}
+
+private fun filled(size: Int): ReadBuffer {
+    val payload = PlatformBuffer.allocateNative(size)
+    repeat(size) { payload.writeByte(0x41) }
+    payload.resetForRead()
+    return payload
+}
+
+/** Tiny shim so both refinements — which share no common closable supertype here — close uniformly. */
+private class AutoCloseableChannel(
+    private val closer: () -> Unit,
+) {
+    fun close() = closer()
+}

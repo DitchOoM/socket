@@ -42,6 +42,42 @@ private val SEND_BACKPRESSURE_FIRST_WAIT = 50.microseconds
 private val SEND_BACKPRESSURE_MAX_WAIT = 5.milliseconds
 
 /**
+ * Write [view] with [write], treating a zero return as backpressure rather than as a drop.
+ *
+ * Extracted from the channel — and taking the writer as a parameter — so the retry, give-up and
+ * error-mapping paths are reachable from a test with a stub writer. A real socket cannot be asked to
+ * refuse a datagram on demand: on loopback the sender's queue never fills, because packets move
+ * straight to the receiver. Forcing it would need a rate-limited link in a network namespace, which
+ * would test the kernel rather than this loop, only on Linux, and only with privileges.
+ *
+ * [budget] is a parameter for the same reason: a test can exercise the give-up path in microseconds
+ * instead of waiting out the production second.
+ */
+internal suspend fun writeAbsorbingBackpressure(
+    view: ByteBuffer,
+    write: (ByteBuffer) -> Int,
+    budget: Duration = SEND_BACKPRESSURE_BUDGET,
+) {
+    val length = view.remaining()
+    var waited = Duration.ZERO
+    var backoff = SEND_BACKPRESSURE_FIRST_WAIT
+    while (true) {
+        val written =
+            try {
+                write(view)
+            } catch (e: IOException) {
+                throw DatagramSendException(DatagramSendError.Transport(e))
+            }
+        if (written > 0) return
+        if (waited >= budget) throw DatagramSendException(DatagramSendError.WouldBlock)
+        delay(backoff)
+        waited += backoff
+        backoff = minOf(backoff * 2, SEND_BACKPRESSURE_MAX_WAIT)
+        check(view.remaining() == length) { "a zero-length datagram write must not consume the view" }
+    }
+}
+
+/**
  * JVM/Android [DatagramChannel] machinery backed by a NIO [NioChannel] + [Selector] — the real-socket
  * lift of the quiche `NioUdpChannel`, cleaned to the public datagram shape (RFC §7):
  *
@@ -204,24 +240,13 @@ internal abstract class NioDatagramChannelCore(
     ) {
         val view = stage(payload, options)
         val length = view.remaining()
-        var waited = Duration.ZERO
-        var backoff = SEND_BACKPRESSURE_FIRST_WAIT
-        while (true) {
-            val written =
-                try {
-                    write(view)
-                } catch (e: IOException) {
-                    throw DatagramSendException(DatagramSendError.Transport(e))
-                }
-            if (written > 0) return
-            if (waited >= SEND_BACKPRESSURE_BUDGET) {
-                throw DatagramSendException(DatagramSendError.WouldBlock)
-            }
-            delay(backoff)
-            waited += backoff
-            backoff = minOf(backoff * 2, SEND_BACKPRESSURE_MAX_WAIT)
-            check(view.remaining() == length) { "a zero-length datagram write must not consume the view" }
+        // Parity guard. NIO reports an oversized datagram as an IOException carrying no errno, so
+        // without this the JVM would report Transport where every other backend reports TooLarge —
+        // and a consumer branching on the reason (ICE failing a candidate pair) could not rely on it.
+        if (length > maxWritableSize) {
+            throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
         }
+        writeAbsorbingBackpressure(view, write)
     }
 
     override fun close() {
