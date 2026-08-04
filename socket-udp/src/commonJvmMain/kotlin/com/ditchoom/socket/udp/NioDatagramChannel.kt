@@ -3,6 +3,7 @@ package com.ditchoom.socket.udp
 import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
@@ -25,6 +26,8 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.SocketOption
 import java.nio.ByteBuffer
+import java.nio.channels.ClosedChannelException
+import java.nio.channels.ClosedSelectorException
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import kotlin.time.Duration
@@ -168,31 +171,57 @@ internal abstract class NioDatagramChannelCore(
     override suspend fun receive(): DatagramReadResult {
         while (true) {
             if (closed) return DatagramReadResult.Closed()
-            // select() is the only blocking call; runInterruptible makes a cancelled receive interrupt
-            // the select (which returns) without closing the underlying socket.
-            runInterruptible(Dispatchers.IO) { selector.select() }
-            selector.selectedKeys().clear()
-            if (closed) return DatagramReadResult.Closed()
+            var payload: PlatformBuffer? = null
+            try {
+                // select() is the only blocking call; runInterruptible makes a cancelled receive
+                // interrupt the select (which returns) without closing the underlying socket.
+                runInterruptible(Dispatchers.IO) { selector.select() }
+                selector.selectedKeys().clear()
+                if (closed) return DatagramReadResult.Closed()
 
-            val payload = bufferFactory.allocate(receiveBufferSize)
-            val byteBuffer = (payload.unwrapFully() as BaseJvmBuffer).byteBuffer
-            byteBuffer.clear()
-            // Both modes receive via channel.receive(): on a connected socket the reported sender IS the
-            // connected peer (value-equal via InternedJvmSocketAddress).
-            val sender = channel.receive(byteBuffer) as InetSocketAddress? ?: continue // spurious wakeup
-            val length = byteBuffer.position()
-            // Expose exactly the received datagram as the readable window [0, length).
-            payload.position(0)
-            payload.setLimit(length)
-            return DatagramReadResult.Received(
-                Datagram(
-                    payload = payload,
-                    peer = InternedJvmSocketAddress(sender),
-                    ecn = Ecn.Unknown,
-                    localAddress = LocalAddress.Unknown,
-                    hopLimit = HopLimit.Unknown,
-                ),
-            )
+                val buffer = bufferFactory.allocate(receiveBufferSize)
+                payload = buffer
+                val byteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
+                byteBuffer.clear()
+                // Both modes receive via channel.receive(): on a connected socket the reported sender IS
+                // the connected peer (value-equal via InternedJvmSocketAddress).
+                val sender =
+                    channel.receive(byteBuffer) as InetSocketAddress?
+                        ?: run {
+                            buffer.freeNativeMemory() // spurious wakeup — do not leak the staging buffer
+                            payload = null
+                            null
+                        }
+                        ?: continue
+                val length = byteBuffer.position()
+                // Expose exactly the received datagram as the readable window [0, length).
+                buffer.position(0)
+                buffer.setLimit(length)
+                return DatagramReadResult.Received(
+                    Datagram(
+                        payload = buffer,
+                        peer = InternedJvmSocketAddress(sender),
+                        ecn = Ecn.Unknown,
+                        localAddress = LocalAddress.Unknown,
+                        hopLimit = HopLimit.Unknown,
+                    ),
+                )
+            } catch (_: ClosedSelectorException) {
+                // close() sets `closed`, wakes the selector and then closes it, so a receive parked in
+                // select() — or between select() returning and reading selectedKeys() — races that
+                // close and sees the selector already gone. The contract is that a receive on a closed
+                // channel *yields* Closed, so this must not escape as an exception: a caller draining
+                // in a loop would take a spurious failure purely from shutdown ordering.
+                payload?.freeNativeMemory()
+                return DatagramReadResult.Closed()
+            } catch (_: ClosedChannelException) {
+                // Same shutdown race, one layer down: close() closes the channel after the selector, so
+                // an in-flight receive() can find the channel gone. (ClosedByInterruptException is a
+                // subtype, but a cancelled receive unwinds through runInterruptible before reaching
+                // here, so cancellation still propagates as cancellation rather than as Closed.)
+                payload?.freeNativeMemory()
+                return DatagramReadResult.Closed()
+            }
         }
     }
 

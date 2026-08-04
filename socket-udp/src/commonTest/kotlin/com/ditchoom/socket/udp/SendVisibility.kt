@@ -196,3 +196,40 @@ private class AutoCloseableChannel(
 ) {
     fun close() = closer()
 }
+
+/**
+ * **Closing a channel with a parked receive yields [DatagramReadResult.Closed] — it does not throw.**
+ *
+ * The contract every backend's KDoc states ("once closed, `receive` yields Closed") and which the JVM
+ * path broke: `close()` sets the flag, wakes the selector and then closes it, so a receive parked in
+ * `select()` — or caught between `select()` returning and reading `selectedKeys()` — found the selector
+ * already gone and surfaced `ClosedSelectorException`. A caller draining in a loop would take a
+ * spurious failure purely from shutdown ordering, which is exactly the shape of bug that looks like a
+ * flaky test rather than a real defect.
+ *
+ * Found while writing the oversize send probe, whose teardown happens to close a receiver that never
+ * received anything — the ordinary case for a send that correctly refused to transmit.
+ *
+ * Deterministic without being timing-dependent on the *outcome*: the delay only ensures the receive has
+ * reached its parked state before the close, and the assertion is on what `receive` returns, not on how
+ * long anything took.
+ */
+@OptIn(ExperimentalDatagramApi::class)
+internal suspend fun assertCloseWithParkedReceiveYieldsClosed(scope: CoroutineScope) {
+    val channel = UdpSocket.bind("127.0.0.1", 0)
+    val outcome = CompletableDeferred<Result<DatagramReadResult>>()
+    scope.launch(Dispatchers.Default) { outcome.complete(runCatching { channel.receive() }) }
+
+    kotlinx.coroutines.delay(250) // let the receive park; the assertion below is not timing-dependent
+    channel.close()
+
+    val result =
+        withTimeoutOrNull(5_000) { outcome.await() }
+            ?: fail("closing a channel with a parked receive must release it, but receive never returned")
+    result.exceptionOrNull()?.let { fail("a parked receive must yield Closed on close, but threw $it") }
+    val value = result.getOrThrow()
+    assertTrue(
+        value is DatagramReadResult.Closed,
+        "a parked receive must yield Closed on close, got $value",
+    )
+}

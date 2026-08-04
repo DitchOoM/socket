@@ -21,4 +21,10 @@ class SendVisibilityTests {
         runBlocking {
             withTimeout(60_000) { assertOversizedSendReportsTooLarge(this) }
         }
+
+    @Test
+    fun closeWithParkedReceiveYieldsClosed() =
+        runBlocking {
+            withTimeout(60_000) { assertCloseWithParkedReceiveYieldsClosed(this) }
+        }
 }
