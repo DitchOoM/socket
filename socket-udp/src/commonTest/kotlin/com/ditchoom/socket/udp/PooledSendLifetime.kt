@@ -1,8 +1,6 @@
 package com.ditchoom.socket.udp
 
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.pool.BufferPool
@@ -26,7 +24,13 @@ import kotlin.test.assertIs
  */
 @OptIn(ExperimentalDatagramApi::class)
 internal suspend fun assertSendReturnsPooledChunkToPool() {
-    val pool = BufferPool(maxPoolSize = 16, defaultBufferSize = 8 * 1024, factory = BufferFactory.Default)
+    // Seed the pool from the module's own per-platform factory, not BufferFactory.Default. On
+    // Kotlin/Native the default factory yields a GC-heap buffer with no native memory behind it, and
+    // the Linux and Apple send paths resolve `nativeMemoryAccess` to get the datagram's address — so a
+    // Default-backed pooled buffer fails there with "send requires a native-memory buffer" while
+    // working fine on JVM and Node. Using the same factory the module itself would pick keeps this
+    // test about pool accounting rather than about buffer provenance.
+    val pool = BufferPool(maxPoolSize = 16, defaultBufferSize = 8 * 1024, factory = defaultDatagramBufferFactory)
 
     // Control: acquire and release WITHOUT sending. Establishes that this pool recycles at all, so a
     // failure below is attributable to the send and not to the pool or the release call.
