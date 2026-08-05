@@ -53,7 +53,14 @@ kotlinWrappers = "2026.6.0"
 # typed absent states (LocalAddress/HopLimit + read-side Ecn.Unknown), send-side EcnPreference, and a
 # non-null typed DatagramReadResult.Closed(reason: DatagramCloseReason). Breaking only inside
 # @ExperimentalDatagramApi; :socket-udp and :socket-quic-quiche migrate in lockstep in this PR.
-buffer = "6.23.0"
+# 6.24.0->6.25.0: additive/drop-in. 6.24.0 is hex ⇄ String conversions (#324) + a datagram-send KDoc
+# clarification (#327), neither of which socket consumes. 6.25.0 (buffer #328/#330) adds ONE field,
+# `DatagramCapabilities.requiresNativeMemoryBuffers`, defaulting to false — the channel-level answer to
+# "does my send path need the payload backed by a raw address". :socket-udp's native channels must
+# advertise it (io_uring `sendmsg` / `NWConnection` / `sendto` all take an address), because the new
+# KDoc makes the default an affirmative `false` claim rather than an absent one — so leaving the Apple
+# and Linux channels at their current value would be a lie a consumer acts on.
+buffer = "6.25.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"

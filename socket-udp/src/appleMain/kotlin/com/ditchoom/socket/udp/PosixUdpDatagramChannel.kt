@@ -70,7 +70,10 @@ internal class PosixUdpDatagramChannel(
 
     override val maxWritableSize: Int = MAX_UDP_PAYLOAD
 
-    override val capabilities: DatagramCapabilities = DatagramCapabilities.None
+    // Not DatagramCapabilities.None: `None` asserts requiresNativeMemoryBuffers = false, and `sendto`
+    // takes a raw base pointer (send errors outright if payload.nativeMemoryAccess is absent). No
+    // control plane otherwise — this path uses plain recvfrom/sendto with no ancillary data.
+    override val capabilities: DatagramCapabilities = DatagramCapabilities(requiresNativeMemoryBuffers = true)
 
     override suspend fun receive(): DatagramReadResult {
         val payload = bufferFactory.allocate(receiveBufferSize)

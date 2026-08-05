@@ -141,6 +141,10 @@ internal abstract class IoUringDatagramChannelCore(
             localAddressReceive = true,
             sourceAddressSelect = false, // send-side IP_PKTINFO (fromLocal) is a later additive minor
             multicast = false, // design-for, defer (§10.3)
+            // sendmsg's iovec is a raw base pointer: sendDatagram takes payload.nativeMemoryAccess
+            // and errors if it is absent. BufferFactory.Default on K/N Linux is a GC buffer with no
+            // native address, so a consumer allocating its own outbound datagrams must be told.
+            requiresNativeMemoryBuffers = true,
         )
 
     /** Request per-packet ancillary data (ECN/TTL/dst-IP) so [receive] can populate the read plane. */

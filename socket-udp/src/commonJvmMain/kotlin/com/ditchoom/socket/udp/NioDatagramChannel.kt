@@ -142,6 +142,9 @@ internal abstract class NioDatagramChannelCore(
             localAddressReceive = false, // no IP_PKTINFO on NIO
             sourceAddressSelect = false,
             multicast = false, // design-for, defer to Phase 5
+            // NIO's DatagramChannel.send accepts a heap ByteBuffer and copies it into a direct buffer
+            // internally, so a heap payload is slower here but never fatal. An affirmative false.
+            requiresNativeMemoryBuffers = false,
         )
 
     // IP_TOS / IP_DONTFRAGMENT are socket-wide on NIO (there is no per-datagram ancillary send path), so
