@@ -83,7 +83,7 @@ actual object UdpSocket {
         val af = if (local.family == AddressFamily.IPv6) AF_INET6 else AF_INET
         val fd = socket(af, SOCK_DGRAM, IPPROTO_UDP)
         check(fd >= 0) { "socket(AF=$af, SOCK_DGRAM) failed" }
-        setReuseAddr(fd)
+        // No SO_REUSEADDR here: it is multicast-only (see [setReuseAddr]).
         widenSendBuffer(fd)
         if (wildcard && local.family == AddressFamily.IPv6) setV6Only(fd, false)
         bindTo(fd, local)
@@ -188,6 +188,31 @@ actual object UdpSocket {
         port: Int,
     ): SocketAddress = SocketAddress.resolve(host, port)
 
+    /**
+     * `SO_REUSEADDR` is for [bindMulticast] **only** — never a unicast [bind] or [connect].
+     *
+     * Darwin refuses a duplicate bind of the *identical* address:port even with the option set, which is
+     * why the Linux port-theft flake never reproduced here. But an *overlapping* pair is a different
+     * check, and it is the pair this module actually produces: [bind] with a null host binds the
+     * dual-stack wildcard `::`, and [bind] with a host binds a specific address. Measured on Darwin
+     * (macOS 26, arm64) with plain sockets as the control, where the wildcard socket binds first:
+     *
+     *  - a later specific bind to the same port is refused (`EADDRINUSE`) when plain, and **allowed**
+     *    when it carries `SO_REUSEADDR` — the *new* socket's option alone decides it, whatever the
+     *    incumbent set;
+     *  - once allowed, the more-specific socket then **takes the delivery**: a datagram sent to
+     *    `127.0.0.1:port` (v4) or `[::1]:port` (v6) reaches the later binder and the wildcard-bound
+     *    server receives nothing.
+     *
+     * So a server on port `p` goes permanently silent the moment anything in the process binds `p` on a
+     * specific address — and with the option on every unicast bind, everything did. That is the same
+     * wedge the Linux fix removed, reachable here through the wildcard/specific overlap rather than an
+     * exact duplicate. (The other Linux hazard, `bind(port = 0)` re-handing out a live ephemeral port,
+     * does *not* reproduce on Darwin: 2000 binds, 2000 distinct ports, with the option set.)
+     *
+     * UDP has no `TIME_WAIT`, so a unicast bind gains nothing in exchange. Guarded by
+     * `AppleUdpBindConformanceTests`.
+     */
     private fun setReuseAddr(fd: Int) {
         memScoped {
             val v = alloc<IntVar>()
