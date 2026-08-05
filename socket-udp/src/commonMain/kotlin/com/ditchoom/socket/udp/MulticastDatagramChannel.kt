@@ -163,4 +163,10 @@ internal fun DatagramCapabilities.withMulticast(): DatagramCapabilities =
         localAddressReceive = localAddressReceive,
         sourceAddressSelect = sourceAddressSelect,
         multicast = true,
+        // Carried through, not defaulted: a multicast channel sends over the same syscall as its
+        // unicast sibling, so it has the same raw-address requirement. DatagramCapabilities is not a
+        // data class (no copy()), so every field must be restated here — and this one is
+        // correctness-critical, so omitting it would silently tell a consumer that heap payloads are
+        // sendable on the very platforms where they are not.
+        requiresNativeMemoryBuffers = requiresNativeMemoryBuffers,
     )

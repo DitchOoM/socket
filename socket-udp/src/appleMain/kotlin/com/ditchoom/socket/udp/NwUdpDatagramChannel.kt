@@ -84,7 +84,11 @@ internal class NwUdpDatagramChannel(
     // queried rather than hardcoded, since net.inet.udp.maxdgram is a tunable sysctl.
     override val maxWritableSize: Int = darwinUdpSendCeiling()
 
-    override val capabilities: DatagramCapabilities = DatagramCapabilities.None
+    // No control plane (NW manages ECN/DF/PKTINFO itself, §7.1) — but NOT DatagramCapabilities.None:
+    // `None` asserts requiresNativeMemoryBuffers = false, and `nw_udp_send` takes a raw base pointer
+    // (send errors outright if payload.nativeMemoryAccess is absent). The one capability this channel
+    // does claim is that requirement.
+    override val capabilities: DatagramCapabilities = DatagramCapabilities(requiresNativeMemoryBuffers = true)
 
     /**
      * Receive one datagram. The `nw_connection_receive_message` callback fires on a libdispatch (foreign)

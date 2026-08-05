@@ -69,6 +69,9 @@ internal abstract class NodeDatagramChannelCore(
             localAddressReceive = false,
             sourceAddressSelect = false,
             multicast = false, // design-for, defer to Phase 5
+            // `dgram.send` takes a JS Uint8Array — there is no native-address concept on this platform
+            // to require. An affirmative false.
+            requiresNativeMemoryBuffers = false,
         )
 
     init {
