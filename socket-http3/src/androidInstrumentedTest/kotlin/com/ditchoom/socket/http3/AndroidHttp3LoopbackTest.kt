@@ -1,5 +1,6 @@
 package com.ditchoom.socket.http3
 
+import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
 import com.ditchoom.socket.quic.QuicTlsConfig
 import java.io.File
@@ -43,4 +44,29 @@ class AndroidHttp3LoopbackTest : Http3LoopbackTestSuite() {
             certChainPath = certPath("cert.crt"),
             privKeyPath = certPath("cert.key"),
         )
+
+    /**
+     * Route the failure report to **logcat** — the trace transport on Android. An instrumented test
+     * runs in the app process: its `System.out` goes to logcat, not to the Gradle-side test XML, so
+     * the base class's `println` would leave the CI record with nothing but the bare exception (which
+     * is exactly what run 31027926910 gave us). The emulator workflow streams logcat to a file for the
+     * whole run, uploads it on failure, and greps [LOG_TAG] into the job log.
+     *
+     * Chunked: logcat drops a single message beyond ~4 KB, and a full report (250 trace lines) is well
+     * past that. One line per message keeps every line intact and in order under one tag.
+     */
+    override fun emitDiagnostics(report: String) {
+        report.lineSequence().forEach { line ->
+            // Log has no length guarantee either; split any over-long line rather than lose its tail.
+            line.chunked(MAX_LOGCAT_CHARS).forEach { Log.e(LOG_TAG, it) }
+        }
+    }
+
+    private companion object {
+        /** Grepped by the emulator workflow's diagnostics step; keep the two in sync. */
+        const val LOG_TAG = "H3Loopback"
+
+        /** Comfortably under logcat's ~4000-byte per-message cap, ASCII-safe. */
+        const val MAX_LOGCAT_CHARS = 3000
+    }
 }
