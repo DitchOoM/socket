@@ -8,8 +8,11 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.SocketClosedException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -331,6 +334,37 @@ class ReactiveDriverTests {
             } finally {
                 driver.destroy()
             }
+            Unit
+        }
+
+    @Test
+    fun scope_cancelled_connection_still_publishes_the_typed_terminal_reason() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.established = true
+            // A connection that died without any CONNECTION_CLOSE — quiche reports only its idle
+            // timeout, never connIsClosed — whose scope is then torn down. That is the teardown path
+            // (not the connIsClosed transition), and it used to close `commands` while leaving `state`
+            // on Established forever: every later caller resolved its reason through closeReasonOr,
+            // read the non-Closed state, and got the NoError fallback — the opaque
+            // `QuicCloseException: connection closed` that made the API-35 emulator failure in run
+            // 31027926910 undiagnosable. The reason must survive the teardown, typed.
+            api.timedOut = true
+            val driver = createTestDriver(api)
+            val connectionScope = CoroutineScope(coroutineContext + Job())
+            driver.start(connectionScope)
+
+            sendOpenStream(driver)
+            assertIs<QuicConnectionState.Established>(driver.state.value)
+
+            connectionScope.cancel()
+
+            val closed =
+                assertIs<QuicConnectionState.Closed>(
+                    withTimeout(5.seconds) { driver.state.first { it is QuicConnectionState.Closed } },
+                )
+            assertEquals(QuicError.IdleTimeout, closed.error)
+            assertEquals(QuicError.IdleTimeout, driver.closeReasonOr(QuicError.NoError))
             Unit
         }
 
