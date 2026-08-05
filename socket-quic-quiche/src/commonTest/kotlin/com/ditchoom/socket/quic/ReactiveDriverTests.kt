@@ -13,6 +13,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
@@ -992,6 +993,65 @@ class ReactiveDriverTests {
             withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Closed } }
             assertTrue(driver.commands.isClosedForSend, "command channel must close coupled with the Closed state")
             assertEquals(1, api.onTimeoutCount, "the idle timer fire should have been handed to quiche")
+        }
+
+    // ---- Establishment gate ----
+
+    @Test
+    fun awaitEstablished_handshakeThatIdleTimesOut_failsWithTheTypedReason() =
+        runQuicTest {
+            // Regression for the linuxX64 :socket-http3 flake in release run 30954202211: the handshake
+            // never completed, quiche idle-closed it, and `awaitEstablished` — which only waited for "no
+            // longer Handshaking" — returned SUCCESSFULLY on the Closed state. The caller then walked into
+            // Http3Connection.bootstrap and hit the already-closed command channel, so a *handshake* idle
+            // timeout was reported as an `openUniStream` failure several frames away from the connect call.
+            //
+            // The gate must fail at establishment instead, carrying the reason quiche actually recorded.
+            val api = StubQuicheApi()
+            api.established = false // handshake never completes
+            api.connTimeout = 50.milliseconds
+            api.closeOnTimeout = true
+            api.timedOut = true // → resolveCloseError() reports IdleTimeout
+            val clock = ManualDriverClock()
+            val driver = createTestDriver(api, keepAliveInterval = null, clock = clock)
+            driver.start(this)
+
+            // supervisorScope so the gate's failure lands in await() rather than cancelling the test.
+            val failure =
+                supervisorScope {
+                    val gate = async { driver.awaitEstablished(5.seconds) }
+                    // Park the gate on the state flow before the idle timer fires, so this pins the ordering
+                    // that actually occurred in CI (waiter first, close second), not a pre-closed shortcut.
+                    yield()
+
+                    clock.fireExpectingNoRearm(50.milliseconds)
+
+                    assertFailsWith<QuicCloseException> { withTimeout(2.seconds) { gate.await() } }
+                }
+            assertEquals(
+                QuicError.IdleTimeout,
+                failure.quicError,
+                "the establishment failure must carry quiche's recorded reason, not a generic close",
+            )
+        }
+
+    @Test
+    fun awaitEstablished_returnsOnlyOnEstablished() =
+        runQuicTest {
+            // The other half of the gate: a genuinely established connection must still pass through
+            // (and reach Established, not merely "not Handshaking") — so the fix above cannot be
+            // satisfied by a gate that rejects everything.
+            val api = StubQuicheApi()
+            api.established = true
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                withTimeout(2.seconds) { driver.awaitEstablished(2.seconds) }
+                assertIs<QuicConnectionState.Established>(driver.state.value)
+            } finally {
+                driver.destroy()
+            }
+            Unit
         }
 
     // ---- Helpers ----

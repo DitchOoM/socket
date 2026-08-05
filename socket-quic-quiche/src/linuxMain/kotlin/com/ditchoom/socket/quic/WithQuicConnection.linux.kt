@@ -39,8 +39,6 @@ import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeout
 import platform.posix.F_OK
 import platform.posix.access
 import platform.posix.close
@@ -263,11 +261,7 @@ internal class LinuxQuicConnection(
         driver.start(scope)
     }
 
-    suspend fun awaitEstablished(timeout: Duration) {
-        withTimeout(timeout) {
-            state.first { it !is QuicConnectionState.Handshaking }
-        }
-    }
+    suspend fun awaitEstablished(timeout: Duration) = driver.awaitEstablished(timeout)
 
     override suspend fun openStream(): QuicByteStream = open(unidirectional = false)
 
