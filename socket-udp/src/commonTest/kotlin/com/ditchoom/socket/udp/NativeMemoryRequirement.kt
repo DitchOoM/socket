@@ -1,9 +1,9 @@
 package com.ditchoom.socket.udp
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.managed
 import kotlinx.coroutines.withTimeout
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -17,8 +17,8 @@ import kotlin.test.assertTrue
  * check, TURN request and DTLS record itself — can pick a compatible [BufferFactory] at construction
  * instead of discovering the mismatch as a transmit-time failure on one platform. That only works if
  * the flag is true exactly where a heap payload really is fatal, so this asserts the biconditional
- * rather than the flag's value: **a `BufferFactory.Default` payload sends successfully if and only if
- * the channel says it does not require native memory.**
+ * rather than the flag's value: **a heap-backed payload sends successfully if and only if the channel
+ * says it does not require native memory.**
  *
  * Written this way it needs no per-platform expectation table and cannot rot into agreement with a
  * hardcoded one. It fails if a native channel ever forgets to advertise the requirement (the
@@ -26,6 +26,25 @@ import kotlin.test.assertTrue
  * over-claims it (the wasteful direction — a consumer is pushed onto explicit-free buffers it does
  * not need). The multicast wrappers rebuild capabilities field-by-field, so this also guards the
  * flag being silently dropped on the way through `withMulticast()`.
+ *
+ * ### Why the probe is `managed()` and not `Default`
+ *
+ * An earlier revision allocated from [BufferFactory.Default], reasoning that "the factory a consumer
+ * reaches for by default" was the interesting case. It passes on JVM/Node/Linux and fails on Apple —
+ * because `Default` is not a heap buffer everywhere:
+ *
+ * - **Apple**: `MutableDataBuffer` over `NSMutableData` — *native-backed*, so `sendto` accepts it
+ * - **Linux**: `ByteArrayBuffer` — GC heap, no native address, so `sendmsg` rejects it
+ * - **JVM**: `DirectJvmBuffer` over `ByteBuffer.allocateDirect`
+ *
+ * So a Default-backed send succeeding on Apple says nothing about the channel's requirement; it says
+ * Apple's default happens to satisfy it. [BufferFactory.managed] is GC heap on *every* platform
+ * (`ByteArrayBuffer` on both native targets, `HeapJvmBuffer` on the JVM), which is what makes it a
+ * real test of the flag rather than of a platform coincidence.
+ *
+ * That divergence is also the best argument for the flag existing at all: `Default` is native-capable
+ * on Apple and not on Linux, so a consumer cannot reason its way to the right factory from platform
+ * knowledge — it has to ask the channel.
  */
 @OptIn(ExperimentalDatagramApi::class)
 internal suspend fun assertNativeMemoryRequirementMatchesSendPath() {
@@ -34,10 +53,8 @@ internal suspend fun assertNativeMemoryRequirementMatchesSendPath() {
     try {
         val requiresNative = sender.capabilities.requiresNativeMemoryBuffers
 
-        // Deliberately BufferFactory.Default, NOT defaultDatagramBufferFactory: Default is the factory
-        // a consumer reaches for when it has not been told otherwise, and on Kotlin/Native it is a
-        // GC-heap buffer with no native address behind it. That divergence is the whole subject here.
-        val payload = BufferFactory.Default.allocate(5)
+        // GC heap on every platform — see the KDoc on why this is not BufferFactory.Default.
+        val payload = BufferFactory.managed().allocate(5)
         payload.writeString("hello")
         payload.resetForRead()
 
@@ -46,15 +63,15 @@ internal suspend fun assertNativeMemoryRequirementMatchesSendPath() {
         if (requiresNative) {
             assertTrue(
                 outcome.isFailure,
-                "capabilities.requiresNativeMemoryBuffers is true, so a BufferFactory.Default payload " +
-                    "must be rejected — if this send succeeded the flag is over-claiming and pushes " +
+                "capabilities.requiresNativeMemoryBuffers is true, so a heap payload must be " +
+                    "rejected — if this send succeeded the flag is over-claiming and pushes " +
                     "consumers onto explicit-free buffers they do not need",
             )
         } else {
             assertTrue(
                 outcome.isSuccess,
-                "capabilities.requiresNativeMemoryBuffers is false, so a BufferFactory.Default payload " +
-                    "must send — a consumer that believed that claim would fail at transmit time: " +
+                "capabilities.requiresNativeMemoryBuffers is false, so a heap payload must send — " +
+                    "a consumer that believed that claim would fail at transmit time: " +
                     "${outcome.exceptionOrNull()}",
             )
             // ...and it must genuinely reach the peer. A send that silently dropped the datagram would
