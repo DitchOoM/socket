@@ -19,6 +19,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
@@ -175,6 +176,34 @@ class QuicheDriver(
      * always carries the most specific reason available.
      */
     fun closeReasonOr(fallback: QuicError): QuicError = (state.value as? QuicConnectionState.Closed)?.error ?: fallback
+
+    /**
+     * Suspend until the handshake **settles**, and fail if it settled anywhere other than
+     * [QuicConnectionState.Established].
+     *
+     * The documented lifecycle has two exits from `Handshaking` (see [QuicConnectionState]):
+     * `→ Established` and `↘ Closed` on handshake failure. Waiting for "no longer `Handshaking`" alone
+     * therefore accepts a **dead** connection as a live one: the caller returns from establishment
+     * successfully and only discovers the failure at its first stream open, where [closeConnection]
+     * has already closed [commands] — so the real reason (idle timeout, crypto error, protocol
+     * violation) surfaces as a confusing mid-session `QuicCloseException` from whatever the caller
+     * happened to do first, several frames removed from the connect call that actually failed.
+     *
+     * That misreporting is what made a linuxX64 `:socket-http3` handshake idle-timeout read as an
+     * `openUniStream` failure inside `Http3Connection.bootstrap` (release run `30954202211`). Failing
+     * here instead keeps the typed [QuicError] attached to the operation that owns it — establishment —
+     * so callers can tell "never came up" from "came up, then broke", and an establishment-scoped
+     * retry can be written without also swallowing genuine mid-session errors.
+     */
+    suspend fun awaitEstablished(timeout: Duration) {
+        val settled =
+            withTimeout(timeout) {
+                state.first { it !is QuicConnectionState.Handshaking }
+            }
+        if (settled !is QuicConnectionState.Established) {
+            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed")
+        }
+    }
 
     val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val streams = mutableMapOf<Long, StreamSlot>()

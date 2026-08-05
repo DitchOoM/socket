@@ -65,7 +65,8 @@ actual object UdpSocket {
     ): AddressedDatagramChannel {
         val local = LinuxSocketAddressResolver.resolve(localHost ?: WILDCARD_V4, localPort) as LinuxSocketAddress
         val fd = openDatagramSocket(local.family)
-        setReuseAddr(fd)
+        // NO SO_REUSEADDR here — see [reuseAddrIsMulticastOnly]. Unicast binds must keep the kernel's
+        // duplicate-bind check, or two sockets can share a port and the later binder steals the traffic.
         bindTo(fd, local)
         // Addressed contract: localAddress is non-null by construction, so an unreportable getsockname
         // fails fast HERE — before the channel exists and before IoUringManager counts the socket.
@@ -93,7 +94,7 @@ actual object UdpSocket {
     ): ConnectedDatagramChannel {
         val peer = resolve(remoteHost, remotePort) as LinuxSocketAddress
         val fd = openDatagramSocket(peer.family)
-        setReuseAddr(fd)
+        // NO SO_REUSEADDR here — see [reuseAddrIsMulticastOnly].
         // Bind the local endpoint only when one was named (else the kernel auto-binds on connect).
         if (localHost != null || localPort != 0) {
             val wildcard = if (peer.family == AddressFamily.IPv6) WILDCARD_V6 else WILDCARD_V4
@@ -165,6 +166,24 @@ actual object UdpSocket {
         return fd
     }
 
+    /**
+     * `SO_REUSEADDR` is **multicast-only** — set it in [bindMulticast] and nowhere else. This is the
+     * contract the public [UdpSocket.bindMulticast] KDoc states, and what the JVM actual already does.
+     *
+     * On Linux it must never touch a *unicast* socket. Unlike Darwin (where `SO_REUSEADDR` alone still
+     * refuses a duplicate unicast bind), Linux relaxes the duplicate-bind check for UDP, and two
+     * consequences follow — both measured on 6.18 x86_64 and 6.18 aarch64, with the plain arm as control:
+     *
+     *  1. a second socket can bind an addr:port a first already holds (plain bind: `EADDRINUSE`), and
+     *     the **later** binder then receives the unicast datagrams — the original owner goes silent;
+     *  2. `bind(port = 0)` will hand out an **already-allocated ephemeral port**: 5/5 runs collided
+     *     within a few hundred binds, versus 0/5 without the option.
+     *
+     * Together that is a live wedge on a busy host: a QUIC server binds port 0, an unrelated socket is
+     * handed the same port, and the server never sees the client's Initial — the client observes total
+     * silence and dies at its idle timeout. UDP has no `TIME_WAIT`, so a unicast bind gains nothing from
+     * the option in exchange. Guarded by `LinuxUdpBindConformanceTests`.
+     */
     private fun setReuseAddr(fd: Int) {
         memScoped {
             val v = alloc<IntVar>()
