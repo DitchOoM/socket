@@ -76,8 +76,8 @@ class Http3LoopbackDiagnostics {
     fun report(cause: Throwable): String =
         buildString {
             appendLine("=== HTTP/3 loopback failure diagnostics ===")
-            appendLine("cause: ${cause::class.qualifiedName}: ${cause.message}")
-            causeChain(cause).forEach { appendLine("  caused by: ${it::class.qualifiedName}: ${it.message}") }
+            appendLine("cause: ${typeName(cause)}: ${cause.message}")
+            causeChain(cause).forEach { appendLine("  caused by: ${typeName(it)}: ${it.message}") }
             // The typed QUIC reason the failure carries. `NoError` here means the connection state
             // held no reason when the exception was minted, and the STATE / ERROR lines in the trace
             // below are then the only place the real cause appears.
@@ -93,6 +93,17 @@ class Http3LoopbackDiagnostics {
             captured.forEach { appendLine("  $it") }
             appendLine("=== end diagnostics ===")
         }
+
+    /**
+     * `simpleName`, NOT `qualifiedName`: this file lives in `src/loopbackShared`, which is wired into
+     * `commonTest` as well as `androidInstrumentedTest`, so it compiles for EVERY target — including
+     * Kotlin/JS, where `KClass.qualifiedName` is a hard compile error ("This reflection API is not
+     * supported in Kotlin/JS"). That is what broke `:socket-http3:compileTestKotlinJs`; the local
+     * jvm/macos verification never compiled the JS target. The package prefix is no loss here: an
+     * `androidTest` APK is not minified, so the simple name is the real class name, and the typed QUIC
+     * reason — the part the report exists to surface — is printed separately below.
+     */
+    private fun typeName(t: Throwable): String = t::class.simpleName ?: "Throwable"
 
     private fun causeChain(t: Throwable): List<Throwable> {
         val chain = mutableListOf<Throwable>()
