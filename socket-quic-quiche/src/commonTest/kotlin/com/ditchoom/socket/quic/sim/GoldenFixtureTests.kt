@@ -47,6 +47,14 @@ class GoldenFixtureTests {
             Observed.KeepAlivePing(10.seconds),
             Observed.KeepAlivePing(20.seconds),
             Observed.KeepAlivePing(30.seconds),
+            // End of life, at the end of the timeline: the driver publishes its terminal state
+            // whatever unwinds the loop, so a recorded session always ends with a typed reason
+            // instead of trailing off on Established. The reason is IdleTimeout only because this
+            // fixture arms `timedOut = true` for the whole run — quiche is scripted to report the
+            // idle timer as its terminal condition. The connection did NOT idle-close during the
+            // run: that is what the three PINGs and `onTimeoutCount == 0` below prove.
+            Observed.StateChange(30.seconds, QuicConnectionState.Closed(QuicError.IdleTimeout)),
+            Observed.ErrorSurfaced(30.seconds, QuicError.IdleTimeout),
         )
 
     @Test
@@ -115,6 +123,10 @@ class GoldenFixtureTests {
                 NetworkState.Routable(NetworkId.KindOnly(NetworkKind.Cellular), InternetAccess.Unobserved),
             ),
             Observed.DatagramFed(3.seconds + 5.milliseconds, 6),
+            // End of life at the end of the timeline, with NO error: the stale-path packet was data,
+            // not a teardown signal, so the connection reached t=4s alive and closed cleanly. A
+            // `Closed(error=…)` here — or any Closed before t=4s — would be the regression.
+            Observed.StateChange(4.seconds, QuicConnectionState.Closed(null)),
         )
 
     @Test
@@ -123,7 +135,8 @@ class GoldenFixtureTests {
             val run = runDatagramThenStalePath()
             run.trace.assertMatches(datagramThenStalePathGolden)
             // The reconnect-race shape: the post-path-change datagram is data, not a teardown
-            // signal — the trace must show it fed to quiche with no Closed transition anywhere.
+            // signal — the trace must show it fed to quiche with no Closed transition before the
+            // end-of-timeline teardown (the golden above pins that one at t=4s, error-free).
             run.trace.assertSequence {
                 at(3.seconds + 5.milliseconds, "stale-path datagram fed to quiche") {
                     it is Observed.DatagramFed && it.len == 6

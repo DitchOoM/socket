@@ -449,6 +449,17 @@ class QuicheDriver(
             }
         } finally {
             withContext(NonCancellable) {
+                // Publish the terminal state FIRST, while `conn` is still alive (cleanup() frees it
+                // below) so quiche's peer/local CONNECTION_CLOSE and its timed-out flag are still
+                // readable. The loop also exits on paths quiche never reports via connIsClosed — the
+                // connection scope being cancelled, or a throw unwinding the loop — and on those only
+                // cleanup() used to run, which closes `commands` while leaving `state` on Established
+                // forever. Every caller that then hit the closed channel resolved its reason through
+                // closeReasonOr, documented as reading `state` as the single source of truth, and so
+                // got the NoError fallback: the opaque `QuicCloseException: connection closed` that
+                // made the API-35 emulator failure in run 31027926910 undiagnosable. Idempotent — a
+                // no-op when the loop already exited through the normal connIsClosed transition.
+                transitionToClosed()
                 // Readers FIRST: cancel and await every reader loop (primary included) before
                 // cleanup() clears the recv pool. A reader parked in receive() holds a pool
                 // buffer; if it freed that buffer after clear(), the release would re-pool it

@@ -10,6 +10,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -66,6 +67,21 @@ abstract class Http3LoopbackTestSuite {
     /** Skip-on-missing-native-lib hook; JVM overrides to translate `UnsatisfiedLinkError` to a skip. */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
 
+    /**
+     * Per-test failure diagnostics. Fresh per test (kotlin.test constructs the class per test method),
+     * dumped by [runHttp3LoopbackTest] on any failure and silent otherwise — see
+     * [Http3LoopbackDiagnostics] for why this exists.
+     */
+    internal val diagnostics = Http3LoopbackDiagnostics()
+
+    /**
+     * Where [Http3LoopbackDiagnostics.report] goes on a failure. `println` reaches the test XML's
+     * `system-out` on every host platform, which CI already uploads. Android overrides this: an
+     * instrumented test's stdout does NOT reach the Gradle-side test XML, so there the report goes to
+     * logcat, which the emulator workflow captures.
+     */
+    internal open fun emitDiagnostics(report: String) = println(report)
+
     // Datagrams enabled so the WebTransport datagram tests (RFC 9297) work; harmless for the others
     // (it only advertises max_datagram_frame_size in the QUIC handshake).
     //
@@ -77,12 +93,22 @@ abstract class Http3LoopbackTestSuite {
     // withQuicServer, so without this it would run a transport config production never uses — and its
     // control-stream SETTINGS would silently not arrive on Apple. On quiche (JVM/Linux) PreferStreams is
     // a no-op for datagrams, so the datagram round-trip test is unaffected there.
+    //
+    // trace: deterministic-replay capture (RFC_DETERMINISTIC_SIMULATION.md §5) into
+    // [diagnostics]'s in-memory ring, dumped only when a test fails. BOTH ends are captured because
+    // the failure this answers — a client-side `QuicCloseException: connection closed` carrying the
+    // NoError fallback (API-35 emulator, run 31027926910) — is exactly the question "did the client
+    // die on its own, or did the server tear it down?". The single-sink convenience constructor is
+    // deliberate on the server: every accepted connection interleaves onto one buffer, which is
+    // aggregate diagnostics rather than per-connection replay, and interleaving is what shows which
+    // end stopped first.
     private val serverQuicOptions =
         QuicOptions(
             alpnProtocols = listOf(HTTP3_ALPN),
             verifyPeer = false,
             idleTimeout = 10.seconds,
             datagrams = DatagramOptions(),
+            trace = QuicTraceCapture(diagnostics.serverSink),
         ).forHttp3()
 
     private val clientQuicOptions =
@@ -91,6 +117,7 @@ abstract class Http3LoopbackTestSuite {
             verifyPeer = false,
             idleTimeout = 10.seconds,
             datagrams = DatagramOptions(),
+            trace = QuicTraceCapture(diagnostics.clientSink),
         ).forHttp3()
 
     // QUIC stream I/O is zero-copy: it reads each buffer's native address. On Kotlin/Native,
@@ -745,10 +772,13 @@ abstract class Http3LoopbackTestSuite {
                     },
                 ) {
                     delay(100)
+                    diagnostics.mark("server up; dialing")
                     withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
+                        diagnostics.mark("connected; awaiting peer SETTINGS")
                         withTimeout(5.seconds) { peerSettings() }
                         delay(50)
                         repeat(3) { i ->
+                            diagnostics.mark("request $i: opening")
                             val response =
                                 request(
                                     Http3Request(
@@ -759,6 +789,7 @@ abstract class Http3LoopbackTestSuite {
                                     ),
                                 )
                             try {
+                                diagnostics.mark("request $i: reading body")
                                 val body = response.readFullBody()
                                 val text = body.readString(body.remaining(), Charset.UTF8)
                                 body.freeIfNeeded()
@@ -770,9 +801,11 @@ abstract class Http3LoopbackTestSuite {
                                 )
                                 assertEquals("echo:client-token", text, "request $i body")
                             } finally {
+                                diagnostics.mark("request $i: closing response")
                                 response.close()
                             }
                         }
+                        diagnostics.mark("all requests done; checking connectionError")
                         assertNull(connectionError, "production server dynamic-QPACK exchange must not raise a connection error")
                     }
                 }
@@ -1634,13 +1667,23 @@ private data class PushResult(
  * HTTP/3 loopback test runner with a wall-clock timeout, mirroring `:socket-quic`'s `runQuicTest`:
  * [runTest] gives the right per-platform [TestResult] shape (Unit on JVM/K-N), and the body runs on
  * [Dispatchers.Default] so real QUIC I/O and real timing work (no virtual-time fast-forward).
+ *
+ * On ANY failure it emits [Http3LoopbackDiagnostics.report] before rethrowing, so the failure carries
+ * the step it reached and both ends' QUIC traces instead of a bare
+ * `QuicCloseException: connection closed`. On host platforms that lands in the test XML's
+ * `system-out`; on Android [Http3LoopbackTestSuite.emitDiagnostics] routes it to logcat instead.
  */
-private fun runHttp3LoopbackTest(
+private fun Http3LoopbackTestSuite.runHttp3LoopbackTest(
     timeout: Duration = 30.seconds,
     block: suspend CoroutineScope.() -> Unit,
 ): TestResult =
     runTest(timeout = timeout + 15.seconds) {
         withContext(Dispatchers.Default) {
-            withTimeout(timeout) { block() }
+            try {
+                withTimeout(timeout) { block() }
+            } catch (t: Throwable) {
+                emitDiagnostics(diagnostics.report(t))
+                throw t
+            }
         }
     }

@@ -169,29 +169,12 @@ jobs:
           disk-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -writable-system -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: |
-            adb root || true
-            adb wait-for-device
-            # The previous `adb reverse tcp:4433 tcp:4433` is gone: QUIC
-            # is UDP and adb reverse only handles TCP. The emulator
-            # reaches the host's docker-published 127.0.0.1:14433/udp
-            # via its built-in 10.0.2.2 host alias — no port forwarding
-            # needed. AndroidQuicConnectivityTests + AndroidQuicMigrationTests
-            # now point at 10.0.2.2:14433 (matches QuicHarnessConfig.quicEchoPort).
-            #
-            # Start the host-side NetworkControlServer (TCP :9998 + `adb reverse
-            # tcp:9998`) BEFORE the tests so AndroidQuicMigrationTests' netem /
-            # resilience suite actually RUNS instead of skipping on
-            # `NetworkControl.isAvailable() == false`. The server drives
-            # `adb shell su 0 iptables/tc/settings` on the rooted emulator (the
-            # `adb root` above) to toggle UDP / latency / airplane-mode while the
-            # device-side TCP control channel (10.0.2.2:9998) stays up. This is
-            # issue #72 Task 1 — the docker quic-echo (14433/udp) stays up for the
-            # connect + migration tests. Run as a separate Gradle invocation so its
-            # detached host JVM is alive before connectedAndroidTest starts.
-            ./gradlew :socket-quic-quiche:startNetworkControlServer
-            ./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest
-            ./gradlew :socket-quic-quiche:stopNetworkControlServer || true
+          # ONE line, deliberately. This action splits `script:` on newlines and runs each line as
+          # its own `/usr/bin/sh -c` — multi-line constructs are a syntax error and shell variables
+          # do not survive to the next line (run 31057524722 died on exactly that, after the tests
+          # had passed). The body therefore lives in a file that runs in a single shell; see the
+          # header of scripts/android-emulator-tests.sh.
+          script: bash scripts/android-emulator-tests.sh ${{ matrix.api-level }}
 
       # Mirror the audit step from build-apple.yaml + build-linux.yaml:
       # count `harness OK` vs `harness SKIP` markers from
@@ -235,6 +218,22 @@ jobs:
           if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
             echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
           fi
+
+      # The instrumented-test record itself. Without this a failure left ONLY the Gradle console
+      # stack (run 31027926910): no per-test HTML/XML report, and no logcat — where the Android
+      # failure diagnostics actually live (see the `run tests` script above). Both are uploaded
+      # together so the next occurrence can be read end-to-end from the artifact.
+      - name: Upload instrumented test reports + logcat on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-test-reports-${{ matrix.api-level }}
+          path: |
+            **/build/reports/androidTests/**
+            **/build/outputs/androidTest-results/**
+            emulator-diagnostics/**
+          if-no-files-found: warn
+          retention-days: 7
 
       # Surface the quiche cargo build transcript when anything failed, so a build failure
       # (e.g. a missing rustup cross target → E0463) is diagnosable from an artifact instead
