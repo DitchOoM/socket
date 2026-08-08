@@ -36,6 +36,36 @@ class FfmQuicheApi private constructor(
 
     private fun seg(addr: Long): MemorySegment = MemorySegment.ofAddress(addr)
 
+    /**
+     * NUL-terminated UTF-8 copy of [s], allocated in [arena] — a `const char *` for quiche.
+     *
+     * Hand-rolled instead of the one-call `Arena` helper because that helper has two names and this
+     * class has to satisfy both. It was `allocateUtf8String` in JDK 21's PREVIEW FFM API and was
+     * renamed to `allocateFrom` when JEP 454 finalised FFM in JDK 22. This tier is compiled by
+     * `jvmToolchain(21)` but selected at runtime by every JDK >= 21 through `META-INF/versions/21`,
+     * so either name is wrong for half the supported range: `allocateUtf8String` compiles here and
+     * throws `NoSuchMethodError` on JDK 22+ (issue #287), and `allocateFrom` does not exist on the
+     * JDK 21 that compiles it. `allocate` + `MemorySegment.copy` is spelled identically in both.
+     *
+     * Do not "simplify" this back to a single call without moving the whole `java21` compilation to a
+     * JDK 22+ toolchain — the failure is invisible at build time and only reaches a consumer.
+     */
+    private fun cString(
+        arena: Arena,
+        s: String,
+    ): MemorySegment {
+        // Platform boundary: MemorySegment.copy's array overload is the only spelling of
+        // String -> native UTF-8 that exists unchanged on both JDK 21 and JDK 22+.
+        @Suppress("NoByteArrayInProd")
+        val bytes = s.encodeToByteArray()
+        // +1 for the terminator. FFM zero-fills a fresh allocation, so the trailing byte is already
+        // NUL; it is written explicitly so the invariant does not depend on that guarantee.
+        val segment = arena.allocate(bytes.size + 1L)
+        MemorySegment.copy(bytes, 0, segment, JAVA_BYTE, 0L, bytes.size)
+        segment.set(JAVA_BYTE, bytes.size.toLong(), 0)
+        return segment
+    }
+
     // --- Lazily resolved downcall handles ---
     private val hConfigNew by lazy { downcall("quiche_config_new", FunctionDescriptor.of(ADDRESS, JAVA_INT)) }
     private val hConfigFree by lazy { downcall("quiche_config_free", FunctionDescriptor.ofVoid(ADDRESS)) }
@@ -872,9 +902,9 @@ class FfmQuicheApi private constructor(
         Arena.ofConfined().use { arena ->
             hConnSetQlogPath.invokeExact(
                 seg(conn.handle),
-                arena.allocateUtf8String(path),
-                arena.allocateUtf8String(title),
-                arena.allocateUtf8String(desc),
+                cString(arena, path),
+                cString(arena, title),
+                cString(arena, desc),
             ) as Boolean
         }
 
