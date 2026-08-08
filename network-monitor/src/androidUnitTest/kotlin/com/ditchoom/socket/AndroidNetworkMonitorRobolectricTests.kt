@@ -411,6 +411,63 @@ class AndroidNetworkMonitorRobolectricTests {
     }
 
     @Test
+    fun aPerUidBlockedVerdictFoldsIntoTheSamePublishedState() {
+        // The Data Saver / restricted-background scenario: the network's capabilities keep reading
+        // INTERNET|VALIDATED — no onCapabilitiesChanged will ever arrive — and the platform delivers
+        // the verdict through onBlockedStatusChanged alone. Before this override existed, the monitor
+        // kept publishing Routable(id, Confirmed) while every socket the app opened failed.
+        withMonitor { monitor, callback ->
+            val network = ShadowNetwork.newInstance(NET_ID)
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            assertEquals(
+                InternetAccess.Observed.Confirmed,
+                assertIs<NetworkState.Routable>(monitor.state.value).internet,
+            )
+
+            callback.onBlockedStatusChanged(network, true)
+
+            val blocked = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Blocked(BlockReason.Suspended), blocked.internet)
+            assertFalse(blocked.canRouteOffLink, "blocked traffic is not worth attempting")
+            assertTrue(blocked.isTransient, "…but the verdict lifts on its own — wait, do not tear down")
+            // One atomic value: the identity rides the same emission as the verdict.
+            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(blocked.id).kind)
+
+            // Foregrounding the app (or lifting Data Saver) delivers the counter-verdict the same way.
+            callback.onBlockedStatusChanged(network, false)
+            assertEquals(
+                InternetAccess.Observed.Confirmed,
+                assertIs<NetworkState.Routable>(monitor.state.value).internet,
+            )
+        }
+    }
+
+    @Test
+    fun aBlockedVerdictForASupersededNetworkDoesNotBrandItsSuccessor() {
+        // The verdict is keyed to the network it was delivered for. After a handover the new default
+        // must start from the platform's verdict about IT — not inherit the dead network's blocked bit.
+        withMonitor { monitor, callback ->
+            val wifiNetwork = ShadowNetwork.newInstance(NET_ID)
+            val cellular = ShadowNetwork.newInstance(NET_ID + 1)
+
+            callback.onCapabilitiesChanged(wifiNetwork, wifi(validated = true))
+            callback.onBlockedStatusChanged(wifiNetwork, true)
+            assertEquals(
+                InternetAccess.Observed.Blocked(BlockReason.Suspended),
+                assertIs<NetworkState.Routable>(monitor.state.value).internet,
+            )
+
+            // Handover to cellular, delivered in the platform's guaranteed order.
+            callback.onAvailable(cellular)
+            callback.onCapabilitiesChanged(cellular, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR, validated = true))
+
+            val state = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Confirmed, state.internet, "the old network's verdict must not leak")
+            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(state.id).kind)
+        }
+    }
+
+    @Test
     fun onLostForTheCurrentNetworkPublishesOfflineWhichCarriesNoIdentity() {
         withMonitor { monitor, callback ->
             val network = ShadowNetwork.newInstance(NET_ID)
