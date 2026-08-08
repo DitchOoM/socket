@@ -10,7 +10,9 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.quic.connectionsByAlpn
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.quic.withQuicConnection
 import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -1621,6 +1623,111 @@ abstract class Http3LoopbackTestSuite {
                     // the auth filter) — proving composition order outer→inner.
                     val seen = setOf(withTimeout(2.seconds) { observed.receive() }, withTimeout(2.seconds) { observed.receive() })
                     assertEquals(setOf("/ok", "/denied"), seen, "observe filter saw both requests")
+                }
+            }
+        }
+
+    // --- ALPN demux: HTTP/3 + a raw QUIC protocol sharing one listener on one UDP port ---
+
+    /**
+     * One [withQuicServer] listener offers `h3` AND a raw application protocol, routing each
+     * accepted connection by its negotiated ALPN: `h3` connections are served by the production
+     * [serveHttp3] path, `raw-echo` connections by a plain QUIC stream echo. An HTTP/3 client and a
+     * raw QUIC client then both talk to the SAME port, and each must reach its own stack — the
+     * end-to-end proof that two protocol stacks can share a single UDP listener.
+     */
+    @Test
+    fun alpnDemux_http3AndRawProtocolShareOnePort() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                val serverOptions =
+                    QuicOptions(
+                        alpnProtocols = listOf(HTTP3_ALPN, "raw-echo"),
+                        verifyPeer = false,
+                        idleTimeout = 10.seconds,
+                        // serveHttp3 documents the transport prerequisites as the listener owner's
+                        // job; forHttp3() applies the same PreferStreams the production wrapper forces.
+                    ).forHttp3()
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverOptions) {
+                    val serverJob =
+                        launch {
+                            connectionsByAlpn(
+                                HTTP3_ALPN to {
+                                    serveHttp3(connectionOptions = connectionOptions) {
+                                        val body = textBuffer("h3:${request.path}")
+                                        try {
+                                            response.send(200, body = body)
+                                        } finally {
+                                            body.freeIfNeeded()
+                                        }
+                                    }
+                                },
+                                "raw-echo" to {
+                                    val stream = acceptStream()
+                                    val data = stream.read(5.seconds)
+                                    if (data is ReadResult.Data) {
+                                        val text = data.buffer.readString(data.buffer.remaining(), Charset.UTF8)
+                                        val out = textBuffer("raw:$text")
+                                        try {
+                                            stream.write(out, 5.seconds)
+                                        } finally {
+                                            out.freeIfNeeded()
+                                        }
+                                    }
+                                    stream.close()
+                                },
+                            )
+                        }
+                    delay(100)
+
+                    try {
+                        // HTTP/3 client → the h3 route (production client + production serveHttp3).
+                        val h3Result =
+                            withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
+                                val response = request(Http3Request(method = "GET", authority = "localhost", path = "/shared"))
+                                try {
+                                    val body = response.readFullBody()
+                                    val text = body.readString(body.remaining(), Charset.UTF8)
+                                    body.freeIfNeeded()
+                                    response.status to text
+                                } finally {
+                                    response.close()
+                                }
+                            }
+                        assertEquals(200, h3Result.first)
+                        assertEquals("h3:/shared", h3Result.second)
+
+                        // Raw QUIC client → the raw-echo route on the SAME port.
+                        val rawOptions =
+                            QuicOptions(
+                                alpnProtocols = listOf("raw-echo"),
+                                verifyPeer = false,
+                                idleTimeout = 10.seconds,
+                            )
+                        val rawResult =
+                            withQuicConnection("localhost", port, rawOptions, timeout = 15.seconds) {
+                                val stream = openStream()
+                                val ping = textBuffer("ping")
+                                try {
+                                    stream.write(ping, 5.seconds)
+                                } finally {
+                                    ping.freeIfNeeded()
+                                }
+                                val reply = stream.read(5.seconds)
+                                val text =
+                                    if (reply is ReadResult.Data) {
+                                        reply.buffer.readString(reply.buffer.remaining(), Charset.UTF8)
+                                    } else {
+                                        "no_data:${reply::class.simpleName}"
+                                    }
+                                stream.close()
+                                text to negotiatedAlpn
+                            }
+                        assertEquals("raw:ping" to "raw-echo", rawResult)
+                    } finally {
+                        serverJob.cancel()
+                    }
                 }
             }
         }
