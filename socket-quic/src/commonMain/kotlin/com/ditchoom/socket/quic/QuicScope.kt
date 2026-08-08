@@ -31,6 +31,23 @@ import kotlinx.coroutines.flow.flow
  */
 interface QuicScope : CoroutineScope {
     /**
+     * The ALPN protocol negotiated during this connection's TLS 1.3 handshake (RFC 7301). QUIC
+     * mandates ALPN, so an established connection always has exactly one negotiated protocol —
+     * one of the entries the local endpoint offered in [QuicOptions.alpnProtocols].
+     *
+     * Inside a [withQuicConnection] / [QuicServer.connections] block the connection is established
+     * by contract, so this is always readable there. On the server it is the demultiplexing key
+     * when one listener offers several protocols (see [connectionsByAlpn]): route the accepted
+     * connection to the stack that speaks what the client negotiated.
+     *
+     * Defaults to [UnsupportedOperationException] for scope implementations that cannot know the
+     * negotiated protocol; [QuicConnection] overrides it by deriving from
+     * [QuicConnectionState.Established], which every driver-backed platform populates.
+     */
+    val negotiatedAlpn: String
+        get() = throw UnsupportedOperationException("Negotiated ALPN is not available on this platform")
+
+    /**
      * The [BufferFactory] this connection allocates from — the one passed via
      * [TransportConfig.bufferFactory][com.ditchoom.socket.TransportConfig.bufferFactory] (default
      * [BufferFactory.Default]). Allocate your send buffers and datagrams from here so they share the

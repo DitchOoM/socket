@@ -34,6 +34,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_max_recv_udp_payload_si
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_send_udp_payload_size
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_stream_window
 import com.ditchoom.socket.quic.quiche.quiche_config_verify_peer
+import com.ditchoom.socket.quic.quiche.quiche_conn_application_proto
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
@@ -385,6 +386,28 @@ internal object CinteropQuicheApi : QuicheApi {
                 0
             } else {
                 // Copy out only when it fits; otherwise report the needed length so the caller retries.
+                if (len <= bufLen) {
+                    memcpy(buf.toCPointer<UByteVar>()!!, src, len.convert())
+                }
+                len
+            }
+        }
+
+    override fun connApplicationProto(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        memScoped {
+            val out = alloc<CPointerVar<UByteVar>>() // const uint8_t **out
+            val outLen = alloc<ULongVar>() // size_t *out_len
+            quiche_conn_application_proto(conn.handle.toCPointer()!!, out.ptr, outLen.ptr)
+            val len = outLen.value.toInt()
+            val src = out.value
+            if (len <= 0 || src == null) {
+                0
+            } else {
+                // Same snprintf-style contract as connPeerCert: copy only when it fits.
                 if (len <= bufLen) {
                     memcpy(buf.toCPointer<UByteVar>()!!, src, len.convert())
                 }

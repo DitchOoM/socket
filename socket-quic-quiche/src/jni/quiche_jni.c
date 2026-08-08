@@ -256,6 +256,21 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
     return (jint)out_len;
 }
 
+/* Negotiated ALPN protocol (RFC 7301): copy the identifier's bytes into the caller's native buffer
+   at `buf` (capacity `buf_len`). Same snprintf-style two-pass contract as nConnPeerCert; returns 0
+   when no protocol has been negotiated. The bytes quiche returns point into conn-owned memory. */
+JNIEXPORT jint JNICALL JNI_FN(nConnApplicationProto)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    quiche_conn_application_proto((quiche_conn *)(uintptr_t)conn, &out, &out_len);
+    if (out == NULL || out_len == 0) return 0;
+    if ((jlong)out_len <= (jlong)buf_len) {
+        memcpy((void *)(uintptr_t)buf, out, out_len);
+    }
+    return (jint)out_len;
+}
+
 /*
  * The peer's (peer=JNI_TRUE) or our local (peer=JNI_FALSE) CONNECTION_CLOSE reason.
  * Returns JNI_FALSE when no close frame applies (still open / we closed first). On JNI_TRUE

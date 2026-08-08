@@ -158,6 +158,96 @@ abstract class QuicServerTestSuite {
         }
 
     /**
+     * ALPN demultiplexing: ONE listener on ONE UDP port offers two application protocols, and each
+     * accepted connection is routed to the handler for the protocol its client negotiated
+     * ([connectionsByAlpn] keyed on [QuicScope.negotiatedAlpn]). Two clients — each offering a
+     * single, different ALPN — must land in different handlers, prove it by receiving a
+     * handler-specific reply, and observe their own negotiated protocol client-side.
+     */
+    @Test
+    fun alpnDemux_twoProtocolsShareOneListener() =
+        runQuicTest {
+            wrapTestBody {
+                val serverOptions =
+                    QuicOptions(
+                        alpnProtocols = listOf("proto-a", "proto-b"),
+                        verifyPeer = false,
+                        idleTimeout = 10.seconds,
+                    )
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverOptions) {
+                    val serverJob =
+                        launch {
+                            connectionsByAlpn(
+                                "proto-a" to {
+                                    val stream = acceptStream()
+                                    replyTagged(stream, "a")
+                                },
+                                "proto-b" to {
+                                    val stream = acceptStream()
+                                    replyTagged(stream, "b")
+                                },
+                            )
+                        }
+                    delay(100)
+
+                    try {
+                        // Sequential, one protocol at a time — each client negotiates a single ALPN,
+                        // so its reply proves which handler its connection was routed to.
+                        assertEquals("a:ping" to "proto-a", roundTrip(port, alpn = "proto-a"))
+                        assertEquals("b:ping" to "proto-b", roundTrip(port, alpn = "proto-b"))
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /** Echo the stream's first chunk back prefixed with `"$tag:"` — the handler-identity marker. */
+    private suspend fun QuicScope.replyTagged(
+        stream: QuicByteStream,
+        tag: String,
+    ) {
+        val data = stream.read(5.seconds)
+        if (data is ReadResult.Data) {
+            val text = data.buffer.readString(data.buffer.remaining(), Charset.UTF8)
+            val out = BufferFactory.deterministic().allocate(tag.length + 1 + text.length)
+            out.writeString("$tag:$text", Charset.UTF8)
+            out.resetForRead()
+            stream.write(out, 5.seconds)
+        }
+        stream.close()
+    }
+
+    /** Connect offering only [alpn], send "ping", and return (reply, client-observed negotiated ALPN). */
+    private suspend fun roundTrip(
+        port: Int,
+        alpn: String,
+    ): Pair<String, String> {
+        val clientOptions =
+            QuicOptions(
+                alpnProtocols = listOf(alpn),
+                verifyPeer = false,
+                idleTimeout = 10.seconds,
+            )
+        return withQuicConnection("localhost", port, clientOptions, timeout = 10.seconds) {
+            val stream = openStream()
+            val sendBuf = BufferFactory.deterministic().allocate(4)
+            sendBuf.writeString("ping", Charset.UTF8)
+            sendBuf.resetForRead()
+            stream.write(sendBuf, 5.seconds)
+            val response = stream.read(5.seconds)
+            val reply =
+                if (response is ReadResult.Data) {
+                    response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                } else {
+                    "no_data:${response::class.simpleName}"
+                }
+            stream.close()
+            reply to negotiatedAlpn
+        }
+    }
+
+    /**
      * The [ReadResult] a peer observes when the remote abruptly resets a stream.
      * Apple's Network.framework surfaces it as [ReadResult.Reset]; the quiche driver
      * (JVM/Linux) collapses a stream reset to EOF ([ReadResult.End]). Both are terminal

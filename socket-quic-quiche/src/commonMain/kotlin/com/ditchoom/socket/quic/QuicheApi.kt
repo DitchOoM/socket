@@ -328,6 +328,24 @@ interface QuicheApi {
     ): Int
 
     /**
+     * Copy the negotiated ALPN protocol (`quiche_conn_application_proto`) into the native buffer at
+     * [buf] (capacity [bufLen] bytes). Same snprintf-style contract as [connPeerCert]:
+     * - `0` — no protocol negotiated yet (handshake not far enough along), or the backend does not
+     *   expose it (the interface default — test doubles that don't model ALPN are automatically fine);
+     * - `N in 1..bufLen` — the protocol name length; the first `N` bytes of [buf] hold it (ASCII);
+     * - `N > bufLen` — the length, but **nothing was copied**; re-allocate and call again. (ALPN
+     *   identifiers are at most 255 bytes per RFC 7301, so a 255-byte buffer never needs the retry.)
+     *
+     * The bytes quiche returns point into conn-owned memory, so they are copied out here. quiche is
+     * single-threaded — call this only from the driver loop.
+     */
+    fun connApplicationProto(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = 0
+
+    /**
      * The peer's CONNECTION_CLOSE reason as a typed [QuicError], or `null` if the peer has not closed
      * the connection (we closed first, or it is still open). Maps `quiche_conn_peer_error`, decoding the
      * C API's `is_app` flag + numeric code into the sealed hierarchy — application closes (frame 0x1d) →
