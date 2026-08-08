@@ -6,6 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
 
@@ -49,6 +50,16 @@ class ScriptedNetworkMonitor(
     private val stateFlow = MutableStateFlow(script.initialState)
     override val state: StateFlow<NetworkState> = stateFlow.asStateFlow()
 
+    /**
+     * One bump per transition *applied*, exactly as a platform monitor bumps once per OS callback —
+     * including a transition to the state already published, which the [state] flow de-dupes away. A
+     * script that repeats a state therefore models real platform chatter (the callback burst a weak
+     * radio produces before any rung changes), and a consumer's density logic can be exercised under
+     * virtual time.
+     */
+    private val _observationCount = MutableStateFlow(0L)
+    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+
     /** The script's declared capability, reported verbatim — every scripted state was checked against it. */
     override val capability: MonitorCapability = script.capability
 
@@ -56,7 +67,8 @@ class ScriptedNetworkMonitor(
      * Plays [script] to completion on the calling coroutine, suspending between transitions with [delay]
      * (virtual time under `runTest`). Returns once the last transition has fired; a script with no
      * transitions returns immediately. Cancelling the caller stops playback at whatever state was last
-     * applied. Calling [play] again re-runs the timeline (StateFlow de-dupes the repeated values).
+     * applied. Calling [play] again re-runs the timeline (StateFlow de-dupes the repeated values;
+     * [observationCount] keeps counting, as a real monitor's would).
      */
     suspend fun play() {
         var elapsed = Duration.ZERO
@@ -64,6 +76,7 @@ class ScriptedNetworkMonitor(
             val wait = transition.at - elapsed
             if (wait > Duration.ZERO) delay(wait)
             elapsed = transition.at
+            _observationCount.update { it + 1 }
             stateFlow.value = transition.state
         }
     }

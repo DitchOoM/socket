@@ -510,6 +510,43 @@ class AndroidNetworkMonitorRobolectricTests {
     }
 
     @Test
+    fun observationCountPreservesTheCallbackDensityTheStateFlowDedupes() {
+        withMonitor { monitor, callback ->
+            val network = ShadowNetwork.newInstance(NET_ID)
+            assertEquals(0L, monitor.observationCount.value, "the synchronous seed is not a platform observation")
+
+            // Real baseband chatter: repeated onCapabilitiesChanged deliveries folding to the same state.
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            val settled = monitor.state.value
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+
+            assertEquals(settled, monitor.state.value, "identical capabilities fold to an unchanged state")
+            assertEquals(3L, monitor.observationCount.value, "…but every delivery still counts once")
+        }
+    }
+
+    @Test
+    @Config(sdk = [Build.VERSION_CODES.M])
+    fun preOARejectedNonDefaultCallbackIsNotAnObservation() {
+        // The counter reads as density on the tracked network. Below O the INTERNET request multi-fires
+        // for every satisfying network; a concurrent network's chatter is its own story and must not
+        // inflate ours — otherwise the ordinary two-live-networks phone state reads as a permanent flap.
+        setActiveNetwork(NET_ID)
+        withMonitor { monitor, callback ->
+            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi(validated = true))
+            val counted = monitor.observationCount.value
+
+            callback.onCapabilitiesChanged(
+                ShadowNetwork.newInstance(NET_ID + 1),
+                capabilities(NetworkCapabilities.TRANSPORT_CELLULAR),
+            )
+
+            assertEquals(counted, monitor.observationCount.value, "rejected chatter must not count")
+        }
+    }
+
+    @Test
     fun withNoCapturedContextThereIsNoAndroidMonitor() {
         // The precondition for socket's Android default() falling back to PollingNetworkMonitor.
         assertNull(NetworkMonitor.androidOrNull())

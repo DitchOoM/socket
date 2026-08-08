@@ -11,6 +11,7 @@ import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * Apple [NetworkMonitor] backed by `NWPathMonitor` from Network.framework.
@@ -32,6 +33,14 @@ class AppleNetworkMonitor : NetworkMonitor {
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
     /**
+     * One bump per `NWPathMonitor` update-handler invocation. The framework fires the handler on every
+     * path *evaluation*, and consecutive evaluations frequently fold to a byte-identical [NetworkState]
+     * — that chatter is exactly what [NetworkMonitor.observationCount] exists to preserve.
+     */
+    private val _observationCount = MutableStateFlow(0L)
+    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+
+    /**
      * `NWPathMonitor` invokes its update handler on every path change — no interval anywhere — and
      * resolves route-vs-no-route without ever probing the internet.
      */
@@ -42,6 +51,7 @@ class AppleNetworkMonitor : NetworkMonitor {
 
     init {
         nm_path_monitor_set_update_handler(monitor) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
+            _observationCount.update { it + 1 }
             // Decode the C enum ONCE, here at the boundary, so nothing downstream branches on a raw Int.
             _state.value =
                 appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)

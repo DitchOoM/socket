@@ -14,6 +14,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import platform.linux.freeifaddrs
@@ -54,6 +55,15 @@ class LinuxNetworkMonitor : NetworkMonitor {
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
     /**
+     * One bump per netlink wake-up (each successful `recv`, ENOBUFS included — a drop *is* an
+     * observation the kernel tried to deliver). The kernel batches messages, so this counts
+     * deliveries, not messages — still a faithful density signal: a flapping link produces many
+     * deliveries, most of which re-resolve to an unchanged [NetworkState] that [state] de-dupes away.
+     */
+    private val _observationCount = MutableStateFlow(0L)
+    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+
+    /**
      * Link, address and route netlink multicast (the five `RTMGRP_*` groups in the class KDoc) — the
      * kernel pushes, we never poll — and the kernel resolves routes but never probes the internet
      * (RFC §8.2).
@@ -87,6 +97,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
                         // which observes whatever end state the dropped burst left behind. So re-resolve
                         // and keep listening; anything else (0 = closed, other errors) ends the loop.
                         if (n == 0L || (n < 0L && errno != ENOBUFS)) break
+                        _observationCount.update { it + 1 }
                         // One re-resolution, one publication: link, route and identity come from the same
                         // pass, so a collector can never see a new link beside the old route.
                         _state.value = resolveNetworkState()

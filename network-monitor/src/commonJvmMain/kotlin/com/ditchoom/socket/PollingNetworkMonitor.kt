@@ -22,6 +22,10 @@ import kotlin.time.Duration.Companion.seconds
  * Reports [ReachResolution.RouteOnly]: it distinguishes [NetworkState.LinkLocal] from
  * [NetworkState.Routable], and never observes internet reachability.
  *
+ * Deliberately leaves [NetworkMonitor.observationCount] at the contract default (never advances): a
+ * poll's cadence is this constructor's [interval], not a property of the network, so reporting it as
+ * observation density would be a configuration constant dressed up as a measurement.
+ *
  * @param interval How often to re-resolve the network state (default 5 seconds).
  * @param checkNetwork Injectable resolver, for testing without touching real interfaces.
  */

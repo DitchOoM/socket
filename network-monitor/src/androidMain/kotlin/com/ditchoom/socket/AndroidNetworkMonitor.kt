@@ -10,6 +10,7 @@ import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import android.net.NetworkCapabilities as AndroidNetworkCapabilities
 
 /**
@@ -45,6 +46,16 @@ class AndroidNetworkMonitor(
 ) : NetworkMonitor {
     private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
+
+    /**
+     * One bump per [ConnectivityManager.NetworkCallback] delivery that concerns the tracked network —
+     * i.e. per callback that passes [acceptsUpdateFor]. Rejected chatter from a concurrent non-default
+     * network (the pre-O request-based path) is *its* network's story, not density on ours, so it does
+     * not count. The constructor's synchronous seed is not a platform observation and does not count
+     * either.
+     */
+    private val _observationCount = MutableStateFlow(0L)
+    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
 
     override val capability: MonitorCapability =
         MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet)
@@ -113,6 +124,7 @@ class AndroidNetworkMonitor(
                     return
                 }
                 if (!acceptsUpdateFor(network)) return
+                observed()
                 currentNetwork = network
                 publish(network, connectivityManager.getNetworkCapabilities(network))
             }
@@ -124,10 +136,14 @@ class AndroidNetworkMonitor(
                     // network satisfies the criteria of the request" — so there is genuinely nothing
                     // left to fall back to and no stale-onLost race to guard against. A handover to a
                     // better network arrives as onAvailable/onCapabilitiesChanged instead, never here.
+                    observed()
                     clear()
                     return
                 }
-                if (network == currentNetwork) clear()
+                if (network == currentNetwork) {
+                    observed()
+                    clear()
+                }
             }
 
             override fun onCapabilitiesChanged(
@@ -135,6 +151,7 @@ class AndroidNetworkMonitor(
                 caps: AndroidNetworkCapabilities,
             ) {
                 if (!acceptsUpdateFor(network)) return
+                observed()
                 publish(network, caps)
             }
 
@@ -154,11 +171,17 @@ class AndroidNetworkMonitor(
                 // so by the time a verdict lands for the current network, its capabilities are already
                 // retained in currentCaps and the re-fold below cannot tear.
                 if (!acceptsUpdateFor(network)) return
+                observed()
                 blockedNetwork = network
                 blockedForApp = blocked
                 if (network == currentNetwork) publish(network, currentCaps)
             }
         }
+
+    /** One platform observation delivered for the tracked network — see [observationCount]. */
+    private fun observed() {
+        _observationCount.update { it + 1 }
+    }
 
     /**
      * Whether a callback for [network] may reach [publish]. Only the pre-O request-based path ever says

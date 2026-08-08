@@ -79,6 +79,14 @@ class AppleNetworkMonitorLiveTests {
                     NetworkState.Unknown ->
                         fail("unreachable — awaited a non-Unknown state")
                 }
+
+                // The state left Unknown, so at least one update-handler invocation was folded — and
+                // every invocation must have been counted. (Environment-invariant: asserts the counter
+                // moved with the callback, not any particular density.)
+                assertTrue(
+                    monitor.observationCount.value >= 1L,
+                    "a delivered path update must count as an observation, count=${monitor.observationCount.value}",
+                )
             } finally {
                 // close() must cancel the NWPathMonitor without crashing or hanging.
                 monitor.close()
