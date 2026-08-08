@@ -217,6 +217,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$OK" = "0" ] && [ "$SKIP" != "0" ]; then
             echo "::warning::Every QuicHarnessIntegrationTest skipped on Android — emulator QUIC client not actually validated"
+          elif [ "$OK" = "0" ]; then
+            # OK=0 AND SKIP=0 means the audit matched NOTHING — the suite never ran on the emulator
+            # (QuicHarnessIntegrationTests lives in commonTest, which connectedAndroidTest does not
+            # execute) or the marker text moved. Either way this step validated nothing, so it has to
+            # say so instead of printing "OK=0, SKIP=0" and passing like a clean result.
+            echo "::warning::No harness OK/SKIP markers on Android — QuicHarnessIntegrationTests never ran on the emulator, so this audit validated nothing"
           fi
 
       # The instrumented-test record itself. Without this a failure left ONLY the Gradle console
