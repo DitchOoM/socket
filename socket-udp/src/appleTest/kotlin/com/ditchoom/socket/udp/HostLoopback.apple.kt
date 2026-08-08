@@ -76,7 +76,10 @@ private fun rawLoopbackCarries(size: Int): Boolean =
             val payload = allocArray<ByteVar>(size)
             for (i in 0 until size) payload[i] = 0x41
             val sent = sendto(sender, payload, size.convert(), 0, target.reinterpret(), addrLength.convert())
-            if (sent != size.toLong()) return false // the host refused it outright (EMSGSIZE)
+            // .toLong() on BOTH sides: sendto returns ssize_t, which K/N maps to Long on every Apple
+            // target except watchosArm64 (arm64_32), where it is Int. Comparing the raw return against
+            // a Long compiles everywhere else and fails only there.
+            if (sent.toLong() != size.toLong()) return false // the host refused it outright (EMSGSIZE)
 
             // Accepted — now find out whether it actually arrives. Silence here is the WSL2 shape: a
             // host that drops rather than refuses, and the case this whole seam exists to recognize.
@@ -87,7 +90,7 @@ private fun rawLoopbackCarries(size: Int): Boolean =
             if (poll(fds.ptr, 1.convert(), RECEIVE_TIMEOUT_MILLIS) <= 0) return false
 
             val landing = allocArray<ByteVar>(size + 1)
-            recvfrom(receiver, landing, (size + 1).convert(), 0, null, null) == size.toLong()
+            recvfrom(receiver, landing, (size + 1).convert(), 0, null, null).toLong() == size.toLong()
         } finally {
             close(sender)
             close(receiver)
