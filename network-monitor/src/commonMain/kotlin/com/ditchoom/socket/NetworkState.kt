@@ -150,6 +150,12 @@ data class MonitorCapability(
     val mechanism: MonitorMechanism,
     /** Which rungs of the link → route → internet ladder this monitor can ever report. */
     val resolution: ReachResolution,
+    /**
+     * Whether [NetworkMonitor.linkQuality] can ever report a measurement. Defaults to
+     * [LinkQualityResolution.None] — the honest answer for a monitor declared before this axis
+     * existed, and for every platform with no public signal-strength API.
+     */
+    val linkQuality: LinkQualityResolution = LinkQualityResolution.None,
 )
 
 /**

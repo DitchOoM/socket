@@ -255,6 +255,32 @@ kotlin {
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
+
+            // Wi-Fi RSSI (LinkQuality) is macOS-only among Apple platforms: CoreWLAN is the one PUBLIC
+            // signal-strength API, and it exists only there. Same per-target-srcDir technique as
+            // appleNativeImpl (these are only ever compiled by a real target, never as shared
+            // metadata), with exactly one of the two twins per target: macOS gets the CoreWLAN sampler
+            // (platform.CoreWLAN ships in Kotlin/Native's macOS platform klibs — no cinterop needed),
+            // every other Apple target gets the honest-absence twin that declares
+            // LinkQualityResolution.None and never fabricates a reading.
+            val appleRssiMacosDir = file("src/appleRssiMacosImpl/kotlin")
+            val appleRssiDefaultDir = file("src/appleRssiDefaultImpl/kotlin")
+            listOf("macosArm64Main", "macosX64Main").forEach { sourceSetName ->
+                findByName(sourceSetName)?.kotlin?.srcDir(appleRssiMacosDir)
+            }
+            listOf(
+                "iosArm64Main",
+                "iosSimulatorArm64Main",
+                "iosX64Main",
+                "tvosArm64Main",
+                "tvosSimulatorArm64Main",
+                "tvosX64Main",
+                "watchosArm64Main",
+                "watchosSimulatorArm64Main",
+                "watchosX64Main",
+            ).forEach { sourceSetName ->
+                findByName(sourceSetName)?.kotlin?.srcDir(appleRssiDefaultDir)
+            }
         }
 
         // Linux uses the standard KMP hierarchy: src/linuxMain / src/linuxTest are shared by linuxX64

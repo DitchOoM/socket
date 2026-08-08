@@ -57,8 +57,25 @@ class AndroidNetworkMonitor(
     private val _observationCount = MutableStateFlow(0L)
     override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
 
+    /**
+     * From the same capabilities object every state publication reads:
+     * [android.net.NetworkCapabilities.getSignalStrength] (API 29+) rides each `onCapabilitiesChanged`,
+     * so no extra OS observer, no location permission, and no polling. Below API 29 the getter does not
+     * exist and the capability honestly declares [LinkQualityResolution.None].
+     */
+    private val _linkQuality = MutableStateFlow<LinkQuality>(LinkQuality.Unavailable)
+    override val linkQuality: StateFlow<LinkQuality> = _linkQuality.asStateFlow()
+
     override val capability: MonitorCapability =
-        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet)
+        MonitorCapability(
+            MonitorMechanism.PlatformSignalled,
+            ReachResolution.RouteAndInternet,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                LinkQualityResolution.Rssi
+            } else {
+                LinkQualityResolution.None
+            },
+        )
 
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -210,6 +227,8 @@ class AndroidNetworkMonitor(
         currentNetwork = null
         currentCaps = null
         _state.value = NetworkState.Offline
+        // No link, no measurement — never let a dead link's last reading linger as if it were current.
+        _linkQuality.value = LinkQuality.Unavailable
     }
 
     /** Publish one coherent [NetworkState] — identity, reachability and the per-UID blocked verdict together. */
@@ -247,6 +266,15 @@ class AndroidNetworkMonitor(
                 // API 29+ includes onBlockedStatusChanged) corrects it within milliseconds — the same
                 // seed-then-callback-authoritative contract the constructor already documents.
                 blockedForApp = blockedForApp && network == blockedNetwork,
+            )
+        _linkQuality.value =
+            androidLinkQuality(
+                signalStrength =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && caps != null) {
+                        caps.signalStrength
+                    } else {
+                        null
+                    },
             )
     }
 
@@ -393,6 +421,23 @@ internal fun androidNetworkId(
         }
     return NetworkId.Link(kind, handle)
 }
+
+/**
+ * Pure mapper from `NetworkCapabilities.getSignalStrength()` to a [LinkQuality] (unit-testable without
+ * a device). [signalStrength] is `null` where the getter cannot be read at all (below API 29, or no
+ * capabilities object); [AndroidNetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED] is the platform's own
+ * in-band "no measurement" sentinel — a wired link, or an agent that never filled the field. Both are
+ * the same honest answer: [LinkQuality.Unavailable], never a fabricated number.
+ *
+ * The value is passed through unedited. For Wi-Fi it is the RSSI in dBm; telephony reports a
+ * bearer-specific level on the same field — monotone in quality either way (see [LinkQuality.Rssi]).
+ */
+internal fun androidLinkQuality(signalStrength: Int?): LinkQuality =
+    if (signalStrength == null || signalStrength == AndroidNetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED) {
+        LinkQuality.Unavailable
+    } else {
+        LinkQuality.Rssi(signalStrength)
+    }
 
 /**
  * Accept/ignore decision for a network callback, pure so the full matrix is unit-testable without

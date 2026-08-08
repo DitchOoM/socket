@@ -41,11 +41,23 @@ class AppleNetworkMonitor : NetworkMonitor {
     override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
 
     /**
+     * Sampled on each path update, and only while the path's primary interface is Wi-Fi — the one
+     * Apple link kind with a public strength API, and macOS-only at that (CoreWLAN). Every other
+     * Apple platform declares [LinkQualityResolution.None] and this stays [LinkQuality.Unavailable]:
+     * iOS/tvOS/watchOS public API exposes no RSSI, and reporting nothing is the contract's honest
+     * answer. See `appleWifiRssiOrNull` (per-target source dirs).
+     */
+    private val _linkQuality = MutableStateFlow<LinkQuality>(LinkQuality.Unavailable)
+    override val linkQuality: StateFlow<LinkQuality> = _linkQuality.asStateFlow()
+
+    /**
      * `NWPathMonitor` invokes its update handler on every path change — no interval anywhere — and
-     * resolves route-vs-no-route without ever probing the internet.
+     * resolves route-vs-no-route without ever probing the internet. [appleLinkQualityResolution] is a
+     * per-target constant: [LinkQualityResolution.Rssi] on macOS (CoreWLAN), else
+     * [LinkQualityResolution.None].
      */
     override val capability: MonitorCapability =
-        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly)
+        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly, appleLinkQualityResolution)
 
     private val monitor = nm_create_path_monitor()
 
@@ -53,8 +65,15 @@ class AppleNetworkMonitor : NetworkMonitor {
         nm_path_monitor_set_update_handler(monitor) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
             _observationCount.update { it + 1 }
             // Decode the C enum ONCE, here at the boundary, so nothing downstream branches on a raw Int.
-            _state.value =
-                appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)
+            val state = appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)
+            _state.value = state
+            _linkQuality.value =
+                if ((state as? NetworkState.Up)?.id.let { it is NetworkId.Link && it.kind == NetworkKind.Wifi }) {
+                    appleWifiRssiOrNull()?.let { LinkQuality.Rssi(it) } ?: LinkQuality.Unavailable
+                } else {
+                    // Wired/cellular/none: no meaningful RSSI — and never a stale one from the last Wi-Fi.
+                    LinkQuality.Unavailable
+                }
         }
         nm_path_monitor_start(monitor)
     }

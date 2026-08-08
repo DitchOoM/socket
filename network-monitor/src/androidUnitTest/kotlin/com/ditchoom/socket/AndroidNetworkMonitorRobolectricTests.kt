@@ -17,6 +17,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNetwork
 import org.robolectric.shadows.ShadowNetworkCapabilities
 import org.robolectric.shadows.ShadowNetworkInfo
+import org.robolectric.util.ReflectionHelpers
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -64,7 +65,11 @@ class AndroidNetworkMonitorRobolectricTests {
         try {
             assertIs<AndroidNetworkMonitor>(monitor)
             assertEquals(
-                MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+                MonitorCapability(
+                    MonitorMechanism.PlatformSignalled,
+                    ReachResolution.RouteAndInternet,
+                    LinkQualityResolution.Rssi,
+                ),
                 monitor.capability,
             )
         } finally {
@@ -547,6 +552,51 @@ class AndroidNetworkMonitorRobolectricTests {
     }
 
     @Test
+    fun linkQualityRidesTheSameCapabilitiesDeliveryAsTheState() {
+        // getSignalStrength() is read off the very capabilities object each state publication reads —
+        // no second OS observer, no location permission. The declared capability must say so up front.
+        withMonitor { monitor, callback ->
+            assertEquals(LinkQualityResolution.Rssi, monitor.capability.linkQuality)
+            assertEquals(LinkQuality.Unavailable, monitor.linkQuality.value, "no reading before a delivery")
+
+            val network = ShadowNetwork.newInstance(NET_ID)
+            callback.onCapabilitiesChanged(network, wifi(validated = true).withSignalStrength(-55))
+            assertEquals(LinkQuality.Rssi(-55), monitor.linkQuality.value)
+
+            // A delivery without the field goes back to honest absence — never a stale -55.
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            assertEquals(LinkQuality.Unavailable, monitor.linkQuality.value)
+        }
+    }
+
+    @Test
+    fun losingTheNetworkClearsTheReadingWithIt() {
+        withMonitor { monitor, callback ->
+            val network = ShadowNetwork.newInstance(NET_ID)
+            callback.onCapabilitiesChanged(network, wifi(validated = true).withSignalStrength(-40))
+            assertEquals(LinkQuality.Rssi(-40), monitor.linkQuality.value)
+
+            callback.onLost(network)
+            assertEquals(
+                LinkQuality.Unavailable,
+                monitor.linkQuality.value,
+                "a dead link's last reading must not linger as if it were current",
+            )
+        }
+    }
+
+    @Test
+    @Config(sdk = [Build.VERSION_CODES.P])
+    fun belowApi29TheCapabilityHonestlyDeclaresNoQualityReporting() {
+        // getSignalStrength() is API 29+. The gate is the feature: a consumer learns at configuration
+        // time that trend data does not exist here, rather than watching a value that never moves.
+        withMonitor { monitor, _ ->
+            assertEquals(LinkQualityResolution.None, monitor.capability.linkQuality)
+            assertEquals(LinkQuality.Unavailable, monitor.linkQuality.value)
+        }
+    }
+
+    @Test
     fun withNoCapturedContextThereIsNoAndroidMonitor() {
         // The precondition for socket's Android default() falling back to PollingNetworkMonitor.
         assertNull(NetworkMonitor.androidOrNull())
@@ -657,6 +707,20 @@ class AndroidNetworkMonitorRobolectricTests {
 
     private fun wifi(validated: Boolean = false): NetworkCapabilities =
         capabilities(NetworkCapabilities.TRANSPORT_WIFI, validated = validated)
+
+    /**
+     * Fills the real (hidden-API) signal-strength field the platform's connectivity agents write —
+     * ShadowNetworkCapabilities has no setter for it, but under Robolectric the framework object is
+     * real, so the production `getSignalStrength()` read path is exercised end-to-end.
+     */
+    private fun NetworkCapabilities.withSignalStrength(dbm: Int): NetworkCapabilities {
+        ReflectionHelpers.callInstanceMethod<Any>(
+            this,
+            "setSignalStrength",
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, dbm),
+        )
+        return this
+    }
 
     /** Wi-Fi behind a captive portal — and also VALIDATED, which some builds really do report. */
     private fun portal(): NetworkCapabilities =
