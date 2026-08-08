@@ -72,6 +72,25 @@ set -e
 kill "$LOGCAT_PID" 2>/dev/null || true
 wait "$LOGCAT_PID" 2>/dev/null || true
 
+# Prove the transport on EVERY run, including green ones. The report is only READ on failure and
+# the artifact is only uploaded on failure, so a streamer that silently captured nothing would go
+# unnoticed until the next occurrence of the ~1-in-120 flake this lane exists to diagnose — burning
+# the occurrence, which is the exact outcome this whole change is meant to prevent. A green run that
+# prints 0 lines here says the transport is broken, immediately and for free.
+#
+# Guarded with `[ -s ]` rather than `$(wc -l <"$file" 2>/dev/null)`: under this script's
+# `set -euo pipefail` a missing file makes the redirect fail, which fails the assignment and exits
+# the script — turning a run whose tests PASSED red. That is the same class of bug as the `if` that
+# broke run 31057524722, so it is spelled out instead of being rediscovered.
+LOGCAT_LINES=0
+if [ -s "$LOGCAT_FILE" ]; then
+  LOGCAT_LINES=$(wc -l <"$LOGCAT_FILE" | tr -d ' ')
+fi
+echo "logcat capture (API ${API_LEVEL}): ${LOGCAT_LINES} lines -> ${LOGCAT_FILE}"
+if [ "$LOGCAT_LINES" = "0" ]; then
+  echo "::warning::logcat capture is EMPTY — the Android H3Loopback failure-diagnostics transport is broken"
+fi
+
 if [ "$TEST_EXIT" != "0" ]; then
   # Inline in the job log too — a failure should be readable without downloading artifacts.
   echo "=== H3Loopback failure diagnostics (logcat, API ${API_LEVEL}) ==="
