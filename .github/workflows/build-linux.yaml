@@ -988,6 +988,78 @@ jobs:
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
 
+      # --- Multi-release tier linkage gate (issue #293, from shipped bug #287) ---
+      #
+      # socket-quic-quiche and network-monitor both ship a META-INF/versions/21 tier holding their FFM
+      # bindings. Those tiers are compiled by jvmToolchain(21) but selected at runtime by EVERY JDK >= 21,
+      # and nothing else in CI ever loads them on a JDK newer than the one that built them.
+      #
+      # That is precisely how #287 shipped: FfmQuicheApi called Arena.allocateUtf8String, a JDK-21-PREVIEW
+      # name that JEP 454 renamed to allocateFrom when FFM finalised in 22. javac would have refused it
+      # without --enable-preview and stamped the classfile; the Kotlin compiler does neither, so it
+      # compiled clean, published clean, and threw NoSuchMethodError only when a consumer on JDK 22+ hit
+      # that call site. An outside ProGuard audit found it, not us.
+      #
+      # Deliberately a *linkage* check, not a test run: #287 lived in an optional qlog path the suite
+      # never calls, so running the FFM tests on a newer JDK would not have caught it. Only resolving
+      # every reference sees the whole surface. jdeps cannot substitute — it stops at class granularity,
+      # and java.lang.foreign.Arena exists on both JDKs, so a renamed method on a present class reads as
+      # clean.
+      #
+      # Placed here, in build-linux, rather than in the `validate` job: validate has
+      # needs: [build-linux, build-apple], which would gate a check that reads only META-INF/versions/**
+      # behind the 40-60 minute macOS job. Neither tier is Apple-produced. This is the earliest point at
+      # which both exist.
+      #
+      # setup-java is a SEPARATE step with an id rather than another entry in this job's multi-line
+      # java-version: that list's last entry becomes JAVA_HOME, so appending 25 would silently run Gradle
+      # on 25. Referencing steps.<id>.outputs.path also avoids $JAVA_HOME_25_<ARCH>, which is
+      # architecture-coupled and breaks under `set -u` if the runner arch ever changes. This step runs
+      # after every Gradle step in the job, so repointing JAVA_HOME here affects nothing.
+      - name: Set up JDK 25 for the linkage check
+        id: jdk25
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '25'
+
+      - name: Link-check multi-release tiers against JDK 25
+        run: |
+          set -euo pipefail
+          JAVA25="${{ steps.jdk25.outputs.path }}/bin/java"
+          "$JAVA25" -version
+
+          # Self-test first. It asserts the checker still flags the exact #287 signature as unresolvable
+          # AND still resolves its JDK 22+ replacement, so a refactor that neuters the resolver fails
+          # loudly instead of going green forever. A gate that cannot fail is not a gate.
+          "$JAVA25" scripts/LinkCheck.java --selftest
+
+          # --require makes a vanished tier fail. Without it, a build that stopped emitting
+          # META-INF/versions/21 would scan zero classes and pass — the "an audit that matched nothing
+          # looks identical to a clean audit" shape that hid #290.
+          # Scoped to THIS build's version. A CI runner's ~/.m2 is fresh so an unscoped find would
+          # work here, but locally it picks up every version ever published to the developer's
+          # ~/.m2 — including genuinely buggy historical ones (3.6.6 / 3.8.11 / 3.8.13 all still
+          # carry #287) — which makes a local repro fail for reasons that have nothing to do with
+          # the working tree.
+          VERSION='${{ steps.version.outputs.version }}'
+          # Plain read loop rather than `mapfile`: mapfile is bash 4+, so this stays runnable on a
+          # stock macOS bash 3.2 when reproducing the gate locally. A single invocation (not
+          # `xargs`) so the --require assertions see the whole jar set at once — xargs could split
+          # the list into batches and fail a require that a later batch would have satisfied.
+          JARS=()
+          while IFS= read -r j; do JARS+=("$j"); done < <(find ~/.m2/repository/com/ditchoom \
+            -name "*-jvm-${VERSION}.jar" ! -name '*-sources.jar' ! -name '*-javadoc.jar' | sort)
+          echo "scanning ${#JARS[@]} jvm jar(s) at version ${VERSION}"
+          if [ "${#JARS[@]}" -eq 0 ]; then
+            echo "::error::no -jvm-${VERSION}.jar found under ~/.m2 — publishToMavenLocal did not produce what this gate expects"
+            exit 1
+          fi
+          "$JAVA25" scripts/LinkCheck.java \
+            --require=socket-quic-quiche-jvm \
+            --require=network-monitor-jvm \
+            "${JARS[@]}"
+
       # Surface the quiche cargo build transcript when anything in this job failed, so a build
       # failure (e.g. a missing rustup cross target → E0463) is diagnosable from an artifact
       # instead of hunting through interleaved BoringSSL/cargo output in the job log.
