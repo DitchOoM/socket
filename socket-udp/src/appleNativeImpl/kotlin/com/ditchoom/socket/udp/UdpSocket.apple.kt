@@ -309,11 +309,3 @@ actual object UdpSocket {
     private const val STATE_FAILED = 4
     private const val STATE_CANCELLED = 5
 }
-
-/**
- * A `connect()` fault surfaced by the NWConnection state handler (terminal failed/cancelled). Public so
- * a consumer in another module (e.g. `:socket-quic-quiche`'s Apple datapath) can catch and map it.
- */
-class UdpConnectException(
-    message: String,
-) : RuntimeException(message)

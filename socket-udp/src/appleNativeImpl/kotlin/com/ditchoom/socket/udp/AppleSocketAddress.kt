@@ -75,13 +75,6 @@ internal class AppleSocketAddress(
 }
 
 /**
- * The BSD/Darwin C `sockaddr` layout for [SocketAddressCodec]: a length byte, a single-byte
- * `sa_family`, `AF_INET6` = 30.
- */
-@ExperimentalDatagramApi
-val appleSockAddrLayout: SockAddrLayout = SockAddrLayout(hasLenByte = true, afInet = AF_INET, afInet6 = AF_INET6)
-
-/**
  * Materialize [this] address into [storage] as BSD/Darwin network-order `sockaddr` bytes; return its
  * length — the send-target fast path (zero-alloc; [storage] is a channel-reused scratch). A foreign
  * [SocketAddress] (a buffer-flow literal) is re-parsed from its numeric [SocketAddress.host].

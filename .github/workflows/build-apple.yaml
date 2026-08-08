@@ -155,6 +155,18 @@ jobs:
           ktlintCheck
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # Compile (can't run — no device) the test sources for the Apple *device* targets that nothing else
+      # covers. The simulator lanes above are all 64-bit, so they cannot catch an ILP32 regression:
+      # watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every other Apple target maps it
+      # to Long. A width-dependent comparison therefore compiles clean on macOS/iOS/tvOS and on the
+      # watchOS *simulator*, and fails only here — exactly how socket-udp's HostLoopback.apple.kt was
+      # broken for watchosArm64 while looking fine everywhere (#280). Cheap: compile only, no link, no run.
+      - name: Compile Apple device-target test sources (ILP32 / no-simulator guard)
+        run: >-
+          ./gradlew
+          compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
       # Link (don't run) the macosArm64 test binaries for the integration-macos-arm64 job. UNQUALIFIED so
       # every module with a macosArm64 test target is linked — socket-quic-quiche / socket-http3 /
       # socket-webtransport carry the real Apple QUIC/H3/WebTransport loopback suites. The K/N link
