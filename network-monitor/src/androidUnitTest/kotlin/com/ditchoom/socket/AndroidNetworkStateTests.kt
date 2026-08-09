@@ -23,7 +23,8 @@ class AndroidNetworkStateTests {
         hasValidated: Boolean = false,
         hasCaptivePortal: Boolean = false,
         notSuspended: Boolean = true,
-    ) = androidNetworkState(wifi, hasInternet, hasValidated, hasCaptivePortal, notSuspended)
+        blockedForApp: Boolean = false,
+    ) = androidNetworkState(wifi, hasInternet, hasValidated, hasCaptivePortal, notSuspended, blockedForApp)
 
     @Test
     fun noInternetCapabilityIsLinkLocal() {
@@ -61,6 +62,30 @@ class AndroidNetworkStateTests {
         assertTrue(s.isTransient, "wait — do not tear down (crbug.com/1120144)")
         assertFalse(s.canRouteOffLink)
         assertFalse(s.needsUserAction, "no human can un-suspend a cellular link")
+    }
+
+    /**
+     * The defining scenario of the per-UID verdict: under Data Saver / restricted-background the
+     * network's capabilities keep reading `INTERNET|VALIDATED` while the platform passes none of this
+     * app's traffic. Mapping that to `Confirmed` is precisely the bug — the monitor would keep
+     * reporting a fully working network while every socket the app opens fails.
+     */
+    @Test
+    fun aPerUidBlockedVerdictBeatsValidated() {
+        val s = state(hasValidated = true, blockedForApp = true)
+        assertEquals(NetworkState.Routable(wifi, InternetAccess.Observed.Blocked(BlockReason.Suspended)), s)
+        assertTrue(s.isTransient, "the platform promises a follow-up verdict — wait, do not tear down")
+        assertFalse(s.canRouteOffLink, "retrying while blocked is futile")
+        assertFalse(s.needsUserAction)
+    }
+
+    /** A portal needs a human; a per-UID pause only needs time. When both apply, the human wins. */
+    @Test
+    fun aPortalOutranksAPerUidBlockedVerdict() {
+        assertEquals(
+            InternetAccess.Observed.Blocked(BlockReason.CaptivePortal),
+            (state(hasCaptivePortal = true, blockedForApp = true) as NetworkState.Routable).internet,
+        )
     }
 
     /**
@@ -107,6 +132,7 @@ class AndroidNetworkStateTests {
                 state(hasValidated = true),
                 state(hasCaptivePortal = true),
                 state(notSuspended = false),
+                state(hasValidated = true, blockedForApp = true),
             )
         for (s in states) {
             assertTrue(
@@ -128,13 +154,15 @@ class AndroidNetworkStateTests {
             listOf(true, false).flatMap { internet ->
                 listOf(true, false).flatMap { validated ->
                     listOf(true, false).flatMap { portal ->
-                        listOf(true, false).map { notSuspended ->
-                            androidNetworkState(wifi, internet, validated, portal, notSuspended)
+                        listOf(true, false).flatMap { notSuspended ->
+                            listOf(true, false).map { blocked ->
+                                androidNetworkState(wifi, internet, validated, portal, notSuspended, blocked)
+                            }
                         }
                     }
                 }
             }
-        assertEquals(16, combinations.size, "the full 2^4 bit space")
+        assertEquals(32, combinations.size, "the full 2^5 bit space")
         assertTrue(
             combinations.none { it is NetworkState.Routable && it.internet == InternetAccess.Observed.Limited },
             "Limited has no Android producer",

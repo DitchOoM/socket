@@ -79,6 +79,40 @@ class ScriptedNetworkMonitorTests {
         }
 
     /**
+     * The counter preserves the one dimension [NetworkMonitor.state] is deliberately lossy in: a
+     * transition to the already-published state is invisible to every state collector (StateFlow
+     * de-dupes it) but is still one platform observation — the callback burst a weak radio produces
+     * before any rung changes. A script that repeats a state models exactly that chatter, so a
+     * consumer's density logic (flap early-warning) is testable under virtual time.
+     */
+    @Test
+    fun observationCountBumpsPerTransitionEvenWhenTheStateFlowDedupes() =
+        runTest {
+            val monitor =
+                ScriptedNetworkMonitor(
+                    networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                        after(1.seconds) { state(confirmed(wifi)) } // chatter: folds to the same state
+                        after(1.seconds) { state(confirmed(wifi)) } // chatter
+                        after(1.seconds) { state(pending(cellular)) } // the real change
+                    },
+                )
+            val stateEmissions = mutableListOf<NetworkState>()
+            backgroundScope.launch { monitor.state.collect { stateEmissions += it } }
+            runCurrent()
+
+            assertEquals(0L, monitor.observationCount.value, "nothing observed before playback")
+            monitor.play()
+            runCurrent()
+
+            assertEquals(3L, monitor.observationCount.value, "every applied transition is one observation")
+            assertEquals(
+                listOf<NetworkState>(confirmed(wifi), pending(cellular)),
+                stateEmissions.toList(),
+                "the state flow correctly de-dupes the chatter the counter preserves",
+            )
+        }
+
+    /**
      * The one flow is why a recording cannot interleave out of order any more: a state and its identity
      * arrive as a single emission, so there is no second stream to race (RFC_NETWORK_REACHABILITY §1.2).
      */

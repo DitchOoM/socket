@@ -122,9 +122,15 @@ sealed interface BlockReason {
     data object CaptivePortal : BlockReason
 
     /**
-     * Data is paused on an otherwise-up link (Android `!NET_CAPABILITY_NOT_SUSPENDED`) — a suspended
-     * cellular link keeps `INTERNET` and passes nothing. **Transient** ([isTransient]): wait, do not
-     * tear down. Chromium hit this and fixed it (crbug.com/1120144).
+     * Data is paused on an otherwise-up link — a suspended cellular link keeps `INTERNET` and passes
+     * nothing. **Transient** ([isTransient]): wait, do not tear down. Chromium hit this and fixed it
+     * (crbug.com/1120144).
+     *
+     * Two Android signals land here, because they prescribe the same response and [BlockReason] is
+     * keyed on treatment, not cause: the network-wide `!NET_CAPABILITY_NOT_SUSPENDED`, and the
+     * **per-UID** verdict from `NetworkCallback.onBlockedStatusChanged` (Data Saver / background
+     * restriction — the network stays `INTERNET|VALIDATED`, but none of this app's traffic passes).
+     * Both carry the platform's promise of a follow-up emission when the pause lifts.
      */
     data object Suspended : BlockReason
 }
@@ -144,6 +150,12 @@ data class MonitorCapability(
     val mechanism: MonitorMechanism,
     /** Which rungs of the link → route → internet ladder this monitor can ever report. */
     val resolution: ReachResolution,
+    /**
+     * Whether [NetworkMonitor.linkQuality] can ever report a measurement. Defaults to
+     * [LinkQualityResolution.None] — the honest answer for a monitor declared before this axis
+     * existed, and for every platform with no public signal-strength API.
+     */
+    val linkQuality: LinkQualityResolution = LinkQualityResolution.None,
 )
 
 /**

@@ -17,6 +17,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNetwork
 import org.robolectric.shadows.ShadowNetworkCapabilities
 import org.robolectric.shadows.ShadowNetworkInfo
+import org.robolectric.util.ReflectionHelpers
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -64,7 +65,11 @@ class AndroidNetworkMonitorRobolectricTests {
         try {
             assertIs<AndroidNetworkMonitor>(monitor)
             assertEquals(
-                MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+                MonitorCapability(
+                    MonitorMechanism.PlatformSignalled,
+                    ReachResolution.RouteAndInternet,
+                    LinkQualityResolution.Rssi,
+                ),
                 monitor.capability,
             )
         } finally {
@@ -411,6 +416,63 @@ class AndroidNetworkMonitorRobolectricTests {
     }
 
     @Test
+    fun aPerUidBlockedVerdictFoldsIntoTheSamePublishedState() {
+        // The Data Saver / restricted-background scenario: the network's capabilities keep reading
+        // INTERNET|VALIDATED — no onCapabilitiesChanged will ever arrive — and the platform delivers
+        // the verdict through onBlockedStatusChanged alone. Before this override existed, the monitor
+        // kept publishing Routable(id, Confirmed) while every socket the app opened failed.
+        withMonitor { monitor, callback ->
+            val network = ShadowNetwork.newInstance(NET_ID)
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            assertEquals(
+                InternetAccess.Observed.Confirmed,
+                assertIs<NetworkState.Routable>(monitor.state.value).internet,
+            )
+
+            callback.onBlockedStatusChanged(network, true)
+
+            val blocked = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Blocked(BlockReason.Suspended), blocked.internet)
+            assertFalse(blocked.canRouteOffLink, "blocked traffic is not worth attempting")
+            assertTrue(blocked.isTransient, "…but the verdict lifts on its own — wait, do not tear down")
+            // One atomic value: the identity rides the same emission as the verdict.
+            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(blocked.id).kind)
+
+            // Foregrounding the app (or lifting Data Saver) delivers the counter-verdict the same way.
+            callback.onBlockedStatusChanged(network, false)
+            assertEquals(
+                InternetAccess.Observed.Confirmed,
+                assertIs<NetworkState.Routable>(monitor.state.value).internet,
+            )
+        }
+    }
+
+    @Test
+    fun aBlockedVerdictForASupersededNetworkDoesNotBrandItsSuccessor() {
+        // The verdict is keyed to the network it was delivered for. After a handover the new default
+        // must start from the platform's verdict about IT — not inherit the dead network's blocked bit.
+        withMonitor { monitor, callback ->
+            val wifiNetwork = ShadowNetwork.newInstance(NET_ID)
+            val cellular = ShadowNetwork.newInstance(NET_ID + 1)
+
+            callback.onCapabilitiesChanged(wifiNetwork, wifi(validated = true))
+            callback.onBlockedStatusChanged(wifiNetwork, true)
+            assertEquals(
+                InternetAccess.Observed.Blocked(BlockReason.Suspended),
+                assertIs<NetworkState.Routable>(monitor.state.value).internet,
+            )
+
+            // Handover to cellular, delivered in the platform's guaranteed order.
+            callback.onAvailable(cellular)
+            callback.onCapabilitiesChanged(cellular, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR, validated = true))
+
+            val state = assertIs<NetworkState.Routable>(monitor.state.value)
+            assertEquals(InternetAccess.Observed.Confirmed, state.internet, "the old network's verdict must not leak")
+            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(state.id).kind)
+        }
+    }
+
+    @Test
     fun onLostForTheCurrentNetworkPublishesOfflineWhichCarriesNoIdentity() {
         withMonitor { monitor, callback ->
             val network = ShadowNetwork.newInstance(NET_ID)
@@ -449,6 +511,88 @@ class AndroidNetworkMonitorRobolectricTests {
                     "AndroidNetworkMonitor declares ${monitor.capability.resolution} but published $it",
                 )
             }
+        }
+    }
+
+    @Test
+    fun observationCountPreservesTheCallbackDensityTheStateFlowDedupes() {
+        withMonitor { monitor, callback ->
+            val network = ShadowNetwork.newInstance(NET_ID)
+            assertEquals(0L, monitor.observationCount.value, "the synchronous seed is not a platform observation")
+
+            // Real baseband chatter: repeated onCapabilitiesChanged deliveries folding to the same state.
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            val settled = monitor.state.value
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+
+            assertEquals(settled, monitor.state.value, "identical capabilities fold to an unchanged state")
+            assertEquals(3L, monitor.observationCount.value, "…but every delivery still counts once")
+        }
+    }
+
+    @Test
+    @Config(sdk = [Build.VERSION_CODES.M])
+    fun preOARejectedNonDefaultCallbackIsNotAnObservation() {
+        // The counter reads as density on the tracked network. Below O the INTERNET request multi-fires
+        // for every satisfying network; a concurrent network's chatter is its own story and must not
+        // inflate ours — otherwise the ordinary two-live-networks phone state reads as a permanent flap.
+        setActiveNetwork(NET_ID)
+        withMonitor { monitor, callback ->
+            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi(validated = true))
+            val counted = monitor.observationCount.value
+
+            callback.onCapabilitiesChanged(
+                ShadowNetwork.newInstance(NET_ID + 1),
+                capabilities(NetworkCapabilities.TRANSPORT_CELLULAR),
+            )
+
+            assertEquals(counted, monitor.observationCount.value, "rejected chatter must not count")
+        }
+    }
+
+    @Test
+    fun linkQualityRidesTheSameCapabilitiesDeliveryAsTheState() {
+        // getSignalStrength() is read off the very capabilities object each state publication reads —
+        // no second OS observer, no location permission. The declared capability must say so up front.
+        withMonitor { monitor, callback ->
+            assertEquals(LinkQualityResolution.Rssi, monitor.capability.linkQuality)
+            assertEquals(LinkQuality.Unavailable, monitor.linkQuality.value, "no reading before a delivery")
+
+            val network = ShadowNetwork.newInstance(NET_ID)
+            callback.onCapabilitiesChanged(network, wifi(validated = true).withSignalStrength(-55))
+            assertEquals(LinkQuality.Rssi(-55), monitor.linkQuality.value)
+
+            // A delivery without the field goes back to honest absence — never a stale -55.
+            callback.onCapabilitiesChanged(network, wifi(validated = true))
+            assertEquals(LinkQuality.Unavailable, monitor.linkQuality.value)
+        }
+    }
+
+    @Test
+    fun losingTheNetworkClearsTheReadingWithIt() {
+        withMonitor { monitor, callback ->
+            val network = ShadowNetwork.newInstance(NET_ID)
+            callback.onCapabilitiesChanged(network, wifi(validated = true).withSignalStrength(-40))
+            assertEquals(LinkQuality.Rssi(-40), monitor.linkQuality.value)
+
+            callback.onLost(network)
+            assertEquals(
+                LinkQuality.Unavailable,
+                monitor.linkQuality.value,
+                "a dead link's last reading must not linger as if it were current",
+            )
+        }
+    }
+
+    @Test
+    @Config(sdk = [Build.VERSION_CODES.P])
+    fun belowApi29TheCapabilityHonestlyDeclaresNoQualityReporting() {
+        // getSignalStrength() is API 29+. The gate is the feature: a consumer learns at configuration
+        // time that trend data does not exist here, rather than watching a value that never moves.
+        withMonitor { monitor, _ ->
+            assertEquals(LinkQualityResolution.None, monitor.capability.linkQuality)
+            assertEquals(LinkQuality.Unavailable, monitor.linkQuality.value)
         }
     }
 
@@ -563,6 +707,20 @@ class AndroidNetworkMonitorRobolectricTests {
 
     private fun wifi(validated: Boolean = false): NetworkCapabilities =
         capabilities(NetworkCapabilities.TRANSPORT_WIFI, validated = validated)
+
+    /**
+     * Fills the real (hidden-API) signal-strength field the platform's connectivity agents write —
+     * ShadowNetworkCapabilities has no setter for it, but under Robolectric the framework object is
+     * real, so the production `getSignalStrength()` read path is exercised end-to-end.
+     */
+    private fun NetworkCapabilities.withSignalStrength(dbm: Int): NetworkCapabilities {
+        ReflectionHelpers.callInstanceMethod<Any>(
+            this,
+            "setSignalStrength",
+            ReflectionHelpers.ClassParameter.from(Int::class.javaPrimitiveType, dbm),
+        )
+        return this
+    }
 
     /** Wi-Fi behind a captive portal — and also VALIDATED, which some builds really do report. */
     private fun portal(): NetworkCapabilities =

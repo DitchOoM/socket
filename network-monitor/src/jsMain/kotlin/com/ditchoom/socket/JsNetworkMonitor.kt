@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
@@ -38,6 +39,15 @@ class JsNetworkMonitor(
 ) : NetworkMonitor {
     private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
+
+    /**
+     * Browser only: one bump per pushed event (`online`, `offline`, Network Information `change`). The
+     * Node path is [MonitorMechanism.Polled] and deliberately leaves this at the contract default —
+     * never advances — because a poll's cadence is configuration, not a property of the network
+     * (see [NetworkMonitor.observationCount]).
+     */
+    private val _observationCount = MutableStateFlow(0L)
+    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
 
     /**
      * Node polls `os.networkInterfaces()`; the browser is pushed `online`/`offline` (plus the Network
@@ -88,13 +98,19 @@ class JsNetworkMonitor(
         refreshBrowserState()
         // online/offline and the Network Information API's `change` all mutate the SAME value, so every
         // one of them republishes the whole state — reachability and identity can never be sampled apart.
-        js("window").addEventListener("online") { _: dynamic -> refreshBrowserState() }
-        js("window").addEventListener("offline") { _: dynamic -> refreshBrowserState() }
+        js("window").addEventListener("online") { _: dynamic -> observedBrowserEvent() }
+        js("window").addEventListener("offline") { _: dynamic -> observedBrowserEvent() }
         // Network Information API (Chromium): fires on connection-type transitions (wifi↔cellular).
         val connection = js("navigator.connection || null")
         if (connection != null) {
-            connection.addEventListener("change") { _: dynamic -> refreshBrowserState() }
+            connection.addEventListener("change") { _: dynamic -> observedBrowserEvent() }
         }
+    }
+
+    /** A pushed browser event: count the observation (the initial synchronous read does not count). */
+    private fun observedBrowserEvent() {
+        _observationCount.update { it + 1 }
+        refreshBrowserState()
     }
 
     /** Read both browser facts — `navigator.onLine` and the connection type — and publish one state. */

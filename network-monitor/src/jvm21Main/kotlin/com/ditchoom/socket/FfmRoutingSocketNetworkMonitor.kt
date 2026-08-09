@@ -9,6 +9,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.lang.foreign.Arena
@@ -95,6 +96,15 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
     /**
+     * One bump per routing-socket wake-up (each successful `recv`). The kernel batches multiple
+     * messages into one datagram, so this counts deliveries, not messages — still a faithful density
+     * signal, since a flapping link produces many *deliveries*, and re-resolution frequently folds
+     * them to an unchanged [NetworkState] that [state] de-dupes away.
+     */
+    private val _observationCount = MutableStateFlow(0L)
+    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+
+    /**
      * The whole point of the FFM subclasses: a blocking read on a routing socket, not a poll — and
      * [ReachResolution.RouteOnly], because the routing socket says which link carries the default route
      * and nothing at all about whether traffic reaches the internet.
@@ -130,6 +140,7 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
                     while (isActive) {
                         val n = Libc.recv(localFd, scratch, RECV_BUFFER_SIZE.toLong(), 0)
                         if (n <= 0L) break
+                        _observationCount.update { it + 1 }
                         _state.value = resolveJvmNetworkState()
                     }
                 } catch (e: CancellationException) {

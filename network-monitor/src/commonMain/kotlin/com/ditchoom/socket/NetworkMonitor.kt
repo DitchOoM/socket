@@ -75,6 +75,52 @@ interface NetworkMonitor {
      */
     val capability: MonitorCapability get() = UndeclaredCapability
 
+    /**
+     * Monotonic count of platform observations folded into [state] — **including the ones that dedupe
+     * to no visible state change**.
+     *
+     * [state] is deliberately lossy in one dimension: it is a [StateFlow], so an OS callback whose
+     * folded [NetworkState] equals the current value is invisible to every collector. That is correct
+     * for consumers reacting to *what* the network is — but it erases *how often the platform is
+     * talking*, and callback density is itself a signal: a link about to be lost (weak radio, roaming
+     * between access points, a flapping route) typically produces a burst of capability/path chatter
+     * before any rung actually changes. This counter preserves that signal: every platform-delivered
+     * observation bumps it exactly once, whether or not the folded state changed, so a consumer can
+     * sample its rate as an early instability warning — without registering a second OS observer of
+     * its own.
+     *
+     * Interpretation is gated on [capability]:
+     *  - [MonitorMechanism.PlatformSignalled] monitors bump per OS callback — the rate is the
+     *    platform's own chatter, the intended signal.
+     *  - [MonitorMechanism.Polled] monitors leave the **default** (never advances): a poll's cadence
+     *    is configuration, not a property of the network, so reporting it as density would be a lie
+     *    shaped like a measurement.
+     *  - The default (never advances) is also what an implementation predating this property reports —
+     *    the same explicit-unknown stance as [UndeclaredCapability]: "not reported", never "quiet".
+     *
+     * The count is per-monitor, starts at zero, and never resets or goes backwards while the monitor
+     * is open. Only deltas and rates are meaningful; the absolute value depends on when the monitor
+     * was constructed.
+     */
+    val observationCount: StateFlow<Long> get() = NoObservations
+
+    /**
+     * Signal quality of the current link, where the platform will say — [LinkQuality.Rssi] readings,
+     * or the honest [LinkQuality.Unavailable] whenever no measurement exists (never a fabricated or
+     * stale value).
+     *
+     * Whether this can ever report a measurement is a configuration-time question:
+     * [MonitorCapability.linkQuality] declares it, exactly as [MonitorCapability.resolution] does for
+     * reachability, so a consumer that needs trend data learns up front rather than watching a value
+     * that will never move. The default (constant [LinkQuality.Unavailable], declared
+     * [LinkQualityResolution.None]) is what monitors predating this property report.
+     *
+     * Deliberately a separate flow from [state] — see [LinkQuality] for why quality is not part of
+     * the atomic state value. Readings refresh on the monitor's own observation cadence; this is a
+     * trend input, not a high-rate sampler.
+     */
+    val linkQuality: StateFlow<LinkQuality> get() = NoLinkQuality
+
     /** Releases platform resources (unregisters callbacks, closes sockets, cancels polling). */
     fun close()
 
@@ -156,6 +202,19 @@ interface NetworkMonitor {
  * paired with the least capable resolution, so an undeclared monitor is never over-trusted.
  */
 private val UndeclaredCapability = MonitorCapability(MonitorMechanism.Unknown, ReachResolution.LinkOnly)
+
+/**
+ * The [NetworkMonitor.observationCount] default for a monitor that does not report observation density —
+ * a counter that never advances, meaning "not reported", never "the platform is quiet". Shared and
+ * effectively immutable: nothing holds a reference through which it could be bumped.
+ */
+private val NoObservations: StateFlow<Long> = MutableStateFlow(0L)
+
+/**
+ * The [NetworkMonitor.linkQuality] default for a monitor that never measures — constantly
+ * [LinkQuality.Unavailable], matching the [LinkQualityResolution.None] its capability declares.
+ */
+private val NoLinkQuality: StateFlow<LinkQuality> = MutableStateFlow(LinkQuality.Unavailable)
 
 /**
  * Changes of the **network path itself** — the identity-keyed projection of [NetworkMonitor.state], with

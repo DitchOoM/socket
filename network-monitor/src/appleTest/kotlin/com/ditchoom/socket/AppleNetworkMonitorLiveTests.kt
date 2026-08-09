@@ -40,9 +40,26 @@ class AppleNetworkMonitorLiveTests {
                     "monitor declares ${monitor.capability.resolution} but emitted $state",
                 )
                 assertEquals(
-                    MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly),
+                    // appleLinkQualityResolution is the per-target constant: Rssi on macOS (CoreWLAN
+                    // is the one public Apple RSSI API), None everywhere else — so this test asserts
+                    // the family-correct declaration on whichever target is running it.
+                    MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteOnly, appleLinkQualityResolution),
                     monitor.capability,
                 )
+
+                // Coherence of the quality gate, environment-invariant: a monitor declaring None can
+                // only ever report Unavailable; one declaring Rssi reports either a real reading or the
+                // honest absence (headless/wired/permission-gated runners land on Unavailable).
+                when (monitor.capability.linkQuality) {
+                    LinkQualityResolution.None ->
+                        assertEquals(LinkQuality.Unavailable, monitor.linkQuality.value)
+                    LinkQualityResolution.Rssi ->
+                        when (val quality = monitor.linkQuality.value) {
+                            is LinkQuality.Rssi ->
+                                assertTrue(quality.dbm < 0, "a real RSSI reading is negative dBm, was ${quality.dbm}")
+                            LinkQuality.Unavailable -> {} // wired or unassociated runner — honest absence
+                        }
+                }
 
                 // If the runner has a usable path (the normal case — it just cloned the repo), the same
                 // callback must have produced a concrete primary-link identity: a Link with a non-zero OS
@@ -79,6 +96,14 @@ class AppleNetworkMonitorLiveTests {
                     NetworkState.Unknown ->
                         fail("unreachable — awaited a non-Unknown state")
                 }
+
+                // The state left Unknown, so at least one update-handler invocation was folded — and
+                // every invocation must have been counted. (Environment-invariant: asserts the counter
+                // moved with the callback, not any particular density.)
+                assertTrue(
+                    monitor.observationCount.value >= 1L,
+                    "a delivered path update must count as an observation, count=${monitor.observationCount.value}",
+                )
             } finally {
                 // close() must cancel the NWPathMonitor without crashing or hanging.
                 monitor.close()

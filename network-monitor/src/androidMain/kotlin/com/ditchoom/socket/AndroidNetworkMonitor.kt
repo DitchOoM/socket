@@ -10,6 +10,7 @@ import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import android.net.NetworkCapabilities as AndroidNetworkCapabilities
 
 /**
@@ -31,6 +32,13 @@ import android.net.NetworkCapabilities as AndroidNetworkCapabilities
  *  - **`NOT_SUSPENDED` was ignored entirely.** A suspended cellular link keeps `INTERNET` and passes
  *    nothing; Chromium hit this and fixed it (crbug.com/1120144).
  *
+ * A fourth signal arrives on a callback of its own: the **per-UID blocked verdict**
+ * (`onBlockedStatusChanged`, API 29+). Under Data Saver / background restriction the network's
+ * capabilities keep reading `INTERNET|VALIDATED` while the platform passes none of this app's traffic,
+ * so the verdict is folded into the same published [NetworkState] (as
+ * [InternetAccess.Observed.Blocked] ([BlockReason.Suspended])) rather than surfaced beside it — see
+ * [androidNetworkState].
+ *
  * @param context Application context (use `applicationContext` to avoid Activity leaks).
  */
 class AndroidNetworkMonitor(
@@ -39,8 +47,35 @@ class AndroidNetworkMonitor(
     private val _state = MutableStateFlow<NetworkState>(NetworkState.Unknown)
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
+    /**
+     * One bump per [ConnectivityManager.NetworkCallback] delivery that concerns the tracked network —
+     * i.e. per callback that passes [acceptsUpdateFor]. Rejected chatter from a concurrent non-default
+     * network (the pre-O request-based path) is *its* network's story, not density on ours, so it does
+     * not count. The constructor's synchronous seed is not a platform observation and does not count
+     * either.
+     */
+    private val _observationCount = MutableStateFlow(0L)
+    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+
+    /**
+     * From the same capabilities object every state publication reads:
+     * [android.net.NetworkCapabilities.getSignalStrength] (API 29+) rides each `onCapabilitiesChanged`,
+     * so no extra OS observer, no location permission, and no polling. Below API 29 the getter does not
+     * exist and the capability honestly declares [LinkQualityResolution.None].
+     */
+    private val _linkQuality = MutableStateFlow<LinkQuality>(LinkQuality.Unavailable)
+    override val linkQuality: StateFlow<LinkQuality> = _linkQuality.asStateFlow()
+
     override val capability: MonitorCapability =
-        MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet)
+        MonitorCapability(
+            MonitorMechanism.PlatformSignalled,
+            ReachResolution.RouteAndInternet,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                LinkQualityResolution.Rssi
+            } else {
+                LinkQualityResolution.None
+            },
+        )
 
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -69,6 +104,28 @@ class AndroidNetworkMonitor(
     @Volatile
     private var currentNetwork: Network? = null
 
+    /**
+     * The last capabilities delivered for [currentNetwork], retained so
+     * [onBlockedStatusChanged][ConnectivityManager.NetworkCallback.onBlockedStatusChanged] — which
+     * carries only the blocked bit — can re-fold the verdict into one coherent [NetworkState] instead of
+     * publishing it on a second surface. Written and read on the framework's callback Handler; [Volatile]
+     * for the same constructor-thread seed reason as [currentNetwork].
+     */
+    @Volatile
+    private var currentCaps: AndroidNetworkCapabilities? = null
+
+    /**
+     * The per-UID blocked verdict, keyed to the [Network] it was delivered for so a verdict about a dead
+     * network can never leak onto its successor: [publish] applies [blockedForApp] only while
+     * [blockedNetwork] still equals the network being published, which makes resets on handover
+     * unnecessary rather than easy to forget.
+     */
+    @Volatile
+    private var blockedNetwork: Network? = null
+
+    @Volatile
+    private var blockedForApp: Boolean = false
+
     private val callback =
         object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -84,6 +141,7 @@ class AndroidNetworkMonitor(
                     return
                 }
                 if (!acceptsUpdateFor(network)) return
+                observed()
                 currentNetwork = network
                 publish(network, connectivityManager.getNetworkCapabilities(network))
             }
@@ -95,10 +153,14 @@ class AndroidNetworkMonitor(
                     // network satisfies the criteria of the request" — so there is genuinely nothing
                     // left to fall back to and no stale-onLost race to guard against. A handover to a
                     // better network arrives as onAvailable/onCapabilitiesChanged instead, never here.
+                    observed()
                     clear()
                     return
                 }
-                if (network == currentNetwork) clear()
+                if (network == currentNetwork) {
+                    observed()
+                    clear()
+                }
             }
 
             override fun onCapabilitiesChanged(
@@ -106,9 +168,37 @@ class AndroidNetworkMonitor(
                 caps: AndroidNetworkCapabilities,
             ) {
                 if (!acceptsUpdateFor(network)) return
+                observed()
                 publish(network, caps)
             }
+
+            override fun onBlockedStatusChanged(
+                network: Network,
+                blocked: Boolean,
+            ) {
+                // Under Data Saver / background restriction the platform delivers the per-UID verdict
+                // HERE, while the network's own capabilities keep reading INTERNET|VALIDATED — so a
+                // monitor that only folds onCapabilitiesChanged keeps publishing Confirmed while every
+                // socket the app opens fails. The verdict must ride the same published value as the
+                // capability bits (one atomic value, RFC_NETWORK_REACHABILITY §1.2), so it is folded
+                // into the state rather than exposed as a second flow.
+                //
+                // This override only ever runs on API 29+ (the platform added it there), where the
+                // registration contract orders onCapabilitiesChanged before onBlockedStatusChanged —
+                // so by the time a verdict lands for the current network, its capabilities are already
+                // retained in currentCaps and the re-fold below cannot tear.
+                if (!acceptsUpdateFor(network)) return
+                observed()
+                blockedNetwork = network
+                blockedForApp = blocked
+                if (network == currentNetwork) publish(network, currentCaps)
+            }
         }
+
+    /** One platform observation delivered for the tracked network — see [observationCount]. */
+    private fun observed() {
+        _observationCount.update { it + 1 }
+    }
 
     /**
      * Whether a callback for [network] may reach [publish]. Only the pre-O request-based path ever says
@@ -135,15 +225,19 @@ class AndroidNetworkMonitor(
 
     private fun clear() {
         currentNetwork = null
+        currentCaps = null
         _state.value = NetworkState.Offline
+        // No link, no measurement — never let a dead link's last reading linger as if it were current.
+        _linkQuality.value = LinkQuality.Unavailable
     }
 
-    /** Publish one coherent [NetworkState] — identity and reachability from the same capabilities object. */
+    /** Publish one coherent [NetworkState] — identity, reachability and the per-UID blocked verdict together. */
     private fun publish(
         network: Network,
         caps: AndroidNetworkCapabilities?,
     ) {
         currentNetwork = network
+        currentCaps = caps
         _state.value =
             androidNetworkState(
                 id =
@@ -165,6 +259,21 @@ class AndroidNetworkMonitor(
                         caps.has(AndroidNetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
                     } else {
                         true
+                    },
+                // Applies only while the verdict still names the network being published — a verdict
+                // for a superseded network must not brand its successor. The seed path runs before any
+                // verdict has arrived, so it publishes unblocked and the registration replay (which on
+                // API 29+ includes onBlockedStatusChanged) corrects it within milliseconds — the same
+                // seed-then-callback-authoritative contract the constructor already documents.
+                blockedForApp = blockedForApp && network == blockedNetwork,
+            )
+        _linkQuality.value =
+            androidLinkQuality(
+                signalStrength =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && caps != null) {
+                        caps.signalStrength
+                    } else {
+                        null
                     },
             )
     }
@@ -226,10 +335,20 @@ class AndroidNetworkMonitor(
  * | Capabilities on the default network | Result |
  * |---|---|
  * | no `INTERNET` | [NetworkState.LinkLocal] — a link, but nothing routes off it |
- * | `INTERNET` + `VALIDATED` + `NOT_SUSPENDED` | `Routable(id, Confirmed)` |
+ * | `INTERNET` + `VALIDATED` + `NOT_SUSPENDED`, not blocked for this app | `Routable(id, Confirmed)` |
  * | `CAPTIVE_PORTAL` | `Routable(id, Blocked(CaptivePortal))` |
- * | not `NOT_SUSPENDED` | `Routable(id, Blocked(Suspended))` |
+ * | not `NOT_SUSPENDED`, **or** blocked for this app (`onBlockedStatusChanged`) | `Routable(id, Blocked(Suspended))` |
  * | `INTERNET`, none of the above | `Routable(id, Pending)` — the validation window |
+ *
+ * [blockedForApp] is the per-UID verdict from
+ * [onBlockedStatusChanged][ConnectivityManager.NetworkCallback.onBlockedStatusChanged] (Data Saver,
+ * background restriction): the network itself is fine — its capabilities keep reading
+ * `INTERNET|VALIDATED` — but the platform passes none of *this app's* traffic. It folds onto
+ * [BlockReason.Suspended] rather than a new [BlockReason] because it prescribes the same consumer
+ * response: transient — the platform promises a follow-up verdict when the app is foregrounded or the
+ * restriction lifts — so wait, do not tear down, and retrying meanwhile is futile. A network-wide
+ * suspension and a per-UID pause are different causes with the same treatment, and [BlockReason] is
+ * deliberately keyed on treatment.
  *
  * [InternetAccess.Observed.Limited] is deliberately **not** produced here. Android's analogue of
  * NetworkManager's `LIMITED` is `NET_CAPABILITY_PARTIAL_CONNECTIVITY`, which is `@SystemApi` — absent
@@ -257,11 +376,13 @@ internal fun androidNetworkState(
     hasValidated: Boolean,
     hasCaptivePortal: Boolean,
     notSuspended: Boolean,
+    blockedForApp: Boolean,
 ): NetworkState =
     when {
         !hasInternet -> NetworkState.LinkLocal(id)
         hasCaptivePortal -> NetworkState.Routable(id, InternetAccess.Observed.Blocked(BlockReason.CaptivePortal))
-        !notSuspended -> NetworkState.Routable(id, InternetAccess.Observed.Blocked(BlockReason.Suspended))
+        !notSuspended || blockedForApp ->
+            NetworkState.Routable(id, InternetAccess.Observed.Blocked(BlockReason.Suspended))
         hasValidated -> NetworkState.Routable(id, InternetAccess.Observed.Confirmed)
         else -> NetworkState.Routable(id, InternetAccess.Observed.Pending)
     }
@@ -300,6 +421,23 @@ internal fun androidNetworkId(
         }
     return NetworkId.Link(kind, handle)
 }
+
+/**
+ * Pure mapper from `NetworkCapabilities.getSignalStrength()` to a [LinkQuality] (unit-testable without
+ * a device). [signalStrength] is `null` where the getter cannot be read at all (below API 29, or no
+ * capabilities object); [AndroidNetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED] is the platform's own
+ * in-band "no measurement" sentinel — a wired link, or an agent that never filled the field. Both are
+ * the same honest answer: [LinkQuality.Unavailable], never a fabricated number.
+ *
+ * The value is passed through unedited. For Wi-Fi it is the RSSI in dBm; telephony reports a
+ * bearer-specific level on the same field — monotone in quality either way (see [LinkQuality.Rssi]).
+ */
+internal fun androidLinkQuality(signalStrength: Int?): LinkQuality =
+    if (signalStrength == null || signalStrength == AndroidNetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED) {
+        LinkQuality.Unavailable
+    } else {
+        LinkQuality.Rssi(signalStrength)
+    }
 
 /**
  * Accept/ignore decision for a network callback, pure so the full matrix is unit-testable without

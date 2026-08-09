@@ -39,6 +39,22 @@ class NetworkMonitorDefaultsTest {
     }
 
     @Test
+    fun anUndeclaredObservationCountNeverAdvancesItMeansNotReportedNotQuiet() {
+        // A monitor that predates the counter (or opts out — every Polled monitor does) reports the
+        // default, which sits at zero forever. Zero-deltas from such a monitor mean "density is not
+        // reported here", never "the platform is quiet" — the same explicit-unknown stance as
+        // UndeclaredCapability, and the reason a consumer gates interpretation on capability.mechanism.
+        val undeclared =
+            object : NetworkMonitor {
+                override val state: StateFlow<NetworkState> = MutableStateFlow(NetworkState.Unknown)
+
+                override fun close() {}
+            }
+        assertEquals(0L, undeclared.observationCount.value)
+        assertEquals(0L, NetworkMonitor.AlwaysAvailable.observationCount.value, "Static asserts, never observes")
+    }
+
+    @Test
     fun processDefaultReturnsTheInstalledOverride() {
         // The cross-platform injection seam: once a monitor is installed, processDefault() returns it
         // for every consumer instead of the platform default. Installs are process-global and one-way
