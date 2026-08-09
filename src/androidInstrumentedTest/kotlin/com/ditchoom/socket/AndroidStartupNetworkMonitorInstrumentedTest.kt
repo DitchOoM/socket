@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ditchoom.socket.transport.NetworkId
 import org.junit.Assert.assertEquals
@@ -40,10 +41,22 @@ class AndroidStartupNetworkMonitorInstrumentedTest {
             // The seam ../webrtc branches on for IceRestartPolicy.OnNetworkChange. Asserting the
             // concrete class above is not enough: the capability is what consumers actually read, and it
             // must agree with what was wired. Polled here would mean the initializer never ran, and a
-            // resolution below RouteAndInternet would mean the ladder never reached the device.
+            // resolution below RouteAndInternet would mean the ladder never reached the device. The
+            // link-quality axis is API-gated like the monitor itself gates it: getSignalStrength()
+            // exists from API 29, so a device at or above it must declare Rssi and below must declare
+            // the honest None — mirroring the gate keeps this lane meaningful on every emulator image
+            // it runs against rather than pinning one API level's answer.
             assertEquals(
                 "a ConnectivityManager-backed monitor must report itself as pushed and fully resolving",
-                MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),
+                MonitorCapability(
+                    MonitorMechanism.PlatformSignalled,
+                    ReachResolution.RouteAndInternet,
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        LinkQualityResolution.Rssi
+                    } else {
+                        LinkQualityResolution.None
+                    },
+                ),
                 monitor.capability,
             )
         } finally {
