@@ -245,6 +245,12 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
     ): Int = nConnPeerCert(conn.handle, buf, bufLen)
 
+    override fun connApplicationProto(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnApplicationProto(conn.handle, buf, bufLen)
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     override fun configEnableDgram(
@@ -737,6 +743,14 @@ object JniQuicheApi : QuicheApi {
     @FastNative
     @JvmStatic
     private external fun nConnPeerCert(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnApplicationProto(
         conn: Long,
         buf: Long,
         bufLen: Int,

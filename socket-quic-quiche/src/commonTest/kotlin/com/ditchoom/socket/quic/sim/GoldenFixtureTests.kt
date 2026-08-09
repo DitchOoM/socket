@@ -43,7 +43,9 @@ class GoldenFixtureTests {
     private val keepaliveIdleSurvivalGolden =
         listOf<Observed>(
             Observed.StateChange(Duration.ZERO, QuicConnectionState.Handshaking),
-            Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("h3")),
+            // Established carries the REAL negotiated ALPN read from the backend (quiche_conn_application_proto);
+            // the scripted sim api models no ALPN, so the driver reports the empty string here.
+            Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("")),
             Observed.KeepAlivePing(10.seconds),
             Observed.KeepAlivePing(20.seconds),
             Observed.KeepAlivePing(30.seconds),
@@ -86,7 +88,9 @@ class GoldenFixtureTests {
     private val idleTimeoutCloseGolden =
         listOf<Observed>(
             Observed.StateChange(Duration.ZERO, QuicConnectionState.Handshaking),
-            Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("h3")),
+            // Established carries the REAL negotiated ALPN read from the backend (quiche_conn_application_proto);
+            // the scripted sim api models no ALPN, so the driver reports the empty string here.
+            Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("")),
             Observed.StateChange(30.seconds, QuicConnectionState.Closed(QuicError.IdleTimeout)),
             Observed.ErrorSurfaced(30.seconds, QuicError.IdleTimeout),
         )
@@ -116,7 +120,9 @@ class GoldenFixtureTests {
     private val datagramThenStalePathGolden =
         listOf<Observed>(
             Observed.StateChange(Duration.ZERO, QuicConnectionState.Handshaking),
-            Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("h3")),
+            // Established carries the REAL negotiated ALPN read from the backend (quiche_conn_application_proto);
+            // the scripted sim api models no ALPN, so the driver reports the empty string here.
+            Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("")),
             Observed.DatagramFed(Duration.ZERO, 8),
             Observed.NetworkChanged(
                 3.seconds,

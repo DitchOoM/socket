@@ -15,6 +15,19 @@ interface QuicConnection : QuicScope {
     /** Current connection state (used by the withQuicConnection/withQuicServer wrappers for lifecycle management). */
     val state: StateFlow<QuicConnectionState>
 
+    /**
+     * Derived from [state]: every driver-backed connection publishes the handshake's negotiated
+     * protocol in [QuicConnectionState.Established], so one default here covers all platforms.
+     * Readable while the connection is established — which is always the case inside the
+     * scope blocks where user code runs.
+     */
+    override val negotiatedAlpn: String
+        get() =
+            when (val s = state.value) {
+                is QuicConnectionState.Established -> s.negotiatedAlpn
+                else -> error("negotiatedAlpn is only available while the connection is established (state: $s)")
+            }
+
     /** Close the connection with a QUIC error. Called by the scope when the block ends. */
     suspend fun close(error: QuicError = QuicError.NoError)
 

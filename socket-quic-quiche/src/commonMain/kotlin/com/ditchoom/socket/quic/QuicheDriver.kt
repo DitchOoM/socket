@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadResult
@@ -643,11 +644,30 @@ class QuicheDriver(
 
     private fun updateState() {
         if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
-            _state.value = QuicConnectionState.Established("h3")
+            _state.value = QuicConnectionState.Established(readNegotiatedAlpn())
             issueSpareCids()
         }
         if (api.connIsClosed(conn)) {
             transitionToClosed()
+        }
+    }
+
+    /**
+     * The handshake's negotiated ALPN protocol (`quiche_conn_application_proto`), read once at the
+     * Handshaking→Established edge and published in [QuicConnectionState.Established] — the value
+     * behind [QuicConnection.negotiatedAlpn] and the server-side ALPN demux (`connectionsByAlpn`).
+     * Empty when the backend does not expose it (a [QuicheApi] test double using the interface
+     * default). RFC 7301 caps an identifier at 255 bytes, so one fixed allocation never re-tries.
+     */
+    private fun readNegotiatedAlpn(): String {
+        val buf = bufferFactory.allocate(MAX_ALPN_LEN)
+        try {
+            val len = api.connApplicationProto(conn, addr(buf), MAX_ALPN_LEN)
+            if (len <= 0 || len > MAX_ALPN_LEN) return ""
+            buf.setLimit(len)
+            return buf.readString(len, Charset.UTF8)
+        } finally {
+            buf.freeNativeMemory()
         }
     }
 
@@ -1084,6 +1104,9 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /** Max ALPN protocol identifier length (RFC 7301 — 1-byte length prefix, so ≤ 255). */
+        private const val MAX_ALPN_LEN = 255
 
         /** maxPoolSize for a per-connection datagram recv pool — ~87 KB cached (64 × 1350). */
         private const val RECV_BUF_POOL_SIZE = 64

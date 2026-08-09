@@ -2,6 +2,7 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicServer
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.withQuicServer
@@ -53,8 +54,7 @@ suspend fun <R> withHttp3Server(
             val acceptJob =
                 launch {
                     connections {
-                        Http3ServerConnection(this, connectionOptions, qpackCapacity, onRequest, webTransport, onWebTransport)
-                            .serve()
+                        serveHttp3(connectionOptions, qpackCapacity, webTransport, onWebTransport, onRequest)
                     }
                 }
             try {
@@ -64,3 +64,39 @@ suspend fun <R> withHttp3Server(
             }
         }
     }
+
+/**
+ * Serve the HTTP/3 (RFC 9114) server role over ONE already-accepted QUIC connection — the
+ * per-connection counterpart of [withHttp3Server], for servers that own the listener themselves.
+ *
+ * The reason to own the listener is protocol demultiplexing: a single QUIC listener whose
+ * [QuicOptions.alpnProtocols] offers several protocols can route each accepted connection by its
+ * negotiated ALPN ([QuicScope.negotiatedAlpn] / `connectionsByAlpn`), sharing one UDP port between
+ * an HTTP/3 stack and other QUIC protocols:
+ *
+ * ```kotlin
+ * withQuicServer(port = 443, tlsConfig = tls, quicOptions = QuicOptions(listOf("h3", "my-proto"))) {
+ *     connectionsByAlpn(
+ *         "h3" to { serveHttp3(onRequest = { /* … */ }) },
+ *         "my-proto" to { /* raw QUIC streams/datagrams */ },
+ *     )
+ * }
+ * ```
+ *
+ * Bootstraps the server control + (optionally) QPACK streams on this connection and dispatches its
+ * request streams to [onRequest] concurrently, exactly as [withHttp3Server] does per connection.
+ * Suspends until the connection closes (or the surrounding scope is cancelled).
+ *
+ * Because the caller builds the [QuicOptions], the transport prerequisites [withHttp3Server]
+ * applies via its internal `forHttp3()` are the caller's responsibility: keep `"h3"` in the ALPN
+ * offer, and leave inbound unidirectional streams deliverable (HTTP/3's control + QPACK streams are
+ * peer-initiated; on platforms where a datagram flow conflicts with inbound streams, prefer streams
+ * — see [com.ditchoom.socket.quic.DatagramStreamConflictPolicy]).
+ */
+suspend fun QuicScope.serveHttp3(
+    connectionOptions: TransportConfig = TransportConfig(),
+    qpackCapacity: Long = 0,
+    webTransport: WebTransportOptions? = null,
+    onWebTransport: (suspend WebTransportServerExchange.() -> Unit)? = null,
+    onRequest: suspend Http3ServerExchange.() -> Unit,
+) = Http3ServerConnection(this, connectionOptions, qpackCapacity, onRequest, webTransport, onWebTransport).serve()
