@@ -54,8 +54,7 @@ class JsQuicGapTests {
             val error =
                 assertFailsWith<UnsupportedOperationException> {
                     engine.bind(
-                        port = 0,
-                        host = null,
+                        binding = QuicPortBinding.Own(port = 0),
                         tlsConfig = QuicTlsConfig(certChainPath = "unused", privKeyPath = "unused"),
                         quicOptions = quicOptions,
                         timeout = 10.seconds,
