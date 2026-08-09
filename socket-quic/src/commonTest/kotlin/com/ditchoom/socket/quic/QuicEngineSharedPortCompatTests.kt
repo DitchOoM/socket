@@ -17,26 +17,21 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Adding shared-port support to [QuicEngine] must not break an engine that predates it. That promise
- * is only worth as much as a test that a *legacy* engine — one implementing solely the own-port
- * [QuicEngine.bind], as every engine did before [QuicPortBinding] existed — still compiles here and
- * still serves its own port.
- *
- * The class below is that engine. It does not override the [QuicPortBinding] overload at all; if the
- * overload were ever made abstract, this file stops compiling, which is exactly the alarm wanted.
+ * [QuicPortBinding] replaced the `bind(port, host, …)` parameters, and the old form survives as a
+ * deprecated convenience that delegates. This pins the two things that promise rests on: an existing
+ * **call site** still compiles and still binds the port it asked for, and an engine that cannot serve
+ * a shared port says so through its capabilities rather than through a surprise.
  */
 class QuicEngineSharedPortCompatTests {
-    private val options = QuicOptions(alpnProtocols = listOf("legacy"))
+    private val options = QuicOptions(alpnProtocols = listOf("test"))
     private val tls = QuicTlsConfig(certChainPath = "unused", privKeyPath = "unused")
 
-    private class LegacyEngine : QuicEngine {
-        // Written before shared ports existed, so it cannot advertise one — and the default for
-        // supportsSharedPort means it does not have to say anything to be honest about it.
-        override val capabilities =
-            EngineCapabilities(supportsMigration = false, supportsDatagrams = false, supportsServer = true)
-
-        var boundPort: Int? = null
-        var boundHost: String? = null
+    /** An engine implementing only the binding form — i.e. every engine, after this change. */
+    private class RecordingEngine(
+        override val capabilities: EngineCapabilities =
+            EngineCapabilities(supportsMigration = false, supportsDatagrams = false, supportsServer = true),
+    ) : QuicEngine {
+        var lastBinding: QuicPortBinding? = null
 
         override suspend fun connect(
             hostname: String,
@@ -47,15 +42,16 @@ class QuicEngineSharedPortCompatTests {
         ): QuicConnection = throw UnsupportedOperationException("client not needed here")
 
         override suspend fun bind(
-            port: Int,
-            host: String?,
+            binding: QuicPortBinding,
             tlsConfig: QuicTlsConfig,
             quicOptions: QuicOptions,
             timeout: Duration,
         ): QuicServer {
-            boundPort = port
-            boundHost = host
-            return StubServer(port)
+            lastBinding = binding
+            if (binding is QuicPortBinding.Shared && !capabilities.supportsSharedPort) {
+                throw UnsupportedOperationException("this engine cannot serve a shared UDP port")
+            }
+            return StubServer(if (binding is QuicPortBinding.Own) binding.port else 443)
         }
     }
 
@@ -85,33 +81,32 @@ class QuicEngineSharedPortCompatTests {
         override fun close() = Unit
     }
 
-    /** The general form routes an owned port to the method a legacy engine already implements. */
+    /**
+     * The deprecated call still compiles — that is half the point of this test existing — and lands
+     * on the binding form as [QuicPortBinding.Own], carrying the same port and host.
+     */
     @Test
-    fun ownBindingReachesALegacyEnginesOwnPortBind() =
+    @Suppress("DEPRECATION")
+    fun theDeprecatedPortHostCallStillBindsThatPort() =
         runQuicTest {
-            val engine = LegacyEngine()
-            val server = engine.bind(QuicPortBinding.Own(port = 8443, host = "127.0.0.1"), tls, options, 5.seconds)
+            val engine = RecordingEngine()
+            val server = engine.bind(8443, "127.0.0.1", tls, options, 5.seconds)
 
-            assertEquals(8443, engine.boundPort, "Own must be unwrapped into the port/host bind")
-            assertEquals("127.0.0.1", engine.boundHost)
+            assertEquals(QuicPortBinding.Own(8443, "127.0.0.1"), engine.lastBinding)
             assertEquals(8443, server.port)
         }
 
-    /**
-     * A shared port is the one thing such an engine genuinely cannot do — so it says so up front via
-     * the capability, and the attempt fails loudly rather than binding something surprising.
-     */
+    /** A shared port is refused by capability, not discovered by exception. */
     @Test
-    fun sharedBindingIsRefusedAndAdvertisedAsUnsupported() =
+    fun anEngineWithoutSharedPortSupportAdvertisesIt() =
         runQuicTest {
-            val engine = LegacyEngine()
+            val engine = RecordingEngine()
             assertFalse(
                 engine.capabilities.supportsSharedPort,
-                "an engine that cannot serve a shared port must advertise that, not be discovered by throwing",
+                "an engine that cannot serve a shared port must advertise that, not be found out by throwing",
             )
             assertFailsWith<UnsupportedOperationException> {
                 engine.bind(QuicPortBinding.Shared(UnusedChannel()), tls, options, 5.seconds)
             }
-            assertEquals(null, engine.boundPort, "a refused shared bind must not have bound anything")
         }
 }

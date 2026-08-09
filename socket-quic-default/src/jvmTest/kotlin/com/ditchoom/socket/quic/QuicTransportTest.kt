@@ -134,8 +134,7 @@ class QuicTransportTest {
         ): QuicConnection = FakeQuicConnection(openStreamDelegate).also { connection = it }
 
         override suspend fun bind(
-            port: Int,
-            host: String?,
+            binding: QuicPortBinding,
             tlsConfig: QuicTlsConfig,
             quicOptions: QuicOptions,
             timeout: kotlin.time.Duration,

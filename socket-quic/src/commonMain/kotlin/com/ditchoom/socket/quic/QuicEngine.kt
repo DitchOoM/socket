@@ -38,41 +38,31 @@ interface QuicEngine {
     ): QuicConnection
 
     /**
-     * Bind a QUIC server on [port] (0 = OS-assigned), [host] (null = all interfaces), owning the
-     * socket. The returned [QuicServer] is bound; the caller (normally [withQuicServer]) owns its
-     * [close][QuicServer.close].
+     * Bind a QUIC server according to [binding]: its own UDP port ([QuicPortBinding.Own]), or one
+     * someone else owns and demultiplexes to it ([QuicPortBinding.Shared] — RFC 9443 port sharing,
+     * which is how QUIC coexists with the ICE/media stacks on 443). The returned [QuicServer] is
+     * bound; the caller (normally [withQuicServer]) owns its [close][QuicServer.close].
      *
-     * Every engine can do this, so it stays the one method an engine must implement.
-     */
-    suspend fun bind(
-        port: Int,
-        host: String?,
-        tlsConfig: QuicTlsConfig,
-        quicOptions: QuicOptions,
-        timeout: Duration,
-    ): QuicServer
-
-    /**
-     * Bind a QUIC server according to [binding] — the general form. [QuicPortBinding.Own] is the
-     * method above; [QuicPortBinding.Shared] runs the listener on a UDP port someone else owns and
-     * demultiplexes to it (RFC 9443 port sharing, so QUIC can coexist with the ICE/media stacks).
-     *
-     * Defaulted rather than abstract so an engine written before shared ports existed keeps
-     * compiling and keeps working for its own port. Such an engine advertises
-     * [EngineCapabilities.supportsSharedPort] = false, which is the answer to consult — the throw
-     * below is the backstop, not the API.
+     * An engine that cannot serve a shared port advertises
+     * [EngineCapabilities.supportsSharedPort] = false and throws on one — the capability is the
+     * answer to consult, not the exception.
      */
     suspend fun bind(
         binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
-    ): QuicServer =
-        when (binding) {
-            is QuicPortBinding.Own -> bind(binding.port, binding.host, tlsConfig, quicOptions, timeout)
-            is QuicPortBinding.Shared ->
-                throw UnsupportedOperationException(
-                    "This QUIC engine cannot serve a shared UDP port (EngineCapabilities.supportsSharedPort is false)",
-                )
-        }
+    ): QuicServer
+
+    @Deprecated(
+        "Superseded by QuicPortBinding, which also expresses a shared port.",
+        ReplaceWith("bind(QuicPortBinding.Own(port, host), tlsConfig, quicOptions, timeout)"),
+    )
+    suspend fun bind(
+        port: Int,
+        host: String?,
+        tlsConfig: QuicTlsConfig,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer = bind(QuicPortBinding.Own(port, host), tlsConfig, quicOptions, timeout)
 }
