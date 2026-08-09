@@ -21,9 +21,13 @@ package com.ditchoom.socket.quic
  * A client whose ALPN list does not intersect the server's never reaches a handler — the TLS
  * handshake itself fails with `no_application_protocol`, so routing only ever sees protocols
  * the listener offered. [onUnmatched] therefore fires only on a local configuration mismatch:
- * a protocol present in [QuicOptions.alpnProtocols] but missing from [routes]. The default
- * closes such a connection immediately (the handler-return close, `NO_ERROR`); pass your own
- * to log or close with an application error code via [QuicScope.closeWithError].
+ * a protocol present in [QuicOptions.alpnProtocols] but missing from [routes]. That mismatch is
+ * rejected up front — [QuicServer.alpnProtocols] is the offer, and every entry of it must have a
+ * route, so an unrouted protocol fails here at call time instead of silently dropping connections
+ * later. Servers that do not report their offer (an empty [QuicServer.alpnProtocols]) skip the
+ * check, leaving [onUnmatched] as the runtime backstop. Its default closes such a connection
+ * immediately (the handler-return close, `NO_ERROR`); pass your own to log or close with an
+ * application error code via [QuicScope.closeWithError].
  *
  * Semantics are otherwise identical to [QuicServer.connections]: one handler invocation per
  * accepted connection, concurrent across connections, connection closed when the handler
@@ -37,6 +41,17 @@ suspend fun QuicServer.connectionsByAlpn(
     val table = routes.toMap()
     require(table.size == routes.size) {
         "Duplicate ALPN route: ${routes.groupingBy { it.first }.eachCount().filterValues { it > 1 }.keys}"
+    }
+    // Every protocol the listener offers must be routable. The offer is what TLS selects from, so an
+    // unrouted entry can only ever surface as a connection quietly falling through to onUnmatched.
+    val offered = alpnProtocols
+    if (offered.isNotEmpty()) {
+        val unrouted = offered.filterNot { it in table }
+        require(unrouted.isEmpty()) {
+            "No connectionsByAlpn route for offered ALPN protocol(s) $unrouted — " +
+                "the listener offers $offered but routes ${table.keys.toList()}. " +
+                "Add a route, or drop the protocol from QuicOptions.alpnProtocols."
+        }
     }
     connections {
         (table[negotiatedAlpn] ?: onUnmatched).invoke(this)

@@ -47,7 +47,13 @@ class ServerCloseRecvInfoRaceTest {
             try {
                 val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false)
                 val gated = GatedConnRecvQuicheApi(loadQuicheApi())
-                val server = buildJvmQuicServer(port = 0, host = "127.0.0.1", tlsConfig = tls, quicOptions = opts, api = gated)
+                val server =
+                    buildJvmQuicServer(
+                        QuicPortBinding.Own(port = 0, host = "127.0.0.1"),
+                        tlsConfig = tls,
+                        requestedOptions = opts,
+                        api = gated,
+                    )
                 val serverPort = server.port
 
                 val established = CompletableDeferred<Unit>()

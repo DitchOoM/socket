@@ -9,7 +9,6 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.udp.SocketAddressCodec
-import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.hostOsSockAddrLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,10 +28,9 @@ private const val QUICHE_PROTOCOL_VERSION = 0x00000001
  * (native-memory config load, the host-OS sockaddr layout, the injectable backend) is here.
  */
 internal suspend fun buildJvmQuicServer(
-    port: Int,
-    host: String?,
+    binding: QuicPortBinding,
     tlsConfig: QuicTlsConfig,
-    quicOptions: QuicOptions,
+    requestedOptions: QuicOptions,
     // Determinism seams (RFC_DETERMINISTIC_SIMULATION.md §3.1) — production defaults are
     // byte-identical to the pre-seam behaviour; the sim harness injects its own.
     tuning: QuicheDriverTuning = QuicheDriverTuning(),
@@ -43,6 +41,9 @@ internal suspend fun buildJvmQuicServer(
     val parentJob = SupervisorJob()
     val parentScope = CoroutineScope(parentJob + Dispatchers.IO)
     var bound = false
+
+    // A shared port constrains the transport (RFC 9443 §3) — resolve that before configuring.
+    val quicOptions = binding.transportOptionsFor(requestedOptions)
 
     // QUIC I/O needs native-memory buffers (quiche FFI); see BufferFactory.network(). This is not a
     // caller-configurable knob: the quiche JNI/FFM binding dereferences buffer addresses everywhere
@@ -72,8 +73,7 @@ internal suspend fun buildJvmQuicServer(
         // One recv pool for the whole server, injected as the shared channel's bufferFactory so each
         // datagram is allocated straight from it — the receive loop then routes it with no copy.
         val recvBufPool = QuicheDriver.newRecvBufPool(bufferFactory)
-        val channel =
-            UdpSocket.bind(host, port, receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE, bufferFactory = recvBufPool)
+        val channel = binding.openServerChannel(recvBufPool)
         val localAddress = channel.localAddress
 
         val server =
@@ -91,6 +91,7 @@ internal suspend fun buildJvmQuicServer(
                 onClose = { parentScope.cancel() },
                 tuning = tuning,
                 recvBufPool = recvBufPool,
+                alpnProtocols = quicOptions.alpnProtocols,
             )
         bound = true
         return server

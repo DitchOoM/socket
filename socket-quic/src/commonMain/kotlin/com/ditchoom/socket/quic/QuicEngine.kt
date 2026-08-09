@@ -38,14 +38,31 @@ interface QuicEngine {
     ): QuicConnection
 
     /**
-     * Bind a QUIC server on [port] (0 = OS-assigned), [host] (null = all interfaces). The returned
-     * [QuicServer] is bound; the caller (normally [withQuicServer]) owns its [close][QuicServer.close].
+     * Bind a QUIC server according to [binding]: its own UDP port ([QuicPortBinding.Own]), or one
+     * someone else owns and demultiplexes to it ([QuicPortBinding.Shared] — RFC 9443 port sharing,
+     * which is how QUIC coexists with the ICE/media stacks on 443). The returned [QuicServer] is
+     * bound; the caller (normally [withQuicServer]) owns its [close][QuicServer.close].
+     *
+     * An engine that cannot serve a shared port advertises
+     * [EngineCapabilities.supportsSharedPort] = false and throws on one — the capability is the
+     * answer to consult, not the exception.
      */
+    suspend fun bind(
+        binding: QuicPortBinding,
+        tlsConfig: QuicTlsConfig,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer
+
+    @Deprecated(
+        "Superseded by QuicPortBinding, which also expresses a shared port.",
+        ReplaceWith("bind(QuicPortBinding.Own(port, host), tlsConfig, quicOptions, timeout)"),
+    )
     suspend fun bind(
         port: Int,
         host: String?,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
-    ): QuicServer
+    ): QuicServer = bind(QuicPortBinding.Own(port, host), tlsConfig, quicOptions, timeout)
 }

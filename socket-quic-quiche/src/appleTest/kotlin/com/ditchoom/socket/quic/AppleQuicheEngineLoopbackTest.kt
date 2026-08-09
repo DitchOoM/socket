@@ -39,7 +39,7 @@ class AppleQuicheEngineLoopbackTest {
     fun quicheClientServerStreamEchoOverLoopback() =
         runQuicTest {
             val tls = QuicTlsConfig(certChainPath = cert("cert.crt"), privKeyPath = cert("cert.key"))
-            val server = QuicheEngine.bind(port = 0, host = null, tlsConfig = tls, quicOptions = opts, timeout = 15.seconds)
+            val server = QuicheEngine.bind(QuicPortBinding.Own(port = 0), tlsConfig = tls, quicOptions = opts, timeout = 15.seconds)
             try {
                 val port = server.port
                 val echo = CompletableDeferred<String>()

@@ -19,6 +19,9 @@ object QuicheEngine : QuicEngine {
             supportsMigration = true,
             supportsDatagrams = true,
             supportsServer = true,
+            // quiche reads whatever channel it is handed, so a demultiplexed port is no different
+            // to it than one it bound itself.
+            supportsSharedPort = true,
         )
 
     override suspend fun connect(
@@ -47,15 +50,13 @@ object QuicheEngine : QuicEngine {
     }
 
     override suspend fun bind(
-        port: Int,
-        host: String?,
+        binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
     ): QuicServer =
         buildAppleQuicServer(
-            port,
-            host,
+            binding,
             tlsConfig,
             quicOptions,
             QuicheDriverTuning(recorderFactory = {
