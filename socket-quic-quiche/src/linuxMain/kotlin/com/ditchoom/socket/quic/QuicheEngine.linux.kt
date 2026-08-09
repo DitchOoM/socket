@@ -37,15 +37,13 @@ object QuicheEngine : QuicEngine {
     }
 
     override suspend fun bind(
-        port: Int,
-        host: String?,
+        binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
     ): QuicServer =
         buildLinuxQuicServer(
-            port,
-            host,
+            binding,
             tlsConfig,
             quicOptions,
             QuicheDriverTuning(recorderFactory = {

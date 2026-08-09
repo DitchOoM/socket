@@ -38,12 +38,13 @@ interface QuicEngine {
     ): QuicConnection
 
     /**
-     * Bind a QUIC server on [port] (0 = OS-assigned), [host] (null = all interfaces). The returned
-     * [QuicServer] is bound; the caller (normally [withQuicServer]) owns its [close][QuicServer.close].
+     * Bind a QUIC server according to [binding] — its own UDP port
+     * ([QuicPortBinding.Own]) or a channel someone else owns and demultiplexes to it
+     * ([QuicPortBinding.Shared]). The returned [QuicServer] is bound; the caller (normally
+     * [withQuicServer]) owns its [close][QuicServer.close].
      */
     suspend fun bind(
-        port: Int,
-        host: String?,
+        binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,

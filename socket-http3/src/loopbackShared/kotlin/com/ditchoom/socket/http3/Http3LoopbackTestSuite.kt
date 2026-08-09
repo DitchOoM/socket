@@ -1679,7 +1679,9 @@ abstract class Http3LoopbackTestSuite {
                                 },
                             )
                         }
-                    delay(100)
+                    // No settle delay: withQuicServer has already bound when its block runs, and
+                    // accepted connections queue (Channel.UNLIMITED) until connectionsByAlpn collects
+                    // them — so a client cannot arrive "too early" for the accept loop.
 
                     try {
                         // HTTP/3 client → the h3 route (production client + production serveHttp3).
@@ -1725,6 +1727,165 @@ abstract class Http3LoopbackTestSuite {
                                 text to negotiatedAlpn
                             }
                         assertEquals("raw:ping" to "raw-echo", rawResult)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * The three-way share: raw QUIC, HTTP/3 requests, and WebTransport all live on ONE UDP port at
+     * once — the two demultiplexing levels stacked, end to end.
+     *
+     * Level 1 is ALPN ([connectionsByAlpn] on [com.ditchoom.socket.quic.QuicScope.negotiatedAlpn]):
+     * `raw-echo` connections go to a plain QUIC stream echo, `h3` connections to [serveHttp3].
+     * Level 2 is inside `h3`, where HTTP/3 and WebTransport necessarily SHARE the ALPN — they are
+     * split by Extended CONNECT (RFC 9220): a CONNECT carrying `:protocol` reaches `onWebTransport`,
+     * everything else reaches `onRequest`.
+     *
+     * So the interesting assertion is not just that three stacks answered on one port, but WHERE the
+     * split happened: the client makes its plain GET and its WebTransport session on a SINGLE HTTP/3
+     * connection, and the server's event log must show exactly ONE accepted `h3` connection carrying
+     * both — proving the request/WebTransport split is a level-2 (Extended CONNECT) split, not two
+     * connections. The raw-QUIC client then proves the level-1 split on the same port.
+     */
+    @Test
+    fun alpnDemux_rawQuicHttp3AndWebTransportShareOnePort() =
+        runHttp3LoopbackTest {
+            wrapTestBody {
+                // Ordered log of what the SERVER saw. Unlimited so no handler ever blocks on it.
+                val serverEvents = Channel<String>(Channel.UNLIMITED)
+                val serverOptions =
+                    QuicOptions(
+                        alpnProtocols = listOf(HTTP3_ALPN, "raw-echo"),
+                        verifyPeer = false,
+                        idleTimeout = 10.seconds,
+                        datagrams = DatagramOptions(),
+                        trace = QuicTraceCapture(diagnostics.serverSink),
+                        // The listener is ours, so its transport prerequisites are ours too (serveHttp3
+                        // documents this) — forHttp3() applies the same PreferStreams the production
+                        // withHttp3Server wrapper forces at its boundary.
+                    ).forHttp3()
+
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverOptions) {
+                    val serverJob =
+                        launch {
+                            connectionsByAlpn(
+                                HTTP3_ALPN to {
+                                    serverEvents.send("h3-connection")
+                                    serveHttp3(
+                                        connectionOptions = connectionOptions,
+                                        webTransport = WebTransportOptions(maxSessions = 4),
+                                        onWebTransport = {
+                                            serverEvents.send("wt-connect:$path")
+                                            val session = accept()
+                                            val stream = session.incomingBidiStreams.first()
+                                            val msg = stream.readUtf8()
+                                            stream.write(textBuffer("wt-echo:$msg"))
+                                            stream.close()
+                                        },
+                                    ) {
+                                        serverEvents.send("h3-request:${request.path}")
+                                        val body = textBuffer("h3:${request.path}")
+                                        try {
+                                            response.send(200, body = body)
+                                        } finally {
+                                            body.freeIfNeeded()
+                                        }
+                                    }
+                                },
+                                "raw-echo" to {
+                                    serverEvents.send("raw-connection")
+                                    val stream = acceptStream()
+                                    val data = stream.read(5.seconds)
+                                    if (data is ReadResult.Data) {
+                                        val text = data.buffer.readString(data.buffer.remaining(), Charset.UTF8)
+                                        val out = textBuffer("raw:$text")
+                                        try {
+                                            stream.write(out, 5.seconds)
+                                        } finally {
+                                            out.freeIfNeeded()
+                                        }
+                                    }
+                                    stream.close()
+                                },
+                            )
+                        }
+                    // Same as above: bind happened before this block; accepts queue until collected.
+
+                    try {
+                        // ONE HTTP/3 connection doing BOTH a plain request and a WebTransport session.
+                        val h3AndWt =
+                            withHttp3Connection(
+                                "localhost",
+                                port,
+                                clientQuicOptions,
+                                connectionOptions,
+                                15.seconds,
+                                webTransport = WebTransportOptions(maxSessions = 4),
+                            ) {
+                                withTimeout(5.seconds) { peerSettings() }
+                                val response = request(Http3Request(method = "GET", authority = "localhost", path = "/shared"))
+                                val requestResult =
+                                    try {
+                                        val body = response.readFullBody()
+                                        val text = body.readString(body.remaining(), Charset.UTF8)
+                                        body.freeIfNeeded()
+                                        response.status to text
+                                    } finally {
+                                        response.close()
+                                    }
+
+                                val session = connectWebTransport(authority = "localhost", path = "/wt")
+                                val stream = session.openBidiStream()
+                                stream.write(textBuffer("hello"))
+                                stream.shutdownSend()
+                                requestResult to withTimeout(5.seconds) { stream.readUtf8() }
+                            }
+                        assertEquals(200 to "h3:/shared", h3AndWt.first, "plain HTTP/3 request served on the shared port")
+                        assertEquals("wt-echo:hello", h3AndWt.second, "WebTransport session served on the same connection")
+
+                        // The third stack: raw QUIC, same UDP port, routed by its own ALPN.
+                        val rawOptions =
+                            QuicOptions(
+                                alpnProtocols = listOf("raw-echo"),
+                                verifyPeer = false,
+                                idleTimeout = 10.seconds,
+                            )
+                        val rawResult =
+                            withQuicConnection("localhost", port, rawOptions, timeout = 15.seconds) {
+                                val stream = openStream()
+                                val ping = textBuffer("ping")
+                                try {
+                                    stream.write(ping, 5.seconds)
+                                } finally {
+                                    ping.freeIfNeeded()
+                                }
+                                val reply = stream.read(5.seconds)
+                                val text =
+                                    if (reply is ReadResult.Data) {
+                                        reply.buffer.readString(reply.buffer.remaining(), Charset.UTF8)
+                                    } else {
+                                        "no_data:${reply::class.simpleName}"
+                                    }
+                                stream.close()
+                                text to negotiatedAlpn
+                            }
+                        assertEquals("raw:ping" to "raw-echo", rawResult, "raw QUIC served on the same port")
+
+                        // The client's calls were sequential, so the server's view is a fixed sequence.
+                        // One `h3-connection` covering both the request and the CONNECT is the point:
+                        // HTTP/3 and WebTransport shared a connection, not just a port.
+                        val events = List(4) { withTimeout(5.seconds) { serverEvents.receive() } }
+                        assertEquals(
+                            listOf("h3-connection", "h3-request:/shared", "wt-connect:/wt", "raw-connection"),
+                            events,
+                        )
+                        assertNull(
+                            withTimeoutOrNull(300) { serverEvents.receive() },
+                            "no further connections: HTTP/3 and WebTransport rode the single accepted h3 connection",
+                        )
                     } finally {
                         serverJob.cancel()
                     }

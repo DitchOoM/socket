@@ -72,6 +72,10 @@ internal class SharedQuicheServer(
      * [bufferFactory] — never an already-pooled factory (the `80575c1` double-wrap regression).
      */
     private val recvBufPool: BufferPool = QuicheDriver.newRecvBufPool(bufferFactory),
+    // The ALPN offer this listener was configured with. Carried purely to report it back through
+    // [QuicServer.alpnProtocols] — quiche keeps the offer inside the opaque config, so the build
+    // functions pass QuicOptions.alpnProtocols through rather than reading it back out.
+    override val alpnProtocols: List<String> = emptyList(),
 ) : QuicServer {
     override val port: Int get() = localAddress.port
 

@@ -3,15 +3,23 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.udp.MultiplexedProtocol
+import com.ditchoom.socket.udp.UdpSocket
+import com.ditchoom.socket.udp.demultiplex
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -246,6 +254,100 @@ abstract class QuicServerTestSuite {
             reply to negotiatedAlpn
         }
     }
+
+    /**
+     * QUIC and a non-QUIC protocol on the SAME UDP port, demultiplexed per RFC 9443.
+     *
+     * The port is bound by `:socket-udp` and owned by the demultiplexer, not by QUIC: the QUIC
+     * listener is handed [MultiplexedUdpSocket.quic] via [QuicPortBinding.Shared], and everything
+     * that is not QUIC surfaces on [MultiplexedUdpSocket.datagrams]. A STUN-shaped probe (first byte
+     * 0x00 — an ICE connectivity check, as far as the table is concerned) and a real QUIC handshake
+     * are then driven at that one port concurrently, and each must reach its own stack: the QUIC
+     * client completes a stream round trip while the probe is answered from the same port.
+     *
+     * No STUN is parsed or implemented here — one byte decides the branch, and the payload is handed
+     * on untouched. That is the whole contract a media/ICE stack needs from this layer.
+     */
+    @Test
+    fun sharedPort_quicAndANonQuicProtocolCoexist() =
+        runQuicTest {
+            wrapTestBody {
+                val socket = UdpSocket.bind(localHost = "127.0.0.1")
+                val mux = socket.demultiplex(this)
+                val port = mux.localAddress.port
+
+                // The media half: one collector, echoing each probe back from the shared port.
+                val seen = Channel<MultiplexedProtocol.NonQuic>(Channel.UNLIMITED)
+                val media =
+                    launch {
+                        mux.datagrams.collect { received ->
+                            seen.send(received.protocol)
+                            val reply = BufferFactory.deterministic().allocate(4)
+                            reply.writeString("pong", Charset.UTF8)
+                            reply.resetForRead()
+                            mux.send(reply, to = received.datagram.peer)
+                            received.datagram.payload.freeIfNeeded()
+                        }
+                    }
+
+                val serverOptions =
+                    QuicOptions(
+                        alpnProtocols = listOf("shared-port"),
+                        verifyPeer = false,
+                        idleTimeout = 10.seconds,
+                    )
+                // withQuicServer binds before it runs its block, and the block is inside a launch, so
+                // the bind is what a client could race — not the accept loop (accepted connections
+                // queue from the moment of bind). Wait for the actual event rather than guessing at it.
+                val listening = CompletableDeferred<Unit>()
+                val server =
+                    launch {
+                        withQuicServer(QuicPortBinding.Shared(mux.quic), testTlsConfig(), serverOptions) {
+                            listening.complete(Unit)
+                            connections {
+                                val stream = acceptStream()
+                                replyTagged(stream, "quic")
+                            }
+                        }
+                    }
+                listening.await()
+
+                try {
+                    // A STUN-shaped probe from an unrelated socket to the shared port.
+                    val prober = UdpSocket.connect("127.0.0.1", port, localHost = "127.0.0.1")
+                    try {
+                        val probe = BufferFactory.deterministic().allocate(8)
+                        probe.writeByte(0x00) // STUN: first two bits zero (RFC 8489 / RFC 9443)
+                        repeat(7) { probe.writeByte(0) }
+                        probe.resetForRead()
+                        prober.send(probe)
+
+                        assertEquals(
+                            MultiplexedProtocol.Stun,
+                            withTimeout(5.seconds.scaled) { seen.receive() },
+                            "the probe reached the non-QUIC branch, not the QUIC stack",
+                        )
+                        val answer = withTimeout(5.seconds.scaled) { prober.receive() }
+                        val answered = assertIs<DatagramReadResult.Received>(answer)
+                        assertEquals(
+                            "pong",
+                            answered.datagram.payload.readString(answered.datagram.payload.remaining(), Charset.UTF8),
+                            "the reply came back from the shared port",
+                        )
+                        answered.datagram.payload.freeIfNeeded()
+                    } finally {
+                        prober.close()
+                    }
+
+                    // …and QUIC still works on that same port, handshake and all.
+                    assertEquals("quic:ping" to "shared-port", roundTrip(port, alpn = "shared-port"))
+                } finally {
+                    server.cancel()
+                    media.cancel()
+                    mux.close()
+                }
+            }
+        }
 
     /**
      * The [ReadResult] a peer observes when the remote abruptly resets a stream.

@@ -84,6 +84,11 @@ kotlin {
             // Neutral trace model (TraceSink) referenced by TestHelpers' capture helpers
             // (RFC unified-harness P0).
             api(project(":socket-testkit"))
+            // Shared-port suite (RFC 9443): the QUIC listener under test rides a UDP socket bound and
+            // demultiplexed by :socket-udp, so the suite needs it on EVERY target, not just the jvm
+            // sidecar below. This widens nothing in practice — every platform that runs these suites
+            // already resolves :socket-udp transitively through the quiche backend.
+            api(project(":socket-udp"))
             api(libs.buffer)
             api(libs.buffer.flow)
             api(libs.kotlinx.coroutines.core)

@@ -27,8 +27,7 @@ class UnsupportedQuicEngine(
     ): QuicConnection = throw UnsupportedOperationException(connectReason)
 
     override suspend fun bind(
-        port: Int,
-        host: String?,
+        binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
         timeout: Duration,
