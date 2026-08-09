@@ -19,6 +19,9 @@ object QuicheEngine : QuicEngine {
             supportsMigration = true,
             supportsDatagrams = true,
             supportsServer = true,
+            // quiche reads whatever channel it is handed, so a demultiplexed port is no different
+            // to it than one it bound itself.
+            supportsSharedPort = true,
         )
 
     override suspend fun connect(
@@ -45,6 +48,14 @@ object QuicheEngine : QuicEngine {
         wireAutoMigration(quicOptions, connection)
         return connection
     }
+
+    override suspend fun bind(
+        port: Int,
+        host: String?,
+        tlsConfig: QuicTlsConfig,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer = bind(QuicPortBinding.Own(port, host), tlsConfig, quicOptions, timeout)
 
     override suspend fun bind(
         binding: QuicPortBinding,

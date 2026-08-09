@@ -16,4 +16,11 @@ data class EngineCapabilities(
     val supportsDatagrams: Boolean,
     /** Whether the engine can [bind][QuicEngine.bind] a server, not just [connect][QuicEngine.connect]. */
     val supportsServer: Boolean,
+    /**
+     * Whether the engine can serve a [QuicPortBinding.Shared] — a UDP port it does not own, fed by a
+     * demultiplexer (RFC 9443 port sharing). Consult it rather than discovering the answer from the
+     * [UnsupportedOperationException] the default [QuicEngine.bind] throws: an engine written before
+     * shared ports existed inherits that default, and its `false` here is the honest advertisement.
+     */
+    val supportsSharedPort: Boolean = false,
 )

@@ -27,6 +27,16 @@ class UnsupportedQuicEngine(
     ): QuicConnection = throw UnsupportedOperationException(connectReason)
 
     override suspend fun bind(
+        port: Int,
+        host: String?,
+        tlsConfig: QuicTlsConfig,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer = throw UnsupportedOperationException(bindReason)
+
+    // Overridden so a shared-port bind reports the platform's real reason ("no QUIC here") rather
+    // than the interface default's "this engine cannot share a port", which would be misleading.
+    override suspend fun bind(
         binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
