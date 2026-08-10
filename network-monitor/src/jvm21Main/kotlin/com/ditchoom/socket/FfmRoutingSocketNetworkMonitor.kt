@@ -103,7 +103,7 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
      */
     private val observationRelay = ObservationRelay(_state)
     override val observationCount: StateFlow<Long> = observationRelay.count
-    override val observations: Flow<NetworkState> = observationRelay.observations
+    override val observations: Flow<NetworkObservation> = observationRelay.observations
 
     /**
      * The whole point of the FFM subclasses: a blocking read on a routing socket, not a poll — and
@@ -126,7 +126,8 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
     protected abstract fun openRoutingSocket(): Int
 
     protected fun start() {
-        _state.value = resolveJvmNetworkState()
+        // A synchronous seed, not the network talking: published without advancing the count.
+        observationRelay.publish(resolveJvmNetworkState())
         fd = openRoutingSocket()
         if (fd < 0) return
 
@@ -141,10 +142,9 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
                     while (isActive) {
                         val n = Libc.recv(localFd, scratch, RECV_BUFFER_SIZE.toLong(), 0)
                         if (n <= 0L) break
-                        _state.value = resolveJvmNetworkState()
-                        // Recorded after the publish, so the relayed observation carries the state this
+                        // One call publishes and counts, so the observation carries the state this
                         // delivery resolved to — including a re-resolution that changed nothing.
-                        observationRelay.record()
+                        observationRelay.record(resolveJvmNetworkState())
                     }
                 } catch (e: CancellationException) {
                     throw e

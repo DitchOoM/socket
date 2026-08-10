@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
@@ -48,7 +49,24 @@ class JsNetworkMonitor(
      */
     private val observationRelay = ObservationRelay(_state)
     override val observationCount: StateFlow<Long> = observationRelay.count
-    override val observations: Flow<NetworkState> = observationRelay.observations
+
+    /**
+     * The relay's stream in the browser; the *contract default* under Node.
+     *
+     * This is the one monitor whose mechanism is decided at runtime, so it is the one place the default
+     * has to be re-stated rather than inherited. Under Node nothing ever calls
+     * [ObservationRelay.record] — a poll is not an observation — so exposing the relay's stream here
+     * would open with the current state and then go silent forever, and a recorder collecting it would
+     * write one line for a monitor that kept reporting changes on [state]. Reporting
+     * [NetworkObservation.Unsequenced] over [state] instead is what "leaves the default" actually means
+     * for density: every visible change, and no claim about how often the platform spoke.
+     */
+    override val observations: Flow<NetworkObservation> =
+        if (isNodeJsRuntime) {
+            _state.map { NetworkObservation.Unsequenced(it) }
+        } else {
+            observationRelay.observations
+        }
 
     /**
      * Node polls `os.networkInterfaces()`; the browser is pushed `online`/`offline` (plus the Network
@@ -68,7 +86,8 @@ class JsNetworkMonitor(
         if (isNodeJsRuntime) {
             scope.launch {
                 while (isActive) {
-                    _state.value = checkNodeNetwork()
+                    // publish, not record: a poll's cadence is configuration, not the network talking.
+                    observationRelay.publish(checkNodeNetwork())
                     delay(interval)
                 }
             }
@@ -96,7 +115,8 @@ class JsNetworkMonitor(
         }
 
     private fun initBrowserMonitor() {
-        refreshBrowserState()
+        // The synchronous opening read is not a pushed event, so it publishes without counting.
+        observationRelay.publish(readBrowserState())
         // online/offline and the Network Information API's `change` all mutate the SAME value, so every
         // one of them republishes the whole state — reachability and identity can never be sampled apart.
         js("window").addEventListener("online") { _: dynamic -> observedBrowserEvent() }
@@ -108,22 +128,19 @@ class JsNetworkMonitor(
         }
     }
 
-    /** A pushed browser event: count the observation (the initial synchronous read does not count). */
+    /** A pushed browser event: one observation, publishing the state it folded to. */
     private fun observedBrowserEvent() {
-        refreshBrowserState()
-        // Recorded after the publish, so the relayed observation carries the state this event folded to.
-        observationRelay.record()
+        observationRelay.record(readBrowserState())
     }
 
-    /** Read both browser facts — `navigator.onLine` and the connection type — and publish one state. */
-    private fun refreshBrowserState() {
+    /** Read both browser facts — `navigator.onLine` and the connection type — and fold one state. */
+    private fun readBrowserState(): NetworkState {
         val online =
             try {
                 js("navigator.onLine") as Boolean
             } catch (_: Throwable) {
                 // A runtime without navigator.onLine tells us nothing; Unknown, not Offline.
-                _state.value = NetworkState.Unknown
-                return
+                return NetworkState.Unknown
             }
         val type =
             try {
@@ -131,7 +148,7 @@ class JsNetworkMonitor(
             } catch (_: Throwable) {
                 null
             }
-        _state.value = jsNetworkState(hasLink = online, id = browserConnectionTypeToNetworkId(type))
+        return jsNetworkState(hasLink = online, id = browserConnectionTypeToNetworkId(type))
     }
 
     override fun close() {

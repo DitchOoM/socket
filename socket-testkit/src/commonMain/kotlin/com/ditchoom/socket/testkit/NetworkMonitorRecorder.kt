@@ -79,7 +79,7 @@ class NetworkMonitorRecorder(
     ): Job =
         scope.launch {
             capability(monitor.capability)
-            monitor.observations.collect { state(it) }
+            monitor.observations.collect { state(it.state) }
         }
 
     companion object {

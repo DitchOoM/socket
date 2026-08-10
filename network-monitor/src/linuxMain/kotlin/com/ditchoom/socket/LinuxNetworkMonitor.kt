@@ -62,7 +62,7 @@ class LinuxNetworkMonitor : NetworkMonitor {
      */
     private val observationRelay = ObservationRelay(_state)
     override val observationCount: StateFlow<Long> = observationRelay.count
-    override val observations: Flow<NetworkState> = observationRelay.observations
+    override val observations: Flow<NetworkObservation> = observationRelay.observations
 
     /**
      * Link, address and route netlink multicast (the five `RTMGRP_*` groups in the class KDoc) — the
@@ -77,7 +77,8 @@ class LinuxNetworkMonitor : NetworkMonitor {
 
     init {
         netlinkFd = createNetlinkSocket()
-        _state.value = resolveNetworkState()
+        // A synchronous seed, not the network talking: published without advancing the count.
+        observationRelay.publish(resolveNetworkState())
 
         if (netlinkFd >= 0) {
             scope.launch {
@@ -99,11 +100,10 @@ class LinuxNetworkMonitor : NetworkMonitor {
                         // and keep listening; anything else (0 = closed, other errors) ends the loop.
                         if (n == 0L || (n < 0L && errno != ENOBUFS)) break
                         // One re-resolution, one publication: link, route and identity come from the same
-                        // pass, so a collector can never see a new link beside the old route.
-                        _state.value = resolveNetworkState()
-                        // Recorded after the publish, so the relayed observation carries the state this
-                        // delivery resolved to — including a re-resolution that changed nothing.
-                        observationRelay.record()
+                        // pass, so a collector can never see a new link beside the old route. One call
+                        // publishes and counts, so the observation carries what this delivery resolved to
+                        // — including a re-resolution that changed nothing.
+                        observationRelay.record(resolveNetworkState())
                     }
                 } finally {
                     nativeHeap.free(scratch)

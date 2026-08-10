@@ -118,15 +118,18 @@ interface NetworkMonitor {
      *
      * A subscriber receives the current [state] immediately (as [state] itself would), then every
      * subsequent observation. Emissions are **not** conflated; under a burst faster than the collector,
-     * the oldest entries are dropped rather than blocking the platform callback that produced them —
-     * [observationCount] never drops, so a lossy timeline still carries a faithful count.
+     * the oldest entries are dropped rather than blocking the platform callback that produced them.
+     * [observationCount] never drops, and every surviving [NetworkObservation.Sequenced] carries its
+     * position, so a lossy timeline reports its own gaps ([ObservationSequence.droppedSince]) instead of
+     * reading as a quiet network.
      *
-     * Defaults to [state], which is the honest degradation for a monitor that does not report density:
-     * a consumer still sees every *visible* change, and simply cannot see the invisible ones. Monitors
-     * declaring [MonitorMechanism.Polled] leave this default deliberately, for the same reason they
-     * leave [observationCount] at zero — a poll's cadence is configuration, not the network talking.
+     * Defaults to [NetworkObservation.Unsequenced] over [state], the honest degradation for a monitor
+     * that does not report density: a consumer still sees every *visible* change, and simply cannot see
+     * the invisible ones. Monitors declaring [MonitorMechanism.Polled] leave this default deliberately,
+     * for the same reason they leave [observationCount] at zero — a poll's cadence is configuration, not
+     * the network talking.
      */
-    val observations: Flow<NetworkState> get() = state
+    val observations: Flow<NetworkObservation> get() = state.map { NetworkObservation.Unsequenced(it) }
 
     /**
      * Signal quality of the current link, where the platform will say — [LinkQuality.Rssi] readings,

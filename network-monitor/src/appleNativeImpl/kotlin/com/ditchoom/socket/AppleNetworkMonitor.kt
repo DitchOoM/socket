@@ -40,7 +40,7 @@ class AppleNetworkMonitor : NetworkMonitor {
      */
     private val observationRelay = ObservationRelay(_state)
     override val observationCount: StateFlow<Long> = observationRelay.count
-    override val observations: Flow<NetworkState> = observationRelay.observations
+    override val observations: Flow<NetworkObservation> = observationRelay.observations
 
     /**
      * Sampled on each path update, and only while the path's primary interface is Wi-Fi — the one
@@ -67,7 +67,9 @@ class AppleNetworkMonitor : NetworkMonitor {
         nm_path_monitor_set_update_handler(monitor) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
             // Decode the C enum ONCE, here at the boundary, so nothing downstream branches on a raw Int.
             val state = appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)
-            _state.value = state
+            // One call publishes and counts, so the observation is stamped with the state it folded to —
+            // including an evaluation that changed nothing, which is the chatter worth recording.
+            observationRelay.record(state)
             _linkQuality.value =
                 if ((state as? NetworkState.Up)?.id.let { it is NetworkId.Link && it.kind == NetworkKind.Wifi }) {
                     appleWifiRssiOrNull()?.let { LinkQuality.Rssi(it) } ?: LinkQuality.Unavailable
@@ -75,9 +77,6 @@ class AppleNetworkMonitor : NetworkMonitor {
                     // Wired/cellular/none: no meaningful RSSI — and never a stale one from the last Wi-Fi.
                     LinkQuality.Unavailable
                 }
-            // AFTER the publish, so the relayed observation carries the state this evaluation folded to
-            // — including an evaluation that changed nothing, which is the chatter worth recording.
-            observationRelay.record()
         }
         nm_path_monitor_start(monitor)
     }

@@ -57,15 +57,15 @@ class ScriptedNetworkMonitor(
      * radio produces before any rung changes), and a consumer's density logic can be exercised under
      * virtual time.
      */
-    private val observationRelay = ObservationRelay(state)
+    private val observationRelay = ObservationRelay(stateFlow)
     override val observationCount: StateFlow<Long> = observationRelay.count
 
     /**
      * Every applied transition, repeats included — so a script round-trips. Without this override the
-     * inherited default ([NetworkMonitor.state]) would de-dupe the repeats back out, and re-recording a
-     * replayed ride would silently lose exactly the chatter the script was written to carry.
+     * inherited default would de-dupe the repeats back out (it is derived from [state]), and re-recording
+     * a replayed ride would silently lose exactly the chatter the script was written to carry.
      */
-    override val observations: Flow<NetworkState> = observationRelay.observations
+    override val observations: Flow<NetworkObservation> = observationRelay.observations
 
     /** The script's declared capability, reported verbatim — every scripted state was checked against it. */
     override val capability: MonitorCapability = script.capability
@@ -83,8 +83,7 @@ class ScriptedNetworkMonitor(
             val wait = transition.at - elapsed
             if (wait > Duration.ZERO) delay(wait)
             elapsed = transition.at
-            stateFlow.value = transition.state
-            observationRelay.record()
+            observationRelay.record(transition.state)
         }
     }
 
