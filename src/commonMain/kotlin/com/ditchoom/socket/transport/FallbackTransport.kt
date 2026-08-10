@@ -59,12 +59,26 @@ data class TransportFailure(
  * connect time (typically `{ monitor.state.value.networkId }` from a platform `NetworkMonitor` — the
  * total `NetworkState.networkId` projection); a config that already carries an explicit identity
  * wins over the producer.
+ *
+ * **Transient gating (§6 refinement).** A [CacheScope.PerNetwork] verdict claims something durable
+ * about the *path* — "this network blocks UDP" — but a failure can just as easily land inside a
+ * window the network itself promises to resolve on its own: the post-associate validation `Pending`
+ * window, or a `Suspended` cellular pause (`NetworkState.isTransient`, network-monitor module). The
+ * `NetworkId` does not change across that window, so a verdict recorded mid-window would otherwise
+ * outlive it. [transientNow] answers "is the network transient *right now*", sampled at the moment a
+ * per-network write would happen, so this seam mirrors [networkId]'s shape rather than overloading it
+ * with a nullable `NetworkState`: two questions ("what network" and "is it settling") stay two
+ * booleans/producers, never one nullable. Defaults to `{ false }` — today's behavior, unaffected — and
+ * wires the same way as [networkId], typically `{ monitor.state.value.isTransient }`. Only
+ * [CacheScope.PerNetwork] writes are gated: per-host verdicts describe the *server*, not the path, and
+ * a success heal is never withheld.
  */
 class FallbackTransport(
     private val chain: List<Transport>,
     private val policy: FallbackPolicy = DefaultFallbackPolicy,
     private val cache: CapabilityCache = InMemoryCapabilityCache(),
     private val networkId: () -> NetworkId = { NetworkId.Unidentified },
+    private val transientNow: () -> Boolean = { false },
     private val stagger: Duration? = null,
 ) : Transport {
     init {
@@ -80,12 +94,17 @@ class FallbackTransport(
         // Stamp the connect-time network identity unless the caller pinned one explicitly.
         val effectiveConfig =
             if (config.networkId == NetworkId.Unidentified) config.copy(networkId = networkId()) else config
+        // Sampled HERE, beside the identity, not only at verdict time: a failure's evidence spans the
+        // whole attempt, and the common tear is precisely "entered during Pending, verdict after the
+        // network validated" (Android grants INTERNET ~1s before VALIDATED, and a UDP timeout is longer
+        // than that window). The gate consults both ends — see recordUnsupportedUnlessTransient.
+        val transientAtEntry = transientNow()
         val order = cache.order(hostname, effectiveConfig.networkId, chain)
         val headFamily = order.first().family
         return if (stagger != null && order.any { it.family != headFamily }) {
-            raced(order, headFamily, hostname, port, effectiveConfig, stagger)
+            raced(order, headFamily, hostname, port, effectiveConfig, stagger, transientAtEntry)
         } else {
-            sequential(order, hostname, port, effectiveConfig)
+            sequential(order, hostname, port, effectiveConfig, transientAtEntry)
         }
     }
 
@@ -116,6 +135,7 @@ class FallbackTransport(
         hostname: String,
         port: Int,
         config: TransportConfig,
+        transientAtEntry: Boolean,
     ): RungResult =
         try {
             val stream = attempt(transport, hostname, port, config)
@@ -129,7 +149,7 @@ class FallbackTransport(
         } catch (error: Throwable) {
             val verdict = policy.classify(error)
             if (verdict.cacheUnsupported) {
-                cache.recordUnsupported(verdict.scope, hostname, config.networkId, transport)
+                recordUnsupportedUnlessTransient(verdict.scope, hostname, config.networkId, transport, transientAtEntry)
             }
             if (!verdict.fallback) throw error // fatal (bad cert): stop, don't mask
             RungResult.Failed(TransportFailure(transport, error, verdict))
@@ -158,12 +178,13 @@ class FallbackTransport(
         hostname: String,
         port: Int,
         config: TransportConfig,
+        transientAtEntry: Boolean,
     ): ByteStream {
         val failures = ArrayList<TransportFailure>(order.size)
         for (transport in order) {
-            when (val result = runRung(transport, hostname, port, config)) {
+            when (val result = runRung(transport, hostname, port, config, transientAtEntry)) {
                 is RungResult.Connected -> {
-                    recordPathBlocksUdp(transport, failures, hostname, config.networkId)
+                    recordPathBlocksUdp(transport, failures, hostname, config.networkId, transientAtEntry)
                     return result.stream
                 }
                 is RungResult.Failed -> failures += result.failure
@@ -189,6 +210,7 @@ class FallbackTransport(
         port: Int,
         config: TransportConfig,
         stagger: Duration,
+        transientAtEntry: Boolean,
     ): ByteStream =
         coroutineScope {
             val head = Lane(order.filter { it.family == headFamily })
@@ -197,8 +219,8 @@ class FallbackTransport(
 
             // A fatal verdict throws out of a lane's launch, which fails this scope: the other lane is
             // cancelled and coroutineScope rethrows the original error — same "fatal is fatal" as sequential.
-            launchLane(head, other = chase, winner = winner, hostname, port, config, gate = null)
-            launchLane(chase, other = head, winner = winner, hostname, port, config, gate = stagger to head.exhausted)
+            launchLane(head, other = chase, winner = winner, hostname, port, config, gate = null, transientAtEntry)
+            launchLane(chase, other = head, winner = winner, hostname, port, config, gate = stagger to head.exhausted, transientAtEntry)
             launch {
                 head.exhausted.join()
                 chase.exhausted.join()
@@ -221,16 +243,17 @@ class FallbackTransport(
         port: Int,
         config: TransportConfig,
         gate: Pair<Duration, Job>?,
+        transientAtEntry: Boolean,
     ) = launch {
         // The chase lane holds at the gate for the stagger head start — released early if the head
         // lane exhausts first, so a fast-failing head never makes the chase wait the full stagger.
         if (gate != null) withTimeoutOrNull(gate.first) { gate.second.join() }
         val failures = ArrayList<TransportFailure>()
         for (transport in lane.rungs) {
-            when (val result = runRung(transport, hostname, port, config)) {
+            when (val result = runRung(transport, hostname, port, config, transientAtEntry)) {
                 is RungResult.Connected -> {
                     val otherFailures = if (other.exhausted.isCompleted) other.failures else emptyList()
-                    recordPathBlocksUdp(transport, failures + otherFailures, hostname, config.networkId)
+                    recordPathBlocksUdp(transport, failures + otherFailures, hostname, config.networkId, transientAtEntry)
                     // Lost the race after connecting → close, never leak a second live connection.
                     // NonCancellable: by now the race is decided and this lane is being cancelled —
                     // the cleanup must still run to completion.
@@ -260,6 +283,7 @@ class FallbackTransport(
         failures: List<TransportFailure>,
         hostname: String,
         networkId: NetworkId,
+        transientAtEntry: Boolean,
     ) {
         if (winner.family != TransportFamily.Tcp) return
         if (networkId == NetworkId.Unidentified) return // per-network scope is off (RFC §12)
@@ -272,9 +296,34 @@ class FallbackTransport(
                 .toSet()
         if (timedOut != udpRungs.toSet()) return
         for (rung in udpRungs) {
-            cache.recordUnsupported(CacheScope.PerNetwork, hostname, networkId, rung)
+            recordUnsupportedUnlessTransient(CacheScope.PerNetwork, hostname, networkId, rung, transientAtEntry)
         }
     }
 
     private fun isTimeout(error: Throwable): Boolean = error is TimeoutCancellationException || error is SocketTimeoutException
+
+    /**
+     * The one gate on every [CapabilityCache.recordUnsupported] call (both call sites above route
+     * through this): a [CacheScope.PerNetwork] write is withheld if the network was mid-transition at
+     * **either end of the attempt window** — [transientAtEntry], sampled beside the identity when the
+     * connect began, or [transientNow] read here at verdict time. The failure's evidence spans the whole
+     * attempt, and record-time alone misses the *common* tear: a connect entering during the ~1s
+     * `Pending` validation window whose UDP timeout expires after the network has validated would read
+     * as not-transient at the only moment a single sample looks — writing exactly the poison this gate
+     * exists to prevent. Two samples cannot cover a transient dip strictly between them; that residue is
+     * accepted and bounded the same way everything here is (per-network keying + TTL re-probe).
+     *
+     * The failure still falls forward; the verdict is skipped, not deferred. [CacheScope.PerHost] and
+     * [CacheScope.None] pass straight through, untouched.
+     */
+    private fun recordUnsupportedUnlessTransient(
+        scope: CacheScope,
+        host: String,
+        networkId: NetworkId,
+        transport: Transport,
+        transientAtEntry: Boolean,
+    ) {
+        if (scope == CacheScope.PerNetwork && (transientAtEntry || transientNow())) return
+        cache.recordUnsupported(scope, host, networkId, transport)
+    }
 }
