@@ -404,32 +404,41 @@ class IoUringManagerTests {
                     }
                 }
 
-            try {
-                // Each iteration re-arms the poller (traffic keeps submitting) and then races a stop
-                // against it. Pre-fix this wedges within a few dozen rounds on a loaded runner.
-                repeat(200) { round ->
-                    val returned = CompletableDeferred<Unit>()
-                    launch(Dispatchers.Default) {
-                        IoUringManager.cleanup()
-                        returned.complete(Unit)
-                    }
-                    try {
-                        withTimeout(10.seconds) { returned.await() }
-                    } catch (e: TimeoutCancellationException) {
-                        fail(
-                            "IoUringManager.cleanup() did not return within 10s on round $round — the " +
-                                "poller start/stop race resurrected pollerStarted and stranded the event " +
-                                "loop (issue #307).",
-                        )
-                    }
-                    yield()
+            // Each iteration re-arms the poller (traffic keeps submitting) and then races a stop
+            // against it. Pre-fix this wedges within a few dozen rounds on a loaded runner.
+            var wedgedRound: Int? = null
+            for (round in 0 until 200) {
+                val returned = CompletableDeferred<Unit>()
+                launch(Dispatchers.Default) {
+                    IoUringManager.cleanup()
+                    returned.complete(Unit)
                 }
-            } finally {
-                trafficRunning.value = 0
-                traffic.cancelAndJoin()
-                server.close()
-                serverJob.cancel()
+                try {
+                    withTimeout(10.seconds) { returned.await() }
+                } catch (e: TimeoutCancellationException) {
+                    wedgedRound = round
+                    break
+                }
+                yield()
             }
+
+            trafficRunning.value = 0
+            if (wedgedRound != null) {
+                // Deliberately skip socket teardown on the failure path. A stranded cleanup owns the
+                // poller lifecycle, so `server.close()` (which routes to cleanup via onSocketClosed)
+                // would block this thread too and the assertion below would never be reported — the
+                // test would hang exactly like the bug it is detecting. The process is about to exit;
+                // leaking one listening socket is the cost of a legible failure.
+                fail(
+                    "IoUringManager.cleanup() did not return within 10s on round $wedgedRound — a " +
+                        "concurrent ensurePollerStarted() resurrected pollerStarted after cleanup " +
+                        "cleared it, stranding the event loop (issue #307).",
+                )
+            }
+
+            traffic.cancelAndJoin()
+            server.close()
+            serverJob.cancel()
         }
 
     /**
