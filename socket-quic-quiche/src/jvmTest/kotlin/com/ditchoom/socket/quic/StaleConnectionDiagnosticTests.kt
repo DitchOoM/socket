@@ -32,8 +32,8 @@ import kotlin.time.Duration.Companion.seconds
  * [withQuicServer] / [withQuicConnection] helpers — block-scoped construction
  * with `close()` in finally on every exit path. The previous
  * `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate that hid these tests on CI
- * is gone — the lifecycle gap it worked around was closed by construction
- * (see `socket-quic/DRIVER_REDESIGN.md` → "Engine lifecycle").
+ * is gone — the lifecycle gap it worked around (leaked engine scopes starving
+ * dispatchers on small runners) is closed by construction.
  */
 class StaleConnectionDiagnosticTests {
     private val testQuicOptions =

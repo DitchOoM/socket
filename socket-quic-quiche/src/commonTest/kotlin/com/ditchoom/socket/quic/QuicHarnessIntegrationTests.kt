@@ -47,15 +47,18 @@ import kotlin.time.Duration.Companion.seconds
 class QuicHarnessIntegrationTests {
     private val bufferFactory = BufferFactory.deterministic()
 
-    // Apple's Network.framework always evaluates the peer cert (its verifyPeer
-    // knob can't bypass that). Rather than trusting the harness CA in the OS
-    // keychain, the Apple path PINS the CA via trustedCaCertificatesPem: the
-    // verify_block in nw_quic_helpers.h makes ca.crt the sole anchor (CT-exempt),
-    // which clears the -9808 the default QUIC trust path returns for the private
-    // CA. The PR #54 verify_block SIGABRT was a wrong-accessor bug (it attached to
-    // nw_tls_copy_sec_protocol_options on a QUIC object), not macOS hardening —
-    // see issue #81. Other targets keep verifyPeer = false: quiche and the JVM
-    // TLS stack accept the self-signed peer cert directly.
+    // Apple runs verifyPeer = true and PINS the harness CA via
+    // trustedCaCertificatesPem, so quiche validates the chain against ca.crt as
+    // the sole anchor rather than against the OS keychain. Other targets keep
+    // verifyPeer = false and let quiche / the JVM TLS stack accept the
+    // self-signed peer cert directly.
+    //
+    // The asymmetry predates the quiche-on-Apple pivot — it was originally
+    // required because Network.framework always evaluated the peer cert and its
+    // verifyPeer knob could not bypass that. Now that Apple QUIC is quiche like
+    // everywhere else, the pin is no longer forced by the platform; it is kept
+    // because it exercises the pinning path on a real target. Changing it is
+    // safe but should be a deliberate, separately-validated edit.
     private val applePinnedTrust = isAppleKNative()
     private val quicOptions =
         QuicOptions(

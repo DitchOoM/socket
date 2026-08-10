@@ -33,8 +33,13 @@ import kotlin.time.Duration.Companion.seconds
  * Both helpers own construction and release of every resource (UDP socket,
  * drivers, handler coroutines, parent scope) — the block boundary IS the
  * lifecycle, the engine layer that the old code threaded through is gone.
- * See `socket-quic/DRIVER_REDESIGN.md` → "Engine lifecycle" for the
- * rationale.
+ *
+ * The rationale: a `QuicEngine` owns a `SupervisorJob`, a loaded `QuicheApi`
+ * and (for servers) a per-bind config plus receive loop, so a forgotten
+ * `engine.close()` leaked a scope and ~2 worker threads per test. That
+ * starved dispatchers on small CI runners after ~130 tests and surfaced as
+ * handshake timeouts. The cure was API shape, not `@AfterTest` retrofits —
+ * scope-only construction makes the leak impossible.
  *
  * [wrapTestBody] is the platform extension point for skipping tests when
  * the native quiche binding isn't present — JVM overrides it to translate

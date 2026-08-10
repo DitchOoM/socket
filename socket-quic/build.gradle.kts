@@ -8,16 +8,17 @@ plugins {
     signing
 }
 
-// :socket-quic is the PURE QUIC API/SPI module (v6 Phase 2b.2+). The quiche engine,
-// JNI/FFM/cinterop bindings, native build wiring, and the quiche test suites live in
-// the sibling :socket-quic-quiche module; the Apple Network.framework engine (NetworkEngine
-// + NWQuicHelpers cinterop) lives in :socket-quic-nw (Phase 2b.3). The default-engine
-// wrappers (withQuicConnection / withQuicServer) and the multiplatform `defaultQuicEngine`
-// return in :socket-quic-default (Phase 2b.4). Until then, :socket-http3 (which calls them)
-// does not compile — that is the intentional Phase-2b interim state.
+// :socket-quic is the PURE QUIC API/SPI module. The quiche engine, JNI/FFM/cinterop bindings,
+// native build wiring, and the quiche test suites live in the sibling :socket-quic-quiche module.
+// The default-engine wrappers (withQuicConnection / withQuicServer) and the multiplatform
+// `defaultQuicEngine` live in :socket-quic-default.
+//
+// There is exactly ONE engine on every platform: Cloudflare quiche. The Network.framework-native
+// QUIC backend (:socket-quic-nw / NetworkEngine) was deleted in June 2026 — on Apple, quiche runs
+// the protocol and Network.framework only carries the client's UDP datagrams.
 //
 // This module keeps bare Apple target declarations (no cinterop, no engine sources) so the
-// pure-API klibs still publish for Apple consumers; the NW backend supplies the actual engine.
+// pure-API klibs still publish for Apple consumers; :socket-quic-quiche supplies the engine.
 
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
 val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux

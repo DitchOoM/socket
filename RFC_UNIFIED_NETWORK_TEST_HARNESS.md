@@ -1,6 +1,6 @@
 # RFC — Unified network test harness across TCP, UDP & QUIC
 
-**Status:** Proposed. Scoping only — no code has moved yet. Supersedes the QUIC-only assumptions baked into today's harness surface.
+**Status:** **Partially implemented.** P0 (`:socket-testkit`), P1 (UDP Tier-A + the `udp-echo`/`udp-toxi` sidecars + `impairedUdp()`), P5 (`:network-monitor` + `ScriptedNetworkMonitor`/`NetworkMonitorRecorder`) and P7 (quiche caller-clock) have landed. **Still outstanding: P2** (route `quic-echo` through `udp-toxi`, add `impairedQuic()`), **P3** (TCP Tier-A sim), **P4** (fixture-codegen + fuzzer/ddmin generalization) and **P6** (external packaging). Supersedes the QUIC-only assumptions baked into the original harness surface.
 **Builds on:** [`RFC_DETERMINISTIC_SIMULATION.md`](./RFC_DETERMINISTIC_SIMULATION.md) (the timeline engine, Tier-A/Tier-B model, `TraceSink`/`TraceEvent`, `withNetworkHarness`, the container control plane) and [`RFC_TRANSPORT_FALLBACK.md`](./RFC_TRANSPORT_FALLBACK.md) (`NetworkMonitor`/`networkId`, injected-clock precedent). Extends those seams to **all three transport stacks** and factors the reusable core into a published module.
 
 ## 1. Goal

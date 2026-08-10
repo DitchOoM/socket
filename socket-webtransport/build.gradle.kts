@@ -26,7 +26,7 @@ repositories {
 
 // WebTransport (RFC 9220 + draft-ietf-webtrans-http3) as a top-level transport (v6 Phase 4).
 //
-// ONE neutral API, two honest backings (MAJOR_API_REDESIGN.md §5/§9):
+// ONE neutral API, two honest backings:
 //   - jvm / android / native  → Extended CONNECT over :socket-http3 (real QUIC on the classpath)
 //   - browser (js / wasmJs)    → the platform's own `WebTransport` object; the browser does HTTP/3
 //                                internally, so the browser source set pulls NEITHER :socket-http3
@@ -207,7 +207,8 @@ kotlin {
         if (isMacOS) {
             // `appleTest` (default-template parent of macos/ios/tvos/watchos Test) gets the suite once;
             // the Apple QUIC server backing comes transitively through nativeMain → socket-http3 →
-            // socket-quic-default → socket-quic-nw (Network.framework), so no cinterop/linker opts here.
+            // socket-quic-default → socket-quic-quiche (quiche), which carries its own cinterop and
+            // linker opts in its manifest, so none need repeating here.
             named("appleTest") {
                 dependencies {
                     implementation(project(":socket-testsuite"))

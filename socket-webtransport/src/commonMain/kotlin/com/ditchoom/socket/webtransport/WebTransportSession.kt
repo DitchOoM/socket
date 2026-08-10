@@ -43,8 +43,8 @@ open class WebTransportException(
  * buffer-flow signal) on both backings; this exception is the WRITE-side counterpart, carrying the
  * [errorCode] — the WebTransport application error code, a **32-bit unsigned** value (draft §4.3; the
  * same `unsigned long` the browser's `WebTransportError.streamErrorCode` uses), hence [UInt]. Every
- * backend resolves it on a real abort (quiche surfaces quiche's `out_error_code` on all three bindings,
- * Apple via `nw_quic_get_stream_application_error`, the browser via `streamErrorCode`), so it is
+ * backend resolves it on a real abort (quiche surfaces its `out_error_code` on every native binding —
+ * FFM, JNI and cinterop, Apple included — and the browser surfaces `streamErrorCode`), so it is
  * non-null — no "unknown code" sentinel.
  */
 class WebTransportStreamException(

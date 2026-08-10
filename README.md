@@ -9,7 +9,7 @@ Cross-platform TCP + TLS with streaming, compression, and buffer pooling — sam
 
 | Concern | Without | With socket + buffer |
 |---------|---------|---------------------|
-| **Platform I/O** | Separate NIO, NWConnection, io_uring, net.Socket | `ClientSocket.connect()` |
+| **Platform I/O** | Separate NIO, NWConnection, io_uring, net.Socket (and quiche per-platform for QUIC) | `ClientSocket.connect()` / `withQuicConnection()` |
 | **TLS** | Configure SSLEngine, SecureTransport, OpenSSL, tls separately | `SocketOptions.tlsDefault()` |
 | **Buffer management** | Platform-specific ByteBuffer / NSData / Uint8Array | `ReadBuffer` / `WriteBuffer` everywhere via `BufferFactory` |
 | **Memory** | Manual pool or GC pressure | `BufferPool` with `withBuffer`, `BufferFactory.deterministic()` for I/O |
@@ -348,6 +348,8 @@ Socket builds on the [buffer v4](https://github.com/DitchOoM/buffer) library for
 
 ## Platform Support
 
+**TCP + TLS** (core `socket` module):
+
 | Platform | Implementation |
 |----------|---------------|
 | JVM 1.8+ | `AsynchronousSocketChannel` / `SocketChannel` |
@@ -356,6 +358,16 @@ Socket builds on the [buffer v4](https://github.com/DitchOoM/buffer) library for
 | Linux (x64/arm64) | `io_uring` (kernel 5.1+, static OpenSSL) |
 | Node.js | `net.Socket` |
 | Browser | Not supported (throws `UnsupportedOperationException`) |
+
+**QUIC / HTTP&#8203;/3 / WebTransport** (`socket-quic` and friends) — Cloudflare quiche on *every*
+platform, Apple included. There is no Network.framework-native QUIC backend:
+
+| Platform | Implementation |
+|----------|---------------|
+| JVM / Android | quiche via FFM (JDK 21+) or JNI (JDK ≤20) |
+| Linux (x64/arm64) | quiche cinterop, static `libquiche.a`, io_uring UDP |
+| iOS/macOS/tvOS/watchOS | quiche cinterop; client UDP over `NWConnection` (path-migration aware), server on a dual-stack POSIX UDP socket |
+| JS / wasmJs | Not supported (no raw UDP) |
 
 ## License
 

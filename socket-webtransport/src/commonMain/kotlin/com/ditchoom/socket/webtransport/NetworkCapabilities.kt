@@ -9,7 +9,7 @@ enum class TransportKind {
 }
 
 /**
- * The coarse capability layer (MAJOR_API_REDESIGN.md §5): which transports exist at all on this
+ * The coarse capability layer: which transports exist at all on this
  * platform. Replaces the 5.x `enum NetworkCapabilities { FULL_SOCKET_ACCESS, WEBSOCKETS_ONLY }` with a
  * set that common code can query and exhaustively `when` over.
  *

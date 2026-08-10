@@ -1,6 +1,7 @@
 # RFC — Network state: one ladder, one flow, no impossible states
 
-**Status:** Accepted, implementing on `feat/network-state-ladder`. **Breaking by design** — this replaces
+**Status:** **Implemented** — the one-ladder/one-flow `NetworkState` landed in PR #272, and §8.4's
+Apple `nw_path_status_satisfiable` → `Routable` rung in PR #275. **Breaking by design** — this replaced
 `NetworkAvailability` rather than deriving from it. No compatibility shim, no compat view.
 **Builds on:** [`RFC_TRANSPORT_FALLBACK.md`](./RFC_TRANSPORT_FALLBACK.md) (`NetworkMonitor`/`networkId`) and
 [`RFC_UNIFIED_NETWORK_TEST_HARNESS.md`](./RFC_UNIFIED_NETWORK_TEST_HARNESS.md) §7 (the

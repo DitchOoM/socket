@@ -5,15 +5,12 @@ package com.ditchoom.socket.quic
  * (RFC 9000 §19.4-19.5).
  *
  * Every backend resolves the peer's [applicationErrorCode] on a real abort, so it is **non-null**:
- * - the quiche driver reports the **direction** ([StopSending] vs [ResetStream], from the
- *   `QUICHE_ERR_STREAM_STOPPED` / `QUICHE_ERR_STREAM_RESET` sentinels) and the peer's
- *   [applicationErrorCode] via `quiche_conn_stream_send`'s `out_error_code` out-parameter — surfaced on
- *   all three quiche backends (FFM on JDK 21, JNI on JDK < 21 / Android, cinterop on K/N; quiche fills
- *   the out-param, 0 if the peer used 0, only on STREAM_STOPPED / STREAM_RESET);
- * - Network.framework (Apple) reports the peer's [applicationErrorCode] (via
- *   `nw_quic_get_stream_application_error`) but does not distinguish the direction, so a peer reset
- *   surfacing on our write path is reported as [StopSending] (the peer no longer wants our data)
- *   carrying the code.
+ * The quiche driver reports the **direction** ([StopSending] vs [ResetStream], from the
+ * `QUICHE_ERR_STREAM_STOPPED` / `QUICHE_ERR_STREAM_RESET` sentinels) and the peer's
+ * [applicationErrorCode] via `quiche_conn_stream_send`'s `out_error_code` out-parameter. This is
+ * uniform across every platform, because quiche is the engine on every platform: FFM on JDK 21+,
+ * JNI on JDK < 21 / Android, cinterop on Linux and Apple K/N. quiche fills the out-param (0 if the
+ * peer used 0) only on STREAM_STOPPED / STREAM_RESET.
  *
  * The code is a 62-bit QUIC application error code (RFC 9000 §19.4-19.5 varint), hence [Long]. Higher
  * layers that speak a narrower space (e.g. WebTransport's 32-bit code) decode it themselves.

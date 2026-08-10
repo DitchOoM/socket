@@ -1,8 +1,12 @@
 # Testing Strategy: A Deterministic, Non-Flaky Multiplatform Test Suite
 
-Status: DESIGN — nothing implemented yet.
-Author: research pass, 2026-05-22.
-Scope: `com.ditchoom:socket` + `socket-quic`, all targets (JVM, Android, JS Node, JS browser/Karma, wasmJs browser, Linux native, Apple).
+Status: **LIVING REFERENCE — phases 0–5 and §8 are implemented and shipped.** Originally written as a
+design proposal (research pass, 2026-05-22); the harness, cert matrix, toxiproxy/netem fault injection,
+shared conformance suites, CI fold-in and the QUIC fuzzing lanes of §8 all landed. §6 records the
+migration history; the rest describes what the suite does today. The follow-on design for the
+harness's next generation is `RFC_UNIFIED_NETWORK_TEST_HARNESS.md`.
+Author: research pass, 2026-05-22. Status refreshed 2026-08-09.
+Scope: `com.ditchoom:socket` + the QUIC modules, all targets (JVM, Android, JS Node, JS browser/Karma, wasmJs browser, Linux native, Apple).
 
 ---
 
@@ -226,9 +230,9 @@ The `harness-root` CA cert must be injectable into each platform's trust store (
 netem is applied **inside the toxiproxy container** (it already has `cap_add: NET_ADMIN`) against its egress interface, or inside a dedicated `netem` sidecar. Two ways a test triggers it:
 
 1. **Static, compose-time:** a separate compose profile / a second proxy port pre-configured with a fixed `tc` rule baked into the container entrypoint — e.g. port `15001` is "echo with 100% packet loss" for deterministic connect-timeout.
-2. **Dynamic, test-time:** the toxiproxy container also runs a tiny HTTP `netem-control` shim (10 lines of shell behind `socat`, or reuse the *exact pattern* already in `socket-quic/.../netctrl/NetworkControlServer.kt` — that file is a TCP command server that runs network commands; generalize it). A test POSTs `{ "dev": "eth0", "rule": "delay 200ms" }` and the shim runs `tc qdisc replace …`.
+2. **Dynamic, test-time:** the toxiproxy container also runs a tiny HTTP `netem-control` shim (10 lines of shell behind `socat`, or reuse the *exact pattern* already in `socket-quic-quiche/src/jvmTest/.../netctrl/NetworkControlServer.kt` — that file is a TCP command server that runs network commands; generalize it). A test POSTs `{ "dev": "eth0", "rule": "delay 200ms" }` and the shim runs `tc qdisc replace …`.
 
-Recommendation: **start with static** (profiles + fixed ports). Only build the dynamic control shim when a test genuinely needs to *change* conditions mid-connection. The `netctrl` protocol in `socket-quic/src/sharedJvmTestProtocol/` is the proven blueprint — it already has typed `AddLatency` / `BlockUdp` commands and a codec; lift it to a shared harness module rather than reinventing.
+Recommendation: **start with static** (profiles + fixed ports). Only build the dynamic control shim when a test genuinely needs to *change* conditions mid-connection. The `netctrl` protocol in `socket-quic-quiche/src/sharedJvmTestProtocol/` is the proven blueprint — it already has typed `AddLatency` / `BlockUdp` commands and a codec; lift it to a shared harness module rather than reinventing.
 
 ### 2d. L4 — toxiproxy usage
 
@@ -363,7 +367,7 @@ Consequence: the Gradle `dependsOn(harnessUp)` / `finalizedBy(harnessDown)` wiri
 - name: Run ARM64 tests (base module)
   run: ./build/bin/linuxArm64/debugTest/test.kexe
 - name: Run ARM64 tests (socket-quic)
-  run: ./socket-quic/build/bin/linuxArm64/debugTest/test.kexe
+  run: ./socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe
 - name: Stop harness
   if: always()
   working-directory: test-harness
@@ -484,8 +488,8 @@ No container fixes a wall-clock assertion. The principle: **assert observable st
 - ✅ `tls` container, `gen-certs.sh` (harness-root + untrusted CA + 5 leaf certs, `openssl ca` backdating for the expired cert), 5 nginx server-blocks on 5 ports, `generateHarnessCerts` Gradle task wired before `harnessUp`, 5 new ports exposed via `HarnessConfig`.
 - ✅ `TlsConformanceTests` (10 tests): valid-handshake + valid-GET smoke, four cert-rejection scenarios with strict `assertFailsWith<SSLSocketException>`, four insecure-mode acceptance scenarios. Verified on both JVM and `linuxX64` (BoringSSL) — multiplatform TLS error mapping is now provable.
 - ✅ Migrated the six cert-validation tests in `TlsErrorTests` (`badssl.com` family) to `@Ignore` with pointer comments to their harness equivalents.
-- 🔶 **CA-trust CI injection (§3c/§3d/§7.3) deferred** — the valid-path test uses `tlsInsecure()` for now; once CI injects the harness root CA into JVM `cacerts` / Linux CA bundle / Apple keychain, switch it to `tlsDefault()`. Tracked in `TODO.md`.
-- 🔶 **Remaining migrations deferred** — `NetworkIntegrationTests.tls_*`, `SniStrictHostsTest`, `LinuxTlsTests`, plus the read-shape / concurrent-connection variants in `TlsErrorTests`. All have direct harness equivalents now; sweep is mechanical, tracked in `TODO.md`.
+- 🔶 **CA-trust CI injection (§3c/§3d/§7.3) deferred** — the valid-path test uses `tlsInsecure()` for now; once CI injects the harness root CA into JVM `cacerts` / Linux CA bundle / Apple keychain, switch it to `tlsDefault()`. Tracked in issue #311.
+- 🔶 **Remaining migrations deferred** — `NetworkIntegrationTests.tls_*`, `SniStrictHostsTest`, `LinuxTlsTests`, plus the read-shape / concurrent-connection variants in `TlsErrorTests`. All have direct harness equivalents now; sweep is mechanical, tracked in issue #311.
 
 **Phase 3 — toxiproxy (L4). ✅ DONE — commits `0bff529`, `3f9c917`, `a0d3962`.**
 - ✅ `toxiproxy` service (ghcr.io/shopify/toxiproxy:2.12.0, distroless image — healthcheck via `/toxiproxy-cli list`). 4 ports: 8474 API + 15000/15080/15443 proxies to echo/http/tls.
@@ -499,7 +503,7 @@ No container fixes a wall-clock assertion. The principle: **assert observable st
 - ✅ TLS-1.3-only sixth nginx vhost on port 493 (host 14493); `tlsHarnessFirstReadReturnsData` migrated. `/json` and `/large` routes also added to the valid (443) vhost so the Phase-3 sweep's softened assertions can be tightened back to content-type + ≥ 8 KB body.
 - ✅ `quic-echo` container (`eclipse-temurin:21-jre-noble` — alpine/jammy fail the quiche JNI shim's glibc check). Built per-CI-run by new `:socket-quic:quicEchoJar` task. `QuicHarnessIntegrationTests` (5 tests) on 14433 with `verifyPeer=false` against the harness self-signed cert; originals `@Ignore`'d.
 - ✅ `LinuxQuicSmokeTest` — cloudflare-quic.com → 127.0.0.1 (the smoke tests never send packets; only DNS + bind correctness).
-- 🔶 **IPv6-only / multi-address DNS coverage deferred** — `LinuxClientSocket.kt`'s addrinfo iteration is inside a `memScoped` cinterop block with no injection seam, and a real dnsmasq fixture would need root to edit /etc/resolv.conf on the test runner. Bullet kept in `TODO.md`; ships when the iteration grows a seam or container-side test execution lands.
+- 🔶 **IPv6-only / multi-address DNS coverage deferred** — `LinuxClientSocket.kt`'s addrinfo iteration is inside a `memScoped` cinterop block with no injection seam, and a real dnsmasq fixture would need root to edit /etc/resolv.conf on the test runner. Tracked in issue #310; ships when the iteration grows a seam or container-side test execution lands.
 
 **Phase 5 — browser/wasmJs + cleanup. ✅ DONE — commits `7c44876`, `20313af`.**
 - ✅ CORS headers already in `test-harness/http/conf.d/default.conf` (`Access-Control-Allow-Origin/Methods/Headers: *` with `always`). Browser target itself stays skipped (decision §7.4 / `WEBSOCKETS_ONLY`); headers stand ready for a future browser source set.
@@ -547,7 +551,7 @@ no randomness (no `Math.random`, unavailable on K/N).
 
 `HeaderInfoFuzzer` (jvmTest) drives the same `quiche_header_info` entry point under Jazzer/libFuzzer via
 the `quicHeaderFuzz` Gradle task (`-PquicFuzzSeconds=<n>`, default 60). The committed seed corpus lives
-in `socket-quic/fuzz/corpus/header-info/` (the §8a vectors as binary files); libFuzzer writes discovered
+in `socket-quic-quiche/fuzz/corpus/header-info/` (the §8a vectors as binary files); libFuzzer writes discovered
 inputs and `crash-*` repros under `build/fuzz/` (gitignored).
 
 - **Why it's worth it despite native parsing.** JVM Jazzer cannot instrument the native quiche parser, so
@@ -558,7 +562,7 @@ inputs and `crash-*` repros under `build/fuzz/` (gitignored).
   against Jazzer; the driver is pulled into a dedicated, runtime-only `jazzer` configuration.
 ### 8b′. Native ASAN + coverage-guided fuzzing (cargo-fuzz)
 
-The depth the JVM lane can't reach. `socket-quic/fuzz/native/` is a cargo-fuzz crate that builds **quiche
+The depth the JVM lane can't reach. `socket-quic-quiche/fuzz/native/` is a cargo-fuzz crate that builds **quiche
 itself** with SanitizerCoverage + AddressSanitizer. Two targets, both from the **same** committed seed
 corpus, both calling only quiche's *public Rust API*:
 

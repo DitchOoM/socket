@@ -2215,7 +2215,7 @@ kotlin {
                 implementation(project(":socket-quic-default"))
                 // Cross-backend conformance suites (abstract *TestSuite + harness). The Jvm*/Linux*
                 // wrapper subclasses live in this module's per-platform test source sets; the shared
-                // suites they extend live here. Also consumed by :socket-quic-nw (apple).
+                // suites they extend live here.
                 implementation(project(":socket-testsuite"))
             }
         }
@@ -2566,8 +2566,8 @@ ktlint {
     }
 }
 
-// (The iOS-simulator QUIC harness booted-mode wiring — issue #81 — lives in :socket-quic-nw, the
-// module whose appleTest runs the Apple QUIC suites. This module has no Apple target.)
+// (The iOS-simulator QUIC harness booted-mode wiring — issue #81 — was defined in the deleted
+// :socket-quic-nw module. The Apple QUIC suites now run from this module's own appleTest.)
 
 // --- Self-signed `localhost` test identity, GENERATED at build time (issues #112 / #99) ---
 // The QUIC CA-pinning tests (QuicServerTestSuite.pinnedCorrectCaAnchor.../pinnedWrongCaAnchor...)

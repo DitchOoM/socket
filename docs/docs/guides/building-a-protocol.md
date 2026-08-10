@@ -297,6 +297,7 @@ The key value of this stack is what you **don't** have to write:
 | Concern | Without this library | With socket + buffer |
 |---------|---------------------|---------------------|
 | **Platform I/O** | Separate implementations for NIO, NWConnection, io_uring, net.Socket | One `ClientSocket.connect()` call |
+| **QUIC backend** | Bind quiche (or another stack) per platform yourself | One `withQuicConnection()` call — quiche everywhere |
 | **TLS** | Configure SSLEngine, SecureTransport, OpenSSL, and Node tls module separately | `SocketOptions.tlsDefault()` |
 | **Buffer management** | Platform-specific ByteBuffer / NSData / Uint8Array | `PlatformBuffer` everywhere |
 | **Memory** | Manual pool management or GC pressure | `BufferPool` with `withBuffer` |
@@ -313,6 +314,6 @@ The key value of this stack is what you **don't** have to write:
 Each platform uses its fastest available I/O primitive — no abstraction penalty:
 
 - **Linux**: `io_uring` for kernel-level async I/O with zero-copy buffer submission. OpenSSL 3.0 statically linked for glibc compatibility.
-- **Apple**: `NWConnection` via Network.framework — the same API that Safari and system services use. Zero-copy NSData buffer integration.
+- **Apple**: `NWConnection` via Network.framework for TCP/TLS — the same API that Safari and system services use. Zero-copy NSData buffer integration. (QUIC on Apple is quiche, not Network.framework — see [Apple platforms](../platforms/apple).)
 - **JVM/Android**: NIO2 `AsynchronousSocketChannel` with NIO `SocketChannel` fallback. Uses `BufferFactory.deterministic()` for direct `ByteBuffer` allocation with explicit cleanup.
 - **Node.js**: Native `net.Socket` and `tls` module with proper backpressure handling.

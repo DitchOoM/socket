@@ -1,7 +1,6 @@
 # RFC — Unified connection establishment + transport-agnostic errors
 
-**Status:** Proposed · **Date:** 2026-07-01 · **Branch:** `feat/composable-transports`
-**Supersedes discussion in:** `HANDOFF_COMPOSABLE_API.md` · **Related issue:** #166
+**Status:** **Implemented** in PR #190 — `com.ditchoom.socket.transport` carries the `Transport` / `SessionTransport` model, the `SessionOwningByteStream` projection and the typed error vocabulary. The selection/composition layer on top is [`RFC_TRANSPORT_FALLBACK.md`](./RFC_TRANSPORT_FALLBACK.md). · **Date:** 2026-07-01 · **Related issue:** #166
 
 > This RFC is the design deliverable that must be agreed before the transport code lands. It
 > reconciles the three establishment shapes on `main` into one model, decides how URL-addressed
