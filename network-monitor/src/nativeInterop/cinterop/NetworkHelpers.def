@@ -45,8 +45,14 @@ void nm_path_monitor_set_update_handler(
 
 void nm_path_monitor_start(nw_path_monitor_t _Nonnull monitor)
 {
-    nw_path_monitor_set_queue(monitor,
-        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    // Must be SERIAL, not dispatch_get_global_queue's concurrent queue. The
+    // Kotlin side (AppleNetworkMonitor -> ObservationRelay.record()) does a
+    // read-modify-write on a sequence counter under a single-writer-per-monitor
+    // contract; a concurrent queue lets two path-update handler invocations
+    // overlap, racing that read-modify-write and publishing states out of order.
+    dispatch_queue_t queue = dispatch_queue_create("com.ditchoom.networkmonitor.path",
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    nw_path_monitor_set_queue(monitor, queue);
     nw_path_monitor_start(monitor);
 }
 

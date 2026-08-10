@@ -154,6 +154,53 @@ class ObservationRelayTests {
         }
 
     /**
+     * The claim [ObservationRelay.observations] is built on, driven end to end: a burst that outruns its
+     * collector really does lose entries, and the first survivor after the loss reports it.
+     *
+     * The collector never runs during the burst. A [kotlinx.coroutines.flow.MutableSharedFlow.tryEmit]
+     * that fills a slot resumes a parked collector *through its dispatcher*, not inline, and nothing
+     * dispatches until the next [runCurrent] — so all 100 records land against a collector frozen where
+     * it parked. The buffer is [ObservationRelay.OBSERVATION_BUFFER] wide (no replay, 64 extra slots), so
+     * under [kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST] it ends the burst holding the *last*
+     * 64 emissions — sequences 37..100 — and the parked collector's read position is dragged forward with
+     * each drop rather than left pointing at an entry that no longer exists. Sequences 1..36 are gone.
+     *
+     * The arithmetic is exactly 64 kept, not 65: the collector was suspended *awaiting* its next value
+     * rather than holding one, so it occupies no buffer slot of its own, and the opening emission it had
+     * already consumed came from [kotlinx.coroutines.flow.onSubscription] rather than from the buffer.
+     *
+     * What survives is the point: the opening emission carries sequence 0, the next carries 37, and
+     * [ObservationSequence.droppedSince] turns that into the 36 observations this consumer never saw —
+     * while [ObservationRelay.count] still reports every one of the 100.
+     */
+    @Test
+    fun aBurstThatOutrunsACollectorDropsTheOldestAndSaysSo() =
+        runTest {
+            val state = MutableStateFlow<NetworkState>(wifi)
+            val relay = ObservationRelay(state)
+
+            val seen = mutableListOf<NetworkObservation>()
+            backgroundScope.launch { relay.observations.collect { seen += it } }
+            runCurrent()
+
+            repeat(100) { relay.record(wifi) } // no suspension point: the collector cannot drain mid-burst
+            runCurrent()
+
+            val sequences = seen.map { (it as NetworkObservation.Sequenced).sequence }
+            assertEquals(
+                listOf(0L) + (37L..100L),
+                sequences.map { it.value },
+                "the opening emission, then only what the 64-slot buffer still held when the collector woke",
+            )
+            assertEquals(100L, relay.count.value, "the count is the half a slow collector never costs")
+            assertEquals(
+                36L,
+                sequences[1].droppedSince(sequences[0]),
+                "the loss is reported to the consumer rather than being silent",
+            )
+        }
+
+    /**
      * A late subscriber opens at the sequence reached so far and continues from it without repeating it.
      *
      * This is the observable half of the subscription-gap contract: the opening emission and the stream's

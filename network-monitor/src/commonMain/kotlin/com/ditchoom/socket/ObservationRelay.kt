@@ -115,6 +115,11 @@ class ObservationRelay(
      * consistent with what [NetworkMonitor.state] reports: a subscriber arriving before the first
      * observation must open with the seeded state, not with whatever the flow held when this relay was
      * constructed.
+     *
+     * This is for the seed, and for monitors that never [record] at all — not for mixing. Interleaving a
+     * [publish] after recording has begun leaves [latest] holding a state no observation ever produced
+     * stamped with the latest observation's sequence, so a subscriber's opening emission mislabels itself
+     * as that observation and the real one is then suppressed as a duplicate.
      */
     fun publish(newState: NetworkState) {
         state.value = newState

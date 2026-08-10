@@ -76,6 +76,10 @@ class ScriptedNetworkMonitor(
      * transitions returns immediately. Cancelling the caller stops playback at whatever state was last
      * applied. Calling [play] again re-runs the timeline (StateFlow de-dupes the repeated values;
      * [observationCount] keeps counting, as a real monitor's would).
+     *
+     * Sequential re-runs are supported; overlapping ones are not. Two [play] calls in flight at once
+     * interleave their recordings into one relay whose sequence stamping assumes a single platform
+     * callback thread, so the timeline a consumer sees belongs to neither pass.
      */
     suspend fun play() {
         var elapsed = Duration.ZERO
