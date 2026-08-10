@@ -1,5 +1,6 @@
 package com.ditchoom.socket.transport
 
+import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.socket.ConnectionFailureReason
 import com.ditchoom.socket.SSLHandshakeFailedException
 import com.ditchoom.socket.SocketConnectionException
@@ -353,6 +354,47 @@ class FallbackRacingTest {
 
             assertEquals(2, quic.connectCount, "QUIC is tried on the first two connects, then demoted")
             assertEquals(3, tcp.connectCount)
+        }
+
+    /**
+     * The tear the gate must survive: the attempt ENTERS during the Pending window and the network
+     * validates while the UDP rung is still timing out — Android grants INTERNET ~1s before VALIDATED,
+     * and a UDP timeout outlives that window, so this alignment is the common one, not a corner. A gate
+     * that samples only at verdict time reads "Confirmed" and writes the very poison it exists to
+     * prevent; the evidence spans the whole attempt, so transience at either end taints it.
+     */
+    @Test
+    fun aContrastThatEnteredTransientIsSkippedEvenIfTheNetworkSettledByVerdictTime() =
+        runTest {
+            var transient = true
+            val quicScript =
+                ScriptedTransport(
+                    "QUIC",
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    family = TransportFamily.Udp,
+                )
+            // The network validates mid-attempt: strictly after connect() sampled entry state, strictly
+            // before the family contrast records its verdict.
+            val quic =
+                object : Transport by quicScript {
+                    override suspend fun connect(
+                        hostname: String,
+                        port: Int,
+                        config: TransportConfig,
+                    ): ByteStream {
+                        transient = false
+                        return quicScript.connect(hostname, port, config)
+                    }
+                }
+            val tcp = ScriptedTransport("TCP", ScriptedTransport.Outcome.Succeed, ScriptedTransport.Outcome.Succeed)
+            val fallback = FallbackTransport(listOf(quic, tcp), networkId = { wifi }, transientNow = { transient })
+
+            fallback.connect("h", 1, config) // enters Pending, verdict lands after validation
+            transient = true // back in a window, so a second write is also gated — isolates the first
+            fallback.connect("h", 1, config)
+
+            assertEquals(2, quicScript.connectCount, "an attempt that entered transient must not poison the cache")
         }
 
     // ---- networkId stamping ---------------------------------------------------------------------
