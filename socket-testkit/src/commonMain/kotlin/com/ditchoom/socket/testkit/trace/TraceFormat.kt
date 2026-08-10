@@ -87,6 +87,10 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append("NET ")
                 append(encodeNetworkState(event.state))
             }
+            is TraceEvent.NetGap -> {
+                append("NET_GAP ")
+                append(event.dropped)
+            }
             is TraceEvent.NetCapability -> {
                 append("NET_CAP ")
                 append(encodeMechanism(event.capability.mechanism))
@@ -172,6 +176,10 @@ internal fun decodeTraceLine(line: String): TraceEvent {
             )
         }
         "NET" -> TraceEvent.Net(at, decodeNetworkState(fields))
+        // `v1` still: NET_GAP is a new line kind in the existing version, exactly as NET_CAP was added
+        // after the format shipped. A reader predating it fails the unknown-event branch below rather
+        // than mis-parsing, and a trace without gap lines means "no claim" — never a fabricated zero.
+        "NET_GAP" -> TraceEvent.NetGap(at, fields.toLong())
         "NET_CAP" -> {
             val (mechanism, resolution) = fields.split(' ', limit = 2)
             TraceEvent.NetCapability(at, MonitorCapability(decodeMechanism(mechanism), decodeResolution(resolution)))

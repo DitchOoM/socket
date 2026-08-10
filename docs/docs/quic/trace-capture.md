@@ -122,6 +122,7 @@ Each `TraceEvent` is either a replayable **input** or an observed **observation*
 | `Error` | `ERROR` | input | typed error (**qualified** class name + message) |
 | `Stats` | `STATS` | observation | quiche path-stats snapshot |
 | `Net` | `NET` | input | `NetworkMonitor.state` emission — the whole `NetworkState`, identity included |
+| `NetGap` | `NET_GAP` | input | observations lost before the **next** `NET` line (the relay's `DROP_OLDEST` buffer overran) |
 | `NetCapability` | `NET_CAP` | input | the monitor's `MonitorCapability` (mechanism + resolution), emitted once at subscribe |
 | `Liveness` | `LIVENESS` | input | liveness probe outcome |
 
@@ -129,6 +130,14 @@ On the wire, `NET` is `NET <rung> [<id> [<internet>]]` — only the rungs that c
 fields on identity, so an `Offline` line is just `NET Offline` while a full line reads
 `NET Routable Link:Wifi:441492361229 Confirmed`. `NET_CAP` is `NET_CAP <mechanism> <resolution>`,
 e.g. `NET_CAP PlatformSignalled RouteAndInternet`.
+
+`NET_GAP` is `NET_GAP <dropped>`, e.g. `NET_GAP 36`, and always *precedes* the `NET` it modifies
+(sharing its timestamp): 36 platform observations were lost, **then** this state was seen. An intact
+stream writes no line at all rather than a confirmed zero, so a trace recorded before `NET_GAP`
+existed and a gap-free one recorded today mean the same thing — `networkMonitorScriptFromTrace`
+replays both with `droppedBefore = 0`. On replay, `ScriptedNetworkMonitor` jumps its observation
+sequence by `dropped + 1`, so re-recording a replayed ride reproduces the same gap instead of
+erasing it.
 
 > **Migration note.** Traces recorded before the single-`NetworkState`-flow migration contain
 > `NET_AVAIL` / `NET_ID` lines. Those tags no longer exist, and `TraceEvent.parse` **throws** on an

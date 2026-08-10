@@ -56,6 +56,12 @@ class ScriptedNetworkMonitor(
      * script that repeats a state therefore models real platform chatter (the callback burst a weak
      * radio produces before any rung changes), and a consumer's density logic can be exercised under
      * virtual time.
+     *
+     * A transition carrying a [NetworkMonitorScript.Transition.droppedBefore] bumps it by
+     * `droppedBefore + 1` — not because playback counts twice, but because it *jumps the sequence*
+     * ([ObservationRelay.recordAfterGap]) and this count is assigned from that sequence. So a replayed
+     * lossy ride reports the density the platform produced (every observation, lost ones included) while
+     * its [observations] stream carries only the survivors, exactly as the original capture did.
      */
     private val observationRelay = ObservationRelay(stateFlow)
     override val observationCount: StateFlow<Long> = observationRelay.count
@@ -63,7 +69,9 @@ class ScriptedNetworkMonitor(
     /**
      * Every applied transition, repeats included — so a script round-trips. Without this override the
      * inherited default would de-dupe the repeats back out (it is derived from [state]), and re-recording
-     * a replayed ride would silently lose exactly the chatter the script was written to carry.
+     * a replayed ride would silently lose exactly the chatter the script was written to carry. Scripted
+     * gaps round-trip through here too: the sequences these emissions carry are the jumped ones, so a
+     * recorder re-measures the same [NetworkMonitorScript.Transition.droppedBefore] back out of them.
      */
     override val observations: Flow<NetworkObservation> = observationRelay.observations
 
@@ -87,7 +95,9 @@ class ScriptedNetworkMonitor(
             val wait = transition.at - elapsed
             if (wait > Duration.ZERO) delay(wait)
             elapsed = transition.at
-            observationRelay.record(transition.state)
+            // recordAfterGap, not record: a scripted gap has to jump the sequence, or the replayed
+            // stream comes out contiguous and a re-recording of it carries no gap at all (issue #315).
+            observationRelay.recordAfterGap(transition.state, transition.droppedBefore)
         }
     }
 

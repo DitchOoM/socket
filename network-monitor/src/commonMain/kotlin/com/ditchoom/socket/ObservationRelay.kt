@@ -19,6 +19,11 @@ import kotlinx.coroutines.flow.onSubscription
  * the first place. One [record] call advances both, so "exactly once per platform observation" is
  * structural rather than a discipline each monitor has to keep independently.
  *
+ * There are exactly two ways to record, and both keep that coupling: [record] advances the sequence by
+ * one, and [recordAfterGap] jumps it by `dropped + 1` for an observation that arrived after earlier ones
+ * were lost — the entry point a replay of a recorded gap needs, since [count] is assigned *from* the
+ * sequence rather than incremented alongside it.
+ *
  * [record] also *publishes* the state, rather than trusting each monitor to publish first and record
  * second. That ordering is not a style preference: the state and its sequence have to become visible as
  * one indivisible pair, or a subscriber arriving between the two writes opens with a state stamped by
@@ -131,7 +136,35 @@ class ObservationRelay(
      * whether or not [newState] differs from what was published before.
      */
     fun record(newState: NetworkState) {
-        val observation = NetworkObservation.Sequenced(newState, latest.value.sequence.next())
+        recordAfterGap(newState, dropped = 0)
+    }
+
+    /**
+     * One platform observation that arrived after [dropped] earlier observations were lost — the same as
+     * [record] except that the sequence **jumps** by `dropped + 1` instead of advancing by one, so the
+     * gap survives into everything downstream.
+     *
+     * This is what makes a recorded gap replayable rather than merely reportable. A replay that bumped a
+     * side-channel count by `dropped + 1` while [record] kept stamping contiguous sequences underneath
+     * would produce a stream whose [ObservationSequence.droppedSince] is `0` between every pair — so
+     * re-recording a replayed ride would erase exactly the information the capture was taken for
+     * (issue #315). Jumping the sequence instead means a re-recording measures the same `dropped` back
+     * out, and [count] follows for free: it is assigned from the observation's own sequence, so density
+     * and sequence cannot drift apart.
+     *
+     * The observation this emits carries the *jumped* sequence — the position it would have held had the
+     * lost observations been delivered — so the `dropped` entries are missing from the stream exactly as
+     * a real [BufferOverflow.DROP_OLDEST] loss leaves them missing.
+     *
+     * `dropped = 0` is the intact case and is precisely what [record] delegates here with.
+     */
+    fun recordAfterGap(
+        newState: NetworkState,
+        dropped: Long,
+    ) {
+        require(dropped >= 0) { "dropped $dropped is negative; a gap counts observations that went missing" }
+        val observation =
+            NetworkObservation.Sequenced(newState, ObservationSequence(latest.value.sequence.value + dropped + 1))
         state.value = newState
         latest.value = observation
         _count.value = observation.sequence.value

@@ -6,6 +6,7 @@ import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -13,6 +14,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 /**
  * The contract [ObservationRelay] exists to make structural: [NetworkMonitor.observationCount] and
@@ -198,6 +200,69 @@ class ObservationRelayTests {
                 sequences[1].droppedSince(sequences[0]),
                 "the loss is reported to the consumer rather than being silent",
             )
+        }
+
+    /**
+     * The jump entry point, which is what makes a recorded gap replayable: the sequence advances by
+     * `dropped + 1` rather than by one, and [ObservationRelay.count] follows because it is assigned
+     * *from* the sequence — density and sequence cannot drift apart.
+     */
+    @Test
+    fun recordAfterGapJumpsTheSequenceAndTheCountByTheGapPlusOne() =
+        runTest {
+            val relay = ObservationRelay(MutableStateFlow(wifi))
+
+            relay.record(wifi) // sequence 1
+            relay.recordAfterGap(cellular, dropped = 36)
+
+            assertEquals(38L, relay.count.value, "1 + 36 lost + this one")
+            assertEquals(cellular, relay.observations.first().state, "the jump still publishes the state")
+        }
+
+    /**
+     * The round-trip property the whole gap feature rests on: a consumer re-measuring the replayed
+     * stream reads back **exactly** the gap that was replayed into it. Without the jump these emissions
+     * would be contiguous and [ObservationSequence.droppedSince] would report `0`, so a re-recording of a
+     * replayed lossy ride would come out claiming a perfectly intact stream.
+     */
+    @Test
+    fun aJumpedObservationReportsExactlyTheGapItWasRecordedWith() =
+        runTest {
+            val relay = ObservationRelay(MutableStateFlow(wifi))
+
+            val seen = mutableListOf<NetworkObservation>()
+            backgroundScope.launch { relay.observations.collect { seen += it } }
+            runCurrent()
+
+            relay.record(wifi)
+            relay.recordAfterGap(cellular, dropped = 36)
+            relay.record(wifi)
+            runCurrent()
+
+            val sequences = seen.map { (it as NetworkObservation.Sequenced).sequence }
+            assertEquals(listOf(0L, 1L, 38L, 39L), sequences.map { it.value })
+            assertEquals(0L, sequences[1].droppedSince(sequences[0]))
+            assertEquals(36L, sequences[2].droppedSince(sequences[1]), "the gap is measured back out unchanged")
+            assertEquals(0L, sequences[3].droppedSince(sequences[2]))
+        }
+
+    /** `dropped = 0` is the intact case, so [ObservationRelay.record] is exactly it. */
+    @Test
+    fun aZeroGapIsAPlainRecord() =
+        runTest {
+            val relay = ObservationRelay(MutableStateFlow(wifi))
+            relay.recordAfterGap(wifi, dropped = 0)
+            relay.recordAfterGap(cellular, dropped = 0)
+            assertEquals(2L, relay.count.value)
+        }
+
+    /** A negative gap is not a lossy stream, it is a bug in whatever computed it. */
+    @Test
+    fun recordAfterGapRejectsANegativeGap() =
+        runTest {
+            val relay = ObservationRelay(MutableStateFlow(wifi))
+            assertFailsWith<IllegalArgumentException> { relay.recordAfterGap(wifi, dropped = -1) }
+            assertEquals(0L, relay.count.value, "a rejected call records nothing")
         }
 
     /**
