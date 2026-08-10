@@ -60,7 +60,14 @@ kotlinWrappers = "2026.6.0"
 # advertise it (io_uring `sendmsg` / `NWConnection` / `sendto` all take an address), because the new
 # KDoc makes the default an affirmative `false` claim rather than an absent one — so leaving the Apple
 # and Linux channels at their current value would be a lie a consumer acts on.
-buffer = "6.25.0"
+# 6.25.1->6.26.0: drop-in — every change lands in a module or surface socket does not consume. 6.25.1 is
+# an Apple buffer-crypto `aesGcmOpen` leak fix (buffer #335: two ciphertext slices per record) plus a
+# buffer-compression detekt cleanup (#336); socket links buffer-crypto only from :socket-quic-quiche and
+# only for sha256 — QUIC's AEAD is quiche/BoringSSL, not buffer-crypto — and never depends on
+# buffer-compression. 6.26.0 (buffer #337) renames buffer-crypto's PKCS#11 configuration names to be
+# module-neutral; that rename is the only source-breaking item in the range, and socket references no
+# PKCS#11 symbol in any source set.
+buffer = "6.26.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
