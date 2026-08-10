@@ -29,9 +29,16 @@ data class AcceptCompletionHandler(
         exc: Throwable,
         attachment: CancellableContinuation<AsynchronousSocketChannel>,
     ) {
-        // Pass through AsynchronousCloseException unwrapped — callers (AsyncServerSocket)
-        // catch it specifically to detect server socket shutdown.
-        if (exc is java.nio.channels.AsynchronousCloseException) {
+        // Pass close exceptions through unwrapped — callers (AsyncServerSocket) catch them to
+        // detect server socket shutdown.
+        //
+        // ClosedChannelException, NOT just its AsynchronousCloseException subclass: the JDK picks
+        // between the two by *when* close() lands relative to the accept. Closing while an accept
+        // is pending gives AsynchronousCloseException; closing before the next accept is issued
+        // makes implAccept raise a plain ClosedChannelException. Matching only the subclass left
+        // the second ordering to be wrapped as SocketClosedException and reported as a failure out
+        // of a perfectly normal shutdown.
+        if (exc is java.nio.channels.ClosedChannelException) {
             continuation.resumeWithException(exc)
         } else {
             continuation.resumeWithException(com.ditchoom.socket.wrapJvmException(exc))
