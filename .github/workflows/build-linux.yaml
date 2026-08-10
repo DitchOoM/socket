@@ -228,9 +228,23 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      # This is the FIRST gradlew invocation in the job, and deliberately so: it is the single
+      # authoritative version query for everything that follows. `getNextVersion` derives the
+      # version by fetching Maven Central's maven-metadata.xml live (gradle/setup.gradle.kts),
+      # once per Gradle invocation — so without a pin, two invocations in the same job return
+      # different answers the moment a release publishes between them. That is not theoretical:
+      # it took down the JDK-25 link-check gate on #320, where `nextVersion` read 4.2.1 at
+      # 20:06:57Z, v4.3.0 hit Central metadata at 20:11:50Z, and `publishToMavenLocal` then
+      # produced 4.3.1 at 20:24:14Z — leaving the gate hunting for jars at a version this build
+      # never emitted. Exporting ORG_GRADLE_PROJECT_version freezes it: build.gradle.kts only
+      # calls getNextVersion when no version was supplied from outside, so every later Gradle
+      # call in this job reuses this exact string and skips the network entirely.
       - name: Get version
         id: version
-        run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
+        run: |
+          version="$(./gradlew -q nextVersion ${{ inputs.gradle-args }})"
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "ORG_GRADLE_PROJECT_version=$version" >> $GITHUB_ENV
 
       # BoringSSL is no longer built here: socket consumes the canonical :boringssl-canonical owner
       # klib + provision bundle (fetched on-demand by the quiche build below via boringssl.boringsslDir).
