@@ -22,7 +22,7 @@ actual fun shouldSkipQuicHarnessOnSimulator(): Boolean {
     // booted-mode wiring reached the test process (booted-mode=true) vs ran under KGP's default
     // --standalone (booted-mode=false → skip). The CI gate keys off the gradle-side "booted-mode wiring
     // enabled" marker instead (K/N test stdout capture is less certain); this just makes a sim run
-    // self-explanatory in the log. See :socket-quic-nw build.gradle.kts (iosSimulatorDevice wiring).
+    // self-explanatory in the log.
     println("[QUIC-SIM-HARNESS] simulator booted-mode=$booted")
     return !booted
 }

@@ -50,7 +50,7 @@ kotlin {
         linuxArm64()
     }
 
-    // Apple Network.framework-backend consumers (host-gated like :socket-quic-nw).
+    // Apple targets — host-gated, since they only build on macOS.
     if (isMacOS) {
         macosArm64()
         macosX64()

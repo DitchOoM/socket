@@ -152,7 +152,7 @@ services:
   # L4 — toxiproxy. Sits between the test process and {echo, http, tls:valid}
   # so Phase-3 tests can inject `down`/`reset_peer`/`slicer` toxics for the
   # deterministic broken-pipe / partial-read regressions
-  # (TESTING_STRATEGY.md §2d, HANDOFF.md Phase 3).
+  # (TESTING_STRATEGY.md §2d).
   #
   # The image is distroless — no shell, no `nc`, no `wget`. The only binaries
   # are `/toxiproxy-server` (the default entrypoint) and `/toxiproxy-cli`.

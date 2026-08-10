@@ -23,6 +23,9 @@ Socket provides suspend-based async socket I/O with platform-native implementati
 
 ## Platform Implementations
 
+These are the **TCP/TLS** backends in the core `socket` module. QUIC has a different answer — see
+below.
+
 | Platform | Native Type | Notes |
 |----------|-------------|-------|
 | JVM | [`AsynchronousSocketChannel`](https://docs.oracle.com/en/java/javase/12/docs/api/java.base/java/nio/channels/AsynchronousSocketChannel.html) | NIO2 with NIO fallback |
@@ -30,6 +33,11 @@ Socket provides suspend-based async socket I/O with platform-native implementati
 | iOS/macOS/tvOS/watchOS | [`NWConnection`](https://developer.apple.com/documentation/network/nwconnection) | Network.framework, zero-copy |
 | Linux (x64/arm64) | [`io_uring`](https://kernel.dk/io_uring.pdf) | Kernel 5.1+, zero-copy, static OpenSSL |
 | Node.js | [`net.Socket`](https://nodejs.org/api/net.html#class-netsocket) | Node.js networking API |
+
+**QUIC, HTTP/3 and WebTransport are Cloudflare [quiche](https://github.com/cloudflare/quiche) on
+every platform** — including Apple. There is no Network.framework-native QUIC backend; on Apple,
+`NWConnection` carries only the client's UDP datagrams (for path-migration awareness) while quiche
+runs the protocol itself. See [QUIC](./quic/intro) and [Apple platforms](./platforms/apple).
 
 ## Quick Example
 

@@ -16,10 +16,10 @@ import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Phase-0 quiche-on-Apple end-to-end proof: an Apple [QuicheEngine] client and server talk to each
- * other over the POSIX UDP loopback datapath, completing a QUIC handshake and a bidirectional stream
- * round-trip. Drives [QuicheEngine] directly (not via `defaultQuicEngine`, which is still the NW
- * `NetworkEngine` on Apple) so this exercises the new quiche path specifically. If this passes, the
+ * quiche-on-Apple end-to-end proof: an Apple [QuicheEngine] client and server talk to each other
+ * over the UDP loopback datapath, completing a QUIC handshake and a bidirectional stream
+ * round-trip. Drives [QuicheEngine] directly rather than via `defaultQuicEngine` so the assertion
+ * is pinned to this engine even if the default wiring changes. If this passes, the
  * full quiche QUIC stack — cinterop API, config/ALPN/cert loading, accept loop, per-peer demux, the
  * driver event loop, and the POSIX datapath — works on macOS.
  */

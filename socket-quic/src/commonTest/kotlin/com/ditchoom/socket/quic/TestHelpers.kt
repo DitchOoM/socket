@@ -107,17 +107,19 @@ suspend fun awaitUntil(
  * tvosArm64, tvosSimulatorArm64, tvosX64, watchosArm64,
  * watchosSimulatorArm64, watchosX64).
  *
- * Used by [QuicHarnessIntegrationTests] to skip the harness suite on Apple
- * K/N targets. The handshake SIGTRAP that previously blocked Apple QUIC is
- * fixed (nw_quic_copy_sec_protocol_options, PR #60) — the client now runs the
- * full suite. The remaining gap is cert *acceptance*: NW's QUIC TLS rejects the
- * private-CA, non-CT-logged harness cert with errSSLBadCert (-9808), and the
- * verify_block that would override trust SIGABRTs under macOS hardening
- * (PR #54). Public CT-logged certs are unaffected. See the withHarness comment.
+ * Used by `QuicHarnessIntegrationTests` to select the Apple-only pinned-trust
+ * configuration (verifyPeer = true against the pinned harness CA) instead of the
+ * verifyPeer = false the other targets use.
+ *
+ * Historical note: this flag once gated a much larger Apple carve-out, back when
+ * Apple QUIC ran on Network.framework and its QUIC TLS rejected the private-CA,
+ * non-CT-logged harness cert with errSSLBadCert (-9808). Apple QUIC is quiche
+ * now, so that whole class of divergence is gone — the flag survives only to pick
+ * the pinning configuration.
  *
  * (Earlier docstrings referenced an `AppleQuicConnectStartupProbe` as the Apple
- * smoke test — it never existed in the repo. Tracked under TODO.md "macOS
- * harness coverage"; a real startup probe + the -9808 fix are the follow-ups.)
+ * smoke test — it never existed in the repo. Broader macOS harness coverage is
+ * tracked in issue #311.)
  */
 internal expect fun isAppleKNative(): Boolean
 

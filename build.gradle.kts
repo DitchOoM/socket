@@ -919,14 +919,14 @@ val harnessDown by tasks.registering {
 // tasks with the harness lifecycle. Phase 4 adds quic-echo to the compose
 // stack, so :socket-quic:jvmTest's new QuicHarnessIntegrationTests need it
 // running. The exit gate is intentionally two separate gradle invocations
-// (HANDOFF.md Phase 4) so the root and socket-quic test tasks don't run
+// so the root and socket-quic test tasks don't run
 // concurrently — JVM+native workload contention causes the in-process QUIC
 // tests' 10 s timeouts to miss on resource-constrained runners.
 //
 // jsNodeTest (Phase 5): Node has full socket access (`net.Socket`), so
 // isHarnessAvailable() returns true when the harness is up and Node-targeted
 // harness tests exercise the same conformance suites. Browser/wasmJs stays
-// WEBSOCKETS_ONLY and skips via the early-return path (HANDOFF.md §7.4) — no
+// WEBSOCKETS_ONLY and skips via the early-return path — no
 // special-case needed; on Windows CI the harnessUp task is a documented no-op
 // and the tests skip cleanly through isHarnessAvailable().
 listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->

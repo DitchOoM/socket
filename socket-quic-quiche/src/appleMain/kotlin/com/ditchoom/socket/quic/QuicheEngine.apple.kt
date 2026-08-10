@@ -4,14 +4,16 @@ import com.ditchoom.socket.TransportConfig
 import kotlin.time.Duration
 
 /**
- * Apple/native [QuicEngine] backed by Cloudflare quiche (K/N cinterop into the macOS libquiche.a) over
- * a POSIX UDP datapath. Phase-0 quiche-on-Apple pivot: mirrors the linux [QuicheEngine]. The
- * `withQuicConnection` / `withQuicServer` wrappers (in `:socket-quic-default`) own the lifecycle; this
- * engine just builds + establishes.
+ * Apple/native [QuicEngine] backed by Cloudflare quiche (K/N cinterop into the Apple `libquiche.a`).
+ * Mirrors the linux [QuicheEngine]. The `withQuicConnection` / `withQuicServer` wrappers (in
+ * `:socket-quic-default`) own the lifecycle; this engine just builds + establishes.
  *
- * Not yet wired as the Apple `defaultQuicEngine` (that stays the NW `NetworkEngine` until the pivot's
- * later phases); consumers select it explicitly for now. See [AppleUdpChannel] for the POSIX-vs-NW
- * datapath note.
+ * This **is** the Apple `defaultQuicEngine` — there is no Network.framework-native QUIC backend
+ * (the former `:socket-quic-nw` was deleted in June 2026).
+ *
+ * Datapath split: the client's UDP rides an `NWConnection` (`UdpSocket.connect`), chosen because
+ * Network.framework reports path changes and so keeps connection migration reactive on iOS. The
+ * server binds a dual-stack POSIX socket, which is what an unconnected `recvfrom` accept loop needs.
  */
 object QuicheEngine : QuicEngine {
     override val capabilities: EngineCapabilities =

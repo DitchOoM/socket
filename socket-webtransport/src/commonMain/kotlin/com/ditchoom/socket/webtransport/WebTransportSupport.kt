@@ -2,7 +2,7 @@ package com.ditchoom.socket.webtransport
 
 /**
  * Entry point for opening WebTransport sessions, surfaced as a **type-gated capability** (the v6
- * sealed-provider model, MAJOR_API_REDESIGN.md §5).
+ * sealed-provider model): an unavailable capability is a type you cannot reach, not a call that throws.
  *
  * The base [connect] works on every platform that has WebTransport at all. Native-only *power* — many
  * sessions over a single held HTTP/3 connection — is the separate [Multiplexed] sub-interface, present

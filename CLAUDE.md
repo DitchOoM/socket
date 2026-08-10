@@ -50,7 +50,7 @@ The library uses Kotlin's `expect`/`actual` mechanism for platform-specific sock
 
 - `src/commonMain/` - Shared interfaces and `expect` declarations
 - `src/commonJvmMain/` - JVM/Android implementations (shared via custom source set hierarchy)
-- `src/appleNativeImpl/` - Apple platforms using Network.framework via Swift cinterop
+- `src/appleNativeImpl/` - Apple platforms using Network.framework via a C cinterop shim (`nw_helpers.h`); there is no Swift in this repo
 - `src/jsMain/` - Node.js `net.Socket` implementation (browser throws `UnsupportedOperationException`)
 
 ### Core Types (in `com.ditchoom.socket`)
@@ -98,7 +98,7 @@ Apple targets use C helper functions in `src/nativeInterop/cinterop/nw_helpers.h
 ### TLS/SSL
 
 - JVM: `SSLClientSocket` wraps NIO sockets with `SSLEngine`
-- Apple: Handled natively by Network.framework
+- Apple: TCP TLS handled natively by Network.framework (`NWProtocolTLS`). QUIC's TLS 1.3 is quiche/BoringSSL, not Network.framework.
 - Enabled by passing `tls = true` to `ClientSocket.connect()` or `ClientSocket.allocate()`
 
 ## Testing

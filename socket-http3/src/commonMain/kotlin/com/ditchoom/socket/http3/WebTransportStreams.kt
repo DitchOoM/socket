@@ -21,8 +21,8 @@ import kotlin.time.Duration.Companion.seconds
  * peer's WebTransport application error code, **decoded** back out of the HTTP/3 error-code space. It is
  * a **32-bit unsigned** value (draft §4.3), hence [UInt], and non-null — the underlying
  * [QuicStreamException] always carries the peer's QUIC application error code on a real abort (every
- * quiche binding surfaces `out_error_code`; Apple surfaces `nw_quic_get_stream_application_error`). Wraps
- * the underlying [QuicStreamException].
+ * quiche binding surfaces `out_error_code`, Apple included). Wraps the underlying
+ * [QuicStreamException].
  */
 class WebTransportStreamException internal constructor(
     val errorCode: UInt,

@@ -6,9 +6,9 @@ import kotlinx.cinterop.toKString
 import platform.posix.getenv
 
 // Apple Kotlin/Native actuals for the socket-quic unit-test harness. socket-quic's commonTest is
-// engine-free (MockQuicConnection — no real Network.framework / quiche), so these run on every Apple
-// target. The real-network Apple QUIC suites live in :socket-quic-nw (their harness actuals are in
-// :socket-testsuite); this mirrors that logic so the simulator gate matches.
+// engine-free (MockQuicConnection — no real quiche), so these run on every Apple target. The
+// real-network Apple QUIC suites live in :socket-quic-quiche's appleTest (their harness actuals are
+// in :socket-testsuite); this mirrors that logic so the simulator gate matches.
 
 internal actual fun isAppleKNative(): Boolean = true
 

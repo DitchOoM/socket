@@ -32,10 +32,10 @@ class ResourceCleanupTests {
             // `WindowsAsynchronousServerSocketChannelImpl.implAccept`, which our
             // JvmExceptionMapping wraps as `SocketClosedException.General` —
             // identical shape to the existing repeatedOpenClose skip below and
-            // forecast in HANDOFF.md ("If it recurs, apply the same skip
-            // pattern"). The same contract is exercised on Linux/macOS JVM,
-            // K/Native, and JS without issue. Tracked in TODO.md as Windows JVM
-            // Tests mapping gaps; tighten the Windows mapping when that lands.
+            // identical in shape to the repeatedOpenClose skip below. The same
+            // contract is exercised on Linux/macOS JVM, K/Native, and JS without
+            // issue. Tracked as issue #309 (Windows JVM mapping gaps); tighten the
+            // Windows mapping when that lands.
             if (isWindowsJvm()) return@runTestNoTimeSkipping
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()
@@ -72,7 +72,7 @@ class ResourceCleanupTests {
             // socketClosedAfterUseBlock (commit 7e82e42) — skipped on
             // Windows pending a tighter `JvmExceptionMapping.kt` that
             // distinguishes "closed by us" from "kernel just closed it
-            // under us". Tracked in TODO.md.
+            // under us". Tracked as issue #309.
             if (isWindowsJvm()) return@runTestNoTimeSkipping
             val server = ServerSocket.allocate()
             val serverFlow = server.bind()

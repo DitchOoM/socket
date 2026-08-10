@@ -16,8 +16,7 @@ import kotlin.test.assertTrue
  *
  * **What's gone:** four reflection tests that asserted on the *engine
  * scope*'s child-count after operations. The engine layer was removed in
- * the no-engine refactor (see `socket-quic/DRIVER_REDESIGN.md` → "Engine
- * lifecycle"); the per-call parent scope is now an implementation detail
+ * the no-engine refactor; the per-call parent scope is now an implementation detail
  * of [withQuicServer] and is cancelled by construction on every exit
  * path. The black-box invariants in the base suite —
  * `closeWhileConnectionsBlockingDoesNotDeadlock` and

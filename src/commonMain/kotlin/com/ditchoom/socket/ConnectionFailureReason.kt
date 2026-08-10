@@ -9,7 +9,7 @@ package com.ditchoom.socket
  * handshake, …) surfaces as a **different native string per platform** — JSSE messages on JVM, POSIX
  * errno text on Linux K/N, Network.framework / `Sec` codes on Apple, JS error `code`s on Node. Making
  * that string the thing callers switch on makes exhaustive, portable error handling impossible and is
- * the direct cause of the 6 skipped Windows JVM mapping tests (see `TODO.md`).
+ * the direct cause of the 6 skipped Windows JVM mapping tests (see issue #309).
  *
  * Every platform mapper produces one of these instead. It mirrors the [com.ditchoom.socket.quic.QuicError]
  * gold standard: a sealed hierarchy that a `when` discriminates exhaustively, with the raw platform

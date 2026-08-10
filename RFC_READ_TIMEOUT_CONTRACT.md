@@ -1,6 +1,6 @@
 # RFC — The read-timeout contract (cross-platform)
 
-**Status:** Proposed — not implemented. Emerged from an investigation into (a) exposing a virtual-thread I/O strategy on the JVM and (b) test-harness parity with QUIC. Both questions collapsed into a prior one: **the library has no defined read-timeout contract, and the six socket implementations disagree three different ways.** This RFC defines the contract and the per-platform conformance work; the virtual-thread strategy becomes a downstream implementation detail that must obey it.
+**Status:** **Implemented.** All phases landed, including 4a (JVM NIO2) and 4b (Apple, macOS-CI-validated) — see §8. The per-phase notes below are the record of what shipped, not a plan. Emerged from an investigation into (a) exposing a virtual-thread I/O strategy on the JVM and (b) test-harness parity with QUIC. Both questions collapsed into a prior one: **the library has no defined read-timeout contract, and the six socket implementations disagree three different ways.** This RFC defines the contract and the per-platform conformance work; the virtual-thread strategy becomes a downstream implementation detail that must obey it.
 **Builds on:** [`RFC_DETERMINISTIC_SIMULATION.md`](./RFC_DETERMINISTIC_SIMULATION.md) — the contract can only be *locked* with a deterministic "silent peer" harness that runs identically on every platform. That harness is the same infrastructure this repo already has for QUIC and lacks for TCP.
 
 ## 1. Goal

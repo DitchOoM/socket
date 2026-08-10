@@ -23,7 +23,7 @@ import kotlin.time.Duration.Companion.seconds
 class SniStrictHostsTest {
     private val sniStrictHosts = listOf("www.example.com", "www.cloudflare.com", "badssl.com")
 
-    // Deferred — SNI strictness migration blocked on separate server_name-only nginx vhosts (no default_server fallback) in test-harness/tls/conf.d/. Tracked in TODO.md.
+    // Deferred — SNI strictness migration blocked on separate server_name-only nginx vhosts (no default_server fallback) in test-harness/tls/conf.d/. Tracked as issue #311.
     @Ignore
     @Test
     fun handshakeSucceedsAgainstSniStrictHosts() =

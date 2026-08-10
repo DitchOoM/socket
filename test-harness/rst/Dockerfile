@@ -6,7 +6,7 @@
 # observes EOF (graceful) before the RST arrives, which flakes the
 # pendingReadDuringPeerReset assertion. See
 # src/commonTest/.../harness/ExceptionConformanceTests.kt for the original
-# `@Ignore`'d test and TODO.md for the rationale.
+# `@Ignore`'d test, and issue #311 for the rationale.
 #
 # This sidecar removes toxiproxy from that path entirely: the test connects
 # directly here. socat is configured with `so-linger=0` on the accepted FD,
