@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.ReadBuffer
 import kotlinx.coroutines.channels.Channel
 import kotlin.concurrent.Volatile
 
@@ -35,4 +36,23 @@ class StreamSlot(
      */
     @Volatile
     var finReceived = false
+
+    /**
+     * Stream bytes quiche had already delivered to us, drained out of the connection by
+     * [QuicheDriver.drainReadableStreamsIntoSlots] at teardown because no reader had consumed them yet.
+     *
+     * The connection dying does not un-receive them (RFC 9000 §10.2: a CONNECTION_CLOSE ends the
+     * connection; the stream data the transport already accepted and acknowledged is still the
+     * application's). Without this queue those bytes died with `quiche_conn_free` and the pending
+     * `read()` returned [com.ditchoom.buffer.flow.ReadResult.End] — indistinguishable from a clean FIN
+     * (issue #318: `expected:<[ping]> but was:<[no_data:End]>`).
+     *
+     * UNLIMITED so the drain — which runs on the driver loop, where suspending is not an option — can
+     * never block, and because quiche's own flow-control window already bounds how much there can be.
+     * A [Channel] rather than a plain deque because producer (driver loop) and consumer (the reading
+     * coroutine) are different threads. Ownership of a buffer taken from here transfers to the reader,
+     * exactly like [QuicheStreamAdapter.streamRead]'s data path; anything still queued when the stream
+     * is closed is released by [DriverStreamAdapter.releaseUndeliveredReads].
+     */
+    val pendingData = Channel<ReadBuffer>(Channel.UNLIMITED)
 }

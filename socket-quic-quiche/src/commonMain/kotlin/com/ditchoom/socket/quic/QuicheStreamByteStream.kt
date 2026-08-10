@@ -79,6 +79,15 @@ interface QuicheStreamAdapter {
         direction: Int,
         errorCode: Long,
     )
+
+    /**
+     * Release any bytes the implementation buffered for this stream that can no longer be delivered —
+     * called once the read side is gone for good ([QuicheStreamByteStream.close] / [reset], after which
+     * `read()` is rejected). The driver-backed implementation frees the chunks it drained out of quiche
+     * at connection teardown (see [StreamSlot.pendingData]); an implementation that buffers nothing has
+     * nothing to release, hence the no-op default.
+     */
+    fun releaseUndeliveredReads() {}
 }
 
 /**
@@ -148,6 +157,9 @@ class QuicheStreamByteStream(
         closed = true
         // Avoid a duplicate FIN if the send side was already shut down.
         if (!sendFinished) adapter.streamClose(streamId)
+        // read() is rejected from here on, so any teardown-drained chunk left undelivered is
+        // unreachable — release it instead of holding a pooled/native buffer for the slot's lifetime.
+        adapter.releaseUndeliveredReads()
     }
 
     override suspend fun reset(errorCode: Long) {
@@ -156,5 +168,6 @@ class QuicheStreamByteStream(
         // Abort both directions: RESET_STREAM (write) then STOP_SENDING (read), RFC 9000 §19.4/§19.5.
         adapter.streamShutdown(streamId, direction = 1, errorCode)
         adapter.streamShutdown(streamId, direction = 0, errorCode)
+        adapter.releaseUndeliveredReads()
     }
 }
