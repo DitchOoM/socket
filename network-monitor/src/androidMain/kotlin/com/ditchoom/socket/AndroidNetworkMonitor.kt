@@ -7,10 +7,10 @@ import android.net.NetworkRequest
 import android.os.Build
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import android.net.NetworkCapabilities as AndroidNetworkCapabilities
 
 /**
@@ -54,8 +54,9 @@ class AndroidNetworkMonitor(
      * not count. The constructor's synchronous seed is not a platform observation and does not count
      * either.
      */
-    private val _observationCount = MutableStateFlow(0L)
-    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+    private val observationRelay = ObservationRelay(_state)
+    override val observationCount: StateFlow<Long> = observationRelay.count
+    override val observations: Flow<NetworkObservation> = observationRelay.observations
 
     /**
      * From the same capabilities object every state publication reads:
@@ -116,7 +117,7 @@ class AndroidNetworkMonitor(
 
     /**
      * The per-UID blocked verdict, keyed to the [Network] it was delivered for so a verdict about a dead
-     * network can never leak onto its successor: [publish] applies [blockedForApp] only while
+     * network can never leak onto its successor: [fold] applies [blockedForApp] only while
      * [blockedNetwork] still equals the network being published, which makes resets on handover
      * unnecessary rather than easy to forget.
      */
@@ -141,9 +142,10 @@ class AndroidNetworkMonitor(
                     return
                 }
                 if (!acceptsUpdateFor(network)) return
-                observed()
                 currentNetwork = network
-                publish(network, connectivityManager.getNetworkCapabilities(network))
+                val caps = connectivityManager.getNetworkCapabilities(network)
+                observationRelay.record(fold(network, caps))
+                publishLinkQuality(caps)
             }
 
             override fun onLost(network: Network) {
@@ -153,14 +155,10 @@ class AndroidNetworkMonitor(
                     // network satisfies the criteria of the request" — so there is genuinely nothing
                     // left to fall back to and no stale-onLost race to guard against. A handover to a
                     // better network arrives as onAvailable/onCapabilitiesChanged instead, never here.
-                    observed()
                     clear()
                     return
                 }
-                if (network == currentNetwork) {
-                    observed()
-                    clear()
-                }
+                if (network == currentNetwork) clear()
             }
 
             override fun onCapabilitiesChanged(
@@ -168,8 +166,8 @@ class AndroidNetworkMonitor(
                 caps: AndroidNetworkCapabilities,
             ) {
                 if (!acceptsUpdateFor(network)) return
-                observed()
-                publish(network, caps)
+                observationRelay.record(fold(network, caps))
+                publishLinkQuality(caps)
             }
 
             override fun onBlockedStatusChanged(
@@ -188,20 +186,22 @@ class AndroidNetworkMonitor(
                 // so by the time a verdict lands for the current network, its capabilities are already
                 // retained in currentCaps and the re-fold below cannot tear.
                 if (!acceptsUpdateFor(network)) return
-                observed()
                 blockedNetwork = network
                 blockedForApp = blocked
-                if (network == currentNetwork) publish(network, currentCaps)
+                // A verdict for a network that is not the tracked one changes nothing to publish, but the
+                // platform still spoke — so it counts, exactly as it did before, via the unchanged path.
+                if (network == currentNetwork) {
+                    val caps = currentCaps
+                    observationRelay.record(fold(network, caps))
+                    publishLinkQuality(caps)
+                } else {
+                    observationRelay.recordUnchanged()
+                }
             }
         }
 
-    /** One platform observation delivered for the tracked network — see [observationCount]. */
-    private fun observed() {
-        _observationCount.update { it + 1 }
-    }
-
     /**
-     * Whether a callback for [network] may reach [publish]. Only the pre-O request-based path ever says
+     * Whether a callback for [network] may reach [fold]. Only the pre-O request-based path ever says
      * no — see [acceptsNetworkUpdate] for why that path multi-fires and how the gate decides.
      *
      * Reading [ConnectivityManager.activeNetwork] *inside* a callback is deliberate, even though the
@@ -223,22 +223,33 @@ class AndroidNetworkMonitor(
         )
     }
 
+    /** The link is gone: forget it and record the loss as the observation it is. */
     private fun clear() {
         currentNetwork = null
         currentCaps = null
-        _state.value = NetworkState.Offline
+        observationRelay.record(NetworkState.Offline)
         // No link, no measurement — never let a dead link's last reading linger as if it were current.
         _linkQuality.value = LinkQuality.Unavailable
     }
 
-    /** Publish one coherent [NetworkState] — identity, reachability and the per-UID blocked verdict together. */
-    private fun publish(
+    /**
+     * Fold one coherent [NetworkState] — identity, reachability and the per-UID blocked verdict together
+     * — and retain what it was folded from.
+     *
+     * Returns the state rather than publishing it, so the caller decides whether this is a counted
+     * observation ([ObservationRelay.record]) or the synchronous seed ([ObservationRelay.publish]). The
+     * relay publishes either way, which is what keeps a state and its sequence indivisible.
+     *
+     * [publishLinkQuality] is deliberately *not* folded in here: it has to run after the state is
+     * published, not before, and only a caller holding both halves can order them.
+     */
+    private fun fold(
         network: Network,
         caps: AndroidNetworkCapabilities?,
-    ) {
+    ): NetworkState {
         currentNetwork = network
         currentCaps = caps
-        _state.value =
+        val folded =
             androidNetworkState(
                 id =
                     androidNetworkId(
@@ -267,6 +278,18 @@ class AndroidNetworkMonitor(
                 // seed-then-callback-authoritative contract the constructor already documents.
                 blockedForApp = blockedForApp && network == blockedNetwork,
             )
+        return folded
+    }
+
+    /**
+     * Publish the RSSI reading these capabilities carry, **after** the state they were folded with.
+     *
+     * The order is the one this class has always published in: [state] is the primary signal and moves
+     * first, [linkQuality] follows. They are separate flows by design (a reading is not reachability), so
+     * a consumer watching both can see one move before the other either way — but flipping which one
+     * leads would be a silent change in what an existing collector observes.
+     */
+    private fun publishLinkQuality(caps: AndroidNetworkCapabilities?) {
         _linkQuality.value =
             androidLinkQuality(
                 signalStrength =
@@ -317,10 +340,13 @@ class AndroidNetworkMonitor(
     private fun seedInitialState() {
         val activeNetwork = connectivityManager.activeNetwork
         if (activeNetwork == null) {
-            _state.value = NetworkState.Offline
+            // publish, not record: a seed is the constructor asking, not the platform speaking.
+            observationRelay.publish(NetworkState.Offline)
             return
         }
-        publish(activeNetwork, connectivityManager.getNetworkCapabilities(activeNetwork))
+        val caps = connectivityManager.getNetworkCapabilities(activeNetwork)
+        observationRelay.publish(fold(activeNetwork, caps))
+        publishLinkQuality(caps)
     }
 
     override fun close() {
