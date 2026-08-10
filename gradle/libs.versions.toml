@@ -22,7 +22,7 @@ quicheSha256 = "c840a0d04e2406d0989a5238f6d6054aa0139872ed49a6c48395fca0cfcad75c
 # Windows/Android/Apple/fuzz still build a self-contained libquiche via `boringssl-boring-crate`.
 androidGradlePlugin = "9.2.1"
 ktlint = "14.2.0"
-mavenPublish = "0.36.0"
+mavenPublish = "0.37.0"
 dokka = "2.2.0"
 kotlinxCoroutines = "1.11.0"
 kotlinWrappers = "2026.6.0"
@@ -60,10 +60,10 @@ kotlinWrappers = "2026.6.0"
 # advertise it (io_uring `sendmsg` / `NWConnection` / `sendto` all take an address), because the new
 # KDoc makes the default an affirmative `false` claim rather than an absent one — so leaving the Apple
 # and Linux channels at their current value would be a lie a consumer acts on.
-buffer = "6.25.0"
+buffer = "6.25.1"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
-androidxCore = "1.18.0"
+androidxCore = "1.19.0"
 # androidx.startup — App Startup's InitializationProvider is how :network-monitor gets the application
 # Context on Android without the app remembering to call NetworkMonitor.installAndroidContext().
 # minSdk 21 (matches ours); its consumer proguard.txt already keeps `* extends Initializer`.
