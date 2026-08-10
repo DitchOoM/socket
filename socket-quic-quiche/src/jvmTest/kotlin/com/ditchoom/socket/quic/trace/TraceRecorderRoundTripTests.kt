@@ -171,6 +171,8 @@ class TraceRecorderRoundTripTests {
                         ),
                     ),
                 ),
+                // A recorded observation-sequence gap: the losses that happened before the NET after it.
+                TraceEvent.NetGap(13_500L.nanoseconds, dropped = 36),
                 TraceEvent.NetCapability(
                     14_000L.nanoseconds,
                     MonitorCapability(MonitorMechanism.PlatformSignalled, ReachResolution.RouteAndInternet),

@@ -71,7 +71,7 @@ data class TracePathStats(
  * [parse]/[parseAll] decode it back, so `parse(e.toString()) == e` holds for every variant.
  *
  * Two roles, mirroring RFC_DETERMINISTIC_SIMULATION.md §2:
- *  - **Input events** ([DgramIn], [Error], [Net], [NetCapability], [Liveness]) are replayable — the
+ *  - **Input events** ([DgramIn], [Error], [Net], [NetGap], [NetCapability], [Liveness]) are replayable — the
  *    fixture codegen turns them into a `simFixture` timeline injected through the deterministic
  *    seams, and the round-trip bar holds exactly.
  *  - **Observations** ([DgramOut], [State], [PathState], [Stats]) are the golden trajectory —
@@ -182,6 +182,38 @@ sealed interface TraceEvent {
     }
 
     /**
+     * [dropped] platform observations were lost before the [Net] that follows this line — the recorded
+     * form of an [com.ditchoom.socket.ObservationSequence] gap. Input event.
+     *
+     * **It precedes the [Net] it modifies**: dropped observations happened, *then* this state was seen.
+     * A recorded burst deep enough to overrun the relay's `DROP_OLDEST` buffer would otherwise read back
+     * as a quiet network — the failure mode a live subscriber can already detect
+     * ([com.ditchoom.socket.ObservationSequence.droppedSince]) and a recorded artifact could not
+     * (issue #315).
+     *
+     * **A new sealed case rather than a field on [Net]**, for two reasons that both cut this way:
+     *  - [isInput]'s exhaustive `when` is the safety net that forces every call site over the hierarchy
+     *    to be re-examined when the model grows. Widening [Net] with a count compiles with *zero*
+     *    changes anywhere and nothing would force `networkMonitorScriptFromTrace`, the fixture codegen,
+     *    or any downstream projection to be revisited. A new case makes the compiler do that work.
+     *  - The pairing hazard a separate marker normally carries — another tap writing between this line
+     *    and the [Net] it belongs to on a shared sink — does not exist here.
+     *    `networkMonitorScriptFromTrace` filters to the network events *before* pairing, and the
+     *    recorder's single collector emits this and its [Net] consecutively in program order, so their
+     *    relative order within that filtered subsequence survives any interleaved QUIC lines. Pairing by
+     *    matching [at] offsets, which would have to break ties, is never needed.
+     *
+     * [dropped] is always `> 0` as recorded: an intact stream writes no line at all rather than a
+     * confirmed zero, so an old trace (no gap lines) and a gap-free new one mean the same thing.
+     */
+    data class NetGap(
+        override val at: Duration,
+        val dropped: Long,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
      * The recorded monitor's [MonitorCapability]. Input event, emitted **once**, at the instant the
      * recorder subscribes.
      *
@@ -205,11 +237,17 @@ sealed interface TraceEvent {
         override fun toString(): String = encodeTraceLine(this)
     }
 
-    /** True for the replayable input-event subset (RFC §2), false for observations. */
+    /**
+     * True for the replayable input-event subset (RFC §2), false for observations.
+     *
+     * The exhaustive `when` is load-bearing, not stylistic: it is what makes adding a variant a
+     * compile error at every projection that has to decide about it, which is why [NetGap] shipped as
+     * its own case instead of a field on [Net].
+     */
     val isInput: Boolean
         get() =
             when (this) {
-                is DgramIn, is Error, is Net, is NetCapability, is Liveness -> true
+                is DgramIn, is Error, is Net, is NetGap, is NetCapability, is Liveness -> true
                 is DgramOut, is State, is PathState, is Stats -> false
             }
 

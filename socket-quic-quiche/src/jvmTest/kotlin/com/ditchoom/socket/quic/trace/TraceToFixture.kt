@@ -35,9 +35,15 @@ internal object TraceToFixture {
      * `NET_CAP` is an input but not a **timed** one: a monitor's [com.ditchoom.socket.MonitorCapability]
      * is constant for its lifetime, so it configures the replay's `SimNetworkMonitor` rather than firing
      * at an instant. It is dropped here and read separately by whoever builds the monitor.
+     *
+     * `NET_GAP` is dropped for a different reason: it modifies the `NET` that follows it rather than
+     * firing on its own, and the seam it modifies does not exist here. The sim's `SimNetworkMonitor`
+     * publishes states without an observation sequence, so there is no density for a gap to jump; the
+     * replay path that *does* honour it is `NetworkMonitorScript` → `ScriptedNetworkMonitor`, via
+     * `networkMonitorScriptFromTrace`.
      */
     fun toSimEvents(events: List<TraceEvent>): List<SimEvent> =
-        events.filter { it.isInput && it !is TraceEvent.NetCapability }.map { event ->
+        events.filter { it.isInput && it !is TraceEvent.NetCapability && it !is TraceEvent.NetGap }.map { event ->
             val at = event.at
             when (event) {
                 is TraceEvent.DgramIn -> SimEvent.DatagramIn(at, event.payloadHex)

@@ -53,6 +53,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  *                                                        ;   declaration order (durations as nanos,
  *                                                        ;   active as 0/1)
  *             | "NET" SP netstate                                       ; input: NetworkState rung
+ *             | "NET_GAP" SP dropped                                    ; input: observations lost
+ *                                                                       ;   before the NEXT "NET" line
  *             | "NET_CAP" SP mechanism SP resolution                    ; input: MonitorCapability, once
  *             | "LIVENESS" SP (Alive|Dead|Unknown)                      ; input
  * path       := "-" | family ":" port ":" hi-hex ":" lo-hex             ; PathKey

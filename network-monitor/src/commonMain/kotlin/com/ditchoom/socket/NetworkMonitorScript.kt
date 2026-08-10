@@ -25,6 +25,7 @@ import kotlin.time.Duration
  *    [ReachResolution.RouteOnly] is a bug in the fixture, and this is where it surfaces: in
  *    `commonTest`, under virtual time, on every platform, with no device.
  *  - A [MonitorMechanism.Static] monitor may not have transitions at all — that is what "static" means.
+ *  - A [Transition.droppedBefore] count is non-negative: a gap counts observations that went missing.
  *
  * Build one with the [networkMonitorScript] DSL, which appends in call order and stamps each transition
  * with the running offset.
@@ -61,6 +62,9 @@ class NetworkMonitorScript(
             require(capability.resolution.permits(transition.state)) {
                 "transition[$index] state ${transition.state} is not producible by a monitor declaring ${capability.resolution}"
             }
+            require(transition.droppedBefore >= 0) {
+                "transition[$index] droppedBefore ${transition.droppedBefore} is negative; a gap counts observations that went missing"
+            }
             previous = transition.at
         }
     }
@@ -81,6 +85,24 @@ class NetworkMonitorScript(
         val at: Duration,
         /** The state the monitor reports from [at] onwards. */
         val state: NetworkState,
+        /**
+         * How many platform observations were lost immediately before this one — `0` (the default, and
+         * what every hand-written script and every pre-gap trace produces) meaning an intact stream.
+         *
+         * First-class on the transition rather than a decoration the codec carries, because replaying it
+         * has to *jump the sequence* ([ObservationRelay.recordAfterGap]), not merely bump a count. A
+         * replay that advanced [NetworkMonitor.observationCount] by `droppedBefore + 1` while the relay
+         * kept stamping contiguous sequences would emit a stream whose
+         * [ObservationSequence.droppedSince] is `0` everywhere, and re-recording that ride would produce
+         * a trace with no gap in it at all — the second-generation loss issue #315 exists to close. With
+         * the jump, a recorded gap survives replay and re-recording unchanged.
+         *
+         * A plain [Long] and not a sealed "no claim"/"confirmed zero" pair: on the *script* side the two
+         * replay identically (a plain `+1`), so the distinction would be a difference with no behaviour.
+         * It is preserved where it does mean something — the wire, where an absent
+         * `TraceEvent.NetGap` line makes no claim at all.
+         */
+        val droppedBefore: Long = 0,
     )
 
     companion object {
@@ -162,11 +184,12 @@ class NetworkMonitorScriptBuilder internal constructor() {
     fun stateAt(
         at: Duration,
         state: NetworkState,
+        droppedBefore: Long = 0,
     ) {
         require(at >= cursor) {
             "stateAt($at) precedes the running offset $cursor; offsets must be scheduled in non-decreasing order"
         }
-        transitions += NetworkMonitorScript.Transition(at, state)
+        transitions += NetworkMonitorScript.Transition(at, state, droppedBefore)
         cursor = at
     }
 
@@ -176,9 +199,19 @@ class NetworkMonitorScriptBuilder internal constructor() {
     inner class TransitionWindow internal constructor(
         private val at: Duration,
     ) {
-        /** At this window's instant, the monitor's [state][NetworkMonitor.state] becomes [state]. */
-        fun state(state: NetworkState) {
-            transitions += NetworkMonitorScript.Transition(at, state)
+        /**
+         * At this window's instant, the monitor's [state][NetworkMonitor.state] becomes [state].
+         *
+         * [droppedBefore] scripts a *lossy* stream: that many platform observations went missing
+         * immediately before this one, which playback reproduces by jumping the observation sequence
+         * (see [NetworkMonitorScript.Transition.droppedBefore]). The default, `0`, is the intact stream
+         * every ordinary script wants.
+         */
+        fun state(
+            state: NetworkState,
+            droppedBefore: Long = 0,
+        ) {
+            transitions += NetworkMonitorScript.Transition(at, state, droppedBefore)
         }
     }
 }

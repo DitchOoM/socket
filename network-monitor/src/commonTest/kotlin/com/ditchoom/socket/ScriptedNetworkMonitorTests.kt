@@ -113,6 +113,57 @@ class ScriptedNetworkMonitorTests {
         }
 
     /**
+     * A scripted gap replays as a **sequence jump**, not as a bumped side-channel count: the stream a
+     * consumer collects carries the survivors' real positions, so re-measuring it
+     * ([ObservationSequence.droppedSince]) yields exactly the scripted `droppedBefore` — the property a
+     * second-generation recording of this ride depends on (issue #315). The density counter follows for
+     * free, because it is assigned from the same sequence.
+     */
+    @Test
+    fun playReplaysAScriptedGapAsASequenceJumpTheStreamCanMeasureBack() =
+        runTest {
+            val monitor =
+                ScriptedNetworkMonitor(
+                    networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                        after(1.seconds) { state(confirmed(wifi)) }
+                        after(1.seconds) { state(pending(cellular), droppedBefore = 36) }
+                        after(1.seconds) { state(confirmed(cellular)) }
+                    },
+                )
+            val observed = mutableListOf<NetworkObservation>()
+            backgroundScope.launch { monitor.observations.collect { observed += it } }
+            runCurrent()
+
+            monitor.play()
+            runCurrent()
+
+            val sequences = observed.map { (it as NetworkObservation.Sequenced).sequence }
+            assertEquals(
+                listOf(0L, 1L, 38L, 39L),
+                sequences.map { it.value },
+                "the subscription value, one transition, then the jump over the 36 lost observations",
+            )
+            assertEquals(36L, sequences[2].droppedSince(sequences[1]), "a replayed gap is measurable as the gap it was")
+            assertEquals(
+                39L,
+                monitor.observationCount.value,
+                "3 applied transitions + the 36 the platform made that this stream never saw",
+            )
+        }
+
+    /** A negative gap is not a lossy timeline; the script rejects it where it is written. */
+    @Test
+    fun rejectsANegativeDroppedCount() {
+        assertFailsWith<IllegalArgumentException> {
+            NetworkMonitorScript(
+                capability = fullLadder,
+                initialState = confirmed(wifi),
+                transitions = listOf(NetworkMonitorScript.Transition(1.seconds, confirmed(cellular), droppedBefore = -1)),
+            )
+        }
+    }
+
+    /**
      * The one flow is why a recording cannot interleave out of order any more: a state and its identity
      * arrive as a single emission, so there is no second stream to race (RFC_NETWORK_REACHABILITY §1.2).
      */
