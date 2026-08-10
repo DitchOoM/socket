@@ -12,17 +12,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One Maven Central version query for the whole run, ~90s, feeding every job below. Both build
+  # jobs used to compute their own, which let a release publishing between their two queries pin
+  # them to different versions — see compute-version.yaml and #329.
+  version:
+    uses: ./.github/workflows/compute-version.yaml
+
   build-linux:
+    needs: version
     uses: ./.github/workflows/build-linux.yaml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   build-apple:
+    needs: version
     uses: ./.github/workflows/build-apple.yaml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   validate:
-    needs: [build-linux, build-apple]
+    needs: [version, build-linux, build-apple]
     uses: ./.github/workflows/validate-artifacts.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
 
   # Consumer-smoke: drive the MERGED published artifacts as a real downstream consumer would.
   # `validate` (above) RESOLVES the dependency graph and checks module-metadata shape; it never

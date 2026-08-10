@@ -8,10 +8,15 @@ on:
         required: false
         default: ""
         type: string
-    outputs:
       version:
-        description: "Computed next version"
-        value: ${{ jobs.build.outputs.version }}
+        # REQUIRED, with no fallback to computing it here on purpose. An optional input defaulting
+        # to "compute it yourself" would silently restore the cross-job version split this exists
+        # to remove — and it would do so invisibly, since both branches produce a plausible
+        # version. A caller that forgets to pass it must fail at the workflow-call, not 40
+        # minutes later in `validate`. See compute-version.yaml for the full story.
+        description: "The run's version, from the compute-version job. Pins every Gradle call here."
+        required: true
+        type: string
 
 jobs:
   build:
@@ -22,9 +27,12 @@ jobs:
     # macos-26 is kept for a recent Xcode + an iOS-26 simulator runtime for iosSimulatorArm64Test.
     runs-on: macos-26
     timeout-minutes: 60
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     env:
+      # Pins every Gradle invocation in this job to the run's single version. build.gradle.kts
+      # only calls getNextVersion when no version was supplied from outside, so with this set no
+      # Gradle call here touches Maven Central's metadata at all. Job-level (not a step export)
+      # so it covers the FIRST invocation too — there is no longer a version step to run first.
+      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
       # Loaded macOS runners occasionally take >10s for a QUIC handshake that is normally <1s (this is a
       # real-network establishment test, not the deterministic ManualDriverClock sim tier), tripping the
       # fixed test deadlines and flaking the release. Scale every `.scaled` test budget
@@ -63,16 +71,14 @@ jobs:
           restore-keys: |
             gradle-macos-
 
-      # First gradlew invocation in the job on purpose — see the matching step in build-linux.yaml
-      # for the full story. Short version: the version comes from a live Maven Central metadata
-      # fetch performed once per Gradle invocation, so a release publishing mid-run makes two
-      # invocations in one job disagree. Pin it here and every later call reuses this string.
-      - name: Get version
-        id: version
-        run: |
-          version="$(./gradlew -q nextVersion ${{ inputs.gradle-args }})"
-          echo "version=$version" >> $GITHUB_OUTPUT
-          echo "ORG_GRADLE_PROJECT_version=$version" >> $GITHUB_ENV
+      # The ~99s `Get version` Gradle call that used to sit here is gone: ORG_GRADLE_PROJECT_version
+      # is set at job level from the run's single version job (compute-version.yaml). This is both
+      # a correctness fix — build-apple can start 40 minutes before/after build-linux, and a
+      # release landing in that window used to pin them to different versions — and the thing that
+      # makes fanning this job into test shards affordable, since otherwise every shard would
+      # re-pay the query.
+      - name: Show pinned version
+        run: echo "Building version ${ORG_GRADLE_PROJECT_version} (pinned for the whole run)"
 
       # All five Apple Rust targets the quiche static libs are built for (macOS x2 + iOS device/sim-arm64/
       # sim-x64). Pre-installing them here means the Gradle build step doesn't have to.
