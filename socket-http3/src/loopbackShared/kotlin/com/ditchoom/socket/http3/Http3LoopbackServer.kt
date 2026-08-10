@@ -56,6 +56,9 @@ internal class Http3LoopbackServer(
     // enabled push (sent MAX_PUSH_ID) and the allocated push id is within its advertised limit. The
     // promise field section is QPACK static-only (RIC=0), which the client's decoder reads either way.
     private val serverPushes: suspend (Request) -> List<Push> = { emptyList() },
+    // Optional so the many construction sites that never fail stay untouched. Pass it wherever a test
+    // needs a server-side protocol violation to survive into the failure report (see [serve]'s catch).
+    private val diagnostics: Http3LoopbackDiagnostics? = null,
     private val respond: suspend (Request) -> Response,
 ) {
     /** A decoded request as seen by the server: the request-line pseudo-headers, fields, and body. */
@@ -131,8 +134,12 @@ internal class Http3LoopbackServer(
             scope.launch {
                 try {
                     if (stream.streamId.isUnidirectional) handleUniStream(stream) else handleRequest(scope, stream)
-                } catch (_: Http3StreamException) {
-                    // A single stream failing must not take the connection down.
+                } catch (e: Http3StreamException) {
+                    // A single stream failing must not take the connection down — unchanged. But it is
+                    // now RECORDED before being swallowed: discarding it with `_` meant a server-side
+                    // protocol violation left no trace anywhere, which is the one failure origin the
+                    // #291 report could never explain. Recording is orthogonal to the swallow.
+                    diagnostics?.recordStreamViolation("S", e)
                 } catch (_: QuicStreamException) {
                     // Peer STOP_SENDING / RESET_STREAM on one stream (e.g. a client cancelling a server
                     // PUSH, RFC 9114 §7.2.3) — stream-scoped, the connection stays up for other streams.

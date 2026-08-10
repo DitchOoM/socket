@@ -36,6 +36,57 @@ class Http3LoopbackDiagnostics {
         lastStep.store(step)
     }
 
+    /**
+     * Connections whose [Http3Connection.connectionError] should be read at [report] time.
+     *
+     * WHY this exists: the peer that *raises* a protocol violation keeps it fully typed, but the peer
+     * that *observes* the close only ever sees the opaque wire code. #291 failed with
+     * `ApplicationError(applicationCode=514)` — QPACK_DECODER_STREAM_ERROR (0x202, RFC 9204 §6) — which
+     * narrows it to one of four named violations but says nothing about WHICH, or with what operands.
+     * `Http3Connection.abortConnection` already stores exactly that object; nothing read it back.
+     */
+    private val connections = AtomicReference(emptyList<Pair<String, Http3Connection>>())
+
+    /**
+     * Register a connection so its typed connection-level violation lands in the failure report.
+     * Call right after opening one; safe to call for connections that never fail.
+     */
+    fun registerConnection(
+        side: String,
+        connection: Http3Connection,
+    ) {
+        while (true) {
+            val current = connections.load()
+            if (connections.compareAndSet(current, current + (side to connection))) return
+        }
+    }
+
+    /**
+     * A violation the hand-rolled [Http3LoopbackServer] caught per-stream.
+     *
+     * That server deliberately does NOT take the connection down when one stream fails, so before this
+     * hook a server-side QPACK violation was discarded at the `catch (_: Http3StreamException)` and left
+     * no trace anywhere — the one origin the report could never explain. Recording is orthogonal to the
+     * swallow: the connection still stays up, exactly as before.
+     */
+    private val streamViolations = AtomicReference(emptyList<Pair<String, Http3StreamException>>())
+
+    fun recordStreamViolation(
+        side: String,
+        violation: Http3StreamException,
+    ) {
+        while (true) {
+            val current = streamViolations.load()
+            val next =
+                if (current.size >= MAX_VIOLATIONS) {
+                    current.subList(1, current.size) + (side to violation)
+                } else {
+                    current + (side to violation)
+                }
+            if (streamViolations.compareAndSet(current, next)) return
+        }
+    }
+
     /** Capture sink for the in-process server's connections (every accepted connection interleaves). */
     val serverSink: TraceSink = sinkTagged("S")
 
@@ -85,6 +136,19 @@ class Http3LoopbackDiagnostics {
                 appendLine("typed QUIC reason: ${it.quicError.describe()}")
             }
             appendLine("last step reached: ${lastStep.load()}")
+            // The typed violation behind an opaque application close code. `ApplicationError(514)` alone
+            // is only "some QPACK decoder-stream error"; the violation names which of the four and its
+            // operands, which is the difference between a hypothesis and a fix (#291).
+            connections.load().forEach { (side, connection) ->
+                connection.connectionError?.let { e ->
+                    appendLine("$side connection-level H3 violation: ${e.violation}")
+                    appendLine("  -> ${e.violation.describe()} (error code 0x${e.errorCode.toString(16)})")
+                }
+            }
+            streamViolations.load().forEach { (side, e) ->
+                appendLine("$side stream-level H3 violation (connection kept up): ${e.violation}")
+                appendLine("  -> ${e.violation.describe()} (error code 0x${e.errorCode.toString(16)})")
+            }
             val captured = events.load()
             // Lines are in capture order, which is the comparable axis: each recorder stamps against
             // its OWN connection's clock origin (RFC §5), so a client `at` and a server `at` are not
@@ -118,5 +182,6 @@ class Http3LoopbackDiagnostics {
     private companion object {
         const val MAX_EVENTS = 250
         const val MAX_LINE = 180
+        const val MAX_VIOLATIONS = 16
     }
 }
