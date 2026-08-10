@@ -4,13 +4,17 @@ import com.ditchoom.data.readBuffer
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -370,12 +374,23 @@ class IoUringManagerTests {
      * background thread completes keeps the test coroutine free, so a regression fails this assertion
      * instead of hanging the whole `:linuxX64Test` task.
      */
+    @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
     @Test
-    fun cleanupRacingPollerStartDoesNotBlockForever() =
-        runTestNoTimeSkipping(timeout = 120.seconds) {
+    fun cleanupRacingPollerStartDoesNotBlockForever() {
+        // ⚠️ Deliberately plain `runBlocking`, NOT `runTestNoTimeSkipping`. That helper runs the body on
+        // `Dispatchers.Default.limitedParallelism(1)` (ReadStats.kt:22). Under regression a stranded
+        // cleanup() blocks Default workers, so the observing coroutine can no longer be scheduled and
+        // its `withTimeout` never fires — verified empirically: the first version of this test hung on
+        // the mutation instead of failing. Here the observer owns the runBlocking thread and every
+        // participant that can block gets a thread of its own, so the timeout is always deliverable.
+        runBlocking {
+            val trafficCtx = newSingleThreadContext("issue307-traffic")
+            val acceptCtx = newSingleThreadContext("issue307-accept")
+            val cleanupCtx = newSingleThreadContext("issue307-cleanup")
+
             val server = ServerSocket.allocate()
             val serverJob =
-                launch {
+                launch(acceptCtx) {
                     try {
                         // Accept loop stays live for the whole test — this is the submitter that
                         // re-arms an accept (and so calls ensurePollerStarted) inside cleanup's window.
@@ -391,7 +406,7 @@ class IoUringManagerTests {
             // Steady stream of connects so a submission is nearly always in flight against cleanup.
             val trafficRunning = AtomicInt(1)
             val traffic =
-                launch(Dispatchers.Default) {
+                launch(trafficCtx) {
                     while (trafficRunning.value == 1) {
                         try {
                             val client = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
@@ -409,7 +424,7 @@ class IoUringManagerTests {
             var wedgedRound: Int? = null
             for (round in 0 until 200) {
                 val returned = CompletableDeferred<Unit>()
-                launch(Dispatchers.Default) {
+                launch(cleanupCtx) {
                     IoUringManager.cleanup()
                     returned.complete(Unit)
                 }
@@ -426,9 +441,8 @@ class IoUringManagerTests {
             if (wedgedRound != null) {
                 // Deliberately skip socket teardown on the failure path. A stranded cleanup owns the
                 // poller lifecycle, so `server.close()` (which routes to cleanup via onSocketClosed)
-                // would block this thread too and the assertion below would never be reported — the
-                // test would hang exactly like the bug it is detecting. The process is about to exit;
-                // leaking one listening socket is the cost of a legible failure.
+                // would block here too and the assertion below would never be reported. The process is
+                // about to exit; leaking one listening socket is the cost of a legible failure.
                 fail(
                     "IoUringManager.cleanup() did not return within 10s on round $wedgedRound — a " +
                         "concurrent ensurePollerStarted() resurrected pollerStarted after cleanup " +
@@ -439,7 +453,11 @@ class IoUringManagerTests {
             traffic.cancelAndJoin()
             server.close()
             serverJob.cancel()
+            trafficCtx.close()
+            acceptCtx.close()
+            cleanupCtx.close()
         }
+    }
 
     /**
      * Stress test: many rapid cleanup/reinitialize cycles.
