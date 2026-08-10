@@ -59,12 +59,26 @@ data class TransportFailure(
  * connect time (typically `{ monitor.state.value.networkId }` from a platform `NetworkMonitor` — the
  * total `NetworkState.networkId` projection); a config that already carries an explicit identity
  * wins over the producer.
+ *
+ * **Transient gating (§6 refinement).** A [CacheScope.PerNetwork] verdict claims something durable
+ * about the *path* — "this network blocks UDP" — but a failure can just as easily land inside a
+ * window the network itself promises to resolve on its own: the post-associate validation `Pending`
+ * window, or a `Suspended` cellular pause (`NetworkState.isTransient`, network-monitor module). The
+ * `NetworkId` does not change across that window, so a verdict recorded mid-window would otherwise
+ * outlive it. [transientNow] answers "is the network transient *right now*", sampled at the moment a
+ * per-network write would happen, so this seam mirrors [networkId]'s shape rather than overloading it
+ * with a nullable `NetworkState`: two questions ("what network" and "is it settling") stay two
+ * booleans/producers, never one nullable. Defaults to `{ false }` — today's behavior, unaffected — and
+ * wires the same way as [networkId], typically `{ monitor.state.value.isTransient }`. Only
+ * [CacheScope.PerNetwork] writes are gated: per-host verdicts describe the *server*, not the path, and
+ * a success heal is never withheld.
  */
 class FallbackTransport(
     private val chain: List<Transport>,
     private val policy: FallbackPolicy = DefaultFallbackPolicy,
     private val cache: CapabilityCache = InMemoryCapabilityCache(),
     private val networkId: () -> NetworkId = { NetworkId.Unidentified },
+    private val transientNow: () -> Boolean = { false },
     private val stagger: Duration? = null,
 ) : Transport {
     init {
@@ -129,7 +143,7 @@ class FallbackTransport(
         } catch (error: Throwable) {
             val verdict = policy.classify(error)
             if (verdict.cacheUnsupported) {
-                cache.recordUnsupported(verdict.scope, hostname, config.networkId, transport)
+                recordUnsupportedUnlessTransient(verdict.scope, hostname, config.networkId, transport)
             }
             if (!verdict.fallback) throw error // fatal (bad cert): stop, don't mask
             RungResult.Failed(TransportFailure(transport, error, verdict))
@@ -272,9 +286,27 @@ class FallbackTransport(
                 .toSet()
         if (timedOut != udpRungs.toSet()) return
         for (rung in udpRungs) {
-            cache.recordUnsupported(CacheScope.PerNetwork, hostname, networkId, rung)
+            recordUnsupportedUnlessTransient(CacheScope.PerNetwork, hostname, networkId, rung)
         }
     }
 
     private fun isTimeout(error: Throwable): Boolean = error is TimeoutCancellationException || error is SocketTimeoutException
+
+    /**
+     * The one gate on every [CapabilityCache.recordUnsupported] call (both call sites above route
+     * through this): a [CacheScope.PerNetwork] write is withheld while [transientNow] reports the
+     * network mid-transition (see the class doc's "Transient gating" paragraph) — the failure still
+     * falls forward, only the durable per-network verdict is skipped, not deferred; the cache's own TTL
+     * re-probe already covers the case where the network really was blocking UDP all along.
+     * [CacheScope.PerHost] and [CacheScope.None] pass straight through, untouched.
+     */
+    private fun recordUnsupportedUnlessTransient(
+        scope: CacheScope,
+        host: String,
+        networkId: NetworkId,
+        transport: Transport,
+    ) {
+        if (scope == CacheScope.PerNetwork && transientNow()) return
+        cache.recordUnsupported(scope, host, networkId, transport)
+    }
 }

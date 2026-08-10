@@ -261,6 +261,100 @@ class FallbackRacingTest {
             assertEquals(2, quic.connectCount, "no network identity → the per-network scope is off (RFC §12)")
         }
 
+    // ---- §6 transient gating (issue #316) -------------------------------------------------------
+
+    @Test
+    fun transientFailureDuringFamilyContrastRecordsNothingPerNetwork() =
+        runTest {
+            // Same family contrast as wholeUdpFamilyTimeoutWithTcpSuccessDemotesUdpOnThisNetwork, but the
+            // network is mid-Pending-window at the moment of the contrast: the per-network verdict must be
+            // skipped, so the next connect on the same network re-probes UDP instead of skipping it.
+            val quic =
+                ScriptedTransport(
+                    "QUIC",
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    family = TransportFamily.Udp,
+                )
+            val wt =
+                ScriptedTransport(
+                    "WT",
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    family = TransportFamily.Udp,
+                )
+            val tcp = ScriptedTransport("TCP", ScriptedTransport.Outcome.Succeed, ScriptedTransport.Outcome.Succeed)
+            val fallback = FallbackTransport(listOf(quic, wt, tcp), networkId = { wifi }, transientNow = { true })
+
+            fallback.connect("h", 1, config) // whole UDP family times out during a Pending window
+            fallback.connect("h", 1, config) // same network, still transient: UDP must be re-probed, not skipped
+
+            assertEquals(2, quic.connectCount, "a transient-window failure must not poison the per-network cache")
+            assertEquals(2, wt.connectCount, "a transient-window failure must not poison the per-network cache")
+        }
+
+    @Test
+    fun confirmedFailureDuringFamilyContrastStillDemotes() =
+        runTest {
+            // The same scenario with the network explicitly NOT transient: behaves exactly like the
+            // pre-existing (default-seam) test — the gate must not touch a genuine Confirmed-state verdict.
+            val quic =
+                ScriptedTransport(
+                    "QUIC",
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    ScriptedTransport.Outcome.Succeed,
+                    family = TransportFamily.Udp,
+                )
+            val wt =
+                ScriptedTransport(
+                    "WT",
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    ScriptedTransport.Outcome.Succeed,
+                    family = TransportFamily.Udp,
+                )
+            val tcp = ScriptedTransport("TCP", ScriptedTransport.Outcome.Succeed, ScriptedTransport.Outcome.Succeed)
+            val fallback = FallbackTransport(listOf(quic, wt, tcp), networkId = { wifi }, transientNow = { false })
+
+            fallback.connect("h", 1, config) // family contrast while Confirmed → demote, same as before this fix
+            fallback.connect("h", 1, config) // demotion active: TCP lane first, UDP skipped
+
+            assertEquals(1, quic.connectCount, "a Confirmed-state contrast must still demote, unchanged by the gate")
+            assertEquals(1, wt.connectCount, "a Confirmed-state contrast must still demote, unchanged by the gate")
+            assertEquals(2, tcp.connectCount)
+        }
+
+    @Test
+    fun networkSettlingBetweenConnectsStartsRecordingOnceConfirmed() =
+        runTest {
+            // The exact defect scenario end to end: the first family contrast lands mid-Pending-window
+            // (skipped), the network then settles, and the SAME shape of contrast on the next connect
+            // — now Confirmed — demotes as normal. The demotion then sticks for a third connect.
+            var transient = true
+            val quic =
+                ScriptedTransport(
+                    "QUIC",
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    ScriptedTransport.Outcome.Fail(timeout()),
+                    family = TransportFamily.Udp,
+                )
+            val tcp =
+                ScriptedTransport(
+                    "TCP",
+                    ScriptedTransport.Outcome.Succeed,
+                    ScriptedTransport.Outcome.Succeed,
+                    ScriptedTransport.Outcome.Succeed,
+                )
+            val fallback = FallbackTransport(listOf(quic, tcp), networkId = { wifi }, transientNow = { transient })
+
+            fallback.connect("h", 1, config) // Pending window → contrast skipped
+            transient = false
+            fallback.connect("h", 1, config) // Confirmed now → same-shape contrast demotes UDP
+            fallback.connect("h", 1, config) // demotion active: QUIC skipped this time
+
+            assertEquals(2, quic.connectCount, "QUIC is tried on the first two connects, then demoted")
+            assertEquals(3, tcp.connectCount)
+        }
+
     // ---- networkId stamping ---------------------------------------------------------------------
 
     @Test
