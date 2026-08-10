@@ -3,15 +3,21 @@ package com.ditchoom.socket
 import com.ditchoom.data.readBuffer
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -344,6 +350,86 @@ class IoUringManagerTests {
             client.close()
             server.close()
             serverJob.cancel()
+        }
+
+    /**
+     * Regression for issue #307: [IoUringManager.cleanup] must not be able to block forever when a
+     * socket operation starts the poller concurrently with the last-socket close.
+     *
+     * `cleanup()` signals stop by clearing `pollerStarted`, and the event loop runs
+     * `while (pollerStarted.value == 1)`. Before the lifecycle mutex, an `ensurePollerStarted()`
+     * racing that window could CAS the flag back to 1 *after* cleanup cleared it, so the running loop
+     * never observed the stop and cleanup's `runBlocking { job.join() }` blocked forever. Seen in CI as
+     * >900s hangs of `DataIntegrityTests.largeDataTransfer_64KB` and `.partialReadHandling` on linuxX64,
+     * both with `server.close()` on the stack while the test's accept loop was still live.
+     *
+     * ⚠️ [cleanup] is called from a **separate dispatcher**, and deliberately so. The hang blocks the
+     * calling *thread* inside `runBlocking`, which is exactly why the suite's 30s `runTestNoTimeSkipping`
+     * budget never fired in production and CI needed a gdb hang-watchdog to catch it — a `withTimeout`
+     * wrapped directly around a thread-blocking call cannot interrupt it. Awaiting a deferred that a
+     * background thread completes keeps the test coroutine free, so a regression fails this assertion
+     * instead of hanging the whole `:linuxX64Test` task.
+     */
+    @Test
+    fun cleanupRacingPollerStartDoesNotBlockForever() =
+        runTestNoTimeSkipping(timeout = 120.seconds) {
+            val server = ServerSocket.allocate()
+            val serverJob =
+                launch {
+                    try {
+                        // Accept loop stays live for the whole test — this is the submitter that
+                        // re-arms an accept (and so calls ensurePollerStarted) inside cleanup's window.
+                        server.bind(0, "127.0.0.1").collect { it.close() }
+                    } catch (e: Exception) {
+                        // Expected once the server closes
+                    }
+                }
+
+            delay(100.milliseconds)
+            val port = server.port()
+
+            // Steady stream of connects so a submission is nearly always in flight against cleanup.
+            val trafficRunning = AtomicInt(1)
+            val traffic =
+                launch(Dispatchers.Default) {
+                    while (trafficRunning.value == 1) {
+                        try {
+                            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 2.seconds))
+                            client.open(port, "127.0.0.1")
+                            client.close()
+                        } catch (e: Exception) {
+                            // Connection failures are fine — the submission already raced cleanup,
+                            // which is the only thing this test cares about.
+                        }
+                    }
+                }
+
+            try {
+                // Each iteration re-arms the poller (traffic keeps submitting) and then races a stop
+                // against it. Pre-fix this wedges within a few dozen rounds on a loaded runner.
+                repeat(200) { round ->
+                    val returned = CompletableDeferred<Unit>()
+                    launch(Dispatchers.Default) {
+                        IoUringManager.cleanup()
+                        returned.complete(Unit)
+                    }
+                    try {
+                        withTimeout(10.seconds) { returned.await() }
+                    } catch (e: TimeoutCancellationException) {
+                        fail(
+                            "IoUringManager.cleanup() did not return within 10s on round $round — the " +
+                                "poller start/stop race resurrected pollerStarted and stranded the event " +
+                                "loop (issue #307).",
+                        )
+                    }
+                    yield()
+                }
+            } finally {
+                trafficRunning.value = 0
+                traffic.cancelAndJoin()
+                server.close()
+                serverJob.cancel()
+            }
         }
 
     /**
