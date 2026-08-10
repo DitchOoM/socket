@@ -126,6 +126,72 @@ class NetworkMonitorRecorderTests {
             assertEquals(first.events.toList(), second.events.toList())
         }
 
+    /**
+     * The capture gap this recorder had, in the one case that most deserves recording: a link flapping
+     * hard while every evaluation folds back to the **same** state.
+     *
+     * Driven by [com.ditchoom.socket.NetworkMonitor.state] this records nothing at all — a `StateFlow`
+     * de-dupes an emission equal to the current value, so the entire burst collapses to the single
+     * initial line and a replayed ride reports a network that was perfectly quiet. Exactly backwards:
+     * the burst *is* the instability signal. Collecting
+     * [observations][com.ditchoom.socket.NetworkMonitor.observations] preserves every callback.
+     *
+     * Note the trace is otherwise unremarkable — same event type, same stamps, no new schema. The
+     * repeats simply stop being thrown away.
+     */
+    @Test
+    fun aBurstFoldingBackToTheSameStateIsRecordedInFull() =
+        runTest {
+            val chatter =
+                networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                    after(100.milliseconds) { state(confirmed(wifi)) }
+                    after(100.milliseconds) { state(confirmed(wifi)) }
+                    after(100.milliseconds) { state(confirmed(wifi)) }
+                }
+            val sink = CapturingSink()
+            record(chatter, sink)
+
+            assertEquals(
+                listOf<TraceEvent>(
+                    TraceEvent.NetCapability(Duration.ZERO, fullLadder),
+                    TraceEvent.Net(Duration.ZERO, confirmed(wifi)),
+                    TraceEvent.Net(100.milliseconds, confirmed(wifi)),
+                    TraceEvent.Net(200.milliseconds, confirmed(wifi)),
+                    TraceEvent.Net(300.milliseconds, confirmed(wifi)),
+                ),
+                sink.events.toList(),
+                "every observation is recorded, including the three that folded to no visible change",
+            )
+        }
+
+    /**
+     * Closing the loop the whole change exists for: the density a real device produced survives capture
+     * *and* replay, so a threshold tuned against a recorded ride is tuned against the real callback rate
+     * rather than a synthetic guess.
+     */
+    @Test
+    fun replayingABurstReproducesTheObservationDensityItWasCapturedWith() =
+        runTest {
+            val chatter =
+                networkMonitorScript(fullLadder, initialState = confirmed(wifi)) {
+                    after(100.milliseconds) { state(confirmed(wifi)) }
+                    after(100.milliseconds) { state(confirmed(wifi)) }
+                    after(100.milliseconds) { state(confirmed(wifi)) }
+                }
+            val sink = CapturingSink()
+            record(chatter, sink)
+
+            val replayed = ScriptedNetworkMonitor(networkMonitorScriptFromTrace(sink.events))
+            assertEquals(0L, replayed.observationCount.value, "nothing observed before playback starts")
+            replayed.play()
+
+            assertEquals(
+                3L,
+                replayed.observationCount.value,
+                "the three post-initial observations replay as three, not as the zero state-changes they were",
+            )
+        }
+
     @Test
     fun emptyTraceYieldsUnknown() {
         val script = networkMonitorScriptFromTrace(emptyList())

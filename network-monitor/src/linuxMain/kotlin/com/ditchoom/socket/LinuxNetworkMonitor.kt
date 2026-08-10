@@ -11,10 +11,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import platform.linux.freeifaddrs
@@ -60,8 +60,9 @@ class LinuxNetworkMonitor : NetworkMonitor {
      * deliveries, not messages — still a faithful density signal: a flapping link produces many
      * deliveries, most of which re-resolve to an unchanged [NetworkState] that [state] de-dupes away.
      */
-    private val _observationCount = MutableStateFlow(0L)
-    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+    private val observationRelay = ObservationRelay(_state)
+    override val observationCount: StateFlow<Long> = observationRelay.count
+    override val observations: Flow<NetworkState> = observationRelay.observations
 
     /**
      * Link, address and route netlink multicast (the five `RTMGRP_*` groups in the class KDoc) — the
@@ -97,10 +98,12 @@ class LinuxNetworkMonitor : NetworkMonitor {
                         // which observes whatever end state the dropped burst left behind. So re-resolve
                         // and keep listening; anything else (0 = closed, other errors) ends the loop.
                         if (n == 0L || (n < 0L && errno != ENOBUFS)) break
-                        _observationCount.update { it + 1 }
                         // One re-resolution, one publication: link, route and identity come from the same
                         // pass, so a collector can never see a new link beside the old route.
                         _state.value = resolveNetworkState()
+                        // Recorded after the publish, so the relayed observation carries the state this
+                        // delivery resolved to — including a re-resolution that changed nothing.
+                        observationRelay.record()
                     }
                 } finally {
                     nativeHeap.free(scratch)

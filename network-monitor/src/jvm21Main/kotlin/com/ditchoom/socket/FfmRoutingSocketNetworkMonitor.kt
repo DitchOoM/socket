@@ -6,10 +6,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.lang.foreign.Arena
@@ -101,8 +101,9 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
      * signal, since a flapping link produces many *deliveries*, and re-resolution frequently folds
      * them to an unchanged [NetworkState] that [state] de-dupes away.
      */
-    private val _observationCount = MutableStateFlow(0L)
-    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+    private val observationRelay = ObservationRelay(_state)
+    override val observationCount: StateFlow<Long> = observationRelay.count
+    override val observations: Flow<NetworkState> = observationRelay.observations
 
     /**
      * The whole point of the FFM subclasses: a blocking read on a routing socket, not a poll — and
@@ -140,8 +141,10 @@ abstract class FfmRoutingSocketNetworkMonitor : NetworkMonitor {
                     while (isActive) {
                         val n = Libc.recv(localFd, scratch, RECV_BUFFER_SIZE.toLong(), 0)
                         if (n <= 0L) break
-                        _observationCount.update { it + 1 }
                         _state.value = resolveJvmNetworkState()
+                        // Recorded after the publish, so the relayed observation carries the state this
+                        // delivery resolved to — including a re-resolution that changed nothing.
+                        observationRelay.record()
                     }
                 } catch (e: CancellationException) {
                     throw e

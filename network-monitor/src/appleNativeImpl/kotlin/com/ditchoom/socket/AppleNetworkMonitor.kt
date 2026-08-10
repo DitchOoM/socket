@@ -8,10 +8,10 @@ import com.ditchoom.networkmonitor.nw.nm_path_monitor_set_update_handler
 import com.ditchoom.networkmonitor.nw.nm_path_monitor_start
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 
 /**
  * Apple [NetworkMonitor] backed by `NWPathMonitor` from Network.framework.
@@ -35,10 +35,12 @@ class AppleNetworkMonitor : NetworkMonitor {
     /**
      * One bump per `NWPathMonitor` update-handler invocation. The framework fires the handler on every
      * path *evaluation*, and consecutive evaluations frequently fold to a byte-identical [NetworkState]
-     * — that chatter is exactly what [NetworkMonitor.observationCount] exists to preserve.
+     * — that chatter is exactly what [NetworkMonitor.observationCount] and
+     * [NetworkMonitor.observations] exist to preserve.
      */
-    private val _observationCount = MutableStateFlow(0L)
-    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+    private val observationRelay = ObservationRelay(_state)
+    override val observationCount: StateFlow<Long> = observationRelay.count
+    override val observations: Flow<NetworkState> = observationRelay.observations
 
     /**
      * Sampled on each path update, and only while the path's primary interface is Wi-Fi — the one
@@ -63,7 +65,6 @@ class AppleNetworkMonitor : NetworkMonitor {
 
     init {
         nm_path_monitor_set_update_handler(monitor) { status, interfaceType, interfaceIndex, interfaceName, usesTypes ->
-            _observationCount.update { it + 1 }
             // Decode the C enum ONCE, here at the boundary, so nothing downstream branches on a raw Int.
             val state = appleNetworkState(nwPathStatus(status), interfaceType, interfaceIndex, interfaceName, usesTypes)
             _state.value = state
@@ -74,6 +75,9 @@ class AppleNetworkMonitor : NetworkMonitor {
                     // Wired/cellular/none: no meaningful RSSI — and never a stale one from the last Wi-Fi.
                     LinkQuality.Unavailable
                 }
+            // AFTER the publish, so the relayed observation carries the state this evaluation folded to
+            // — including an evaluation that changed nothing, which is the chatter worth recording.
+            observationRelay.record()
         }
         nm_path_monitor_start(monitor)
     }

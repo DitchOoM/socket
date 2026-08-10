@@ -7,10 +7,10 @@ import android.net.NetworkRequest
 import android.os.Build
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import android.net.NetworkCapabilities as AndroidNetworkCapabilities
 
 /**
@@ -54,8 +54,9 @@ class AndroidNetworkMonitor(
      * not count. The constructor's synchronous seed is not a platform observation and does not count
      * either.
      */
-    private val _observationCount = MutableStateFlow(0L)
-    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+    private val observationRelay = ObservationRelay(_state)
+    override val observationCount: StateFlow<Long> = observationRelay.count
+    override val observations: Flow<NetworkState> = observationRelay.observations
 
     /**
      * From the same capabilities object every state publication reads:
@@ -141,9 +142,9 @@ class AndroidNetworkMonitor(
                     return
                 }
                 if (!acceptsUpdateFor(network)) return
-                observed()
                 currentNetwork = network
                 publish(network, connectivityManager.getNetworkCapabilities(network))
+                observed()
             }
 
             override fun onLost(network: Network) {
@@ -153,13 +154,13 @@ class AndroidNetworkMonitor(
                     // network satisfies the criteria of the request" — so there is genuinely nothing
                     // left to fall back to and no stale-onLost race to guard against. A handover to a
                     // better network arrives as onAvailable/onCapabilitiesChanged instead, never here.
-                    observed()
                     clear()
+                    observed()
                     return
                 }
                 if (network == currentNetwork) {
-                    observed()
                     clear()
+                    observed()
                 }
             }
 
@@ -168,8 +169,8 @@ class AndroidNetworkMonitor(
                 caps: AndroidNetworkCapabilities,
             ) {
                 if (!acceptsUpdateFor(network)) return
-                observed()
                 publish(network, caps)
+                observed()
             }
 
             override fun onBlockedStatusChanged(
@@ -188,16 +189,16 @@ class AndroidNetworkMonitor(
                 // so by the time a verdict lands for the current network, its capabilities are already
                 // retained in currentCaps and the re-fold below cannot tear.
                 if (!acceptsUpdateFor(network)) return
-                observed()
                 blockedNetwork = network
                 blockedForApp = blocked
                 if (network == currentNetwork) publish(network, currentCaps)
+                observed()
             }
         }
 
     /** One platform observation delivered for the tracked network — see [observationCount]. */
     private fun observed() {
-        _observationCount.update { it + 1 }
+        observationRelay.record()
     }
 
     /**

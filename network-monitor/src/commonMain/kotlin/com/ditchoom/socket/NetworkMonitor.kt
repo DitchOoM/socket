@@ -105,6 +105,30 @@ interface NetworkMonitor {
     val observationCount: StateFlow<Long> get() = NoObservations
 
     /**
+     * The same observations [observationCount] counts, as a **stream** — one emission per platform
+     * observation carrying the state it folded to, including the ones [state] dedupes away.
+     *
+     * [observationCount] answers *how many*, which is enough to sample a rate live. It is not enough to
+     * **record** density: it is a [StateFlow], so a recorder sampling it sees a conflated value and
+     * learns that six observations happened since it last looked, never when. Worse, the pathological
+     * case erases itself entirely — a link flapping hard while always folding back to the same state
+     * produces no [state] emission at all, so a recorder driven by [state] writes nothing, precisely in
+     * the situation density exists to expose. This stream is what a capture collects instead, and the
+     * repeated states it preserves replay through [ScriptedNetworkMonitor] as the real chatter they were.
+     *
+     * A subscriber receives the current [state] immediately (as [state] itself would), then every
+     * subsequent observation. Emissions are **not** conflated; under a burst faster than the collector,
+     * the oldest entries are dropped rather than blocking the platform callback that produced them —
+     * [observationCount] never drops, so a lossy timeline still carries a faithful count.
+     *
+     * Defaults to [state], which is the honest degradation for a monitor that does not report density:
+     * a consumer still sees every *visible* change, and simply cannot see the invisible ones. Monitors
+     * declaring [MonitorMechanism.Polled] leave this default deliberately, for the same reason they
+     * leave [observationCount] at zero — a poll's cadence is configuration, not the network talking.
+     */
+    val observations: Flow<NetworkState> get() = state
+
+    /**
      * Signal quality of the current link, where the platform will say — [LinkQuality.Rssi] readings,
      * or the honest [LinkQuality.Unavailable] whenever no measurement exists (never a fabricated or
      * stale value).

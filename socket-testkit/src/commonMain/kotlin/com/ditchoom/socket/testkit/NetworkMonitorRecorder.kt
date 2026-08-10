@@ -52,15 +52,26 @@ class NetworkMonitorRecorder(
 
     /**
      * Records [monitor]'s [capability][NetworkMonitor.capability], then collects its
-     * [state][NetworkMonitor.state] flow in [scope], recording every emission — including the initial
-     * replayed value, which becomes the script's initial state on replay. Returns the [Job]; cancel it
-     * (or [scope]) to stop recording.
+     * [observations][NetworkMonitor.observations] in [scope], recording every one — including the
+     * current value delivered on subscription, which becomes the script's initial state on replay.
+     * Returns the [Job]; cancel it (or [scope]) to stop recording.
      *
      * **One collector, deliberately.** The previous two-flow recorder launched one collector per flow,
      * so two independently-stamped streams interleaved by scheduling rather than by time, and the
      * 2026-07-29 device capture duly emitted an earlier availability line *after* a later identity line.
      * A single flow cannot do that: the stream is monotonic by construction, not by discipline
-     * (RFC_NETWORK_REACHABILITY §1.2).
+     * (RFC_NETWORK_REACHABILITY §1.2). That is why capturing density is a property of the *stream* the
+     * monitor exposes rather than a second collector here — see [NetworkMonitor.observations].
+     *
+     * **[observations][NetworkMonitor.observations], not [state][NetworkMonitor.state].** They differ
+     * only in what they de-dupe, and that difference is the whole capture fidelity question. `state` is
+     * a [kotlinx.coroutines.flow.StateFlow]: an observation folding to the value already published is
+     * invisible to it, so a recorder driven by `state` writes nothing for a link flapping hard while
+     * always resolving back to the same rung — the burst that most deserves recording. Collecting
+     * `observations` preserves those repeats, [networkMonitorScriptFromTrace] turns each into its own
+     * transition, and [com.ditchoom.socket.ScriptedNetworkMonitor] replays them as the platform chatter
+     * they were, bumping [NetworkMonitor.observationCount] once each. A monitor that does not report
+     * density defaults `observations` to `state`, so this is exactly the old behaviour there.
      */
     fun observe(
         monitor: NetworkMonitor,
@@ -68,7 +79,7 @@ class NetworkMonitorRecorder(
     ): Job =
         scope.launch {
             capability(monitor.capability)
-            monitor.state.collect { state(it) }
+            monitor.observations.collect { state(it) }
         }
 
     companion object {

@@ -7,10 +7,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
@@ -46,8 +46,9 @@ class JsNetworkMonitor(
      * never advances — because a poll's cadence is configuration, not a property of the network
      * (see [NetworkMonitor.observationCount]).
      */
-    private val _observationCount = MutableStateFlow(0L)
-    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+    private val observationRelay = ObservationRelay(_state)
+    override val observationCount: StateFlow<Long> = observationRelay.count
+    override val observations: Flow<NetworkState> = observationRelay.observations
 
     /**
      * Node polls `os.networkInterfaces()`; the browser is pushed `online`/`offline` (plus the Network
@@ -109,8 +110,9 @@ class JsNetworkMonitor(
 
     /** A pushed browser event: count the observation (the initial synchronous read does not count). */
     private fun observedBrowserEvent() {
-        _observationCount.update { it + 1 }
         refreshBrowserState()
+        // Recorded after the publish, so the relayed observation carries the state this event folded to.
+        observationRelay.record()
     }
 
     /** Read both browser facts — `navigator.onLine` and the connection type — and publish one state. */

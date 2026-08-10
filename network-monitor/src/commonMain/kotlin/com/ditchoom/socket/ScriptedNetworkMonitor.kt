@@ -3,10 +3,10 @@ package com.ditchoom.socket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
 
@@ -57,8 +57,15 @@ class ScriptedNetworkMonitor(
      * radio produces before any rung changes), and a consumer's density logic can be exercised under
      * virtual time.
      */
-    private val _observationCount = MutableStateFlow(0L)
-    override val observationCount: StateFlow<Long> = _observationCount.asStateFlow()
+    private val observationRelay = ObservationRelay(state)
+    override val observationCount: StateFlow<Long> = observationRelay.count
+
+    /**
+     * Every applied transition, repeats included — so a script round-trips. Without this override the
+     * inherited default ([NetworkMonitor.state]) would de-dupe the repeats back out, and re-recording a
+     * replayed ride would silently lose exactly the chatter the script was written to carry.
+     */
+    override val observations: Flow<NetworkState> = observationRelay.observations
 
     /** The script's declared capability, reported verbatim — every scripted state was checked against it. */
     override val capability: MonitorCapability = script.capability
@@ -76,8 +83,8 @@ class ScriptedNetworkMonitor(
             val wait = transition.at - elapsed
             if (wait > Duration.ZERO) delay(wait)
             elapsed = transition.at
-            _observationCount.update { it + 1 }
             stateFlow.value = transition.state
+            observationRelay.record()
         }
     }
 
