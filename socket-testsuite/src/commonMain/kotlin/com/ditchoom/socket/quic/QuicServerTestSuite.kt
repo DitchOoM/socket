@@ -776,6 +776,83 @@ abstract class QuicServerTestSuite {
             }
         }
 
+    /**
+     * Regression guard for #318, on every backend's real quiche binding.
+     *
+     * Same half-close shape as [halfCloseAllowsReadAfterSendFin], with the read deliberately issued
+     * *after* the peer has replied, FIN'd the stream and closed the connection — the interleaving the
+     * API-29 emulator lane produced by losing a scheduler race and reported as
+     * `expected:<[ping]> but was:<[no_data:End]>`. Those bytes were accepted and acknowledged by our
+     * transport before the CONNECTION_CLOSE, and RFC 9000 §10.2 ends the connection, not the data the
+     * application has not read yet, so the read must still deliver `ping`.
+     *
+     * The delay outlasts the connection's draining period (3 × PTO) by a wide margin, so the read
+     * provably runs after this connection was torn down — it forces the losing interleaving rather
+     * than waiting for a stalled runner to produce it. Without
+     * `QuicheDriver.drainReadableStreamsIntoSlots` the reply dies with `quiche_conn_free` and this
+     * fails with the exact string from the issue.
+     */
+    @Test
+    fun halfCloseReplyIsDeliveredAfterPeerConnectionClose() =
+        // Larger than the 15 s default: the scenario itself spends 2 s waiting out the draining period.
+        runQuicTest(timeout = 25.seconds) {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                    val echoResult = CompletableDeferred<String>()
+
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                val received = StringBuilder()
+                                while (true) {
+                                    val r = stream.read(5.seconds)
+                                    if (r !is ReadResult.Data) break
+                                    received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                }
+                                val reply = BufferFactory.deterministic().allocate(received.length)
+                                reply.writeString(received.toString(), Charset.UTF8)
+                                reply.resetForRead()
+                                stream.write(reply, 5.seconds)
+                                stream.close()
+                                // Returning closes the connection — CONNECTION_CLOSE reaches the client
+                                // while its reply is still sitting unread in quiche.
+                            }
+                        }
+                    delay(100)
+
+                    val clientJob =
+                        launch {
+                            withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                val stream = openStream()
+                                val sendBuf = BufferFactory.deterministic().allocate(4)
+                                sendBuf.writeString("ping", Charset.UTF8)
+                                sendBuf.resetForRead()
+                                stream.write(sendBuf, 5.seconds)
+                                stream.shutdownSend()
+
+                                delay(2.seconds)
+
+                                val response = stream.read(5.seconds)
+                                if (response is ReadResult.Data) {
+                                    echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                } else {
+                                    echoResult.complete("no_data:${response::class.simpleName}")
+                                }
+                                stream.close()
+                            }
+                        }
+
+                    try {
+                        assertEquals("ping", kotlinx.coroutines.withTimeout(15.seconds) { echoResult.await() })
+                    } finally {
+                        clientJob.cancel()
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
     @Test
     fun multipleConnections() =
         runQuicTest {
