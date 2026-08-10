@@ -203,13 +203,20 @@ sealed interface TraceEvent {
      *    relative order within that filtered subsequence survives any interleaved QUIC lines. Pairing by
      *    matching [at] offsets, which would have to break ties, is never needed.
      *
-     * [dropped] is always `> 0` as recorded: an intact stream writes no line at all rather than a
-     * confirmed zero, so an old trace (no gap lines) and a gap-free new one mean the same thing.
+     * [dropped] is always `> 0` — enforced, not just described. A `NetGap(_, 0)` would be a line
+     * claiming a gap of nothing, which is exactly the "confirmed zero" this event's absence exists to
+     * avoid: an intact stream writes no line at all, so an old trace (no gap lines) and a gap-free new
+     * one mean the same thing. Enforcing it here puts the failure at the closest door — a hand-edited
+     * `NET_GAP 0` (or negative) trace dies at decode, not later inside script construction or replay.
      */
     data class NetGap(
         override val at: Duration,
         val dropped: Long,
     ) : TraceEvent {
+        init {
+            require(dropped > 0) { "NetGap.dropped must be positive, was $dropped — an intact stream writes no line at all" }
+        }
+
         override fun toString(): String = encodeTraceLine(this)
     }
 

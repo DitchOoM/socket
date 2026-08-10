@@ -76,4 +76,16 @@ class TraceGapCodecTests {
     fun aNonNumericCountIsRejected() {
         assertFailsWith<IllegalArgumentException> { TraceEvent.parse("v1 0 NET_GAP lots") }
     }
+
+    /**
+     * The type refuses what the domain forbids: a gap of nothing is the "confirmed zero" whose absence
+     * is the format's whole stance, and a negative gap counts observations that never went missing.
+     * Both die at decode — the closest door — not later inside script construction or replay.
+     */
+    @Test
+    fun aZeroOrNegativeGapIsUnrepresentable() {
+        assertFailsWith<IllegalArgumentException> { TraceEvent.parse("v1 0 NET_GAP 0") }
+        assertFailsWith<IllegalArgumentException> { TraceEvent.parse("v1 0 NET_GAP -5") }
+        assertFailsWith<IllegalArgumentException> { TraceEvent.NetGap(kotlin.time.Duration.ZERO, 0) }
+    }
 }
