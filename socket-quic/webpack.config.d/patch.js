@@ -18,11 +18,3 @@ config.resolve.alias = Object.assign({}, config.resolve.alias, {
     tls: false,
     util: false,
 })
-
-// Root-only: the wasm/SharedArrayBuffer surface needs cross-origin isolation in the dev server.
-if (config.devServer != null) {
-    config.devServer.headers = {
-        "Cross-Origin-Opener-Policy": "same-origin",
-        "Cross-Origin-Embedder-Policy": "require-corp"
-    }
-}
