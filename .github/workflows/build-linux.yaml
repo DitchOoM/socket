@@ -1055,7 +1055,12 @@ jobs:
           # ~/.m2 — including genuinely buggy historical ones (3.6.6 / 3.8.11 / 3.8.13 all still
           # carry #287) — which makes a local repro fail for reasons that have nothing to do with
           # the working tree.
-          VERSION='${{ steps.version.outputs.version }}'
+          # Read from the job-level pin (the run's single version) rather than a step output — the
+          # `Get version` step this used to reference is gone. Fittingly, this is the gate whose
+          # #320 failure motivated #328/#329 in the first place: when the version it looks for is
+          # not the version that got published, it reports "no -jvm-<V>.jar found", which reads
+          # exactly like the MR-jar drift it exists to catch.
+          VERSION="${ORG_GRADLE_PROJECT_version}"
           # Plain read loop rather than `mapfile`: mapfile is bash 4+, so this stays runnable on a
           # stock macOS bash 3.2 when reproducing the gate locally. A single invocation (not
           # `xargs`) so the --require assertions see the whole jar set at once — xargs could split
@@ -1473,9 +1478,6 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # See malloc-check: pinned so no lane in this run queries Central for a version.
-    env:
-      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -1505,6 +1507,8 @@ jobs:
     # on the pure-JVM http3 lanes.
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+      # See malloc-check: pinned so no lane in this run queries Central for a version.
+      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-linux-fuzz

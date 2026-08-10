@@ -355,7 +355,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
-    needs: build-linux
+    needs: [version, build-linux]
+    # Pinned like every other Gradle-running job in the run. This lane publishes nothing, so a
+    # divergent version could not corrupt an artifact — but it removes one more live Maven Central
+    # fetch, which is both latency and a failure mode, and keeps "one version per run" exception-free.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     # continue-on-error stays during Windows-peer bring-up: the MinGW-cross-
     # compiled DLL has not yet been proven to load on a bare windows-latest
     # (static-libgcc/stdc++ link is the intended fix; CI is the only place to
@@ -414,6 +419,12 @@ jobs:
   docs:
     name: "Validate Docs Generation"
     runs-on: macos-latest
+    needs: version
+    # Same reasoning as build-windows: docs publish nothing, but pinning drops a Central fetch from
+    # the Dokka run. `needs: version` delays this job by ~90s; it finishes in ~8 min against a
+    # ~40 min critical path, so it stays far off it.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
       - name: Set up JDK 21

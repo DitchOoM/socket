@@ -296,6 +296,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # The image tags below already come from the version job; pin the controller/udp-toxi jar build
+    # to the same string so this job cannot compute a second, different version internally.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
