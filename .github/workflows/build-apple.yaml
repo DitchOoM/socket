@@ -63,9 +63,16 @@ jobs:
           restore-keys: |
             gradle-macos-
 
+      # First gradlew invocation in the job on purpose — see the matching step in build-linux.yaml
+      # for the full story. Short version: the version comes from a live Maven Central metadata
+      # fetch performed once per Gradle invocation, so a release publishing mid-run makes two
+      # invocations in one job disagree. Pin it here and every later call reuses this string.
       - name: Get version
         id: version
-        run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
+        run: |
+          version="$(./gradlew -q nextVersion ${{ inputs.gradle-args }})"
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "ORG_GRADLE_PROJECT_version=$version" >> $GITHUB_ENV
 
       # All five Apple Rust targets the quiche static libs are built for (macOS x2 + iOS device/sim-arm64/
       # sim-x64). Pre-installing them here means the Gradle build step doesn't have to.
