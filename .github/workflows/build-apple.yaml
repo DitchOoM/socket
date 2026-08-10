@@ -177,7 +177,18 @@ jobs:
           ./gradlew linkDebugTestMacosArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # ⚠️ Two-attempt upload. `actions/upload-artifact` classifies a 403 from the storage
+      # intermediary at FinalizeArtifact as NON-retryable and gives up immediately, which fails
+      # this whole ~50-minute job and skips every downstream lane that needs the binaries.
+      # Observed 2026-08-10 on run 31422985484: every Apple test passed and the binaries linked
+      # (step "Link macosArm64 test binaries" succeeded), yet the job went red on
+      #   "Failed to FinalizeArtifact: Received non-retryable error: ... (403) Forbidden"
+      # A fresh request usually succeeds, so retry once rather than pay the rebuild.
+      # `continue-on-error` on the first attempt keeps its failure from ending the job; the retry
+      # is NOT continue-on-error, so a genuine problem (e.g. no files found) still fails loudly.
       - name: Upload macosArm64 test binaries
+        id: upload_test_binaries
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: macos-arm64-test-binaries
@@ -187,6 +198,17 @@ jobs:
           path: '**/build/bin/macosArm64/debugTest/test.kexe'
           retention-days: 1
           if-no-files-found: error
+
+      - name: Upload macosArm64 test binaries (retry after transient finalize failure)
+        if: steps.upload_test_binaries.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-test-binaries
+          path: '**/build/bin/macosArm64/debugTest/test.kexe'
+          retention-days: 1
+          if-no-files-found: error
+          # The first attempt may have registered the name before failing to finalize.
+          overwrite: true
 
       # :socket-quic-quiche on the JVM — the only place FFM-on-macOS and the IS_BSD sockaddr decode run.
       # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test into a hard failure so
@@ -212,8 +234,11 @@ jobs:
 
       # Test reports on failure — includes the JVM hs_err/replay crash logs: a native abort (quiche/JNI/
       # FFM SIGABRT/SIGSEGV) shows only as "exit value 134" with no failing JUnit case otherwise.
+      # continue-on-error: this is diagnostics for an already-failing job. A finalize 403 here must
+      # not replace the real failure with an artifact error in the job summary.
       - name: Upload test reports (on failure)
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-apple
@@ -231,13 +256,27 @@ jobs:
       # macOS dylibs consumed by validate-artifacts.yaml (it injects them into the published klibs to
       # smoke-test resolution); the artifact name + macos-* path are load-bearing for that job.
       - name: Upload macOS quiche native libs
+        id: upload_quiche_natives
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: quiche-macos-natives
           path: socket-quic-quiche/libs/quiche/macos-*/lib/
           retention-days: 1
           if-no-files-found: ignore
+
+      # Same non-retryable-403 exposure as the test-binary upload above, and this one is `always()`,
+      # so a finalize hiccup would turn an otherwise-green job red.
+      - name: Upload macOS quiche native libs (retry after transient finalize failure)
+        if: always() && steps.upload_quiche_natives.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-macos-natives
+          path: socket-quic-quiche/libs/quiche/macos-*/lib/
+          retention-days: 1
+          if-no-files-found: ignore
+          overwrite: true
 
       - name: Publish Apple targets to Maven Local
         run: >-
@@ -256,17 +295,31 @@ jobs:
           publishWatchosX64PublicationToMavenLocal
 
       - name: Upload Maven local artifacts
+        id: upload_maven_local
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: maven-local-apple
           path: ~/.m2/repository/com/ditchoom
           retention-days: 3
 
+      # Consumer Smoke + validate-artifacts both download this; losing it to a finalize 403 would
+      # skip them and cost the whole publish-path signal.
+      - name: Upload Maven local artifacts (retry after transient finalize failure)
+        if: steps.upload_maven_local.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: maven-local-apple
+          path: ~/.m2/repository/com/ditchoom
+          retention-days: 3
+          overwrite: true
+
       # Surface the quiche cargo build transcript when anything in this job failed, so a build
       # failure (e.g. a missing rustup target → E0463) is diagnosable from an artifact instead
       # of hunting through interleaved BoringSSL/cargo output in the job log.
       - name: Upload quiche build logs on failure
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: quiche-build-logs-apple
@@ -322,6 +375,7 @@ jobs:
       # failure capture the combined log for diagnosis.
       - name: Upload macosArm64 test log (on failure)
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: macos-arm64-test-log
