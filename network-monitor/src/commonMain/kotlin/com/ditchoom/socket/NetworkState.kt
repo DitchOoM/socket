@@ -309,9 +309,16 @@ val NetworkState.needsUserAction: Boolean
  * [Pending][InternetAccess.Observed.Pending] and [Suspended][BlockReason.Suspended] carry the
  * platform's promise of a follow-up emission.
  *
- * This is the predicate that pays for the whole RFC: today a validation window, a suspended cellular
- * link and a genuine network change are indistinguishable, so QUIC auto-migration and transport
- * fallback react to all three identically. They should tear down and re-migrate for only one of them.
+ * This is the predicate that paid for the whole RFC. Before it, a validation window, a suspended
+ * cellular link and a genuine network change were indistinguishable, so QUIC auto-migration and
+ * transport fallback reacted to all three identically — tearing down for states that would have
+ * resolved on their own. The shipped consumers now discriminate by **identity**: auto-migration keys
+ * on [NetworkState.networkId] precisely so the `Pending` → `Confirmed` window on one network never
+ * reads as a handoff (`AutoMigrationWiring` in `:socket-quic-quiche`), and reconnect backoff reacts
+ * to [canRouteOffLink] flipping and to [pathChanges] emissions. What identity cannot answer is the
+ * time dimension on a *single* network — is this bad state worth waiting out — and that question is
+ * this predicate's: a gate above connect/teardown holds off while the state carries the platform's
+ * promise of a follow-up emission, and acts otherwise.
  */
 val NetworkState.isTransient: Boolean
     get() =
