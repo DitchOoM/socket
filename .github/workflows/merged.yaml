@@ -107,26 +107,38 @@ jobs:
           echo "Only non-code files changed, skipping"
           echo "flow=skip" >> $GITHUB_OUTPUT
 
-  build-linux:
+  # One Maven Central version query for the whole run — the version that gets published, tagged,
+  # and stamped onto the GHCR harness images all come from here. `check-release` decides the bump
+  # (major/minor/patch), so this necessarily follows it. See compute-version.yaml and #329.
+  version:
     needs: check-release
+    if: needs.check-release.outputs.flow != 'skip'
+    uses: ./.github/workflows/compute-version.yaml
+    with:
+      gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+
+  build-linux:
+    needs: [check-release, version]
     if: needs.check-release.outputs.flow != 'skip'
     uses: ./.github/workflows/build-linux.yaml
     with:
       gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+      version: ${{ needs.version.outputs.version }}
 
   build-apple:
-    needs: check-release
+    needs: [check-release, version]
     if: needs.check-release.outputs.flow != 'skip'
     uses: ./.github/workflows/build-apple.yaml
     with:
       gradle-args: ${{ needs.check-release.outputs.gradle-args }}
+      version: ${{ needs.version.outputs.version }}
 
   validate:
-    needs: [check-release, build-linux, build-apple]
+    needs: [check-release, version, build-linux, build-apple]
     if: needs.check-release.outputs.flow != 'skip'
     uses: ./.github/workflows/validate-artifacts.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
 
   # Per-platform QUIC harness coverage matrix. Same job as the one in
   # review.yaml — gates the release on QUIC validity in addition to the
@@ -238,13 +250,15 @@ jobs:
             exit 1
           fi
 
+  # `needs: validate` is load-bearing on the release path and must stay: validate depends on
+  # build-linux + build-apple, so nothing reaches Central until every platform's tests are green.
   publish:
-    needs: [check-release, validate]
+    needs: [check-release, version, validate]
     if: needs.check-release.outputs.flow == 'draft' || needs.check-release.outputs.flow == 'release'
     uses: ./.github/workflows/publish-to-central.yaml
     with:
       publishing-type: ${{ needs.check-release.outputs.flow == 'draft' && 'USER_MANAGED' || 'AUTOMATIC' }}
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
     secrets:
       GPG_KEY_CONTENTS: ${{ secrets.GPG_KEY_CONTENTS }}
       SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
@@ -273,7 +287,7 @@ jobs:
   # controller jar IS built here — it is pure-JVM (no natives), a cheap compile.
   publish-harness-images:
     name: Publish harness images (GHCR)
-    needs: [check-release, build-linux, publish]
+    needs: [check-release, version, build-linux, publish]
     if: needs.check-release.outputs.flow == 'release' && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -282,6 +296,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # The image tags below already come from the version job; pin the controller/udp-toxi jar build
+    # to the same string so this job cannot compute a second, different version internally.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
@@ -326,9 +344,9 @@ jobs:
       - name: Build and push harness images (multi-arch)
         run: |
           set -euo pipefail
-          version="${{ needs.build-linux.outputs.version }}"
+          version="${{ needs.version.outputs.version }}"
           if [ -z "$version" ]; then
-            echo "::error::build-linux produced no version output — refusing to tag images"
+            echo "::error::the version job produced no output — refusing to tag images"
             exit 1
           fi
           # GHCR namespaces are lowercase; github.repository_owner is "DitchOoM".
@@ -346,7 +364,7 @@ jobs:
 
   finalize:
     name: Finalize Release
-    needs: [check-release, build-linux, publish]
+    needs: [check-release, version, build-linux, publish]
     if: always() && needs.check-release.outputs.flow != 'skip' && needs.check-release.outputs.flow != 'dry-run'
     runs-on: ubuntu-latest
     steps:
@@ -367,7 +385,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
           PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
         run: |
-          version="${{ needs.build-linux.outputs.version }}"
+          version="${{ needs.version.outputs.version }}"
           deployment_id="${{ needs.publish.outputs.deployment-id }}"
           staging_url="https://central.sonatype.com/publishing/deployments"
 
@@ -398,7 +416,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
           PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
         run: |
-          version="${{ needs.build-linux.outputs.version }}"
+          version="${{ needs.version.outputs.version }}"
           tag="v${version}"
 
           # Check if tag already exists

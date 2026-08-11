@@ -1,0 +1,84 @@
+name: "Compute Version"
+
+# One authoritative version query per RUN.
+#
+# `getNextVersion` (gradle/setup.gradle.kts) derives the version from a LIVE fetch of Maven
+# Central's maven-metadata.xml, performed once per Gradle invocation. The version a build uses
+# is therefore not a property of the commit — it is a property of what Central happened to be
+# serving at that instant.
+#
+# #328 pinned it per JOB (each of build-linux / build-apple exports ORG_GRADLE_PROJECT_version
+# from its own `Get version` step). That closed the within-a-job split, but not the across-jobs
+# one: on run 31427748610 build-apple and build-linux started together, yet build-apple ran 43
+# minutes. A release landing anywhere in that window pins the two jobs to different versions and
+# reproduces #329's failure #2 exactly — build-linux publishes 4.2.1, build-apple publishes
+# 4.3.1, and `validate` merges the two maven-local repos into a 4.2.1 root module carrying no
+# Apple variants, surfacing as an unresolvable :iosArm64CInterop that reads like a KMP metadata
+# bug. review.yaml already anticipated the race and hardened `validate` to resolve the version
+# from the built artifacts, but it resolves from the LINUX side only, so an Apple/Linux split
+# passes straight through that guard.
+#
+# This job hoists the query to the top of the graph so there is exactly one answer per run and
+# every job downstream is handed the same string. That is also what makes the test-shard fan-out
+# safe: without it, each new shard re-introduces a Central fetch that can disagree with its peers.
+#
+# NOT hermetic, and deliberately out of scope here: the same commit built before and after a
+# release still yields different numbers. True hermeticity means sourcing the version from a git
+# tag or gradle.properties and having the release flow bump it — a larger change to the
+# label-driven release machinery (see #329 "Out of scope").
+
+on:
+  workflow_call:
+    inputs:
+      gradle-args:
+        description: "Extra Gradle arguments (e.g., -PincrementMinor=true) — selects the bump."
+        required: false
+        default: ""
+        type: string
+    outputs:
+      version:
+        description: "The next version, computed once for the whole run"
+        value: ${{ jobs.version.outputs.version }}
+
+jobs:
+  version:
+    name: "Compute version"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Only a JDK is needed. Deliberately none of the heavy setup the build jobs do (Konan,
+      # Android SDK, Rust, cross toolchains, native caches): `nextVersion` is satisfied by
+      # configuring the build, and every one of those would add setup time to a job that now
+      # sits on the critical path of every run.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: gradle
+
+      # `nextVersion` prints from its configuration block, so `-q` yields exactly one line: the
+      # version (build.gradle.kts's own "Version: ..." banner is suppressed at QUIET).
+      #
+      # The regex assert is the point of doing this in one place. Every downstream job now takes
+      # this string on faith and bakes it into artifact paths, so a malformed value (a Gradle
+      # warning leaking onto stdout, an empty string from a failed Central fetch) must fail HERE,
+      # loudly, in 90 seconds — not 40 minutes later as a confusing "no -jvm-<V>.jar found" or an
+      # unresolvable dependency in `validate`, which is exactly how this class of bug has
+      # presented every time so far.
+      - name: Compute version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(./gradlew -q nextVersion ${{ inputs.gradle-args }})"
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::nextVersion did not produce a bare semver. Got: '${version}'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version for this run: ${version}"
+          echo "### Version for this run: \`${version}\`" >> "$GITHUB_STEP_SUMMARY"
