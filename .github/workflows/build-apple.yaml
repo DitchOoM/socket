@@ -1,5 +1,31 @@
 name: "Build & Test (Apple)"
 
+# FAN-OUT SHAPE (was one ~32-43 minute serial job):
+#
+#   natives ──┬── kn-tests (matrix: macos-x64 | ios-sim | other-sims | device-compile)
+#             ├── jvm-tests (matrix: jni | ffm)
+#             ├── link ── integration-macos-arm64
+#             └── publish
+#
+# `natives` builds every Apple libquiche.a/dylib + JNI shim once and hands them to the consumers as
+# an artifact, so the ~10-20 minute cargo/BoringSSL build is paid at most once per run instead of
+# being the serial prefix of everything.
+#
+# The win is mostly in taking `publish` off the tail: it used to run AFTER the ~15-19 minute K/N
+# suite and both ~8 minute JVM suites, purely because they shared a job, even though it depends on
+# none of them. `validate` (the caller's next job) needs the published artifacts, not the test
+# results, so publishing in parallel with the tests shortens the run's critical path directly.
+#
+# ⚠️ This does NOT weaken the release gate. A reusable workflow call completes only when ALL of its
+# jobs complete and fails if ANY of them fail, so a caller's `needs: build-apple` still waits for
+# every test job here. Publishing early makes the artifacts available sooner within the run; it
+# never lets a red test suite reach `publish-to-central`.
+#
+# ⚠️ Shard balance is a first cut, not a measured optimum. Every extra macOS job re-pays checkout +
+# JDK + cache restore + Gradle configuration (~3-4 min), so splitting further is NOT free and can
+# lose to the serial version. Judge changes here over several runs — `Run Apple K/N tests` alone
+# swung 884s..1151s run-to-run before any of this.
+
 on:
   workflow_call:
     inputs:
@@ -18,38 +44,49 @@ on:
         required: true
         type: string
 
+# Every job below shares these. Job-level (not a step export) so it covers the FIRST Gradle
+# invocation too — there is no longer a version step to run first.
+env:
+  # Pins every Gradle invocation to the run's single version. build.gradle.kts only calls
+  # getNextVersion when no version was supplied from outside, so with this set no Gradle call here
+  # touches Maven Central's metadata at all. See #329 / compute-version.yaml.
+  ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
+  # Loaded macOS runners occasionally take >10s for a QUIC handshake that is normally <1s (this is a
+  # real-network establishment test, not the deterministic ManualDriverClock sim tier), tripping the
+  # fixed test deadlines and flaking the release. Scale every `.scaled` test budget
+  # (TestHelpers.testTimeScale, clamped 1..10) by 3x so a slow runner simply gets more wall-clock
+  # without weakening any assertion or timing ratio. Left unset on Linux/local (scale = 1). See
+  # QuicMalformedPacketTestSuite + withTracedQuicConnection.
+  QUIC_TEST_TIME_SCALE: "3"
+  # The Docker-backed conformance harness has no working macOS fixture; the env var makes every
+  # harness-backed test self-skip cleanly. Was a `>> $GITHUB_ENV` step in the monolith, which would
+  # now have to be repeated in every shard.
+  HARNESS_DISABLED: "true"
+
 jobs:
-  build:
-    name: "Apple Targets"
-    # The Apple QUIC backend is now Cloudflare quiche over an NWConnection-UDP datapath (the
-    # quiche-on-Apple pivot replaced the Network.framework system-QUIC backend / the deleted
-    # :socket-quic-nw, which deleted the macos-26 libquic teardown UAF). quiche needs no special SDK;
-    # macos-26 is kept for a recent Xcode + an iOS-26 simulator runtime for iosSimulatorArm64Test.
+  # ── Stage 1: build every Apple quiche native exactly once ────────────────────────────────────
+  # The Apple QUIC backend is Cloudflare quiche over an NWConnection-UDP datapath (the
+  # quiche-on-Apple pivot replaced the Network.framework system-QUIC backend / the deleted
+  # :socket-quic-nw). quiche needs no special SDK; macos-26 is kept for a recent Xcode + an iOS-26
+  # simulator runtime for iosSimulatorArm64Test.
+  natives:
+    name: "Apple quiche natives"
     runs-on: macos-26
-    timeout-minutes: 60
-    env:
-      # Pins every Gradle invocation in this job to the run's single version. build.gradle.kts
-      # only calls getNextVersion when no version was supplied from outside, so with this set no
-      # Gradle call here touches Maven Central's metadata at all. Job-level (not a step export)
-      # so it covers the FIRST invocation too — there is no longer a version step to run first.
-      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
-      # Loaded macOS runners occasionally take >10s for a QUIC handshake that is normally <1s (this is a
-      # real-network establishment test, not the deterministic ManualDriverClock sim tier), tripping the
-      # fixed test deadlines and flaking the release. Scale every `.scaled` test budget
-      # (TestHelpers.testTimeScale, clamped 1..10) by 3x so a slow runner simply gets more wall-clock
-      # without weakening any assertion or timing ratio. Left unset on Linux/local (scale = 1). See
-      # QuicMalformedPacketTestSuite + withTracedQuicConnection.
-      QUIC_TEST_TIME_SCALE: "3"
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
+      # NO `cache: gradle` — the caches are saved explicitly below, and setup-java's gradle cache
+      # points at the same ~/.gradle/caches directory, so enabling both stored that tree twice.
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
-          cache: gradle
 
+      # This job is the SINGLE WRITER for the Konan/Gradle caches. Every fanned-out consumer uses
+      # actions/cache/restore (read-only) via .github/actions/apple-quiche-env, so a cache miss
+      # cannot turn into six parallel jobs racing to upload the same key.
       - name: Cache Konan
         uses: actions/cache@v5
         with:
@@ -59,10 +96,17 @@ jobs:
 
       # Persist the local Gradle build cache (~/.gradle/caches/build-cache-1) across runs so the
       # compiled native klibs, cinterop klibs, and per-target native shim archives are reused
-      # instead of rebuilt cold every run. setup-java's `cache: gradle` only restores the
-      # dependency caches (modules-2), NOT build-cache-1, so without this every PR recompiles all
-      # klibs even though org.gradle.caching=true. Keyed on the build definition (version catalog,
+      # instead of rebuilt cold every run. Keyed on the build definition (version catalog,
       # build scripts, wrapper); restore-keys fall back to the most recent partial match. (mirrors buffer #232)
+      #
+      # This REPLACES setup-java's `cache: gradle` rather than supplementing it. The old comment
+      # here claimed setup-java only restored modules-2 and not build-cache-1; that is false —
+      # setup-java/src/cache.ts pins the gradle package manager to
+      # `path: [join(os.homedir(), '.gradle', 'caches')]`, the whole tree. Running both therefore
+      # bought nothing and cost a duplicate copy of this directory in the repo's Actions cache
+      # (measured 2026-08-11: 687MB `setup-java-macOS-arm64-gradle-*` alongside the 1088MB
+      # `gradle-macos-*` here), which matters because the repo sits at the 10GB cap and the
+      # resulting LRU eviction is what makes "cached" quiche natives still cost ~339s.
       - name: Cache Gradle build outputs
         uses: actions/cache@v5
         with:
@@ -71,12 +115,17 @@ jobs:
           restore-keys: |
             gradle-macos-
 
-      # The ~99s `Get version` Gradle call that used to sit here is gone: ORG_GRADLE_PROJECT_version
-      # is set at job level from the run's single version job (compute-version.yaml). This is both
-      # a correctness fix — build-apple can start 40 minutes before/after build-linux, and a
-      # release landing in that window used to pin them to different versions — and the thing that
-      # makes fanning this job into test shards affordable, since otherwise every shard would
-      # re-pay the query.
+      # The wrapper distribution is cached SEPARATELY from ~/.gradle/caches on purpose, mirroring
+      # what setup-java did (its `additionalCaches: [{name: 'gradle-wrapper', ...}]`, added for
+      # actions/setup-java#269). Folding ~/.gradle/wrapper into the step above would re-download
+      # the ~150MB Gradle distribution on every `*.gradle.kts` edit, since that key rotates on
+      # build-script changes while the wrapper itself changes only when the wrapper properties do.
+      - name: Cache Gradle wrapper distribution
+        uses: actions/cache@v5
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
       - name: Show pinned version
         run: echo "Building version ${ORG_GRADLE_PROJECT_version} (pinned for the whole run)"
 
@@ -139,66 +188,280 @@ jobs:
           done
           [ "$missing" = 0 ] || { echo "::error::quiche Apple static libs missing — the build step failed."; exit 1; }
 
-      # The Docker-backed conformance harness has no working macOS fixture (HANDOFF.md Q1); the env var
-      # makes every harness-backed test self-skip cleanly. Apple K/N unit tests, the quiche loopback +
-      # H3 + WebTransport suites, ktlint, and the JVM quiche tests don't need it.
-      - name: Disable harness on macOS (no working Docker fixture)
-        run: echo "HARNESS_DISABLED=true" >> $GITHUB_ENV
+      # ⚠️ include-hidden-files IS LOAD-BEARING — do not drop it.
+      # The consumers skip their cargo builds via `onlyIf { !markerFile.exists() || ... }`, and every
+      # marker is a DOTFILE inside lib/ (`.built-<ver>-qlog-<digest>`, `.jni-built-<ver>`,
+      # `.bssl-vendored`). upload-artifact excludes hidden files by default, so without this the .a
+      # files would arrive WITHOUT their markers and every consumer would silently re-run the
+      # ~15-minute cargo build — a green run that quietly costs more than the serial version it
+      # replaced. .github/actions/apple-quiche-env fails loudly if the markers ever go missing.
+      - name: Upload Apple quiche natives
+        id: upload_natives
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-apple-natives
+          # Least common ancestor of the matched files is socket-quic-quiche/libs/quiche, so the
+          # artifact holds <target>/lib/... and the consumers download it back to that same dir.
+          path: socket-quic-quiche/libs/quiche/*/lib/
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
 
-      # Apple K/N tests across EVERY module. The task names are UNQUALIFIED (no leading colon) so Gradle
-      # runs them in every subproject that has them — a leading-colon `:macosX64Test` would run only the
-      # ROOT project's test and silently skip socket-quic-quiche / socket-http3 / socket-webtransport (a
-      # false green). The full QUIC suites on quiche are:
-      #   - socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> dual-stack
-      #     IPv6 POSIX server)
-      #   - socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack — was the flaky macos-26 NW-loopback CI
-      #     red, now green on quiche)
-      #   - socket-webtransport AppleWebTransportTest (the WebTransport server stack)
-      # macosArm64Test is NOT run here — it moved to the integration-macos-arm64 job, which runs the
-      # prebuilt .kexe standalone (linked + uploaded below). macOS x64 still runs the full suites inline.
-      # iosSimulatorArm64Test runs the quiche loopback for real (POSIX/NW datapath needs no
-      # Network.framework listener, so it works standalone); the H3/WebTransport suites self-skip on the
-      # standalone sim (no testcerts/ cwd). tvOS/watchOS have no quiche target → UnsupportedQuicEngine, so
-      # their QUIC suites skip cleanly. NOT continue-on-error: a real Apple test failure must stay red.
-      - name: Run Apple K/N tests (quiche)
+      # ⚠️ Two-attempt upload. `actions/upload-artifact` classifies a 403 from the storage
+      # intermediary at FinalizeArtifact as NON-retryable and gives up immediately. Here that would
+      # fail the natives job and skip EVERY job in this workflow, so the retry matters more than it
+      # did when this was one job. Observed 2026-08-10 on run 31422985484.
+      - name: Upload Apple quiche natives (retry after transient finalize failure)
+        if: steps.upload_natives.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-apple-natives
+          path: socket-quic-quiche/libs/quiche/*/lib/
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+      # macOS dylibs consumed by validate-artifacts.yaml (it injects them into the published klibs to
+      # smoke-test resolution); the artifact name + macos-* path are load-bearing for that job.
+      # Kept as its own artifact rather than pointing validate at quiche-apple-natives, because that
+      # one also carries the iOS archives (~200MB) validate has no use for.
+      - name: Upload macOS quiche native libs
+        id: upload_quiche_natives
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-macos-natives
+          path: socket-quic-quiche/libs/quiche/macos-*/lib/
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Upload macOS quiche native libs (retry after transient finalize failure)
+        if: always() && steps.upload_quiche_natives.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-macos-natives
+          path: socket-quic-quiche/libs/quiche/macos-*/lib/
+          retention-days: 1
+          if-no-files-found: ignore
+          overwrite: true
+
+      # Surface the quiche cargo build transcript when this job failed, so a build failure (e.g. a
+      # missing rustup target → E0463) is diagnosable from an artifact instead of hunting through
+      # interleaved BoringSSL/cargo output in the job log.
+      - name: Upload quiche build logs on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-build-logs-apple
+          path: '**/build/quiche-build-logs/'
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ── Stage 2a: Kotlin/Native test shards ──────────────────────────────────────────────────────
+  # Task names are UNQUALIFIED (no leading colon) so Gradle runs them in every subproject that has
+  # them — a leading-colon `:macosX64Test` would run only the ROOT project's test and silently skip
+  # socket-quic-quiche / socket-http3 / socket-webtransport (a false green). The full QUIC suites are:
+  #   - socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> dual-stack
+  #     IPv6 POSIX server)
+  #   - socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack)
+  #   - socket-webtransport AppleWebTransportTest (the WebTransport server stack)
+  # macosArm64Test is NOT here — it runs in integration-macos-arm64 from the prebuilt .kexe the
+  # `link` job uploads. iosSimulatorArm64Test runs the quiche loopback for real (the POSIX/NW
+  # datapath needs no Network.framework listener, so it works standalone); the H3/WebTransport
+  # suites self-skip on the standalone sim (no testcerts/ cwd). tvOS/watchOS have no quiche target
+  # → UnsupportedQuicEngine, so their QUIC suites skip cleanly.
+  # NOT continue-on-error: a real Apple test failure must stay red.
+  kn-tests:
+    name: "K/N ${{ matrix.shard.name }}"
+    needs: natives
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      # One shard's failure must not cancel the others — with fail-fast the first red shard hides
+      # whether the rest would have passed, which is the single most useful thing to know when
+      # triaging a multi-target Kotlin/Native break.
+      fail-fast: false
+      matrix:
+        shard:
+          # ⚠️ The macOS x64 suite is split with `-x`, NOT with a hand-kept list of qualified
+          # `:module:macosX64Test` task paths, and that choice is load-bearing. An explicit list is
+          # exactly the false-green this file already warns about above: add a module (or an Apple
+          # target to an existing one) and its tests silently stop running, with everything green.
+          # `-x` inverts the failure mode — the unqualified task still means "every subproject that
+          # has one", so a new module automatically lands in the `rest` shard. The only thing the
+          # split can get wrong is running something twice, which is loud and cheap.
+          #
+          # socket-quic-quiche is peeled off because it carries the real QUIC loopback suites and
+          # dominates the lane; the two together were 827s of a 864s job before this split.
+          - name: "macOS x64 (quiche)"
+            tasks: ":socket-quic-quiche:macosX64Test"
+          - name: "macOS x64 (all other modules)"
+            tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
+          - name: "iOS simulator"
+            tasks: "iosSimulatorArm64Test"
+          # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
+          # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
+          # cleanly and what remains is mostly compile time, which parallelises well.
+          - name: "tvOS simulator"
+            tasks: "tvosSimulatorArm64Test"
+          - name: "watchOS simulator"
+            tasks: "watchosSimulatorArm64Test"
+          # ktlint gets its OWN lane. It rode the macOS x64 lane, then moved to the compile lane
+          # when that was split — and took the bottleneck with it both times, because it is ~400s
+          # of work in its own right (measured: the ILP32 lane went 414s -> 813s the moment ktlint
+          # landed on it). It depends on no native artifact and no test, so it parallelises freely.
+          - name: "ktlint"
+            tasks: "ktlintCheck"
+          # Compile (can't run — no device) the test sources for the Apple *device* targets that
+          # nothing else covers. The simulator lanes above are all 64-bit, so they cannot catch an
+          # ILP32 regression: watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every
+          # other Apple target maps it to Long. A width-dependent comparison therefore compiles
+          # clean on macOS/iOS/tvOS and on the watchOS *simulator*, and fails only here — exactly
+          # how socket-udp's HostLoopback.apple.kt was broken for watchosArm64 while looking fine
+          # everywhere (#280). Cheap: compile only, no link, no run.
+          - name: "device-target compile (ILP32 guard)"
+            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/apple-quiche-env
+
+      - name: Run ${{ matrix.shard.name }}
         run: >-
           ./gradlew
-          macosX64Test iosSimulatorArm64Test
-          tvosSimulatorArm64Test watchosSimulatorArm64Test
-          ktlintCheck
+          ${{ matrix.shard.tasks }}
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Compile (can't run — no device) the test sources for the Apple *device* targets that nothing else
-      # covers. The simulator lanes above are all 64-bit, so they cannot catch an ILP32 regression:
-      # watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every other Apple target maps it
-      # to Long. A width-dependent comparison therefore compiles clean on macOS/iOS/tvOS and on the
-      # watchOS *simulator*, and fails only here — exactly how socket-udp's HostLoopback.apple.kt was
-      # broken for watchosArm64 while looking fine everywhere (#280). Cheap: compile only, no link, no run.
-      - name: Compile Apple device-target test sources (ILP32 / no-simulator guard)
+      # ⚠️ Restores the Kotlin/Native build cache that the fan-out otherwise LOSES.
+      #
+      # The monolith saved one ~1GB gradle-macos-* entry containing every compiled klib, because
+      # one job did all the compiling. After the split, `natives` is the single cache writer — and
+      # `natives` only runs cargo and a Gradle configure, so the entry it saves holds no klibs at
+      # all (measured: 258MB here vs 1088MB on a pre-fan-out PR). Every shard then recompiled the
+      # klibs cold on every run, quietly giving back much of what the parallelism bought.
+      #
+      # This shard compiles the widest set (unqualified macosX64Test = every module) so it is the
+      # designated writer of a SECOND key that actually contains build-cache-1 output. The other
+      # shards restore it (see apple-quiche-env) and get the shared commonMain metadata and
+      # dependency resolution even though their own target's klibs are not in it.
+      #
+      # Deliberately NOT per-shard keys: five ~1GB entries would blow the repo's 10GB Actions cache
+      # cap and trigger exactly the LRU eviction that makes a "cached" quiche build cost 514s.
+      # if: always() — the klibs compiled before a test assertion failed are still valid and worth
+      # keeping; gating on success would mean a flaky lane also poisons the next run's cache.
+      # continue-on-error: a save whose key already exists warns rather than fails, and a cache
+      # problem must never turn a green test lane red.
+      - name: Save Gradle build outputs (K/N klibs)
+        if: always() && matrix.shard.name == 'macOS x64 (all other modules)'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.gradle/caches
+          key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Upload test reports (on failure)
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          # Artifact names must be unique across the run; the shard names contain spaces and '+',
+          # which are fine in an artifact name but are normalised here for readability.
+          name: test-reports-apple-kn-${{ strategy.job-index }}
+          # Report globs are module-agnostic on purpose: a hand-kept module list silently drops
+          # the one module that failed (test-reports-linux missed :socket-http3's XML this way).
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+            build/reports/ktlint/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ── Stage 2b: JVM quiche suites (JNI and FFM backends) ───────────────────────────────────────
+  # :socket-quic-quiche on the JVM — the only place FFM-on-macOS and the IS_BSD sockaddr decode run.
+  # The two backends were sequential steps in one job purely because they shared it; they are
+  # independent (the old `if: !cancelled()` on the FFM step existed to express exactly that), so
+  # they are now two parallel jobs. -PquicheJvmBackend=ffm prepends the java21/Panama loader.
+  # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test into a hard failure
+  # so a broken native can't pass as green.
+  jvm-tests:
+    name: "JVM quiche (${{ matrix.backend.name }})"
+    needs: natives
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - name: "JNI"
+            args: ""
+          - name: "FFM"
+            args: "-PquicheJvmBackend=ffm"
+    env:
+      QUIC_MIGRATION_REQUIRE_RUN: "1"
+    steps:
+      - uses: actions/checkout@v6
+      # konan: false — this lane is JVM-only, so restoring the ~450MB Kotlin/Native toolchain would
+      # be pure download cost.
+      - uses: ./.github/actions/apple-quiche-env
+        with:
+          konan: "false"
+
+      # ⚠️ 20 min, NOT the 8 the monolith used or the 12 this job first carried over. Both were
+      # sized for a world where this step ran AFTER the JNI step in the SAME job, so compilation
+      # was already done and the Gradle daemon was warm. Fanned out, each backend lane compiles
+      # from cold, and the step legitimately grew: measured 618s, 637s, then 733s across three
+      # runs on equivalent content — the third tripped the 720s limit and failed a green suite.
+      # That is a timeout mis-sized by the split, not a hang.
+      # The limit still earns its place: it fires faster than the job timeout and names the step.
+      # A genuine hang is bounded by timeout-minutes: 30 at job level.
+      - name: Run socket-quic-quiche JVM tests (${{ matrix.backend.name }})
+        timeout-minutes: 20
         run: >-
-          ./gradlew
-          compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64
+          ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # Link (don't run) the macosArm64 test binaries for the integration-macos-arm64 job. UNQUALIFIED so
-      # every module with a macosArm64 test target is linked — socket-quic-quiche / socket-http3 /
-      # socket-webtransport carry the real Apple QUIC/H3/WebTransport loopback suites. The K/N link
-      # -force_loads each libquiche.a, so the .kexe is self-contained: the integration job runs it with
-      # only a checkout (for the committed <module>/testcerts/), no quiche libs or Docker harness.
-      - name: Link macosArm64 test binaries for integration job
+      # Test reports on failure — includes the JVM hs_err/replay crash logs: a native abort
+      # (quiche/JNI/FFM SIGABRT/SIGSEGV) shows only as "exit value 134" with no failing JUnit case
+      # otherwise. continue-on-error: this is diagnostics for an already-failing job, and a finalize
+      # 403 here must not replace the real failure with an artifact error in the job summary.
+      - name: Upload test reports (on failure)
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-apple-jvm-${{ matrix.backend.name }}
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+            **/hs_err_pid*.log
+            **/replay_pid*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ── Stage 2c: link the macosArm64 test binaries for the integration job ──────────────────────
+  link:
+    name: "Link macosArm64 test binaries"
+    needs: natives
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/apple-quiche-env
+
+      # UNQUALIFIED so every module with a macosArm64 test target is linked — socket-quic-quiche /
+      # socket-http3 / socket-webtransport carry the real Apple QUIC/H3/WebTransport loopback
+      # suites. The K/N link -force_loads each libquiche.a, so the .kexe is self-contained: the
+      # integration job runs it with only a checkout (for the committed <module>/testcerts/), no
+      # quiche libs and no Docker harness.
+      - name: Link macosArm64 test binaries
         run: >-
           ./gradlew linkDebugTestMacosArm64
           --no-configuration-cache ${{ inputs.gradle-args }}
 
-      # ⚠️ Two-attempt upload. `actions/upload-artifact` classifies a 403 from the storage
-      # intermediary at FinalizeArtifact as NON-retryable and gives up immediately, which fails
-      # this whole ~50-minute job and skips every downstream lane that needs the binaries.
-      # Observed 2026-08-10 on run 31422985484: every Apple test passed and the binaries linked
-      # (step "Link macosArm64 test binaries" succeeded), yet the job went red on
-      #   "Failed to FinalizeArtifact: Received non-retryable error: ... (403) Forbidden"
-      # A fresh request usually succeeds, so retry once rather than pay the rebuild.
-      # `continue-on-error` on the first attempt keeps its failure from ending the job; the retry
-      # is NOT continue-on-error, so a genuine problem (e.g. no files found) still fails loudly.
+      # ⚠️ Two-attempt upload — see the natives upload above for the non-retryable-403 story.
       - name: Upload macosArm64 test binaries
         id: upload_test_binaries
         continue-on-error: true
@@ -223,73 +486,19 @@ jobs:
           # The first attempt may have registered the name before failing to finalize.
           overwrite: true
 
-      # :socket-quic-quiche on the JVM — the only place FFM-on-macOS and the IS_BSD sockaddr decode run.
-      # QUIC_MIGRATION_REQUIRE_RUN=1 turns a clean skip of the active-migration test into a hard failure so
-      # a broken native can't pass as green.
-      - name: Run socket-quic-quiche JVM tests (JNI)
-        timeout-minutes: 8
-        env:
-          QUIC_MIGRATION_REQUIRE_RUN: "1"
-        run: >-
-          ./gradlew :socket-quic-quiche:jvmTest --continue
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Same suite on the FFM backend (-PquicheJvmBackend=ffm prepends the java21/Panama loader). `if:
-      # !cancelled()` so FFM runs even if the JNI step crashed — the two backends are independent.
-      - name: Run socket-quic-quiche JVM tests (FFM backend)
-        if: ${{ !cancelled() }}
-        timeout-minutes: 8
-        env:
-          QUIC_MIGRATION_REQUIRE_RUN: "1"
-        run: >-
-          ./gradlew :socket-quic-quiche:jvmTest -PquicheJvmBackend=ffm --continue
-          --no-configuration-cache ${{ inputs.gradle-args }}
-
-      # Test reports on failure — includes the JVM hs_err/replay crash logs: a native abort (quiche/JNI/
-      # FFM SIGABRT/SIGSEGV) shows only as "exit value 134" with no failing JUnit case otherwise.
-      # continue-on-error: this is diagnostics for an already-failing job. A finalize 403 here must
-      # not replace the real failure with an artifact error in the job summary.
-      - name: Upload test reports (on failure)
-        if: failure()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-reports-apple
-          # Report globs are module-agnostic on purpose: a hand-kept module list silently drops
-          # the one module that failed (test-reports-linux missed :socket-http3's XML this way).
-          path: |
-            **/build/reports/tests/
-            **/build/test-results/
-            build/reports/ktlint/
-            **/hs_err_pid*.log
-            **/replay_pid*.log
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # macOS dylibs consumed by validate-artifacts.yaml (it injects them into the published klibs to
-      # smoke-test resolution); the artifact name + macos-* path are load-bearing for that job.
-      - name: Upload macOS quiche native libs
-        id: upload_quiche_natives
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: quiche-macos-natives
-          path: socket-quic-quiche/libs/quiche/macos-*/lib/
-          retention-days: 1
-          if-no-files-found: ignore
-
-      # Same non-retryable-403 exposure as the test-binary upload above, and this one is `always()`,
-      # so a finalize hiccup would turn an otherwise-green job red.
-      - name: Upload macOS quiche native libs (retry after transient finalize failure)
-        if: always() && steps.upload_quiche_natives.outcome == 'failure'
-        uses: actions/upload-artifact@v7
-        with:
-          name: quiche-macos-natives
-          path: socket-quic-quiche/libs/quiche/macos-*/lib/
-          retention-days: 1
-          if-no-files-found: ignore
-          overwrite: true
+  # ── Stage 2d: publish ────────────────────────────────────────────────────────────────────────
+  # OFF THE TEST CRITICAL PATH. This job depends only on the natives, never on the test results —
+  # which is safe because the caller's `needs: build-apple` waits for this whole workflow, tests
+  # included, before `validate`/`publish-to-central` run. Previously this sat behind ~30 minutes of
+  # tests in the same job for no reason other than colocation.
+  publish:
+    name: "Publish Apple targets to Maven Local"
+    needs: natives
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/apple-quiche-env
 
       - name: Publish Apple targets to Maven Local
         run: >-
@@ -327,28 +536,15 @@ jobs:
           retention-days: 3
           overwrite: true
 
-      # Surface the quiche cargo build transcript when anything in this job failed, so a build
-      # failure (e.g. a missing rustup target → E0463) is diagnosable from an artifact instead
-      # of hunting through interleaved BoringSSL/cargo output in the job log.
-      - name: Upload quiche build logs on failure
-        if: failure()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: quiche-build-logs-apple
-          path: '**/build/quiche-build-logs/'
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # macosArm64 K/N tests split out of `build`, mirroring integration-linux-{x64,arm64}:
-  # `build` links the .kexe (self-contained, libquiche.a -force_loaded), this job runs it.
-  # The Apple QUIC/H3/WebTransport suites are in-process loopback — no Docker harness — and
-  # locate their TLS fixtures via a <module>/testcerts/ fallback, so a plain checkout (which
-  # carries the committed testcerts/) plus cwd=repo-root is all they need. macOS x64 + the
-  # iOS/tvOS/watchOS sim tests still run inline in `build`'s Gradle.
+  # ── Stage 3: run the linked macosArm64 binaries ──────────────────────────────────────────────
+  # Split out of the old monolith exactly as integration-linux-{x64,arm64} are: `link` builds the
+  # .kexe (self-contained, libquiche.a -force_loaded), this job runs it. The Apple QUIC/H3/
+  # WebTransport suites are in-process loopback — no Docker harness — and locate their TLS fixtures
+  # via a <module>/testcerts/ fallback, so a plain checkout (which carries the committed testcerts/)
+  # plus cwd=repo-root is all they need.
   integration-macos-arm64:
     name: "Integration Tests (macOS ARM64)"
-    needs: build
+    needs: link
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -371,7 +567,7 @@ jobs:
           # this matches both the structure-preserved paths and a flattened single file.
           found=$(find . -name test.kexe -type f)
           if [ -z "$found" ]; then
-            echo "::error::no macosArm64 test.kexe downloaded — check the linkDebugTestMacosArm64 upload in build"
+            echo "::error::no macosArm64 test.kexe downloaded — check the linkDebugTestMacosArm64 upload in the link job"
             exit 1
           fi
           rc=0

@@ -266,4 +266,115 @@ jobs:
           find libs/boringssl libs/liburing socket-quic-quiche/libs/quiche \
             -type f \( -name '*.a' -o -name '*.so' \) 2>/dev/null \
             | sort >> "$GITHUB_STEP_SUMMARY" || echo "(no artifacts produced)" >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # 3. Apple native cache-warm.
+  #
+  #    Same job as `cache-warm` above, for the five Apple targets — and the
+  #    reason it exists is measured, not theoretical. This workflow warmed only
+  #    the Linux triples, so `refs/heads/main` carried NO `quiche-apple-v3-*`
+  #    entry at all. GitHub scopes cache writes to the ref that made them: a PR
+  #    can read its base branch's caches, but one PR cannot read another's. With
+  #    main cold, EVERY Apple PR run paid a full from-source cargo + BoringSSL
+  #    build for five targets.
+  #
+  #    Measured on PR #337 (run 31500984797 vs 31505526881), same commit content:
+  #      cold (no cache on main) -> `Build quiche Apple native libs` = 514s,
+  #                                 whole natives job 9m48s
+  #      warm (entry on the ref) -> natives job 1m32s
+  #    i.e. this job is worth ~8.5 minutes on the critical path of every single
+  #    Apple PR run, for one scheduled macOS job a day.
+  #
+  #    Keys/paths below are byte-for-byte identical to build-apple.yaml's
+  #    `natives` job — if they drift, the warmed entry silently stops hitting and
+  #    the only symptom is that PRs get slow again. Uses actions/cache (not
+  #    restore-only) so the fresh build is SAVED at post-job.
+  #
+  #    ⚠️ NO restore-keys on the quiche cache, matching build-apple.yaml: a prefix
+  #    fallback can resurrect a sibling built from a DIFFERENT quiche source patch,
+  #    which is the #260/#263 bug where a pre-caller-clock dylib satisfied the
+  #    marker and the JNI shim failed to link.
+  # -------------------------------------------------------------------------
+  cache-warm-apple:
+    name: "Warm native build caches (Apple)"
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      # No `cache: gradle` — see build-apple.yaml. setup-java's gradle cache points at the same
+      # ~/.gradle/caches the explicit step below saves, so enabling both stores it twice, and this
+      # repo is at the 10GB Actions cache cap.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      # ---- Cache entries mirrored EXACTLY from build-apple.yaml's `natives` job ----
+      - name: Cache Konan
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-macos-
+
+      - name: Cache Gradle build outputs
+        uses: actions/cache@v5
+        with:
+          path: ~/.gradle/caches
+          key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-macos-
+
+      - name: Cache Gradle wrapper distribution
+        uses: actions/cache@v5
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache quiche Apple native libs
+        uses: actions/cache@v5
+        with:
+          path: |
+            socket-quic-quiche/libs/quiche/macos-arm64/lib
+            socket-quic-quiche/libs/quiche/macos-x64/lib
+            socket-quic-quiche/libs/quiche/ios-arm64/lib
+            socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
+            socket-quic-quiche/libs/quiche/ios-x64/lib
+          key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+
+      # continue-on-error, like the Linux warm steps: this job is best-effort priming, never a
+      # freshness gate. A partial warm still gets SAVED at post-job, and any entry that already hit
+      # on restore skips its build via the marker/up-to-date check.
+      - name: Warm quiche Apple cache (5 targets — macOS x2 + iOS device/sim-arm64/sim-x64)
+        continue-on-error: true
+        run: >-
+          ./gradlew
+          :socket-quic-quiche:buildQuicheAppleStaticLibs
+          :socket-quic-quiche:prepareQuicheNativeLib
+          --no-configuration-cache
+
+      - name: Report warmed Apple artifacts
+        if: always()
+        run: |
+          echo "## Apple native cache-warm summary" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          find socket-quic-quiche/libs/quiche -type f \( -name '*.a' -o -name '*.dylib' \) 2>/dev/null \
+            | sort >> "$GITHUB_STEP_SUMMARY" || echo "(no artifacts produced)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
