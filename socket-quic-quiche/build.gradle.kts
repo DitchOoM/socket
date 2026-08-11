@@ -2798,3 +2798,41 @@ tasks
             (it.name.contains("ProcessResources", ignoreCase = true) && it.name.contains("Test", ignoreCase = true)) ||
             it.name.matches(Regex("process\\w*(AndroidTest|UnitTest)\\w*Resources"))
     }.configureEach { dependsOn(generateLocalhostCert, generatePinnedW3cCerts) }
+
+// --- CI guard: fixtures must be proven present where they are PRODUCED ------------------------
+// The wiring above hangs generation off TEST tasks, so a job that ships a test binary without ever
+// running one — the raw-.kexe integration lanes in build-apple/build-linux — mints nothing, and
+// nothing notices until a test reads a fixture and dies far downstream. That is exactly how the
+// Linux lane broke (43 cert-reading tests) and later the Apple one (4 pinning tests). Running this
+// task instead of the two generators turns that into a one-line failure in the producing job.
+//
+// The expectation is the generators' OWN declared outputs, so a fixture added to either is covered
+// here for free — this cannot go stale the way a hand-listed set would.
+val generatedTestCertFixtures = files(generateLocalhostCert, generatePinnedW3cCerts)
+val repoRoot = rootDir
+
+tasks.register("verifyGeneratedTestCerts") {
+    group = "verification"
+    description = "Fail if a generated TLS fixture (localhost.*, pinned*) is missing after its generator ran."
+    // Carries the dependsOn on both generators, so this task alone is enough to mint AND check.
+    inputs.files(generatedTestCertFixtures)
+    doLast {
+        val missing =
+            generatedTestCertFixtures.files
+                .filterNot { it.isFile }
+                .map { it.relativeTo(repoRoot) }
+                .sorted()
+        check(missing.isEmpty()) {
+            buildString {
+                appendLine("Generated TLS test fixtures are missing after their generators ran:")
+                missing.forEach { appendLine("  - $it") }
+                appendLine()
+                append(
+                    "They are minted only by generateLocalhostCert / generatePinnedW3cCerts. In CI this means the " +
+                        "job that ships test binaries is about to upload an incomplete testcerts/ — the raw-.kexe " +
+                        "integration jobs run no Gradle and cannot mint them later.",
+                )
+            }
+        }
+    }
+}

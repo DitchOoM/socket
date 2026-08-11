@@ -456,19 +456,46 @@ jobs:
       # suites. The K/N link -force_loads each libquiche.a, so the .kexe is self-contained: the
       # integration job needs no quiche libs and no Docker harness.
       #
-      # ⚠️ The two generate*Cert tasks are NOT optional here, and this job is the only place they can
-      # run — the same trap build-linux's link job documents. socket-quic-quiche/testcerts/{localhost,
-      # pinned}* are git-ignored and minted ONLY by these tasks, which build.gradle.kts (~line 2795)
-      # wires to `(jvm|linuxX64|macos|ios|tvos|watchos)\w*Test` — a regex `linkDebugTestMacosArm64`
-      # does not match. The integration job runs the raw .kexe with no Gradle at all, so without this
-      # the checkout's testcerts/ holds only the two committed files and the Apple CA-/hash-pinning
-      # tests die on AppleTestCerts.MissingGeneratedFixture. PEMs are all they read — no .p12.
-      - name: Link macosArm64 test binaries (+ mint the generated TLS fixtures)
+      # ⚠️ verifyGeneratedTestCerts is NOT optional here, and this job is the only place it can run —
+      # the same trap build-linux's link job documents. socket-quic-quiche/testcerts/{localhost,
+      # pinned}* are git-ignored and minted ONLY by generateLocalhostCert / generatePinnedW3cCerts,
+      # which build.gradle.kts wires to `(jvm|linuxX64|macos|ios|tvos|watchos)\w*Test` — a regex
+      # `linkDebugTestMacosArm64` does not match. The integration job runs the raw .kexe with no
+      # Gradle at all, so without this the checkout's testcerts/ holds only the two committed files
+      # and the Apple CA-/hash-pinning tests die on AppleTestCerts.MissingGeneratedFixture.
+      # The verify task depends on both generators, so it both MINTS the fixtures and fails here,
+      # in the producing job, if any is missing. PEMs are all these suites read — no .p12.
+      - name: Link macosArm64 test binaries (+ mint and verify the generated TLS fixtures)
         run: >-
           ./gradlew linkDebugTestMacosArm64
-          :socket-quic-quiche:generateLocalhostCert
-          :socket-quic-quiche:generatePinnedW3cCerts
+          :socket-quic-quiche:verifyGeneratedTestCerts
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # The artifact boundary is the other half of the guard. upload-artifact silently drops what it
+      # cannot match (hidden files are the classic — that is how the cargo skip markers vanished and
+      # bought a silent 15min rebuild per shard, still green), and the run step in the integration
+      # job only errors when ZERO kexes arrive — so losing ONE module's binary would quietly delete
+      # a whole suite's coverage and still pass. Record exactly what this job produced; the
+      # integration job asserts the same set came back. Derived by find, so it needs no maintenance
+      # when a module or fixture is added.
+      - name: Record the artifact manifest
+        run: |
+          set -euo pipefail
+          mkdir -p build/ci
+          # The grep mirrors upload-artifact's own default (include-hidden-files: false): a path with
+          # a hidden segment is NOT uploaded, so listing one here would fail the integration job for a
+          # file that was never shipped in the first place.
+          {
+            find . -path '*/build/bin/macosArm64/debugTest/test.kexe' -type f
+            find socket-quic-quiche/testcerts -type f
+          } | sed 's|^\./||' | { grep -vE '(^|/)\.' || true; } | LC_ALL=C sort > build/ci/macos-arm64-manifest.txt
+          count=$(wc -l < build/ci/macos-arm64-manifest.txt | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "::error::linkDebugTestMacosArm64 produced no test.kexe — nothing to ship"
+            exit 1
+          fi
+          echo "artifact must carry $count files:"
+          cat build/ci/macos-arm64-manifest.txt
 
       # ⚠️ Two-attempt upload — see the natives upload above for the non-retryable-403 story.
       - name: Upload macosArm64 test binaries
@@ -487,6 +514,7 @@ jobs:
           path: |
             **/build/bin/macosArm64/debugTest/test.kexe
             socket-quic-quiche/testcerts/
+            build/ci/macos-arm64-manifest.txt
           retention-days: 1
           if-no-files-found: error
 
@@ -498,6 +526,7 @@ jobs:
           path: |
             **/build/bin/macosArm64/debugTest/test.kexe
             socket-quic-quiche/testcerts/
+            build/ci/macos-arm64-manifest.txt
           retention-days: 1
           if-no-files-found: error
           # The first attempt may have registered the name before failing to finalize.
@@ -578,6 +607,29 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: macos-arm64-test-binaries
+
+      # Fail HERE, at the boundary, rather than 20 minutes later inside a test — or not at all, if the
+      # loss was a whole module's binary. The link job recorded what it produced; anything that did
+      # not survive the round-trip is named individually.
+      - name: Verify the artifact carried everything the link job produced
+        run: |
+          set -uo pipefail
+          manifest=build/ci/macos-arm64-manifest.txt
+          if [ ! -f "$manifest" ]; then
+            echo "::error::$manifest did not arrive in macos-arm64-test-binaries — either the link job failed to record it, or upload-artifact dropped it"
+            exit 1
+          fi
+          rc=0
+          while IFS= read -r f; do
+            if [ ! -e "$f" ]; then
+              echo "::error::$f was produced by the link job but did not survive the artifact round-trip"
+              rc=1
+            fi
+          done < "$manifest"
+          if [ "$rc" -eq 0 ]; then
+            echo "all $(wc -l < "$manifest" | tr -d ' ') files from the link job are present"
+          fi
+          exit $rc
 
       - name: Run macosArm64 tests (all modules)
         run: |
