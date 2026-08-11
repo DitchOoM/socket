@@ -53,12 +53,19 @@ runs:
         key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
         restore-keys: konan-macos-
 
+    # Prefers the `gradle-macos-kn-*` entry, which is saved by the widest K/N test shard and so
+    # actually contains build-cache-1 klib output. The plain `gradle-macos-*` entry is written by
+    # `natives`, which only runs cargo and a Gradle configure — it holds no klibs (measured: 258MB
+    # vs 1088MB for a pre-fan-out entry), so restoring only that would make every shard recompile
+    # Kotlin/Native cold on every run. Ordered fallbacks: exact klib cache, newest klib cache,
+    # then the natives-only cache, which is still better than nothing for dependency resolution.
     - name: Restore Gradle build outputs
       uses: actions/cache/restore@v5
       with:
         path: ~/.gradle/caches
-        key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
         restore-keys: |
+          gradle-macos-kn-
           gradle-macos-
 
     - name: Restore Gradle wrapper distribution

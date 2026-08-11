@@ -287,10 +287,20 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          # ktlintCheck rides the macOS x64 shard: it is JVM-side and cheap, and this is the shard
-          # whose Gradle configuration is warmest.
-          - name: "macOS x64 + ktlint"
-            tasks: "macosX64Test ktlintCheck"
+          # ⚠️ The macOS x64 suite is split with `-x`, NOT with a hand-kept list of qualified
+          # `:module:macosX64Test` task paths, and that choice is load-bearing. An explicit list is
+          # exactly the false-green this file already warns about above: add a module (or an Apple
+          # target to an existing one) and its tests silently stop running, with everything green.
+          # `-x` inverts the failure mode — the unqualified task still means "every subproject that
+          # has one", so a new module automatically lands in the `rest` shard. The only thing the
+          # split can get wrong is running something twice, which is loud and cheap.
+          #
+          # socket-quic-quiche is peeled off because it carries the real QUIC loopback suites and
+          # dominates the lane; the two together were 827s of a 864s job before this split.
+          - name: "macOS x64 (quiche)"
+            tasks: ":socket-quic-quiche:macosX64Test"
+          - name: "macOS x64 (all other modules)"
+            tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
           - name: "tvOS + watchOS simulators"
@@ -301,9 +311,10 @@ jobs:
           # other Apple target maps it to Long. A width-dependent comparison therefore compiles
           # clean on macOS/iOS/tvOS and on the watchOS *simulator*, and fails only here — exactly
           # how socket-udp's HostLoopback.apple.kt was broken for watchosArm64 while looking fine
-          # everywhere (#280). Cheap: compile only, no link, no run.
-          - name: "device-target compile (ILP32 guard)"
-            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
+          # everywhere (#280). Cheap: compile only, no link, no run — so ktlintCheck rides along
+          # here rather than on a test lane.
+          - name: "device-target compile (ILP32 guard) + ktlint"
+            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64 ktlintCheck"
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/apple-quiche-env
@@ -313,6 +324,33 @@ jobs:
           ./gradlew
           ${{ matrix.shard.tasks }}
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # ⚠️ Restores the Kotlin/Native build cache that the fan-out otherwise LOSES.
+      #
+      # The monolith saved one ~1GB gradle-macos-* entry containing every compiled klib, because
+      # one job did all the compiling. After the split, `natives` is the single cache writer — and
+      # `natives` only runs cargo and a Gradle configure, so the entry it saves holds no klibs at
+      # all (measured: 258MB here vs 1088MB on a pre-fan-out PR). Every shard then recompiled the
+      # klibs cold on every run, quietly giving back much of what the parallelism bought.
+      #
+      # This shard compiles the widest set (unqualified macosX64Test = every module) so it is the
+      # designated writer of a SECOND key that actually contains build-cache-1 output. The other
+      # shards restore it (see apple-quiche-env) and get the shared commonMain metadata and
+      # dependency resolution even though their own target's klibs are not in it.
+      #
+      # Deliberately NOT per-shard keys: five ~1GB entries would blow the repo's 10GB Actions cache
+      # cap and trigger exactly the LRU eviction that makes a "cached" quiche build cost 514s.
+      # if: always() — the klibs compiled before a test assertion failed are still valid and worth
+      # keeping; gating on success would mean a flaky lane also poisons the next run's cache.
+      # continue-on-error: a save whose key already exists warns rather than fails, and a cache
+      # problem must never turn a green test lane red.
+      - name: Save Gradle build outputs (K/N klibs)
+        if: always() && matrix.shard.name == 'macOS x64 (all other modules)'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.gradle/caches
+          key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
 
       - name: Upload test reports (on failure)
         if: failure()
