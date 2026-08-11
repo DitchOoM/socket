@@ -454,11 +454,20 @@ jobs:
       # UNQUALIFIED so every module with a macosArm64 test target is linked — socket-quic-quiche /
       # socket-http3 / socket-webtransport carry the real Apple QUIC/H3/WebTransport loopback
       # suites. The K/N link -force_loads each libquiche.a, so the .kexe is self-contained: the
-      # integration job runs it with only a checkout (for the committed <module>/testcerts/), no
-      # quiche libs and no Docker harness.
-      - name: Link macosArm64 test binaries
+      # integration job needs no quiche libs and no Docker harness.
+      #
+      # ⚠️ The two generate*Cert tasks are NOT optional here, and this job is the only place they can
+      # run — the same trap build-linux's link job documents. socket-quic-quiche/testcerts/{localhost,
+      # pinned}* are git-ignored and minted ONLY by these tasks, which build.gradle.kts (~line 2795)
+      # wires to `(jvm|linuxX64|macos|ios|tvos|watchos)\w*Test` — a regex `linkDebugTestMacosArm64`
+      # does not match. The integration job runs the raw .kexe with no Gradle at all, so without this
+      # the checkout's testcerts/ holds only the two committed files and the Apple CA-/hash-pinning
+      # tests die on AppleTestCerts.MissingGeneratedFixture. PEMs are all they read — no .p12.
+      - name: Link macosArm64 test binaries (+ mint the generated TLS fixtures)
         run: >-
           ./gradlew linkDebugTestMacosArm64
+          :socket-quic-quiche:generateLocalhostCert
+          :socket-quic-quiche:generatePinnedW3cCerts
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # ⚠️ Two-attempt upload — see the natives upload above for the non-retryable-403 story.
@@ -471,7 +480,13 @@ jobs:
           # Glob across modules; upload-artifact strips the common ancestor (repo root, since the root
           # module's path has no module prefix), so each file keeps its <module>/build/bin/... path and
           # restores there on download — exactly where it must sit to find <module>/testcerts/.
-          path: '**/build/bin/macosArm64/debugTest/test.kexe'
+          # testcerts/ rides along for the reason the link step above explains: the generated
+          # localhost*/pinned* fixtures exist only where a Gradle task minted them. Adding it keeps the
+          # common ancestor at the repo root, so the .kexe paths are unchanged. (Committed cert.crt/
+          # cert.key ride along too and land byte-identical on top of the checkout's copies.)
+          path: |
+            **/build/bin/macosArm64/debugTest/test.kexe
+            socket-quic-quiche/testcerts/
           retention-days: 1
           if-no-files-found: error
 
@@ -480,7 +495,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: macos-arm64-test-binaries
-          path: '**/build/bin/macosArm64/debugTest/test.kexe'
+          path: |
+            **/build/bin/macosArm64/debugTest/test.kexe
+            socket-quic-quiche/testcerts/
           retention-days: 1
           if-no-files-found: error
           # The first attempt may have registered the name before failing to finalize.
@@ -540,8 +557,10 @@ jobs:
   # Split out of the old monolith exactly as integration-linux-{x64,arm64} are: `link` builds the
   # .kexe (self-contained, libquiche.a -force_loaded), this job runs it. The Apple QUIC/H3/
   # WebTransport suites are in-process loopback — no Docker harness — and locate their TLS fixtures
-  # via a <module>/testcerts/ fallback, so a plain checkout (which carries the committed testcerts/)
-  # plus cwd=repo-root is all they need.
+  # via a cwd-relative <module>/testcerts/ fallback, so cwd=repo-root plus that directory is all they
+  # need. The directory arrives in two halves: the COMMITTED cert.crt/cert.key from the checkout, and
+  # the git-ignored localhost*/pinned* fixtures, which only Gradle can mint and so ride the `link`
+  # artifact. No Gradle runs here, so a checkout on its own would leave the pinning suites broken.
   integration-macos-arm64:
     name: "Integration Tests (macOS ARM64)"
     needs: link
@@ -553,7 +572,8 @@ jobs:
 
       # Restores each module's test.kexe to its <module>/build/bin/macosArm64/debugTest/ path
       # (the artifact preserved the repo-root-relative structure), so running from repo root
-      # resolves the per-module testcerts/ fallback.
+      # resolves the per-module testcerts/ fallback — and drops the Gradle-generated
+      # socket-quic-quiche/testcerts/{localhost,pinned}* fixtures next to the committed ones.
       - name: Download macosArm64 test binaries
         uses: actions/download-artifact@v8
         with:
