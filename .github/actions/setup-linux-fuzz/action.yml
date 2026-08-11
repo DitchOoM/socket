@@ -88,10 +88,13 @@ runs:
     # earlier "skip the toolchain for http3 lanes" optimization broke. libclang: the
     # cargo-fuzz native lanes compile quiche 0.29 (boring-crate default), whose boring-sys
     # build runs bindgen.
+    # See .github/actions/apt-safe-update: a 403 from the runner image's unused azure-cli source
+    # made `apt-get update` exit 100 and blocked the 1efafc4b release.
+    - uses: ./.github/actions/apt-safe-update
+
     - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
       shell: bash
       run: |
-        sudo apt-get update
         sudo apt-get install -y build-essential perl pkg-config cmake nasm
         sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
         sudo apt-get install -y libclang-dev

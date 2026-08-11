@@ -1,0 +1,55 @@
+name: "apt-get update, resilient to unused third-party sources"
+description: >-
+  `apt-get update` that cannot be taken down by a third-party apt source this project does not use.
+  Wraps the one-line fix so the five call sites cannot drift apart.
+
+runs:
+  using: composite
+  steps:
+    - name: apt-get update (drop unused third-party sources first)
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # ⚠️ WHY THIS EXISTS — it blocked a release on 2026-08-11.
+        #
+        # `apt-get update` fails WHOLESALE (exit 100) if ANY configured source fails, even one whose
+        # packages are irrelevant to the build. GitHub's ubuntu-24.04 runner image preconfigures
+        # several third-party sources this project never installs from, and one of them broke:
+        #
+        #   E: Failed to fetch https://packages.microsoft.com/repos/azure-cli/dists/noble/InRelease
+        #      403  Forbidden [IP: 13.107.213.69 443]
+        #   E: The repository 'https://packages.microsoft.com/repos/azure-cli noble InRelease'
+        #      is no longer signed.
+        #   ##[error]Process completed with exit code 100.
+        #
+        # That killed `QUIC quiche JVM (JDK 17 / JNI)` on the merged.yaml release run for
+        # 1efafc4b, which skipped validate -> publish -> Finalize Release. A repository we do not
+        # depend on, serving a 403, stopped a release of this library.
+        #
+        # `-o Acquire::Retries=3` does NOT cover it: retries absorb transient 5xx/timeouts, but a
+        # 403 on the InRelease signature check is a hard, immediate, deterministic failure.
+        #
+        # So: remove the sources we never install from, THEN update. `install` stays strict, so a
+        # genuinely missing package still fails loudly — this only stops an unrelated repo from
+        # being able to fail the build.
+        #
+        # Deliberately NOT removed: google-chrome. The JS/browser test lane uses Chrome, and while
+        # it currently arrives via browser-actions/setup-chrome rather than apt, removing its source
+        # would be a silent trap the day that changes.
+        for src in \
+          /etc/apt/sources.list.d/microsoft-prod.list \
+          /etc/apt/sources.list.d/microsoft-prod.sources \
+          /etc/apt/sources.list.d/azure-cli.list \
+          /etc/apt/sources.list.d/azure-cli.sources
+        do
+          if [ -e "$src" ]; then
+            echo "removing unused apt source: $src"
+            sudo rm -f "$src"
+          fi
+        done
+
+        # Retries still worth keeping for the Ubuntu archives themselves, which do throw transient
+        # 5xx and timeouts (a recurring flake in this repo's history — a release once died on an
+        # apt stall).
+        sudo apt-get update -o Acquire::Retries=3

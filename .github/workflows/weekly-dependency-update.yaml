@@ -44,9 +44,13 @@ jobs:
       # Native build toolchain for quiche + BoringSSL + liburing (mirrors
       # build-linux.yaml). Without these a quiche/liburing bump cannot be
       # validated and the agent would open an unverified PR.
+      # See .github/actions/apt-safe-update: an unused third-party apt source on the runner image
+      # can exit-100 the whole job. This lane validates a dependency bump before opening a PR, so a
+      # spurious apt failure here reads as "the bump is broken".
+      - uses: ./.github/actions/apt-safe-update
+
       - name: Install native build deps
         run: |
-          sudo apt-get update
           sudo apt-get install -y build-essential perl pkg-config cmake nasm
 
       - name: Set up JDK 21

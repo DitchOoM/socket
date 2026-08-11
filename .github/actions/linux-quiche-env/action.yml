@@ -156,11 +156,16 @@ runs:
     # The concrete consumer-side use: buildJvmJniShimLinuxArm64 links with aarch64-linux-gnu-gcc, and
     # `natives` writes its `.jni-built-<ver>` marker so that task normally skips here. "Normally" is
     # not "always" (see the continue-on-error on that step), so keep the compiler within reach.
+    # ⚠️ apt-safe-update, not a bare `apt-get update`: the fan-out runs this composite in ~10 Linux
+    # jobs where the monolith ran apt ONCE, so a flaky-or-broken apt source now gets ten chances to
+    # fail the run instead of one. That is not hypothetical — a 403 from the runner image's unused
+    # azure-cli source blocked the 1efafc4b release here. See .github/actions/apt-safe-update.
+    - uses: ./.github/actions/apt-safe-update
+
     - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
       shell: bash
       run: |
         # -o Acquire::Retries=3 absorbs transient archive-mirror 5xx/timeouts (a recurring CI flake).
-        sudo apt-get update -o Acquire::Retries=3
         sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
         sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
         sudo apt-get install -y -o Acquire::Retries=3 libclang-dev
