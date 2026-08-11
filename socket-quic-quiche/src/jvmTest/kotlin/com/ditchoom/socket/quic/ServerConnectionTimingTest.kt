@@ -4,7 +4,6 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -148,7 +147,6 @@ class ServerConnectionTimingTest {
                                     stream.close()
                                 }
                             }
-                        delay(100)
 
                         // Client: open stream, write, read echo
                         val clientJob =

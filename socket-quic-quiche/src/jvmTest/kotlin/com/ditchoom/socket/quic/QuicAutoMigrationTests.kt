@@ -9,7 +9,6 @@ import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -103,7 +102,6 @@ class QuicAutoMigrationTests {
                                     stream.close()
                                 }
                             }
-                        delay(100)
 
                         val beforeEcho = CompletableDeferred<String>()
                         val migratedPhase = CompletableDeferred<MigrationPhase>()

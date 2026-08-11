@@ -177,7 +177,6 @@ class JvmQuicTraceCaptureTests {
                                     stream.close()
                                 }
                             }
-                        delay(100)
 
                         // Consumer-owned sink (thread-safe: the recorder emits from driver loops +
                         // the monitor collectors) + a settable monitor standing in for the platform one.
@@ -292,7 +291,6 @@ class JvmQuicTraceCaptureTests {
                                     stream.close()
                                 }
                             }
-                        delay(100)
 
                         suspend fun oneClient(payload: String): String {
                             val echoed = CompletableDeferred<String>()

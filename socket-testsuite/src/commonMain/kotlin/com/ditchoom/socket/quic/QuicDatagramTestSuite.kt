@@ -26,6 +26,11 @@ import kotlin.time.Duration.Companion.seconds
  * Datagrams are unreliable, but a single datagram over loopback with no impairment does not drop, so
  * the round-trip assertions are deterministic. Control-flow/ownership edge cases live in the
  * platform-agnostic [QuicDatagramAdapterTests].
+ *
+ * No settle delay between `launch { connections { … } }` and the first client (issue #305) — see
+ * [QuicServerTestSuite]'s class doc for why one was never needed. The one delay left here is the
+ * resend interval of [datagramRoundTrip]'s bounded resend-until-echoed loop, which is load-bearing for
+ * a different reason: RFC 9221 datagrams are genuinely droppable, so the resend IS the retry.
  */
 abstract class QuicDatagramTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
@@ -71,7 +76,6 @@ abstract class QuicDatagramTestSuite {
                                 }
                             }
                         }
-                    delay(100)
 
                     var roundTripped: String? = null
                     try {
@@ -150,7 +154,6 @@ abstract class QuicDatagramTestSuite {
                                 // Return immediately; framework closes the connection.
                             }
                         }
-                    delay(100)
 
                     try {
                         withQuicConnection("localhost", port, noDgramOptions, timeout = 10.seconds) {
@@ -175,7 +178,6 @@ abstract class QuicDatagramTestSuite {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = dgramOptions) {
                     val ready = CompletableDeferred<Unit>()
                     val serverJob = launch { connections { ready.complete(Unit) } }
-                    delay(100)
 
                     try {
                         withQuicConnection("localhost", port, dgramOptions, timeout = 10.seconds) {

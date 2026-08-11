@@ -6,7 +6,6 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -177,7 +176,6 @@ class QuicMigrationLoopbackTests {
                                 stream.close()
                             }
                         }
-                    delay(100)
 
                     val migrationResult = CompletableDeferred<MigrationResult>()
                     val beforeEcho = CompletableDeferred<String>()

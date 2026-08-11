@@ -97,7 +97,6 @@ class QuicLocalServerTests {
                                     stream.close()
                                 }
                             }
-                        delay(100)
 
                         val clientJob =
                             launch(Dispatchers.IO) {
@@ -179,7 +178,6 @@ class QuicLocalServerTests {
                                     // reaches the client while its reply is still unread.
                                 }
                             }
-                        delay(100)
 
                         val clientJob =
                             launch(Dispatchers.IO) {

@@ -57,10 +57,23 @@ import kotlin.time.Duration.Companion.seconds
  * server, so it gets no subclass and runs nothing here.
  *
  * Lifecycle follows `QuicServerTestSuite`'s proven shape: the server accept loop runs in a launched
- * `serverJob`; a short settle lets [Http3LoopbackServer.serve] open its control stream and start
- * collecting before the client connects; and `finally { serverJob.cancel() }` plus `withQuicServer`'s
- * block-boundary teardown closes everything. The client always reads the full response body (and
- * `close()`s the response) before the block exits, so the response is fully delivered before teardown.
+ * `serverJob`; and `finally { serverJob.cancel() }` plus `withQuicServer`'s block-boundary teardown
+ * closes everything. The client always reads the full response body (and `close()`s the response)
+ * before the block exits, so the response is fully delivered before teardown.
+ *
+ * **No settle delay before dialing** (issue #305). Every test here used to open with a `delay(100)`
+ * "let the accept loop start" beat. It waited for nothing: `withQuicServer` (and `withHttp3Server`,
+ * which wraps it and launches its accept job before running the block) has already **bound** by the
+ * time the block runs, and every accepted connection queues in `ServerConnectionRegistry.acceptedDrivers`
+ * — a `Channel.UNLIMITED` fed by the receive loop from the moment of bind. A client therefore cannot
+ * arrive "too early" for the accept loop; the handler simply starts later, and `Http3LoopbackServer.serve`
+ * cannot open its control stream *before* a client connects in any case, because it only runs on an
+ * already-accepted connection. The bind is the only raceable event, and it is not raced here — nothing
+ * in this suite puts `withQuicServer` inside a `launch` (see `QuicServerTestSuite`'s shared-port test
+ * for the one shape that does, and the `CompletableDeferred` signal it uses instead of a guess).
+ *
+ * The delays that remain are the ones that are NOT stand-ins for an observable condition — see
+ * [settleClientControlStream] — plus the poll intervals inside bounded reactive waits.
  */
 abstract class Http3LoopbackTestSuite {
     /** Server cert + key for the in-process loopback server (platform-specific path resolution). */
@@ -136,6 +149,47 @@ abstract class Http3LoopbackTestSuite {
             resetForRead()
         }
 
+    /**
+     * The one beat in this suite that is genuinely irreducible (issue #305 category 3): time for the
+     * client's own **control / QPACK-encoder stream** bytes — MAX_PUSH_ID (RFC 9114 §7.2.7) or the
+     * encoder instructions that install a dynamic-table entry (RFC 9204 §4.3) — to reach the server
+     * before a request stream that depends on them.
+     *
+     * Call it only AFTER `peerSettings()`, which is the reactive half: that one awaits an observable
+     * event (the server's SETTINGS arriving) and needs no beat. This covers the opposite direction, and
+     * that direction has **no client-observable signal at all** — QUIC orders bytes within a stream but
+     * gives no ordering *between* streams, so a request stream opened immediately after can overtake the
+     * control stream, and HTTP/3 never acknowledges control frames at the application layer. So unlike
+     * every other delay this file used to carry, this one is not a stand-in for a condition we could
+     * await; there is nothing to await. Its absence shows up as a server that handles the request
+     * without the push credit / dynamic entry — a missing push, or a static-only encoding.
+     *
+     * The 100 ms is uniform on purpose: the pre-#305 sites were split 50/100 with no stated reason, and
+     * the larger of the two is the one that has never been observed to fall short here. Where the test
+     * *can* be reactive instead, it is — [serverPushWindowRollsViaReIssuedMaxPushId] drives requests
+     * until it observes the push rather than budgeting for the round trip.
+     */
+    private suspend fun settleClientControlStream() = delay(100)
+
+    /**
+     * Hold the client's HTTP/3 connection open until the server-side [signal] the test asserts on has
+     * actually arrived, or until a bounded deadline expires (issue #305).
+     *
+     * Replaces a fixed `delay(300) // let the WT_CLOSE_SESSION capsule + FIN flush before teardown`.
+     * The call sites sit at the end of a `withHttp3Connection` block, and leaving that block tears the
+     * QUIC connection down — so a capsule the session has queued but whose datagram the driver has not
+     * flushed yet dies with the connection, and the server never sees the close. The `CompletableDeferred`
+     * the assertion already reads is exactly the "it arrived" evidence, so wait for THAT instead of
+     * guessing how long a loaded runner needs to flush.
+     *
+     * The timeout is swallowed **on purpose**: the assertion after the block does its own bounded
+     * `serverClose.await()`, so a genuinely lost capsule fails exactly as it did before this change,
+     * while the common case now costs a round trip instead of a flat 300 ms.
+     */
+    private suspend fun awaitServerObserved(signal: CompletableDeferred<*>) {
+        withTimeoutOrNull(5.seconds) { signal.await() }
+    }
+
     @Test
     fun getRoundTripsThroughInProcessServer() =
         runHttp3LoopbackTest {
@@ -153,7 +207,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100) // let serve() open its control stream + start collecting before the client connects
                     try {
                         val result =
                             withHttp3Connection(
@@ -196,7 +249,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100) // let serve() open its control stream + start collecting before the client connects
                     try {
                         val (status, text) =
                             withHttp3Connection(
@@ -251,7 +303,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100)
                     try {
                         val code =
                             withHttp3Connection(
@@ -293,7 +344,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100)
                     try {
                         val (badCode, secondStatus, secondBody) =
                             withHttp3Connection(
@@ -350,7 +400,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100)
                     try {
                         withHttp3Connection(
                             "localhost",
@@ -361,7 +410,7 @@ abstract class Http3LoopbackTestSuite {
                         ) {
                             // Let the peer SETTINGS arrive so the client's encoder activates before requests.
                             withTimeout(5.seconds) { peerSettings() }
-                            delay(50)
+                            settleClientControlStream()
                             repeat(3) { i ->
                                 val response =
                                     request(
@@ -429,7 +478,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100)
                     try {
                         val result =
                             withHttp3Connection(
@@ -443,7 +491,7 @@ abstract class Http3LoopbackTestSuite {
                                 // Let our MAX_PUSH_ID reach the server before it handles the request, so it
                                 // knows push is allowed (it decides per-request whether to push).
                                 withTimeout(5.seconds) { peerSettings() }
-                                delay(100)
+                                settleClientControlStream()
                                 // Collect the first push concurrently — the promise arrives during request().
                                 val pushDeferred = async { withTimeout(10.seconds) { pushes.first() } }
                                 val response = request(Http3Request(method = "GET", authority = "localhost", path = "/index.html"))
@@ -505,7 +553,6 @@ abstract class Http3LoopbackTestSuite {
                         }
                     },
                 ) {
-                    delay(100)
                     val result =
                         withHttp3Connection(
                             "localhost",
@@ -517,7 +564,7 @@ abstract class Http3LoopbackTestSuite {
                         ) {
                             // Let our MAX_PUSH_ID reach the server before it handles the request.
                             withTimeout(5.seconds) { peerSettings() }
-                            delay(100)
+                            settleClientControlStream()
                             val pushDeferred = async { withTimeout(10.seconds) { pushes.first() } }
                             val r = request(Http3Request(method = "GET", authority = "localhost", path = "/index.html"))
                             val htmlBody = r.readFullBody()
@@ -577,7 +624,6 @@ abstract class Http3LoopbackTestSuite {
                         }
                     },
                 ) {
-                    delay(100)
                     val paths =
                         withHttp3Connection(
                             "localhost",
@@ -588,7 +634,7 @@ abstract class Http3LoopbackTestSuite {
                             maxPushId = 8,
                         ) {
                             withTimeout(5.seconds) { peerSettings() }
-                            delay(100)
+                            settleClientControlStream()
                             val collected = async { withTimeout(10.seconds) { pushes.take(3).toList() } }
                             val r = request(Http3Request(method = "GET", authority = "localhost", path = "/index.html"))
                             r.readFullBody().freeIfNeeded()
@@ -630,7 +676,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100)
                     try {
                         val pushCount =
                             withHttp3Connection(
@@ -642,7 +687,7 @@ abstract class Http3LoopbackTestSuite {
                                 maxPushId = 0,
                             ) {
                                 withTimeout(5.seconds) { peerSettings() }
-                                delay(50)
+                                settleClientControlStream()
                                 val received = mutableListOf<Long>()
                                 val collector =
                                     launch {
@@ -717,7 +762,6 @@ abstract class Http3LoopbackTestSuite {
                         }
                     },
                 ) {
-                    delay(100) // let the accept loop start before the client connects
                     val result =
                         withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
                             val g = request(Http3Request(method = "GET", authority = "localhost", path = "/hi"))
@@ -773,7 +817,6 @@ abstract class Http3LoopbackTestSuite {
                         }
                     },
                 ) {
-                    delay(100)
                     diagnostics.mark("server up; dialing")
                     withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
                         // #291: when this connection aborts itself on a protocol violation, the test only
@@ -783,7 +826,7 @@ abstract class Http3LoopbackTestSuite {
                         diagnostics.registerConnection("C", this)
                         diagnostics.mark("connected; awaiting peer SETTINGS")
                         withTimeout(5.seconds) { peerSettings() }
-                        delay(50)
+                        settleClientControlStream()
                         repeat(3) { i ->
                             diagnostics.mark("request $i: opening")
                             val response =
@@ -829,7 +872,6 @@ abstract class Http3LoopbackTestSuite {
 
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = serverQuicOptions) {
                     val serverJob = launch { connections { server.serve(this) } }
-                    delay(100) // let serve() open its control stream + start collecting before the client connects
                     try {
                         val settings =
                             withHttp3Connection(
@@ -874,7 +916,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val clientSessionId =
                         withHttp3Connection(
                             "localhost",
@@ -914,7 +955,6 @@ abstract class Http3LoopbackTestSuite {
                         onWebTransport = { reject(status) },
                         onRequest = { response.send(404) },
                     ) {
-                        delay(100)
                         withHttp3Connection(
                             "localhost",
                             port,
@@ -967,7 +1007,6 @@ abstract class Http3LoopbackTestSuite {
                     connectionOptions = connectionOptions,
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1006,7 +1045,6 @@ abstract class Http3LoopbackTestSuite {
                     webTransport = WebTransportOptions(maxSessions = 4),
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1043,7 +1081,6 @@ abstract class Http3LoopbackTestSuite {
                     onWebTransport = { serverIds.trySend(accept().sessionId) },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val (a, b) =
                         withHttp3Connection(
                             "localhost",
@@ -1087,7 +1124,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val reply =
                         withHttp3Connection(
                             "localhost",
@@ -1127,7 +1163,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1166,7 +1201,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val got =
                         withHttp3Connection(
                             "localhost",
@@ -1211,7 +1245,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val reply =
                         withHttp3Connection(
                             "localhost",
@@ -1253,7 +1286,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1266,7 +1298,9 @@ abstract class Http3LoopbackTestSuite {
                         val session = connectWebTransport(authority = "localhost", path = "/wt")
                         session.close(code = 42, reason = "all done")
                         assertTrue(session.isClosed)
-                        delay(300) // let the WT_CLOSE_SESSION capsule + FIN flush before teardown
+                        // Hold the connection open until the WT_CLOSE_SESSION capsule + FIN have actually
+                        // reached the server — the condition the assertion below reads — not a fixed beat.
+                        awaitServerObserved(serverClose)
                     }
                     assertEquals(WebTransportCloseInfo(42, "all done"), withTimeout(5.seconds) { serverClose.await() })
                 }
@@ -1289,7 +1323,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val info =
                         withHttp3Connection(
                             "localhost",
@@ -1333,7 +1366,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val observed =
                         withHttp3Connection(
                             "localhost",
@@ -1388,7 +1420,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1406,7 +1437,8 @@ abstract class Http3LoopbackTestSuite {
                         // Now finish cleanly from the client side.
                         session.close(code = 0, reason = "drained, closing")
                         assertTrue(session.isClosed)
-                        delay(300) // let the WT_CLOSE_SESSION capsule + FIN flush before teardown
+                        // Same as the client-close test: wait for the capsule to land, not for a beat.
+                        awaitServerObserved(serverClose)
                     }
                     assertEquals(
                         WebTransportCloseInfo(0, "drained, closing"),
@@ -1439,7 +1471,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1486,7 +1517,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     val reply =
                         withHttp3Connection(
                             "localhost",
@@ -1529,7 +1559,6 @@ abstract class Http3LoopbackTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(100)
                     withHttp3Connection(
                         "localhost",
                         port,
@@ -1596,7 +1625,6 @@ abstract class Http3LoopbackTestSuite {
                     connectionOptions = connectionOptions,
                     onRequest = observe.then(requireToken).then(handler),
                 ) {
-                    delay(100)
                     val result =
                         withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
                             // 1) with the token → passes both filters → handler → 200 + body.
