@@ -1,13 +1,20 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlin.experimental.ExperimentalNativeApi::class)
 
 package com.ditchoom.socket.quic
 
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.get
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.set
 import kotlinx.cinterop.toKString
 import platform.posix.F_OK
 import platform.posix.access
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fputs
+import platform.posix.fread
 import platform.posix.getenv
 
 /**
@@ -24,13 +31,19 @@ import platform.posix.getenv
  *    writable `TMPDIR`. That is what lets the full quiche handshake run **for real** on the simulator
  *    instead of self-skipping: the POSIX UDP datapath needs no Network.framework listener, so the only
  *    thing that ever blocked the sim was the missing cwd.
+ *
+ * The build-GENERATED fixtures ([requireGenerated]) have no such fallback and cannot have one — see
+ * their section below.
  */
 internal object AppleTestCerts {
-    /** Absolute-or-relative path to test cert [name], materializing it into TMPDIR when cwd has none. */
-    fun path(name: String): String {
+    /** The cwd-relative locations any `testcerts/` fixture can appear at (module dir, or repo root). */
+    private fun findInTestCerts(name: String): String? =
         listOf("testcerts/$name", "socket-quic-quiche/testcerts/$name")
             .firstOrNull { access(it, F_OK) == 0 }
-            ?.let { return it }
+
+    /** Absolute-or-relative path to test cert [name], materializing it into TMPDIR when cwd has none. */
+    fun path(name: String): String {
+        findInTestCerts(name)?.let { return it }
         val pem = if (name.endsWith(".key")) TEST_KEY_PEM else TEST_CERT_PEM
         val dir = getenv("TMPDIR")?.toKString()?.trimEnd('/') ?: "/tmp"
         val path = "$dir/aqe-$name"
@@ -46,6 +59,77 @@ internal object AppleTestCerts {
     /** The committed `cert.crt` + `cert.key` identity every Apple quiche suite here uses. */
     val tlsConfig: QuicTlsConfig
         get() = QuicTlsConfig(certChainPath = path("cert.crt"), privKeyPath = path("cert.key"))
+
+    // --- build-GENERATED fixtures (localhost.*, pinned*) -------------------------------------------
+    //
+    // These are minted fresh by `generateLocalhostCert` / `generatePinnedW3cCerts` (both wired ahead of
+    // every `(macos|ios)\w*Test` task), so — unlike cert.crt/cert.key — they can NOT be embedded as a
+    // constant: a committed copy would carry a committed expiry, which is exactly what those tasks exist
+    // to avoid. They are therefore resolvable only from a cwd that has `testcerts/`.
+    //
+    // Resolution is deliberately STRICT, with no PEM fallback. [path] above falls back to the embedded
+    // quic.tech identity for anything that isn't a `.key`, which for a generated name would silently hand
+    // the CA-pinning / hash-pinning suites the WRONG certificate and turn a wiring break into a confusing
+    // assertion failure. [requireGenerated] fails loudly instead.
+
+    /** Thrown by [requireGenerated]; [skippingWhenSimulatorLacksFixtures] turns it into a skip on a simulator. */
+    class MissingGeneratedFixture(
+        val name: String,
+    ) : Exception(
+            "Build-generated test fixture '$name' not found in testcerts/. It is minted by " +
+                "generateLocalhostCert / generatePinnedW3cCerts, which every (macos|ios)*Test task " +
+                "depends on — on macOS a miss means the task wiring broke, not that the fixture is optional.",
+        )
+
+    /** Path to a build-generated fixture; throws (never a silent substitute) when it isn't there. */
+    fun requireGenerated(name: String): String = findInTestCerts(name) ?: throw MissingGeneratedFixture(name)
+
+    /**
+     * `wrapTestBody` body for a suite where only *some* tests need a build-generated fixture.
+     *
+     * Runs [block]; if it fails purely because a generated fixture is unreachable, and that is a property
+     * of the runtime rather than a build break, skip. An Apple simulator runs under
+     * `simctl spawn --standalone`, whose cwd is not the repo, so no amount of Gradle wiring can put
+     * `testcerts/` in front of it. On macOS K/N (cwd = the repo/module dir) the exception propagates and
+     * the test fails loudly.
+     *
+     * Catching the fixture miss rather than pre-checking is what keeps the skip **precise**: only the
+     * handful of tests that actually touch `localhost.*` / `pinned*` skip on the simulator, while every
+     * sibling test in the same suite still runs there for real. (A pre-check in `wrapTestBody` cannot
+     * tell which test it is wrapping, so it would take all 16 of `QuicServerTestSuite` down with the two
+     * CA-pinning ones.) Same shape as the JVM members' `UnsatisfiedLinkError → assumeTrue` hook.
+     *
+     * Prints the decision for the same reason `shouldSkipQuicHarnessOnSimulator` does — a self-skipping
+     * test is otherwise indistinguishable from a passing one in the log.
+     */
+    suspend fun skippingWhenSimulatorLacksFixtures(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: MissingGeneratedFixture) {
+            if (kotlin.native.Platform.osFamily == kotlin.native.OsFamily.MACOSX) throw e
+            println("[QUIC-APPLE-FIXTURES] skipping: no testcerts/ in the simulator cwd, missing '${e.name}'")
+        }
+    }
+
+    /** Read a (text) fixture file via posix — test-only, no buffer-lib dependency needed. */
+    fun readText(path: String): String =
+        memScoped {
+            val fp = fopen(path, "r") ?: error("Cannot open $path")
+            try {
+                val sb = StringBuilder()
+                val bufSize = 4096
+                val buf = allocArray<ByteVar>(bufSize)
+                while (true) {
+                    val n = fread(buf, 1.convert(), (bufSize - 1).convert(), fp).toInt()
+                    if (n <= 0) break
+                    buf[n] = 0
+                    sb.append(buf.toKString())
+                }
+                sb.toString()
+            } finally {
+                fclose(fp)
+            }
+        }
 
     // The committed socket-quic-quiche/testcerts/cert.{crt,key} (public test fixtures), embedded so
     // the suite is self-contained on an iOS simulator whose cwd lacks the repo testcerts/ dir.
