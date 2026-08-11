@@ -67,7 +67,7 @@ kotlinWrappers = "2026.6.0"
 # buffer-compression. 6.26.0 (buffer #337) renames buffer-crypto's PKCS#11 configuration names to be
 # module-neutral; that rename is the only source-breaking item in the range, and socket references no
 # PKCS#11 symbol in any source set.
-buffer = "6.26.0"
+buffer = "6.28.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
