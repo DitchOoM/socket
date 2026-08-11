@@ -303,18 +303,28 @@ jobs:
             tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
-          - name: "tvOS + watchOS simulators"
-            tasks: "tvosSimulatorArm64Test watchosSimulatorArm64Test"
+          # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
+          # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
+          # cleanly and what remains is mostly compile time, which parallelises well.
+          - name: "tvOS simulator"
+            tasks: "tvosSimulatorArm64Test"
+          - name: "watchOS simulator"
+            tasks: "watchosSimulatorArm64Test"
+          # ktlint gets its OWN lane. It rode the macOS x64 lane, then moved to the compile lane
+          # when that was split — and took the bottleneck with it both times, because it is ~400s
+          # of work in its own right (measured: the ILP32 lane went 414s -> 813s the moment ktlint
+          # landed on it). It depends on no native artifact and no test, so it parallelises freely.
+          - name: "ktlint"
+            tasks: "ktlintCheck"
           # Compile (can't run — no device) the test sources for the Apple *device* targets that
           # nothing else covers. The simulator lanes above are all 64-bit, so they cannot catch an
           # ILP32 regression: watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every
           # other Apple target maps it to Long. A width-dependent comparison therefore compiles
           # clean on macOS/iOS/tvOS and on the watchOS *simulator*, and fails only here — exactly
           # how socket-udp's HostLoopback.apple.kt was broken for watchosArm64 while looking fine
-          # everywhere (#280). Cheap: compile only, no link, no run — so ktlintCheck rides along
-          # here rather than on a test lane.
-          - name: "device-target compile (ILP32 guard) + ktlint"
-            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64 ktlintCheck"
+          # everywhere (#280). Cheap: compile only, no link, no run.
+          - name: "device-target compile (ILP32 guard)"
+            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/apple-quiche-env
@@ -380,7 +390,7 @@ jobs:
     name: "JVM quiche (${{ matrix.backend.name }})"
     needs: natives
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -399,8 +409,16 @@ jobs:
         with:
           konan: "false"
 
+      # ⚠️ 20 min, NOT the 8 the monolith used or the 12 this job first carried over. Both were
+      # sized for a world where this step ran AFTER the JNI step in the SAME job, so compilation
+      # was already done and the Gradle daemon was warm. Fanned out, each backend lane compiles
+      # from cold, and the step legitimately grew: measured 618s, 637s, then 733s across three
+      # runs on equivalent content — the third tripped the 720s limit and failed a green suite.
+      # That is a timeout mis-sized by the split, not a hang.
+      # The limit still earns its place: it fires faster than the job timeout and names the step.
+      # A genuine hang is bounded by timeout-minutes: 30 at job level.
       - name: Run socket-quic-quiche JVM tests (${{ matrix.backend.name }})
-        timeout-minutes: 12
+        timeout-minutes: 20
         run: >-
           ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
