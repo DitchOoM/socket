@@ -34,7 +34,7 @@ jobs:
         api-level: [29, 35]
     steps:
       - name: checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -135,7 +135,7 @@ jobs:
       #   FATAL | A snapshot operation for 'test' is pending and timeout has expired. Exiting...
       # which surfaces only as the boot poller's misleading "Timeout waiting for emulator to boot".
       - name: AVD cache (restore)
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         id: avd-cache
         with:
           path: |
@@ -166,7 +166,7 @@ jobs:
 
       - name: AVD cache (save pristine snapshot)
         if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: |
             ~/.android/avd/*
