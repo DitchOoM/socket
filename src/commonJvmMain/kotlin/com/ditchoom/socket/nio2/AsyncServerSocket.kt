@@ -10,8 +10,8 @@ import com.ditchoom.socket.nio2.util.openAsyncServerSocketChannel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.net.InetSocketAddress
-import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.AsynchronousServerSocketChannel
+import java.nio.channels.ClosedChannelException
 
 class AsyncServerSocket(
     private val config: TransportConfig = TransportConfig(),
@@ -47,7 +47,16 @@ class AsyncServerSocket(
                 val client =
                     try {
                         server.aAccept()
-                    } catch (e: AsynchronousCloseException) {
+                    } catch (e: ClosedChannelException) {
+                        // Supertype on purpose, covering both shutdown orderings: a close that
+                        // lands *during* a pending accept surfaces as AsynchronousCloseException
+                        // (a ClosedChannelException subclass), while a close that lands *between*
+                        // accepts surfaces as a plain ClosedChannelException. Catching only the
+                        // former made a normal shutdown throw on the second ordering.
+                        //
+                        // This also covers aAccept() throwing synchronously rather than routing
+                        // through AcceptCompletionHandler.failed, so the loop terminates cleanly
+                        // no matter which path the JDK takes.
                         break
                     }
                 val serverToClient = AsyncServerToClientSocket(client, config)

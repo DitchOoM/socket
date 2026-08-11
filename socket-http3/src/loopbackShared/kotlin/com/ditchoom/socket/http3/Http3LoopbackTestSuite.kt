@@ -776,6 +776,11 @@ abstract class Http3LoopbackTestSuite {
                     delay(100)
                     diagnostics.mark("server up; dialing")
                     withHttp3Connection("localhost", port, clientQuicOptions, connectionOptions, 15.seconds) {
+                        // #291: when this connection aborts itself on a protocol violation, the test only
+                        // ever sees the opaque `ApplicationError(514)` its next openStream throws. The
+                        // typed violation is sitting right here in connectionError — register so the
+                        // failure report prints which of the four QPACK decoder-stream violations it was.
+                        diagnostics.registerConnection("C", this)
                         diagnostics.mark("connected; awaiting peer SETTINGS")
                         withTimeout(5.seconds) { peerSettings() }
                         delay(50)

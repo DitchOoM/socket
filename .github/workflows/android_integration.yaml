@@ -1,8 +1,10 @@
 name: "Android Emulator Integration Test"
 on:
   pull_request:
+    # See review.yaml: '*' does not match '/', so '*.md' let every docs/**.md change boot an
+    # emulator for nothing. '**.md' matches markdown at any depth.
     paths-ignore:
-      - '*.md'
+      - '**.md'
     types:
       - synchronize
       - opened
@@ -14,9 +16,10 @@ jobs:
     # any normal runner-speed jitter. 25 leaves comfortable headroom while still bounding a
     # genuine hang (e.g. an emulator that never boots).
     timeout-minutes: 25
-    env:
-      # Force-kill emulator after 1 second instead of waiting 20 seconds for graceful shutdown
-      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+    # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL is deliberately NOT set job-wide — see the `run tests`
+    # step, which is the only step where force-killing the emulator is safe. Setting it here also
+    # applied it to the create-AVD step, whose entire purpose is to let the emulator WRITE a
+    # snapshot on shutdown, and a 1-second grace is not enough to flush one.
     strategy:
       # 29 and 35 are independent signals — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
@@ -119,6 +122,14 @@ jobs:
       # right after the create-AVD step caches the PRISTINE snapshot — no
       # package ever installed. (Root-caused in DitchOoM/buffer#186 where the
       # API-21 lane was failing this way on every second run.)
+      #
+      # `-v2` retires every entry written before the kill-timing fix above. The key carries no
+      # content hash and is scoped per ref, so a single poisoned entry breaks that ref for the
+      # cache's whole lifetime — which is exactly what happened on PR #332: run 1 missed, created
+      # the AVD, passed, and saved a snapshot the emulator had been SIGKILLed halfway through
+      # writing; run 2 restored it and the emulator exited before ever registering with adb:
+      #   FATAL | A snapshot operation for 'test' is pending and timeout has expired. Exiting...
+      # which surfaces only as the boot poller's misleading "Timeout waiting for emulator to boot".
       - name: AVD cache (restore)
         uses: actions/cache/restore@v5
         id: avd-cache
@@ -126,7 +137,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-x86_64-${{ matrix.api-level }}-disk4096
+          key: avd-x86_64-${{ matrix.api-level }}-disk4096-v2
 
       - name: create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -156,10 +167,15 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-x86_64-${{ matrix.api-level }}-disk4096
+          key: avd-x86_64-${{ matrix.api-level }}-disk4096-v2
 
       - name: run tests
         uses: reactivecircus/android-emulator-runner@v2
+        # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
+        # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
+        # dead time. The create-AVD step above must NOT inherit this — see the job-level note.
+        env:
+          ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
         with:
           api-level: ${{ matrix.api-level }}
           target: default

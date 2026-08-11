@@ -1,8 +1,15 @@
 name: "Build and Test"
 on:
   pull_request:
+    # '*' does not match '/', so '*.md' ignored ONLY root-level markdown. 28 of this repo's 39
+    # tracked .md files live in subdirectories, so every docs change bought the full matrix —
+    # PR #323 spent 60 minutes of macOS runner time on a one-file edit to
+    # docs/docs/platforms/jvm.md and then got killed by timeout-minutes anyway. '**' matches '/'.
+    # NOTE: '**/*.md' would NOT match root-level README.md; '**.md' matches markdown at any depth.
+    # docs/** is deliberately NOT ignored here, so the `docs` job still runs on Docusaurus config
+    # and dependency changes. Markdown-only PRs are covered by docs-markdown.yaml instead.
     paths-ignore:
-      - '*.md'
+      - '**.md'
     types:
       - synchronize
       - opened
@@ -12,17 +19,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One Maven Central version query for the whole run, ~90s, feeding every job below. Both build
+  # jobs used to compute their own, which let a release publishing between their two queries pin
+  # them to different versions — see compute-version.yaml and #329.
+  version:
+    uses: ./.github/workflows/compute-version.yaml
+
   build-linux:
+    needs: version
     uses: ./.github/workflows/build-linux.yaml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   build-apple:
+    needs: version
     uses: ./.github/workflows/build-apple.yaml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   validate:
-    needs: [build-linux, build-apple]
+    needs: [version, build-linux, build-apple]
     uses: ./.github/workflows/validate-artifacts.yaml
     with:
-      version: ${{ needs.build-linux.outputs.version }}
+      version: ${{ needs.version.outputs.version }}
 
   # Consumer-smoke: drive the MERGED published artifacts as a real downstream consumer would.
   # `validate` (above) RESOLVES the dependency graph and checks module-metadata shape; it never
@@ -343,7 +362,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
-    needs: build-linux
+    needs: [version, build-linux]
+    # Pinned like every other Gradle-running job in the run. This lane publishes nothing, so a
+    # divergent version could not corrupt an artifact — but it removes one more live Maven Central
+    # fetch, which is both latency and a failure mode, and keeps "one version per run" exception-free.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     # continue-on-error stays during Windows-peer bring-up: the MinGW-cross-
     # compiled DLL has not yet been proven to load on a bare windows-latest
     # (static-libgcc/stdc++ link is the intended fix; CI is the only place to
@@ -402,6 +426,12 @@ jobs:
   docs:
     name: "Validate Docs Generation"
     runs-on: macos-latest
+    needs: version
+    # Same reasoning as build-windows: docs publish nothing, but pinning drops a Central fetch from
+    # the Dokka run. `needs: version` delays this job by ~90s; it finishes in ~8 min against a
+    # ~40 min critical path, so it stays far off it.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
       - name: Set up JDK 21

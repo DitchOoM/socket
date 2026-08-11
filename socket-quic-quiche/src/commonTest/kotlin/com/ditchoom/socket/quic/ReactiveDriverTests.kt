@@ -775,6 +775,127 @@ class ReactiveDriverTests {
             }
         }
 
+    // ---- connection teardown must not discard buffered stream data (#318) ----
+    //
+    // The half-close shape from AndroidQuicServerTests.halfCloseAllowsReadAfterSendFin: the peer replies,
+    // FINs the stream, and closes the connection. Our transport accepted (and acked) those bytes, so the
+    // connection dying does not un-receive them — RFC 9000 §10.2 ends the *connection*, and quiche keeps
+    // the stream readable while it drains. Before the fix the reader's wakeup raced the teardown: if it
+    // lost, `commands` was already closed and `streamRead` reported ReadResult.End over data quiche was
+    // still holding, which `quiche_conn_free` then destroyed — `expected:<[ping]> but was:<[no_data:End]>`.
+    //
+    // Both tests pin the losing interleaving deterministically: one `afterCommand` signals the stream as
+    // readable AND observes the connection closed, with no suspension point in between, so the reader
+    // cannot get its StreamRecv in first. Negative check (the mutation proof): drop
+    // `drainReadableStreamsIntoSlots()` from `transitionToClosed` and both fail with End instead of Data.
+
+    /** A reader parked on `dataSignal` when the connection dies must still be handed the buffered bytes. */
+    @Test
+    fun streamRead_parkedWhenConnectionCloses_deliversBufferedDataBeforeEnd() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvResult = StreamRecvResult.Done // nothing readable yet -> the reader parks
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val slot = sendOpenStream(driver)
+                val adapter = DriverStreamAdapter(driver, slot)
+
+                val read = async { adapter.streamRead(slot.id, bufferFactory, 1024, 5.seconds) }
+                assertNull(
+                    withTimeoutOrNull(200) { read.await() },
+                    "reader should be parked on dataSignal — nothing has been made readable yet",
+                )
+
+                // The peer's reply + FIN land in quiche, then its CONNECTION_CLOSE: one afterCommand
+                // reports the stream readable (first sweep) and then sees the connection closed, which
+                // drains quiche (second sweep) and closes `commands` under the still-parked reader.
+                api.readableStreams.addLast(slot.id.id)
+                api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 4, fin = true))
+                api.closed = true
+                driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
+
+                val result = withTimeout(2.seconds) { read.await() }
+                val data = assertIs<ReadResult.Data>(result, "buffered bytes must outrank the End verdict")
+                assertEquals(4, data.buffer.remaining(), "the whole drained chunk must be delivered")
+                data.buffer.freeIfNeeded()
+
+                // The FIN the drain carried forward ends the stream on the next read — no park, no hang.
+                assertIs<ReadResult.End>(
+                    adapter.streamRead(slot.id, bufferFactory, 1024, 2.seconds),
+                    "once the drained chunks are gone the recorded FIN must end the stream",
+                )
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /** A read issued *after* the connection is already gone must also see the bytes drained on the way out. */
+    @Test
+    fun streamRead_startedAfterConnectionClosed_deliversBufferedDataBeforeEnd() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvResult = StreamRecvResult.Done
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val slot = sendOpenStream(driver)
+                val adapter = DriverStreamAdapter(driver, slot)
+
+                api.readableStreams.addLast(slot.id.id)
+                api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 7, fin = true))
+                api.closed = true
+                driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
+                withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Closed } }
+
+                val result = adapter.streamRead(slot.id, bufferFactory, 1024, 2.seconds)
+                val data = assertIs<ReadResult.Data>(result, "a post-teardown read must still drain the slot")
+                assertEquals(7, data.buffer.remaining())
+                data.buffer.freeIfNeeded()
+
+                assertIs<ReadResult.End>(adapter.streamRead(slot.id, bufferFactory, 1024, 2.seconds))
+            } finally {
+                driver.destroy()
+            }
+        }
+
+    /**
+     * Closing the stream releases whatever the teardown drain left undelivered — `read()` is rejected
+     * after close, so holding those pooled buffers for the slot's lifetime would be a leak.
+     */
+    @Test
+    fun streamClose_releasesUndeliveredTeardownChunks() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            api.streamRecvResult = StreamRecvResult.Done
+            val driver = createTestDriver(api)
+            driver.start(this)
+            try {
+                val slot = sendOpenStream(driver)
+                val adapter = DriverStreamAdapter(driver, slot)
+                val stream = QuicheStreamByteStream(slot.id, adapter, driver.streamReadPool)
+
+                // Two chunks drained at teardown; the reader takes one and abandons the rest by closing.
+                api.readableStreams.addLast(slot.id.id)
+                api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 11, fin = false))
+                api.streamRecvSequence.addLast(StreamRecvResult.Data(bytesRead = 5, fin = true))
+                api.closed = true
+                driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
+                withTimeout(2.seconds) { driver.state.first { it is QuicConnectionState.Closed } }
+
+                val first = stream.read(2.seconds)
+                assertIs<ReadResult.Data>(first).buffer.freeIfNeeded()
+
+                stream.close()
+                assertNull(
+                    slot.pendingData.tryReceive().getOrNull(),
+                    "close() must release every undelivered chunk",
+                )
+            } finally {
+                driver.destroy()
+            }
+        }
+
     // ---- stream-command buffer lifetime under cancellation (native heap-corruption regression) ----
     //
     // An address-bearing StreamRecv / StreamSend carries a buffer's *raw native address* into the driver's

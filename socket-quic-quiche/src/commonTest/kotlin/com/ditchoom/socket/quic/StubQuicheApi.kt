@@ -422,20 +422,41 @@ internal class StubQuicheApi : QuicheApi {
     ) = 0
 
     // --- Stream iteration ---
-    override fun connReadable(conn: QuicheConn) = QuicheStreamIter(0L)
+
+    /**
+     * Stream IDs quiche reports as readable. Unlike [writableStreams] this is **not** consumed by a
+     * poll: each [connReadable] takes a snapshot, mirroring real quiche, where a stream stays in
+     * `readable()` until the application drains it. The driver polls it once per `afterCommand` (to
+     * signal/accept streams) and once more at teardown (to drain quiche's remaining bytes into the
+     * slots — the #318 fix), and both sweeps must see the same stream. Empty ⇒ exhausted iterator,
+     * the stub's original behaviour.
+     */
+    val readableStreams: ArrayDeque<Long> = ArrayDeque()
+
+    private var readableSnapshot: ArrayDeque<Long> = ArrayDeque()
+
+    override fun connReadable(conn: QuicheConn): QuicheStreamIter {
+        if (readableStreams.isEmpty()) return QuicheStreamIter(0L)
+        readableSnapshot = ArrayDeque(readableStreams)
+        return QuicheStreamIter(READABLE_ITER)
+    }
 
     /**
      * Stream IDs to report as writable on the next [connWritable] poll, drained by [streamIterNext].
      * The driver calls `connWritable` once per `afterCommand` and drains the iterator, so a test arms
      * this right before triggering one command to fire exactly one `writableSignal` wakeup. Non-empty
-     * ⇒ [connWritable] returns a live iterator handle (1L). (The stub's `connReadable` stays exhausted,
-     * so `streamIterNext` is only ever exercised by the writable path.)
+     * ⇒ [connWritable] returns a live iterator handle ([WRITABLE_ITER]).
      */
     val writableStreams: ArrayDeque<Long> = ArrayDeque()
 
-    override fun connWritable(conn: QuicheConn) = if (writableStreams.isEmpty()) QuicheStreamIter(0L) else QuicheStreamIter(1L)
+    override fun connWritable(conn: QuicheConn) = if (writableStreams.isEmpty()) QuicheStreamIter(0L) else QuicheStreamIter(WRITABLE_ITER)
 
-    override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? = writableStreams.removeFirstOrNull()?.let { QuicStreamId(it) }
+    // The handle tells the two iterators apart, so a test can arm both without their ids crossing over.
+    override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? =
+        when (iter.handle) {
+            READABLE_ITER -> readableSnapshot.removeFirstOrNull()
+            else -> writableStreams.removeFirstOrNull()
+        }?.let { QuicStreamId(it) }
 
     override fun streamIterFree(iter: QuicheStreamIter) {}
 
@@ -517,4 +538,10 @@ internal class StubQuicheApi : QuicheApi {
         peerOut: Long,
         peerLenOut: Long,
     ): QuichePathEventType? = null
+
+    private companion object {
+        /** Live-iterator handles: distinct so [streamIterNext] knows which queue it is draining. */
+        const val READABLE_ITER = 2L
+        const val WRITABLE_ITER = 1L
+    }
 }

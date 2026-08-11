@@ -13,10 +13,13 @@ on:
         required: false
         default: false
         type: boolean
-    outputs:
       version:
-        description: "Computed next version"
-        value: ${{ jobs.build.outputs.version }}
+        # REQUIRED, with no fallback to computing it here on purpose — see the matching note in
+        # build-apple.yaml. An optional "compute it yourself" default would silently restore the
+        # cross-job split this removes, and both branches produce a plausible-looking version.
+        description: "The run's version, from the compute-version job. Pins every Gradle call here."
+        required: true
+        type: string
 
 jobs:
   build:
@@ -28,8 +31,11 @@ jobs:
     # the live job log, not just an opaque exit 134. See socket-quic-quiche/build.gradle.kts.
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
-    outputs:
-      version: ${{ steps.version.outputs.version }}
+      # Pins every Gradle invocation in this job to the run's single version. build.gradle.kts only
+      # calls getNextVersion when no version was supplied from outside, so no Gradle call here
+      # touches Central's metadata. Job-level (not a step export) so it covers the FIRST
+      # invocation too — there is no longer a version step that has to run before everything else.
+      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v6
 
@@ -228,9 +234,16 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Get version
-        id: version
-        run: echo "version=$(./gradlew -q nextVersion ${{ inputs.gradle-args }})" >> $GITHUB_OUTPUT
+      # The ~86s `Get version` Gradle call that used to sit here is gone; the query now happens
+      # once per RUN in compute-version.yaml and arrives as `inputs.version` (pinned at job level
+      # above). #328 pinned it per job, which fixed the within-a-job split that took down the
+      # JDK-25 link-check gate on #320 — `nextVersion` read 4.2.1 at 20:06:57Z, v4.3.0 hit Central
+      # at 20:11:50Z, `publishToMavenLocal` produced 4.3.1 at 20:24:14Z, and the gate hunted for
+      # jars at a version the build never emitted. What #328 could NOT fix from inside one job is
+      # build-linux and build-apple disagreeing with each other; that is what moving the query up
+      # to the run closes. See compute-version.yaml.
+      - name: Show pinned version
+        run: echo "Building version ${ORG_GRADLE_PROJECT_version} (pinned for the whole run)"
 
       # BoringSSL is no longer built here: socket consumes the canonical :boringssl-canonical owner
       # klib + provision bundle (fetched on-demand by the quiche build below via boringssl.boringsslDir).
@@ -1042,7 +1055,12 @@ jobs:
           # ~/.m2 — including genuinely buggy historical ones (3.6.6 / 3.8.11 / 3.8.13 all still
           # carry #287) — which makes a local repro fail for reasons that have nothing to do with
           # the working tree.
-          VERSION='${{ steps.version.outputs.version }}'
+          # Read from the job-level pin (the run's single version) rather than a step output — the
+          # `Get version` step this used to reference is gone. Fittingly, this is the gate whose
+          # #320 failure motivated #328/#329 in the first place: when the version it looks for is
+          # not the version that got published, it reports "no -jvm-<V>.jar found", which reads
+          # exactly like the MR-jar drift it exists to catch.
+          VERSION="${ORG_GRADLE_PROJECT_version}"
           # Plain read loop rather than `mapfile`: mapfile is bash 4+, so this stays runnable on a
           # stock macOS bash 3.2 when reproducing the gate locally. A single invocation (not
           # `xargs`) so the --require assertions see the whole jar set at once — xargs could split
@@ -1372,6 +1390,11 @@ jobs:
     # recv_info UAF lifecycle guard on the forked jvmTest worker.
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+      # Pinned like every other Gradle-running job in this run. These lanes publish nothing, so a
+      # divergent version here would not corrupt an artifact — but "one version per run" is only a
+      # useful invariant if it has no exceptions, and each unpinned lane is one more live Maven
+      # Central fetch that can fail or hang on a job whose whole point is to be reproducible.
+      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-linux-fuzz
@@ -1484,6 +1507,8 @@ jobs:
     # on the pure-JVM http3 lanes.
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
+      # See malloc-check: pinned so no lane in this run queries Central for a version.
+      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-linux-fuzz
@@ -1582,6 +1607,9 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # See malloc-check: pinned so no lane in this run queries Central for a version.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -1649,6 +1677,9 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # See malloc-check: pinned so no lane in this run queries Central for a version.
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-linux-fuzz

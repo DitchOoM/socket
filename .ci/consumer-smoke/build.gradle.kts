@@ -67,7 +67,7 @@ kotlin {
             // Standalone build (not part of the main Gradle build), so this literal cannot come from
             // the version catalog — keep it in step with `buffer` in gradle/libs.versions.toml so the
             // smoke consumer declares what a current consumer would rather than a stale floor.
-            implementation("com.ditchoom:buffer:6.22.0")
+            implementation("com.ditchoom:buffer:6.28.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
         }
 
