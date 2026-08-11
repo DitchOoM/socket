@@ -791,12 +791,19 @@ abstract class QuicServerTestSuite {
      * than waiting for a stalled runner to produce it. Without
      * `QuicheDriver.drainReadableStreamsIntoSlots` the reply dies with `quiche_conn_free` and this
      * fails with the exact string from the issue.
+     *
+     * The server closes with [QuicCloseLinger.Immediate] deliberately: the graceful close added for
+     * #321 would otherwise hold the CONNECTION_CLOSE until this client is done, and there would be no
+     * teardown for the read to lose a race against. The two fixes are complementary — #321 keeps a
+     * *sender* from closing over bytes that may still need retransmitting, #318 keeps a *receiver*
+     * from discarding bytes it already has when a close does arrive — so this pins the receive half.
      */
     @Test
     fun halfCloseReplyIsDeliveredAfterPeerConnectionClose() =
         // Larger than the 15 s default: the scenario itself spends 2 s waiting out the draining period.
         runQuicTest(timeout = 25.seconds) {
             wrapTestBody {
+                val testQuicOptions = testQuicOptions.copy(closeLinger = QuicCloseLinger.Immediate)
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
                     val echoResult = CompletableDeferred<String>()
 

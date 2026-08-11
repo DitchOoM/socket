@@ -37,6 +37,57 @@ sealed interface Pacing {
     }
 }
 
+/**
+ * When a **server** connection may send its CONNECTION_CLOSE after the connection handler returns.
+ * Exhaustive — `when` requires handling both cases.
+ *
+ * RFC 9000 §10.2: once an endpoint sends CONNECTION_CLOSE it enters the closing state and transmits
+ * nothing else — including retransmissions. Closing the instant the handler returns therefore makes
+ * the last reply *unreliable*: if the datagram carrying it is dropped in flight, the connection that
+ * owed the retransmission no longer exists, and the peer's read ends cleanly over data it never got.
+ * That is close-after-write truncation (issue #321), and it is silent — the reply looks sent from both
+ * sides of the API.
+ */
+sealed interface QuicCloseLinger {
+    /**
+     * Send CONNECTION_CLOSE as soon as the handler returns.
+     *
+     * Correct only when nothing the handler wrote still needs delivering — a connection that replied
+     * nothing, or one whose protocol carries its own acknowledgement. Anything else risks truncation.
+     */
+    data object Immediate : QuicCloseLinger
+
+    /**
+     * Hold the CONNECTION_CLOSE until the connection ends on its own, or at most [bound].
+     *
+     * The connection keeps running while it lingers: quiche's loss timers stay armed on the driver
+     * loop, so a dropped reply datagram is retransmitted exactly as it would be mid-session. The wait
+     * ends the moment the connection reaches
+     * [com.ditchoom.socket.quic.QuicConnectionState.Closed] — in practice the peer's own
+     * CONNECTION_CLOSE, which is the end-to-end evidence that it read what we sent (a peer that has
+     * the reply stops needing us and says so), or an idle timeout.
+     *
+     * [bound] is what keeps a peer that simply vanished from pinning a server connection: when it
+     * elapses the close goes out anyway. It is a ceiling, not a delay — a well-behaved exchange
+     * finishes in about a round trip and never approaches it.
+     */
+    data class UntilPeerDone(
+        val bound: Duration,
+    ) : QuicCloseLinger {
+        init {
+            require(bound.isPositive()) { "close linger bound must be positive" }
+        }
+    }
+
+    companion object {
+        /**
+         * The default: linger up to 3 seconds. Wide enough for several PTO-driven retransmissions on a
+         * lossy path, short enough that a vanished peer is reaped promptly.
+         */
+        val Default: QuicCloseLinger = UntilPeerDone(3.seconds)
+    }
+}
+
 /** Flow control limits for a QUIC connection. */
 data class FlowControl(
     /** Maximum data the peer may send across all streams (bytes). */
@@ -139,6 +190,16 @@ data class QuicOptions(
      * the connection already idled out is useless).
      */
     val keepAliveInterval: Duration? = null,
+    /**
+     * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
+     * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
+     * (linger up to 3 seconds), so a reply whose datagram is lost on the wire is still retransmitted
+     * instead of dying with the connection (issue #321).
+     *
+     * Ignored for the client role, where the application decides when to call
+     * [QuicConnection.close] and nothing closes the connection behind its back.
+     */
+    val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
     /** Maximum UDP payload size (bytes). Must be >= 1200 per RFC 9000. */
     val maxUdpPayloadSize: Int = 1350,
     /** Initial congestion window in packets. Null uses quiche default. */

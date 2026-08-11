@@ -13,6 +13,7 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.udp.SocketAddressCodec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
@@ -20,6 +21,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
@@ -59,6 +62,11 @@ internal class SharedQuicheServer(
     private val bufferFactory: BufferFactory,
     parentScope: CoroutineScope,
     private val keepAliveInterval: Duration? = null,
+    /**
+     * When an accepted connection may send its CONNECTION_CLOSE once its handler returns
+     * ([QuicOptions.closeLinger], threaded here by every build function). See [lingerBeforeClose].
+     */
+    private val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
     // Per-call lifecycle teardown wired by the build function (cancel the parent scope). Invoked last by
     // close(); null for any direct-construction test that owns the scope externally.
     private val onClose: (() -> Unit)? = null,
@@ -123,14 +131,54 @@ internal class SharedQuicheServer(
                             conn.handler()
                         }
                     } finally {
-                        conn.close()
-                        registry.enqueueCleanup(driver)
-                        wakeups.trySend(Unit) // drain the routing table now, not on the next datagram
-                        connJob.cancel()
+                        try {
+                            // Graceful close (#321). Skipped for a connection that never came up or is
+                            // already gone — there is nothing left to deliver on either.
+                            if (conn.state.value is QuicConnectionState.Established) lingerBeforeClose(driver)
+                        } finally {
+                            // The linger is a cancellable suspension point, so the teardown that follows
+                            // it must not be: a cancelled handler (server shutting down) still has to
+                            // release its routing-table entry and connection scope.
+                            withContext(NonCancellable) {
+                                conn.close()
+                                registry.enqueueCleanup(driver)
+                                wakeups.trySend(Unit) // drain the routing table now, not on the next datagram
+                                connJob.cancel()
+                            }
+                        }
                     }
                 }
             }
         }
+
+    /**
+     * Hold this connection's CONNECTION_CLOSE until the peer is done with it, or at most the
+     * [QuicCloseLinger.UntilPeerDone.bound] — the graceful-close half of a server's lifetime (#321).
+     *
+     * A handler's last write is only *handed to quiche*; whether it reached the peer is decided on the
+     * wire afterwards. Closing the moment the handler returns ends that story early: RFC 9000 §10.2
+     * puts the connection into the closing state, where quiche emits nothing but the CONNECTION_CLOSE,
+     * so a reply datagram dropped in flight has no connection left to retransmit it and the peer's read
+     * reports a clean end over bytes it never received. Lingering keeps the connection running instead
+     * — the driver loop is still arming quiche's loss timers, still processing the peer's ACKs, still
+     * retransmitting — until the connection ends by itself.
+     *
+     * The wait is on [QuicheDriver.state] reaching [QuicConnectionState.Closed], which the driver
+     * publishes when quiche reports the connection closed: the peer's own CONNECTION_CLOSE (after its
+     * draining period), or an idle timeout. The peer closing is the strongest signal available here —
+     * it is *end-to-end* evidence the peer has what it was waiting for, whereas quiche's C API exposes
+     * no per-stream ack state and no bytes-in-flight gauge to ask locally (`quiche_stats` carries
+     * `acked_bytes`, but ACK-only packets are never themselves acked, so it never converges on
+     * `sent_bytes`). The bound is what makes a vanished peer harmless, and cancellation (the server
+     * closing, which destroys the driver) ends the wait immediately rather than after it.
+     */
+    private suspend fun lingerBeforeClose(driver: QuicheDriver) {
+        when (val linger = closeLinger) {
+            QuicCloseLinger.Immediate -> Unit
+            is QuicCloseLinger.UntilPeerDone ->
+                withTimeoutOrNull(linger.bound) { driver.state.first { it is QuicConnectionState.Closed } }
+        }
+    }
 
     /**
      * TEST SEAM (do not call in production): delegates to [ServerConnectionRegistry.deRouteAllDriversForTest]

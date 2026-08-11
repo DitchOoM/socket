@@ -82,6 +82,7 @@ internal suspend fun buildLinuxQuicServer(
                 bufferFactory = bufferFactory,
                 parentScope = parentScope,
                 keepAliveInterval = quicOptions.keepAliveInterval,
+                closeLinger = quicOptions.closeLinger,
                 // server.close() frees config + drivers; the per-call parent scope is the server's
                 // to cancel last, so the withQuicServer wrapper stays a plain block + close().
                 onClose = { parentScope.cancel() },
