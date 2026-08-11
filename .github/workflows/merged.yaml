@@ -321,8 +321,11 @@ jobs:
       # aarch64-linux-gnu-g++. Without the cross-toolchain on PATH the job dies with
       # "CMAKE_C_COMPILER aarch64-linux-gnu-gcc ... not found in the PATH" (same fix as review.yaml /
       # android_integration.yaml / native-deps-freshness.yaml).
+      # apt-safe-update first: an unused third-party source on the runner image can exit-100 the
+      # whole job (see .github/actions/apt-safe-update). This is the RELEASE path.
+      - uses: ./.github/actions/apt-safe-update
       - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64) + libclang
-        run: sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
+        run: sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
 
       - name: Build harness controller + udp-toxi jars
         run: ./gradlew :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar --no-configuration-cache

@@ -229,10 +229,13 @@ jobs:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
+      # See .github/actions/apt-safe-update: a 403 from the runner image's unused azure-cli source
+      # made `apt-get update` exit 100 and blocked the 1efafc4b release.
+      - uses: ./.github/actions/apt-safe-update
+
       - name: Install cross-compilation toolchains
         run: |
           # -o Acquire::Retries=3 absorbs transient archive-mirror 5xx/timeouts (a recurring CI flake).
-          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
           # libc6-dev-arm64-cross provides /usr/aarch64-linux-gnu/include/sys/socket.h for the arm64
           # quiche_jni.c cross-compile. It is only a *Recommends* of gcc-aarch64-linux-gnu, so it can
@@ -2108,7 +2111,7 @@ jobs:
       # clang is required: its LLVM ASAN runtime must match cargo-fuzz's.
       - name: Install clang (for BoringSSL ASAN)
         continue-on-error: true
-        run: sudo apt-get update && sudo apt-get install -y clang
+        run: sudo apt-get install -y clang
 
       - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
         continue-on-error: true

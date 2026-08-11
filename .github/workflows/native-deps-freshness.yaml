@@ -227,10 +227,13 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       # ---- Toolchain the native builds need (mirrors build-linux.yaml) ----
+      # See .github/actions/apt-safe-update — kept in lockstep with build-linux.yaml, which needs it
+      # for the same reason: an unused third-party source can otherwise exit-100 the whole job.
+      - uses: ./.github/actions/apt-safe-update
+
       - name: Install cross-compilation toolchains
         run: |
           # Keep in lockstep with build-linux.yaml so the warmed caches match the PR job's toolchain.
-          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
           sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
 
