@@ -1,8 +1,15 @@
 name: "Build and Test"
 on:
   pull_request:
+    # '*' does not match '/', so '*.md' ignored ONLY root-level markdown. 28 of this repo's 39
+    # tracked .md files live in subdirectories, so every docs change bought the full matrix —
+    # PR #323 spent 60 minutes of macOS runner time on a one-file edit to
+    # docs/docs/platforms/jvm.md and then got killed by timeout-minutes anyway. '**' matches '/'.
+    # NOTE: '**/*.md' would NOT match root-level README.md; '**.md' matches markdown at any depth.
+    # docs/** is deliberately NOT ignored here, so the `docs` job still runs on Docusaurus config
+    # and dependency changes. Markdown-only PRs are covered by docs-markdown.yaml instead.
     paths-ignore:
-      - '*.md'
+      - '**.md'
     types:
       - synchronize
       - opened
