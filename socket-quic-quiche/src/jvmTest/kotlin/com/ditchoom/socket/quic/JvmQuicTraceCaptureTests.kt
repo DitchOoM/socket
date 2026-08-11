@@ -54,6 +54,62 @@ class JvmQuicTraceCaptureTests {
         return if (tokens[2] == "DGRAM_OUT" || tokens[2] == "DGRAM_IN") tokens[4] else null
     }
 
+    /**
+     * Consistent snapshot of the server capture's per-connection sinks. Both the outer list (minted by
+     * `sinkFor` on accept) and every inner list (appended from a driver loop) are concurrently mutated
+     * while the server runs, so each is copied under its own monitor — `Collections.synchronizedList`
+     * guards element access but NOT iteration, so a bare `sinks.map { it.toList() }` can CME.
+     */
+    private fun snapshotSinks(sinks: List<MutableList<String>>): List<List<String>> =
+        synchronized(sinks) { sinks.toList() }.map { s -> synchronized(s) { s.toList() } }
+
+    /** Distinct peer [PathKey]s across all sinks — one per client connection that recorded datagrams. */
+    private fun datagramPaths(perConn: List<List<String>>): Set<String> =
+        perConn.flatMapTo(mutableSetOf()) { s -> s.mapNotNull(::datagramPathKey) }
+
+    /**
+     * Sinks carrying a fully-established connection. STATE lines carry the state's *qualified* class
+     * name (…QuicConnectionState.Established).
+     */
+    private fun establishedSinks(perConn: List<List<String>>): Int =
+        perConn.count { s ->
+            s.any { line -> (TraceEvent.parse(line) as? TraceEvent.State)?.name?.endsWith(".Established") == true }
+        }
+
+    /**
+     * Suspend until the server capture holds [want] connections' worth of exactly the evidence the
+     * assertions read — [want] distinct datagram paths AND [want] sinks carrying an `.Established`
+     * STATE line — or until a bounded deadline expires (issue #334).
+     *
+     * The drivers record asynchronously: DGRAM lines come from the recording `UdpChannel` decorator and
+     * STATE lines from a `state.collect` collector that shares the driver's single-threaded context, so
+     * both land some unbounded time after the echo the test just observed. The fixed `delay()` beats this
+     * replaces were a coin flip on a loaded runner — and were tuned/commented for DGRAM flush while the
+     * assertion that flaked is about STATE lines. Awaiting the asserted condition is both faster in the
+     * common case and correct under load; the deadline is scaled by [testTimeScale] so CI's
+     * `QUIC_TEST_TIME_SCALE` actually buys this test time (bare `delay()`s ignored it).
+     *
+     * A timeout is swallowed **on purpose**: the assertions that follow name the exact shortfall
+     * (which invariant, with the full trace snapshot), so a genuine failure still fails with its own
+     * diagnostic rather than a generic timeout.
+     */
+    private suspend fun awaitServerTraces(
+        sinks: List<MutableList<String>>,
+        want: Int,
+    ) {
+        try {
+            withTimeout(5.seconds * testTimeScale()) {
+                while (true) {
+                    val perConn = snapshotSinks(sinks)
+                    if (datagramPaths(perConn).size >= want && establishedSinks(perConn) >= want) return@withTimeout
+                    delay(20)
+                }
+            }
+        } catch (_: TimeoutCancellationException) {
+            // Deliberate: let the assertions below report which invariant actually fell short.
+        }
+    }
+
     private fun certPath(name: String): String {
         val url =
             this::class.java.classLoader.getResource("certs/$name")
@@ -254,8 +310,12 @@ class JvmQuicTraceCaptureTests {
                                         "no_data"
                                     },
                                 )
-                                // Let the server driver flush its final trace lines before close().
-                                delay(150)
+                                // Hold the connection open until the server driver has recorded the
+                                // trace lines this test asserts on, instead of a fixed beat. Both
+                                // clients rendezvous on the same condition, so neither tears its
+                                // connection down while the other's server-side driver still owes the
+                                // trace a line. Bounded — see awaitServerTraces.
+                                awaitServerTraces(sinks, want = 2)
                                 stream.close()
                             }
                             return echoed.await()
@@ -266,8 +326,10 @@ class JvmQuicTraceCaptureTests {
                             val c2 = async(Dispatchers.IO) { oneClient("second-conn") }
                             assertEquals("first-conn", c1.await())
                             assertEquals("second-conn", c2.await())
-                            // Beat for the server-side drivers to flush trailing DGRAM lines.
-                            delay(250)
+                            // Second (usually already-satisfied) await on the same condition, before the
+                            // finally cancels the server and with it the drivers still doing the
+                            // recording. A no-op when the clients' rendezvous above already converged.
+                            awaitServerTraces(sinks, want = 2)
                         } finally {
                             serverJob.cancel()
                         }
@@ -282,7 +344,7 @@ class JvmQuicTraceCaptureTests {
                         // the path-isolation check. (Server sinks record DGRAM_OUT only — inbound
                         // datagrams reach a server driver through the central demux loop, which bypasses
                         // the per-driver recording channel; that's orthogonal to per-connection routing.)
-                        val perConn = sinks.map { it.toList() }
+                        val perConn = snapshotSinks(sinks)
                         assertTrue(perConn.isNotEmpty(), "server capture minted no sinks at all")
                         perConn.forEachIndexed { i, s ->
                             assertTrue(s.isNotEmpty(), "sink #$i captured nothing: $perConn")
@@ -303,13 +365,7 @@ class JvmQuicTraceCaptureTests {
                         pathToSinks.forEach { (path, idxs) ->
                             assertEquals(1, idxs.size, "client $path appears on multiple sinks $idxs (interleaved/split)")
                         }
-                        // STATE lines carry the state's *qualified* class name (…QuicConnectionState.Established).
-                        val established =
-                            perConn.count { s ->
-                                s.any { line ->
-                                    (TraceEvent.parse(line) as? TraceEvent.State)?.name?.endsWith(".Established") == true
-                                }
-                            }
+                        val established = establishedSinks(perConn)
                         assertTrue(established >= 2, "expected >=2 fully-established server-side traces, got $established")
                     }
                 }
