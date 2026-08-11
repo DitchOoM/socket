@@ -1,0 +1,44 @@
+name: "Docs (markdown / site)"
+on:
+  pull_request:
+    # The exact inverse of review.yaml's paths-ignore. review.yaml now skips markdown-only PRs,
+    # which would otherwise leave the Docusaurus site completely unvalidated on exactly the
+    # changes most likely to break it. This lane covers that hole for ~2 minutes instead of ~50.
+    paths:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/docs-markdown.yaml'
+
+# Mirrors review.yaml's group so a force-push on a markdown-heavy PR cancels the in-flight run
+# rather than accumulating one run per push.
+concurrency:
+  group: docs-markdown-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docusaurus-build:
+    name: "Docusaurus site build (no Dokka)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs/package-lock.json
+
+      # KNOWN TRADE, accepted deliberately: this lane runs no Gradle and therefore no Dokka, so a
+      # markdown edit that breaks a Dokka include or an MDX construct that only misbehaves once the
+      # generated API pages exist will not be caught here. review.yaml's `docs` job remains the
+      # Dokka gate and still runs on every non-markdown PR. This is safe because the site links to
+      # API docs as pathname:///api/..., which Docusaurus never resolves at build time — so the
+      # site builds correctly without docs/static/api present.
+      - name: Install docs dependencies
+        working-directory: docs
+        run: npm ci
+
+      - name: Build docs site
+        working-directory: docs
+        run: npm run build

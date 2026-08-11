@@ -1,8 +1,10 @@
 name: "Android Emulator Integration Test"
 on:
   pull_request:
+    # See review.yaml: '*' does not match '/', so '*.md' let every docs/**.md change boot an
+    # emulator for nothing. '**.md' matches markdown at any depth.
     paths-ignore:
-      - '*.md'
+      - '**.md'
     types:
       - synchronize
       - opened
