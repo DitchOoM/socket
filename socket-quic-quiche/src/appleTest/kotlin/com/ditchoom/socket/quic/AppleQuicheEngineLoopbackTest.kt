@@ -8,7 +8,6 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -52,7 +51,10 @@ class AppleQuicheEngineLoopbackTest {
                             stream.close()
                         }
                     }
-                delay(100)
+                // No settle delay (issue #305): `QuicheEngine.bind` has already returned a BOUND server
+                // above, and accepted connections queue in `ServerConnectionRegistry.acceptedDrivers`
+                // (`Channel.UNLIMITED`) from the moment of bind — so the client below cannot arrive "too
+                // early" for `connections { … }`; the handler simply starts later.
 
                 val conn = QuicheEngine.connect("127.0.0.1", port, opts, TransportConfig(), 15.seconds)
                 try {
