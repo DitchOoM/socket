@@ -74,7 +74,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # NO `cache: gradle` — the caches are saved explicitly below, and setup-java's gradle cache
       # points at the same ~/.gradle/caches directory, so enabling both stored that tree twice.
@@ -88,7 +88,7 @@ jobs:
       # actions/cache/restore (read-only) via .github/actions/apple-quiche-env, so a cache miss
       # cannot turn into six parallel jobs racing to upload the same key.
       - name: Cache Konan
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.konan
           key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
@@ -108,7 +108,7 @@ jobs:
       # `gradle-macos-*` here), which matters because the repo sits at the 10GB cap and the
       # resulting LRU eviction is what makes "cached" quiche natives still cost ~339s.
       - name: Cache Gradle build outputs
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.gradle/caches
           key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -121,7 +121,7 @@ jobs:
       # the ~150MB Gradle distribution on every `*.gradle.kts` edit, since that key rotates on
       # build-script changes while the wrapper itself changes only when the wrapper properties do.
       - name: Cache Gradle wrapper distribution
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -137,7 +137,7 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -155,7 +155,7 @@ jobs:
       # dylib (missing quiche_set_virtual_time_nanos) satisfied the marker and the JNI shim failed to link.
       # An exact-key miss must force a clean rebuild; cargo warm-start still comes from the cargo-target cache.
       - name: Cache quiche Apple native libs
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             socket-quic-quiche/libs/quiche/macos-arm64/lib
@@ -326,7 +326,7 @@ jobs:
           - name: "device-target compile (ILP32 guard)"
             tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env
 
       - name: Run ${{ matrix.shard.name }}
@@ -357,7 +357,7 @@ jobs:
       - name: Save Gradle build outputs (K/N klibs)
         if: always() && matrix.shard.name == 'macOS x64 (all other modules)'
         continue-on-error: true
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: ~/.gradle/caches
           key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -402,7 +402,7 @@ jobs:
     env:
       QUIC_MIGRATION_REQUIRE_RUN: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # konan: false — this lane is JVM-only, so restoring the ~450MB Kotlin/Native toolchain would
       # be pure download cost.
       - uses: ./.github/actions/apple-quiche-env
@@ -448,7 +448,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env
 
       # UNQUALIFIED so every module with a macosArm64 test target is linked — socket-quic-quiche /
@@ -497,7 +497,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env
 
       - name: Publish Apple targets to Maven Local
@@ -549,7 +549,7 @@ jobs:
     timeout-minutes: 30
     steps:
       # Checkout supplies the committed <module>/testcerts/ the loopback suites fall back to.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Restores each module's test.kexe to its <module>/build/bin/macosArm64/debugTest/ path
       # (the artifact preserved the repo-root-relative structure), so running from repo root

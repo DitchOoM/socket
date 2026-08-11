@@ -68,7 +68,7 @@ jobs:
       ISSUE_TITLE: "Native dep freshness: upstream updates available"
       ISSUE_LABEL: "dependencies"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check upstream vs pinned and raise/update tracking issue
         run: |
@@ -162,7 +162,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -173,37 +173,37 @@ jobs:
 
       # ---- Cache entries mirrored EXACTLY from build-linux.yaml ----
       - name: Cache BoringSSL x64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/boringssl/linux-x64
           key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache BoringSSL ARM64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/boringssl/linux-arm64
           key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache liburing x64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/liburing/linux-x64
           key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache liburing ARM64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Cache quiche Linux x64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
           key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
       - name: Cache quiche Linux ARM64
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
           key: quiche-linux-arm64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
@@ -211,14 +211,14 @@ jobs:
       # Intermediate cargo target/ tree + cloned quiche source — the same entry
       # build-linux.yaml keeps so a quiche rebuild is incremental, not from zero.
       - name: Cache quiche cargo target/ (all triples)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: socket-quic-quiche/build/quiche
           key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
           restore-keys: quiche-cargo-target-v3-
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -300,7 +300,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # No `cache: gradle` — see build-apple.yaml. setup-java's gradle cache points at the same
       # ~/.gradle/caches the explicit step below saves, so enabling both stores it twice, and this
@@ -313,14 +313,14 @@ jobs:
 
       # ---- Cache entries mirrored EXACTLY from build-apple.yaml's `natives` job ----
       - name: Cache Konan
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.konan
           key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-macos-
 
       - name: Cache Gradle build outputs
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.gradle/caches
           key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -328,7 +328,7 @@ jobs:
             gradle-macos-
 
       - name: Cache Gradle wrapper distribution
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -339,7 +339,7 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -348,7 +348,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       - name: Cache quiche Apple native libs
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             socket-quic-quiche/libs/quiche/macos-arm64/lib
