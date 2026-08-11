@@ -1,0 +1,262 @@
+name: "Linux quiche build environment"
+description: >-
+  JDK + Konan/Gradle/native-dep cache restore + the prebuilt quiche natives, for every job that fans
+  out of build-linux.yaml's `natives` job. Exists so the consumer jobs cannot drift apart in how they
+  restore state — the failure mode of copy-pasting this block five times is one shard silently
+  rebuilding quiche from source for ~10-20 minutes while the others don't. The Linux twin of
+  .github/actions/apple-quiche-env; keep the two in step when either changes.
+
+  NOT a replacement for .github/actions/setup-linux-fuzz. That one deliberately builds its lanes from
+  the warm CACHES (it installs nightly Rust + cargo-fuzz and rebuilds quiche with SanitizerCoverage/
+  ASAN, so a prebuilt release-mode artifact would be the wrong input). This one hands over the exact
+  release natives `natives` produced.
+
+inputs:
+  konan:
+    description: >-
+      Restore the ~/.konan cache. Default true and, unlike build-apple.yaml's Apple twin, no Linux job
+      currently turns it off: `downloadKotlinNativeDistribution` sits in the task graph here even for a
+      pure-JVM/Android task (verified with `--dry-run` on :socket-quic-quiche:testDebugUnitTest), so
+      skipping the restore trades a ~450MB cache restore for a ~450MB live download. Kept as an input
+      so a lane proven not to need it can opt out without touching every other consumer.
+    required: false
+    default: "true"
+  jdk17:
+    description: >-
+      Also install JDK 17 alongside 21, for the `JDK 17 / JNI` quiche lane. Off by default because
+      only that one matrix leg runs a Test task on a 17 launcher, and each extra JDK is a download.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    # ⚠️ Guards a SILENT failure mode. build-linux.yaml sets ORG_GRADLE_PROJECT_version once at
+    # WORKFLOW level from `inputs.version`, so it covers every fanned-out job without repeating
+    # itself. If that expression ever stopped resolving (a rename, or an `env:` block moved under a
+    # context where `inputs` is unavailable), the variable would simply be empty — and
+    # build.gradle.kts falls back to querying Maven Central live when no version is supplied. That
+    # is exactly the per-job version split #329 removed, and it would come back INVISIBLY: every
+    # job still produces a plausible version, just not necessarily the same one. Fail loudly here
+    # instead, before any Gradle call.
+    - name: Assert the run's version is pinned
+      shell: bash
+      run: |
+        if [ -z "${ORG_GRADLE_PROJECT_version:-}" ]; then
+          echo "::error::ORG_GRADLE_PROJECT_version is empty in this job. The workflow-level env in"
+          echo "::error::build-linux.yaml did not resolve inputs.version, so every Gradle call here"
+          echo "::error::would fetch its own version from Maven Central — the #329 split, silently."
+          exit 1
+        fi
+        echo "version pinned for this job: ${ORG_GRADLE_PROJECT_version}"
+
+    # NO `cache: gradle` here — see the Gradle cache steps below. setup-java's gradle cache
+    # points at ~/.gradle/caches, byte-for-byte the same directory the explicit step already
+    # saves, so enabling both stored that tree TWICE per run under two different keys.
+    - name: Set up JDK 21
+      if: inputs.jdk17 != 'true'
+      uses: actions/setup-java@v5
+      with:
+        distribution: 'zulu'
+        java-version: '21'
+
+    # Install both 17 and 21. The build/toolchain runs on 21 (the last entry
+    # becomes the default JAVA_HOME) — required to compile the FFM bindings —
+    # while JDK 17 (exposed as JAVA_HOME_17_X64) lets the "JDK 17 / JNI" test
+    # step run :socket-quic-quiche:jvmTest on a JDK < 21 launcher.
+    # ONE setup-java call, not two: the last entry of the multi-line java-version becomes
+    # JAVA_HOME, so two separate steps (21 then 17) would silently hand Gradle a 17 launcher.
+    - name: Set up JDKs (17 + 21)
+      if: inputs.jdk17 == 'true'
+      uses: actions/setup-java@v5
+      with:
+        distribution: 'zulu'
+        java-version: |
+          17
+          21
+
+    # RESTORE-ONLY (actions/cache/restore, not actions/cache) in every fanned-out job, on purpose.
+    # The full action also SAVES at post-step, so with five parallel consumers a cache miss would have
+    # all five racing to upload the same key — four of them losing, all five paying the upload. The
+    # `natives` job is the single writer for these keys.
+    - name: Restore Konan cache
+      if: inputs.konan == 'true'
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.konan
+        key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+        restore-keys: konan-linux-
+
+    - name: Restore Gradle build outputs
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.gradle/caches
+        key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-linux-
+
+    - name: Restore Gradle wrapper distribution
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.gradle/wrapper
+        key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+    # BoringSSL/OpenSSL are restored for parity with the `natives` writer and for the legacy
+    # QUICHE_BSSL_PATH fallback in the natives build script; today socket consumes the canonical
+    # :boringssl-canonical owner klib + provision bundle instead, so these usually restore empty.
+    # liburing is the one that is unambiguously load-bearing: the root project's and :socket-udp's
+    # io_uring cinterop read libs/liburing/linux-<arch>, so :linuxX64Test and linkDebugTestLinuxArm64
+    # need it warm or they rebuild it.
+    - name: Restore BoringSSL x64
+      uses: actions/cache/restore@v5
+      with:
+        path: libs/boringssl/linux-x64
+        key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+    - name: Restore BoringSSL ARM64
+      uses: actions/cache/restore@v5
+      with:
+        path: libs/boringssl/linux-arm64
+        key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+
+    - name: Restore OpenSSL x64 (legacy fallback)
+      uses: actions/cache/restore@v5
+      with:
+        path: libs/openssl/linux-x64
+        key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+
+    - name: Restore OpenSSL ARM64 (legacy fallback)
+      uses: actions/cache/restore@v5
+      with:
+        path: libs/openssl/linux-arm64
+        key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
+
+    - name: Restore liburing x64
+      uses: actions/cache/restore@v5
+      with:
+        path: libs/liburing/linux-x64
+        key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+    - name: Restore liburing ARM64
+      uses: actions/cache/restore@v5
+      with:
+        path: libs/liburing/linux-arm64
+        key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
+
+    # Host build deps + aarch64 cross-compiler: REQUIRED, not optional — the same reasoning
+    # .github/actions/setup-linux-fuzz spells out, and it applies harder here. Even a "pure-JVM" lane
+    # has a task graph that transitively reaches :buildBoringsslX64/:buildBoringsslArm64 + the
+    # quiche/cinterop chain through the KMP metadata dependency (socket-http3 → socket-quic →
+    # socket-quic-quiche). On a warm restore those are up to date and skip; on ANY miss they run cmake
+    # and die without this toolchain. libc6-dev-arm64-cross is named explicitly because it is only a
+    # *Recommends* of gcc-aarch64-linux-gnu and can silently not arrive (→ `fatal error:
+    # sys/socket.h: No such file`) — the same trap build-linux.yaml's own toolchain step documents.
+    # libclang: boring-sys' bindgen needs it whenever a quiche build is not fully cache-satisfied.
+    #
+    # The concrete consumer-side use: buildJvmJniShimLinuxArm64 links with aarch64-linux-gnu-gcc, and
+    # `natives` writes its `.jni-built-<ver>` marker so that task normally skips here. "Normally" is
+    # not "always" (see the continue-on-error on that step), so keep the compiler within reach.
+    - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
+      shell: bash
+      run: |
+        # -o Acquire::Retries=3 absorbs transient archive-mirror 5xx/timeouts (a recurring CI flake).
+        sudo apt-get update -o Acquire::Retries=3
+        sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
+        sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+        sudo apt-get install -y -o Acquire::Retries=3 libclang-dev
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    # arm64 Rust target so a marker-missing arm64 quiche build can still cross-compile rather than
+    # failing on a bare `error: target may not be installed`.
+    - name: Add Rust aarch64 target
+      shell: bash
+      run: rustup target add aarch64-unknown-linux-gnu
+
+    # The linux-x64 / linux-arm64 / windows-x64 quiche lib dirs built once by `natives`. Restored to
+    # the exact paths the Gradle build, the K/N `-force_load` link, and NativeLibLoader's staging all
+    # expect (socket-quic-quiche/libs/quiche/<platform>/lib/).
+    - name: Download prebuilt Linux quiche natives
+      uses: actions/download-artifact@v8
+      with:
+        name: quiche-linux-natives-full
+        path: socket-quic-quiche/libs/quiche
+
+    # ⚠️ Load-bearing, and the reason this whole fan-out works at all.
+    #
+    # buildQuicheSharedLinux{X64,Arm64} / buildJvmJniShimLinux{X64,Arm64} skip their (10-20 minute)
+    # cargo builds via
+    #   onlyIf { !markerFile.exists() || !destLib.exists() }
+    # where markerFile is a DOTFILE inside lib/. Confirmed against socket-quic-quiche/build.gradle.kts
+    # (createBuildQuicheSharedTask ~line 418, createBuildJvmJniShimTask ~line 836) — the Linux marker
+    # names are NOT the same set as Apple's:
+    #   socket-quic-quiche/libs/quiche/linux-x64/lib/.built-<ver>-qlog-jvm-<patchDigest>
+    #   socket-quic-quiche/libs/quiche/linux-arm64/lib/.built-<ver>-qlog-jvm-<patchDigest>
+    #   socket-quic-quiche/libs/quiche/linux-{x64,arm64}/lib/.jni-built-<ver>
+    # (`-qlog-jvm`, not Apple's `-qlog`: on Linux one cargo build emits BOTH the JVM libquiche.so and
+    # the K/Native libquiche.a, so there is no separate static task with its own marker. The Android
+    # tasks deliberately have NO marker at all — they use Gradle's own content-hashed up-to-date
+    # check — so nothing here can make them skip; only the `publish` job builds them.)
+    #
+    # Two hazards:
+    #
+    #  1. actions/upload-artifact excludes hidden files unless `include-hidden-files: true`. Without
+    #     it the .so/.a files arrive but the markers do NOT, so every consumer re-runs cargo — a green
+    #     run that costs 10-20 extra minutes per consumer and silently deletes the entire point of the
+    #     split. The upload in `natives` sets that input; this step fails loudly if it ever regresses.
+    #
+    #  2. buildJvmJniShimLinux*'s guard is an MTIME COMPARISON:
+    #         jniSourceFile.lastModified() > markerFile.lastModified()
+    #     Checkout writes quiche_jni.c at job start; the artifact download may carry the marker's
+    #     original mtime from the `natives` job, which can be EARLIER. That reads as "the source was
+    #     edited after the shim was built" and rebuilds. `touch` makes the restored markers newer
+    #     than the checkout, which is the true state of affairs: these natives were built from this
+    #     very commit's source, by the `natives` job in this same run.
+    - name: Make restored quiche markers authoritative
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        markers=(socket-quic-quiche/libs/quiche/*/lib/.built-* socket-quic-quiche/libs/quiche/*/lib/.jni-built-*)
+        if [ ${#markers[@]} -eq 0 ]; then
+          echo "::error::No quiche build markers restored from the quiche-linux-natives-full artifact."
+          echo "::error::Almost certainly 'include-hidden-files: true' was dropped from the upload"
+          echo "::error::in the natives job — without the markers every consumer silently re-runs cargo."
+          echo "--- what did arrive: ---"
+          find socket-quic-quiche/libs/quiche -maxdepth 3 | head -50
+          exit 1
+        fi
+        # Newer than the checked-out quiche_jni.c, so the mtime guard reads "shim is current".
+        touch "${markers[@]}"
+        printf 'restored + touched %d quiche marker(s)\n' "${#markers[@]}"
+        printf '  %s\n' "${markers[@]}"
+
+    # HARD check, and deliberately stricter than the monolith's warn-only `Verify JNI shims exist`.
+    # Three separate silent failures hide behind a missing file here:
+    #   - libquiche.a  — the K/N link gates -force_load on it at CONFIGURATION time, so its absence
+    #                    surfaces as a confusing unresolved-symbol link error many minutes later.
+    #   - libquiche.so — NativeLibLoader extracts it beside the shim; DT_NEEDED resolves via $ORIGIN.
+    #   - libquiche_jni.so — build.gradle.kts attaches the linux-x86_64 / linux-aarch64 CLASSIFIER
+    #                    JARs to the jvm publication only `if (allPresent)`, evaluated at configure
+    #                    time against these very files. Miss one and `publish` quietly emits a
+    #                    maven-local-linux with no native classifier jars, and every downstream check
+    #                    stays green. That is the exact "an audit that matched nothing looks identical
+    #                    to a clean audit" shape, so it must be fatal here.
+    - name: Verify Linux quiche libs are present
+      shell: bash
+      run: |
+        set -euo pipefail
+        missing=0
+        for d in linux-x64 linux-arm64; do
+          for f in libquiche.a libquiche.so libquiche_jni.so; do
+            p="socket-quic-quiche/libs/quiche/$d/lib/$f"
+            if [ ! -f "$p" ]; then echo "::error::missing $p"; missing=1; else echo "ok: $p"; fi
+          done
+        done
+        [ "$missing" = 0 ] || {
+          echo "::error::Linux quiche natives missing from the artifact — the natives job's build step"
+          echo "::error::is continue-on-error, so check ITS log (and the quiche-build-logs-linux artifact)"
+          echo "::error::rather than this job."
+          exit 1
+        }
