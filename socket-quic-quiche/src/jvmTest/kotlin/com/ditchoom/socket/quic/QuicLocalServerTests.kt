@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -12,6 +13,8 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 class QuicLocalServerTests {
@@ -94,7 +97,6 @@ class QuicLocalServerTests {
                                     stream.close()
                                 }
                             }
-                        delay(100)
 
                         val clientJob =
                             launch(Dispatchers.IO) {
@@ -140,12 +142,19 @@ class QuicLocalServerTests {
      * drain in QuicheDriver.transitionToClosed this returns `no_data:End` every time — the same
      * verdict, with the peer's reply discarded — which is the end-to-end mutation proof that the
      * drained bytes are real quiche's and not a stub's.
+     *
+     * The server runs with [QuicCloseLinger.Immediate] on purpose: the graceful close added for #321
+     * would otherwise hold the CONNECTION_CLOSE until this client is done, and the teardown race this
+     * test exists to reproduce would never happen. The two behaviours are complementary — #321 stops
+     * the *sender* closing over undelivered bytes, #318 stops the *receiver* discarding delivered ones
+     * when a close does arrive — so this keeps asserting the receive half in isolation.
      */
     @Test
     fun replyBufferedWhenPeerClosesIsStillDelivered() =
         runBlocking(Dispatchers.IO) {
             skipOnMissingNativeLib {
                 withTimeout(30.seconds) {
+                    val testQuicOptions = testQuicOptions.copy(closeLinger = QuicCloseLinger.Immediate)
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val echoResult = CompletableDeferred<String>()
 
@@ -169,7 +178,6 @@ class QuicLocalServerTests {
                                     // reaches the client while its reply is still unread.
                                 }
                             }
-                        delay(100)
 
                         val clientJob =
                             launch(Dispatchers.IO) {
@@ -207,4 +215,195 @@ class QuicLocalServerTests {
                 }
             }
         }
+
+    /**
+     * #321, against real quiche: the reply's first datagrams are **lost in flight**, and the server
+     * closes the connection as soon as its handler returns.
+     *
+     * RFC 9000 §10.2 makes CONNECTION_CLOSE terminal for the sender: once it is sent, quiche emits
+     * nothing else — including the retransmission the dropped datagrams need. So a server that closes
+     * the instant its handler returns has made its last reply unreliable; the peer sees the connection
+     * end and the bytes simply never arrive. Nothing about that is visible from either application:
+     * the write succeeded, the close succeeded, the data is gone.
+     *
+     * The loss is deterministic, not probabilistic: an in-process UDP proxy drops the first
+     * [DROPPED_REPLY_DATAGRAMS] server→client datagrams after [ImpairingProxy.arm], and the client arms
+     * it only after a warm-up echo has round-tripped — so the handshake tail is flushed and acked
+     * beforehand and the drop window covers the reply burst itself. The reply is [REPLY_SIZE] bytes
+     * (≈7 datagrams), so the dropped prefix cannot be reassembled from what gets through: without a
+     * retransmission the client has a hole at offset 0 and can deliver nothing at all.
+     *
+     * With the graceful close, the connection stays up while the handler's coroutine waits, quiche's
+     * loss timers fire on the driver loop, the lost range is retransmitted, and the client reads the
+     * whole payload before the server closes. Flipping this server to [QuicCloseLinger.Immediate] —
+     * exactly the pre-fix behaviour, asserted by [replyLostInFlightIsTruncatedByAnImmediateClose] — the
+     * client gets nothing.
+     */
+    @Test
+    fun replyLostInFlightIsRetransmittedBeforeTheServerCloses() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                val received = replyUnderDroppedDatagrams(QuicCloseLinger.Default, readBudget = 20.seconds)
+                assertEquals(
+                    replyPayload.length,
+                    received.length,
+                    "the reply was truncated: the server closed before quiche could retransmit the dropped datagrams",
+                )
+                assertEquals(replyPayload, received, "the retransmitted reply must be byte-identical")
+            }
+        }
+
+    /**
+     * Anti-vacuous guard for [replyLostInFlightIsRetransmittedBeforeTheServerCloses], and the
+     * pre-#321 behaviour written down: with [QuicCloseLinger.Immediate] the same scenario loses the
+     * reply outright. If the proxy ever stopped dropping the reply burst — the one way the positive
+     * test could pass without the fix doing anything — this would start passing the payload through
+     * and fail here instead.
+     */
+    @Test
+    fun replyLostInFlightIsTruncatedByAnImmediateClose() =
+        runBlocking(Dispatchers.IO) {
+            skipOnMissingNativeLib {
+                val received = replyUnderDroppedDatagrams(QuicCloseLinger.Immediate, readBudget = 4.seconds)
+                assertTrue(
+                    received.length < replyPayload.length,
+                    "closing immediately after the handler cannot deliver a dropped reply — got ${received.length} bytes",
+                )
+            }
+        }
+
+    /**
+     * Request/reply against a real quiche server whose first [DROPPED_REPLY_DATAGRAMS] reply datagrams
+     * are dropped by an in-process proxy, returning whatever the client managed to read within
+     * [readBudget]. The server closes the connection as soon as its handler returns; [closeLinger]
+     * decides whether that close waits for the peer.
+     */
+    private suspend fun replyUnderDroppedDatagrams(
+        closeLinger: QuicCloseLinger,
+        readBudget: Duration,
+    ): String {
+        val options = testQuicOptions.copy(closeLinger = closeLinger)
+        var received = ""
+        withTimeout(60.seconds) {
+            withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = options) {
+                val serverJob =
+                    launch(Dispatchers.IO) {
+                        connections {
+                            val stream = acceptStream()
+                            // Warm-up leg: echo the token back, so the client can prove the path is up
+                            // (and the handshake tail acked) before it arms the impairment.
+                            val warmup = stream.read(10.seconds)
+                            if (warmup is com.ditchoom.buffer.flow.ReadResult.Data) {
+                                stream.write(warmup.buffer, 10.seconds)
+                            }
+                            // Request leg: drain to the peer's FIN.
+                            while (true) {
+                                val r = stream.read(10.seconds)
+                                if (r !is com.ditchoom.buffer.flow.ReadResult.Data) break
+                            }
+                            // The reply this test is about: written, FINed, and then the handler returns,
+                            // which closes the connection.
+                            val reply = BufferFactory.Default.allocate(replyPayload.length)
+                            reply.writeString(replyPayload, Charset.UTF8)
+                            reply.resetForRead()
+                            stream.write(reply, 10.seconds)
+                            stream.close()
+                        }
+                    }
+
+                val proxy =
+                    DatagramChannelImpairingProxy(port) { direction, index ->
+                        if (direction == ImpairDirection.ServerToClient && index < DROPPED_REPLY_DATAGRAMS) {
+                            ImpairAction.Drop
+                        } else {
+                            ImpairAction.Forward
+                        }
+                    }
+                val done = CompletableDeferred<String>()
+                val clientJob =
+                    launch(Dispatchers.IO) {
+                        try {
+                            withQuicConnection("127.0.0.1", proxy.proxyPort, options, timeout = 15.seconds) {
+                                val stream = openStream()
+                                writeAscii(stream, WARMUP)
+                                assertEquals(WARMUP, readUpTo(stream, WARMUP.length, 10.seconds), "warm-up echo failed before arming")
+                                proxy.arm() // from here, the server's next datagrams are the ones dropped
+                                writeAscii(stream, "request")
+                                stream.shutdownSend()
+                                done.complete(readUpTo(stream, replyPayload.length, readBudget))
+                                stream.close()
+                            }
+                        } catch (t: Throwable) {
+                            done.completeExceptionally(t)
+                        }
+                    }
+
+                try {
+                    received = done.await()
+                    assertTrue(proxy.droppedCount > 0, "no datagram was dropped — the impairment never fired")
+                } finally {
+                    clientJob.cancel()
+                    serverJob.cancel()
+                    proxy.close()
+                }
+            }
+        }
+        return received
+    }
+
+    private suspend fun writeAscii(
+        stream: QuicByteStream,
+        text: String,
+    ) {
+        val buf = BufferFactory.Default.allocate(text.length)
+        buf.writeString(text, Charset.UTF8)
+        buf.resetForRead()
+        stream.write(buf, 10.seconds)
+    }
+
+    /**
+     * Accumulate stream reads until [total] characters have arrived, the stream ends, or a read runs
+     * out of time — returning what did arrive. A read timeout is a *result* here, not a failure: the
+     * unfixed server simply never sends the rest, and the assertion should be about the missing bytes
+     * rather than about a stack trace.
+     */
+    private suspend fun readUpTo(
+        stream: QuicByteStream,
+        total: Int,
+        timeout: Duration,
+    ): String {
+        val sb = StringBuilder(total)
+        while (sb.length < total) {
+            val r =
+                try {
+                    stream.read(timeout)
+                } catch (_: TimeoutCancellationException) {
+                    break
+                }
+            if (r !is com.ditchoom.buffer.flow.ReadResult.Data) break
+            sb.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+        }
+        return sb.toString()
+    }
+
+    private companion object {
+        /** Warm-up token: proves the path (and flushes the handshake tail) before the impairment arms. */
+        const val WARMUP = "warmup"
+
+        /**
+         * Post-arm server→client datagrams to drop — the reply's whole first transmission (≈7
+         * datagrams at [REPLY_SIZE]) plus a PTO round, so recovery provably comes from a
+         * retransmission that happens *after* the handler returned.
+         */
+        const val DROPPED_REPLY_DATAGRAMS = 10
+
+        /** ~8 KB ⇒ several datagrams, so a dropped prefix leaves a hole nothing else can fill. */
+        const val REPLY_SIZE = 8 * 1024
+
+        /** Deterministic single-byte-UTF8 payload, so a chunk boundary never splits a codepoint. */
+        val replyPayload =
+            buildString(REPLY_SIZE) {
+                for (i in 0 until REPLY_SIZE) append('A' + (i % 26))
+            }
+    }
 }

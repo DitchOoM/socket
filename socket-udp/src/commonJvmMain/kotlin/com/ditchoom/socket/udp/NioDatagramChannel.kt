@@ -20,7 +20,6 @@ import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runInterruptible
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -31,9 +30,8 @@ import java.nio.channels.ClosedSelectorException
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.microseconds
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 import java.nio.channels.DatagramChannel as NioChannel
 
 /** 65535 − 8 (UDP header) − 20 (IPv4 header). Large enough that no real datagram is truncated. */
@@ -41,8 +39,21 @@ private const val MAX_UDP_PAYLOAD = 65507
 
 /** How long a send waits out a full output buffer before reporting [DatagramSendError.WouldBlock]. */
 private val SEND_BACKPRESSURE_BUDGET = 1.seconds
-private val SEND_BACKPRESSURE_FIRST_WAIT = 50.microseconds
-private val SEND_BACKPRESSURE_MAX_WAIT = 5.milliseconds
+
+/**
+ * The outcome of waiting for a full send buffer to drain — exhaustive, so the send loop's three
+ * continuations (retry / give up / unwind) are the compiler's business rather than a boolean's.
+ */
+internal sealed interface WriteReadiness {
+    /** The socket reported it can accept a datagram again; retry the same view. */
+    data object Writable : WriteReadiness
+
+    /** The remaining budget elapsed with the socket still full — the caller's [DatagramSendError.WouldBlock]. */
+    data object TimedOut : WriteReadiness
+
+    /** The channel (or its selector) was closed while waiting; this send can never complete. */
+    data object Closed : WriteReadiness
+}
 
 /**
  * Write [view] with [write], treating a zero return as backpressure rather than as a drop.
@@ -53,17 +64,25 @@ private val SEND_BACKPRESSURE_MAX_WAIT = 5.milliseconds
  * straight to the receiver. Forcing it would need a rate-limited link in a network namespace, which
  * would test the kernel rather than this loop, only on Linux, and only with privileges.
  *
- * [budget] is a parameter for the same reason: a test can exercise the give-up path in microseconds
- * instead of waiting out the production second.
+ * A refusal is waited out through [awaitWritable] — the socket's own writability signal
+ * ([NioDatagramChannelCore.awaitWritable] registers `OP_WRITE` on a selector and parks until the
+ * kernel says there is room again). It is a parameter for the same reason [write] is: the stub in
+ * `BackpressureLoopTests` drives every branch, including the one where readiness never arrives, in
+ * microseconds and without a socket.
+ *
+ * [budget] bounds the *whole* send, measured against a monotonic mark rather than by accumulating
+ * sleeps, and each wait is handed only the time left in it — so a send still reports
+ * [DatagramSendError.WouldBlock] on the same deadline it always did (issue #303 keeps that contract),
+ * and the caller's buffer is left unconsumed either way.
  */
 internal suspend fun writeAbsorbingBackpressure(
     view: ByteBuffer,
     write: (ByteBuffer) -> Int,
+    awaitWritable: suspend (Duration) -> WriteReadiness,
     budget: Duration = SEND_BACKPRESSURE_BUDGET,
 ) {
     val length = view.remaining()
-    var waited = Duration.ZERO
-    var backoff = SEND_BACKPRESSURE_FIRST_WAIT
+    val started = TimeSource.Monotonic.markNow()
     while (true) {
         val written =
             try {
@@ -72,11 +91,18 @@ internal suspend fun writeAbsorbingBackpressure(
                 throw DatagramSendException(DatagramSendError.Transport(e))
             }
         if (written > 0) return
-        if (waited >= budget) throw DatagramSendException(DatagramSendError.WouldBlock)
-        delay(backoff)
-        waited += backoff
-        backoff = minOf(backoff * 2, SEND_BACKPRESSURE_MAX_WAIT)
         check(view.remaining() == length) { "a zero-length datagram write must not consume the view" }
+        val remaining = budget - started.elapsedNow()
+        if (remaining <= Duration.ZERO) throw DatagramSendException(DatagramSendError.WouldBlock)
+        when (awaitWritable(remaining)) {
+            // The socket has room again: retry the same view. Exactly one write per readiness
+            // signal — no timer, no re-probe of a socket that has not said anything.
+            WriteReadiness.Writable -> Unit
+            WriteReadiness.TimedOut -> throw DatagramSendException(DatagramSendError.WouldBlock)
+            // Closed underneath us: the same typed shape a mid-send close already reports, with the
+            // JVM exception carrying the detail rather than a message we invented.
+            WriteReadiness.Closed -> throw DatagramSendException(DatagramSendError.Transport(ClosedChannelException()))
+        }
     }
 }
 
@@ -111,6 +137,23 @@ internal abstract class NioDatagramChannelCore(
     private val bufferFactory: BufferFactory = BufferFactory.Default,
 ) : DatagramChannel {
     private val selector: Selector = Selector.open().also { channel.register(it, SelectionKey.OP_READ) }
+
+    /**
+     * Second selector, registered `OP_WRITE`, used only by [awaitWritable].
+     *
+     * It cannot be the read [selector]: that one is parked in `select()` inside a [receive], and a
+     * `Selector` serializes selection operations — a send-side `select()` on it would queue behind a
+     * receive that only returns when a *datagram arrives*, converting backpressure into a deadlock.
+     * A separate selector is registered with the same channel (a `SelectableChannel` may be
+     * registered with several) so the two directions park independently.
+     *
+     * Opened **lazily**, on the first refused write, so a channel whose send buffer never fills — the
+     * normal case, and the reason the original loop chose a sleep — still pays exactly one selector,
+     * as before. Written on the send coroutine (sends are single-coroutine-confined per the
+     * buffer-flow contract) and read by [close] on any thread, hence [Volatile].
+     */
+    @Volatile
+    private var writeSelector: Selector? = null
 
     @Volatile
     private var closed = false
@@ -256,14 +299,12 @@ internal abstract class NioDatagramChannelCore(
      *
      * A zero is therefore treated as backpressure, not as failure: wait briefly and retry the same
      * view (a datagram write is all-or-nothing, so a zero leaves the cursor untouched). Only when the
-     * socket will not accept it within [SEND_BACKPRESSURE_BUDGET] does it become a reported
+     * socket will not accept it within the send budget does it become a reported
      * [DatagramSendError.WouldBlock]. Surfacing backpressure any earlier would be actively harmful —
      * quiche treats any exception from a send as fatal and would tear down a live connection over a
      * momentary full buffer.
      *
-     * Backoff rather than an `OP_WRITE` registration: the channel's selector belongs to the receive
-     * coroutine, and a second selector per channel is a heavier standing cost than a bounded sleep for
-     * a condition that normally clears in microseconds.
+     * The wait itself is [awaitWritable] — the socket's own `OP_WRITE` signal, not a timer (#303).
      */
     protected suspend fun transmit(
         payload: ReadBuffer,
@@ -278,7 +319,48 @@ internal abstract class NioDatagramChannelCore(
         if (length > maxWritableSize) {
             throw DatagramSendException(DatagramSendError.TooLarge(length, maxWritableSize))
         }
-        writeAbsorbingBackpressure(view, write)
+        writeAbsorbingBackpressure(view, write, ::awaitWritable)
+    }
+
+    /**
+     * Park until the kernel says this socket can accept a datagram again, or until [timeout] elapses.
+     *
+     * The reactive half of the send path (#303): a full output buffer is a readiness condition the
+     * platform already reports, so it is awaited rather than polled — one wakeup when the buffer
+     * drains, instead of a backoff ladder of timer wakeups that both wastes them and adds latency to
+     * the retry. [writeSelector] is opened here on first use and lives with the channel; it is
+     * registered `OP_WRITE`, so `select` returns as soon as there is room.
+     *
+     * Blocking is confined to [Selector.select] inside [runInterruptible], exactly like [receive], so
+     * cancelling a parked send interrupts the select instead of closing the socket. The timeout is
+     * floored at one millisecond because `select(0)` means *block forever*, which is the one outcome
+     * a bounded send must never have.
+     */
+    internal suspend fun awaitWritable(timeout: Duration): WriteReadiness {
+        if (closed) return WriteReadiness.Closed
+        val writeSelector =
+            this.writeSelector ?: try {
+                Selector.open().also {
+                    channel.register(it, SelectionKey.OP_WRITE)
+                    this.writeSelector = it
+                }
+            } catch (_: ClosedChannelException) {
+                return WriteReadiness.Closed
+            }
+        return try {
+            val ready = runInterruptible(Dispatchers.IO) { writeSelector.select(timeout.inWholeMilliseconds.coerceAtLeast(1)) }
+            writeSelector.selectedKeys().clear()
+            when {
+                closed -> WriteReadiness.Closed
+                ready > 0 -> WriteReadiness.Writable
+                else -> WriteReadiness.TimedOut
+            }
+        } catch (_: ClosedSelectorException) {
+            // close() raced this wait — same shutdown ordering the receive path documents.
+            WriteReadiness.Closed
+        } catch (_: ClosedChannelException) {
+            WriteReadiness.Closed
+        }
     }
 
     override fun close() {
@@ -286,6 +368,14 @@ internal abstract class NioDatagramChannelCore(
         runCatching {
             selector.wakeup()
             selector.close()
+        }
+        // Wake a send parked on write readiness before the channel goes: it observes `closed` and
+        // unwinds as a typed send failure rather than waiting out its budget on a dead socket.
+        writeSelector?.let { w ->
+            runCatching {
+                w.wakeup()
+                w.close()
+            }
         }
         runCatching { channel.close() }
     }

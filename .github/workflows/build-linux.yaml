@@ -1261,9 +1261,15 @@ jobs:
       # up on the Linux ARM64 (native) job (Phase 3) out of the same artifact.
       # The cross-build uses aarch64-linux-gnu-gcc + the cargo arm64 target
       # that this job already has installed for the K/Native ARM64 chain.
+      # verifyGeneratedTestCerts makes the testcerts half of the ⚠️ above ENFORCED rather than merely
+      # documented: it depends on both generators, so it mints the fixtures and then fails here, in
+      # the producing job, if any is missing — instead of surfacing as "Test cert not found" inside a
+      # raw-.kexe integration job that has no Gradle to mint them. (The same guard runs in
+      # build-apple's link job, which is where this class of break was last found.)
       - name: Build multi-arch quic-echo fat jar
         run: >-
           ./gradlew :socket-quic-quiche:quicEchoJar -PquicEchoAllArches=true
+          :socket-quic-quiche:verifyGeneratedTestCerts
           --no-configuration-cache ${{ inputs.gradle-args }}
 
       # Upload the multi-arch quic-echo Docker context (jar + Dockerfile +

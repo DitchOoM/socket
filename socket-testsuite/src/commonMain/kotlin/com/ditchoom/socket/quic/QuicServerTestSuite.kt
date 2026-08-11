@@ -46,6 +46,17 @@ import kotlin.time.Duration.Companion.seconds
  * `UnsatisfiedLinkError` into a JUnit `assumeTrue` skip; native targets
  * inherit the default no-op since their cinterop binding is fixed at
  * compile time.
+ *
+ * **No settle delay between `launch { connections { … } }` and the first client** (issue #305). Those
+ * `delay(100)`s waited for nothing: [withQuicServer] has already **bound** by the time its block runs,
+ * and every accepted connection queues in `ServerConnectionRegistry.acceptedDrivers` — a
+ * `Channel.UNLIMITED` fed by the receive loop from the moment of bind — so a client cannot arrive "too
+ * early" for the accept loop; the handler simply starts later. The bind IS raceable when
+ * [withQuicServer] itself sits inside a `launch`, which is why
+ * [sharedPort_quicAndANonQuicProtocolCoexist] waits on a `CompletableDeferred` completed inside the
+ * server block (post-bind by contract) instead of guessing. The delays that remain here are the ones
+ * that are *about* elapsed time — see [halfCloseReplyIsDeliveredAfterPeerConnectionClose] — and the
+ * poll intervals inside bounded retry loops.
  */
 abstract class QuicServerTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
@@ -138,7 +149,6 @@ abstract class QuicServerTestSuite {
                                 stream.close()
                             }
                         }
-                    delay(100)
 
                     val clientJob =
                         launch {
@@ -201,7 +211,6 @@ abstract class QuicServerTestSuite {
                                 },
                             )
                         }
-                    delay(100)
 
                     try {
                         // Sequential, one protocol at a time — each client negotiates a single ALPN,
@@ -403,7 +412,6 @@ abstract class QuicServerTestSuite {
                                 stream.close()
                             }
                         }
-                    delay(100)
 
                     val clientJob =
                         launch {
@@ -462,7 +470,6 @@ abstract class QuicServerTestSuite {
                                 s2.close()
                             }
                         }
-                    delay(100)
 
                     try {
                         withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
@@ -474,6 +481,10 @@ abstract class QuicServerTestSuite {
                             serverReadFirst.await()
 
                             // The peer reset must surface here as a STREAM error, not a connection close.
+                            // The delay is the POLL INTERVAL of this bounded retry loop (issue #305
+                            // category 2, kept): the write that observes the peer's STOP_SENDING is the
+                            // awaited event, and there is nothing else to await — so we re-probe every
+                            // 100 ms up to 50 times rather than spinning the connection with writes.
                             val streamError =
                                 assertFailsWith<QuicStreamException>(
                                     "a peer stream reset must be a QuicStreamException, not a connection-level QuicCloseException",
@@ -566,7 +577,6 @@ abstract class QuicServerTestSuite {
                                 closeWithError(connectionCloseAppCode)
                             }
                         }
-                    delay(100)
 
                     try {
                         withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
@@ -579,7 +589,8 @@ abstract class QuicServerTestSuite {
 
                             // After the peer's CONNECTION_CLOSE the next writes must raise a
                             // connection-level QuicCloseException (mirrors the stream-reset test's
-                            // shape: repeated writes flush the peer's close frame in, then throw).
+                            // shape: repeated writes flush the peer's close frame in, then throw —
+                            // including its poll-interval delay, kept for the same reason).
                             val closeError =
                                 assertFailsWith<QuicCloseException>(
                                     "a peer connection abort must surface as a connection-level QuicCloseException",
@@ -627,7 +638,6 @@ abstract class QuicServerTestSuite {
                                 stream.close()
                             }
                         }
-                    delay(100)
 
                     // verifyPeer omitted → default true; the pinned anchor must be loaded
                     // and the self-signed localhost chain validated against it.
@@ -679,7 +689,6 @@ abstract class QuicServerTestSuite {
                                 // Handshake should never complete; nothing to echo.
                             }
                         }
-                    delay(100)
 
                     // Pin an unrelated CA that did NOT sign the server cert. Supplying anchors
                     // forces verifyPeer on, so chain validation must reject the peer — the
@@ -742,7 +751,6 @@ abstract class QuicServerTestSuite {
                                 stream.close()
                             }
                         }
-                    delay(100)
 
                     val clientJob =
                         launch {
@@ -791,12 +799,19 @@ abstract class QuicServerTestSuite {
      * than waiting for a stalled runner to produce it. Without
      * `QuicheDriver.drainReadableStreamsIntoSlots` the reply dies with `quiche_conn_free` and this
      * fails with the exact string from the issue.
+     *
+     * The server closes with [QuicCloseLinger.Immediate] deliberately: the graceful close added for
+     * #321 would otherwise hold the CONNECTION_CLOSE until this client is done, and there would be no
+     * teardown for the read to lose a race against. The two fixes are complementary — #321 keeps a
+     * *sender* from closing over bytes that may still need retransmitting, #318 keeps a *receiver*
+     * from discarding bytes it already has when a close does arrive — so this pins the receive half.
      */
     @Test
     fun halfCloseReplyIsDeliveredAfterPeerConnectionClose() =
         // Larger than the 15 s default: the scenario itself spends 2 s waiting out the draining period.
         runQuicTest(timeout = 25.seconds) {
             wrapTestBody {
+                val testQuicOptions = testQuicOptions.copy(closeLinger = QuicCloseLinger.Immediate)
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
                     val echoResult = CompletableDeferred<String>()
 
@@ -819,7 +834,6 @@ abstract class QuicServerTestSuite {
                                 // while its reply is still sitting unread in quiche.
                             }
                         }
-                    delay(100)
 
                     val clientJob =
                         launch {

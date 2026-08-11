@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -34,6 +35,15 @@ import kotlin.time.Duration.Companion.seconds
  * `assumeTrue(CI == null || RUN_FLAKY_TESTS)` gate that hid these tests on CI
  * is gone — the lifecycle gap it worked around (leaked engine scopes starving
  * dispatchers on small runners) is closed by construction.
+ *
+ * **Delays (issue #305).** The `delay(100)` after each `launch { echoHandler() }` is gone: it waited
+ * for nothing, because [withQuicServer] has already bound when its block runs and accepted connections
+ * queue in `ServerConnectionRegistry.acceptedDrivers` (`Channel.UNLIMITED`) from the moment of bind.
+ * The delays that remain are NOT synchronisation — they are the scenario itself. This suite is about
+ * what a connection's *lifetime* does to the routing table, so "hold a no-stream connection open for
+ * 1 s", "hold it for 200 ms", "leave a gap between connections" are the inputs under test (contrast
+ * [immediateReconnectAfterNoStreamConnection], the zero-gap case, which exists precisely because the
+ * gap is a variable). Removing them would collapse distinct scenarios into duplicates.
  */
 class StaleConnectionDiagnosticTests {
     private val testQuicOptions =
@@ -116,7 +126,6 @@ class StaleConnectionDiagnosticTests {
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
-                        delay(100)
 
                         try {
                             assertEquals("first!", echoRoundTrip(this@withQuicServer, "first!"))
@@ -138,7 +147,6 @@ class StaleConnectionDiagnosticTests {
                 withTimeout(20.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
-                        delay(100)
 
                         try {
                             // Connection 1: connect but don't open any streams (health-check)
@@ -167,7 +175,6 @@ class StaleConnectionDiagnosticTests {
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
-                        delay(100)
 
                         try {
                             for (i in 1..5) {
@@ -195,7 +202,6 @@ class StaleConnectionDiagnosticTests {
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
-                        delay(100)
 
                         // Access the routing map via reflection — it now lives on the server's
                         // ServerConnectionRegistry (extracted from the per-platform server), so hop
@@ -219,7 +225,22 @@ class StaleConnectionDiagnosticTests {
                                 delay(500)
                             }
 
-                            delay(4.seconds) // 3s acceptStream timeout + cleanup
+                            // Await the condition the assertion depends on instead of budgeting for it
+                            // (issue #305). The old `delay(4.seconds)` was sized as "3 s acceptStream
+                            // timeout + cleanup": connection 2 opens no stream, so its handler sits in
+                            // `withTimeout(3.seconds) { acceptStream() }`, and only when that expires does
+                            // it return, close the connection, and let the receive loop drain
+                            // `driverCleanupQueue` into `connectionsByDcid`.
+                            //
+                            // The assertion below — "no entry points at a destroyed driver" — is vacuously
+                            // true BEFORE the sweep runs, so the await deliberately does NOT poll it: that
+                            // would return on the first tick and let the test pass without cleanup ever
+                            // happening. It polls the real post-condition instead. Both connections are
+                            // finished, so a correct sweep empties the map entirely; a broken one leaves the
+                            // entry behind, burns the whole deadline (longer than the old fixed wait, so
+                            // nothing gets less time than before) and falls through to the assertion, which
+                            // reports the stale count with its own diagnostic rather than a bare timeout.
+                            withTimeoutOrNull(8.seconds) { while (dcidMap.isNotEmpty()) delay(20) }
 
                             // All entries should be cleaned up — no stale drivers
                             var staleCount = 0
@@ -251,7 +272,6 @@ class StaleConnectionDiagnosticTests {
                 withTimeout(20.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
-                        delay(100)
 
                         try {
                             // No-stream, minimal hold time

@@ -51,6 +51,15 @@ import com.ditchoom.socket.http3.WebTransportOptions as Http3WebTransportOptions
  *
  * The **DONE bar** for v6 Phase 4 is [multiplexed_twoSessionsOverOneConnection_eachRoundTrip]: many
  * WebTransport sessions over a single held HTTP/3 connection, each with working streams.
+ *
+ * **No settle delay before dialing** (issue #305). Every test here opened with a `delay(SETTLE)` "let
+ * the server's control stream + SETTINGS go out before we dial" beat. It waited for nothing:
+ * [withHttp3Server] wraps `withQuicServer`, which has already **bound** by the time its block runs, and
+ * it launches its accept job before running the block; accepted connections then queue in
+ * `ServerConnectionRegistry.acceptedDrivers` (`Channel.UNLIMITED`) from the moment of bind. The server's
+ * control stream cannot go out *before* a client dials in any case — it is opened per accepted
+ * connection — and the client's own `peerSettings()` gate is what actually waits for it. The only delay
+ * left is the poll interval inside the bounded reset-observation loop.
  */
 abstract class WebTransportTestSuite {
     /** Server cert + key for the in-process WebTransport server (platform-specific path resolution). */
@@ -115,7 +124,6 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(SETTLE) // let the server's control stream + SETTINGS go out before we dial
                     val session = openSingleSession("https://localhost:$port/wt")
                     try {
                         assertEquals("echo:hello", session.roundTripBidi("hello"))
@@ -141,7 +149,6 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(SETTLE)
                     assertTrue(
                         webTransportSupport() is WebTransportSupport.Multiplexed,
                         "native webTransportSupport() must be Multiplexed (the v6 type-gated capability)",
@@ -185,7 +192,6 @@ abstract class WebTransportTestSuite {
                     },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(SETTLE)
                     val session = openSingleSession("https://localhost:$port/wt")
                     try {
                         val observed =
@@ -227,7 +233,6 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(SETTLE)
                     assertTrue(webTransportSupport() is WebTransportSupport.Multiplexed)
                     val held = openMultiplexed("https://localhost:$port/")
                     val session = held.openSession("/a")
@@ -255,8 +260,7 @@ abstract class WebTransportTestSuite {
                     onWebTransport = { echoFirstBidiStream() },
                     onRequest = { response.send(404) },
                 ) {
-                    delay(SETTLE)
-                    diagnostics.mark("settled; dialing first")
+                    diagnostics.mark("server bound; dialing first")
                     // Two separate connect() calls to the SAME authority. On native each dials a DEDICATED
                     // HTTP/3 connection — WebTransportOptions.allowPooling is a documented no-op here (never
                     // mapped in WebTransportSupportHttp3.connectInternal); transparent pooling is browser-only.
@@ -419,6 +423,3 @@ class WebTransportDiagnostics {
         const val MAX_LINE = 180
     }
 }
-
-/** Settle time for the server's control stream + SETTINGS to be sent before a client dials. */
-private const val SETTLE = 100L
