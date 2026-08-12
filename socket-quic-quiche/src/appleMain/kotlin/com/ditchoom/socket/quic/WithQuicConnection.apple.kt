@@ -251,14 +251,14 @@ internal suspend fun buildAppleQuicConnection(
                 bufferFactory,
                 readPeerCertDer = quicConn::readPeerCertDer,
                 closeConnection = { quicConn.close() },
-                // No X.509 leaf-field parser on Apple yet (Linux uses its BoringSslX509 cinterop; Apple
-                // would need either hand-written declarations for quiche's vendored BoringSSL or
-                // Security.framework's macOS-only SecCertificateCopyValues). With null, leaf-hash
-                // matching — the actual trust check — still runs, but the W3C validity/P-256 constraint
-                // enforcement is skipped. Tracked as issue #339, which also owns flipping
-                // `serverCertificateConstraintSupport` back to Enforced for Apple; that capability now
-                // reports LeafHashOnly here so it describes what this line actually does.
-                parseLeafFields = null,
+                // Apple has no usable native X.509 parser for this: Security.framework's
+                // SecCertificateCopyValues is macOS-only, and the portable
+                // SecCertificateCopyNotValidBefore/AfterDate needs macOS 15 / iOS 18 while K/N's floors
+                // are macOS 12 / iOS 15 (the shipped klib declares them extern_weak, so calling one on
+                // iOS 15–17 is a jump to NULL). So Apple uses the shared commonMain DER walk — the same
+                // code every target compiles — which is what lets `serverCertificateConstraintSupport`
+                // report Enforced here rather than LeafHashOnly (issue #339).
+                parseLeafFields = ::parsePinnedLeafFieldsDer,
                 now = tuning.wallClock(),
             )
             quicConn

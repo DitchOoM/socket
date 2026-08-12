@@ -33,10 +33,13 @@ private const val MAX_PEER_CERT_CAPACITY = 1 shl 16 // 64 KiB
  * off (see [applyQuicOptions]); this leaf-hash match is the sole trust check, matching the browser.
  *
  * Once the hash matches, the W3C `serverCertificateHashes` certificate constraints (validity ≤ 14 days,
- * currently valid, ECDSA P-256) are enforced — but only when [parseLeafFields] is supplied. Each backend
- * passes its own native X.509 parser (java.security on JVM/Android, BoringSSL on Linux); a backend whose
- * parser is not yet wired passes `null`, in which case the constraints are not yet enforced (hash-only,
- * the prior behaviour). A non-null parser that returns `null` on a leaf that already hash-matched is a
+ * currently valid, ECDSA P-256) are enforced — but only when [parseLeafFields] is supplied. Every quiche
+ * backend now supplies one: `java.security` on JVM/Android ([parsePinnedLeafFieldsJvm]), BoringSSL via
+ * cinterop on Linux (`parsePinnedLeafFieldsLinux`), and the shared structural DER walk
+ * ([parsePinnedLeafFieldsDer]) on Apple, which has no usable native X.509 parser. The parameter stays
+ * nullable because the *type* must still model "constraints not checked here" — see
+ * [ServerCertificateConstraintSupport] — but a `null` is now a deliberate hash-only choice, not an
+ * unwired backend. A non-null parser that returns `null` on a leaf that already hash-matched is a
  * fail-closed [CertificateHashPinningFailure.CertificateParseFailed].
  */
 internal suspend fun verifyServerCertificateHashes(

@@ -9,6 +9,7 @@ import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -41,11 +42,34 @@ abstract class QuicCertificateHashPinningTestSuite {
     /**
      * Whether this platform enforces the W3C certificate constraints — driven by the modeled
      * [serverCertificateConstraintSupport] capability rather than a hand-maintained per-backend flag. The
-     * constraint-reject tests run on a [ServerCertificateConstraintSupport.Enforced] platform (JVM/Android,
-     * Linux, macOS, web) and skip on a [ServerCertificateConstraintSupport.LeafHashOnly] one (iOS/tvOS/watchOS,
-     * which lack a public cert-validity API). The accept + wrong-hash tests run regardless.
+     * constraint-reject tests are gated open on a [ServerCertificateConstraintSupport.Enforced] platform
+     * and skipped on [ServerCertificateConstraintSupport.NoQuicEngine] or on the currently unproduced
+     * [ServerCertificateConstraintSupport.LeafHashOnly]. The accept + wrong-hash tests run regardless.
+     *
+     * Where that actually resolves today, per concrete member (there are four: JVM, Android, Linux,
+     * Apple):
+     *  - JVM/Android/Linux/macOS — `Enforced`, and the three cases execute end-to-end.
+     *  - **iOS simulator** — `Enforced` too, so this gate opens, but every test in the Apple member
+     *    still self-skips one step later for want of the build-generated `pinned*` fixtures, which the
+     *    simulator's cwd cannot reach. See `AppleQuicCertificateHashPinningTests`; a green iOS tick here
+     *    is not end-to-end evidence.
+     *  - tvOS/watchOS and JS/wasmJs — `NoQuicEngine`, and no member of this suite is compiled for them
+     *    at all (`:socket-quic-quiche` registers no such target), so this branch is a statement about the
+     *    capability, not a run that happens.
+     *
+     * Returning `false` here does not skip — it **fails**. Every member of this suite is compiled only
+     * for a backend that must enforce, so a `false` is a capability regression, and a regression that
+     * reports green is precisely how #339 survived. See [runConstraintRejectTest].
      */
     protected open fun enforcesW3cConstraints(): Boolean = serverCertificateConstraintSupport is ServerCertificateConstraintSupport.Enforced
+
+    /**
+     * The concrete subclass's name (`JvmQuicCertificateHashPinningTests`, `AppleQuic…`, …) — the closest
+     * thing this commonMain suite has to a platform label, used in the `[QUIC-PIN-CONSTRAINTS]` marker.
+     * A property, not an inline `this::class`: inside [runQuicTest] the receiver is a `CoroutineScope`.
+     */
+    private val memberName: String?
+        get() = this::class.simpleName
 
     private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
@@ -146,14 +170,47 @@ abstract class QuicCertificateHashPinningTestSuite {
     /**
      * Drive a constraint-violation fixture end-to-end: the server presents [fixture], the client pins
      * that leaf's real hash (so the hash matches and the W3C constraint check is what rejects), and
-     * [assertFailure] checks the structured failure. Skips on backends not yet enforcing constraints.
+     * [assertFailure] checks the structured failure. Skips on backends not enforcing constraints.
+     *
+     * The skip is **loud**. `kotlin.test` has no common skip primitive, so an early return is
+     * indistinguishable from a pass on the tick alone — and a silently-disarmed security test is exactly
+     * how issue #339 stayed hidden (macOS advertised `Enforced` while nothing enforced it). Following the
+     * repo's existing marker idiom (`[QUIC-SIM-HARNESS]`, `[QUIC-APPLE-FIXTURES]`), the decision is
+     * printed with the concrete suite member and the capability value that caused it, so grepping
+     * `QUIC-PIN-CONSTRAINTS` over a run tells you which platforms actually armed these three cases.
+     *
+     * On every platform the line lands in the JUnit XML under
+     * `build/test-results/<target>Test/TEST-*.xml` (`<system-out>`), including Kotlin/Native. The module
+     * that runs these members, `:socket-quic-quiche`, configures `testLogging` without
+     * `showStandardStreams`, so stdout stays off the Gradle console — but not out of the XML report.
+     * Verified on both: the jvmTest XML and `macosArm64Test`'s carry the marker lines.
      */
     private fun runConstraintRejectTest(
         fixture: String,
         assertFailure: (CertificateHashPinningFailure) -> Unit,
     ) = runQuicTest {
         wrapTestBody {
-            if (!enforcesW3cConstraints()) return@wrapTestBody
+            if (!enforcesW3cConstraints()) {
+                // NOT a skip. A marker in `<system-out>` was not enough: with the capability forced to
+                // LeafHashOnly the three cases still reported TEST SUCCESS and the XML still said
+                // `skipped="0" failures="0"`, so nothing a CI gate reads could tell the difference — the
+                // same green-while-disarmed shape as #339 itself. All four members (JVM, Android, Linux,
+                // Apple) compile only for backends that must enforce, and none overrides this gate, so a
+                // `false` here is a regression and has to be red.
+                fail(
+                    "[QUIC-PIN-CONSTRAINTS] DISARMED '$fixture' in $memberName: " +
+                        "enforcesW3cConstraints() returned false " +
+                        "(serverCertificateConstraintSupport=$serverCertificateConstraintSupport). " +
+                        "Every member of this suite runs on a backend that must enforce the W3C constraints, so this " +
+                        "is a capability regression, not a skip. A backend that genuinely cannot enforce them must be " +
+                        "removed from this suite deliberately — which is a reviewable change — rather than silently " +
+                        "disarming these three security tests.",
+                )
+            }
+            println(
+                "[QUIC-PIN-CONSTRAINTS] running '$fixture' in $memberName: " +
+                    "serverCertificateConstraintSupport=$serverCertificateConstraintSupport",
+            )
             val opts = options()
             // The `pinned-rsa` fixture deliberately presents an RSA leaf. On Apple that trips the
             // Network.framework server anti-amplification guard (RSA flight can't be delivered to a
