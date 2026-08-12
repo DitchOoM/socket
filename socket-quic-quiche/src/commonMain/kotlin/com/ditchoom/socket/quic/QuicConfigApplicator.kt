@@ -1,5 +1,8 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.WritePolicy
+
 /**
  * Platform-neutral bindings for quiche config calls.
  *
@@ -83,6 +86,26 @@ internal fun resolveVerifyPeer(options: QuicOptions): Boolean =
     } else {
         options.verifyPeer || options.trustedCaCertificatesPem.isNotEmpty()
     }
+
+/**
+ * The [ReadPolicy] every stream on a connection built from [options] gets — the single source of
+ * truth [QuicheDriver.streamReadPolicy] is threaded from at every build site. See
+ * [QuicOptions.persistentStreams].
+ */
+internal fun resolveStreamReadPolicy(options: QuicOptions): ReadPolicy =
+    if (options.persistentStreams) ReadPolicy.UntilClosed else ReadPolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE)
+
+/**
+ * The [WritePolicy] every stream on a connection built from [options] gets. Deliberately NOT gated on
+ * [QuicOptions.persistentStreams] — matching [WritePolicy]'s own doc ("an infinite write is rarely
+ * wanted") and the precedent already set by the WebTransport streams
+ * (`socket-http3`'s `WebTransportStreams.kt`), which keep `writePolicy = Bounded` even though their
+ * `readPolicy` is [ReadPolicy.UntilClosed]: a write that cannot drain — the peer stopped reading, flow
+ * control never reopens — is a real condition worth surfacing as an error, unlike a read simply
+ * waiting for the next message on an otherwise-idle persistent stream.
+ */
+internal fun resolveStreamWritePolicy(options: QuicOptions): WritePolicy =
+    WritePolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE)
 
 /**
  * Apply all [QuicOptions] to a quiche config via platform-specific [calls].

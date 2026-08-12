@@ -206,6 +206,8 @@ internal suspend fun buildAppleQuicConnection(
                     clientMode = true,
                     isServer = false,
                     keepAliveInterval = quicOptions.keepAliveInterval,
+                    streamReadPolicy = resolveStreamReadPolicy(quicOptions),
+                    streamWritePolicy = resolveStreamWritePolicy(quicOptions),
                     clock = tuning.clock,
                     driverContext = tuning.driverContext,
                     random = tuning.random,
@@ -302,7 +304,16 @@ internal class AppleQuicConnection(
             driver.commands.send(QuicheCmd.OpenStream(deferred, unidirectional))
             val slot = deferred.await()
             val adapter = DriverStreamAdapter(driver, slot)
-            return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, driver.streamReadPool))
+            return QuicByteStream(
+                slot.id,
+                QuicheStreamByteStream(
+                    slot.id,
+                    adapter,
+                    driver.streamReadPool,
+                    readPolicy = driver.streamReadPolicy,
+                    writePolicy = driver.streamWritePolicy,
+                ),
+            )
         } catch (_: ClosedSendChannelException) {
             throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
         }

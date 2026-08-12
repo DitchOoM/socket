@@ -7,7 +7,9 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.udp.SocketAddressCodec
@@ -62,6 +64,10 @@ internal class SharedQuicheServer(
     private val bufferFactory: BufferFactory,
     parentScope: CoroutineScope,
     private val keepAliveInterval: Duration? = null,
+    /** Threaded into every accepted connection's [QuicheDriver.streamReadPolicy]. See [QuicOptions.persistentStreams]. */
+    private val streamReadPolicy: ReadPolicy = ReadPolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
+    /** Threaded into every accepted connection's [QuicheDriver.streamWritePolicy]. See [QuicOptions.persistentStreams]. */
+    private val streamWritePolicy: WritePolicy = WritePolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
     /**
      * When an accepted connection may send its CONNECTION_CLOSE once its handler returns
      * ([QuicOptions.closeLinger], threaded here by every build function). See [lingerBeforeClose].
@@ -456,6 +462,8 @@ internal class SharedQuicheServer(
                 clientMode = false,
                 isServer = true,
                 keepAliveInterval = keepAliveInterval,
+                streamReadPolicy = streamReadPolicy,
+                streamWritePolicy = streamWritePolicy,
                 clock = tuning.clock,
                 driverContext = tuning.driverContext,
                 random = tuning.random,

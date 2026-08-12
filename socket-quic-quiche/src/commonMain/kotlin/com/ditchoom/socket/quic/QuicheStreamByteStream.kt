@@ -102,6 +102,12 @@ class QuicheStreamByteStream(
     // allocating one per read. Any plain BufferFactory also works; it just allocates fresh each read.
     private val bufferFactory: BufferFactory,
     private val bufferSize: Int = QuicheDriver.STREAM_READ_BUFFER_SIZE,
+    // Request/response-shaped default (unchanged pre-existing behavior). Every construction site
+    // driven by a real connection instead passes QuicheDriver.streamReadPolicy /
+    // QuicheDriver.streamWritePolicy, which honor QuicOptions.persistentStreams — see that option's
+    // doc for why a stream-level deadline is a DIFFERENT thing from the connection's idle timeout.
+    override val readPolicy: ReadPolicy = ReadPolicy.Bounded(DEFAULT_STREAM_DEADLINE),
+    override val writePolicy: WritePolicy = WritePolicy.Bounded(DEFAULT_STREAM_DEADLINE),
 ) : ByteStream,
     HalfCloseable,
     Resettable {
@@ -112,12 +118,6 @@ class QuicheStreamByteStream(
     private var sendFinished = false
 
     override val isOpen: Boolean get() = !closed
-
-    // QUIC stream policy refinement to UntilClosed (persistent WebTransport streams) is Phase 3
-    // work; the request/response-shaped Bounded default is correct for the current stream surface.
-    override val readPolicy: ReadPolicy = ReadPolicy.Bounded(15.seconds)
-
-    override val writePolicy: WritePolicy = WritePolicy.Bounded(15.seconds)
 
     /**
      * Read the next chunk from the stream.
@@ -169,5 +169,10 @@ class QuicheStreamByteStream(
         adapter.streamShutdown(streamId, direction = 1, errorCode)
         adapter.streamShutdown(streamId, direction = 0, errorCode)
         adapter.releaseUndeliveredReads()
+    }
+
+    companion object {
+        /** Default per-call deadline for a request/response-shaped stream (`QuicOptions.persistentStreams = false`). */
+        val DEFAULT_STREAM_DEADLINE: Duration = 15.seconds
     }
 }
