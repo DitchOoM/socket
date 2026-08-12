@@ -283,9 +283,26 @@ data class QuicOptions(
      *
      * Beyond the hash match, the W3C `serverCertificateHashes` certificate *constraints* (leaf validity
      * <= 14 days, currently within the validity window, ECDSA P-256 key) are enforced on every platform
-     * with a native X.509 parser — JVM/Android (`java.security`), Linux (BoringSSL), macOS
-     * (Security.framework). iOS/tvOS/watchOS lack a public cert-validity API and so check the leaf hash
-     * only. Branch on [serverCertificateConstraintSupport] to see what the current platform enforces.
+     * that ships a QUIC engine — JVM/Android (`java.security`), Linux (BoringSSL), and macOS and iOS (a
+     * shared structural DER walk, because Apple's only *portable* cert-validity API needs macOS 15 /
+     * iOS 18 — above K/N's deployment floor — and the older `SecCertificateCopyValues` is macOS-only, so
+     * neither can back a shared Apple implementation).
+     * tvOS/watchOS and JS/wasmJs ship no QUIC engine, so nothing here is enforced on them:
+     * `connect()` throws before a certificate exists. Branch on [serverCertificateConstraintSupport]
+     * rather than on the platform to see what actually runs.
+     *
+     * **Behaviour change on Apple (macOS/iOS), issue #339.** Apple previously never parsed the pinned
+     * leaf's fields, so *any* certificate whose hash matched a pin connected. The constraints are now
+     * enforced there too, which means a pinned leaf that used to connect on Apple can now be rejected
+     * with a [com.ditchoom.socket.CertificateHashPinningException]:
+     * `NotTemporallyValid` (expired or not yet valid), `ValidityPeriodTooLong` (validity > 14 days),
+     * `UnsupportedPublicKey` (not ECDSA P-256 — including an EC key carrying explicit domain parameters
+     * instead of a namedCurve OID, which the walk reads successfully and reports as *not* the named
+     * P-256), or `CertificateParseFailed` for a leaf whose DER the shared walk cannot read at all — it
+     * accepts the ordinary shapes but not, for example, a UTCTime without seconds or a GeneralizedTime
+     * with fractional seconds or a numeric UTC offset. Every other platform already
+     * behaved this way, so an Apple-only pin is the case to check: confirm the pinned leaf is EC P-256,
+     * currently valid, and issued for 14 days or less. Nothing changed for callers who pin no hashes.
      */
     val serverCertificateHashes: List<CertificateHash> = emptyList(),
     /**
