@@ -244,8 +244,27 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
+      # cache-disabled — see docs.yaml for the full reasoning. This job and docs.yaml are the only
+      # two that run setup-gradle in the default branch's ref scope (via merged.yaml's
+      # pull_request_target), so they are the only writers of the 1384MB `gradle-home-v2`
+      # extraction family — a third copy of the modules-2 content the explicit `gradle-*` entries
+      # already hold, in a repo at the 10GB cache cap.
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-disabled: true
+
+      # Read-only, zero new bytes: warms dependency resolution from what build-linux already saved.
+      # This job SPARSE-checks-out only .ci/validate-resolution + the version catalog, so the exact
+      # key will not match build-linux's (different *.gradle.kts set) — the `gradle-linux-` prefix
+      # is what actually lands, and that is sufficient for modules-2.
+      - name: Restore Gradle build outputs (read-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
 
       - name: Validate with Gradle resolution
         run: |

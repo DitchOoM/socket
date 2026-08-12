@@ -6,10 +6,15 @@ description: >-
   rebuilding quiche from source for ~10-20 minutes while the others don't. The Linux twin of
   .github/actions/apple-quiche-env; keep the two in step when either changes.
 
-  NOT a replacement for .github/actions/setup-linux-fuzz. That one deliberately builds its lanes from
-  the warm CACHES (it installs nightly Rust + cargo-fuzz and rebuilds quiche with SanitizerCoverage/
-  ASAN, so a prebuilt release-mode artifact would be the wrong input). This one hands over the exact
-  release natives `natives` produced.
+  Used by every Linux consumer job that must run against the natives this run SHIPS — the test
+  shards, `link`, `publish`, and (since #338) malloc-check and the four fuzz-jvm legs.
+
+  The one deliberate exception is .github/actions/setup-linux-fuzz, now scoped to the cargo-fuzz
+  ASAN lanes alone: those install nightly Rust + cargo-fuzz and rebuild quiche with
+  SanitizerCoverage/ASAN under socket-quic-quiche/fuzz/native/target, so a prebuilt release-mode
+  artifact would be the wrong input for them. Any other lane that finds itself building quiche
+  locally is a bug, not a variant: that is precisely how malloc-check and the JNI fuzzer ended up
+  exercising a libquiche no other job in the run had ever seen.
 
 inputs:
   konan:
@@ -81,14 +86,14 @@ runs:
     # `natives` job is the single writer for these keys.
     - name: Restore Konan cache
       if: inputs.konan == 'true'
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: ~/.konan
         key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
         restore-keys: konan-linux-
 
     - name: Restore Gradle build outputs
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: ~/.gradle/caches
         key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -96,10 +101,28 @@ runs:
           gradle-linux-
 
     - name: Restore Gradle wrapper distribution
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: ~/.gradle/wrapper
         key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+    # The Cargo registry, for the same reason the toolchain below is installed: the marker-guarded
+    # skips are the common case, not the guaranteed one. Consumers of this composite (malloc-check,
+    # fuzz-jvm) do not normally build quiche — `natives` writes the `.jni-built-<ver>` marker and
+    # the build task skips — but the note further down concedes that "normally" is not "always",
+    # and the step it describes carries continue-on-error precisely because it can run. When it
+    # does run without this, cargo re-downloads the whole crates.io index and every dependency
+    # before it can even start compiling, turning a rare miss into a very expensive one.
+    # Restore-only: build-linux.yaml's `natives` is the single writer of this key. Key copied
+    # byte-for-byte from there, so the prefix lineage is shared rather than private.
+    - name: Restore Cargo registry
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+        restore-keys: cargo-${{ runner.os }}-
 
     # BoringSSL/OpenSSL are restored for parity with the `natives` writer and for the legacy
     # QUICHE_BSSL_PATH fallback in the natives build script; today socket consumes the canonical
@@ -108,37 +131,37 @@ runs:
     # io_uring cinterop read libs/liburing/linux-<arch>, so :linuxX64Test and linkDebugTestLinuxArm64
     # need it warm or they rebuild it.
     - name: Restore BoringSSL x64
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: libs/boringssl/linux-x64
         key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
     - name: Restore BoringSSL ARM64
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: libs/boringssl/linux-arm64
         key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
 
     - name: Restore OpenSSL x64 (legacy fallback)
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: libs/openssl/linux-x64
         key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
     - name: Restore OpenSSL ARM64 (legacy fallback)
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: libs/openssl/linux-arm64
         key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
     - name: Restore liburing x64
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: libs/liburing/linux-x64
         key: liburing-linux-x64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
     - name: Restore liburing ARM64
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: libs/liburing/linux-arm64
         key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}

@@ -37,8 +37,32 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
+      # cache-disabled, plus an explicit read-only restore below.
+      #
+      # This job and validate-artifacts.yaml's `validate` are the only two that run setup-gradle in
+      # the DEFAULT BRANCH's ref scope, which is the only scope where it writes rather than reads.
+      # Between them they were storing the entire `gradle-home-v2` extraction family — 1384MB of
+      # gradle-dependencies-v2 / gradle-wrapper-zips-v2 / gradle-transforms-v2 / … — which is a
+      # third mechanism caching the same modules-2 content that build-apple.yaml's explicit
+      # `gradle-macos-*` entry and setup-java's (now removed) `cache: gradle` also held. Three
+      # copies of one directory, in a repo pinned at the 10GB Actions cache cap, where the eviction
+      # that causes is what makes a "cached" quiche native build still cost 339s on Apple.
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-disabled: true
+
+      # Zero new bytes: reads the entry build-apple.yaml's K/N shard already writes. `gradle-macos-kn-*`
+      # is the warmest of the three (it holds build-cache-1 klib output); `gradle-macos-` is the
+      # `natives`-written fallback.
+      - name: Restore Gradle build outputs (read-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-macos-kn-
+            gradle-macos-
 
       - name: Determine version
         id: version

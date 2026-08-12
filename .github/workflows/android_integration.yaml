@@ -8,6 +8,22 @@ on:
     types:
       - synchronize
       - opened
+
+# Same value as build-apple.yaml:60 and build-linux.yaml, so no lane scales its deadlines
+# differently from another. `timeScaleEnv()`'s Android actual is the commonJvmMain one
+# (System.getenv), and TestHelpers.testTimeScale clamps the result to 1..10, so a slow/loaded
+# emulator gets 3x the wall-clock on every `.scaled` budget without any assertion, ordering or
+# timing ratio changing — the shape of flake #291 on the API-35 lane.
+#
+# ⚠️ Scope, stated honestly: this env reaches the HOST side of this job (the Gradle daemon and the
+# :socket-quic-quiche:startNetworkControlServer JVM that scripts/android-emulator-tests.sh
+# launches). It does NOT reach the instrumented test process on the emulator — an app process is
+# forked from zygote and inherits the device's environment, not the runner's. Propagating a scale
+# to `connectedAndroidTest` needs an instrumentation argument plumbed through to timeScaleEnv(),
+# which is Kotlin-side work outside this file; tracked with #291.
+env:
+  QUIC_TEST_TIME_SCALE: "3"
+
 jobs:
   android-emulator:
     runs-on: ubuntu-latest
@@ -116,35 +132,28 @@ jobs:
       - name: Bring up quic-echo via the docker harness
         run: bash test-harness/compose-up-retry.sh quic-echo
 
-      # restore/save are deliberately SPLIT (not the unified actions/cache):
-      # the unified action saves at job END — after `run tests` — so every
-      # cache-miss run caches AVD userdata WITH the test APKs installed,
-      # possibly torn from the emulator teardown mid-write. The next run then
-      # fails before any test: the stale install can neither be uninstalled
-      # (DELETE_FAILED_INTERNAL_ERROR on old API levels) nor reinstalled over
-      # (INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES). Saving explicitly
-      # right after the create-AVD step caches the PRISTINE snapshot — no
-      # package ever installed. (Root-caused in DitchOoM/buffer#186 where the
-      # API-21 lane was failing this way on every second run.)
+      # ⚠️ THERE IS DELIBERATELY NO AVD CACHE HERE — do not "restore" one without re-reading this.
       #
-      # `-v2` retires every entry written before the kill-timing fix above. The key carries no
-      # content hash and is scoped per ref, so a single poisoned entry breaks that ref for the
-      # cache's whole lifetime — which is exactly what happened on PR #332: run 1 missed, created
-      # the AVD, passed, and saved a snapshot the emulator had been SIGKILLed halfway through
-      # writing; run 2 restored it and the emulator exited before ever registering with adb:
-      #   FATAL | A snapshot operation for 'test' is pending and timeout has expired. Exiting...
-      # which surfaces only as the boot poller's misleading "Timeout waiting for emulator to boot".
-      - name: AVD cache (restore)
-        uses: actions/cache/restore@v6
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-x86_64-${{ matrix.api-level }}-disk4096-v2
-
-      - name: create AVD and generate snapshot for caching
-        if: steps.avd-cache.outputs.cache-hit != 'true'
+      # This is NOT a revert of #333 (72e24e21). #333's substantive fix was moving
+      # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL out of the job-level env and onto the `run tests`
+      # step alone, so the create-AVD step below keeps its full shutdown grace period and can flush
+      # a complete snapshot. That fix is untouched (see the job-level note and the `run tests` env).
+      # What is removed is the cached artifact itself, which makes the poisoning failure mode
+      # structurally impossible rather than merely fixed:
+      #   run 1 misses, creates the AVD, passes, saves a snapshot; run 2 restores it and the
+      #   emulator exits before registering with adb —
+      #     FATAL | A snapshot operation for 'test' is pending and timeout has expired. Exiting...
+      #   surfacing only as the boot poller's misleading "Timeout waiting for emulator to boot".
+      #
+      # The economics, measured rather than assumed (2026-08-12):
+      #   create+save on a miss = 71s (api-29) / 83s (api-35); restore on a hit = 19-36s / 10-16s.
+      #   Net saving ~35-52s and ~67-73s, for 1776 MiB of a 10 GiB repo-wide cap — about
+      #   0.07 s/MiB, versus 1-4 s/MiB for the quiche/Konan/Gradle entries it was evicting. And
+      #   `on:` here is `pull_request` only, so the key is written per PR REF and never shared:
+      #   7 distinct refs in 24h = ~12 GiB of AVD writes against a 10 GiB cap.
+      #   This job (13-16 min) is nowhere near review.yaml's 48-55 min critical path, so the
+      #   ~100s costs zero wall-clock on the run as a whole.
+      - name: create AVD and generate boot snapshot
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api-level }}
@@ -158,20 +167,12 @@ jobs:
           # boot poller then timed out with a misleading "emulator to boot"
           # error). Cap it: this instrumented suite installs a couple of modest
           # APKs, so 4 GB is ample and drops `need` well under available. Must
-          # match the run-tests step below (that step reuses this cached AVD).
+          # match the run-tests step below (that step reuses the AVD this one
+          # creates, in the same job).
           disk-size: 4096M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
-          script: echo "Generated AVD snapshot for caching."
-
-      - name: AVD cache (save pristine snapshot)
-        if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-x86_64-${{ matrix.api-level }}-disk4096-v2
+          script: echo "Generated the AVD + boot snapshot this job's test step will reuse."
 
       - name: run tests
         uses: reactivecircus/android-emulator-runner@v2
@@ -185,7 +186,8 @@ jobs:
           target: default
           arch: x86_64
           force-avd-creation: false
-          # Must match the create-AVD step above — this step reuses the cached AVD.
+          # Must match the create-AVD step above — this step reuses the AVD that
+          # step created earlier in this same job.
           disk-size: 4096M
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -writable-system -noaudio -no-boot-anim -camera-back none
           disable-animations: true

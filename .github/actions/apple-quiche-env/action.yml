@@ -11,6 +11,15 @@ inputs:
     required: false
     default: "true"
 
+outputs:
+  gradle-cache-hit:
+    description: >-
+      'true' only when `~/.gradle/caches` was restored from an EXACT `gradle-macos-kn-<hash>` match
+      (a restore-keys prefix hit leaves it false). The one shard designated to SAVE that key gates
+      its save on this being false: cache entries are immutable per key, so re-saving an exact hit
+      can only fail — but `actions/cache/save` tars the ~1GB directory before it discovers that.
+    value: ${{ steps.restore_gradle_caches.outputs.cache-hit }}
+
 runs:
   using: composite
   steps:
@@ -47,7 +56,7 @@ runs:
     # `natives` job is the single writer for these keys.
     - name: Restore Konan cache
       if: inputs.konan == 'true'
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: ~/.konan
         key: konan-macos-${{ hashFiles('gradle/libs.versions.toml') }}
@@ -60,7 +69,8 @@ runs:
     # Kotlin/Native cold on every run. Ordered fallbacks: exact klib cache, newest klib cache,
     # then the natives-only cache, which is still better than nothing for dependency resolution.
     - name: Restore Gradle build outputs
-      uses: actions/cache/restore@v5
+      id: restore_gradle_caches
+      uses: actions/cache/restore@v6
       with:
         path: ~/.gradle/caches
         key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -69,7 +79,7 @@ runs:
           gradle-macos-
 
     - name: Restore Gradle wrapper distribution
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@v6
       with:
         path: ~/.gradle/wrapper
         key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}

@@ -309,12 +309,16 @@ jobs:
           name: quic-echo-docker-context
           path: test-harness/quic-echo/
 
+      # No `cache: gradle` — see build-linux.yaml's `natives` job. setup-java's gradle cache stores
+      # the whole ~/.gradle/caches tree under its own `setup-java-Linux-x64-gradle-*` key, i.e. a
+      # duplicate of the tree the explicit `gradle-linux-*` entry already holds, and this repo is at
+      # the 10GB Actions cache cap. This job builds two pure-JVM jars; it does not need to be a
+      # cache writer at all.
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
-          cache: gradle
 
       # :socket-testsuite:controllerJar is pure-JVM, but configuring the project pulls in
       # socket-quic-quiche's linuxArm64 target, whose :buildBoringsslArm64 cmake-configures with
@@ -365,28 +369,46 @@ jobs:
               "test-harness/${name}"
           done
 
+  # ── Closed-PR cache housekeeping lives in .github/workflows/purge-pr-caches.yaml ─────────────
+  # It was a job here. That was wrong: this workflow is serialized by `concurrency: {group: deploy,
+  # cancel-in-progress: false}`, under which a newer PENDING run cancels the older pending one — so
+  # in a multi-PR merge burst (exactly what pushes the repo over the 10GB cache cap) the cancelled
+  # runs never reached the purge, and the dead `refs/pull/N/merge` entries survived their full
+  # 7-day idle window. Cleanup must not queue behind the deploy lock, so it now has its own
+  # `pull_request: closed` workflow with no concurrency group.
+
   finalize:
     name: Finalize Release
     needs: [check-release, version, build-linux, publish]
     if: always() && needs.check-release.outputs.flow != 'skip' && needs.check-release.outputs.flow != 'dry-run'
     runs-on: ubuntu-latest
+    # No checkout, and no RELEASE_PAT. Every step below drives `gh` entirely through
+    # `--repo="$GITHUB_REPOSITORY"` (or an explicit `repos/{owner}/{repo}/…` API path), so there is
+    # no working tree to need and no local git context to resolve — GITHUB_REPOSITORY and
+    # GITHUB_TOKEN are enough.
+    #
+    # This is the fix for the bug that lost the tags for v3.1.0, v3.1.1 and v4.3.2. The old
+    # implementation did `git tag` + `git push`, which is checked by receive-pack: a GitHub App
+    # token (which GITHUB_TOKEN is) may not introduce or update .github/workflows/* without the
+    # `workflows` scope, and pushing a TAG at a commit containing workflow changes trips it:
+    #   ! [remote rejected] v4.3.2 -> v4.3.2 (refusing to allow a GitHub App to create or update
+    #   workflow .github/workflows/build-apple.yaml without workflows permission)
+    # — each time after the artifacts were already live on Maven Central, so the release was
+    # half-done and had to be backfilled by hand. Creating the ref through the REST API instead
+    # is not subject to that hook: the commit is already on the remote, so no new workflow content
+    # is introduced. No PAT is needed, by anyone, ever again — which also retires the
+    # silent-degradation mode where an unconfigured RELEASE_PAT looked fine until release day.
     steps:
-      # Checkout with RELEASE_PAT (workflow scope) so the tag push in
-      # "Create tag and GitHub release" can succeed when the release commit's
-      # tree contains .github/workflows/* changes. Default GITHUB_TOKEN lacks
-      # the workflow scope and silently rejects such tag pushes (v3.1.0/v3.1.1
-      # both failed this way and were backfilled manually).
-      # Falls back to GITHUB_TOKEN if RELEASE_PAT is not configured.
-      - uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
-
+      # A draft release creates no tag until it is published, so this path never hit the tag-push
+      # rejection below. `--target` is passed anyway so that when it IS published the tag lands on
+      # the commit this run built, not on whatever main's head happens to be that day.
       - name: Create draft GitHub release
         if: needs.check-release.outputs.flow == 'draft' && needs.publish.result == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
           PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           version="${{ needs.version.outputs.version }}"
           deployment_id="${{ needs.publish.outputs.deployment-id }}"
@@ -395,6 +417,7 @@ jobs:
           gh release create "v${version}" \
               --draft \
               --repo="$GITHUB_REPOSITORY" \
+              --target="$RELEASE_SHA" \
               --title="v${version}" \
               --notes="$(cat <<EOF
           ## [${PR_TITLE}](${PR_URL})
@@ -412,30 +435,119 @@ jobs:
           EOF
           )"
 
+      # ⚠️ NO `git tag` + `git push` here — that is what has been silently losing release tags.
+      #
+      # A push is checked by receive-pack: a GitHub App token (which GITHUB_TOKEN is) may not
+      # introduce or update .github/workflows/* without the `workflows` scope, and pushing a TAG
+      # that points at a commit containing workflow changes trips that check:
+      #   ! [remote rejected] v4.3.2 -> v4.3.2 (refusing to allow a GitHub App to create or update
+      #   workflow .github/workflows/build-apple.yaml without workflows permission)
+      # The publish to Maven Central had already succeeded, so v4.3.2 shipped with no tag and no
+      # GitHub release — the third time (v3.1.0, v3.1.1) this exact thing happened, each fixed by
+      # hand rather than in the workflow.
+      #
+      # `gh release create <tag> --target <sha>` creates the tag through the REST API instead. The
+      # commit is already on the remote, so the ref creation introduces no workflow content and the
+      # push-time check does not apply. No PAT, no fallback, no scope to forget to configure.
+      #
+      # WHICH COMMIT: github.sha, and it is the only correct choice here.
+      #   • On `pull_request_target: closed` — this workflow's normal trigger — github.sha is the
+      #     last commit on the PR's BASE branch, i.e. the squash/merge commit on main. It is also
+      #     what actions/checkout resolved in build-linux, build-apple and validate, so it is
+      #     literally the tree whose artifacts `publish` pushed to Central.
+      #   • On workflow_dispatch it is the HEAD of the dispatched ref.
+      #   NOT github.event.pull_request.head.sha: after a squash merge that commit does not exist
+      #   on main at all, and tagging it would point the release at an unreachable PR head.
+      #   NOT github.event.pull_request.merge_commit_sha either: absent on workflow_dispatch.
+      # The containment check below turns "tagged something off main" from a silent mistake into a
+      # loud failure, since the whole class of bug this step keeps hitting is silent.
       - name: Create tag and GitHub release
         if: needs.check-release.outputs.flow == 'release' && needs.publish.result == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title || 'Manual release' }}
           PR_URL: ${{ github.event.pull_request.html_url || format('{0}/{1}', github.server_url, github.repository) }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
+          set -uo pipefail
           version="${{ needs.version.outputs.version }}"
           tag="v${version}"
 
-          # Check if tag already exists
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists, skipping"
-            exit 0
+          # ── Idempotence is keyed on the RELEASE, not on the tag ──────────────────────────────
+          # This step produces TWO artifacts (a tag and a GitHub release) and the failure mode it
+          # exists to repair leaves exactly one of them behind. Keying the skip on the tag would
+          # therefore make the documented recovery path a silent no-op: `gh api .../git/ref/tags/`
+          # genuinely answers "yes" (unlike the old `git rev-parse`, which could only ever answer
+          # "no" against this shallow tagless clone and so always fell through to the create).
+          #
+          # A tag-present/release-absent repo is not hypothetical — it is precisely what a
+          # hand-backfilled tag leaves behind (v3.1.0, v3.1.1, v4.3.2), and what a finalize re-run
+          # after a transient `gh release create` failure produces. Skipping on the tag would exit 0
+          # having created nothing, in the one state a re-run is supposed to fix.
+          #
+          # Four states, all reachable, all handled:
+          #   published release present  → clean no-op (v4.3.2 was just backfilled with both, so the
+          #                                very next run meets this state for real)
+          #   DRAFT release present      → hard error: a draft carries NO tag, so skipping here would
+          #                                leave the version untagged — the exact bug this step fixes
+          #   release absent, tag absent → normal path: create both
+          #   release absent, tag present→ recovery: create the release ON the existing tag
+          #
+          # `gh release view` succeeds on a draft, so it alone cannot stand in for "already done":
+          # a draft release has no git tag at all. Ask for isDraft explicitly rather than inferring.
+          release_is_draft=$(gh release view "$tag" --repo="$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo absent)
+          case "$release_is_draft" in
+            false)
+              echo "Release $tag already exists (published) — nothing to do."
+              exit 0
+              ;;
+            true)
+              echo "::error::A DRAFT release ${tag} already exists, and a draft carries no git tag — so treating it as 'already done' would leave ${tag} permanently untagged (the v3.1.0/v3.1.1/v4.3.2 failure). Publish it via the 'Complete or Cancel Release' workflow (action: complete, version: ${version}), or delete the draft, then re-run."
+              exit 1
+              ;;
+          esac
+
+          # Resolve through `commits/{ref}`, which PEELS an annotated tag to its commit. `git/ref/tags`
+          # returns the tag OBJECT sha for annotated tags, and every tag this recovery path exists for
+          # was hand-backfilled with `git tag` — so that spelling would fire the mismatch warning below
+          # on its own primary use case.
+          tag_commit=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${tag}" --jq '.sha' 2>/dev/null || true)
+          if [ -n "$tag_commit" ]; then
+            # Recovery path. `target_commitish` is documented as "unused if the Git tag already
+            # exists", so the existing tag stays authoritative and --target is deliberately omitted
+            # rather than passed-and-ignored. The containment guard below is skipped with it: it
+            # guards the CREATION of a ref, and no ref is being created here.
+            echo "::notice::Tag ${tag} already exists (-> ${tag_commit}) but has no GitHub release — creating the release on the existing tag."
+            if [ "$tag_commit" != "$RELEASE_SHA" ]; then
+              echo "::warning::${tag} points at ${tag_commit}, not this run's ${RELEASE_SHA}. Keeping the existing tag."
+            fi
+            target_args=()
+          else
+            # Refuse to tag a commit that is not on the default branch. `compare` reports the head's
+            # relationship to the base: `identical` (it IS main's head) or `behind` (main has moved
+            # on since) are both fine; `ahead`/`diverged` mean RELEASE_SHA is not on main.
+            default_branch=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')
+            status=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${default_branch}...${RELEASE_SHA}" --jq '.status')
+            case "$status" in
+              identical|behind)
+                echo "Tagging ${RELEASE_SHA} (${status} vs ${default_branch})"
+                ;;
+              *)
+                echo "::error::${RELEASE_SHA} is '${status}' relative to ${default_branch} — refusing to tag ${tag} off the default branch."
+                exit 1
+                ;;
+            esac
+            target_args=(--target="${RELEASE_SHA}")
           fi
 
-          # Create and push tag
-          git tag "$tag"
-          git push origin "$tag"
-
-          # Create release
+          # Creates the tag via the API as a side effect of creating the release (normal path), or
+          # attaches the release to the tag that is already there (recovery path).
           maven_url="https://central.sonatype.com/artifact/com.ditchoom/socket/${version}"
+          # ${a[@]+"${a[@]}"} — expanding an EMPTY array under `set -u` is fatal on bash < 4.4.
+          # ubuntu-latest ships 5.2, but the guard costs nothing and survives a runner/shell change.
           gh release create "$tag" \
               --repo="$GITHUB_REPOSITORY" \
+              ${target_args[@]+"${target_args[@]}"} \
               --title="${tag}" \
               --notes="$(cat <<EOF
           ## [${PR_TITLE}](${PR_URL})

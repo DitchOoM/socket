@@ -53,22 +53,37 @@ jobs:
         run: |
           sudo apt-get install -y build-essential perl pkg-config cmake nasm
 
+      # No `cache: gradle` — see build-linux.yaml. setup-java's gradle cache stores the whole
+      # ~/.gradle/caches tree under a second key, duplicating what the explicit `gradle-linux-*`
+      # entry already holds, and this repo is at the 10GB Actions cache cap.
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: "zulu"
           java-version: "21"
-          cache: gradle
 
       - name: Set up Rust (for quiche/BoringSSL cargo build)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Konan
-        uses: actions/cache@v6
+      # `konan-linux-`, NOT `konan-${{ runner.os }}-`. runner.os is "Linux" (capital L) and the
+      # writer of the real entry — build-linux.yaml's `natives` job — uses the literal lowercase
+      # `konan-linux-`. Cache keys are compared verbatim and restore-key prefixes do not cross the
+      # two spellings, so this job had its own private, never-shared Konan lineage. (The cargo key
+      # below is fine as-is: build-linux uses the same `cargo-${{ runner.os }}-` expression.)
+      #
+      # ⚠️ RESTORE-ONLY, and that is a consequence of the rename above. While this job wrote to its
+      # own misspelled lineage it could not hurt anyone; pointing it at the shared `konan-linux-`
+      # key with a read-WRITE `actions/cache` would make it a SECOND writer of a key build-linux
+      # documents as single-writer. This is a host-only dependency-bump job that never runs a
+      # Kotlin/Native link, so the ~/.konan it would upload is whatever partial toolchain a
+      # configure happened to pull — and being first to claim the key would hand every real build
+      # an incomplete tree. Read the shared entry, never publish over it.
+      - name: Restore Konan cache (read-only)
+        uses: actions/cache/restore@v6
         with:
           path: ~/.konan
-          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
-          restore-keys: konan-${{ runner.os }}-
+          key: konan-linux-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-linux-
 
       - name: Cache cargo
         uses: actions/cache@v6

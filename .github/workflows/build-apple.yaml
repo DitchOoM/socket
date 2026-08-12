@@ -87,6 +87,11 @@ jobs:
       # This job is the SINGLE WRITER for the Konan/Gradle caches. Every fanned-out consumer uses
       # actions/cache/restore (read-only) via .github/actions/apple-quiche-env, so a cache miss
       # cannot turn into six parallel jobs racing to upload the same key.
+      # ⚠️ For the two Gradle keys that is now further narrowed to main's ref scope only — see the
+      # `Restore Gradle …` steps below and their `Save … (main only)` twins at the end of this job.
+      # Konan is still written from every ref: it is keyed on the version catalog alone, so it
+      # rotates only on a Kotlin bump, and a K/N distribution download is the one thing too
+      # expensive to leave to a prefix-restore miss on the job the whole workflow waits for.
       - name: Cache Konan
         uses: actions/cache@v6
         with:
@@ -107,8 +112,17 @@ jobs:
       # (measured 2026-08-11: 687MB `setup-java-macOS-arm64-gradle-*` alongside the 1088MB
       # `gradle-macos-*` here), which matters because the repo sits at the 10GB cap and the
       # resulting LRU eviction is what makes "cached" quiche natives still cost ~339s.
-      - name: Cache Gradle build outputs
-        uses: actions/cache@v6
+      #
+      # ⚠️ RESTORE here, SAVE only on main (the two `Save Gradle …` steps at the end of this job).
+      # Cache entries are ref-scoped: a PR can read main's, main can never read a PR's, and a merged
+      # PR's entries linger for the 7-day idle window evicting live ones. Measured 2026-08-12: the
+      # explicit gradle-* families were 3192MB of a 10240MB cap, 100% of it on PR refs. merged.yaml
+      # calls this workflow on `pull_request_target: closed` (github.ref = refs/heads/main), so main
+      # is rewritten on every merge and each PR prefix-restores that one copy. Same pattern
+      # gradle/actions/setup-gradle uses by default.
+      - name: Restore Gradle build outputs
+        id: restore_gradle_caches
+        uses: actions/cache/restore@v6
         with:
           path: ~/.gradle/caches
           key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -120,8 +134,11 @@ jobs:
       # actions/setup-java#269). Folding ~/.gradle/wrapper into the step above would re-download
       # the ~150MB Gradle distribution on every `*.gradle.kts` edit, since that key rotates on
       # build-script changes while the wrapper itself changes only when the wrapper properties do.
-      - name: Cache Gradle wrapper distribution
-        uses: actions/cache@v6
+      # No restore-keys: a prefix hit would hand back a different Gradle distribution than the
+      # wrapper properties ask for, which gradlew would re-download anyway.
+      - name: Restore Gradle wrapper distribution
+        id: restore_gradle_wrapper
+        uses: actions/cache/restore@v6
         with:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -261,6 +278,37 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # ── The write half of the restore-only Gradle caches at the top of this job ──────────────
+      # Only in main's ref scope — see the note on the restore steps. `!cancelled()` rather than
+      # `success()` mirrors what actions/cache's post-step did (it saved on failure too);
+      # continue-on-error because a save whose key already exists warns rather than fails, and a
+      # cache problem must never redden the job every other job here is `needs:` on.
+      #
+      # ⚠️ The `cache-hit != 'true'` guard is NOT redundant with continue-on-error, and splitting
+      # actions/cache into restore+save is exactly what makes it necessary. The full action knows
+      # it restored an EXACT primary-key hit and skips its own post-save; `actions/cache/save` has
+      # no such knowledge and will happily re-save every run. @actions/cache tars the directory
+      # FIRST and only then reserves the cache entry, so on the common already-cached main run
+      # these steps would tar ~1GB of ~/.gradle/caches and only then discover the key is taken —
+      # minutes of wasted wall time per run, silently swallowed by continue-on-error. `cache-hit`
+      # is true only on an exact primary-key match (a restore-keys prefix hit leaves it false),
+      # which is precisely when a re-save would be a no-op anyway.
+      - name: Save Gradle build outputs (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Save Gradle wrapper distribution (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_wrapper.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
   # ── Stage 2a: Kotlin/Native test shards ──────────────────────────────────────────────────────
   # Task names are UNQUALIFIED (no leading colon) so Gradle runs them in every subproject that has
   # them — a leading-colon `:macosX64Test` would run only the ROOT project's test and silently skip
@@ -328,6 +376,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env
+        id: quiche_env
 
       - name: Run ${{ matrix.shard.name }}
         run: >-
@@ -350,12 +399,28 @@ jobs:
       #
       # Deliberately NOT per-shard keys: five ~1GB entries would blow the repo's 10GB Actions cache
       # cap and trigger exactly the LRU eviction that makes a "cached" quiche build cost 514s.
-      # if: always() — the klibs compiled before a test assertion failed are still valid and worth
-      # keeping; gating on success would mean a flaky lane also poisons the next run's cache.
+      # if: !cancelled() — the klibs compiled before a test assertion failed are still valid and
+      # worth keeping; gating on success would mean a flaky lane also poisons the next run's cache.
       # continue-on-error: a save whose key already exists warns rather than fails, and a cache
       # problem must never turn a green test lane red.
+      #
+      # ⚠️ main's ref scope only, like the two gradle-macos entries in `natives`. This is the single
+      # largest per-ref entry in the repo (713MB); written per PR ref it was pure eviction pressure,
+      # because a PR ref's copy is read only by that PR and dies with it. Written on main it is
+      # prefix-restorable by every PR (apple-quiche-env's restore-keys start at `gradle-macos-kn-`).
+      # merged.yaml runs this workflow on `pull_request_target: closed`, i.e. as main, so the entry
+      # is refreshed on every merge.
+      #
+      # ⚠️ Same `cache-hit != 'true'` guard as the two saves in `natives`, and it matters most here:
+      # this is the repo's single largest entry (713MB-1GB). A cache key is immutable once written,
+      # so on an exact hit this save can only fail to reserve — but `actions/cache/save` tars the
+      # whole directory BEFORE it tries, so an unguarded step burns minutes taring a gigabyte to
+      # throw it away, with continue-on-error hiding the waste. The exact-hit case is common on
+      # main: this key rotates only on build-script/version-catalog/wrapper changes, so every merge
+      # that touches source alone hits it. `cache-hit` comes from apple-quiche-env's output because
+      # the restore lives inside that composite action.
       - name: Save Gradle build outputs (K/N klibs)
-        if: always() && matrix.shard.name == 'macOS x64 (all other modules)'
+        if: ${{ !cancelled() && matrix.shard.name == 'macOS x64 (all other modules)' && github.ref == 'refs/heads/main' && steps.quiche_env.outputs.gradle-cache-hit != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
