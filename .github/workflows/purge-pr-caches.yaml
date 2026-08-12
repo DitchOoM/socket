@@ -1,0 +1,80 @@
+name: "Purge PR Caches"
+
+# ── Housekeeping: reclaim a closed PR's ref-scoped Actions caches ────────────────────────────────
+# A cache entry is scoped to the ref that wrote it, and GitHub keeps it for a 7-day IDLE window
+# regardless of whether that ref still exists. A merged PR's entries are therefore unreadable by
+# anyone (main cannot read a PR ref's caches, and the PR is gone) while still counting against the
+# repo-wide 10GB cap — and when the repo is at the cap, they evict the live `refs/heads/main`
+# entries that every future PR prefix-restores. Measured 2026-08-12: 8269MB (80.7% of the whole
+# cache) belonged to two already-merged PRs, which is the concrete reason "cached" quiche natives
+# still cost 339s on Apple and 204s on Linux.
+#
+# ⚠️ WHY THIS IS ITS OWN WORKFLOW, and must stay one.
+# This started as a job inside merged.yaml. That made it least reliable exactly when it matters
+# most. merged.yaml carries `concurrency: {group: deploy, cancel-in-progress: false}`, under which
+# a newer PENDING run cancels the older pending one — so in a multi-PR merge burst (precisely the
+# situation that pushes the repo over the 10GB cap) the cancelled runs never reach their purge job,
+# and those `refs/pull/N/merge` caches survive the full 7-day idle window. Cleanup must not queue
+# behind, or be cancelled by, the deploy serialization.
+#
+# Hence: separate workflow, its own trigger, and NO concurrency group at all. These runs are
+# seconds long, touch nothing but the cache API, and are idempotent, so letting N of them run
+# concurrently during a merge burst is the correct behaviour — each purges a different PR's ref.
+on:
+  pull_request:
+    types: [ closed ]
+
+# Minimum needed: `actions: write` is what the cache DELETE endpoint requires. Deliberately no
+# `contents: write` (this workflow never touches the repo) and no checkout — `gh` is driven
+# entirely by an explicit `repos/{owner}/{repo}/…` API path.
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  purge:
+    name: "Purge the closed PR's caches"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Runs on close, merged or not: an abandoned PR leaves exactly the same dead bytes behind as
+      # a merged one. Never fails: every delete tolerates an error and the step is
+      # continue-on-error, because losing a cleanup pass is a slow cache, not a broken repo.
+      - name: Delete this PR's ref-scoped caches
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          ref="refs/pull/${PR_NUMBER}/merge"
+          echo "Purging Actions caches scoped to ${ref}"
+
+          # A failed list call and a genuinely empty list must NOT print the same thing. Nobody
+          # watches this workflow, so "found nothing" reading identically to "could not look" is
+          # how a silently-dead purge survives for months while the cache stays over quota.
+          # Capture the exit status separately from the (legitimately empty) output.
+          ids=$(gh api --paginate \
+            "repos/${REPO}/actions/caches?ref=${ref}&per_page=100" \
+            --jq '.actions_caches[].id' 2>/dev/null) && list_rc=0 || list_rc=$?
+          if [ "$list_rc" -ne 0 ]; then
+            echo "::warning::could not list caches for ${ref} (gh exit ${list_rc}) — nothing purged. On a fork PR the token is read-only and this is expected."
+            exit 0
+          fi
+          # An empty result is the normal case for a PR that never ran CI. Exit cleanly rather than
+          # running an empty `for` over unset output under `set -u`.
+          if [ -z "${ids//[[:space:]]/}" ]; then
+            echo "No caches scoped to ${ref} — nothing to do."
+            exit 0
+          fi
+
+          count=0
+          for id in $ids; do
+            if gh api -X DELETE "repos/${REPO}/actions/caches/${id}" >/dev/null 2>&1; then
+              count=$((count + 1))
+            else
+              echo "::warning::could not delete cache id ${id} (already gone?)"
+            fi
+          done
+          echo "Deleted ${count} cache entr(y|ies) for ${ref}."

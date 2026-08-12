@@ -54,12 +54,42 @@ jobs:
       # Android SDK, Rust, cross toolchains, native caches): `nextVersion` is satisfied by
       # configuring the build, and every one of those would add setup time to a job that now
       # sits on the critical path of every run.
+      #
+      # No `cache: gradle`: setup-java's gradle cache is read-WRITE and stores the WHOLE
+      # ~/.gradle/caches tree (setup-java/src/cache.ts pins the gradle package manager to that one
+      # path), which cost this configure-only job a 264MB write + a 133MB wrapper write per ref —
+      # against a repo sitting at the 10GB Actions cache cap, where the eviction that buys is what
+      # makes "cached" quiche natives still cost 204s in build-linux. A configure is not worth a
+      # cache ENTRY.
+      #
+      # It is emphatically worth a cache READ, though. This job sits at the top of the graph and
+      # every other job `needs:` it, so its wall time is on the critical path of every run. With no
+      # restore at all, a configure-only run still cold-downloads the ~150MB Gradle distribution and
+      # re-resolves every plugin for a 12-module KMP build. (The ~90s this job used to be measured at
+      # was measured WITH setup-java's cache warm — it is not the no-cache number.)
+      #
+      # So: restore, never save. Byte-identical keys to build-linux.yaml's, which is the single
+      # writer for both families and runs in main's ref scope; this job is `runs-on: ubuntu-latest`,
+      # so the Linux keys are the right ones. Zero new bytes in the cache.
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
-          cache: gradle
+
+      - name: Restore Gradle build outputs (read-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      - name: Restore Gradle wrapper distribution (read-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
       # `nextVersion` prints from its configuration block, so `-q` yields exactly one line: the
       # version (build.gradle.kts's own "Version: ..." banner is suppressed at QUIET).

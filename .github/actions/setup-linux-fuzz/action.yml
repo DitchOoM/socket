@@ -1,12 +1,25 @@
-name: "Setup Linux fuzz/native toolchain"
+name: "Setup Linux cargo-fuzz/ASAN toolchain"
 description: >-
-  JDK 21 + the warm build caches `build` saved (gradle build-cache, BoringSSL,
-  quiche, cargo) + the BoringSSL/quiche/aarch64 build toolchain, and — for the
-  native ASAN lanes — nightly Rust + cargo-fuzz. Shared by the split malloc-check
-  + fuzz jobs (#209 → parallel fan-out) so they don't each duplicate ~90 lines of
-  setup. Assumes the repo is already checked out (hashFiles + the composite's own
-  file both need the working tree). The caller job must `needs: build` so these
-  caches are populated before restore.
+  JDK 21 + a READ-ONLY restore of the Gradle/Cargo caches `natives` writes, the BoringSSL/quiche/
+  aarch64 build toolchain, and nightly Rust + cargo-fuzz — for the cargo-fuzz ASAN lanes ONLY
+  (fuzz-native x2, fuzz-boringssl-asan). Those lanes deliberately rebuild quiche from source with
+  SanitizerCoverage/AddressSanitizer, so the release-mode natives artifact would be the wrong input
+  for them. Every OTHER fanned-out Linux job — including malloc-check and the JVM Jazzer fuzz lanes,
+  which used to come through here — uses .github/actions/linux-quiche-env and runs against the exact
+  natives this run ships. That split is the whole point: a lane must either consume the shipped
+  binary or knowingly build its own, never accidentally build a third one.
+
+  Caller contract: the job must `needs: natives` (build-linux.yaml's single cache writer).
+
+  ⚠️ This composite writes exactly ONE cache — `cargo-fuzz-bin-<os>-v1` — and restores everything
+  else read-only. It used to use read-write `actions/cache` on keys `natives` owns, with a DIFFERENT
+  version token and a hashFiles set missing socket-quic-quiche/build.gradle.kts (the file whose
+  SHA-256 is quichePatchDigest). The result was not "cache misses": it was a self-sustaining orphan
+  cache lineage (quiche-linux-x64-v7-*, quiche-cargo-target-v2-*) that these lanes wrote and read
+  back, i.e. they fuzzed a libquiche nobody else in the run shipped. See #338.
+
+  Assumes the repo is already checked out (hashFiles + the composite's own file both need the
+  working tree).
 inputs:
   cargo-fuzz:
     description: "Install nightly Rust + cargo-fuzz for the native (cargo-fuzz ASAN) lanes."
@@ -14,64 +27,54 @@ inputs:
 runs:
   using: "composite"
   steps:
+    # NO `cache: gradle` — setup-java's gradle cache points at ~/.gradle/caches, byte-for-byte the
+    # same directory the explicit restore below reads, so enabling both stored that tree a SECOND
+    # time per run under a `setup-java-Linux-x64-gradle-*` key (measured 265MB). Same removal
+    # build-linux.yaml / linux-quiche-env already made.
     - name: Set up JDK 21
       uses: actions/setup-java@v5
       with:
         distribution: 'zulu'
         java-version: '21'
-        cache: gradle
 
-    # Same cache keys as `build` — it (the caller's `needs:`) finishes and saves these
-    # before this job starts, so we restore them warm: the malloc-check jvmTest rerun, the
-    # Jazzer lane's prepareQuicheNativeLib, and the cargo-fuzz quiche compile reuse the
-    # already-built klibs / BoringSSL / quiche / cargo target/ trees, not a cold rebuild.
-    - name: Cache Gradle build outputs
-      uses: actions/cache@v5
+    # RESTORE-ONLY, and the key is copied byte-for-byte from the `Restore Gradle build outputs` step
+    # of build-linux.yaml's `natives` job. `natives` is the single writer; these lanes fan out to
+    # three parallel jobs, so a read-write action here would have them racing to upload a key they
+    # do not own — and if the two expressions ever drift by so much as a filename, this composite
+    # silently starts its own private cache lineage again, which is #338.
+    - name: Restore Gradle build outputs
+      uses: actions/cache/restore@v6
       with:
         path: ~/.gradle/caches
         key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
         restore-keys: |
           gradle-linux-
 
-    - name: Cache BoringSSL x64
-      uses: actions/cache@v5
+    # The OTHER half of what `cache: gradle` used to cover. Dropping setup-java's cache removed the
+    # duplicate ~/.gradle/caches copy (good) but also removed ~/.gradle/wrapper (not good): without
+    # this, all three ASAN lanes re-download the ~150MB Gradle distribution on every run.
+    # Cached separately from ~/.gradle/caches on purpose — see the note in build-linux.yaml — and,
+    # for the same reason given there, deliberately with NO restore-keys: a prefix hit would hand
+    # back a different Gradle distribution than the wrapper properties ask for, which gradlew would
+    # then re-download anyway. Key copied byte-for-byte from `natives`, the single writer.
+    - name: Restore Gradle wrapper distribution
+      uses: actions/cache/restore@v6
       with:
-        path: libs/boringssl/linux-x64
-        key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
+        path: ~/.gradle/wrapper
+        key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
-    # The JVM lanes (malloc-check jvmTest + Jazzer quicHeaderFuzz) pull the host JNI-shim
-    # build, whose Gradle graph also reaches the root :buildBoringsslArm64 + the arm64
-    # quiche/shim tasks (the multi-arch native staging wiring). Restore the SAME arm64
-    # caches `build` saved so those tasks are UP-TO-DATE and skip — exactly as the x64
-    # cache makes the x64 chain skip. Without these the arm64 BoringSSL cmake runs and
-    # dies for lack of an aarch64 cross-compiler.
-    - name: Cache BoringSSL ARM64
-      uses: actions/cache@v5
-      with:
-        path: libs/boringssl/linux-arm64
-        key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-
-    - name: Cache quiche Linux x64
-      uses: actions/cache@v5
-      with:
-        path: socket-quic-quiche/libs/quiche/linux-x64
-        key: quiche-linux-x64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-
-    - name: Cache quiche Linux ARM64
-      uses: actions/cache@v5
-      with:
-        path: socket-quic-quiche/libs/quiche/linux-arm64
-        key: quiche-linux-arm64-v7-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-
-    - name: Cache quiche cargo target/ (all triples)
-      uses: actions/cache@v5
-      with:
-        path: socket-quic-quiche/build/quiche
-        key: quiche-cargo-target-v2-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-        restore-keys: quiche-cargo-target-v2-
-
-    - name: Cache Cargo registry
-      uses: actions/cache@v5
+    # Crate SOURCES for the from-source ASAN quiche build below (fuzz/native/Cargo.toml pulls quiche
+    # from crates.io). Key copied byte-for-byte from the `Cache Cargo registry` step of
+    # build-linux.yaml's `natives` job; restore-only for the same single-writer reason.
+    #
+    # The quiche LIBRARY caches that used to sit here are deliberately gone, not merely repointed:
+    # these lanes never read socket-quic-quiche/libs/quiche or socket-quic-quiche/build/quiche —
+    # cargo-fuzz builds its instrumented quiche under socket-quic-quiche/fuzz/native/target. The
+    # boringssl-linux-{x64,arm64}-v4 steps went with them: no such entry has existed in the repo's
+    # cache for as long as it has been measured, and the jobs logged "Path Validation Error … do(es)
+    # not exist" for them at post-job.
+    - name: Restore Cargo registry
+      uses: actions/cache/restore@v6
       with:
         path: |
           ~/.cargo/registry
@@ -79,15 +82,14 @@ runs:
         key: cargo-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
         restore-keys: cargo-${{ runner.os }}-
 
-    # Host build deps + aarch64 cross-compiler: REQUIRED, not optional. Even a "pure-JVM"
-    # Jazzer lane (e.g. :socket-http3:http3CodecFuzz) has a task graph that transitively
-    # reaches :buildBoringsslX64/:buildBoringsslArm64 + the quiche/cinterop chain through
-    # the KMP metadata dependency (socket-http3 → socket-quic → socket-quic-quiche). On a
-    # warm cache those are up-to-date and skip, but on ANY cache miss (esp. the arm64
-    # BoringSSL) they run cmake and die without this toolchain — which is exactly what an
-    # earlier "skip the toolchain for http3 lanes" optimization broke. libclang: the
-    # cargo-fuzz native lanes compile quiche 0.29 (boring-crate default), whose boring-sys
-    # build runs bindgen.
+    # Host build deps + aarch64 cross-compiler: REQUIRED, not optional. Even a "pure-JVM" Jazzer
+    # lane has a task graph that transitively reaches :buildBoringsslX64/:buildBoringsslArm64 + the
+    # quiche/cinterop chain through the KMP metadata dependency (socket-http3 → socket-quic →
+    # socket-quic-quiche). On a warm cache those are up-to-date and skip, but on ANY cache miss
+    # (esp. the arm64 BoringSSL) they run cmake and die without this toolchain — which is exactly
+    # what an earlier "skip the toolchain for http3 lanes" optimization broke. libclang: the
+    # cargo-fuzz native lanes compile quiche 0.29 (boring-crate default), whose boring-sys build
+    # runs bindgen.
     # See .github/actions/apt-safe-update: a 403 from the runner image's unused azure-cli source
     # made `apt-get update` exit 100 and blocked the 1efafc4b release.
     - uses: ./.github/actions/apt-safe-update
@@ -107,14 +109,19 @@ runs:
       shell: bash
       run: rustup target add aarch64-unknown-linux-gnu
 
-    # cargo-fuzz's compiled binary is NOT in the Cargo registry cache (that caches crate
-    # sources, not the built binary), so cache it directly keyed on a manual version — an
-    # eviction just recompiles. This turns the ~3-5 min `cargo install cargo-fuzz` into a
-    # near-instant restore across runs, which is what makes fanning the native ASAN lanes
-    # out into separate parallel jobs cheap instead of paying that compile per job.
+    # ⚠️ THE ONE read-write cache in this composite, on purpose. `natives` does not build cargo-fuzz,
+    # so nothing else can write this key — this composite is its only writer, which is why it does
+    # not violate the single-writer rule the other keys follow. The key is version-pinned by hand
+    # (`-v1`, no hashFiles), so it is written essentially once in the repo's lifetime and an
+    # eviction just recompiles; the occasional "another job may be creating this cache" warning when
+    # two ASAN lanes start together is benign (no upload, no failure).
+    # cargo-fuzz's compiled binary is NOT in the Cargo registry cache (that caches crate sources,
+    # not built binaries), so it is cached directly — turning a ~3-5 min `cargo install cargo-fuzz`
+    # into a near-instant restore, which is what makes fanning the ASAN lanes out cheap.
+    # NO restore-keys: a prefix fallback would hand back a binary built for a different pin.
     - name: Cache cargo-fuzz binary
       if: inputs.cargo-fuzz == 'true'
-      uses: actions/cache@v5
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/bin/cargo-fuzz
         key: cargo-fuzz-bin-${{ runner.os }}-v1

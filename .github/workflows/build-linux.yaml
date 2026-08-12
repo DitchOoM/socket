@@ -81,6 +81,16 @@ env:
   # other; that is what moving the query up to the run closes. See compute-version.yaml.
   # .github/actions/linux-quiche-env asserts this is non-empty before any Gradle call.
   ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
+  # Same value and same reasoning as build-apple.yaml:60 — and until now that was the ONLY lane in
+  # the repo that set it, even though `timeScaleEnv()` has actuals for Linux
+  # (socket-testsuite/src/linuxMain + socket-quic/src/linuxTest) and the JVM
+  # (socket-testsuite/src/commonJvmMain + socket-quic/src/commonJvmTest). A loaded ubuntu runner
+  # takes >10s for a QUIC handshake that is normally <1s, which trips the fixed test deadlines and
+  # produces exactly the tail flakes tracked in #292 (partialReadHandling[linuxX64]). Scaling every
+  # `.scaled` budget (TestHelpers.testTimeScale, clamped 1..10) by 3x gives a slow runner more
+  # wall-clock WITHOUT weakening any assertion, ordering, or timing RATIO — the deterministic
+  # ManualDriverClock sim tier is unaffected, since it never reads the wall clock.
+  QUIC_TEST_TIME_SCALE: "3"
 
 jobs:
   # ── Stage 1: build every quiche native this runner owns, exactly once ─────────────────────────
@@ -92,6 +102,11 @@ jobs:
   # boringssl / openssl / liburing / quiche / cargo cache keys. Every fanned-out consumer restores
   # them read-only via .github/actions/linux-quiche-env, so a cache miss cannot turn into five
   # parallel jobs racing to upload the same key.
+  # ⚠️ For the two Gradle keys that is now further narrowed to main's ref scope only — see the
+  # `Restore Gradle …` steps below and their `Save … (main only)` twins at the end of this job.
+  # The native keys (konan/boringssl/openssl/liburing/quiche/cargo) are still written from every
+  # ref: they are keyed on content that rotates rarely, and a miss there costs a 10-20 minute
+  # rebuild on the job every other job in this workflow waits for.
   natives:
     name: "quiche natives (Linux/Android/Windows)"
     runs-on: ubuntu-24.04
@@ -174,8 +189,19 @@ jobs:
       # the full test run, so on a key miss it is a colder tree than the old monolith stored. That
       # is the price of a single writer; the alternative (letting checks-tests save too) is N jobs
       # racing to upload the same key. Same trade build-apple.yaml took.
-      - name: Cache Gradle build outputs
-        uses: actions/cache@v6
+      #
+      # ⚠️ RESTORE here, SAVE only on main (the two `Save Gradle …` steps at the end of this job).
+      # A GitHub Actions cache entry is scoped to the ref that wrote it: a PR ref can read main's
+      # entries, but main can never read a PR's, and a merged PR's entries linger for the 7-day idle
+      # window evicting live ones. Measured 2026-08-12: 80.7% of this repo's 10GB cap was held by
+      # already-merged PR refs, and the explicit gradle-* families were 3192MB of it — all on PR
+      # refs, none on main. Writing this key only in main's ref scope (merged.yaml runs this
+      # workflow on `pull_request_target: closed`, i.e. as main) gives every PR one warm entry to
+      # prefix-restore instead of N per-ref copies of the same tree. Same pattern
+      # gradle/actions/setup-gradle uses by default.
+      - name: Restore Gradle build outputs
+        id: restore_gradle_caches
+        uses: actions/cache/restore@v6
         with:
           path: ~/.gradle/caches
           key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
@@ -187,8 +213,11 @@ jobs:
       # Folding ~/.gradle/wrapper into the step above would re-download the ~150MB Gradle
       # distribution on every `*.gradle.kts` edit, since that key rotates on build-script changes
       # while the wrapper itself changes only when the wrapper properties do.
-      - name: Cache Gradle wrapper distribution
-        uses: actions/cache@v6
+      # No restore-keys: a prefix hit would hand back a DIFFERENT Gradle distribution than the
+      # wrapper properties ask for, which gradlew would then re-download anyway.
+      - name: Restore Gradle wrapper distribution
+        id: restore_gradle_wrapper
+        uses: actions/cache/restore@v6
         with:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -571,6 +600,42 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # ── The write half of the restore-only Gradle caches at the top of this job ──────────────
+      # Only in main's ref scope. merged.yaml calls this workflow on `pull_request_target: closed`,
+      # where github.ref is refs/heads/main, so main is rewritten on every merge and every PR
+      # prefix-restores it. See the note on the restore steps for why per-PR-ref copies were the
+      # single largest consumer of the repo's 10GB cache cap.
+      #
+      # `!cancelled()` rather than `success()`: actions/cache's post-step saved on failure too, and
+      # the dependency metadata resolved before a cargo failure is still valid and worth keeping.
+      # continue-on-error: a save whose key already exists warns rather than fails, and a cache
+      # problem must never redden the natives job — every consumer is `needs:` on it.
+      #
+      # ⚠️ The `cache-hit != 'true'` guard is NOT redundant with continue-on-error, and splitting
+      # actions/cache into restore+save is exactly what makes it necessary. The full action knows it
+      # restored an EXACT primary-key hit and skips its own post-save; `actions/cache/save` has no
+      # such knowledge and re-saves every run. @actions/cache tars the directory FIRST and only then
+      # reserves the entry, so on the common already-cached main run these steps would tar 258MB-1GB
+      # of ~/.gradle/caches and only then discover the key is taken — wall time burned every run and
+      # silently swallowed by continue-on-error. `cache-hit` is true only on an exact primary-key
+      # match (a restore-keys prefix hit leaves it false), which is precisely the case where a
+      # re-save is impossible anyway: cache entries are immutable per key.
+      - name: Save Gradle build outputs (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Save Gradle wrapper distribution (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_wrapper.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
   # ── Stage 2a: the main compile + unit/integration suite ──────────────────────────────────────
   # Keeps the monolith's job NAME so the branch-protection check and every run-history comparison
   # still line up. Everything here shares one Gradle invocation and one live Docker harness; the
@@ -948,7 +1013,10 @@ jobs:
     name: "QUIC quiche JVM (${{ matrix.leg.name }})"
     needs: natives
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # 40, not 25: the step lid below is now 24 (see its note on QUIC_TEST_TIME_SCALE=3), and a job
+    # timeout at or below the step timeout would fire first, which is the failure mode the step lid
+    # exists to prevent — the job dies without ever running the report-upload steps.
+    timeout-minutes: 40
     # quicCrashDiag mirrors any JVM fatal-error log (hs_err) to stderr and arms the
     # recv_info UAF lifecycle guard on the forked jvmTest worker.
     env:
@@ -1049,11 +1117,19 @@ jobs:
       # The K/Native side was fixed earlier in b0a4f99. Both steps now run as
       # hard requirements — a real test failure should fail the job.
       #
-      # timeout-minutes: 8 caps a single hanging socket-quic test at 8min so it
-      # can't burn the 60-min job timeout and wipe subsequent steps. On run
-      # 26467344275 step 29 hung 53min on QuicLocalServerTests.serverAcceptsConnection
-      # before this guard existed; normal duration is ~30-60s, so 8min is
-      # ~8-16x headroom for the slowest legitimate flake. 9 alphabetically-late
+      # timeout-minutes caps a single hanging socket-quic test so it can't burn the
+      # job timeout and wipe subsequent steps. On run 26467344275 step 29 hung 53min
+      # on QuicLocalServerTests.serverAcceptsConnection before this guard existed.
+      #
+      # ⚠️ 24, not 8, and it must stay ~3x whatever the unscaled figure would be.
+      # This workflow sets QUIC_TEST_TIME_SCALE=3 at workflow level, which triples
+      # every `.scaled` budget in the suite: normal duration goes from ~30-60s to
+      # ~90-180s, so the old 8min lid had fallen from ~8-16x headroom to ~2.7-5x —
+      # tight enough that a merely slow run trips it. And tripping it is much worse
+      # than a slow run: a step timeout CANCELS the step, so Gradle never writes the
+      # JUnit XML and the lane reports a truncated/absent test report instead of a
+      # clean assertion failure. 24min restores the original headroom.
+      # 9 alphabetically-late
       # tests still skip on CI via assumeTrue gates (see HANDOFF.md / TODO.md
       # for the resource-pressure root-cause story).
       # --continue: without it, the first hanging test (typically
@@ -1064,7 +1140,7 @@ jobs:
       # full failure surface in one CI cycle. Combined with the test-reports
       # artifact upload below, this gives complete signal per run.
       - name: Run socket-quic-quiche JVM tests (${{ matrix.leg.name }})
-        timeout-minutes: 8
+        timeout-minutes: 24
         env:
           # W5 deep-fuzz lane: 2000 Tier-A seeds through SimFuzzDeepRunTests (~1-2s;
           # virtual time). Without this the deep lane never runs anywhere and only the
@@ -1798,15 +1874,28 @@ jobs:
   # `integration-linux-x64` (#209) and then fanned out (#213 follow-up) into
   # independent jobs so they run CONCURRENTLY instead of as sequential steps in one
   # job — the fuzz sweep no longer serializes behind itself, and a hang/abort in one
-  # lane can't gate or blind the others. All four share the warm caches `natives`
-  # saved via the .github/actions/setup-linux-fuzz composite (same keys), so each is a
-  # warm restore, not a cold rebuild. Per-lane crash artifacts carry the lane in
+  # lane can't gate or blind the others. Per-lane crash artifacts carry the lane in
   # their name so parallel uploads don't collide.
   #
-  # `needs: natives` (was `needs: build`): these lanes download no artifact — they
-  # rebuild from the caches — and `natives` is what writes those caches now. Pointing
-  # them at `natives` therefore preserves the setup-linux-fuzz contract ("the caller
-  # job must `needs:` the cache writer") while starting them ~15 minutes earlier.
+  # ⚠️ THESE LANES ARE NOT ALL SET UP THE SAME WAY, and the difference is the point (#338):
+  #
+  #   malloc-check, fuzz-jvm (all 4 legs)   → .github/actions/linux-quiche-env
+  #       They test the natives this run SHIPS, so they download the quiche-linux-natives-full
+  #       artifact `natives` produced and run against that exact binary. Previously they came
+  #       through setup-linux-fuzz and rebuilt quiche from a cache lineage keyed differently from
+  #       the one `natives` writes (-v7 vs -v8, and a hashFiles set missing
+  #       socket-quic-quiche/build.gradle.kts, i.e. quichePatchDigest), which meant the
+  #       heap-corruption guard and the JNI fuzzer were exercising a libquiche no other job in
+  #       the run had ever seen.
+  #
+  #   fuzz-native (both legs), fuzz-boringssl-asan → .github/actions/setup-linux-fuzz
+  #       cargo-fuzz builds quiche from source with SanitizerCoverage/ASAN under
+  #       socket-quic-quiche/fuzz/native/target. A release-mode prebuilt artifact is the WRONG
+  #       input for them, so they knowingly build their own and consume no natives artifact.
+  #
+  # `needs: natives` on all of them (was `needs: build`): the artifact consumers need it to exist,
+  # and the ASAN lanes need `natives` to have written the gradle/cargo caches they restore
+  # read-only. Pointing them at `natives` also starts them ~15 minutes earlier than `build` did.
 
   # Timer lane: the glibc-malloc-check recv-path + soak + teardown jvmTest rerun.
   # Heap-corruption / UAF guard, relocated from the monolithic build job (#209). The
@@ -1826,17 +1915,27 @@ jobs:
     name: "QUIC malloc-check (Linux x64)"
     needs: natives
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 40, not 20: the step lid below is now 24 (QUIC_TEST_TIME_SCALE=3 — see its note). A job
+    # timeout at or below the step lid fires first and takes the core-dump post-mortem steps with
+    # it, which are the entire point of this lane.
+    timeout-minutes: 40
     # quicCrashDiag mirrors any JVM fatal-error log (hs_err) to stderr and arms the
     # recv_info UAF lifecycle guard on the forked jvmTest worker.
     env:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-linux-fuzz
+      # linux-quiche-env, NOT setup-linux-fuzz: this lane is a heap-corruption guard, so it has to
+      # run against the SHIPPED libquiche_jni.so/libquiche.so, not a locally rebuilt one (#338).
+      - uses: ./.github/actions/linux-quiche-env
 
+      # ⚠️ 24, not 8: this is the most deadline-heavy lane in the workflow (QuicConcurrencySoakTests
+      # + StaleConnectionDiagnosticTests) and QUIC_TEST_TIME_SCALE=3 triples every `.scaled` budget
+      # it waits on. A step timeout CANCELS the step, so tripping this lid yields a truncated test
+      # report AND loses the core dump this lane exists to capture — strictly worse signal than the
+      # slow-but-complete run it would be pre-empting. Keep at ~3x the unscaled figure.
       - name: Run socket-quic-quiche recv-path + soak + teardown suites under glibc malloc check
-        timeout-minutes: 8
+        timeout-minutes: 24
         env:
           QUIC_MIGRATION_REQUIRE_RUN: "1"
         run: |
@@ -1901,8 +2000,8 @@ jobs:
   # JVM Jazzer fuzz lanes — ONE matrix leg per target so every fuzzer runs on its own
   # concurrent runner (the http3 trio used to share a single leg and ran sequentially):
   #   quiche-header  — quiche_header_info, the parse on every received datagram before any
-  #                    connection state; drives quiche over JNI (needs prepareQuicheNativeLib,
-  #                    warm from the cache) → native=true so the composite installs the toolchain.
+  #                    connection state; drives quiche over JNI (prepareQuicheNativeLib is
+  #                    satisfied by the natives artifact linux-quiche-env downloads + touches).
   #   http3-codec    — the HAND-ROLLED HTTP/3 + QPACK decoder (untyped-decoder crashes).
   #   http3-roundtrip— encode→decode bijection breaks in that codec.
   #   wt-capsule     — the WebTransport Capsule parser (RFC 9297).
@@ -1921,7 +2020,7 @@ jobs:
           # `jni` marks the lane that drives quiche over JNI (quiche-header) — it alone arms
           # native core/hs_err capture below. It does NOT gate the toolchain: EVERY lane needs
           # it, because even the pure-Kotlin http3 fuzzers have a task graph that transitively
-          # reaches :buildBoringssl*/quiche cinterop via the KMP metadata chain, so the composite
+          # reaches :buildBoringssl*/quiche cinterop via the KMP metadata chain, so linux-quiche-env
           # always installs it (skipping it for http3 broke this job — see the composite comment).
           - lane: quiche-header
             task: ":socket-quic-quiche:quicHeaderFuzz"
@@ -1945,7 +2044,11 @@ jobs:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-linux-fuzz
+      # linux-quiche-env, NOT setup-linux-fuzz: the quiche-header leg drives quiche over JNI and
+      # must fuzz the binary this run ships; the three http3 legs need no native at all, and the
+      # composite's artifact download + marker touch is what keeps prepareQuicheNativeLib from
+      # re-running cargo in each of the four parallel legs (#338).
+      - uses: ./.github/actions/linux-quiche-env
 
       # Persist the accumulated corpus across runs so coverage compounds instead of restarting
       # from the committed seed every time. The fuzzer writes newly-discovered, coverage-expanding
