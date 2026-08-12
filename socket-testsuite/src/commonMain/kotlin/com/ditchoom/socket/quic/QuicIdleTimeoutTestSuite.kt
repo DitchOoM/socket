@@ -5,12 +5,15 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -159,7 +162,199 @@ abstract class QuicIdleTimeoutTestSuite {
             }
         }
 
+    /**
+     * Reactive keepalive must hold a connection alive across MANY idle-timeout windows, not just
+     * one extra interval past the first. [activityKeepsConnectionAlivePastIdleTimeout] only proves
+     * survival to 1.5× the idle window (`KEEPALIVE_IDLE_WAIT` = 9s over a 6s window) — that is not
+     * enough wall-clock to distinguish "the reactive loop keeps rescheduling PINGs forever" from "the
+     * loop fires once, then a subsequent PING/ACK round-trip doesn't reset the timer the same way" —
+     * the latter would still pass a 1.5×-window check but fail here.
+     *
+     * This test goes idle for well over 4× the idle timeout, with a keepalive interval a full 4×
+     * under it (matching a downstream report: keepAlive bought roughly one extra interval instead of
+     * resetting the idle timer indefinitely). No application traffic runs at all during the wait — the
+     * ONLY thing keeping the connection alive is the driver's own reactive PING schedule.
+     */
+    @Test
+    fun keepAliveSurvivesManyIdleTimeoutWindows() =
+        runQuicTest(timeout = 40.seconds) {
+            wrapTestBody {
+                val opts = options(MANY_WINDOWS_IDLE_TIMEOUT).copy(keepAliveInterval = MANY_WINDOWS_KEEPALIVE_INTERVAL)
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
+                    val serverJob = launch { echoEveryStream() }
+                    try {
+                        withLiveQuicConnection(
+                            "127.0.0.1",
+                            port,
+                            opts,
+                            timeout = 10.seconds.scaled,
+                            reason = "many-windows keepalive connection never came up live",
+                        ) { confirmLive ->
+                            val stream = openStream()
+                            // Warmup round-trip proves the connection isn't drain-storm-wedged. A wedge here
+                            // retries a FRESH connection; the real assertion can only surface after
+                            // confirmLive() and is never retried.
+                            if (stream.echoOnce("warmup") != "warmup") retryConnection()
+                            confirmLive()
+                            // Go idle for several multiples of the idle timeout — long enough that a
+                            // keepalive which only survives ONE extension (then idle-closes on schedule)
+                            // fails deterministically inside this wait, not just at its edge.
+                            delay(MANY_WINDOWS_IDLE_WAIT)
+                            val echo =
+                                try {
+                                    stream.echoOnce("still-alive")
+                                } catch (e: QuicCloseException) {
+                                    retryConnection()
+                                } catch (e: QuicStreamException) {
+                                    retryConnection()
+                                }
+                            if (echo == "no_data") retryConnection()
+                            val cycles =
+                                MANY_WINDOWS_IDLE_WAIT.inWholeMilliseconds.toDouble() /
+                                    MANY_WINDOWS_IDLE_TIMEOUT.inWholeMilliseconds
+                            assertEquals(
+                                "still-alive",
+                                echo,
+                                "connection idle-closed despite keepalive after $MANY_WINDOWS_IDLE_WAIT " +
+                                    "(${cycles}x the idle timeout) — the reactive PING stopped resetting the idle timer " +
+                                    "after the first cycle",
+                            )
+                            stream.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * The REAL production bug (root-caused from a live tcpdump, 2026-08): [QuicByteStream.readPolicy]
+     * governs a *stream-level* read deadline that is completely independent of the *connection's* idle
+     * timer. The connection stays healthy the whole test — [keepAliveSurvivesManyIdleTimeoutWindows]
+     * above already proves keepalive resets the connection's idle timer indefinitely — but a stream
+     * whose peer writes once and then goes silent (no more stream data, though the CONNECTION keeps
+     * exchanging keepalive PINGs) starves a no-arg `stream.read()` at
+     * [QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE] (15s) regardless of [QuicOptions.idleTimeout] /
+     * [QuicOptions.keepAliveInterval], because a PING carries no stream data and therefore never
+     * resets it. From the outside this is indistinguishable from "the QUIC idle timeout isn't
+     * honored" — a connection that tears itself down and redials on a fixed ~15s cadence — which is
+     * exactly the symptom that shipped: [QuicOptions.persistentStreams] defaults to `false`, so this
+     * is the pre-existing, unchanged behavior for every caller that hasn't opted in.
+     */
+    @Test
+    fun oneSidedStreamSilenceStarvesTheDefaultReadPolicy() =
+        runQuicTest(timeout = 45.seconds) {
+            wrapTestBody {
+                // persistentStreams defaults to false (unset here) — the request/response Bounded(15s) shape.
+                val opts = options(STREAM_SILENCE_IDLE_TIMEOUT).copy(keepAliveInterval = STREAM_SILENCE_KEEPALIVE_INTERVAL)
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
+                    val serverJob = launch { writeOnceThenGoSilent() }
+                    try {
+                        withLiveQuicConnection(
+                            "127.0.0.1",
+                            port,
+                            opts,
+                            timeout = (STREAM_SILENCE_WAIT + 15.seconds).scaled,
+                            reason = "stream-silence connection never came up live",
+                        ) { confirmLive ->
+                            val stream = openStream()
+                            stream.writeString("hello") // materializes the stream both ways
+                            val first = stream.read(5.seconds.scaled)
+                            assertTrue(first is ReadResult.Data, "expected the server's first write, got $first")
+                            first.buffer.freeIfNeeded()
+                            confirmLive()
+                            // The connection itself is fine (keepalive keeps its idle timer reset). This
+                            // no-arg read() consults the STREAM's own readPolicy, which nothing about the
+                            // connection-level keepalive ever touches — it must starve at the default
+                            // 15-second deadline despite the healthy connection underneath it.
+                            assertFailsWith<TimeoutCancellationException>(
+                                "expected the default Bounded(15s) stream readPolicy to starve this read " +
+                                    "while the connection itself stayed healthy (keepalive kept its idle timer " +
+                                    "reset) — if this doesn't throw, the stream-level deadline stopped being " +
+                                    "enforced independently of the connection's idle timer",
+                            ) {
+                                stream.read()
+                            }
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * The fix for [oneSidedStreamSilenceStarvesTheDefaultReadPolicy]: [QuicOptions.persistentStreams]
+     * switches every stream's policy to "wait forever", delegating liveness to the connection's own
+     * idle timer exactly as [ReadPolicy.UntilClosed][com.ditchoom.buffer.flow.ReadPolicy.UntilClosed]
+     * documents. The identical one-sided silence that starves the previous test's read must instead
+     * simply wait here, and the peer's second write — sent only after
+     * [QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE] has long since passed — must still arrive.
+     */
+    @Test
+    fun persistentStreamsSurviveOneSidedSilenceBeyondTheDefaultReadDeadline() =
+        runQuicTest(timeout = 45.seconds) {
+            wrapTestBody {
+                val opts =
+                    options(STREAM_SILENCE_IDLE_TIMEOUT).copy(
+                        keepAliveInterval = STREAM_SILENCE_KEEPALIVE_INTERVAL,
+                        persistentStreams = true,
+                    )
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = opts) {
+                    val serverJob = launch { writeTwiceWithLongGap() }
+                    try {
+                        withLiveQuicConnection(
+                            "127.0.0.1",
+                            port,
+                            opts,
+                            timeout = (STREAM_SILENCE_WAIT + 15.seconds).scaled,
+                            reason = "persistent-stream connection never came up live",
+                        ) { confirmLive ->
+                            val stream = openStream()
+                            stream.writeString("hello")
+                            val first = stream.read(5.seconds.scaled)
+                            assertTrue(first is ReadResult.Data, "expected the server's first write, got $first")
+                            first.buffer.freeIfNeeded()
+                            confirmLive()
+                            val second = stream.read()
+                            assertTrue(second is ReadResult.Data, "persistentStreams did not hold the read open: $second")
+                            val text = second.buffer.readString(second.buffer.remaining(), Charset.UTF8)
+                            second.buffer.freeIfNeeded()
+                            assertEquals("bye", text, "wrong payload arrived on the held-open read")
+                            stream.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
     // ---- helpers -----------------------------------------------------------------------------------
+
+    private suspend fun QuicServer.writeOnceThenGoSilent() {
+        connections {
+            val stream = acceptStream()
+            stream.writeString("hi")
+            // Stay open but silent on the STREAM — the client's read() above must observe the
+            // stream-level timeout on its own; this server never closes or errors anything.
+            delay((STREAM_SILENCE_WAIT + 10.seconds).scaled)
+            stream.close()
+        }
+    }
+
+    private suspend fun QuicServer.writeTwiceWithLongGap() {
+        connections {
+            val stream = acceptStream()
+            stream.writeString("hi")
+            // Silent for longer than QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE (15s, unscaled — a
+            // fixed production constant) before writing again.
+            delay(STREAM_SILENCE_WAIT)
+            stream.writeString("bye")
+            stream.close()
+        }
+    }
 
     private suspend fun QuicServer.echoEveryStream() {
         connections {
@@ -215,5 +410,22 @@ abstract class QuicIdleTimeoutTestSuite {
         private val KEEPALIVE_IDLE = 6.seconds.scaled
         private val KEEPALIVE_INTERVAL = 1.seconds.scaled // PING every 1 s — 5 s slack under the 6 s idle window
         private val KEEPALIVE_IDLE_WAIT = 9.seconds.scaled // idle 1.5× the window so a broken keepalive closes
+
+        // Many-windows keepalive: short idle timeout + a keepalive interval a full 4x under it, held idle
+        // for 4.5x the idle timeout — long enough for ~17 keepalive cycles, so a keepalive that only
+        // survives its first extension (then reverts to closing on schedule) fails deterministically.
+        private val MANY_WINDOWS_IDLE_TIMEOUT = 2.seconds.scaled
+        private val MANY_WINDOWS_KEEPALIVE_INTERVAL = 500.milliseconds.scaled
+        private val MANY_WINDOWS_IDLE_WAIT = 9.seconds.scaled // 4.5x MANY_WINDOWS_IDLE_TIMEOUT
+
+        // One-sided stream silence: the connection's own idle timeout/keepalive, short so the "connection
+        // stays healthy" half of the story is cheap to hold.
+        private val STREAM_SILENCE_IDLE_TIMEOUT = 2.seconds.scaled
+        private val STREAM_SILENCE_KEEPALIVE_INTERVAL = 500.milliseconds.scaled
+
+        // Deliberately NOT .scaled: QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE (15s) is a fixed
+        // production constant, not itself scaled by testTimeScale() — this margin is measured against
+        // that fixed value, not against a scaled idle timeout.
+        private val STREAM_SILENCE_WAIT = 18.seconds
     }
 }

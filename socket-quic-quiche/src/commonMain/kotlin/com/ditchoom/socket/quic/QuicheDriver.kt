@@ -6,7 +6,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
@@ -62,6 +64,17 @@ class QuicheDriver(
      * the driver's own [select] loop — no polling. Null disables keepalive. See [QuicOptions.keepAliveInterval].
      */
     private val keepAliveInterval: Duration? = null,
+    /**
+     * Read/write deadline policy applied to every [QuicheStreamByteStream] this driver constructs —
+     * both streams this side opens ([DriverQuicConnection]/the platform `open()` sites) and streams
+     * the peer opens ([discoverNewStreams]). Mirrors [QuicOptions.persistentStreams]: defaults to the
+     * pre-existing request/response `Bounded` deadline, so a caller that doesn't opt in sees no
+     * behavior change. See [QuicOptions.persistentStreams] for why this is a separate knob from
+     * [keepAliveInterval] / the connection idle timeout — a stream-level read deadline is not reset
+     * by connection-level keepalive activity (a PING carries no stream data).
+     */
+    internal val streamReadPolicy: ReadPolicy = ReadPolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
+    internal val streamWritePolicy: WritePolicy = WritePolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE),
     /**
      * The driver's clock seam (monotonic mark + the `select` timeout clause). Defaults to
      * [RealDriverClock] so every platform and production path keeps its exact pre-seam timer
@@ -633,7 +646,14 @@ class QuicheDriver(
                     val slot = StreamSlot(streamId)
                     streams[streamId.id] = slot
                     val adapter = DriverStreamAdapter(this, slot)
-                    val byteStream = QuicheStreamByteStream(streamId, adapter, streamReadPool)
+                    val byteStream =
+                        QuicheStreamByteStream(
+                            streamId,
+                            adapter,
+                            streamReadPool,
+                            readPolicy = streamReadPolicy,
+                            writePolicy = streamWritePolicy,
+                        )
                     incomingStreams.trySend(QuicByteStream(streamId, byteStream))
                     slot.dataSignal.trySend(Unit)
                 }

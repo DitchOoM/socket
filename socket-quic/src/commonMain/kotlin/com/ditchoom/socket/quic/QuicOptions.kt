@@ -191,6 +191,33 @@ data class QuicOptions(
      */
     val keepAliveInterval: Duration? = null,
     /**
+     * Read deadline policy for every stream this connection opens or accepts (`QuicByteStream`'s
+     * no-arg `read()` — the call shape `CodecConnection` and most protocol layers use). Defaults to
+     * `false`: each stream's read is bounded to a fixed 15-second deadline per call — the
+     * request/response shape.
+     *
+     * Set `true` for a **persistent** stream: one carrying a long-lived, continuously-framed protocol
+     * (an MQTT-style session, a hand-rolled heartbeat channel) where data legitimately arrives at
+     * irregular intervals and the stream has no natural "response" to bound a read by. Under the
+     * `false` default such a stream's `read()` throws
+     * [kotlinx.coroutines.TimeoutCancellationException] after 15 seconds of *stream-level* silence —
+     * even while the connection itself is perfectly healthy. [idleTimeout] and [keepAliveInterval]
+     * govern the QUIC *connection*'s idle timer, which a keepalive PING resets indefinitely, but
+     * neither one touches this per-stream read bound: a PING carries no stream data, so it never
+     * counts as activity on any individual stream. The visible symptom is a connection that tears
+     * itself down and redials on a fixed ~15s cadence regardless of [idleTimeout] /
+     * [keepAliveInterval] — indistinguishable, from the outside, from the connection idle-timing out
+     * early.
+     *
+     * `true` switches every stream's *read* policy to "wait forever" instead, delegating liveness
+     * entirely to the connection's own [idleTimeout] / [keepAliveInterval]. The *write* deadline is
+     * unaffected either way — still bounded to 15 seconds per call, matching the precedent already
+     * set by the WebTransport streams (`socket-http3`): a write that cannot drain (the peer stopped
+     * reading, flow control never reopens) is a real condition worth surfacing as an error, unlike a
+     * read simply waiting for the next message on an otherwise-idle persistent stream.
+     */
+    val persistentStreams: Boolean = false,
+    /**
      * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
      * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
      * (linger up to 3 seconds), so a reply whose datagram is lost on the wire is still retransmitted

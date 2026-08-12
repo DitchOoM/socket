@@ -56,7 +56,16 @@ internal class JvmQuicConnection(
             driver.commands.send(QuicheCmd.OpenStream(deferred, unidirectional))
             val slot = deferred.await()
             val adapter = DriverStreamAdapter(driver, slot)
-            return QuicByteStream(slot.id, QuicheStreamByteStream(slot.id, adapter, driver.streamReadPool))
+            return QuicByteStream(
+                slot.id,
+                QuicheStreamByteStream(
+                    slot.id,
+                    adapter,
+                    driver.streamReadPool,
+                    readPolicy = driver.streamReadPolicy,
+                    writePolicy = driver.streamWritePolicy,
+                ),
+            )
         } catch (_: ClosedSendChannelException) {
             throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
         }
