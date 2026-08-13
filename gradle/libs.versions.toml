@@ -85,7 +85,11 @@ kotlinWrappers = "2026.6.0"
 # 6.29.0->6.30.0: drop-in. The new text (writeText/readText/TextPolicy) and codec-processor
 # FrameDetector surfaces are additive with defaults; #360's E5 rule (framing uniform across a dispatch
 # family) accepts socket-http3's Http3Frame — @FramedBy sits on the @DispatchOn parent, no variant.
-buffer = "6.30.0"
+# 6.30.1 (buffer #361) is the UPSTREAM HALF of this branch's partial-write fix: it lands
+# `ByteSink.writeFully` + `ByteSinkStalledException` in buffer-flow, behaviourally identical to the
+# copies added here, and fixes `writeGathered`/`CodecSink.send` — neither of which socket calls. So
+# socket deletes its duplicates and imports buffer's; see the cleanup commit.
+buffer = "6.30.1"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"

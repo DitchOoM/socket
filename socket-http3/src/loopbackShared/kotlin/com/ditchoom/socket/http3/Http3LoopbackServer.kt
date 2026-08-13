@@ -6,6 +6,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
@@ -14,12 +15,11 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
-import com.ditchoom.socket.transport.writeFully
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.concurrent.Volatile
 
 /**
  * A minimal in-process HTTP/3 **server** responder, hand-rolled from the same RFC 9114 codecs the

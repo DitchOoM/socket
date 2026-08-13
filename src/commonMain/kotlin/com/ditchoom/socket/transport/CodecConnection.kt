@@ -7,12 +7,15 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
+import com.ditchoom.buffer.flow.ByteSinkStalledException
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.SocketClosedException
+import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -114,6 +117,12 @@ class CodecConnection<T>(
                 if (attempts++ >= MAX_SEND_RESIZE_ATTEMPTS) throw e
                 capacity = (capacity.toLong() * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                 continue
+            } catch (e: ByteSinkStalledException) {
+                // Re-home into this library's error family: buffer raises an IllegalStateException, and
+                // every other failure `send` can produce is a SocketException — an IOException on JVM,
+                // which is the convention SocketException's header promises consumers.
+                buffer.freeIfNeeded()
+                throw SocketWriteStalledException(e)
             } catch (t: Throwable) {
                 buffer.freeIfNeeded()
                 throw t

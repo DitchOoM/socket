@@ -3,10 +3,12 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.ByteSink
+import com.ditchoom.buffer.flow.ByteSinkStalledException
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
-import com.ditchoom.socket.transport.writeFully
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -46,11 +48,22 @@ internal class Http3StreamWriter(
      */
     private val deadlineSource: Http3WriteDeadline = Http3WriteDeadline.CONFIG,
 ) {
-    /** Every byte this layer sends passes through here — the single [writeFully] seam. */
+    /**
+     * Every byte this layer sends passes through here — the single [writeFully] seam.
+     *
+     * Being the one seam is also what makes the error mapping a single line: `writeFully` raises
+     * buffer's [ByteSinkStalledException], an `IllegalStateException`, and letting that escape would put
+     * it outside the [SocketException][com.ditchoom.socket.SocketException] family every other error
+     * this layer raises belongs to — on JVM, outside `catch (e: IOException)` too.
+     */
     private suspend fun ByteSink.emit(buffer: ReadBuffer) =
-        when (deadlineSource) {
-            Http3WriteDeadline.CONFIG -> writeFully(buffer, config.writePolicy.toDeadline())
-            Http3WriteDeadline.LEAF -> writeFully(buffer)
+        try {
+            when (deadlineSource) {
+                Http3WriteDeadline.CONFIG -> writeFully(buffer, config.writePolicy.toDeadline())
+                Http3WriteDeadline.LEAF -> writeFully(buffer)
+            }
+        } catch (e: ByteSinkStalledException) {
+            throw SocketWriteStalledException(e)
         }
 
     /** Encode [frame] into a pooled buffer and write the whole frame to [stream]. */
