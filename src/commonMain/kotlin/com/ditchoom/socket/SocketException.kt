@@ -23,6 +23,7 @@ import kotlin.time.Instant
  * ├── SocketUnknownHostException         — DNS resolution failed            (ConnectionFailure)
  * ├── SocketTimeoutException             — connect / read / write timeout   (ConnectionFailure)
  * ├── SocketIOException                  — generic I/O error (catch-all)
+ * ├── SocketWriteStalledException        — sink reported no progress with bytes pending
  * └── sealed SSLSocketException          — TLS/SSL errors                   (ConnectionFailure)
  *     ├── SSLHandshakeFailedException    — certificate / handshake failure
  *     └── SSLProtocolException           — other TLS protocol errors
@@ -259,6 +260,33 @@ class SocketIOException(
     override val message: String,
     override val cause: Throwable? = null,
 ) : SocketException(message, cause)
+
+/**
+ * A [ByteSink][com.ditchoom.buffer.flow.ByteSink] reported **no progress** while bytes were still
+ * pending, so a write that must complete in full cannot make headway.
+ *
+ * This is a sink CONTRACT violation, not a network condition: back-pressure is expected to block
+ * inside `write` (or park and retry, as the QUIC driver does) and then report at least one byte. A
+ * sink that instead returns zero forever leaves a caller looping on it with nothing to do — and
+ * returning early instead would silently truncate the frame, which for a self-framing codec is
+ * corruption rather than loss (the peer keeps reading to the already-declared length and consumes
+ * whatever follows).
+ *
+ * Distinct from [SocketIOException] because it is precisely diagnosable rather than uncategorized, and
+ * carries the counts as typed fields ([accepted] / [pending]) instead of only a message, so a caller
+ * can discriminate and report it without parsing text.
+ */
+class SocketWriteStalledException(
+    /** Bytes the sink accepted on the call that made no progress (zero, or a defensive negative). */
+    val accepted: Int,
+    /** Bytes still waiting to be written when the sink stalled. */
+    val pending: Int,
+    override val cause: Throwable? = null,
+) : SocketException(
+        "stream sink accepted $accepted bytes with $pending still pending; cannot complete the " +
+            "write without truncating the frame",
+        cause,
+    )
 
 // ──────────────────────────────────────────────────────────────────────
 // TLS / SSL
