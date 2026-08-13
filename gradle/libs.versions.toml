@@ -67,7 +67,22 @@ kotlinWrappers = "2026.6.0"
 # buffer-compression. 6.26.0 (buffer #337) renames buffer-crypto's PKCS#11 configuration names to be
 # module-neutral; that rename is the only source-breaking item in the range, and socket references no
 # PKCS#11 symbol in any source set.
-buffer = "6.28.0"
+# 6.27.0->6.29.0. Read the ORDERING before the content, because this range contains the one version in
+# the line to never resolve to — and socket was pinned to it. 6.28.0 was tagged from buffer #342
+# (`watchosDeviceArm64` across every module with Apple targets), while #343 (buffer-crypto reports
+# X25519 unavailable on every Android, and it is not) merged *after* #342 and shipped as 6.27.1 — from a
+# commit whose parent is #342's. So 6.27.1 ⊃ 6.28.0 by content while losing to it by number, and since
+# Gradle resolves version conflicts UP, socket's POM naming 6.28.0 silently reverted #343 for every
+# consumer that did not pin buffer itself. 6.28.1 re-tags #343's commit above 6.28.0 and ends the
+# argument. socket references no X25519 or `KeyAgreement` symbol in any source set, so this was never a
+# defect *here* — it was one socket exported.
+# 6.29.0 is that escape plus one functional change socket does consume: #349 reclaims wasmJs linear
+# memory on release, and socket publishes wasmJs from root :socket and :socket-quic. The rest of the
+# range is buffer's own CI and dependency bumps. #341 (buffer-crypto `UserVerification`) is not
+# consumed — socket links buffer-crypto only from :socket-quic-quiche and only for sha256.
+# #342 matters here beyond the ordering trap: it is the UPSTREAM HALF of watchosDeviceArm64 for this
+# repo, so `socket-udp/build.gradle.kts`'s "buffer publishes no klib for it" is stale from 6.28.0 on.
+buffer = "6.29.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
