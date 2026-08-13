@@ -32,7 +32,7 @@ class QpackEncoderTests {
      * correctness, only for reaching the interesting schedule; the `decodeInFlightDuringIncrement`
      * assertion below fails loudly if it ever stops doing so.
      */
-    private val WRITE_SUSPENSIONS = 4
+    private val writeSuspensions = 4
 
     private val pool = BufferPool(threadingMode = ThreadingMode.SingleThreaded, factory = BufferFactory.Default)
 
@@ -166,7 +166,7 @@ class QpackEncoderTests {
                     // the very same insertion. Yielding only for the increment picks one of the two
                     // orderings a live connection produces; it does not create an impossible one.
                     if (instruction is QpackDecoderInstruction.InsertCountIncrement) {
-                        repeat(WRITE_SUSPENSIONS) { yield() }
+                        repeat(writeSuspensions) { yield() }
                         decodeInFlightDuringIncrement = !decode.isCompleted
                     }
                     decoderStream.addLast(instruction)
