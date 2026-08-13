@@ -171,28 +171,72 @@ jobs:
       #
       # Removing it is only half the change, though: this job runs ./gradlew twice below, so with
       # no cache at all it cold-downloads the ~150MB Gradle distribution and re-resolves every
-      # plugin on each scheduled run. Restore-only replacements follow, exactly as every other job
-      # that dropped `cache: gradle` got — read the entry build-linux's `natives` job writes, add
-      # no bytes of our own. Keys byte-identical to that writer's.
+      # plugin on each scheduled run.
+      #
+      # ⚠️ These two were restore-ONLY, on the stated assumption that build-linux.yaml's `natives`
+      # job writes them ("read the entry build-linux's `natives` job writes, add no bytes of our
+      # own"). That writer has never once written them. Its save steps are gated
+      # `github.ref == 'refs/heads/main'`, which on a `pull_request` run (review.yaml) is false, so
+      # the only caller that reaches them is merged.yaml — and there the cache service refuses the
+      # `pull_request_target` token outright:
+      #     Failed to save: Unable to reserve cache with key gradle-linux-843f8943…
+      #       More details: cache write denied: token has no writable scopes
+      # `continue-on-error: true` on that step reports the failed save as conclusion=success, so it
+      # never surfaced. Measured 2026-08-13: ZERO `gradle-linux-*` / `gradle-wrapper-linux-*`
+      # entries existed in a store holding 82 caches / 5.35GB — not eviction, they were never
+      # created. Every one of the 14 jobs the #337 fan-out starts within the same second therefore
+      # cold-downloaded the Gradle distribution and re-resolved the plugin graph concurrently from
+      # one runner egress IP, which is what produced the "unrelated" network failures on PR #350:
+      #   QUIC malloc-check   SocketException: Unexpected end of file from server
+      #                       (org.gradle.wrapper.Install.forceFetch, gradle-9.5.1-bin.zip)
+      #   Fuzz quiche-header  Plugin [id: 'com.vanniktech.maven.publish', version: '0.36.0'] was
+      #                       not found in any of the following sources
+      #
+      # So this job WRITES them, exactly as its Apple twin below already does for the
+      # `gradle-macos-*` pair — and that asymmetry is precisely why Apple never had this problem.
+      # A scheduled/dispatch run on main is a context the cache service accepts (verified: the
+      # 2026-08-12 09:39 run saved gradle-macos-* and gradle-wrapper-macos-* successfully with an
+      # even narrower token than merged.yaml's). Keys stay byte-identical to build-linux.yaml's, or
+      # the warmed entry stops hitting on PR runs.
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '21'
 
-      - name: Restore Gradle build outputs (read-only)
-        uses: actions/cache/restore@v6
+      - name: Cache Gradle build outputs
+        uses: actions/cache@v6
         with:
           path: ~/.gradle/caches
           key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-linux-
 
-      - name: Restore Gradle wrapper distribution (read-only)
-        uses: actions/cache/restore@v6
+      # The one that actually stops the stampede. `gradle-linux-*` above is keyed on every
+      # *.gradle.kts, so a build-script edit rotates it and the daily warm cannot keep up (the
+      # `gradle-linux-` prefix fallback still lands close). This key is keyed ONLY on
+      # gradle-wrapper.properties, which changes a few times a year — so once warmed it hits for
+      # every job on every PR, and the ~150MB distribution download that broke PR #350 stops being
+      # something 14 concurrent jobs each do for themselves.
+      - name: Cache Gradle wrapper distribution
+        uses: actions/cache@v6
         with:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # ⚠️ `konan-linux-*` is starved the same way and is deliberately NOT warmed here. It is not
+      # main-gated in build-linux.yaml — plain actions/cache@v6, so PR runs write it, but only into
+      # their own `refs/pull/N/merge` scope: unreadable by any other PR, unreadable by main, and
+      # deleted by purge-pr-caches.yaml when the PR closes. Main's only writer is merged.yaml,
+      # denied as above, so the store holds zero `konan-linux-*` entries and every Linux job
+      # re-downloads the Kotlin/Native toolchain.
+      # Adding a `Cache Konan` step to THIS job would make it worse, not better: the two ./gradlew
+      # invocations below build only Rust/C targets (liburing, quiche) and never compile
+      # Kotlin/Native, so ~/.konan would be empty or partial at post-job. Cache entries are
+      # immutable per key, and build-linux.yaml's konan step is the full actions/cache@v6 — an
+      # exact primary-key hit makes it skip its own save, so one empty warm would pin the empty
+      # entry until gradle/libs.versions.toml next changes. Fixing it properly means giving this
+      # job a real K/N compile to populate the toolchain first; tracked separately.
 
       # ---- Cache entries mirrored EXACTLY from build-linux.yaml ----
       - name: Cache BoringSSL x64

@@ -23,8 +23,22 @@ on:
           - dry-run
         default: release
 
+# `actions: write` is the documented requirement for the Actions cache write endpoint, and this
+# block is exhaustive — every scope not listed here is `none`, so before this line the token
+# reaching build-linux.yaml/build-apple.yaml carried only `Contents: write, Metadata: read` and
+# every `actions/cache/save` on the release path was refused with
+#     cache write denied: token has no writable scopes
+# Granting it is necessary but may well not be sufficient: native-deps-freshness.yaml writes those
+# same cache keys successfully with a strictly narrower token (`contents: read, issues: write`, no
+# actions scope at all), so the refusal is at least partly about the `pull_request_target` context
+# rather than the scope list. That is why the real fix is elsewhere — the cache-warm job in
+# native-deps-freshness.yaml now owns writing the Linux Gradle keys, on a schedule/dispatch run
+# that the cache service demonstrably accepts. This line just removes the one variable we can
+# control; if the release path starts writing again too, that is a bonus (it keeps
+# `gradle-linux-*` fresh after build-script edits, which the daily warm cannot).
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: deploy
