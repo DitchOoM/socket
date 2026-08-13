@@ -621,6 +621,7 @@ jobs:
       # match (a restore-keys prefix hit leaves it false), which is precisely the case where a
       # re-save is impossible anyway: cache entries are immutable per key.
       - name: Save Gradle build outputs (main only)
+        id: save_gradle_caches
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v6
@@ -629,12 +630,28 @@ jobs:
           key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
 
       - name: Save Gradle wrapper distribution (main only)
+        id: save_gradle_wrapper
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_wrapper.outputs.cache-hit != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # `continue-on-error: true` above is deliberate — a cache-save problem must never redden the
+      # job every other job is `needs:` on — but it also rewrites a FAILED step's `conclusion` to
+      # `success`. That masking is not hypothetical: both saves above had been failing on every
+      # single release run with
+      #     cache write denied: token has no writable scopes
+      # while the step list showed two green checks, so `gradle-linux-*` and
+      # `gradle-wrapper-linux-*` never existed at all and every fanned-out job cold-bootstrapped
+      # Gradle (see native-deps-freshness.yaml's cache-warm job, which now owns writing them).
+      # `outcome` keeps the pre-masking result, so read that. Annotation only, never `exit 1`:
+      # the whole point is to stay non-fatal while ceasing to be invisible.
+      - name: Surface a masked cache-save failure
+        if: ${{ !cancelled() && (steps.save_gradle_caches.outcome == 'failure' || steps.save_gradle_wrapper.outcome == 'failure') }}
+        run: |
+          echo "::warning::A Gradle cache SAVE failed here and continue-on-error hid it (caches=${{ steps.save_gradle_caches.outcome }}, wrapper=${{ steps.save_gradle_wrapper.outcome }}). Expected on the merged.yaml/pull_request_target path, whose token the cache service refuses; native-deps-freshness.yaml's cache-warm job is the real writer. If THAT job stops warming, every Linux job re-downloads the Gradle distribution and the fan-out stampedes services.gradle.org."
 
   # ── Stage 2a: the main compile + unit/integration suite ──────────────────────────────────────
   # Keeps the monolith's job NAME so the branch-protection check and every run-history comparison
