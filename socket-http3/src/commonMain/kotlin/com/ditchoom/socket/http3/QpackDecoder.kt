@@ -34,6 +34,62 @@ class QpackDecoder(
     // Never held across the blocking await in decodeSection — only around the brief mutate/decode.
     private val mutex = Mutex()
 
+    /**
+     * Our model of the peer encoder's **Known Received Count** — how many of our insertions it already
+     * considers acknowledged (RFC 9204 §2.1.4).
+     *
+     * A Section Acknowledgment does not only acknowledge its stream: it *implicitly* acknowledges every
+     * dynamic-table insertion up to that section's Required Insert Count. So the two decoder-stream
+     * instructions we send both advance the peer's count, and an Insert Count Increment must only cover
+     * insertions **not already covered that way** — the increment is a delta against this, never a flat
+     * one-per-insert.
+     *
+     * Sending one per insert regardless double-counts, and the peer is required to kill the connection
+     * for it (`QPACK_DECODER_STREAM_ERROR`, 0x202, "increases the Known Received Count beyond what the
+     * encoder has sent"). Whether it fired depended purely on which of the two instructions we emitted
+     * first: increment-then-ack is harmless, because the ack's jump to the Required Insert Count is then
+     * a no-op — but ack-then-increment adds on top of a count the ack already advanced. Both emissions
+     * happen off different coroutines (the encoder-stream router vs. a per-request decode), so the order
+     * was a race, which is why this surfaced as a rare dynamic-QPACK-only flake rather than a hard break.
+     */
+    private var acknowledgedInsertCount = 0L
+
+    /**
+     * Serializes decoder-stream emissions **together with** the [acknowledgedInsertCount] update.
+     *
+     * Held across the emit on purpose: the count is only correct if the order instructions reach the
+     * wire is the order they were accounted for. Computing under a lock and emitting outside it would
+     * reintroduce the same race one level down. Distinct from [mutex] — that one guards table state and
+     * must never be held across I/O.
+     */
+    private val ackMutex = Mutex()
+
+    /**
+     * Tell the peer's encoder we have processed insertions up to [upTo], as a delta against what it
+     * already knows ([acknowledgedInsertCount]). Emits nothing when a Section Acknowledgment has already
+     * carried the count that far — an Increment of zero is itself a decoder-stream error (§4.4.3).
+     */
+    private suspend fun emitInsertCountIncrement(upTo: Long) {
+        ackMutex.withLock {
+            val increment = upTo - acknowledgedInsertCount
+            if (increment <= 0) return@withLock
+            emit(QpackDecoderInstruction.InsertCountIncrement(increment))
+            // Only after a successful write: a failed emit never reached the peer, so its count did not move.
+            acknowledgedInsertCount = upTo
+        }
+    }
+
+    /** Acknowledge [streamId]'s section, recording the insertions [requiredInsertCount] implicitly covers. */
+    private suspend fun emitSectionAck(
+        streamId: Long,
+        requiredInsertCount: Long,
+    ) {
+        ackMutex.withLock {
+            emit(QpackDecoderInstruction.SectionAck(streamId))
+            if (requiredInsertCount > acknowledgedInsertCount) acknowledgedInsertCount = requiredInsertCount
+        }
+    }
+
     /** Current number of insertions into the decoder table (RFC 9204 §3.2.4) — for tests/diagnostics. */
     val insertCountValue: Long get() = table.insertCount
 
@@ -44,15 +100,13 @@ class QpackDecoder(
      * on an instruction that violates the table invariants (over-capacity, dangling reference).
      */
     suspend fun applyEncoderInstruction(instruction: QpackEncoderInstruction) {
-        val inserted =
+        val totalInserts =
             mutex.withLock {
                 when (instruction) {
-                    is QpackEncoderInstruction.SetCapacity -> {
+                    is QpackEncoderInstruction.SetCapacity ->
                         if (!table.setCapacity(instruction.capacity)) {
                             throw Http3StreamException(Http3Violation.QpackSetCapacityExceedsMax(instruction.capacity))
                         }
-                        false // no insert
-                    }
                     is QpackEncoderInstruction.InsertWithNameRef -> {
                         val name =
                             if (instruction.isStatic) {
@@ -63,22 +117,21 @@ class QpackDecoder(
                                 relativeEntry(instruction.nameIndex).name
                             }
                         insertOrThrow(name, instruction.value)
-                        true
                     }
-                    is QpackEncoderInstruction.InsertWithLiteralName -> {
-                        insertOrThrow(instruction.name, instruction.value)
-                        true
-                    }
+                    is QpackEncoderInstruction.InsertWithLiteralName -> insertOrThrow(instruction.name, instruction.value)
                     is QpackEncoderInstruction.Duplicate -> {
                         val entry = relativeEntry(instruction.index)
                         insertOrThrow(entry.name, entry.value)
-                        true
                     }
-                }.also { if (it) insertCount.value = table.insertCount }
+                }
+                insertCount.value = table.insertCount
+                table.insertCount
             }
-        // Emit outside the lock (it does stream I/O); a per-insert increment lets the peer's encoder
-        // advance its Known Received Count (§4.4.3).
-        if (inserted) emit(QpackDecoderInstruction.InsertCountIncrement(1))
+        // Emit outside the table lock (it does stream I/O). The count is reported unconditionally and
+        // [emitInsertCountIncrement] takes the DELTA against what the peer's encoder already knows, so a
+        // SetCapacity — which inserts nothing — yields a zero delta and emits nothing. That is why there
+        // is no "did it insert?" flag to carry out of the lock: the delta already answers it.
+        emitInsertCountIncrement(totalInserts)
     }
 
     /**
@@ -122,7 +175,7 @@ class QpackDecoder(
         } catch (e: Throwable) {
             throw Http3StreamException(Http3Violation.QpackDecompressionFailed(e))
         }
-        if (prefix.requiredInsertCount > 0) emit(QpackDecoderInstruction.SectionAck(streamId))
+        if (prefix.requiredInsertCount > 0) emitSectionAck(streamId, prefix.requiredInsertCount)
         return fields
     }
 

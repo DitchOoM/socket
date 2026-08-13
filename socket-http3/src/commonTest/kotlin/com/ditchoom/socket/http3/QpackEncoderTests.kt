@@ -5,13 +5,17 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * [QpackEncoder] round-trips against a wired [QpackDecoder] — the encoder's instructions feed the
@@ -21,6 +25,15 @@ import kotlin.test.assertFalse
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class QpackEncoderTests {
+    /**
+     * Yields standing in for the suspensions of a real decoder-stream write. Enough to let a parked
+     * section decode resume, decode, and reach its acknowledgment while the increment is still in its
+     * write — the interleaving that used to corrupt the count. The value is not load-bearing for
+     * correctness, only for reaching the interesting schedule; the `decodeInFlightDuringIncrement`
+     * assertion below fails loudly if it ever stops doing so.
+     */
+    private val WRITE_SUSPENSIONS = 4
+
     private val pool = BufferPool(threadingMode = ThreadingMode.SingleThreaded, factory = BufferFactory.Default)
 
     /**
@@ -109,6 +122,82 @@ class QpackEncoderTests {
             // Request 2: x-custom is now an acknowledged dynamic entry → referenced, no new insert.
             assertEquals(fields, roundTrip(p, fields, streamId = 4))
             assertEquals(1L, p.decoder.insertCountValue, "request 2 reused the entry — no second insert")
+        }
+
+    /**
+     * RFC 9204 §2.1.4/§4.4.3 — a Section Acknowledgment *implicitly* acknowledges every insertion up to
+     * the acknowledged section's Required Insert Count, so an Insert Count Increment may only cover
+     * insertions that ack did **not** already carry. Emitting one per insertion regardless
+     * double-counts, and the peer's encoder is required to kill the connection for it
+     * (`QPACK_DECODER_STREAM_ERROR`, 0x202 — "increases the Known Received Count beyond what the
+     * encoder has sent").
+     *
+     * Whether it fired was pure scheduling. The decoder's two decoder-stream emissions come from
+     * different coroutines — the encoder-stream router ([QpackDecoder.applyEncoderInstruction]) and a
+     * per-request decode ([QpackDecoder.decodeSection]) — so both orders were producible:
+     * increment-then-ack is harmless, because the ack's jump to the Required Insert Count is then a
+     * no-op; ack-then-increment is fatal, because the increment adds on top of a count the ack already
+     * advanced. Hence a rare dynamic-QPACK-only flake rather than a hard break —
+     * `AndroidHttp3LoopbackTest.productionServerRole_dynamicQpackRoundTrip` (issue #291), whose shipped
+     * capture named this violation.
+     *
+     * The interleaving is **forced on virtual time, not raced for**: `emit` suspends exactly where a
+     * real decoder-stream write would, and the decode is parked on the very insertion the increment is
+     * about, so it resumes *between* the two emissions. The real [QpackEncoder] is the oracle — replay
+     * what the decoder actually put on the wire, in that order, and it raises if we ever acknowledged
+     * more insertions than were made.
+     */
+    @Test
+    fun aSectionAckAndItsInsertionsIncrementAreNeverBothCounted() =
+        runTest {
+            val decoderStream = ArrayDeque<QpackDecoderInstruction>()
+            val encoderStream = ArrayDeque<QpackEncoderInstruction>()
+            val encoder = QpackEncoder(4096, peerMaxBlockedStreams = 4) { encoderStream.addLast(it) }
+            // The yield is where a real write suspends; it is what lets the parked decode resume between
+            // the two emissions rather than after both, which is the ordering that used to be fatal.
+            // Set while the increment's write is suspended, to prove the decode really was concurrent
+            // with it rather than the two having run one after the other (which would pass vacuously).
+            var decodeInFlightDuringIncrement = false
+            lateinit var decode: Job
+            val decoder =
+                QpackDecoder(4096) { instruction ->
+                    // Force the losing interleaving: a real decoder-stream write suspends, so let the
+                    // increment's write lose the race to the section decode that is about to acknowledge
+                    // the very same insertion. Yielding only for the increment picks one of the two
+                    // orderings a live connection produces; it does not create an impossible one.
+                    if (instruction is QpackDecoderInstruction.InsertCountIncrement) {
+                        repeat(WRITE_SUSPENSIONS) { yield() }
+                        decodeInFlightDuringIncrement = !decode.isCompleted
+                    }
+                    decoderStream.addLast(instruction)
+                }
+
+            encoder.setCapacity(4096)
+            // Blocked streams are permitted, so this section may reference the insert it just made —
+            // giving it a Required Insert Count that covers a not-yet-acknowledged insertion.
+            val section = encoder.encodeSection(listOf(QpackHeaderField("x-custom", "v")), streamId = 0, pool)
+
+            decode = launch { decoder.decodeSection(section, streamId = 0, scratchPool = null) }
+            runCurrent() // the decode is now parked awaiting the insertion its Required Insert Count names
+            val apply =
+                launch {
+                    while (encoderStream.isNotEmpty()) decoder.applyEncoderInstruction(encoderStream.removeFirst())
+                }
+            decode.join()
+            apply.join()
+
+            assertTrue(
+                decoderStream.any { it is QpackDecoderInstruction.SectionAck },
+                "vacuous: no Section Acknowledgment was emitted, so nothing implicitly acknowledged anything",
+            )
+            assertTrue(
+                decodeInFlightDuringIncrement,
+                "vacuous: the decode had already finished when the increment was written, so the two " +
+                    "emissions never overlapped and the ordering this test exists for was not exercised",
+            )
+            // The oracle. Throws Http3StreamException(QpackInsertCountIncrementPastInserts) if the
+            // decoder over-acknowledged; passes only if the two instructions agree on one count.
+            for (instruction in decoderStream) encoder.processDecoderInstruction(instruction)
         }
 
     @Test
