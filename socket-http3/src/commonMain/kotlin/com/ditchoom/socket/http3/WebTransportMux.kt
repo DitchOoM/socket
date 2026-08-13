@@ -46,6 +46,11 @@ internal class WebTransportMux(
     private val config: TransportConfig,
 ) {
     private val sessions = mutableMapOf<Long, WebTransportSession>()
+
+    // Adapter rule: this mux defers to each leaf stream's own writePolicy rather than imposing
+    // config's — see Http3WriteDeadline.
+    private val streamWriter = Http3StreamWriter(pool, config, Http3WriteDeadline.LEAF)
+
     private val mutex = Mutex()
 
     /** The connection's buffer factory — surfaced to [WebTransportSession.bufferFactory]. */
@@ -106,17 +111,7 @@ internal class WebTransportMux(
         prefix: Long,
         sessionId: Long,
     ) {
-        val buffer = pool.allocate(VarIntCodec.encodedLength(prefix) + VarIntCodec.encodedLength(sessionId))
-        try {
-            VarIntCodec.encode(buffer, prefix, EncodeContext.Empty)
-            VarIntCodec.encode(buffer, sessionId, EncodeContext.Empty)
-            buffer.resetForRead()
-            // Adapter rule: no-arg write() consults the leaf stream's writePolicy rather than clobbering
-            // it with config — the stream owns the deadline policy for its direction.
-            stream.write(buffer)
-        } finally {
-            buffer.freeIfNeeded()
-        }
+        streamWriter.writeVarInts(stream, prefix, sessionId)
     }
 
     // --- Demultiplexing peer-opened WebTransport streams ---
@@ -375,16 +370,7 @@ internal class WebTransportMux(
         stream: QuicByteStream,
         payload: ReadBuffer,
     ) {
-        val frame = Http3Frame.Data(payload)
-        // The generated framed encode owns allocation (slicing scheme over the
-        // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
-        val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
-        try {
-            // Adapter rule: no-arg write() consults the CONNECT stream's writePolicy, not config.
-            stream.write(buffer)
-        } finally {
-            buffer.freeIfNeeded()
-        }
+        streamWriter.writeFrame(stream, Http3Frame.Data(payload))
     }
 
     private suspend fun resetQuietly(stream: QuicByteStream) {

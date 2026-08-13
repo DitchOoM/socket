@@ -163,6 +163,9 @@ class Http3Connection private constructor(
     // (response half), which may arrive in either order. Each entry's responseDeferred is completed
     // by whichever push stream carries the matching Push ID. A push is emitted to `pushes` as soon as
     // its promise is seen. Both halves and cancellation are serialized by pushMutex.
+    // The one place this connection puts bytes on a stream — see Http3StreamWriter.
+    private val streamWriter = Http3StreamWriter(pool, config)
+
     private val pushMutex = Mutex()
     private val pushEntries = mutableMapOf<Long, PushEntry>()
     private val pushChannel = Channel<Http3ServerPush>(Channel.UNLIMITED)
@@ -551,35 +554,11 @@ class Http3Connection private constructor(
     private suspend fun writeFrame(
         stream: QuicByteStream,
         frame: Http3Frame,
-    ) {
-        // The generated framed encode owns allocation (slicing scheme over the
-        // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
-        val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
-        try {
-            stream.write(buffer, config.writePolicy.toDeadline())
-        } finally {
-            buffer.freeIfNeeded()
-        }
-    }
+    ) = streamWriter.writeFrame(stream, frame)
 
     /** Encode and write one QPACK encoder-stream instruction (RFC 9204 §4.3) on our encoder uni stream. */
-    private suspend fun writeEncoderInstruction(instruction: QpackEncoderInstruction) {
-        val capacity =
-            when (instruction) {
-                is QpackEncoderInstruction.InsertWithNameRef -> 32 + qpackUtf8ByteLength(instruction.value)
-                is QpackEncoderInstruction.InsertWithLiteralName ->
-                    32 + qpackUtf8ByteLength(instruction.name) + qpackUtf8ByteLength(instruction.value)
-                else -> 32 // SetCapacity / Duplicate: a single prefixed integer
-            }
-        val buffer = pool.allocate(capacity)
-        try {
-            QpackEncoderInstructionCodec.encode(buffer, instruction)
-            buffer.resetForRead()
-            encoderStreamWriteMutex.withLock { qpackEncoderStream.write(buffer, config.writePolicy.toDeadline()) }
-        } finally {
-            buffer.freeIfNeeded()
-        }
-    }
+    private suspend fun writeEncoderInstruction(instruction: QpackEncoderInstruction) =
+        streamWriter.writeEncoderInstruction(qpackEncoderStream, encoderStreamWriteMutex, instruction)
 
     /**
      * Encode and write one QPACK decoder-stream instruction (RFC 9204 §4.4) on our decoder uni stream.
@@ -596,15 +575,10 @@ class Http3Connection private constructor(
      * which still propagates.
      */
     private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction) {
-        val buffer = pool.allocate(16) // a single prefixed integer (≤ ~9 bytes)
         try {
-            QpackDecoderInstructionCodec.encode(buffer, instruction)
-            buffer.resetForRead()
-            decoderStreamWriteMutex.withLock { qpackDecoderStream.write(buffer, config.writePolicy.toDeadline()) }
+            streamWriter.writeDecoderInstruction(qpackDecoderStream, decoderStreamWriteMutex, instruction)
         } catch (_: QuicCloseException) {
             // Connection already closed — the ack/ICI is moot. See KDoc.
-        } finally {
-            buffer.freeIfNeeded()
         }
     }
 
@@ -670,38 +644,15 @@ class Http3Connection private constructor(
             )
         webTransport?.let { entries += webTransportSettings(it) }
         val settings = Http3Frame.Settings(entries)
-        val prefix = pool.allocate(VarIntCodec.encodedLength(Http3StreamType.CONTROL))
-        try {
-            VarIntCodec.encode(prefix, Http3StreamType.CONTROL, EncodeContext.Empty)
-            prefix.resetForRead()
-            controlStream.write(prefix, config.writePolicy.toDeadline())
-        } finally {
-            // Free on both paths: write() is zero-copy and does not take ownership (mirrors writeFrame).
-            prefix.freeIfNeeded()
-        }
-        val frame = Http3FrameCodec.encode(settings, EncodeContext.Empty, pool)
-        try {
-            controlStream.write(frame, config.writePolicy.toDeadline())
-        } finally {
-            frame.freeIfNeeded()
-        }
+        streamWriter.writeVarInts(controlStream, Http3StreamType.CONTROL)
+        streamWriter.writeFrame(controlStream, settings)
     }
 
     /** Writes a bare unidirectional stream-type prefix (RFC 9114 §6.2) as the stream's first bytes. */
     private suspend fun writeStreamType(
         stream: QuicByteStream,
         type: Long,
-    ) {
-        val buffer = pool.allocate(VarIntCodec.encodedLength(type))
-        try {
-            VarIntCodec.encode(buffer, type, EncodeContext.Empty)
-            buffer.resetForRead()
-            stream.write(buffer, config.writePolicy.toDeadline())
-        } finally {
-            // Free on both paths: write() is zero-copy and does not take ownership (mirrors writeFrame).
-            buffer.freeIfNeeded()
-        }
-    }
+    ) = streamWriter.writeVarInts(stream, type)
 
     private fun startRouter() {
         scope.launch {

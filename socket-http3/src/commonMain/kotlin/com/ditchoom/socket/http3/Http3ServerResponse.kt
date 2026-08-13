@@ -1,7 +1,6 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.TransportConfig
@@ -21,6 +20,8 @@ class Http3ServerResponse internal constructor(
     // Encodes a field section through the server's QPACK (dynamic when capacity > 0, else static).
     private val encodeSection: suspend (List<QpackHeaderField>, Long) -> ReadBuffer,
 ) {
+    private val streamWriter = Http3StreamWriter(pool, config)
+
     private var headersSent = false
     private var finished = false
 
@@ -83,16 +84,7 @@ class Http3ServerResponse internal constructor(
         finished = true
     }
 
-    private suspend fun writeFrame(frame: Http3Frame) {
-        // The generated framed encode owns allocation (slicing scheme over the
-        // pool) and returns a ReadBuffer spanning exactly the frame's wire bytes.
-        val buffer = Http3FrameCodec.encode(frame, EncodeContext.Empty, pool)
-        try {
-            stream.write(buffer, config.writePolicy.toDeadline())
-        } finally {
-            buffer.freeIfNeeded()
-        }
-    }
+    private suspend fun writeFrame(frame: Http3Frame) = streamWriter.writeFrame(stream, frame)
 }
 
 /** The promised request line of a server push, encoded into the PUSH_PROMISE field section. */

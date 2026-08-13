@@ -13,7 +13,6 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.SocketClosedException
-import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -104,7 +103,11 @@ class CodecConnection<T>(
             try {
                 codec.encode(buffer, message, encodeContext)
                 buffer.resetForRead()
-                writeFully(buffer)
+                // writeFully, never a bare write: a sink may accept only PART of the buffer, and for a
+                // self-framing codec a dropped tail is corruption rather than loss — the peer reads on
+                // to the declared length and swallows the frames that follow. The no-arg overload keeps
+                // the adapter rule (propagate, don't clobber): the leaf's writePolicy owns the deadline.
+                stream.writeFully(buffer)
                 return
             } catch (e: BufferOverflowException) {
                 buffer.freeIfNeeded()
@@ -115,47 +118,6 @@ class CodecConnection<T>(
                 buffer.freeIfNeeded()
                 throw t
             }
-        }
-    }
-
-    /**
-     * Write every byte of [buffer], resuming until it is drained.
-     *
-     * [ByteSink.write][com.ditchoom.buffer.flow.ByteSink.write] returns [BytesWritten] because a write
-     * may be PARTIAL — its contract calls the post-write position "the resume point for a partial
-     * write's residue". Most sinks here never exercise that: the NIO sockets loop internally until the
-     * whole buffer is gone, and [MemoryTransport] copies it wholesale. A QUIC stream does: quiche's
-     * `stream_send` buffers only as many bytes as the stream's flow-control credit allows at that
-     * moment and reports the count (a fully blocked stream parks and retries inside the driver, but a
-     * PARTIALLY open one returns early by design).
-     *
-     * Ignoring that count silently truncated the frame — and for a self-framing codec that is
-     * corruption, not loss: the length header the peer already received still declares the full size,
-     * so it keeps reading and consumes the packets that FOLLOW as this one's tail. One under-filled
-     * write desynchronizes the stream permanently.
-     *
-     * Resume off the reported COUNT rather than off the cursor, so both sink shapes work: the position
-     * is re-derived after every call, which neither double-advances a contract-compliant sink nor
-     * strands one that leaves the cursor alone. The QUIC stream is the latter — it hands quiche the
-     * buffer's native address and never moves the cursor — so counting is what makes this correct
-     * there today, independent of whether that deviation is later reconciled.
-     *
-     * Adapter rule: propagate, don't clobber. Each iteration calls the leaf's no-arg `write()` so its
-     * injected [writePolicy][com.ditchoom.buffer.flow.ByteSink.writePolicy] governs the deadline — the
-     * policy bounds each underlying call, as it always has, not the loop as a whole.
-     */
-    private suspend fun writeFully(buffer: ReadBuffer) {
-        while (buffer.remaining() > 0) {
-            val before = buffer.position()
-            val written = stream.write(buffer).count
-            // No progress with bytes still pending would spin here forever. That is a broken sink,
-            // not back-pressure (back-pressure blocks inside write), so fail loudly rather than hang
-            // — and rather than return early, which is the truncation this exists to prevent.
-            if (written <= 0) {
-                throw SocketWriteStalledException(accepted = written, pending = buffer.remaining())
-            }
-            val resumeAt = before + written
-            if (buffer.position() != resumeAt) buffer.position(resumeAt)
         }
     }
 
