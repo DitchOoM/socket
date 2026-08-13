@@ -7,6 +7,9 @@ import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /**
@@ -63,12 +66,37 @@ internal class SelectorDatagramRelay(
     private val clientBuf = ByteBuffer.allocate(maxDatagram)
     private val serverBuf = ByteBuffer.allocate(maxDatagram)
 
-    private fun openUpstream(): DatagramChannel =
-        DatagramChannel.open().apply {
-            configureBlocking(false)
-            connect(InetSocketAddress("127.0.0.1", serverPort))
-            register(selector, SelectionKey.OP_READ)
+    /**
+     * Open a fresh upstream socket toward the server.
+     *
+     * [DatagramChannel.connect] on an unbound channel implicitly binds to a kernel-chosen ephemeral
+     * port, and that port can reproduce the 4-tuple of a socket this JVM already holds — most easily
+     * the upstream being replaced, but any of the long-lived test JVM's other loopback sockets will
+     * do. BSD answers a duplicate tuple with `EADDRINUSE` rather than picking another port, so this
+     * is a *retryable* collision, not a real conflict: observed on a macOS CI runner as
+     * `BindException: Address already in use` out of [rebindUpstream].
+     *
+     * Each attempt needs its own channel — a failed `connect` leaves the previous one bound.
+     */
+    private fun openUpstream(): DatagramChannel {
+        var last: Exception? = null
+        repeat(OPEN_UPSTREAM_ATTEMPTS) {
+            val ch = DatagramChannel.open()
+            try {
+                ch.configureBlocking(false)
+                ch.connect(InetSocketAddress("127.0.0.1", serverPort))
+                ch.register(selector, SelectionKey.OP_READ)
+                return ch
+            } catch (e: Exception) {
+                closeQuietly(ch)
+                last = e
+            }
         }
+        throw IllegalStateException(
+            "relay upstream connect to 127.0.0.1:$serverPort failed after $OPEN_UPSTREAM_ATTEMPTS attempts",
+            last,
+        )
+    }
 
     private val pump =
         thread(isDaemon = true, name = "relay-pump", start = false) {
@@ -80,7 +108,18 @@ internal class SelectorDatagramRelay(
                         if (!running) break else continue
                     }
                 if (!running) break
-                while (true) (pending.poll() ?: break).invoke()
+                while (true) {
+                    val action = pending.poll() ?: break
+                    try {
+                        action.invoke()
+                    } catch (_: Exception) {
+                        // The pump must survive a failing action. Every action already reports its
+                        // own outcome to the caller that queued it (see rebindUpstream), so there is
+                        // nothing to recover here — but letting a throw escape would kill this thread
+                        // and silently stop relaying in BOTH directions, which surfaces in whatever
+                        // test is running as an opaque read timeout pointing at production code.
+                    }
+                }
                 if (ready == 0) continue
                 val keys = selector.selectedKeys().iterator()
                 while (keys.hasNext()) {
@@ -124,15 +163,37 @@ internal class SelectorDatagramRelay(
      * Passive NAT rebind: swap the upstream for one with a fresh source port so the server sees the same
      * connection arrive from a new 4-tuple. Performed on the pump thread (via [Selector.wakeup]) so the old
      * channel is closed while its only reader is parked in `select()`, never in a read.
+     *
+     * The old channel is closed **before** the replacement is opened: while both are live they are two
+     * sockets aimed at one destination, so the kernel can hand the new one an ephemeral port that
+     * recreates the old one's 4-tuple and fail the connect (see [openUpstream]). Releasing the tuple
+     * first removes that collision instead of racing it. A rebind drops in-flight packets by
+     * definition — QUIC recovers them by retransmit — so the extra sub-millisecond gap costs nothing.
+     *
+     * Blocks until the swap lands and **throws** if it didn't. A relay that silently fails to rebind
+     * stops forwarding, which the caller can only observe as a read timeout attributed to the QUIC
+     * driver; a harness fault must not be able to masquerade as a protocol failure.
      */
     fun rebindUpstream() {
+        val done = CountDownLatch(1)
+        val failure = AtomicReference<Exception?>(null)
         pending.add {
-            val old = upstream
-            upstream = openUpstream()
-            old.keyFor(selector)?.cancel()
-            closeQuietly(old)
+            try {
+                val old = upstream
+                old.keyFor(selector)?.cancel()
+                closeQuietly(old)
+                upstream = openUpstream()
+            } catch (e: Exception) {
+                failure.set(e)
+            } finally {
+                done.countDown()
+            }
         }
         selector.wakeup()
+        check(done.await(REBIND_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            "relay upstream rebind did not complete within ${REBIND_TIMEOUT_MS}ms (pump thread alive=${pump.isAlive})"
+        }
+        failure.get()?.let { throw IllegalStateException("relay upstream rebind failed", it) }
     }
 
     /** Race-free teardown: stop the pump and JOIN it before closing any channel (see the class KDoc). */
@@ -192,5 +253,9 @@ internal class SelectorDatagramRelay(
     private companion object {
         private const val POLL_MS = 50L
         private const val CLOSE_JOIN_MS = 2000L
+        private const val REBIND_TIMEOUT_MS = 2000L
+
+        /** Ephemeral-tuple collisions are rare and independent; a handful of attempts is plenty. */
+        private const val OPEN_UPSTREAM_ATTEMPTS = 8
     }
 }
