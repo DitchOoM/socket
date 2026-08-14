@@ -191,4 +191,37 @@ class CodecConnectionPartialWriteTests {
             assertEquals(0, failure.accepted)
             assertEquals(encodedSize("hello"), failure.pending)
         }
+
+    /**
+     * `CodecSender` — the typed **mux-leaf** sender behind `TypedMuxView` — carried a byte-for-byte copy
+     * of the same defect, and the consolidation missed it: `Http3StreamWriteConsolidationTest` greps
+     * `:socket-http3`, and this lives in the root module, so no ratchet could see it. It was found by
+     * pointing Kotlin's `-Xreturn-value-checker` at the tree once buffer marked `ByteSink`
+     * `@MustUseReturnValues` — a compile-time check reaches where a source grep structurally cannot.
+     *
+     * Same failure as [sendCompletesTheFrameAcrossManyPartialWrites]: a sink that accepts a bounded
+     * number of bytes per call must still receive every byte, in order, byte-identical.
+     */
+    @Test
+    fun codecSenderCompletesTheFrameAcrossManyPartialWrites() =
+        runTest {
+            val message = "the mux leaf must not truncate either"
+            val sink = PartialAcceptSink(acceptPerWrite = 4)
+
+            CodecSender(sink, TestStringCodec).send(message)
+
+            assertEquals(encodedSize(message), sink.wire.size, "the frame was truncated")
+            assertTrue(sink.writeCalls > 1, "vacuous: the sink accepted everything in one call")
+        }
+
+    /** [CodecSender]'s stalled-sink guard, matching `CodecConnection.send`'s. */
+    @Test
+    fun codecSenderFailsLoudlyWhenTheSinkNeverMakesProgress() =
+        runTest {
+            val failure =
+                assertFailsWith<SocketWriteStalledException> {
+                    CodecSender(StalledSink(), TestStringCodec).send("hello")
+                }
+            assertEquals(0, failure.accepted)
+        }
 }
