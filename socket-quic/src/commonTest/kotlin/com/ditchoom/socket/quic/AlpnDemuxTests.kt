@@ -63,13 +63,25 @@ class AlpnDemuxTests {
             accepted.send(MockQuicConnection(initialState = QuicConnectionState.Established("proto-a")))
             accepted.close()
 
-            val handled = mutableListOf<String>()
+            // A Channel, not a MutableList: this is the one test here with more than one connection,
+            // so its three handlers run concurrently — `connections` launches one coroutine each and
+            // `runQuicTest` dispatches on the multi-threaded Dispatchers.Default. Three unsynchronized
+            // `ArrayList.add` calls lose updates, which surfaced as an intermittent
+            // `expected [a:proto-a, a:proto-a, b:proto-b] but was [a:proto-a, b:proto-b]`.
+            // The other tests in this file accept a single connection, so nothing races there.
+            val handled = Channel<String>(Channel.UNLIMITED)
             FakeQuicServer(accepted).connectionsByAlpn(
-                "proto-a" to { handled += "a:$negotiatedAlpn" },
-                "proto-b" to { handled += "b:$negotiatedAlpn" },
+                "proto-a" to { handled.send("a:$negotiatedAlpn") },
+                "proto-b" to { handled.send("b:$negotiatedAlpn") },
             )
+            handled.close()
 
-            assertEquals(listOf("a:proto-a", "a:proto-a", "b:proto-b"), handled.sorted())
+            // Drained on the test coroutine after `connectionsByAlpn` has joined every handler, so
+            // this read is sequential.
+            val collected = mutableListOf<String>()
+            for (entry in handled) collected += entry
+
+            assertEquals(listOf("a:proto-a", "a:proto-a", "b:proto-b"), collected.sorted())
         }
 
     @Test
