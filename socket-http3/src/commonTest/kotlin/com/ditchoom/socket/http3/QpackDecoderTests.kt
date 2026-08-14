@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -54,10 +55,10 @@ class QpackDecoderTests {
                     dynamicIndexed(1)
                     dynamicIndexed(0)
                 }
-            val fields = d.decodeSection(buf, streamId = 0, scratchPool = null)
+            val fields = d.decodeSection(buf, streamId = QuicStreamId(0L), scratchPool = null)
             assertEquals(listOf(QpackHeaderField("x-a", "1"), QpackHeaderField("x-b", "2")), fields)
             // A dynamic section (RIC>0) acks; each insert emitted an Insert Count Increment.
-            assertTrue(emitted.contains(QpackDecoderInstruction.SectionAck(0)))
+            assertTrue(emitted.contains(QpackDecoderInstruction.SectionAck(QuicStreamId(0L))))
             assertEquals(2, emitted.count { it is QpackDecoderInstruction.InsertCountIncrement })
         }
 
@@ -77,7 +78,7 @@ class QpackDecoderTests {
                 }
             assertEquals(
                 listOf(QpackHeaderField("x-a", "1"), QpackHeaderField("x-b", "2")),
-                d.decodeSection(buf, streamId = 4, scratchPool = null),
+                d.decodeSection(buf, streamId = QuicStreamId(4L), scratchPool = null),
             )
         }
 
@@ -94,7 +95,7 @@ class QpackDecoderTests {
             val buf = section(requiredInsertCount = 2, base = 2) { dynamicIndexed(0) } // abs 1
             assertEquals(
                 listOf(QpackHeaderField(":authority", "example.com")),
-                d.decodeSection(buf, streamId = 0, scratchPool = null),
+                d.decodeSection(buf, streamId = QuicStreamId(0L), scratchPool = null),
             )
         }
 
@@ -107,7 +108,7 @@ class QpackDecoderTests {
                 section(requiredInsertCount = 0, base = 0) {
                     QpackPrefixedInteger.encode(this, 1, prefixBits = 6, firstByteFlags = 0xC0)
                 }
-            val fields = d.decodeSection(buf, streamId = 0, scratchPool = null)
+            val fields = d.decodeSection(buf, streamId = QuicStreamId(0L), scratchPool = null)
             assertEquals(QpackStaticTable.entry(1), fields.single())
             assertTrue(emitted.none { it is QpackDecoderInstruction.SectionAck }, "RIC=0 ⇒ no Section Ack")
         }
@@ -120,7 +121,7 @@ class QpackDecoderTests {
 
             val result = CompletableDeferred<List<QpackHeaderField>>()
             val buf = section(requiredInsertCount = 1, base = 1) { dynamicIndexed(0) } // needs abs 0
-            val job = launch { result.complete(d.decodeSection(buf, streamId = 0, scratchPool = null)) }
+            val job = launch { result.complete(d.decodeSection(buf, streamId = QuicStreamId(0L), scratchPool = null)) }
 
             assertTrue(!result.isCompleted, "decode must block until the table reaches Required Insert Count")
             d.applyEncoderInstruction(QpackEncoderInstruction.InsertWithLiteralName("x-late", "v")) // abs 0 arrives
@@ -138,7 +139,7 @@ class QpackDecoderTests {
             val buf = section(requiredInsertCount = 1, base = 1) { dynamicIndexed(5) }
             // A field-section decode failure is a connection error of type QPACK_DECOMPRESSION_FAILED
             // (RFC 9204 §2.2) — typed at the decodeSection boundary, not a raw DecodeException.
-            val e = assertFailsWith<Http3StreamException> { d.decodeSection(buf, streamId = 0, scratchPool = null) }
+            val e = assertFailsWith<Http3StreamException> { d.decodeSection(buf, streamId = QuicStreamId(0L), scratchPool = null) }
             assertEquals(Http3ErrorCode.QPACK_DECOMPRESSION_FAILED, e.errorCode)
         }
 

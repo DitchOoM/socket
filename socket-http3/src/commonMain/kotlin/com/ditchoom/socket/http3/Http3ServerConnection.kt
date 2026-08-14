@@ -15,6 +15,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -258,7 +259,7 @@ class Http3ServerConnection internal constructor(
                 return
             }
             val first = readRequestHeaders(reader)
-            val streamId = stream.streamId.id
+            val streamId = stream.streamId
             val fields = decodeSection(first.encodedFieldSection, streamId)
             // Extended CONNECT (RFC 9220): a CONNECT carrying `:protocol` is routed to WebTransport,
             // not the normal request handler.
@@ -409,7 +410,7 @@ class Http3ServerConnection internal constructor(
         status: Int,
         fin: Boolean,
     ) {
-        val section = encodeSection(listOf(QpackHeaderField(":status", status.toString())), stream.streamId.id)
+        val section = encodeSection(listOf(QpackHeaderField(":status", status.toString())), stream.streamId)
         try {
             writeFrame(stream, Http3Frame.Headers(section))
         } finally {
@@ -450,7 +451,7 @@ class Http3ServerConnection internal constructor(
     /** Encode a field section through the dynamic encoder (when present) or the static codec. */
     private suspend fun encodeSection(
         fields: List<QpackHeaderField>,
-        streamId: Long,
+        streamId: QuicStreamId,
     ): ReadBuffer {
         val encoder = serverEncoder
         return if (encoder != null) {
@@ -467,7 +468,7 @@ class Http3ServerConnection internal constructor(
     /** Decode a field section through the dynamic decoder (when present) or the static codec. */
     private suspend fun decodeSection(
         section: ReadBuffer,
-        streamId: Long,
+        streamId: QuicStreamId,
     ): List<QpackHeaderField> {
         val decoder = serverDecoder
         return if (decoder != null) {
@@ -519,7 +520,7 @@ class Http3ServerConnection internal constructor(
                 addAll(spec.promisedHeaders)
             }
         // PUSH_PROMISE rides the request stream; its field section uses that stream's QPACK context.
-        val section = encodeSection(promiseFields, requestStream.streamId.id)
+        val section = encodeSection(promiseFields, requestStream.streamId)
         try {
             writeFrame(requestStream, Http3Frame.PushPromise(pushId, section))
         } catch (e: CancellationException) {
@@ -535,7 +536,7 @@ class Http3ServerConnection internal constructor(
                 val pushStream = scope.openUniStream()
                 writePushStreamHeader(pushStream, pushId)
                 val pushResponse =
-                    Http3ServerResponse(pushStream, pool, config, pushStream.streamId.id) { fields, sid -> encodeSection(fields, sid) }
+                    Http3ServerResponse(pushStream, pool, config, pushStream.streamId) { fields, sid -> encodeSection(fields, sid) }
                 pushResponse.respond()
                 pushResponse.finish()
             } catch (e: CancellationException) {

@@ -5,6 +5,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicStreamId
 
 /**
  * The response side of a server [Http3ServerExchange] (RFC 9114 §4.1). Write a response either in one
@@ -16,9 +17,9 @@ class Http3ServerResponse internal constructor(
     private val stream: QuicByteStream,
     private val pool: BufferPool,
     private val config: TransportConfig,
-    private val streamId: Long,
+    private val streamId: QuicStreamId,
     // Encodes a field section through the server's QPACK (dynamic when capacity > 0, else static).
-    private val encodeSection: suspend (List<QpackHeaderField>, Long) -> ReadBuffer,
+    private val encodeSection: suspend (List<QpackHeaderField>, QuicStreamId) -> ReadBuffer,
 ) {
     private val streamWriter = Http3StreamWriter(pool, config)
 

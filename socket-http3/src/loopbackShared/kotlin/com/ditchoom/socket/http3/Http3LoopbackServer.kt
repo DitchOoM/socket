@@ -15,6 +15,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -212,7 +213,7 @@ internal class Http3LoopbackServer(
             val decoder = serverDecoder
             val fields =
                 if (decoder != null) {
-                    decoder.decodeSection(first.encodedFieldSection, stream.streamId.id, pool)
+                    decoder.decodeSection(first.encodedFieldSection, QuicStreamId(stream.streamId.id), pool)
                 } else {
                     QpackFieldSectionCodec.decode(
                         first.encodedFieldSection,
@@ -344,7 +345,7 @@ internal class Http3LoopbackServer(
         val encoder = serverEncoder
         val sectionBuffer =
             if (encoder != null) {
-                encoder.encodeSection(fields, stream.streamId.id, pool)
+                encoder.encodeSection(fields, QuicStreamId(stream.streamId.id), pool)
             } else {
                 val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
                 pool.allocate(sectionSize).also {

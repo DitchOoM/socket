@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -85,9 +86,9 @@ class QpackEncoderTests {
         fields: List<QpackHeaderField>,
         streamId: Long,
     ): List<QpackHeaderField> {
-        val section = p.encoder.encodeSection(fields, streamId, pool)
+        val section = p.encoder.encodeSection(fields, QuicStreamId(streamId), pool)
         p.pump() // deliver the encoder's inserts to the decoder (and the increments back) before decoding
-        val decoded = p.decoder.decodeSection(section, streamId, scratchPool = null)
+        val decoded = p.decoder.decodeSection(section, QuicStreamId(streamId), scratchPool = null)
         p.pump() // deliver the decoder's Section Ack back to the encoder
         return decoded
     }
@@ -175,9 +176,9 @@ class QpackEncoderTests {
             encoder.setCapacity(4096)
             // Blocked streams are permitted, so this section may reference the insert it just made —
             // giving it a Required Insert Count that covers a not-yet-acknowledged insertion.
-            val section = encoder.encodeSection(listOf(QpackHeaderField("x-custom", "v")), streamId = 0, pool)
+            val section = encoder.encodeSection(listOf(QpackHeaderField("x-custom", "v")), streamId = QuicStreamId(0L), pool)
 
-            decode = launch { decoder.decodeSection(section, streamId = 0, scratchPool = null) }
+            decode = launch { decoder.decodeSection(section, streamId = QuicStreamId(0L), scratchPool = null) }
             runCurrent() // the decode is now parked awaiting the insertion its Required Insert Count names
             val apply =
                 launch {
@@ -257,17 +258,17 @@ class QpackEncoderTests {
 
             // Emit a section on stream 8 that references A (abs 0) and deliver it to the decoder, but
             // HOLD the decoder's Section Acknowledgment — A is now pinned by an in-flight reference.
-            val pinning = p.encoder.encodeSection(listOf(a), streamId = 8, pool)
+            val pinning = p.encoder.encodeSection(listOf(a), streamId = QuicStreamId(8L), pool)
             p.flushEncoderStream()
-            assertEquals(listOf(a), p.decoder.decodeSection(pinning, streamId = 8, scratchPool = null))
+            assertEquals(listOf(a), p.decoder.decodeSection(pinning, streamId = QuicStreamId(8L), scratchPool = null))
             // NOTE: deliberately not flushing the decoder stream — the ack stays in flight.
 
             // C is new and the table is full, but evicting A (the only candidate) is unsafe while the
             // stream-8 section still references it ⇒ the encoder must NOT insert (encodes C literally).
-            val held = p.encoder.encodeSection(listOf(c), streamId = 12, pool)
+            val held = p.encoder.encodeSection(listOf(c), streamId = QuicStreamId(12L), pool)
             p.flushEncoderStream()
             assertEquals(2L, p.encoder.insertCountValue, "pinned entry blocks eviction → no insert")
-            assertEquals(listOf(c), p.decoder.decodeSection(held, streamId = 12, scratchPool = null))
+            assertEquals(listOf(c), p.decoder.decodeSection(held, streamId = QuicStreamId(12L), scratchPool = null))
 
             // Now deliver the held acknowledgment; A is released and eviction becomes safe.
             p.flushDecoderStream()
@@ -288,17 +289,17 @@ class QpackEncoderTests {
             assertEquals(listOf(b), roundTrip(p, listOf(b), streamId = 4))
 
             // Pin A via an in-flight section on stream 8 (held, unacked).
-            p.encoder.encodeSection(listOf(a), streamId = 8, pool)
+            p.encoder.encodeSection(listOf(a), streamId = QuicStreamId(8L), pool)
             p.flushEncoderStream()
-            val blocked = p.encoder.encodeSection(listOf(c), streamId = 12, pool)
+            val blocked = p.encoder.encodeSection(listOf(c), streamId = QuicStreamId(12L), pool)
             p.flushEncoderStream()
             assertEquals(2L, p.encoder.insertCountValue, "pinned → eviction blocked")
             // Consume the literally-encoded section so the decoder table stays consistent.
-            assertEquals(listOf(c), p.decoder.decodeSection(blocked, streamId = 12, scratchPool = null))
+            assertEquals(listOf(c), p.decoder.decodeSection(blocked, streamId = QuicStreamId(12L), scratchPool = null))
             p.flushDecoderStream() // ack for stream 12 (no pin to release)
 
             // The peer abandons stream 8 → Stream Cancellation releases A's reference.
-            p.decoder.cancelStream(8)
+            p.decoder.cancelStream(QuicStreamId(8L))
             p.flushDecoderStream()
 
             assertEquals(listOf(c), roundTrip(p, listOf(c), streamId = 16)) // now free to evict A, insert C
@@ -315,10 +316,10 @@ class QpackEncoderTests {
             p.encoder.setCapacity(4096)
             val fields = listOf(QpackHeaderField(":method", "GET"), QpackHeaderField("x-custom", "v1"))
 
-            val section = p.encoder.encodeSection(fields, streamId = 0, pool)
+            val section = p.encoder.encodeSection(fields, streamId = QuicStreamId(0L), pool)
             assertEquals(1L, p.encoder.insertCountValue, "the new field was inserted")
 
-            val decoding = async { p.decoder.decodeSection(section, streamId = 0, scratchPool = null) }
+            val decoding = async { p.decoder.decodeSection(section, streamId = QuicStreamId(0L), scratchPool = null) }
             runCurrent()
             assertFalse(decoding.isCompleted, "decode blocks until the insert arrives — proves a blocking reference")
 
@@ -337,14 +338,14 @@ class QpackEncoderTests {
 
             // Stream 0: insert + reference x-c (abs 0); deliver the insert and decode, but hold the ack
             // so x-c stays unacknowledged (Known Received Count = 0).
-            val s0 = p.encoder.encodeSection(listOf(field), streamId = 0, pool)
+            val s0 = p.encoder.encodeSection(listOf(field), streamId = QuicStreamId(0L), pool)
             p.flushEncoderStream()
-            assertEquals(listOf(field), p.decoder.decodeSection(s0, streamId = 0, scratchPool = null))
+            assertEquals(listOf(field), p.decoder.decodeSection(s0, streamId = QuicStreamId(0L), scratchPool = null))
 
             // Stream 4 reuses x-c while it is unacknowledged → referenced, no second insert.
-            val s4 = p.encoder.encodeSection(listOf(field), streamId = 4, pool)
+            val s4 = p.encoder.encodeSection(listOf(field), streamId = QuicStreamId(4L), pool)
             assertEquals(1L, p.encoder.insertCountValue, "referenced the existing entry — no duplicate insert")
-            assertEquals(listOf(field), p.decoder.decodeSection(s4, streamId = 4, scratchPool = null))
+            assertEquals(listOf(field), p.decoder.decodeSection(s4, streamId = QuicStreamId(4L), scratchPool = null))
         }
 
     @Test
@@ -355,20 +356,20 @@ class QpackEncoderTests {
             val p = wired(maxBlockedStreams = 1)
             p.encoder.setCapacity(4096)
 
-            val s0 = p.encoder.encodeSection(listOf(QpackHeaderField("x-a", "1")), streamId = 0, pool)
-            val s4 = p.encoder.encodeSection(listOf(QpackHeaderField("x-b", "2")), streamId = 4, pool)
+            val s0 = p.encoder.encodeSection(listOf(QpackHeaderField("x-a", "1")), streamId = QuicStreamId(0L), pool)
+            val s4 = p.encoder.encodeSection(listOf(QpackHeaderField("x-b", "2")), streamId = QuicStreamId(4L), pool)
             assertEquals(2L, p.encoder.insertCountValue, "both headers inserted for future reuse")
 
             // s4 was forced literal (budget spent on stream 0): it decodes immediately with NO inserts
             // delivered — a blocking section would have to wait.
             assertEquals(
                 listOf(QpackHeaderField("x-b", "2")),
-                p.decoder.decodeSection(s4, streamId = 4, scratchPool = null),
+                p.decoder.decodeSection(s4, streamId = QuicStreamId(4L), scratchPool = null),
                 "the over-budget section is non-blocking (literal)",
             )
 
             // s0 is the one blocking section: it must wait for its insert before it can decode.
-            val decoding = async { p.decoder.decodeSection(s0, streamId = 0, scratchPool = null) }
+            val decoding = async { p.decoder.decodeSection(s0, streamId = QuicStreamId(0L), scratchPool = null) }
             runCurrent()
             assertFalse(decoding.isCompleted, "the in-budget section blocks until its insert arrives")
             p.flushEncoderStream()
@@ -435,7 +436,7 @@ class QpackEncoderTests {
             val encoder = QpackEncoder(4096) { }
             val e =
                 assertFailsWith<Http3StreamException> {
-                    encoder.processDecoderInstruction(QpackDecoderInstruction.SectionAck(0))
+                    encoder.processDecoderInstruction(QpackDecoderInstruction.SectionAck(QuicStreamId(0L)))
                 }
             assertEquals(Http3ErrorCode.QPACK_DECODER_STREAM_ERROR, e.errorCode)
         }

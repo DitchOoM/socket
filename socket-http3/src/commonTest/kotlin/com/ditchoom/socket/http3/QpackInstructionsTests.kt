@@ -2,6 +2,7 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -50,10 +51,13 @@ class QpackInstructionsTests {
 
     @Test
     fun decoderInstructionsRoundTrip() {
-        assertEquals(QpackDecoderInstruction.SectionAck(7), decoderRoundTrip(QpackDecoderInstruction.SectionAck(7)))
         assertEquals(
-            QpackDecoderInstruction.StreamCancellation(200),
-            decoderRoundTrip(QpackDecoderInstruction.StreamCancellation(200)),
+            QpackDecoderInstruction.SectionAck(QuicStreamId(7L)),
+            decoderRoundTrip(QpackDecoderInstruction.SectionAck(QuicStreamId(7L))),
+        )
+        assertEquals(
+            QpackDecoderInstruction.StreamCancellation(QuicStreamId(200L)),
+            decoderRoundTrip(QpackDecoderInstruction.StreamCancellation(QuicStreamId(200L))),
         )
         assertEquals(
             QpackDecoderInstruction.InsertCountIncrement(5),

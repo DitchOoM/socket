@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -91,7 +92,7 @@ class QpackDecoder(
 
     /** Acknowledge [streamId]'s section, recording the insertions [requiredInsertCount] implicitly covers. */
     private suspend fun emitSectionAck(
-        streamId: Long,
+        streamId: QuicStreamId,
         requiredInsertCount: Long,
     ) {
         ackMutex.withLock(currentCoroutineContext()[Job]) {
@@ -151,7 +152,7 @@ class QpackDecoder(
      */
     suspend fun decodeSection(
         buffer: ReadBuffer,
-        streamId: Long,
+        streamId: QuicStreamId,
         scratchPool: BufferPool?,
     ): List<QpackHeaderField> {
         // Any failure to decode a field section — a bad prefix, an out-of-range static/dynamic index,
@@ -190,7 +191,7 @@ class QpackDecoder(
     }
 
     /** Notify the peer's encoder that [streamId]'s outstanding section references are abandoned (§4.4.2). */
-    suspend fun cancelStream(streamId: Long) = emit(QpackDecoderInstruction.StreamCancellation(streamId))
+    suspend fun cancelStream(streamId: QuicStreamId) = emit(QpackDecoderInstruction.StreamCancellation(streamId))
 
     private fun decodeFieldLine(
         buffer: ReadBuffer,
