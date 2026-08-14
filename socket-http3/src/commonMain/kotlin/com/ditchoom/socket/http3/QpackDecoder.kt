@@ -4,6 +4,8 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -61,6 +63,14 @@ class QpackDecoder(
      * wire is the order they were accounted for. Computing under a lock and emitting outside it would
      * reintroduce the same race one level down. Distinct from [mutex] — that one guards table state and
      * must never be held across I/O.
+     *
+     * Because it *is* held across a caller-supplied [emit], both acquisitions pass the current coroutine
+     * as the mutex **owner**. An `emit` that re-entered this decoder would then fail immediately with
+     * `IllegalStateException` instead of deadlocking silently on itself. Nothing does that today — the
+     * lambda writes a QUIC stream — and this is what keeps it that way loudly rather than by convention.
+     *
+     * Deadlock is otherwise ruled out by lock ordering: [mutex] is always released before this is taken,
+     * so no code path ever holds one while acquiring the other.
      */
     private val ackMutex = Mutex()
 
@@ -70,7 +80,7 @@ class QpackDecoder(
      * carried the count that far — an Increment of zero is itself a decoder-stream error (§4.4.3).
      */
     private suspend fun emitInsertCountIncrement(upTo: Long) {
-        ackMutex.withLock {
+        ackMutex.withLock(currentCoroutineContext()[Job]) {
             val increment = upTo - acknowledgedInsertCount
             if (increment <= 0) return@withLock
             emit(QpackDecoderInstruction.InsertCountIncrement(increment))
@@ -84,7 +94,7 @@ class QpackDecoder(
         streamId: Long,
         requiredInsertCount: Long,
     ) {
-        ackMutex.withLock {
+        ackMutex.withLock(currentCoroutineContext()[Job]) {
             emit(QpackDecoderInstruction.SectionAck(streamId))
             if (requiredInsertCount > acknowledgedInsertCount) acknowledgedInsertCount = requiredInsertCount
         }
