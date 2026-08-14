@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
@@ -15,7 +17,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -45,6 +46,7 @@ import kotlin.time.Duration.Companion.seconds
  * Apple K/N skips this entire suite via [isAppleKNative] (see PR #54);
  * the harness only runs on Linux/JVM/JS CI.
  */
+@OptIn(ExperimentalDatagramApi::class)
 class QuicHarnessIntegrationTests {
     private val bufferFactory = BufferFactory.deterministic()
 
@@ -277,21 +279,22 @@ class QuicHarnessIntegrationTests {
         runTest(timeout = 60.seconds) {
             withContext(Dispatchers.Default) {
                 withHarnessDatagrams {
-                    assertIs<MaxDatagramSize.Bytes>(maxDatagramSize(), "datagrams should be sendable")
+                    assertTrue(datagramChannel().maxWritableSize > 0, "datagrams should be sendable")
 
                     val payload = "hello dgram"
                     bufferFactory.allocate(payload.length).use { buf ->
                         buf.writeString(payload, Charset.UTF8)
                         buf.resetForRead()
-                        sendDatagram(buf)
+                        datagramChannel().send(buf)
                     }
 
-                    when (val r = withTimeoutOrNull(opTimeout) { receiveDatagram() }) {
-                        is DatagramReceiveResult.Received -> {
-                            assertEquals(payload, r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
-                            r.buffer.freeIfNeeded()
+                    when (val r = withTimeoutOrNull(opTimeout) { datagramChannel().receive() }) {
+                        is DatagramReadResult.Received -> {
+                            val echo = r.datagram.payload
+                            assertEquals(payload, echo.readString(echo.remaining(), Charset.UTF8))
+                            echo.freeIfNeeded()
                         }
-                        is DatagramReceiveResult.ConnectionClosed ->
+                        is DatagramReadResult.Closed ->
                             throw AssertionError("connection closed before datagram echo")
                         null -> throw AssertionError("datagram echo timed out")
                     }
