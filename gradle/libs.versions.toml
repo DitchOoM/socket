@@ -89,7 +89,18 @@ kotlinWrappers = "2026.6.0"
 # `ByteSink.writeFully` + `ByteSinkStalledException` in buffer-flow, behaviourally identical to the
 # copies added here, and fixes `writeGathered`/`CodecSink.send` — neither of which socket calls. So
 # socket deletes its duplicates and imports buffer's; see the cleanup commit.
-buffer = "6.30.1"
+# 6.30.2->6.30.3: two wasmJs memory-correctness fixes, both consumed — socket publishes wasmJs from root
+# :socket and :socket-quic. Neither is a logic error; both are silent corruption, which is why the bump is
+# worth taking on its own. 6.30.2 (buffer #363): `LinearMemoryAllocator` based its pool at whatever
+# `memory.grow` returned as the previous page count, on the reading that those pages "weren't previously
+# mapped". They are: the stdlib's scoped allocator — behind every `withScopedMemoryAllocator` interop hop —
+# bump-allocates upward from address 0 on EVERY scope and cannot be told about memory somebody else grew, so
+# the low end of linear memory is the runtime's, repeatedly, and the pool was handed out on top of it.
+# 6.30.3 (buffer #366): a wasmJs `slice()` produced a non-owning view holding no reference to the buffer that
+# owned the block, so once the owner was released and the allocator reissued that block, a read through the
+# view returned somebody else's bytes and a write overwrote them; a view now links to its OWNER and refuses
+# access after release. Nothing in the range is source-breaking.
+buffer = "6.30.3"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"

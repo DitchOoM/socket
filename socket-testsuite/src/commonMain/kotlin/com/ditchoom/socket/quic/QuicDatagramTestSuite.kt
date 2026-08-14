@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -14,7 +16,6 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -32,6 +33,7 @@ import kotlin.time.Duration.Companion.seconds
  * resend interval of [datagramRoundTrip]'s bounded resend-until-echoed loop, which is load-bearing for
  * a different reason: RFC 9221 datagrams are genuinely droppable, so the resend IS the retry.
  */
+@OptIn(ExperimentalDatagramApi::class)
 abstract class QuicDatagramTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
 
@@ -61,17 +63,18 @@ abstract class QuicDatagramTestSuite {
                         launch {
                             connections {
                                 while (true) {
-                                    when (val r = receiveDatagram()) {
-                                        is DatagramReceiveResult.Received -> {
-                                            val text = r.buffer.readString(r.buffer.remaining(), Charset.UTF8)
-                                            r.buffer.freeIfNeeded()
+                                    when (val r = datagramChannel().receive()) {
+                                        is DatagramReadResult.Received -> {
+                                            val payload = r.datagram.payload
+                                            val text = payload.readString(payload.remaining(), Charset.UTF8)
+                                            payload.freeIfNeeded()
                                             val out = BufferFactory.deterministic().allocate(text.length)
                                             out.writeString(text, Charset.UTF8)
                                             out.resetForRead()
-                                            sendDatagram(out)
+                                            datagramChannel().send(out)
                                             out.freeNativeMemory()
                                         }
-                                        is DatagramReceiveResult.ConnectionClosed -> break
+                                        is DatagramReadResult.Closed -> break
                                     }
                                 }
                             }
@@ -86,7 +89,7 @@ abstract class QuicDatagramTestSuite {
                             timeout = 10.seconds,
                             reason = "datagram round-trip never completed (connection came up datagram-wedged)",
                         ) { confirmLive ->
-                            assertIs<MaxDatagramSize.Bytes>(maxDatagramSize(), "datagrams should be sendable")
+                            assertTrue(datagramChannel().maxWritableSize > 0, "datagrams should be sendable")
                             // RFC 9221 datagrams are UNRELIABLE and NW keeps no app-level pre-arm backlog, so
                             // the very first datagram can be lost to a setup-ordering race (peer's recv loop
                             // arms a sub-ms margin before this send; on a jittery runner the send beats the arm
@@ -104,7 +107,7 @@ abstract class QuicDatagramTestSuite {
                                                 val sendBuf = BufferFactory.deterministic().allocate(11)
                                                 sendBuf.writeString("hello dgram", Charset.UTF8)
                                                 sendBuf.resetForRead()
-                                                sendDatagram(sendBuf)
+                                                datagramChannel().send(sendBuf)
                                                 sendBuf.freeNativeMemory()
                                                 delay(250)
                                             }
@@ -112,12 +115,13 @@ abstract class QuicDatagramTestSuite {
                                     try {
                                         withTimeout(4.seconds.scaled) {
                                             while (!echoed.isCompleted) {
-                                                when (val r = receiveDatagram()) {
-                                                    is DatagramReceiveResult.Received -> {
-                                                        echoed.complete(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
-                                                        r.buffer.freeIfNeeded()
+                                                when (val r = datagramChannel().receive()) {
+                                                    is DatagramReadResult.Received -> {
+                                                        val payload = r.datagram.payload
+                                                        echoed.complete(payload.readString(payload.remaining(), Charset.UTF8))
+                                                        payload.freeIfNeeded()
                                                     }
-                                                    is DatagramReceiveResult.ConnectionClosed ->
+                                                    is DatagramReadResult.Closed ->
                                                         return@withTimeout
                                                 }
                                             }
@@ -157,11 +161,11 @@ abstract class QuicDatagramTestSuite {
 
                     try {
                         withQuicConnection("localhost", port, noDgramOptions, timeout = 10.seconds) {
-                            assertEquals(MaxDatagramSize.Unavailable, maxDatagramSize())
+                            assertEquals(0, datagramChannel().maxWritableSize, "datagrams are not enabled on this connection")
                             val buf = BufferFactory.deterministic().allocate(4)
                             buf.writeInt(1)
                             buf.resetForRead()
-                            assertFailsWith<IllegalStateException> { sendDatagram(buf) }
+                            assertFailsWith<IllegalStateException> { datagramChannel().send(buf) }
                             buf.freeNativeMemory()
                         }
                     } finally {
@@ -181,13 +185,12 @@ abstract class QuicDatagramTestSuite {
 
                     try {
                         withQuicConnection("localhost", port, dgramOptions, timeout = 10.seconds) {
-                            val max = maxDatagramSize()
-                            assertIs<MaxDatagramSize.Bytes>(max)
-                            assertTrue(max.bytes > 0)
-                            val tooBig = BufferFactory.deterministic().allocate(max.bytes + 1)
-                            repeat(max.bytes + 1) { tooBig.writeByte(0) }
+                            val max = datagramChannel().maxWritableSize
+                            assertTrue(max > 0)
+                            val tooBig = BufferFactory.deterministic().allocate(max + 1)
+                            repeat(max + 1) { tooBig.writeByte(0) }
                             tooBig.resetForRead()
-                            assertFailsWith<IllegalArgumentException> { sendDatagram(tooBig) }
+                            assertFailsWith<IllegalArgumentException> { datagramChannel().send(tooBig) }
                             tooBig.freeNativeMemory()
                         }
                     } finally {

@@ -1,8 +1,12 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.DatagramReadResult
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.Dispatchers
@@ -65,12 +69,13 @@ fun main(args: Array<String>) {
                     launch {
                         try {
                             while (true) {
-                                when (val r = receiveDatagram()) {
-                                    is DatagramReceiveResult.Received -> {
-                                        sendDatagram(r.buffer) // reads zero-copy; we still own it
-                                        r.buffer.freeIfNeeded()
+                                when (val r = datagramChannel().receive()) {
+                                    is DatagramReadResult.Received -> {
+                                        val payload = r.datagram.payload
+                                        datagramChannel().send(payload) // reads zero-copy; we still own it
+                                        payload.freeIfNeeded()
                                     }
-                                    is DatagramReceiveResult.ConnectionClosed -> break
+                                    is DatagramReadResult.Closed -> break
                                 }
                             }
                         } catch (_: Exception) {

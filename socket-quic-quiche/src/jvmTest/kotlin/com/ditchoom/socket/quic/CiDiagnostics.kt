@@ -85,7 +85,9 @@ internal fun captureJvmState(reason: String): String {
             .append("--- ")
             .append(thread.name)
             .append(" (id=")
-            .append(thread.id)
+            // threadId(), not the id property: Thread.getId() is deprecated from JDK 19 and this
+            // module's tests run on 21.
+            .append(thread.threadId())
             .append(" state=")
             .append(thread.state)
             .append(" daemon=")
