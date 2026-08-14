@@ -1,5 +1,7 @@
 package com.ditchoom.socket.testkit.skip
 
+import kotlin.reflect.KClass
+
 /**
  * Why a test did not run.
  *
@@ -104,15 +106,30 @@ const val REQUIRE_ALL_TESTS_ENV: String = "SOCKET_REQUIRE_ALL_TESTS"
 const val SKIP_MARKER: String = "[TEST-SKIPPED]"
 
 /**
- * Record that the calling suite did not run a test body, and decide whether that is tolerable.
+ * Record that [site] did not run a test body, and decide whether that is tolerable.
  *
  * Always emits [SKIP_MARKER] so the skip appears in the run's artifacts. Throws when
  * [REQUIRE_ALL_TESTS_ENV] is set, which is what turns "silently green" into "red, with the reason
  * already in the message".
+ *
+ * ## Why the site is named rather than inferred
+ *
+ * This was `Any.recordSkip`, deriving the site from `this::class.simpleName`. That reads as "the suite
+ * I am in", and inside a lambda with a receiver it is not: an extension on `Any` binds to the
+ * **innermost implicit receiver**, so a call in a `runBlocking { }` body recorded
+ * `site=BlockingCoroutine` and one in `runTest { }` recorded `site=TestScopeImpl` — measured, at every
+ * such call site. The inventory groups by site, so the one column naming *which* suite stopped running
+ * named a coroutine implementation class instead.
+ *
+ * A [KClass] parameter cannot be captured by an enclosing lambda: the call site has to write the class
+ * down, and the compiler checks and renames it.
  */
-fun Any.recordSkip(reason: SkipReason): Unit = recordSkip(this::class.simpleName ?: "<anonymous>", reason)
+fun recordSkip(
+    site: KClass<*>,
+    reason: SkipReason,
+): Unit = recordSkip(site.simpleName ?: "<anonymous>", reason)
 
-/** [recordSkip] for callers that are not a suite instance (top-level helpers, companions). */
+/** [recordSkip] for callers with no class to name (top-level helpers, generated or synthetic sites). */
 fun recordSkip(
     site: String,
     reason: SkipReason,

@@ -36,7 +36,7 @@ class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(JvmQuicServerLifecycleTestSuite::class, block)
 
     // ── Reflection helper — test-only access to server internals ──
 

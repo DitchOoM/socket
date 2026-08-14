@@ -84,7 +84,7 @@ class QuicLocalServerTests {
     @Test
     fun serverAcceptsConnection() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicLocalServerTests::class) {
                 withTimeout(15.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val handlerRan = CompletableDeferred<Unit>()
@@ -114,7 +114,7 @@ class QuicLocalServerTests {
     @Test
     fun echoSingleStream() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicLocalServerTests::class) {
                 withTimeout(15.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val echoResult = CompletableDeferred<String>()
@@ -208,7 +208,7 @@ class QuicLocalServerTests {
     @Test
     fun replyBufferedWhenPeerClosesIsStillDelivered() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicLocalServerTests::class) {
                 withTimeout(30.seconds) {
                     val testQuicOptions = testQuicOptions.copy(closeLinger = QuicCloseLinger.Immediate)
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
@@ -322,7 +322,7 @@ class QuicLocalServerTests {
     @Test
     fun replyLostInFlightIsRetransmittedBeforeTheServerCloses() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicLocalServerTests::class) {
                 val received = replyUnderDroppedDatagrams(QuicCloseLinger.Default, readBudget = 20.seconds)
                 assertEquals(
                     replyPayload.length,
@@ -343,7 +343,7 @@ class QuicLocalServerTests {
     @Test
     fun replyLostInFlightIsTruncatedByAnImmediateClose() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicLocalServerTests::class) {
                 val received = replyUnderDroppedDatagrams(QuicCloseLinger.Immediate, readBudget = 4.seconds)
                 assertTrue(
                     received.length < replyPayload.length,

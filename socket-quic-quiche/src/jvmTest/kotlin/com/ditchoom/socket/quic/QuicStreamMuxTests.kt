@@ -85,7 +85,7 @@ class QuicStreamMuxTests {
     @Test
     fun bidirectionalStreamMuxExchange() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicStreamMuxTests::class) {
                 // 30s whole-test budget: the client connect alone defaults to 15s, so the old 15s
                 // cap was inconsistent with the work below (connect + send + receive) and a
                 // slow-but-correct run could time out opaquely. (Same shape as the migration-test
@@ -136,7 +136,7 @@ class QuicStreamMuxTests {
     @Test
     fun unidirectionalStreamMuxExchange() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicStreamMuxTests::class) {
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val opts = TransportConfig(readPolicy = ReadPolicy.Bounded(5.seconds), writePolicy = WritePolicy.Bounded(5.seconds))

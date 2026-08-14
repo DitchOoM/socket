@@ -28,7 +28,7 @@ class QuicheStatsBindingTests {
     @Test
     fun semanticSim_echo_yields_sane_conn_and_path_stats() =
         runQuicTest(timeout = 30.seconds) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicheStatsBindingTests::class) {
                 withSemanticSim(
                     // Small REAL latency so quiche collects genuine RTT samples (its clock is
                     // internal `Instant::now()` — see the W4 virtual-time finding).
@@ -94,7 +94,7 @@ class QuicheStatsBindingTests {
     @Test
     fun stats_after_teardown_is_all_null_not_a_crash() =
         runQuicTest(timeout = 30.seconds) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(QuicheStatsBindingTests::class) {
                 val driver =
                     withSemanticSim(ImpairmentConfig(seed = 12L), establishTimeout = 15.seconds) {
                         clientDriver

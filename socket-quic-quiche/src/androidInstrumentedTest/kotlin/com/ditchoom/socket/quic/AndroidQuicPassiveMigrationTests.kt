@@ -16,5 +16,5 @@ class AndroidQuicPassiveMigrationTests : QuicPassiveMigrationTestSuite() {
 
     override fun createRebindingProxy(serverPort: Int): RebindingProxy = DatagramChannelRebindingProxy(serverPort)
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQuicPassiveMigrationTests::class, block)
 }

@@ -788,6 +788,37 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
     }
 }
 
+// ─── Apple simulator test lanes: env vars need the SIMCTL_CHILD_ prefix ───────
+//
+// `simctl spawn` does NOT pass the ambient environment to the process it launches: only variables
+// named `SIMCTL_CHILD_<NAME>` reach the child, with the prefix stripped. KGP launches every simulator
+// test binary that way, so a variable exported by a CI step arrives at a JVM or host-K/N test worker
+// and vanishes on the way into a simulator .kexe. Measured on iosSimulatorArm64Test, same shell:
+// `SOCKET_REQUIRE_ALL_TESTS=1` → the test binary reads null; `SIMCTL_CHILD_SOCKET_REQUIRE_ALL_TESTS=1`
+// → it reads 1.
+//
+// This is why the simulator lanes cannot simply set SOCKET_REQUIRE_ALL_TESTS the way the eight clean
+// lanes do — the gate would be silently unreachable, which is the false green the gate exists to
+// remove. It is also, retroactively, why the QUIC_SIM_BOOTED wiring the old docstrings described
+// could not have worked even if the Gradle property they named had ever existed.
+//
+// Read from the CLIENT environment via the provider API (the daemon may predate the value) and
+// forward every variable the test binaries actually read.
+// Deliberately NOT including QUIC_TEST_TIME_SCALE, which build-apple.yaml sets to 3 workflow-wide:
+// forwarding it would triple every `.scaled` budget inside the simulator suites for the first time,
+// which is a timing change to lanes that currently pass and belongs in its own commit. It is the same
+// bug — a workflow-level variable that never reaches the simulator — and it is now visible here
+// rather than silently absent.
+val simulatorForwardedEnv = listOf("SOCKET_REQUIRE_ALL_TESTS", "QUIC_SIM_BOOTED")
+
+allprojects {
+    tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest>().configureEach {
+        for (name in simulatorForwardedEnv) {
+            providers.environmentVariable(name).orNull?.let { environment("SIMCTL_CHILD_$name", it) }
+        }
+    }
+}
+
 // Pin JVM tests to a single sequential fork. The JVM test surface uses
 // process-wide mutable globals (`useAsyncChannels`, `useNioBlocking` in
 // `commonJvmMain/Socket.kt`) that the Simple{Nio,NioNonBlocking,Async}-

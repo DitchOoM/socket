@@ -14,5 +14,5 @@ class QuicIdleTimeoutTests : QuicIdleTimeoutTestSuite() {
 
     override fun testTlsConfig() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(QuicIdleTimeoutTests::class, block)
 }

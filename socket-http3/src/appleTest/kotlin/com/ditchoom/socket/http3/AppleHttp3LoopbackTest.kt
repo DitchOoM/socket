@@ -44,7 +44,7 @@ class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
     /** Skip on `--standalone` Apple simulators (no `testcerts/` cwd — see [simulatorLacksFixtures]). */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
         val skip = simulatorLacksFixtures()
-        if (skip != null) return recordSkip(skip)
+        if (skip != null) return recordSkip(AppleHttp3LoopbackTest::class, skip)
         block()
     }
 }

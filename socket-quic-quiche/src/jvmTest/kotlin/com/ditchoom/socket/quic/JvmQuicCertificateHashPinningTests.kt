@@ -31,5 +31,5 @@ class JvmQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite()
         return CertificateHash(buf)
     }
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(JvmQuicCertificateHashPinningTests::class, block)
 }

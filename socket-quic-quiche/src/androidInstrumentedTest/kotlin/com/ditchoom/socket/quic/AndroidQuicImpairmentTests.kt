@@ -20,5 +20,5 @@ class AndroidQuicImpairmentTests : QuicImpairmentTestSuite() {
         policy: ImpairmentPolicy,
     ): ImpairingProxy = DatagramChannelImpairingProxy(serverPort, policy)
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQuicImpairmentTests::class, block)
 }

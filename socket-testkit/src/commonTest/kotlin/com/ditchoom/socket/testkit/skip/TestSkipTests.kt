@@ -3,6 +3,7 @@ package com.ditchoom.socket.testkit.skip
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -47,6 +48,26 @@ class TestSkipTests {
                 "marker for ${reason.label} must start with $SKIP_MARKER",
             )
         }
+    }
+
+    @Test
+    fun theSiteInAMarkerIsTheClassItWasGiven() {
+        // The site is a KClass parameter rather than an `Any` receiver because an extension on `Any`
+        // binds to the innermost implicit receiver: every call inside a `runTest`/`runBlocking` body
+        // recorded `site=TestScopeImpl` / `site=BlockingCoroutine` instead of the suite. The inventory
+        // groups by site, so that column named a coroutine class on exactly the lanes it exists for.
+        assertContains(
+            skipMarker(TestSkipTests::class.simpleName ?: "", SkipReason.TransportUnavailable("probe")),
+            "site=TestSkipTests",
+        )
+    }
+
+    @Test
+    fun readingAnUnsetVariableIsNullOnEveryPlatform() {
+        // The only test that executes `testkitEnv` at all. Its js/wasmJs actuals reach for `process.env`
+        // through a `js(...)` block that no test had ever run — they compiled, which is not the same as
+        // working, and a throw there would have turned every skip on those lanes into an error.
+        assertNull(testkitEnv("SOCKET_TESTKIT_VARIABLE_THAT_IS_NEVER_SET"))
     }
 
     @Test

@@ -112,7 +112,7 @@ class SemanticSimSeedSweepTests {
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(SemanticSimSeedSweepTests::class, e)
             }
         }
 

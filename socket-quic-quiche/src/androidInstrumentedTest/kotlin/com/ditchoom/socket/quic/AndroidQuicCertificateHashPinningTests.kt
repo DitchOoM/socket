@@ -33,5 +33,6 @@ class AndroidQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSui
         return CertificateHash(buf)
     }
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) =
+        skipOnMissingNativeLib(AndroidQuicCertificateHashPinningTests::class, block)
 }

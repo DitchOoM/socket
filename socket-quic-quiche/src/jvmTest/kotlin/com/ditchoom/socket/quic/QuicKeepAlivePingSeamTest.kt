@@ -69,7 +69,7 @@ class QuicKeepAlivePingSeamTest {
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(QuicKeepAlivePingSeamTest::class, e)
             }
         }
 

@@ -37,7 +37,7 @@ class JvmCallerClockTests {
         try {
             drive()
         } catch (e: UnsatisfiedLinkError) {
-            recordMissingNativeLib(e)
+            recordMissingNativeLib(JvmCallerClockTests::class, e)
         }
     }
 

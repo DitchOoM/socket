@@ -126,7 +126,7 @@ class ServerCloseRecvInfoRaceTest {
                         "without a use-after-free, but failed with: ${result.exceptionOrNull()}",
                 )
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(ServerCloseRecvInfoRaceTest::class, e)
             }
         }
 }

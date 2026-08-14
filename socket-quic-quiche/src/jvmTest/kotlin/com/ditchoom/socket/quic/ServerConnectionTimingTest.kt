@@ -49,7 +49,7 @@ class ServerConnectionTimingTest {
     @Test
     fun serverHandlerRunsOnClientConnect() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(ServerConnectionTimingTest::class) {
                 withTimeout(15.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val handlerRan = CompletableDeferred<Unit>()
@@ -78,7 +78,7 @@ class ServerConnectionTimingTest {
     @Test
     fun serverAcceptsStreamFromClient() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(ServerConnectionTimingTest::class) {
                 withTimeout(15.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val streamAccepted = CompletableDeferred<Long>()
@@ -121,7 +121,7 @@ class ServerConnectionTimingTest {
     @Test
     fun scopeBasedEchoRoundTrip() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(ServerConnectionTimingTest::class) {
                 withTimeout(15.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val echoResult = CompletableDeferred<String>()

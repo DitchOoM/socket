@@ -79,7 +79,7 @@ class TraceRecorderRoundTripTests {
                     serverJob.cancel()
                 }
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(TraceRecorderRoundTripTests::class, e)
             }
 
             // --- 1. Shape: the session must have produced every driver-side event class. ---

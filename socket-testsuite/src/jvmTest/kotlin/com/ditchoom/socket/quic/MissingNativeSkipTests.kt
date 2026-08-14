@@ -23,7 +23,9 @@ class MissingNativeSkipTests {
         runTest {
             val thrown =
                 try {
-                    skipOnMissingNativeLib { throw UnsatisfiedLinkError("no libquiche in java.library.path") }
+                    skipOnMissingNativeLib(
+                        MissingNativeSkipTests::class,
+                    ) { throw UnsatisfiedLinkError("no libquiche in java.library.path") }
                     null
                 } catch (t: Throwable) {
                     t
@@ -46,7 +48,7 @@ class MissingNativeSkipTests {
         runTest {
             var ran = false
 
-            skipOnMissingNativeLib { ran = true }
+            skipOnMissingNativeLib(MissingNativeSkipTests::class) { ran = true }
 
             assertTrue(ran, "the happy path must actually invoke the block")
         }
@@ -59,7 +61,7 @@ class MissingNativeSkipTests {
             // different hat.
             val thrown =
                 try {
-                    skipOnMissingNativeLib { throw IllegalStateException("a real bug") }
+                    skipOnMissingNativeLib(MissingNativeSkipTests::class) { throw IllegalStateException("a real bug") }
                     null
                 } catch (t: Throwable) {
                     t

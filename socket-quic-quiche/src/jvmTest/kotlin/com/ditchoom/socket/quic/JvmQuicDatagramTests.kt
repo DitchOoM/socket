@@ -15,5 +15,5 @@ class JvmQuicDatagramTests : QuicDatagramTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(JvmQuicDatagramTests::class, block)
 }

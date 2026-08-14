@@ -37,5 +37,5 @@ class AndroidQuicServerTests : QuicServerTestSuite() {
 
     override fun unrelatedCaPem() = File(AndroidTestCerts.path("cert.crt")).readText()
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQuicServerTests::class, block)
 }

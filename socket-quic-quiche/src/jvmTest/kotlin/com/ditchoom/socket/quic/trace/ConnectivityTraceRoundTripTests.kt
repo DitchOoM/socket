@@ -91,7 +91,7 @@ class ConnectivityTraceRoundTripTests {
                     serverJob.cancel()
                 }
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(ConnectivityTraceRoundTripTests::class, e)
             }
 
             // --- capture: connectivity events landed in the SAME trace as the QUIC traffic, typed. ---

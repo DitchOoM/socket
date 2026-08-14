@@ -17,5 +17,5 @@ import org.junit.runner.RunWith
 class AndroidQuicServerLifecycleTests : QuicServerLifecycleTestSuite() {
     override fun testTlsConfig() = AndroidTestCerts.tlsConfig
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQuicServerLifecycleTests::class, block)
 }

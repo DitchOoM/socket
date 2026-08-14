@@ -79,7 +79,7 @@ class AndroidQuicLoopbackTests {
     fun streamSurvivesActiveMigrationToLoopbackAlias() =
         runBlocking(Dispatchers.IO) {
             assumeLoopbackAliasBindable()
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(AndroidQuicLoopbackTests::class) {
                 withTimeout(20.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob =

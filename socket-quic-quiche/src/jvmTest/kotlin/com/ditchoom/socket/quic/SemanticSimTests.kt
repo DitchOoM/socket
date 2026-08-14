@@ -25,7 +25,7 @@ class SemanticSimTests {
     @Test
     fun handshake_completes_under_10pct_loss() =
         runQuicTest(timeout = 30.seconds) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(SemanticSimTests::class) {
                 withSemanticSim(
                     ImpairmentConfig(seed = 42L, loss = 0.10),
                     establishTimeout = 15.seconds,
@@ -42,7 +42,7 @@ class SemanticSimTests {
     @Test
     fun echo_stream_survives_reorder_and_dup() =
         runQuicTest(timeout = 30.seconds) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(SemanticSimTests::class) {
                 withSemanticSim(
                     ImpairmentConfig(
                         seed = 7L,
@@ -119,7 +119,7 @@ class SemanticSimTests {
     @Test
     fun same_seed_same_datagram_count() =
         runQuicTest(timeout = 60.seconds) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(SemanticSimTests::class) {
                 val run1 = runSeededEchoScenario(seed = 1234L)
                 val run2 = runSeededEchoScenario(seed = 1234L)
 
@@ -146,7 +146,7 @@ class SemanticSimTests {
     @Test
     fun heavy_loss_hits_idle_timeout() =
         runQuicTest(timeout = 45.seconds) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(SemanticSimTests::class) {
                 withSemanticSim(
                     ImpairmentConfig(seed = 5L),
                     quicOptions = semanticSimOptions(idleTimeout = 2.seconds),
@@ -189,7 +189,7 @@ class SemanticSimTests {
                     assertIs<QuicConnectionState.Established>(serverDriver.state.value, "server (virtual time)")
                 }
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(SemanticSimTests::class, e)
             }
         }
 

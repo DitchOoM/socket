@@ -13,5 +13,5 @@ import org.junit.runner.RunWith
 class AndroidQuicLargePayloadTests : QuicLargePayloadTestSuite() {
     override fun testTlsConfig() = AndroidTestCerts.tlsConfig
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQuicLargePayloadTests::class, block)
 }

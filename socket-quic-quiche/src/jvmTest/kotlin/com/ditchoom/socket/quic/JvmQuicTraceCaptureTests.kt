@@ -155,7 +155,7 @@ class JvmQuicTraceCaptureTests {
     @Test
     fun publicOptIn_records_quic_traffic_and_taps_the_network_monitor() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(JvmQuicTraceCaptureTests::class) {
                 withTimeout(20.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = baseOptions) {
                         val echoResult = CompletableDeferred<String>()
@@ -251,7 +251,7 @@ class JvmQuicTraceCaptureTests {
     @Test
     fun server_capture_mints_a_fresh_sink_per_accepted_connection() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(JvmQuicTraceCaptureTests::class) {
                 withTimeout(30.seconds) {
                     // Server-side capture: sinkFor mints a fresh sink per ACCEPTED connection, so two
                     // concurrent clients yield two independent, self-contained v1 traces. This is the
