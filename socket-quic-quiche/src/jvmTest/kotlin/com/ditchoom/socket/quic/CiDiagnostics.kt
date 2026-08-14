@@ -1,30 +1,6 @@
 package com.ditchoom.socket.quic
 
-import org.junit.Assume.assumeTrue
 import java.lang.management.ManagementFactory
-
-/**
- * Skip on CI unless `RUN_FLAKY_TESTS=1`. The 8 socket-quic jvmTest tests
- * gated by this assume have all been confirmed to still hang on the GH
- * ubuntu-24.04 runner in run `26519472737` (commit `d1a4106`), with two
- * distinct hang shapes:
- *
- *   1. `server.close()` blocks on `receiveJob.join()` — receive loop won't exit
- *   2. `engine.connect()` handshake doesn't complete in 10s
- *
- * The shapes appear only after ~150 tests have run in the same JVM; per the
- * HANDOFF, the same tests pass in isolation (run `d1cf6c7`). Engine-leak
- * hypothesis was a contributor (the lifecycle fix is structurally correct)
- * but not the root cause. One canary test is left ungated and wrapped in
- * [withDumpingTimeout] so we capture a JVM-state dump at the moment of
- * failure — see `StaleConnectionDiagnosticTests.twoSequentialEchoConnectionsWork`.
- */
-internal fun assumeCiNotHang() {
-    assumeTrue(
-        "CI: late-suite hang (see CiDiagnostics.kt). Bypass via RUN_FLAKY_TESTS=1.",
-        System.getenv("CI") == null || System.getenv("RUN_FLAKY_TESTS") == "1",
-    )
-}
 
 /**
  * Capture JVM state — heap stats, thread counts, stack traces of every
