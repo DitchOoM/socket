@@ -398,6 +398,12 @@ jobs:
           ${{ matrix.shard.tasks }}
           --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # The simulator shards are the reason this exists: `wrapTestBody` early-returns there, and on
+      # Kotlin/Native an early return is reported as a PASS, so the iOS/tvOS/watchOS lanes were
+      # green while running none of the HTTP/3 or WebTransport suites. Reports only — never fails.
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
+
       # ⚠️ Restores the Kotlin/Native build cache that the fan-out otherwise LOSES.
       #
       # The monolith saved one ~1GB gradle-macos-* entry containing every compiled klib, because
@@ -501,6 +507,11 @@ jobs:
         run: >-
           ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # This lane builds its own natives, so a `native-library-unavailable` skip here means the
+      # artifact plumbing broke — the case that used to erase ~38 test classes from a green run.
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
 
       # Test reports on failure — includes the JVM hs_err/replay crash logs: a native abort
       # (quiche/JNI/FFM SIGABRT/SIGSEGV) shows only as "exit value 134" with no failing JUnit case
