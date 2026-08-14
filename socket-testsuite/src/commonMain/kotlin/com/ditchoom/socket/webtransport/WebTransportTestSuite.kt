@@ -87,6 +87,15 @@ abstract class WebTransportTestSuite {
      */
     internal val diagnostics = WebTransportDiagnostics()
 
+    /**
+     * The sink each platform subclass wires into the QUIC options of the connection it dials, so the
+     * failure report carries the client's side of the wire as well as the server's.
+     *
+     * `protected` rather than exposing [diagnostics]: the subclasses live in another module, and this is
+     * the only piece of it their client config needs. Nothing else about the diagnostics is theirs.
+     */
+    protected val clientTraceSink: TraceSink get() = diagnostics.clientSink
+
     // Datagrams enabled on the server so WebTransport datagrams (RFC 9297) are negotiable; the neutral
     // client's connectMultiplexed/connect already enable them client-side. verifyPeer=false because the
     // loopback cert is self-signed; the suite is about WebTransport, not cert validation.
@@ -127,6 +136,23 @@ abstract class WebTransportTestSuite {
                     val session = openSingleSession("https://localhost:$port/wt")
                     try {
                         assertEquals("echo:hello", session.roundTripBidi("hello"))
+
+                        // The diagnostics are only ever read on a failure, so nothing else in this suite
+                        // would notice them going quiet — a subclass that stopped passing the sink into
+                        // its client config, or a capture that never reaches the dialling engine on some
+                        // platform, would leave every future failure report saying "0 events" and reading
+                        // exactly like "the client sent nothing". That is the reading the client trace was
+                        // added to rule out, so it is asserted on the one path known to have sent packets.
+                        assertTrue(
+                            diagnostics.clientEventCount > 0,
+                            "client QUIC trace is empty after a completed round trip: the capture is not " +
+                                "wired on this platform, so a failure report here cannot tell a client that " +
+                                "sent nothing from one that sent into the void",
+                        )
+                        assertTrue(
+                            diagnostics.serverEventCount > 0,
+                            "server QUIC trace is empty after a completed round trip",
+                        )
                     } finally {
                         session.close()
                     }
@@ -362,8 +388,8 @@ private fun WebTransportTestSuite.runWebTransportTest(
     }
 
 /**
- * Failure diagnostics for this suite: the last step the test body reached, plus the tail of the
- * server's QUIC trace.
+ * Failure diagnostics for this suite: the last step the test body reached, plus the tail of the QUIC
+ * trace from **both** ends of the connection.
  *
  * WHY: `connect_twoSessions_areDedicatedConnections_notTransparentlyPooled[linuxX64]` has failed on CI
  * as an opaque `TimeoutCancellationException: Timed out waiting for 30000 ms`. Only the echo read is
@@ -378,7 +404,8 @@ private fun WebTransportTestSuite.runWebTransportTest(
 @OptIn(ExperimentalAtomicApi::class)
 class WebTransportDiagnostics {
     private val lastStep = AtomicReference("(not started)")
-    private val events = AtomicReference(emptyList<String>())
+    private val serverEvents = AtomicReference(emptyList<String>())
+    private val clientEvents = AtomicReference(emptyList<String>())
 
     /** Records the step the test body is about to attempt. Cheap enough to leave on always. */
     fun mark(step: String) {
@@ -390,7 +417,52 @@ class WebTransportDiagnostics {
      * emit steadily (timer wakes, path polls) and the TAIL is what shows where progress stopped, so an
      * unbounded buffer would only risk memory for older, less useful lines.
      */
-    val sink: TraceSink =
+    val sink: TraceSink = ringSink(serverEvents)
+
+    /**
+     * The client-side capture sink, for the dialling connection.
+     *
+     * WHY BOTH SIDES: on 2026-08-14 `connect_peerResetsStream_surfacesNeutralExceptionWithCode` failed
+     * on `build-apple / Integration Tests (macOS ARM64)` with `QUIC handshake failed [IdleTimeout]`,
+     * `last step reached: (not started)`, and **`server QUIC trace (0 most recent events)`**. A
+     * server-only capture cannot say what an empty server trace means: the client may have sent nothing,
+     * or it may have sent into the void. Those have different fixes and the report could not tell them
+     * apart, so the run was unactionable.
+     *
+     * With both sides the next occurrence answers it directly. Client `DGRAM_OUT` lines with no server
+     * `DGRAM_IN` puts the loss on the wire — and each line carries its 4-tuple, which is where a
+     * `localhost` that resolved to `::1` against a server bound v4-only would show itself. No client
+     * `DGRAM_OUT` at all puts it before the wire, in the engine or the dial.
+     */
+    val clientSink: TraceSink = ringSink(clientEvents)
+
+    /** How many lines each side has recorded. Read by the suite to prove the capture is live. */
+    val clientEventCount: Int get() = clientEvents.load().size
+    val serverEventCount: Int get() = serverEvents.load().size
+
+    fun report(cause: Throwable): String =
+        buildString {
+            appendLine("=== WebTransport failure diagnostics ===")
+            appendLine("cause: ${cause::class.simpleName}: ${cause.message}")
+            appendLine("last step reached: ${lastStep.load()}")
+            appendTrace("client", clientEvents.load())
+            appendTrace("server", serverEvents.load())
+            appendLine("=== end diagnostics ===")
+        }
+
+    private fun StringBuilder.appendTrace(
+        side: String,
+        captured: List<String>,
+    ) {
+        appendLine("$side QUIC trace (${captured.size} most recent events):")
+        captured.forEach { appendLine("  $it") }
+    }
+
+    /**
+     * A bounded most-recent-[MAX_EVENTS] ring over [events], CAS-appended because both sinks are written
+     * from driver loops on arbitrary threads.
+     */
+    private fun ringSink(events: AtomicReference<List<String>>): TraceSink =
         TraceSink { event: TraceEvent ->
             // Truncated: a DGRAM line carries the full packet hex (~2400 chars for a 1200-byte
             // datagram), and hundreds of those would bury the report in CI. The prefix keeps everything
@@ -405,17 +477,6 @@ class WebTransportDiagnostics {
                 val next = if (current.size >= MAX_EVENTS) current.subList(1, current.size) + line else current + line
                 if (events.compareAndSet(current, next)) return@TraceSink
             }
-        }
-
-    fun report(cause: Throwable): String =
-        buildString {
-            appendLine("=== WebTransport failure diagnostics ===")
-            appendLine("cause: ${cause::class.simpleName}: ${cause.message}")
-            appendLine("last step reached: ${lastStep.load()}")
-            val captured = events.load()
-            appendLine("server QUIC trace (${captured.size} most recent events):")
-            captured.forEach { appendLine("  $it") }
-            appendLine("=== end diagnostics ===")
         }
 
     private companion object {
