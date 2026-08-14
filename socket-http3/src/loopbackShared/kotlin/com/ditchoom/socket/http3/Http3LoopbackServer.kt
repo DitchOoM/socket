@@ -6,6 +6,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
@@ -14,6 +15,7 @@ import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -211,7 +213,7 @@ internal class Http3LoopbackServer(
             val decoder = serverDecoder
             val fields =
                 if (decoder != null) {
-                    decoder.decodeSection(first.encodedFieldSection, stream.streamId.id, pool)
+                    decoder.decodeSection(first.encodedFieldSection, QuicStreamId(stream.streamId.id), pool)
                 } else {
                     QpackFieldSectionCodec.decode(
                         first.encodedFieldSection,
@@ -294,7 +296,7 @@ internal class Http3LoopbackServer(
             VarIntCodec.encode(header, Http3StreamType.PUSH, EncodeContext.Empty)
             VarIntCodec.encode(header, pushId, EncodeContext.Empty)
             header.resetForRead()
-            pushStream.write(header, config.writePolicy.toDeadline())
+            pushStream.writeFully(header, config.writePolicy.toDeadline())
         } finally {
             header.freeIfNeeded()
         }
@@ -343,7 +345,7 @@ internal class Http3LoopbackServer(
         val encoder = serverEncoder
         val sectionBuffer =
             if (encoder != null) {
-                encoder.encodeSection(fields, stream.streamId.id, pool)
+                encoder.encodeSection(fields, QuicStreamId(stream.streamId.id), pool)
             } else {
                 val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
                 pool.allocate(sectionSize).also {
@@ -385,7 +387,7 @@ internal class Http3LoopbackServer(
             VarIntCodec.encode(buffer, Http3StreamType.CONTROL, EncodeContext.Empty)
             HandwrittenHttp3FrameCodec.encode(buffer, settings, EncodeContext.Empty)
             buffer.resetForRead()
-            control.write(buffer, config.writePolicy.toDeadline())
+            control.writeFully(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -401,7 +403,7 @@ internal class Http3LoopbackServer(
         try {
             HandwrittenHttp3FrameCodec.encode(buffer, frame, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, config.writePolicy.toDeadline())
+            stream.writeFully(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -416,7 +418,7 @@ internal class Http3LoopbackServer(
         try {
             VarIntCodec.encode(buffer, type, EncodeContext.Empty)
             buffer.resetForRead()
-            stream.write(buffer, config.writePolicy.toDeadline())
+            stream.writeFully(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }
@@ -435,7 +437,7 @@ internal class Http3LoopbackServer(
         try {
             QpackEncoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            encoderStreamWriteMutex.withLock { stream.write(buffer, config.writePolicy.toDeadline()) }
+            encoderStreamWriteMutex.withLock { stream.writeFully(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }
@@ -447,7 +449,7 @@ internal class Http3LoopbackServer(
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            decoderStreamWriteMutex.withLock { stream.write(buffer, config.writePolicy.toDeadline()) }
+            decoderStreamWriteMutex.withLock { stream.writeFully(buffer, config.writePolicy.toDeadline()) }
         } finally {
             buffer.freeIfNeeded()
         }

@@ -1,5 +1,7 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.quic.QuicStreamId
+
 /**
  * A typed HTTP/3 (RFC 9114 §8.1) / QPACK (RFC 9204 §8.3) protocol violation. This is the reason an
  * [Http3StreamException] is raised — every distinct violation is its own variant carrying its structured
@@ -284,11 +286,11 @@ sealed interface Http3Violation {
 
     /** A Section Acknowledgment named a stream with no outstanding section. */
     data class QpackSectionAckWithoutOutstanding(
-        val streamId: Long,
+        val streamId: QuicStreamId,
     ) : Http3Violation {
         override val errorCode get() = Http3ErrorCode.QPACK_DECODER_STREAM_ERROR
 
-        override fun describe() = "Section Acknowledgment for stream $streamId with no outstanding section"
+        override fun describe() = "Section Acknowledgment for stream ${streamId.id} with no outstanding section"
     }
 
     // --- QPACK instruction stream (direction-dependent) ------------------------------------------

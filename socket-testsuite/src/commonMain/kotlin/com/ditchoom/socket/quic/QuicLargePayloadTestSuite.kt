@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -60,10 +61,51 @@ abstract class QuicLargePayloadTestSuite {
                 ),
         )
 
+    /**
+     * Which write path a transfer exercises. An enum rather than a flag so the `when` below stays
+     * exhaustive and neither option is the silent default.
+     */
+    protected enum class WritePath {
+        /**
+         * This suite's own resume loop. An *independent control*: it proves the transport carries the
+         * bytes across a window boundary without depending on the production helper being correct.
+         */
+        Manual,
+
+        /**
+         * Production `ByteSink.writeFully` — the loop `CodecConnection.send` and every HTTP/3 write use.
+         * Against a real quiche stream this is the only place its count-based resume meets the sink it
+         * was written for: one that reports what flow-control credit allowed and leaves the cursor alone.
+         */
+        Production,
+    }
+
     @Test
     fun largePayloadTransfersIntactOnOneStream() =
         runQuicTest {
             wrapTestBody { transferAndVerify(streamCount = 1, perStreamBytes = SINGLE_PAYLOAD) }
+        }
+
+    /**
+     * The same MB-scale transfer as [largePayloadTransfersIntactOnOneStream], driven through the
+     * **production** `ByteSink.writeFully` instead of this suite's hand-rolled loop.
+     *
+     * Every other partial-write test in the repo writes to a *fake* bounded-accept sink. This is the one
+     * that meets the real thing: a quiche stream whose window ([STREAM_WINDOW]) is deliberately smaller
+     * than the payload ([SINGLE_PAYLOAD]), so `stream_send` accepts only what credit allows and the
+     * transfer can only finish by resuming across `MAX_STREAM_DATA` cycles. It is also the only test
+     * covering `writeFully` against a sink that does **not** advance the cursor — quiche hands the
+     * buffer's native address to the library and leaves the position untouched, which is exactly the
+     * case the count-based resume exists for and the one a cursor-based loop would get wrong.
+     *
+     * A single `write` here would deliver [STREAM_WINDOW] bytes and report success.
+     */
+    @Test
+    fun largePayloadTransfersIntactThroughProductionWriteFully() =
+        runQuicTest {
+            wrapTestBody {
+                transferAndVerify(streamCount = 1, perStreamBytes = SINGLE_PAYLOAD, writePath = WritePath.Production)
+            }
         }
 
     @Test
@@ -77,6 +119,7 @@ abstract class QuicLargePayloadTestSuite {
     private suspend fun transferAndVerify(
         streamCount: Int,
         perStreamBytes: Int,
+        writePath: WritePath = WritePath.Manual,
     ) = coroutineScope {
         // Every stream carries the same pattern of the same length, so we just collect [streamCount].
         val results = Channel<Pair<Long, Boolean>>(capacity = streamCount)
@@ -100,7 +143,7 @@ abstract class QuicLargePayloadTestSuite {
                         .map {
                             async {
                                 val stream = openStream()
-                                stream.writeAllPattern(perStreamBytes)
+                                stream.writeAllPattern(perStreamBytes, writePath)
                                 stream.close() // FIN
                             }
                         }.awaitAll()
@@ -139,13 +182,19 @@ abstract class QuicLargePayloadTestSuite {
         return offset to ok
     }
 
-    private suspend fun QuicByteStream.writeAllPattern(total: Int) {
+    private suspend fun QuicByteStream.writeAllPattern(
+        total: Int,
+        writePath: WritePath,
+    ) {
         val pattern = ByteArray(total) { (it % 251).toByte() }
         val buf = BufferFactory.deterministic().allocate(total)
         buf.writeBytes(pattern)
         buf.resetForRead()
         try {
-            writeAll(buf)
+            when (writePath) {
+                WritePath.Manual -> writeAll(buf)
+                WritePath.Production -> writeFully(buf, 15.seconds)
+            }
         } finally {
             buf.freeNativeMemory()
         }

@@ -12,6 +12,7 @@ import com.ditchoom.socket.http3.Http3FuzzGenerators.assertFrameRoundTrips
 import com.ditchoom.socket.http3.Http3FuzzGenerators.assertQpackRoundTrips
 import com.ditchoom.socket.http3.Http3FuzzGenerators.frame
 import com.ditchoom.socket.http3.Http3FuzzGenerators.headerFields
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
@@ -129,9 +130,9 @@ class Http3RoundTripFuzzTests {
                 val fields = listOf(QpackHeaderField(":method", "GET"), QpackHeaderField("x-block-$i", "value-$i"))
                 val streamId = (i * 4).toLong()
 
-                val section = pair.encoder.encodeSection(fields, streamId, pool)
+                val section = pair.encoder.encodeSection(fields, QuicStreamId(streamId), pool)
                 // Deliberately do NOT pump: the encoder's insert is queued but not yet applied to the decoder.
-                val decodeJob = async { pair.decoder.decodeSection(section, streamId, scratchPool = null) }
+                val decodeJob = async { pair.decoder.decodeSection(section, QuicStreamId(streamId), scratchPool = null) }
                 runCurrent()
                 assertFalse(decodeJob.isCompleted, "decode#$i should block until the referenced insert arrives")
                 pair.pump() // deliver the insert → the blocked decode unblocks
@@ -153,13 +154,13 @@ class Http3RoundTripFuzzTests {
                 pair.encoder.setCapacity(4096)
                 pair.pump()
 
-                val section = pair.encoder.encodeSection(fields, streamId = 0, pool = pool)
+                val section = pair.encoder.encodeSection(fields, streamId = QuicStreamId(0L), pool = pool)
                 pair.pump()
                 val frame = Http3Frame.Headers(encodedFieldSection = section)
                 val wire = Http3FrameCodec.encode(frame, EncodeContext.Empty, BufferFactory.Default)
                 val decodedFrame = Http3FrameCodec.decode(wire, DecodeContext.Empty)
                 val recovered = (decodedFrame as Http3Frame.Headers).encodedFieldSection
-                val decoded = pair.decoder.decodeSection(recovered, streamId = 0, scratchPool = null)
+                val decoded = pair.decoder.decodeSection(recovered, streamId = QuicStreamId(0L), scratchPool = null)
                 pair.pump()
                 assertEquals(fields, decoded, "headerFrame#$i")
             }

@@ -5,6 +5,7 @@ import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.quic.QuicStreamId
 
 /**
  * An instruction an encoder sends to the peer's decoder on the QPACK **encoder stream** (RFC 9204
@@ -42,12 +43,12 @@ sealed interface QpackEncoderInstruction {
 sealed interface QpackDecoderInstruction {
     /** Section Acknowledgment (§4.4.1): `1` + 7-bit stream id — a field section on that stream decoded. */
     data class SectionAck(
-        val streamId: Long,
+        val streamId: QuicStreamId,
     ) : QpackDecoderInstruction
 
     /** Stream Cancellation (§4.4.2): `01` + 6-bit stream id — the stream was reset/abandoned. */
     data class StreamCancellation(
-        val streamId: Long,
+        val streamId: QuicStreamId,
     ) : QpackDecoderInstruction
 
     /** Insert Count Increment (§4.4.3): `00` + 6-bit increment — entries inserted since the last ack. */
@@ -153,9 +154,9 @@ object QpackDecoderInstructionCodec {
     ) {
         when (instruction) {
             is QpackDecoderInstruction.SectionAck ->
-                QpackPrefixedInteger.encode(buffer, instruction.streamId, prefixBits = 7, firstByteFlags = SECTION_ACK)
+                QpackPrefixedInteger.encode(buffer, instruction.streamId.id, prefixBits = 7, firstByteFlags = SECTION_ACK)
             is QpackDecoderInstruction.StreamCancellation ->
-                QpackPrefixedInteger.encode(buffer, instruction.streamId, prefixBits = 6, firstByteFlags = STREAM_CANCELLATION)
+                QpackPrefixedInteger.encode(buffer, instruction.streamId.id, prefixBits = 6, firstByteFlags = STREAM_CANCELLATION)
             is QpackDecoderInstruction.InsertCountIncrement ->
                 QpackPrefixedInteger.encode(buffer, instruction.increment, prefixBits = 6)
         }
@@ -177,9 +178,11 @@ object QpackDecoderInstructionCodec {
         val first = buffer.readByte().toInt() and 0xFF
         return when {
             first and SECTION_ACK != 0 ->
-                QpackDecoderInstruction.SectionAck(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 7))
+                QpackDecoderInstruction.SectionAck(QuicStreamId(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 7)))
             first and STREAM_CANCELLATION != 0 ->
-                QpackDecoderInstruction.StreamCancellation(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6))
+                QpackDecoderInstruction.StreamCancellation(
+                    QuicStreamId(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6)),
+                )
             else ->
                 QpackDecoderInstruction.InsertCountIncrement(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6))
         }

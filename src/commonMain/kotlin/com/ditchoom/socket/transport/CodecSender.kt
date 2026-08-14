@@ -5,9 +5,12 @@ import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ByteSink
+import com.ditchoom.buffer.flow.ByteSinkStalledException
 import com.ditchoom.buffer.flow.Sender
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
 import kotlin.concurrent.Volatile
 
@@ -46,15 +49,22 @@ class CodecSender<T>(
             try {
                 codec.encode(buffer, message, encodeContext)
                 buffer.resetForRead()
-                // Adapter rule: propagate, don't clobber. Call the leaf's no-arg write() so its
-                // injected writePolicy governs the deadline — never inject our own.
-                sink.write(buffer)
+                // writeFully, never a bare write: a sink may accept only PART of the buffer, and for a
+                // self-framing codec a dropped tail is corruption rather than loss — the peer reads on
+                // to the declared length and swallows the frames that follow.
+                // Adapter rule: propagate, don't clobber. The no-arg overload lets the leaf's injected
+                // writePolicy govern the deadline — never inject our own.
+                sink.writeFully(buffer)
                 return
             } catch (e: BufferOverflowException) {
                 buffer.freeIfNeeded()
                 if (attempts++ >= MAX_SEND_RESIZE_ATTEMPTS) throw e
                 capacity = (capacity.toLong() * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                 continue
+            } catch (e: ByteSinkStalledException) {
+                // Re-home into this library's error family, as CodecConnection.send does.
+                buffer.freeIfNeeded()
+                throw SocketWriteStalledException(e)
             } catch (t: Throwable) {
                 buffer.freeIfNeeded()
                 throw t

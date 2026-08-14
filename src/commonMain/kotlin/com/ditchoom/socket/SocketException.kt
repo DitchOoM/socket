@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import com.ditchoom.buffer.flow.ByteSinkStalledException
 import kotlin.time.Duration
 import kotlin.time.Instant
 
@@ -23,6 +24,7 @@ import kotlin.time.Instant
  * ├── SocketUnknownHostException         — DNS resolution failed            (ConnectionFailure)
  * ├── SocketTimeoutException             — connect / read / write timeout   (ConnectionFailure)
  * ├── SocketIOException                  — generic I/O error (catch-all)
+ * ├── SocketWriteStalledException        — sink reported no progress with bytes pending
  * └── sealed SSLSocketException          — TLS/SSL errors                   (ConnectionFailure)
  *     ├── SSLHandshakeFailedException    — certificate / handshake failure
  *     └── SSLProtocolException           — other TLS protocol errors
@@ -259,6 +261,49 @@ class SocketIOException(
     override val message: String,
     override val cause: Throwable? = null,
 ) : SocketException(message, cause)
+
+/**
+ * A [ByteSink][com.ditchoom.buffer.flow.ByteSink] reported **no progress** while bytes were still
+ * pending, so a write that must complete in full cannot make headway.
+ *
+ * Socket's face of buffer's [ByteSinkStalledException][com.ditchoom.buffer.flow.ByteSinkStalledException],
+ * which is what the shared `writeFully` loop actually raises and which is carried here as [cause]. The
+ * loop is not reimplemented — only the error taxonomy is, and that genuinely belongs to this layer:
+ * this file's contract is "all socket errors", and on JVM/Android that is load-bearing, because
+ * [SocketException] is an `IOException` and consumers are told `catch (e: IOException)` covers this
+ * library. Buffer's type is an `IllegalStateException`, so letting it escape a socket API would leave
+ * a hole in exactly the convention the header promises.
+ *
+ * A stalled sink is a sink CONTRACT violation, not a network condition: back-pressure is expected to
+ * block inside `write` (or park and retry, as the QUIC driver does) and then report at least one byte.
+ * A sink that instead returns zero forever leaves a caller looping with nothing to do — and returning
+ * early would silently truncate the frame, which for a self-framing codec is corruption rather than
+ * loss (the peer keeps reading to the already-declared length and consumes whatever follows).
+ *
+ * Deliberately **not** a [ConnectionFailure]: the peer and the network are fine, the sink is broken, so
+ * there is nothing here to retry or fall back over. Carries the counts as typed fields ([accepted] /
+ * [pending]) rather than only a message, so a caller can discriminate without parsing text.
+ */
+class SocketWriteStalledException(
+    /**
+     * The sink-contract violation being reported, and the single source of truth for the counts.
+     *
+     * Typed and non-null rather than a `Throwable?`: this exception exists only to re-home that one
+     * exception into this family, so there is no second way to construct it and no state where the
+     * counts disagree with the cause they came from.
+     */
+    val stall: ByteSinkStalledException,
+) : SocketException(
+        "stream sink accepted ${stall.accepted} bytes with ${stall.pending} still pending; cannot " +
+            "complete the write without truncating the frame",
+        stall,
+    ) {
+    /** Bytes the sink accepted on the call that made no progress (zero, or a defensive negative). */
+    val accepted: Int get() = stall.accepted
+
+    /** Bytes still waiting to be written when the sink stalled. */
+    val pending: Int get() = stall.pending
+}
 
 // ──────────────────────────────────────────────────────────────────────
 // TLS / SSL

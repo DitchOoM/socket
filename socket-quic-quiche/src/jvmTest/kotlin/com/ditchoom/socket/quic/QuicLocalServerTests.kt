@@ -48,6 +48,53 @@ class QuicLocalServerTests {
         }
     }
 
+    /**
+     * The last step each peer reached, so a stalled exchange names *where* it stalled.
+     *
+     * The tests below drive a client and a server handler from two `launch`ed coroutines and wait on a
+     * [CompletableDeferred] between them. Some of the calls those peers make are unbounded —
+     * `connections`, `acceptStream`, `openStream` — so a stall there throws nothing at all: the deferred
+     * is simply never completed and the only evidence is the awaiting side timing out, over a stack that
+     * names the await and nothing else. Recording the step before each call is what turns that into a
+     * located failure. Written from the peer coroutines, read from the test coroutine on timeout, hence
+     * `@Volatile`.
+     */
+    private class Steps {
+        @Volatile
+        var client: String = "not started"
+
+        @Volatile
+        var server: String = "not started"
+
+        override fun toString() = "client stalled at '$client', server at '$server'"
+    }
+
+    /**
+     * Run a launched peer so that a failure inside it reaches [result] instead of vanishing.
+     *
+     * `withTimeout` raises [TimeoutCancellationException], which **is** a `CancellationException`: thrown
+     * inside `launch` it cancels that one coroutine and is never reported anywhere. So a peer whose
+     * bounded read or write times out dies silently, [result] is never completed, and the awaiting side
+     * reports a bare timeout carrying none of that. Completing [result] exceptionally makes the peer's
+     * own exception the reported failure, with the step it died on in the message.
+     *
+     * Catching [Throwable] deliberately includes the cancellation the test's own `finally` sends after a
+     * *successful* exchange: [CompletableDeferred.completeExceptionally] on an already-completed deferred
+     * is a no-op, so the happy path is unaffected.
+     */
+    private suspend fun <T> reporting(
+        result: CompletableDeferred<T>,
+        peer: String,
+        stepOf: () -> String,
+        block: suspend () -> Unit,
+    ) {
+        try {
+            block()
+        } catch (t: Throwable) {
+            result.completeExceptionally(IllegalStateException("$peer failed at '${stepOf()}'", t))
+        }
+    }
+
     @Test
     fun serverAcceptsConnection() =
         runBlocking(Dispatchers.IO) {
@@ -85,40 +132,63 @@ class QuicLocalServerTests {
                 withTimeout(15.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val echoResult = CompletableDeferred<String>()
+                        val steps = Steps()
 
                         val serverJob =
                             launch(Dispatchers.IO) {
-                                connections {
-                                    val stream = acceptStream()
-                                    val data = stream.read(5.seconds)
-                                    if (data is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                        stream.write(data.buffer, 5.seconds)
+                                reporting(echoResult, "server", { steps.server }) {
+                                    steps.server = "connections"
+                                    connections {
+                                        steps.server = "acceptStream"
+                                        val stream = acceptStream()
+                                        steps.server = "read"
+                                        val data = stream.read(5.seconds)
+                                        if (data is com.ditchoom.buffer.flow.ReadResult.Data) {
+                                            steps.server = "write"
+                                            stream.write(data.buffer, 5.seconds)
+                                        }
+                                        steps.server = "close"
+                                        stream.close()
+                                        steps.server = "echoed"
                                     }
-                                    stream.close()
                                 }
                             }
 
                         val clientJob =
                             launch(Dispatchers.IO) {
-                                withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
-                                    val stream = openStream()
-                                    val sendBuf = BufferFactory.Default.allocate(11)
-                                    sendBuf.writeString("hello quic!", Charset.UTF8)
-                                    sendBuf.resetForRead()
-                                    stream.write(sendBuf, 5.seconds)
+                                reporting(echoResult, "client", { steps.client }) {
+                                    steps.client = "connect"
+                                    withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                        steps.client = "openStream"
+                                        val stream = openStream()
+                                        val sendBuf = BufferFactory.Default.allocate(11)
+                                        sendBuf.writeString("hello quic!", Charset.UTF8)
+                                        sendBuf.resetForRead()
+                                        steps.client = "write"
+                                        stream.write(sendBuf, 5.seconds)
 
-                                    val response = stream.read(5.seconds)
-                                    if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                        echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
-                                    } else {
-                                        echoResult.complete("no_data")
+                                        steps.client = "read"
+                                        val response = stream.read(5.seconds)
+                                        if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
+                                            echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                        } else {
+                                            echoResult.complete("no_data")
+                                        }
+                                        steps.client = "close"
+                                        stream.close()
                                     }
-                                    stream.close()
                                 }
                             }
 
                         try {
-                            val result = withTimeout(10.seconds) { echoResult.await() }
+                            val result =
+                                try {
+                                    withTimeout(10.seconds) { echoResult.await() }
+                                } catch (e: TimeoutCancellationException) {
+                                    // Neither peer reported anything, so both are parked in an unbounded
+                                    // call — the steps are the only evidence of which one.
+                                    throw AssertionError("echo never completed: $steps", e)
+                                }
                             assertEquals("hello quic!", result)
                         } finally {
                             clientJob.cancel()
@@ -157,56 +227,80 @@ class QuicLocalServerTests {
                     val testQuicOptions = testQuicOptions.copy(closeLinger = QuicCloseLinger.Immediate)
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val echoResult = CompletableDeferred<String>()
+                        val steps = Steps()
 
                         val serverJob =
                             launch(Dispatchers.IO) {
-                                connections {
-                                    val stream = acceptStream()
-                                    // Drain the request to the peer's FIN, echo it back, FIN our side.
-                                    val received = StringBuilder()
-                                    while (true) {
-                                        val r = stream.read(5.seconds)
-                                        if (r !is com.ditchoom.buffer.flow.ReadResult.Data) break
-                                        received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                reporting(echoResult, "server", { steps.server }) {
+                                    steps.server = "connections"
+                                    connections {
+                                        steps.server = "acceptStream"
+                                        val stream = acceptStream()
+                                        // Drain the request to the peer's FIN, echo it back, FIN our side.
+                                        val received = StringBuilder()
+                                        while (true) {
+                                            steps.server = "read(${received.length})"
+                                            val r = stream.read(5.seconds)
+                                            if (r !is com.ditchoom.buffer.flow.ReadResult.Data) break
+                                            received.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                                        }
+                                        val reply = BufferFactory.Default.allocate(received.length)
+                                        reply.writeString(received.toString(), Charset.UTF8)
+                                        reply.resetForRead()
+                                        steps.server = "write"
+                                        stream.write(reply, 5.seconds)
+                                        steps.server = "close"
+                                        stream.close()
+                                        steps.server = "echoed"
+                                        // Returning from the handler closes the connection: CONNECTION_CLOSE
+                                        // reaches the client while its reply is still unread.
                                     }
-                                    val reply = BufferFactory.Default.allocate(received.length)
-                                    reply.writeString(received.toString(), Charset.UTF8)
-                                    reply.resetForRead()
-                                    stream.write(reply, 5.seconds)
-                                    stream.close()
-                                    // Returning from the handler closes the connection: CONNECTION_CLOSE
-                                    // reaches the client while its reply is still unread.
                                 }
                             }
 
                         val clientJob =
                             launch(Dispatchers.IO) {
-                                withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
-                                    val stream = openStream()
-                                    val sendBuf = BufferFactory.Default.allocate(4)
-                                    sendBuf.writeString("ping", Charset.UTF8)
-                                    sendBuf.resetForRead()
-                                    stream.write(sendBuf, 5.seconds)
-                                    stream.shutdownSend()
+                                reporting(echoResult, "client", { steps.client }) {
+                                    steps.client = "connect"
+                                    withQuicConnection("localhost", port, testQuicOptions, timeout = 10.seconds) {
+                                        steps.client = "openStream"
+                                        val stream = openStream()
+                                        val sendBuf = BufferFactory.Default.allocate(4)
+                                        sendBuf.writeString("ping", Charset.UTF8)
+                                        sendBuf.resetForRead()
+                                        steps.client = "write"
+                                        stream.write(sendBuf, 5.seconds)
+                                        steps.client = "shutdownSend"
+                                        stream.shutdownSend()
 
-                                    // Outlast the draining period (3 × PTO, tens of ms) by a wide margin
-                                    // so the reply, the FIN and the CONNECTION_CLOSE have all been
-                                    // processed and the driver has torn the connection down before the
-                                    // first read is even issued.
-                                    delay(2.seconds)
+                                        // Outlast the draining period (3 × PTO, tens of ms) by a wide margin
+                                        // so the reply, the FIN and the CONNECTION_CLOSE have all been
+                                        // processed and the driver has torn the connection down before the
+                                        // first read is even issued.
+                                        steps.client = "draining delay"
+                                        delay(2.seconds)
 
-                                    val response = stream.read(5.seconds)
-                                    if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
-                                        echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
-                                    } else {
-                                        echoResult.complete("no_data:${response::class.simpleName}")
+                                        steps.client = "read"
+                                        val response = stream.read(5.seconds)
+                                        if (response is com.ditchoom.buffer.flow.ReadResult.Data) {
+                                            echoResult.complete(response.buffer.readString(response.buffer.remaining(), Charset.UTF8))
+                                        } else {
+                                            echoResult.complete("no_data:${response::class.simpleName}")
+                                        }
+                                        steps.client = "close"
+                                        stream.close()
                                     }
-                                    stream.close()
                                 }
                             }
 
                         try {
-                            assertEquals("ping", withTimeout(15.seconds) { echoResult.await() })
+                            val result =
+                                try {
+                                    withTimeout(15.seconds) { echoResult.await() }
+                                } catch (e: TimeoutCancellationException) {
+                                    throw AssertionError("reply never arrived: $steps", e)
+                                }
+                            assertEquals("ping", result)
                         } finally {
                             clientJob.cancel()
                             serverJob.cancel()

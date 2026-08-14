@@ -8,6 +8,7 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.http3.Http3FuzzGenerators.SeededEntropy
 import com.ditchoom.socket.http3.Http3FuzzGenerators.headerFields
+import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 import java.net.URI
@@ -148,7 +149,7 @@ class QpackDifferentialInteropTests {
         val instructions = mutableListOf<QpackEncoderInstruction>()
         val encoder = QpackEncoder(capacity, blocked) { instructions += it }
         if (capacity > 0) encoder.setCapacity(capacity)
-        val section = encoder.encodeSection(fields, streamId, pool())
+        val section = encoder.encodeSection(fields, QuicStreamId(streamId), pool())
 
         // Serialize the encoder-stream instructions (Set Capacity + inserts) into ls-qpack's wire format.
         val encStream = BufferFactory.Default.allocate(65_536)
@@ -201,7 +202,7 @@ class QpackDifferentialInteropTests {
                 val buf = bufferOf(encStream)
                 while (buf.hasRemaining()) decoder.applyEncoderInstruction(QpackEncoderInstructionCodec.decode(buf, scratchPool = null))
             }
-            val decoded = decoder.decodeSection(bufferOf(frame), streamId, scratchPool = null)
+            val decoded = decoder.decodeSection(bufferOf(frame), QuicStreamId(streamId), scratchPool = null)
             assertEquals(fields, decoded, "ref-encode -> ours-decode (cap=$capacity)")
         }
     }
