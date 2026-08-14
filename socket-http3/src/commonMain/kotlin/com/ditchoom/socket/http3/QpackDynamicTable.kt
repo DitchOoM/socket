@@ -40,8 +40,14 @@ class QpackDynamicTable(
     /** Current maximum table size in octets (≤ [maxCapacity]); 0 until [setCapacity] raises it. */
     val capacity: Long get() = _capacity
 
-    /** Total insertions so far — the absolute index the next inserted entry will take (RFC 9204 §3.2.4). */
-    val insertCount: Long get() = _insertCount
+    /**
+     * Total insertions so far — the absolute index the next inserted entry will take (RFC 9204 §3.2.4).
+     *
+     * Typed as [InsertCount] because that is what it is compared and assigned against everywhere
+     * outside this class. The backing `_insertCount` stays a `Long`: inside here it doubles as the
+     * next absolute *index*, and index arithmetic is a different quantity from a count.
+     */
+    val insertCount: InsertCount get() = InsertCount(_insertCount)
 
     /** Current table size in octets (sum of live [Entry.size]); always ≤ [capacity]. */
     val size: Long get() = _size

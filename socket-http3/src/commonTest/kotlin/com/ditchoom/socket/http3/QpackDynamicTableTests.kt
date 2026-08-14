@@ -21,7 +21,7 @@ class QpackDynamicTableTests {
         val t = table(1000)
         assertEquals(0L, t.insert("a", "1")) // size 34
         assertEquals(1L, t.insert("b", "2")) // size 34
-        assertEquals(2L, t.insertCount)
+        assertEquals(InsertCount(2), t.insertCount)
         assertEquals(68L, t.size)
         assertEquals("a", t.getByAbsolute(0)?.name)
         assertEquals("2", t.getByAbsolute(1)?.value)
@@ -38,7 +38,7 @@ class QpackDynamicTableTests {
         assertNull(t.getByAbsolute(0), "oldest entry evicted")
         assertEquals("b", t.getByAbsolute(1)?.name)
         assertEquals("c", t.getByAbsolute(2)?.name)
-        assertEquals(3L, t.insertCount, "evicted entries still spend their absolute index")
+        assertEquals(InsertCount(3), t.insertCount, "evicted entries still spend their absolute index")
         assertEquals(68L, t.size)
     }
 
@@ -46,7 +46,7 @@ class QpackDynamicTableTests {
     fun entryLargerThanCapacityIsRejected() {
         val t = table(40) // one 34-octet entry fits; a bigger one never does
         assertNull(t.insert("name", "a-very-long-value-that-exceeds-capacity"))
-        assertEquals(0L, t.insertCount)
+        assertEquals(InsertCount(0), t.insertCount)
         assertEquals(0L, t.size)
     }
 
@@ -94,7 +94,7 @@ class QpackDynamicTableTests {
         // Victim (abs 0) refused by the predicate ⇒ no insert, table untouched.
         val refused = t.insertIfEvictable("c", "3") { it.absoluteIndex != 0L }
         assertNull(refused)
-        assertEquals(2L, t.insertCount, "refused insert does not advance insertCount")
+        assertEquals(InsertCount(2), t.insertCount, "refused insert does not advance insertCount")
         assertEquals(68L, t.size)
         assertTrue(t.isLive(0), "refused insert evicts nothing")
 
@@ -119,7 +119,7 @@ class QpackDynamicTableTests {
     fun insertIfEvictableRejectsEntryLargerThanCapacity() {
         val t = table(40)
         assertNull(t.insertIfEvictable("name", "a-very-long-value-that-exceeds-capacity") { true })
-        assertEquals(0L, t.insertCount)
+        assertEquals(InsertCount(0), t.insertCount)
     }
 
     @Test

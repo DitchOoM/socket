@@ -43,15 +43,17 @@ class Http3LoopbackDiagnosticsTests {
         val diagnostics = Http3LoopbackDiagnostics()
         diagnostics.recordStreamViolation(
             "C",
-            Http3StreamException(Http3Violation.QpackInsertCountIncrementPastInserts(increment = 7)),
+            Http3StreamException(Http3Violation.QpackInsertCountIncrementPastInserts(increment = InsertCountDelta(7))),
         )
 
         val report = diagnostics.report(IllegalStateException("boom"))
 
         assertContains(report, "QpackInsertCountIncrementPastInserts")
         // The increment is the evidence for an accounting bug — a violation name without it would still
-        // leave the fix guessing.
-        assertContains(report, "increment=7")
+        // leave the fix guessing. It renders with its type because it *is* typed, and for this violation
+        // that is the useful half: "InsertCountDelta(7)" says a relative increment overshot, where a bare
+        // 7 leaves the reader to work out whether the peer sent a delta or an absolute position.
+        assertContains(report, "increment=InsertCountDelta(7)")
         assertContains(report, "0x202")
     }
 

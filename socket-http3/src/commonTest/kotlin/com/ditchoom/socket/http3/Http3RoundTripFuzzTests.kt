@@ -88,7 +88,7 @@ class Http3RoundTripFuzzTests {
                 val decoded = pair.roundTrip(fields, streamId = (i * 4).toLong(), pool = pool)
                 assertEquals(fields, decoded, "dynamicChurn#$i")
             }
-            assertTrue(pair.encoder.insertCountValue > 0, "dynamic table never inserted — encoder fell back to all-literals")
+            assertTrue(pair.encoder.insertCountValue > InsertCount.ZERO, "dynamic table never inserted — encoder fell back to all-literals")
         }
 
     @Test
@@ -109,7 +109,7 @@ class Http3RoundTripFuzzTests {
                 assertEquals(fields, decoded, "evictionChurn#$i")
             }
             assertTrue(
-                pair.encoder.insertCountValue > 8,
+                pair.encoder.insertCountValue > InsertCount(8),
                 "insert count ${pair.encoder.insertCountValue} did not exceed the 8-entry table — eviction never happened",
             )
         }
