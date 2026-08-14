@@ -82,10 +82,17 @@ class QpackDecoder(
      */
     private suspend fun emitInsertCountIncrement(upTo: InsertCount) {
         ackMutex.withLock(currentCoroutineContext()[Job]) {
-            // Subtraction is the ONLY way to obtain an InsertCountDelta, so the shape of #353's bug —
-            // handing InsertCountIncrement a flat `1` — no longer type-checks.
-            val increment = upTo - acknowledgedInsertCount
-            if (increment <= InsertCountDelta.ZERO) return@withLock
+            // [InsertCount.advanceFrom], not `minus`: subtraction is partial, and [upTo] is captured
+            // outside this lock — in [applyEncoderInstruction], under the table mutex — so by the time
+            // this coroutine holds the lock, [acknowledgedInsertCount] may already have moved past it.
+            // A Section Acknowledgment on another coroutine is enough, and so is a second peer encoder
+            // stream, which nothing currently forbids. Subtracting first and testing the sign second
+            // would let the peer decide whether a `require` fires. Null means already covered, which is
+            // also why an Increment of zero — itself a decoder-stream error (§4.4.3) — is never emitted.
+            //
+            // Subtraction (here, inside advanceFrom) remains the ONLY route to an InsertCountDelta, so
+            // the shape of #353's bug — handing InsertCountIncrement a flat `1` — still does not compile.
+            val increment = upTo.advanceFrom(acknowledgedInsertCount) ?: return@withLock
             emit(QpackDecoderInstruction.InsertCountIncrement(increment))
             // Only after a successful write: a failed emit never reached the peer, so its count did not move.
             acknowledgedInsertCount = upTo
