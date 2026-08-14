@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.skip.SkipReason
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -256,32 +257,32 @@ suspend fun awaitUntil(
 expect fun isAppleKNative(): Boolean
 
 /**
- * True when the QUIC harness suite must be skipped because it's running on an Apple
- * simulator that can't exercise Network.framework QUIC.
+ * The reason the QUIC harness suite cannot run here, or `null` when it can.
  *
- * NOT a platform limitation — QUIC works fine on the iOS Simulator. The blocker is
- * the Kotlin/Native test runner: KGP launches simulator tests with
- * `simctl spawn --standalone`, which runs the test binary OUTSIDE the simulator's
- * `launchd_sim` service context. Network.framework's QUIC datapath needs those
- * network daemons (nehelper / nw services), so under `--standalone` an
- * `nw_parameters_create_quic` connection hangs in `preparing` and never reaches
- * `ready`. Raw-socket TCP doesn't need them, which is why the rest of the Apple
- * suite passes and hides this.
+ * Returns a [SkipReason] rather than a `Boolean` so the caller has to route it through
+ * `recordSkip`. The `Boolean` form let callers early-return, and on Kotlin/Native an early return
+ * is reported as a **pass** — the suite and a genuinely passing suite were the same green tick.
  *
- * Proven empirically (2026-06-02, iOS 26.5 build 23F77, iPhone 17 Pro sim), all
- * against the SAME device + OS:
- *   - our K/N `test.kexe` via `simctl spawn --standalone`     → public QUIC TIMEOUT (even at 45s)
+ * NOT a platform limitation — QUIC works fine on the iOS Simulator. The blocker is the
+ * Kotlin/Native test runner: KGP launches simulator tests with `simctl spawn --standalone`, which
+ * runs the test binary OUTSIDE the simulator's `launchd_sim` service context, so the network
+ * daemons (nehelper / nw services) a connection needs are unreachable. Raw-socket TCP doesn't need
+ * them, which is why the rest of the Apple suite passes and hides this.
+ *
+ * Proven empirically (2026-06-02, iOS 26.5 build 23F77, iPhone 17 Pro sim), all against the SAME
+ * device + OS — note this measured the *Network.framework* QUIC backend, which the quiche-on-Apple
+ * pivot has since replaced, so it is evidence for the mechanism, not a current measurement:
+ *   - our K/N `test.kexe` via `simctl spawn --standalone`      → public QUIC TIMEOUT (even at 45s)
  *   - our K/N `test.kexe` via `simctl spawn` (no --standalone) → public QUIC OK in 87ms
  *   - a normally-launched Swift NW QUIC app                    → READY in 36-47ms
  *   - physical iPhone (iOS 26.5)                               → READY in 42-50ms
  *
- * The fix: run the iOS-simulator test task with `standalone = false` against a
- * pre-booted simulator. The Gradle build flips that on (and sets `QUIC_SIM_BOOTED=1`)
- * only when `-PiosSimulatorDevice=<udid>` is supplied — CI does this after
- * `simctl boot`. In that booted mode this returns false on the iOS simulator and the
- * harness runs. Without it (local `./gradlew check`, which keeps KGP's auto-boot +
- * `--standalone`) it returns true and the harness self-skips rather than hanging.
- * tvOS/watchOS simulators always skip (out of scope for now). macOS K/N (no
- * simulator, real network stack) returns false and validates the QUIC client.
+ * The fix would be to run the iOS-simulator test task with `standalone = false` against a
+ * pre-booted simulator. ⚠️ **That booted mode is not implemented.** Earlier revisions of this
+ * docstring said the build enables it (and sets `QUIC_SIM_BOOTED=1`) when `-PiosSimulatorDevice`
+ * is supplied; no such property, and no assignment of `QUIC_SIM_BOOTED`, exists anywhere in the
+ * build or in CI. Every Apple simulator lane therefore skips unconditionally today, which is why
+ * this now reports the skip instead of hiding it. macOS K/N (no simulator, real network stack)
+ * returns `null` and validates the QUIC client.
  */
-expect fun shouldSkipQuicHarnessOnSimulator(): Boolean
+expect fun quicHarnessSkipReason(): SkipReason?

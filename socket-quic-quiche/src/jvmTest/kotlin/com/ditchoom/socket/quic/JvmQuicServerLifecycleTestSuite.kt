@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -37,13 +36,7 @@ class JvmQuicServerLifecycleTestSuite : QuicServerLifecycleTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 
     // ── Reflection helper — test-only access to server internals ──
 

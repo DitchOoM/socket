@@ -11,7 +11,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
@@ -62,14 +61,6 @@ class StaleConnectionDiagnosticTests {
 
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
-
-    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
 
     /** Echo server handler: 3s timeout for acceptStream (health-check connections time out). */
     private suspend fun QuicServer.echoHandler() {

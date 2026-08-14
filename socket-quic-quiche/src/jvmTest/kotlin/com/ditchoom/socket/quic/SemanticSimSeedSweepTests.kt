@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic
 
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -113,7 +112,7 @@ class SemanticSimSeedSweepTests {
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
-                assumeTrue("Native lib not available: ${e.message}", false)
+                recordMissingNativeLib(e)
             }
         }
 

@@ -1,6 +1,8 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import org.junit.Assume.assumeTrue
 
 /**
@@ -23,10 +25,15 @@ class JvmHttp3LoopbackTest : Http3LoopbackTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
+    // The one hand-written copy of :socket-testsuite's `skipOnMissingNativeLib`. It cannot be
+    // shared: :socket-testsuite `api`s :socket-http3, so depending on it from here is a cycle, and
+    // :socket-testkit — the shared ancestor that carries SkipReason — is published, so it must not
+    // take a junit dependency to host the `assumeTrue` half. Everything except that half is shared.
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
         try {
             block()
         } catch (e: UnsatisfiedLinkError) {
+            recordSkip(SkipReason.NativeLibraryUnavailable(e.message ?: "UnsatisfiedLinkError with no message"))
             assumeTrue("Native lib not available: ${e.message}", false)
         }
     }

@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.nativeMemoryAccess
-import org.junit.Assume.assumeTrue
 import java.net.InetSocketAddress
 import kotlin.random.Random
 import kotlin.test.Test
@@ -38,7 +37,7 @@ class JvmCallerClockTests {
         try {
             drive()
         } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
+            recordMissingNativeLib(e)
         }
     }
 

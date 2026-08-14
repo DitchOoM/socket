@@ -57,14 +57,6 @@ class AndroidQuicLoopbackTests {
         return if (resp is ReadResult.Data) resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8) else "no_data"
     }
 
-    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
-
     /** Verify 127.0.0.2 is bindable (Linux/Android: yes by default for 127.0.0.0/8). */
     private fun assumeLoopbackAliasBindable() {
         try {

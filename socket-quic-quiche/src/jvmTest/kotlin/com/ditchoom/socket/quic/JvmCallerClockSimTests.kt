@@ -7,7 +7,6 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.quic.sim.SimClock
 import kotlinx.coroutines.test.TestCoroutineScheduler
-import org.junit.Assume.assumeTrue
 import java.net.InetSocketAddress
 import kotlin.random.Random
 import kotlin.test.Test
@@ -46,7 +45,7 @@ class JvmCallerClockSimTests {
             try {
                 driveStructuralTrace()
             } catch (e: UnsatisfiedLinkError) {
-                assumeTrue("Native lib not available: ${e.message}", false)
+                recordMissingNativeLib(e)
                 return
             }
         val traceB = driveStructuralTrace()

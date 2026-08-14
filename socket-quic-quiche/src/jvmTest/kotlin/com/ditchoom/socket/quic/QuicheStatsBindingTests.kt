@@ -5,7 +5,6 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.launch
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -26,14 +25,6 @@ import kotlin.time.Duration.Companion.seconds
  * (`AppleQuicheStatsBindingTest`) and mirrors verbatim to linux.
  */
 class QuicheStatsBindingTests {
-    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
-
     @Test
     fun semanticSim_echo_yields_sane_conn_and_path_stats() =
         runQuicTest(timeout = 30.seconds) {

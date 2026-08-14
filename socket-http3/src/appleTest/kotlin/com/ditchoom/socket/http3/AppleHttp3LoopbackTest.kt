@@ -3,10 +3,10 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicTlsConfig
-import kotlinx.cinterop.toKString
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import platform.posix.F_OK
 import platform.posix.access
-import platform.posix.getenv
 
 /**
  * Apple subclass of [Http3LoopbackTestSuite] — a comprehensive HTTP/3 exercise on the Apple **quiche**
@@ -19,7 +19,7 @@ import platform.posix.getenv
  * Like Linux's [LinuxHttp3LoopbackTest] it probes the cert/key on the filesystem and configures the
  * quiche server with loose PEM cert+key (no PKCS#12 — that was an NW-identity requirement). macOS K/N
  * runs the full suite; iOS/tvOS/watchOS `--standalone` simulators lack the `testcerts/` cwd, so
- * [wrapTestBody] skips there (mirrored locally since :socket-http3 doesn't depend on :socket-testsuite).
+ * [wrapTestBody] reports a typed skip there rather than returning green.
  *
  * WebTransport datagrams work on the quiche backend (RFC 9221), so the inherited
  * [Http3LoopbackTestSuite.webTransport_datagramRoundTrip] runs unmodified.
@@ -41,18 +41,26 @@ class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    /** Skip on `--standalone` Apple simulators (no `testcerts/` cwd — see [shouldSkipHttp3HarnessOnSimulator]). */
+    /** Skip on `--standalone` Apple simulators (no `testcerts/` cwd — see [simulatorLacksFixtures]). */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        if (shouldSkipHttp3HarnessOnSimulator()) return
+        val skip = simulatorLacksFixtures()
+        if (skip != null) return recordSkip(skip)
         block()
     }
 }
 
 // macOS K/N is OsFamily.MACOSX (real network stack + repo testcerts/ cwd — always runs). iOS/tvOS/watchOS
-// simulators run via `simctl spawn --standalone`, whose cwd lacks testcerts/, so skip there unless the
-// Gradle build booted the simulator (QUIC_SIM_BOOTED=1). Mirrors :socket-testsuite's
-// shouldSkipQuicHarnessOnSimulator so the gate is identical across modules (this module has no testsuite dep).
-private fun shouldSkipHttp3HarnessOnSimulator(): Boolean {
-    if (kotlin.native.Platform.osFamily == kotlin.native.OsFamily.MACOSX) return false
-    return getenv("QUIC_SIM_BOOTED")?.toKString() != "1"
+// simulators run via `simctl spawn --standalone`, whose cwd lacks testcerts/, so skip there.
+//
+// Returns the typed reason rather than a Boolean, and the caller routes it through `recordSkip`, so
+// the skip lands in the test XML as a greppable line. It previously early-returned, which the report
+// records as a PASS — 31 tests in this suite reported green on three simulator lanes having executed
+// nothing. Mirrors :socket-testsuite's shouldSkipQuicHarnessOnSimulator; both now share
+// :socket-testkit's SkipReason, which is why the gate can no longer drift between the two modules.
+private fun simulatorLacksFixtures(): SkipReason? {
+    if (kotlin.native.Platform.osFamily == kotlin.native.OsFamily.MACOSX) return null
+    return SkipReason.SimulatorLacksFixtures(
+        "${kotlin.native.Platform.osFamily} simulator runs under `simctl spawn --standalone`, " +
+            "whose cwd has no testcerts/ — the loopback server has no cert+key to bind with",
+    )
 }

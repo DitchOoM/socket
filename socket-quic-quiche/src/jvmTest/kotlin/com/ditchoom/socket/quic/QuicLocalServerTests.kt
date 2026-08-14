@@ -10,7 +10,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -34,19 +33,6 @@ class QuicLocalServerTests {
 
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
-
-    /**
-     * Convert `UnsatisfiedLinkError` (raised by the lazy `loadQuicheApi()`
-     * inside the helpers) into a JUnit assumption skip — keeps the test
-     * silent on machines without a built JNI lib.
-     */
-    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
 
     /**
      * The last step each peer reached, so a stalled exchange names *where* it stalled.

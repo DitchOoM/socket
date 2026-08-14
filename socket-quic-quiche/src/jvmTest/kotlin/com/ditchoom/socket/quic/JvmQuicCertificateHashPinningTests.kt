@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import org.junit.Assume.assumeTrue
 import java.io.File
 import java.security.MessageDigest
 import java.security.cert.CertificateFactory
@@ -32,11 +31,5 @@ class JvmQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite()
         return CertificateHash(buf)
     }
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }

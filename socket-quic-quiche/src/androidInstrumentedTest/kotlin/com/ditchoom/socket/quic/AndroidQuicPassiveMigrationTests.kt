@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import org.junit.Assume.assumeTrue
 import org.junit.runner.RunWith
 
 /**
@@ -17,11 +16,5 @@ class AndroidQuicPassiveMigrationTests : QuicPassiveMigrationTestSuite() {
 
     override fun createRebindingProxy(serverPort: Int): RebindingProxy = DatagramChannelRebindingProxy(serverPort)
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }

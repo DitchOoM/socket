@@ -9,7 +9,8 @@ import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.shouldSkipQuicHarnessOnSimulator
+import com.ditchoom.socket.quic.quicHarnessSkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import platform.posix.F_OK
 import platform.posix.access
 import kotlin.time.Duration.Companion.seconds
@@ -21,8 +22,8 @@ import kotlin.time.Duration.Companion.seconds
  * NW `sec_identity_t` requirement, gone with the Network.framework backend in the quiche-on-Apple pivot).
  *
  * Cert paths are probed on the filesystem relative to the test's working directory, mirroring
- * [LinuxWebTransportTest]. macOS K/N runs the full suite; iOS/tvOS/watchOS `--standalone` simulators lack
- * the `testcerts/` cwd, so [wrapTestBody] skips there (see [shouldSkipQuicHarnessOnSimulator]).
+ * [LinuxWebTransportTest]. macOS K/N runs the full suite; on iOS/tvOS/watchOS `--standalone` simulators
+ * [wrapTestBody] reports a typed skip rather than returning green (see [quicHarnessSkipReason]).
  *
  * [multiplexed_twoSessionsOverOneConnection_eachRoundTrip] exercises the full HTTP/3 **server** stack on
  * the Apple quiche backend.
@@ -49,9 +50,10 @@ class AppleWebTransportTest : WebTransportTestSuite() {
     override suspend fun openMultiplexed(url: String): MultiplexedWebTransport =
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig())
 
-    /** Skip on `--standalone` Apple simulators (see [shouldSkipQuicHarnessOnSimulator]). */
+    /** Skip on `--standalone` Apple simulators (see [quicHarnessSkipReason]). */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        if (shouldSkipQuicHarnessOnSimulator()) return
+        val skip = quicHarnessSkipReason()
+        if (skip != null) return recordSkip(skip)
         block()
     }
 }

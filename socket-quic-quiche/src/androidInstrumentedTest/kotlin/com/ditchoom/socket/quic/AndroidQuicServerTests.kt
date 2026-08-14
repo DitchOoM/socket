@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import org.junit.Assume.assumeTrue
 import org.junit.runner.RunWith
 import java.io.File
 
@@ -38,11 +37,5 @@ class AndroidQuicServerTests : QuicServerTestSuite() {
 
     override fun unrelatedCaPem() = File(AndroidTestCerts.path("cert.crt")).readText()
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }

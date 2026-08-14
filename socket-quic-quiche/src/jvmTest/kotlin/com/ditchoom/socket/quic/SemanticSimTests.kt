@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -23,15 +22,6 @@ import kotlin.time.Duration.Companion.seconds
  * the virtual-time finding; [same_seed_same_datagram_count] documents the determinism finding.
  */
 class SemanticSimTests {
-    /** Skip (JUnit assumption) when the bundled quiche native lib isn't available — standard quiche-jvmTest discipline. */
-    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
-
     @Test
     fun handshake_completes_under_10pct_loss() =
         runQuicTest(timeout = 30.seconds) {
@@ -199,7 +189,7 @@ class SemanticSimTests {
                     assertIs<QuicConnectionState.Established>(serverDriver.state.value, "server (virtual time)")
                 }
             } catch (e: UnsatisfiedLinkError) {
-                assumeTrue("Native lib not available: ${e.message}", false)
+                recordMissingNativeLib(e)
             }
         }
 

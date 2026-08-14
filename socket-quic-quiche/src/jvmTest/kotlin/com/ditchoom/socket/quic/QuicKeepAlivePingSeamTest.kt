@@ -8,7 +8,6 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.junit.Assume.assumeTrue
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -70,7 +69,7 @@ class QuicKeepAlivePingSeamTest {
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
-                assumeTrue("Native lib not available: ${e.message}", false)
+                recordMissingNativeLib(e)
             }
         }
 
