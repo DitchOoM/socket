@@ -580,15 +580,18 @@ class Http3Connection private constructor(
      * mid-session failure surfaces as a stream-level [QuicStreamException] (→ QPACK_DECODER_STREAM_ERROR),
      * which still propagates.
      */
-    private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction) {
+    private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction): DecoderStreamWrite =
         try {
             streamWriter.writeDecoderInstruction(qpackDecoderStream, instruction)
-        } catch (_: QuicCloseException) {
-            // Connection already closed — the ack/ICI is moot. See KDoc. The owner's count still
-            // advances past a swallowed close, which is harmless precisely because the connection is
-            // gone: there is no peer left to desynchronize from.
+            DecoderStreamWrite.Sent
+        } catch (e: QuicCloseException) {
+            // Connection already closed — the ack/ICI is moot, so this is still swallowed rather than
+            // propagated (it must not cancel the router). But it is REPORTED, not hidden: the owner
+            // decides what an unsent instruction means for its accounting, and "the connection is gone
+            // so it does not matter" is a conclusion it can draw only if it is told. Returning Unit
+            // here made the swallow indistinguishable from a successful write.
+            DecoderStreamWrite.NotSent(DecoderStreamWrite.NotSentReason.ConnectionClosed(e))
         }
-    }
 
     private fun parseStatus(fields: List<QpackHeaderField>): Int {
         val raw =

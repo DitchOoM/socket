@@ -81,12 +81,13 @@ class QpackDecoderStreamTests {
             val written = mutableListOf<QpackDecoderInstruction>()
             val stream =
                 object : QpackDecoderStream() {
-                    override suspend fun write(instruction: QpackDecoderInstruction) {
+                    override suspend fun write(instruction: QpackDecoderInstruction): DecoderStreamWrite {
                         if (failNext) {
                             failNext = false
                             throw IllegalStateException("stream write failed")
                         }
                         written += instruction
+                        return DecoderStreamWrite.Sent
                     }
                 }
 
@@ -97,6 +98,92 @@ class QpackDecoderStreamTests {
             stream.reportInsertsUpTo(InsertCount(3))
 
             assertEquals(listOf<QpackDecoderInstruction>(QpackDecoderInstruction.InsertCountIncrement(InsertCountDelta(3))), written)
+        }
+
+    @Test
+    fun aReportBehindTheAcknowledgedCountWritesNothingRatherThanThrowing() =
+        runTest {
+            val stream = RecordingQpackDecoderStream()
+            stream.acknowledgeSection(streamId, InsertCount(7))
+
+            // The decoder captures the count it reports under the table lock and reports it under this
+            // one, so an acknowledgment on another coroutine can move the acknowledged count past it in
+            // between — the peer's traffic decides which is larger. `upTo - acknowledged` would throw
+            // IllegalArgumentException here, out of applyEncoderInstruction, past two catch clauses that
+            // only handle typed HTTP/3 and QUIC stream errors, and into an uncaught coroutine.
+            stream.reportInsertsUpTo(InsertCount(5))
+
+            assertEquals(listOf<QpackDecoderInstruction>(QpackDecoderInstruction.SectionAck(streamId)), stream.written)
+        }
+
+    @Test
+    fun aWriteThatReportsItSentNothingLeavesTheCountWhereItWas() =
+        runTest {
+            // The failure mode a `Unit` return could not express: a write that neither wrote nor threw.
+            // Both implementations have one — the client swallows a QuicCloseException, the server
+            // returns early before its stream is open. Advancing the count for either leaves the peer's
+            // Known Received Count permanently short, with no error raised anywhere to say so.
+            val written = mutableListOf<QpackDecoderInstruction>()
+            var sendNothing = true
+            val stream =
+                object : QpackDecoderStream() {
+                    override suspend fun write(instruction: QpackDecoderInstruction): DecoderStreamWrite {
+                        if (sendNothing) {
+                            sendNothing = false
+                            return DecoderStreamWrite.NotSent(DecoderStreamWrite.NotSentReason.StreamNotOpen)
+                        }
+                        written += instruction
+                        return DecoderStreamWrite.Sent
+                    }
+                }
+
+            stream.reportInsertsUpTo(InsertCount(3))
+            stream.reportInsertsUpTo(InsertCount(3))
+
+            assertEquals(listOf<QpackDecoderInstruction>(QpackDecoderInstruction.InsertCountIncrement(InsertCountDelta(3))), written)
+        }
+
+    @Test
+    fun anAcknowledgmentThatWasNotSentDoesNotCountAsCoveringItsInsertions() =
+        runTest {
+            val written = mutableListOf<QpackDecoderInstruction>()
+            var sendNothing = true
+            val stream =
+                object : QpackDecoderStream() {
+                    override suspend fun write(instruction: QpackDecoderInstruction): DecoderStreamWrite {
+                        if (sendNothing) {
+                            sendNothing = false
+                            return DecoderStreamWrite.NotSent(DecoderStreamWrite.NotSentReason.StreamNotOpen)
+                        }
+                        written += instruction
+                        return DecoderStreamWrite.Sent
+                    }
+                }
+
+            stream.acknowledgeSection(streamId, InsertCount(4))
+            // The acknowledgment never left, so its implicit coverage never happened: the increment that
+            // follows must still carry all four insertions.
+            stream.reportInsertsUpTo(InsertCount(4))
+
+            assertEquals(listOf<QpackDecoderInstruction>(QpackDecoderInstruction.InsertCountIncrement(InsertCountDelta(4))), written)
+        }
+
+    @Test
+    fun aWriteThatReEntersTheStreamFailsInsteadOfDeadlocking() =
+        runTest {
+            // The lock is held across `write`, which a subclass supplies, so a re-entrant one would wait
+            // on itself forever. Naming the coroutine as the mutex owner turns that into an immediate
+            // IllegalStateException. Nothing re-enters today; this is what keeps that true loudly.
+            lateinit var stream: QpackDecoderStream
+            stream =
+                object : QpackDecoderStream() {
+                    override suspend fun write(instruction: QpackDecoderInstruction): DecoderStreamWrite {
+                        stream.cancelStream(streamId)
+                        return DecoderStreamWrite.Sent
+                    }
+                }
+
+            assertFailsWith<IllegalStateException> { stream.reportInsertsUpTo(InsertCount(1)) }
         }
 
     @Test

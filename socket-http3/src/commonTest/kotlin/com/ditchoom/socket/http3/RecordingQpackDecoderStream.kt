@@ -16,8 +16,9 @@ internal class RecordingQpackDecoderStream(
 ) : QpackDecoderStream() {
     val written = mutableListOf<QpackDecoderInstruction>()
 
-    override suspend fun write(instruction: QpackDecoderInstruction) {
+    override suspend fun write(instruction: QpackDecoderInstruction): DecoderStreamWrite {
         onWrite(instruction)
         written += instruction
+        return DecoderStreamWrite.Sent
     }
 }

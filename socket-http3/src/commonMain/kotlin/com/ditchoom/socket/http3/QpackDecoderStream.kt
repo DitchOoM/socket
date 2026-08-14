@@ -1,6 +1,8 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicStreamId
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -47,12 +49,24 @@ abstract class QpackDecoderStream {
 
     /**
      * How many of our insertions we have told the peer's encoder about — by either instruction.
-     * Only ever advanced after a write actually reached the wire.
+     * Only ever advanced after a write actually reached the wire, which is what [DecoderStreamWrite]
+     * exists to make [write] say rather than imply.
      */
     private var acknowledgedInsertCount = InsertCount.ZERO
 
-    /** Put one decoder-stream instruction on the wire. Called under the lock, in accounting order. */
-    protected abstract suspend fun write(instruction: QpackDecoderInstruction)
+    /**
+     * Put one decoder-stream instruction on the wire. Called under the lock, in accounting order.
+     *
+     * Returns what happened, because the accounting depends on it and a `Unit` return cannot tell
+     * "wrote" from "silently did not". Both subclasses have a path that writes nothing and raises
+     * nothing: the client swallows a [com.ditchoom.socket.quic.QuicCloseException] (the ack is moot
+     * once the connection is gone) and the server returns early when its decoder stream is not open
+     * yet. Under a `Unit` contract both of those advance [acknowledgedInsertCount] past instructions
+     * the peer never received, and every later increment is short by that much — silently, since a
+     * Known Received Count that lags is not a protocol error, just permanently degraded compression.
+     * The connection-gone case is harmless; the not-open-yet case is on a live connection.
+     */
+    protected abstract suspend fun write(instruction: QpackDecoderInstruction): DecoderStreamWrite
 
     /**
      * Acknowledge [streamId]'s field section, recording the insertions its [requiredInsertCount]
@@ -61,8 +75,8 @@ abstract class QpackDecoderStream {
     suspend fun acknowledgeSection(
         streamId: QuicStreamId,
         requiredInsertCount: InsertCount,
-    ) = lock.withLock {
-        write(QpackDecoderInstruction.SectionAck(streamId))
+    ) = withOwnedLock {
+        if (write(QpackDecoderInstruction.SectionAck(streamId)) is DecoderStreamWrite.NotSent) return@withOwnedLock
         if (requiredInsertCount > acknowledgedInsertCount) acknowledgedInsertCount = requiredInsertCount
     }
 
@@ -72,19 +86,74 @@ abstract class QpackDecoderStream {
      * Increment of zero is itself a decoder-stream error (§4.4.3).
      */
     suspend fun reportInsertsUpTo(upTo: InsertCount) =
-        lock.withLock {
-            val increment = upTo - acknowledgedInsertCount
-            if (increment <= InsertCountDelta.ZERO) return@withLock
-            write(QpackDecoderInstruction.InsertCountIncrement(increment))
-            // Only after a successful write: a failed one never reached the peer, so its count did not move.
+        withOwnedLock {
+            // [InsertCount.advanceFrom], not `minus`: subtraction is partial, and [upTo] was captured
+            // under a different lock (the decoder's table mutex), so by the time this coroutine holds
+            // this one the acknowledged count may already have passed it — a Section Acknowledgment on
+            // another coroutine is enough. Subtracting first and testing the sign second would let the
+            // peer's traffic decide whether a `require` fires. Null means already covered.
+            val increment = upTo.advanceFrom(acknowledgedInsertCount) ?: return@withOwnedLock
+            if (write(QpackDecoderInstruction.InsertCountIncrement(increment)) is DecoderStreamWrite.NotSent) {
+                return@withOwnedLock
+            }
+            // Only after a write that reached the wire: one that did not never reached the peer, so
+            // its count did not move.
             acknowledgedInsertCount = upTo
         }
 
     /** Tell the peer's encoder that [streamId]'s outstanding section references are abandoned (§4.4.2). */
     suspend fun cancelStream(streamId: QuicStreamId) =
-        lock.withLock {
+        withOwnedLock {
             // Carries no count, but still takes the lock: it is a write on the same single-writer stream,
             // and interleaving its bytes with an acknowledgment's would corrupt both.
             write(QpackDecoderInstruction.StreamCancellation(streamId))
+            Unit
         }
+
+    /**
+     * Hold the lock, naming the current coroutine as its **owner**.
+     *
+     * The lock is held across [write], which a subclass supplies, so a `write` that re-entered this
+     * object would otherwise deadlock on itself in silence. With an owner, `kotlinx.coroutines.Mutex`
+     * fails that acquisition immediately with `IllegalStateException` instead. Nothing does it today —
+     * both implementations put bytes on a QUIC stream — and this is what keeps it that way loudly. It
+     * is the guard #353 added, kept rather than dropped when the accounting moved here: giving the
+     * write a subclass to live in widened the surface it protects instead of removing the hazard.
+     */
+    private suspend inline fun <T> withOwnedLock(crossinline body: suspend () -> T): T =
+        lock.withLock(currentCoroutineContext()[Job]) { body() }
+}
+
+/**
+ * Whether a decoder-stream instruction reached the wire — the return of [QpackDecoderStream.write].
+ *
+ * Typed rather than a `Boolean` so the reason survives to whoever reads the code next: the two
+ * not-sent cases have opposite consequences, and only one of them is benign.
+ */
+sealed interface DecoderStreamWrite {
+    /** The bytes are on the stream. The accounting may advance. */
+    data object Sent : DecoderStreamWrite
+
+    /** Nothing was written; [why] says which case, and the accounting must not move. */
+    data class NotSent(
+        val why: NotSentReason,
+    ) : DecoderStreamWrite
+
+    /** Why a decoder-stream write produced no bytes. */
+    sealed interface NotSentReason {
+        /**
+         * The connection is gone, so the acknowledgment is moot — there is no peer left to
+         * desynchronize from. The benign case.
+         */
+        data class ConnectionClosed(
+            val cause: Throwable,
+        ) : NotSentReason
+
+        /**
+         * The decoder stream has not been opened yet. **Not** benign: the connection is live, and
+         * anything that advanced the count here would leave the peer's Known Received Count
+         * permanently short with no error anywhere.
+         */
+        data object StreamNotOpen : NotSentReason
+    }
 }

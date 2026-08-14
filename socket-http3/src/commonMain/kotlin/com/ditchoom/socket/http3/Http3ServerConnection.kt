@@ -593,9 +593,14 @@ class Http3ServerConnection internal constructor(
         streamWriter.writeEncoderInstruction(stream, encoderStreamWriteMutex, instruction)
     }
 
-    private suspend fun writeQpackDecoderInstruction(instruction: QpackDecoderInstruction) {
-        val stream = qpackDecoderStream ?: return
+    private suspend fun writeQpackDecoderInstruction(instruction: QpackDecoderInstruction): DecoderStreamWrite {
+        // Reported, not a silent early return: [serve] assigns the stream before it collects any peer
+        // stream, so this is unreachable today — but it is unreachable by statement order, not by
+        // construction, and the owner must not advance its count for bytes that never left. Unlike the
+        // client's swallowed close, this one would happen on a LIVE connection.
+        val stream = qpackDecoderStream ?: return DecoderStreamWrite.NotSent(DecoderStreamWrite.NotSentReason.StreamNotOpen)
         streamWriter.writeDecoderInstruction(stream, instruction)
+        return DecoderStreamWrite.Sent
     }
 
     private suspend fun drain(stream: QuicByteStream) {

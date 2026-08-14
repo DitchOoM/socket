@@ -448,8 +448,8 @@ internal class Http3LoopbackServer(
         }
     }
 
-    private suspend fun writeQpackDecoderInstruction(instruction: QpackDecoderInstruction) {
-        val stream = qpackDecoderStream ?: return
+    private suspend fun writeQpackDecoderInstruction(instruction: QpackDecoderInstruction): DecoderStreamWrite {
+        val stream = qpackDecoderStream ?: return DecoderStreamWrite.NotSent(DecoderStreamWrite.NotSentReason.StreamNotOpen)
         val buffer = pool.allocate(16)
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
@@ -459,6 +459,7 @@ internal class Http3LoopbackServer(
         } finally {
             buffer.freeIfNeeded()
         }
+        return DecoderStreamWrite.Sent
     }
 
     /** Reads and discards a unidirectional stream's bytes until end-of-stream or reset. */
