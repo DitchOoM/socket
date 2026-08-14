@@ -8,6 +8,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.harness.QuicHarnessConfig
+import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -94,16 +95,12 @@ class QuicHarnessIntegrationTests {
      * Apple K/N short-circuits and skips (see PR #54).
      */
     private suspend fun withHarness(block: suspend QuicScope.() -> Unit) {
-        if (shouldSkipQuicHarnessOnSimulator()) {
-            // Apple simulator launched via KGP's default `simctl spawn --standalone`,
-            // which runs outside launchd_sim's network services so NW QUIC can't
-            // connect. Skip intentionally (not a flaky timeout). The iOS simulator
-            // runs the harness in CI's booted mode (standalone=false + QUIC_SIM_BOOTED);
-            // tvOS/watchOS stay skipped for now; macOS K/N always runs it. Marker
-            // matched by the CI audit's intentional-skip grep. (Issue #81.)
-            println("[QuicHarnessIntegrationTests] harness SKIP: Apple simulator under --standalone (issue #81)")
-            return
-        }
+        // Apple simulator launched via KGP's default `simctl spawn --standalone`, which runs
+        // outside launchd_sim's network services. Skip intentionally (not a flaky timeout);
+        // macOS K/N always runs it. Fires on Apple only, so the `harness SKIP:` markers the CI
+        // interop audit counts on Linux/JVM/JS (see logHarnessSkip) are unaffected. (Issue #81.)
+        val simulatorSkip = quicHarnessSkipReason()
+        if (simulatorSkip != null) return recordSkip(simulatorSkip)
         try {
             withQuicConnection(
                 harnessHost,
@@ -253,10 +250,8 @@ class QuicHarnessIntegrationTests {
      * macOS host (and, in CI's booted mode, the iOS simulator).
      */
     private suspend fun withHarnessDatagrams(block: suspend QuicScope.() -> Unit) {
-        if (shouldSkipQuicHarnessOnSimulator()) {
-            println("[QuicHarnessIntegrationTests] harness SKIP: Apple simulator under --standalone (issue #81)")
-            return
-        }
+        val simulatorSkip = quicHarnessSkipReason()
+        if (simulatorSkip != null) return recordSkip(simulatorSkip)
         try {
             withQuicConnection(
                 harnessHost,

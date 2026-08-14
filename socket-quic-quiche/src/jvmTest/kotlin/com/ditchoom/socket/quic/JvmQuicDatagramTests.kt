@@ -1,7 +1,5 @@
 package com.ditchoom.socket.quic
 
-import org.junit.Assume.assumeTrue
-
 /** JVM member of [QuicDatagramTestSuite] — classpath cert resolution + UnsatisfiedLinkError skip. */
 class JvmQuicDatagramTests : QuicDatagramTestSuite() {
     private fun certPath(name: String): String {
@@ -17,11 +15,5 @@ class JvmQuicDatagramTests : QuicDatagramTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }

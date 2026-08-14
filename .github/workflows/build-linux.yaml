@@ -798,6 +798,10 @@ jobs:
       # quic-echo-docker-context comes from.
       - name: Run checks and tests
         timeout-minutes: 45
+        env:
+          # Inventory came back empty on this lane; a skip here means a broken environment, not an
+          # accommodation. See .github/actions/skip-inventory.
+          SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           set -o pipefail
           command -v gdb >/dev/null 2>&1 || sudo apt-get install -y gdb >/dev/null 2>&1 || true
@@ -858,6 +862,11 @@ jobs:
           name: hang-threaddump-linux
           path: /tmp/hang-threaddump.txt
           if-no-files-found: ignore
+
+      # Inventory whatever this lane skipped. Reports only — the gate is SOCKET_REQUIRE_ALL_TESTS=1,
+      # which goes on once a lane's inventory reads clean.
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
 
       # Exercise the REAL Linux route-resolution paths against controlled network namespaces — the
       # integration paths unit tests cannot reach (netlink always answers on a normal host, so the
@@ -1165,6 +1174,8 @@ jobs:
           # by the quiche build script (daemon env is not step env). Empty on the JDK-17
           # leg, which is how the monolith had it.
           SIM_FUZZ_ITERATIONS: ${{ matrix.leg.sim-fuzz }}
+          # All three legs build their own natives and inventoried zero skips.
+          SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           if [ "${{ matrix.leg.core-dump }}" = "true" ]; then
             # This is the lane where the intermittent JNI SIGSEGV (recv_info UAF) was first caught, so
@@ -1180,6 +1191,11 @@ jobs:
             ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} --continue \
               --no-configuration-cache ${{ inputs.gradle-args }}
           fi
+
+      # Distinct from the harness OK/SKIP audit below: that one counts whether the QUIC *client*
+      # reached the live harness, this one counts test bodies that never executed at all.
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
 
       # Snapshot the JVM QuicHarnessIntegrationTests OK/SKIP markers into a jvmTest-scoped
       # log the audit step reads. Snapshot the jvmTest dir ONLY, so the Node/JS "platform

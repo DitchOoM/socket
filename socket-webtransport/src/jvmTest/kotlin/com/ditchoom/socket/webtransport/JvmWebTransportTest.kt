@@ -7,7 +7,7 @@ import com.ditchoom.socket.http3.HTTP3_ALPN
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
-import org.junit.Assume.assumeTrue
+import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -35,13 +35,7 @@ class JvmWebTransportTest : WebTransportTestSuite() {
     override suspend fun openMultiplexed(url: String): MultiplexedWebTransport =
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig())
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }
 
 /**

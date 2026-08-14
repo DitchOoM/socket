@@ -20,7 +20,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.junit.Assume.assumeTrue
 import java.util.Collections
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -150,14 +149,6 @@ class JvmQuicTraceCaptureTests {
         } catch (_: TimeoutCancellationException) {
             val snapshot = synchronized(lines) { lines.toList() }
             error("connectivity tap never recorded $what within 10s: $snapshot")
-        }
-    }
-
-    private suspend fun skipOnMissingNativeLib(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
         }
     }
 

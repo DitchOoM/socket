@@ -1,12 +1,10 @@
 package com.ditchoom.socket.quic
 
-import org.junit.Assume.assumeTrue
-
 /**
  * JVM passive NAT-rebind migration test — the JVM member of the shared [QuicPassiveMigrationTestSuite].
  *
- * Provides the JVM cert resolution (classpath `certs/`), the `UnsatisfiedLinkError → assumeTrue`
- * skip (so a missing JNI/FFM quiche native skips cleanly), and a [RebindingProxy] backed by a shared
+ * Provides the JVM cert resolution (classpath `certs/`), the shared `skipOnMissingNativeLib` hook
+ * (so a missing JNI/FFM quiche native skips cleanly), and a [RebindingProxy] backed by a shared
  * non-blocking [SelectorDatagramRelay]. The test body itself lives in the common suite, guaranteeing
  * parity with the Linux K/N port.
  */
@@ -20,13 +18,7 @@ class QuicPassiveMigrationTests : QuicPassiveMigrationTestSuite() {
 
     override fun testTlsConfig() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 
     override fun createRebindingProxy(serverPort: Int): RebindingProxy = DatagramChannelRebindingProxy(serverPort)
 }

@@ -1,0 +1,72 @@
+name: "Skip inventory"
+description: >-
+  Inventory the tests that did not run on this lane, from the [TEST-SKIPPED] markers the shared
+  SkipReason path writes into the test XML, and publish them to the job summary.
+
+# Why this exists: a skipped test is invisible in a green run, and on Kotlin/Native it is worse than
+# invisible — there is no `assume` on K/N, so the only skip available is an early return, which the
+# report records as a PASS. Three Apple simulator lanes were reporting 36 tests green while
+# executing none of them. The Kotlin side now always emits a marker; this step is what makes anyone
+# see it.
+#
+# Never fails the job. The gate that DOES fail is SOCKET_REQUIRE_ALL_TESTS=1, set per-lane once this
+# inventory shows the lane is clean — read the summary before setting it.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Inventory skipped tests
+      shell: bash
+      if: ${{ !cancelled() }}
+      run: |
+        set -uo pipefail
+
+        # `find | xargs grep`, not `grep -r --include` over a list of directories: that form
+        # silently returns nothing on BSD grep (the macOS lanes) once it is given many directory
+        # operands, while working fine for one — a false "no skips" on exactly the lanes with the
+        # most skips. Verified on both greps before landing.
+        #
+        # Capture site+reason ONLY. Anchoring on the two `key=value` fields keeps the match bounded:
+        # `detail=` is free text and, when SOCKET_REQUIRE_ALL_TESTS is set, is followed by a
+        # multi-sentence failure message that a greedier pattern swallows whole.
+        MARKERS=$(find . -path '*/build/test-results/*' -name '*.xml' -print0 2>/dev/null \
+          | xargs -0 grep -hoE '\[TEST-SKIPPED\] site=[^ ]+ reason=[^ ]+' 2>/dev/null | sort || true)
+
+        if [ -z "$MARKERS" ]; then
+          echo "No [TEST-SKIPPED] markers found — every test that was collected also ran."
+          {
+            echo "### Skip inventory"
+            echo
+            echo "✅ No skipped tests on this lane."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        TOTAL=$(printf '%s\n' "$MARKERS" | wc -l | tr -d ' ')
+        echo "$TOTAL skipped test invocations:"
+        printf '%s\n' "$MARKERS"
+
+        # awk, not sed: the grouping key is a tab-separated pair, and BSD sed (the macOS lanes)
+        # does not understand `\t` in either the pattern or the replacement.
+        {
+          echo "### Skip inventory"
+          echo
+          echo "⚠️ **$TOTAL** test invocations did not run on this lane."
+          echo
+          echo "| count | reason | site |"
+          echo "|---|---|---|"
+          printf '%s\n' "$MARKERS" | awk '
+            {
+              site = $2; sub(/^site=/, "", site)
+              reason = $3; sub(/^reason=/, "", reason)
+              count[reason "\t" site]++
+            }
+            END {
+              for (k in count) {
+                split(k, parts, "\t")
+                printf "| %d | `%s` | `%s` |\n", count[k], parts[1], parts[2]
+              }
+            }' | sort -t'|' -k2 -rn
+          echo
+          echo "Set \`SOCKET_REQUIRE_ALL_TESTS=1\` on this lane to turn these into failures."
+        } >> "$GITHUB_STEP_SUMMARY"

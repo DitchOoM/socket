@@ -1,13 +1,12 @@
 package com.ditchoom.socket.quic
 
-import org.junit.Assume.assumeTrue
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 
 /**
  * JVM malformed-packet fuzz test — the JVM member of the shared [QuicMalformedPacketTestSuite]. Provides
- * JVM cert resolution, the `UnsatisfiedLinkError → assumeTrue` skip, and a plain [DatagramChannel]
+ * JVM cert resolution, the shared `skipOnMissingNativeLib` hook, and a plain [DatagramChannel]
  * sender for the raw datagrams.
  */
 class QuicMalformedPacketTests : QuicMalformedPacketTestSuite() {
@@ -20,13 +19,7 @@ class QuicMalformedPacketTests : QuicMalformedPacketTestSuite() {
 
     override fun testTlsConfig() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 
     override suspend fun sendRawDatagram(
         port: Int,

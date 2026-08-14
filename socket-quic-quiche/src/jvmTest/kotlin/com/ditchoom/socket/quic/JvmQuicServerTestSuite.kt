@@ -1,7 +1,5 @@
 package com.ditchoom.socket.quic
 
-import org.junit.Assume.assumeTrue
-
 /**
  * JVM subclass of [QuicServerTestSuite].
  *
@@ -36,11 +34,5 @@ class JvmQuicServerTestSuite : QuicServerTestSuite() {
 
     override fun unrelatedCaPem() = java.io.File(certPath("cert.crt")).readText()
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }

@@ -359,10 +359,19 @@ jobs:
           #
           # socket-quic-quiche is peeled off because it carries the real QUIC loopback suites and
           # dominates the lane; the two together were 827s of a 864s job before this split.
+          #
+          # `requireAllTests` turns a skipped test into a hard failure on the lanes whose first
+          # inventory came back empty (see the skip-inventory step). It is deliberately absent from
+          # the three simulator shards, which legitimately skip: measured on run 31815357260, iOS
+          # skipped 43 test invocations, tvOS 36 and watchOS 36 — every one of which used to report
+          # as a PASS, because a Kotlin/Native skip is an early return. They stay reported, not
+          # enforced, until the `testcerts/` fixtures reach the simulator sandbox.
           - name: "macOS x64 (quiche)"
             tasks: ":socket-quic-quiche:macosX64Test"
+            requireAllTests: "1"
           - name: "macOS x64 (all other modules)"
             tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
+            requireAllTests: "1"
           - name: "iOS simulator"
             tasks: "iosSimulatorArm64Test"
           # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
@@ -393,10 +402,18 @@ jobs:
         id: quiche_env
 
       - name: Run ${{ matrix.shard.name }}
+        env:
+          SOCKET_REQUIRE_ALL_TESTS: ${{ matrix.shard.requireAllTests }}
         run: >-
           ./gradlew
           ${{ matrix.shard.tasks }}
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # The simulator shards are the reason this exists: `wrapTestBody` early-returns there, and on
+      # Kotlin/Native an early return is reported as a PASS, so the iOS/tvOS/watchOS lanes were
+      # green while running none of the HTTP/3 or WebTransport suites. Reports only — never fails.
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
 
       # ⚠️ Restores the Kotlin/Native build cache that the fan-out otherwise LOSES.
       #
@@ -498,9 +515,18 @@ jobs:
       # A genuine hang is bounded by timeout-minutes: 30 at job level.
       - name: Run socket-quic-quiche JVM tests (${{ matrix.backend.name }})
         timeout-minutes: 20
+        env:
+          # This lane builds its own natives, so nothing in SkipReason can legitimately fire here —
+          # and its first inventory confirmed zero. A skip now means the artifact plumbing broke.
+          SOCKET_REQUIRE_ALL_TESTS: "1"
         run: >-
           ./gradlew :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} --continue
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # This lane builds its own natives, so a `native-library-unavailable` skip here means the
+      # artifact plumbing broke — the case that used to erase ~38 test classes from a green run.
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
 
       # Test reports on failure — includes the JVM hs_err/replay crash logs: a native abort
       # (quiche/JNI/FFM SIGABRT/SIGSEGV) shows only as "exit value 134" with no failing JUnit case

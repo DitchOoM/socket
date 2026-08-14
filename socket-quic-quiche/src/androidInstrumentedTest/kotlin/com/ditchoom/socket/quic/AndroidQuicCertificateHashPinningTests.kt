@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import org.junit.Assume.assumeTrue
 import org.junit.runner.RunWith
 import java.io.File
 import java.security.MessageDigest
@@ -34,11 +33,5 @@ class AndroidQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSui
         return CertificateHash(buf)
     }
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }

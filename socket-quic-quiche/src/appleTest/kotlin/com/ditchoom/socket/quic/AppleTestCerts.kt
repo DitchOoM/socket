@@ -97,7 +97,7 @@ internal object AppleTestCerts {
      * handful of tests that actually touch `localhost.*` / `pinned*` skip on the simulator, while every
      * sibling test in the same suite still runs there for real. (A pre-check in `wrapTestBody` cannot
      * tell which test it is wrapping, so it would take all 16 of `QuicServerTestSuite` down with the two
-     * CA-pinning ones.) Same shape as the JVM members' `UnsatisfiedLinkError → assumeTrue` hook.
+     * CA-pinning ones.) Same shape as the JVM members' shared `skipOnMissingNativeLib` hook.
      *
      * Prints the decision for the same reason `shouldSkipQuicHarnessOnSimulator` does — a self-skipping
      * test is otherwise indistinguishable from a passing one in the log.

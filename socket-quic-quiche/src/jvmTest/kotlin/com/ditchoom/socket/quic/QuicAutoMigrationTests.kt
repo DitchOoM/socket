@@ -151,7 +151,7 @@ class QuicAutoMigrationTests {
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
-                org.junit.Assume.assumeTrue("Native lib not available: ${e.message}", false)
+                recordMissingNativeLib(e)
             }
         }
 }

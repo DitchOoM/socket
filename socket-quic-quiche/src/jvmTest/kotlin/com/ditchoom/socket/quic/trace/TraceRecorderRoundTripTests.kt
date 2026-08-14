@@ -12,6 +12,7 @@ import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.quic.ImpairmentConfig
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.quic.recordMissingNativeLib
 import com.ditchoom.socket.quic.sim.Observed
 import com.ditchoom.socket.quic.sim.runQuicSim
 import com.ditchoom.socket.quic.withSemanticSim
@@ -21,7 +22,6 @@ import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -79,7 +79,7 @@ class TraceRecorderRoundTripTests {
                     serverJob.cancel()
                 }
             } catch (e: UnsatisfiedLinkError) {
-                assumeTrue("Native lib not available: ${e.message}", false)
+                recordMissingNativeLib(e)
             }
 
             // --- 1. Shape: the session must have produced every driver-side event class. ---

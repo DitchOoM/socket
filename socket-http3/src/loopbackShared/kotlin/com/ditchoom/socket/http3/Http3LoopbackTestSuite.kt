@@ -1222,12 +1222,12 @@ abstract class Http3LoopbackTestSuite {
 
     // --- WebTransport Phase 3: datagrams (draft-ietf-webtrans-http3 §4.4, RFC 9297) ---
 
-    // `open` so the Apple subclass can override-and-@Ignore it: on Network.framework's QUIC
-    // connection-group API, extracting a datagram flow steals inbound *stream* delivery, so HTTP/3
-    // (which needs inbound streams) forces PreferStreams and WebTransport datagrams are unavailable
-    // there. Every other test in this suite is stream-based and runs on Apple unchanged.
+    // Runs on every backend. This was `open` for a Network.framework-specific override that no
+    // longer exists: NW's connection-group API let a datagram flow steal inbound *stream* delivery,
+    // so the Apple subclass had to @Ignore it. The quiche-on-Apple pivot deleted that backend, and
+    // quiche carries RFC 9221 datagrams on every target — see AppleHttp3LoopbackTest.
     @Test
-    open fun webTransport_datagramRoundTrip() =
+    fun webTransport_datagramRoundTrip() =
         runHttp3LoopbackTest {
             wrapTestBody {
                 withHttp3Server(

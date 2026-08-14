@@ -134,6 +134,12 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
+                // Typed skip reporting (SkipReason / recordSkip). Test-scope only, and no cycle:
+                // :socket-testkit depends on root `:` alone. This is also why the Apple simulator
+                // gate no longer needs a hand-mirrored copy of :socket-testsuite's — that module
+                // `api`s :socket-http3, so depending on IT would be a cycle; :socket-testkit is the
+                // shared ancestor both can see.
+                implementation(project(":socket-testkit"))
             }
         }
         // Android instrumented (on-device) HTTP/3 loopback conformance — the 27-test parity gap vs
@@ -147,6 +153,7 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
+                implementation(project(":socket-testkit"))
                 implementation("androidx.test:runner:1.7.0")
                 implementation("androidx.test.ext:junit:1.3.0")
             }

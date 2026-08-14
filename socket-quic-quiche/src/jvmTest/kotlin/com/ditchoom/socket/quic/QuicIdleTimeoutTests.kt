@@ -1,10 +1,8 @@
 package com.ditchoom.socket.quic
 
-import org.junit.Assume.assumeTrue
-
 /**
  * JVM idle-timeout / keepalive test — the JVM member of the shared [QuicIdleTimeoutTestSuite]. Provides
- * JVM cert resolution and the `UnsatisfiedLinkError → assumeTrue` skip.
+ * JVM cert resolution and the shared `skipOnMissingNativeLib` hook.
  */
 class QuicIdleTimeoutTests : QuicIdleTimeoutTestSuite() {
     private fun certPath(name: String): String {
@@ -16,11 +14,5 @@ class QuicIdleTimeoutTests : QuicIdleTimeoutTestSuite() {
 
     override fun testTlsConfig() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }

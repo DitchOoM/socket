@@ -10,6 +10,7 @@ import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.ImpairmentConfig
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.quic.recordMissingNativeLib
 import com.ditchoom.socket.quic.sim.Observed
 import com.ditchoom.socket.quic.sim.SimEvent
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
@@ -21,7 +22,6 @@ import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -91,7 +91,7 @@ class ConnectivityTraceRoundTripTests {
                     serverJob.cancel()
                 }
             } catch (e: UnsatisfiedLinkError) {
-                assumeTrue("Native lib not available: ${e.message}", false)
+                recordMissingNativeLib(e)
             }
 
             // --- capture: connectivity events landed in the SAME trace as the QUIC traffic, typed. ---

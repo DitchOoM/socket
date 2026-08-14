@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import org.junit.Assume.assumeTrue
 import org.junit.runner.RunWith
 
 /**
@@ -14,11 +13,5 @@ import org.junit.runner.RunWith
 class AndroidQuicLargePayloadTests : QuicLargePayloadTestSuite() {
     override fun testTlsConfig() = AndroidTestCerts.tlsConfig
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (e: UnsatisfiedLinkError) {
-            assumeTrue("Native lib not available: ${e.message}", false)
-        }
-    }
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
 }
