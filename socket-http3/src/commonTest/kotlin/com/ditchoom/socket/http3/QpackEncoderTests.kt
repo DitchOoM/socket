@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -34,6 +35,9 @@ class QpackEncoderTests {
      * assertion below fails loudly if it ever stops doing so.
      */
     private val writeSuspensions = 4
+
+    /** Seeds for the interleaving property test; each picks its own write-suspension and section count. */
+    private val interleavingSeeds = 64
 
     private val pool = BufferPool(threadingMode = ThreadingMode.SingleThreaded, factory = BufferFactory.Default)
 
@@ -199,6 +203,70 @@ class QpackEncoderTests {
             // The oracle. Throws Http3StreamException(QpackInsertCountIncrementPastInserts) if the
             // decoder over-acknowledged; passes only if the two instructions agree on one count.
             for (instruction in decoderStream) encoder.processDecoderInstruction(instruction)
+        }
+
+    /**
+     * The property behind [aSectionAckAndItsInsertionsIncrementAreNeverBothCounted], over many
+     * interleavings instead of the one hand-built schedule: **the peer's encoder must never be told we
+     * received more insertions than were made**, whatever order our two decoder-stream instructions
+     * reach the wire in.
+     *
+     * That single test pins one schedule (one insert, one section, one yield count). The defect it
+     * covers is an ordering hazard, so the interesting axis is the schedule itself — here each seed
+     * varies how long the increment's write suspends, how many sections are in flight, and therefore how
+     * the decodes and the encoder-stream drain interleave. The real [QpackEncoder] is the oracle in every
+     * case: it raises `QpackInsertCountIncrementPastInserts` the moment the counts disagree.
+     *
+     * Deterministic despite being randomised — the seed is the loop index and virtual time makes the
+     * scheduling reproducible, so a failure names the exact seed to re-run.
+     */
+    @Test
+    fun theDecoderNeverAcknowledgesMoreInsertionsThanItMade_acrossInterleavings() =
+        runTest {
+            for (seed in 0 until interleavingSeeds) {
+                val rnd = Random(seed)
+                val yields = rnd.nextInt(0, 6)
+                val sectionCount = rnd.nextInt(1, 4)
+
+                val decoderStream = ArrayDeque<QpackDecoderInstruction>()
+                val encoderStream = ArrayDeque<QpackEncoderInstruction>()
+                val encoder = QpackEncoder(4096, peerMaxBlockedStreams = 8) { encoderStream.addLast(it) }
+                val decoder =
+                    QpackDecoder(4096) { instruction ->
+                        if (instruction is QpackDecoderInstruction.InsertCountIncrement) repeat(yields) { yield() }
+                        decoderStream.addLast(instruction)
+                    }
+
+                encoder.setCapacity(4096)
+                // Distinct field values per seed and index, so each section forces its own insertion
+                // rather than reusing an entry an earlier one already put in the table.
+                val sections =
+                    (0 until sectionCount).map { i ->
+                        val id = QuicStreamId((i * 4).toLong())
+                        id to encoder.encodeSection(listOf(QpackHeaderField("x-$seed-$i", "v$i")), id, pool)
+                    }
+
+                // Park every decode on the insertions it needs, then drain the encoder stream underneath
+                // them — the shape a live connection has, and the window the two emissions race in.
+                val decodes = sections.map { (id, section) -> launch { decoder.decodeSection(section, id, null) } }
+                runCurrent()
+                val apply =
+                    launch {
+                        while (encoderStream.isNotEmpty()) decoder.applyEncoderInstruction(encoderStream.removeFirst())
+                    }
+                decodes.forEach { it.join() }
+                apply.join()
+
+                assertTrue(
+                    decoderStream.any { it is QpackDecoderInstruction.SectionAck },
+                    "seed $seed: vacuous — no Section Acknowledgment was emitted",
+                )
+                for (instruction in decoderStream) {
+                    // Fails with QpackInsertCountIncrementPastInserts if this seed's schedule
+                    // double-counted an insertion.
+                    encoder.processDecoderInstruction(instruction)
+                }
+            }
         }
 
     @Test
