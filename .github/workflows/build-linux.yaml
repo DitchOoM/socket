@@ -798,6 +798,10 @@ jobs:
       # quic-echo-docker-context comes from.
       - name: Run checks and tests
         timeout-minutes: 45
+        env:
+          # Inventory came back empty on this lane; a skip here means a broken environment, not an
+          # accommodation. See .github/actions/skip-inventory.
+          SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           set -o pipefail
           command -v gdb >/dev/null 2>&1 || sudo apt-get install -y gdb >/dev/null 2>&1 || true
@@ -1170,6 +1174,8 @@ jobs:
           # by the quiche build script (daemon env is not step env). Empty on the JDK-17
           # leg, which is how the monolith had it.
           SIM_FUZZ_ITERATIONS: ${{ matrix.leg.sim-fuzz }}
+          # All three legs build their own natives and inventoried zero skips.
+          SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           if [ "${{ matrix.leg.core-dump }}" = "true" ]; then
             # This is the lane where the intermittent JNI SIGSEGV (recv_info UAF) was first caught, so
