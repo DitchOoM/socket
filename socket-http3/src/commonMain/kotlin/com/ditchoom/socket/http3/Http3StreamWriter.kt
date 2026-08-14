@@ -34,8 +34,9 @@ import kotlinx.coroutines.sync.withLock
  * and every HTTP/3 write inherits it. `Http3StreamWriteConsolidationTest` fails the build if a new
  * direct `stream.write(...)` appears in this module.
  *
- * Not thread-safe by itself — streams that require serialized access (the control stream, the QPACK
- * encoder/decoder streams) pass their owner's [Mutex] to the methods that take one.
+ * Not thread-safe by itself. The control and QPACK **encoder** streams pass their owner's [Mutex] to
+ * the methods that take one; the QPACK **decoder** stream does not appear here, because
+ * [QpackDecoderStream] owns its lock together with the accounting ordered against it.
  */
 internal class Http3StreamWriter(
     private val pool: BufferPool,
@@ -134,17 +135,23 @@ internal class Http3StreamWriter(
         }
     }
 
-    /** Encode and write one QPACK decoder-stream instruction (RFC 9204 §4.4) under [mutex]. */
+    /**
+     * Encode and write one QPACK decoder-stream instruction (RFC 9204 §4.4).
+     *
+     * No `mutex` parameter, unlike its encoder-stream sibling: serialization for this stream belongs to
+     * [QpackDecoderStream], which holds the lock *and* the acknowledgment accounting that must be
+     * ordered with the write. Taking a lock here as well would be the second lock on one stream that
+     * owner exists to remove.
+     */
     suspend fun writeDecoderInstruction(
         stream: ByteSink,
-        mutex: Mutex,
         instruction: QpackDecoderInstruction,
     ) {
         val buffer = pool.allocate(DECODER_INSTRUCTION_CAPACITY)
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            mutex.withLock { stream.emit(buffer) }
+            stream.emit(buffer)
         } finally {
             buffer.freeIfNeeded()
         }

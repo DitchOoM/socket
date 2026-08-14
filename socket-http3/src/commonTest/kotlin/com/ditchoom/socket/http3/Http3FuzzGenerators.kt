@@ -245,7 +245,7 @@ object Http3FuzzGenerators {
         private val encoderToDecoder = ArrayDeque<QpackEncoderInstruction>()
         private val decoderToEncoder = ArrayDeque<QpackDecoderInstruction>()
         val encoder = QpackEncoder(capacity, maxBlockedStreams) { encoderToDecoder.addLast(it) }
-        val decoder = QpackDecoder(capacity) { decoderToEncoder.addLast(it) }
+        val decoder = QpackDecoder(capacity, RecordingQpackDecoderStream { decoderToEncoder.addLast(it) })
 
         suspend fun pump() {
             while (encoderToDecoder.isNotEmpty() || decoderToEncoder.isNotEmpty()) {
@@ -382,7 +382,10 @@ object Http3FuzzGenerators {
             while (reader.nextFrame() != null) Unit
         }
         tolerate {
-            QpackDecoder(maxCapacity = 0) {}.decodeSection(buffer(wire), streamId = QuicStreamId(0L), scratchPool = null)
+            QpackDecoder(
+                maxCapacity = 0,
+                RecordingQpackDecoderStream(),
+            ).decodeSection(buffer(wire), streamId = QuicStreamId(0L), scratchPool = null)
         }
         tolerate {
             val reader = QpackInstructionReader.encoder(OneShotByteStream(buffer(wire)), decoderPool())

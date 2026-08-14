@@ -223,12 +223,17 @@ class Http3Connection private constructor(
     // non-zero QPACK_MAX_TABLE_CAPACITY; until then (and against a capacity-0 peer) requests encode
     // statically. The write mutexes serialize bytes on each single-writer QPACK uni stream, since
     // multiple coroutines (the router + per-request encodes/decodes) emit on them concurrently.
-    private val decoder = QpackDecoder(QPACK_MAX_TABLE_CAPACITY) { writeDecoderInstruction(it) }
+    private val decoderAcks =
+        object : QpackDecoderStream() {
+            override suspend fun write(instruction: QpackDecoderInstruction) = writeDecoderInstruction(instruction)
+        }
+    private val decoder = QpackDecoder(QPACK_MAX_TABLE_CAPACITY, decoderAcks)
 
     @Volatile
     private var encoder: QpackEncoder? = null
     private val encoderStreamWriteMutex = Mutex()
-    private val decoderStreamWriteMutex = Mutex()
+    // No decoderStreamWriteMutex: [decoderAcks] owns that stream's lock, together with the
+    // acknowledgment accounting that has to be ordered with its writes.
 
     /**
      * The last client-initiated stream id the peer will process, from a server GOAWAY frame
@@ -577,9 +582,11 @@ class Http3Connection private constructor(
      */
     private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction) {
         try {
-            streamWriter.writeDecoderInstruction(qpackDecoderStream, decoderStreamWriteMutex, instruction)
+            streamWriter.writeDecoderInstruction(qpackDecoderStream, instruction)
         } catch (_: QuicCloseException) {
-            // Connection already closed — the ack/ICI is moot. See KDoc.
+            // Connection already closed — the ack/ICI is moot. See KDoc. The owner's count still
+            // advances past a swallowed close, which is harmless precisely because the connection is
+            // gone: there is no peer left to desynchronize from.
         }
     }
 

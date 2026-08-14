@@ -5,8 +5,6 @@ import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -17,15 +15,16 @@ import kotlinx.coroutines.sync.withLock
  * the peer's encoder-stream instructions to it ([applyEncoderInstruction]), and decodes encoded field
  * sections ([decodeSection]) — static and dynamic representations alike. Field sections that reference
  * not-yet-inserted entries **block** until [applyEncoderInstruction] catches the table up to their
- * Required Insert Count (RFC 9204 §2.2.1). Acknowledgments flow back to the peer's encoder via [emit].
+ * Required Insert Count (RFC 9204 §2.2.1). Acknowledgments flow back to the peer's encoder through
+ * [decoderStream], which owns both the decoder stream's write lock and the acknowledgment accounting
+ * that has to stay ordered with those writes — see [QpackDecoderStream] for why that is one object.
  *
  * One instance per connection; [maxCapacity] is the `SETTINGS_QPACK_MAX_TABLE_CAPACITY` *we* advertise
- * (the ceiling the peer's encoder must respect). [emit] writes a decoder-stream instruction on our
- * QPACK decoder uni stream.
+ * (the ceiling the peer's encoder must respect).
  */
 class QpackDecoder(
     maxCapacity: Long,
-    private val emit: suspend (QpackDecoderInstruction) -> Unit,
+    private val decoderStream: QpackDecoderStream,
 ) {
     private val table = QpackDynamicTable(maxCapacity)
 
@@ -36,79 +35,6 @@ class QpackDecoder(
     // while concurrent decodeSection calls (per-request coroutines on Dispatchers.Default) read it.
     // Never held across the blocking await in decodeSection — only around the brief mutate/decode.
     private val mutex = Mutex()
-
-    /**
-     * Our model of the peer encoder's **Known Received Count** — how many of our insertions it already
-     * considers acknowledged (RFC 9204 §2.1.4).
-     *
-     * A Section Acknowledgment does not only acknowledge its stream: it *implicitly* acknowledges every
-     * dynamic-table insertion up to that section's Required Insert Count. So the two decoder-stream
-     * instructions we send both advance the peer's count, and an Insert Count Increment must only cover
-     * insertions **not already covered that way** — the increment is a delta against this, never a flat
-     * one-per-insert.
-     *
-     * Sending one per insert regardless double-counts, and the peer is required to kill the connection
-     * for it (`QPACK_DECODER_STREAM_ERROR`, 0x202, "increases the Known Received Count beyond what the
-     * encoder has sent"). Whether it fired depended purely on which of the two instructions we emitted
-     * first: increment-then-ack is harmless, because the ack's jump to the Required Insert Count is then
-     * a no-op — but ack-then-increment adds on top of a count the ack already advanced. Both emissions
-     * happen off different coroutines (the encoder-stream router vs. a per-request decode), so the order
-     * was a race, which is why this surfaced as a rare dynamic-QPACK-only flake rather than a hard break.
-     */
-    private var acknowledgedInsertCount = InsertCount.ZERO
-
-    /**
-     * Serializes decoder-stream emissions **together with** the [acknowledgedInsertCount] update.
-     *
-     * Held across the emit on purpose: the count is only correct if the order instructions reach the
-     * wire is the order they were accounted for. Computing under a lock and emitting outside it would
-     * reintroduce the same race one level down. Distinct from [mutex] — that one guards table state and
-     * must never be held across I/O.
-     *
-     * Because it *is* held across a caller-supplied [emit], both acquisitions pass the current coroutine
-     * as the mutex **owner**. An `emit` that re-entered this decoder would then fail immediately with
-     * `IllegalStateException` instead of deadlocking silently on itself. Nothing does that today — the
-     * lambda writes a QUIC stream — and this is what keeps it that way loudly rather than by convention.
-     *
-     * Deadlock is otherwise ruled out by lock ordering: [mutex] is always released before this is taken,
-     * so no code path ever holds one while acquiring the other.
-     */
-    private val ackMutex = Mutex()
-
-    /**
-     * Tell the peer's encoder we have processed insertions up to [upTo], as a delta against what it
-     * already knows ([acknowledgedInsertCount]). Emits nothing when a Section Acknowledgment has already
-     * carried the count that far — an Increment of zero is itself a decoder-stream error (§4.4.3).
-     */
-    private suspend fun emitInsertCountIncrement(upTo: InsertCount) {
-        ackMutex.withLock(currentCoroutineContext()[Job]) {
-            // [InsertCount.advanceFrom], not `minus`: subtraction is partial, and [upTo] is captured
-            // outside this lock — in [applyEncoderInstruction], under the table mutex — so by the time
-            // this coroutine holds the lock, [acknowledgedInsertCount] may already have moved past it.
-            // A Section Acknowledgment on another coroutine is enough, and so is a second peer encoder
-            // stream, which nothing currently forbids. Subtracting first and testing the sign second
-            // would let the peer decide whether a `require` fires. Null means already covered, which is
-            // also why an Increment of zero — itself a decoder-stream error (§4.4.3) — is never emitted.
-            //
-            // Subtraction (here, inside advanceFrom) remains the ONLY route to an InsertCountDelta, so
-            // the shape of #353's bug — handing InsertCountIncrement a flat `1` — still does not compile.
-            val increment = upTo.advanceFrom(acknowledgedInsertCount) ?: return@withLock
-            emit(QpackDecoderInstruction.InsertCountIncrement(increment))
-            // Only after a successful write: a failed emit never reached the peer, so its count did not move.
-            acknowledgedInsertCount = upTo
-        }
-    }
-
-    /** Acknowledge [streamId]'s section, recording the insertions [requiredInsertCount] implicitly covers. */
-    private suspend fun emitSectionAck(
-        streamId: QuicStreamId,
-        requiredInsertCount: InsertCount,
-    ) {
-        ackMutex.withLock(currentCoroutineContext()[Job]) {
-            emit(QpackDecoderInstruction.SectionAck(streamId))
-            if (requiredInsertCount > acknowledgedInsertCount) acknowledgedInsertCount = requiredInsertCount
-        }
-    }
 
     /** Current number of insertions into the decoder table (RFC 9204 §3.2.4) — for tests/diagnostics. */
     val insertCountValue: InsertCount get() = table.insertCount
@@ -147,11 +73,11 @@ class QpackDecoder(
                 insertCount.value = table.insertCount
                 table.insertCount
             }
-        // Emit outside the table lock (it does stream I/O). The count is reported unconditionally and
-        // [emitInsertCountIncrement] takes the DELTA against what the peer's encoder already knows, so a
+        // Report outside the table lock (it does stream I/O). The count is reported unconditionally and
+        // [QpackDecoderStream.reportInsertsUpTo] takes the DELTA against what the peer already knows, so a
         // SetCapacity — which inserts nothing — yields a zero delta and emits nothing. That is why there
         // is no "did it insert?" flag to carry out of the lock: the delta already answers it.
-        emitInsertCountIncrement(totalInserts)
+        decoderStream.reportInsertsUpTo(totalInserts)
     }
 
     /**
@@ -195,12 +121,14 @@ class QpackDecoder(
         } catch (e: Throwable) {
             throw Http3StreamException(Http3Violation.QpackDecompressionFailed(e))
         }
-        if (prefix.requiredInsertCount > InsertCount.ZERO) emitSectionAck(streamId, prefix.requiredInsertCount)
+        if (prefix.requiredInsertCount > InsertCount.ZERO) {
+            decoderStream.acknowledgeSection(streamId, prefix.requiredInsertCount)
+        }
         return fields
     }
 
     /** Notify the peer's encoder that [streamId]'s outstanding section references are abandoned (§4.4.2). */
-    suspend fun cancelStream(streamId: QuicStreamId) = emit(QpackDecoderInstruction.StreamCancellation(streamId))
+    suspend fun cancelStream(streamId: QuicStreamId) = decoderStream.cancelStream(streamId)
 
     private fun decodeFieldLine(
         buffer: ReadBuffer,

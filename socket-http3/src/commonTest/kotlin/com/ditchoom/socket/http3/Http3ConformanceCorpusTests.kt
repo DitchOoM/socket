@@ -209,7 +209,7 @@ class Http3ConformanceCorpusTests {
     fun qpack_malformedFieldSections_areDecompressionFailed() =
         runTest {
             for (case in malformedSections) {
-                val decoder = QpackDecoder(maxCapacity = 4096) { /* no decoder-stream output for RIC=0 */ }
+                val decoder = QpackDecoder(maxCapacity = 4096, RecordingQpackDecoderStream()) // RIC=0 sections produce no output
                 val e =
                     assertFailsWith<Http3StreamException>("expected decode failure for: ${case.label}") {
                         decoder.decodeSection(bufferOf(*case.bytes.toIntArray()), streamId = QuicStreamId(0L), scratchPool = null)
@@ -222,7 +222,7 @@ class Http3ConformanceCorpusTests {
     fun qpack_validStaticSection_decodes() =
         runTest {
             // Positive control: RIC=0,Base=0 then an Indexed Field Line, static index 17 = (:method, GET).
-            val decoder = QpackDecoder(maxCapacity = 4096) {}
+            val decoder = QpackDecoder(maxCapacity = 4096, RecordingQpackDecoderStream())
             val fields = decoder.decodeSection(bufferOf(0x00, 0x00, 0xD1), streamId = QuicStreamId(0L), scratchPool = null)
             assertEquals(listOf(QpackHeaderField(":method", "GET")), fields)
         }

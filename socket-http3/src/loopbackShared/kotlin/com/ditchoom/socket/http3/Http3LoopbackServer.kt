@@ -104,15 +104,20 @@ internal class Http3LoopbackServer(
     // Dynamic-QPACK state (only when qpackCapacity > 0). One server instance serves one connection in
     // the tests, so per-instance state is fine. The decoder decodes requests; the encoder (created once
     // the client's SETTINGS reveal its table capacity) compresses responses.
+    private val decoderAcks =
+        object : QpackDecoderStream() {
+            override suspend fun write(instruction: QpackDecoderInstruction) = writeQpackDecoderInstruction(instruction)
+        }
+
     private val serverDecoder: QpackDecoder? =
-        if (qpackCapacity > 0) QpackDecoder(qpackCapacity) { writeQpackDecoderInstruction(it) } else null
+        if (qpackCapacity > 0) QpackDecoder(qpackCapacity, decoderAcks) else null
 
     @Volatile
     private var serverEncoder: QpackEncoder? = null
     private var qpackEncoderStream: QuicByteStream? = null
     private var qpackDecoderStream: QuicByteStream? = null
     private val encoderStreamWriteMutex = Mutex()
-    private val decoderStreamWriteMutex = Mutex()
+    // No decoderStreamWriteMutex: [decoderAcks] owns that stream's lock. See [QpackDecoderStream].
 
     // Push state: the client's advertised MAX_PUSH_ID (-1 until/unless it enables push), and the next
     // server-allocated push id. The server may use ids 0..clientMaxPushId.
@@ -449,7 +454,8 @@ internal class Http3LoopbackServer(
         try {
             QpackDecoderInstructionCodec.encode(buffer, instruction)
             buffer.resetForRead()
-            decoderStreamWriteMutex.withLock { stream.writeFully(buffer, config.writePolicy.toDeadline()) }
+            // Already serialized by [decoderAcks]'s lock — this is called only from its `write`.
+            stream.writeFully(buffer, config.writePolicy.toDeadline())
         } finally {
             buffer.freeIfNeeded()
         }

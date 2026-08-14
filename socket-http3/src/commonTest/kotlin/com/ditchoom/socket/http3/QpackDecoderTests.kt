@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
 class QpackDecoderTests {
     private val emitted = mutableListOf<QpackDecoderInstruction>()
 
-    private fun decoder(maxCapacity: Long = 4096) = QpackDecoder(maxCapacity) { emitted += it }
+    private fun decoder(maxCapacity: Long = 4096) = QpackDecoder(maxCapacity, RecordingQpackDecoderStream { emitted += it })
 
     /** Build an encoded field section: prefix(RIC, base) then [writeLines] writes the representations. */
     private fun section(
