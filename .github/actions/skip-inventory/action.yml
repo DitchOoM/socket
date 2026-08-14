@@ -100,7 +100,10 @@ runs:
             }' | sort -t'|' -k2 -rn
           untypedNote
           echo
-          echo "Set \`SOCKET_REQUIRE_ALL_TESTS=1\` on this lane to turn these into failures."
+          echo "Set \`SOCKET_REQUIRE_ALL_TESTS=1\` on this lane to turn these into failures — except"
+          echo "rows recorded with \`SkipGate.HostCannotProvideIt\`, which name a capability the host"
+          echo "does not have and stay exempt on purpose (a lane cannot install one, so gating on it"
+          echo "would only make the lane permanently red)."
           echo "(On an Apple **simulator** lane that variable only arrives via the build's"
           echo "\`SIMCTL_CHILD_\` forwarding — \`simctl spawn\` drops the ambient environment.)"
         } >> "$GITHUB_STEP_SUMMARY"
