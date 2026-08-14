@@ -19,6 +19,15 @@ runs:
       shell: bash
       if: ${{ !cancelled() }}
       run: |
+        # `+e`, explicitly, and not just as a default: a composite `shell: bash` step is run as
+        # `bash --noprofile --norc -e -o pipefail {0}`, so errexit is ON before the first line of
+        # this script and `set -uo pipefail` does not clear it. Under it, `grep` finding nothing —
+        # its documented exit 1 — killed the whole step, and because the abort happened inside a
+        # `VAR=$(...)` assignment it printed NOTHING: a lane whose tests had all passed failed with
+        # a bare "Process completed with exit code 1". That is the reverse of this action's stated
+        # contract two comments up, and it took out the three simulator lanes it exists to measure.
+        # Every `grep` here is a question whose answer may legitimately be "none".
+        set +e
         set -uo pipefail
 
         # `find | xargs grep`, not `grep -r --include` over a list of directories: that form
@@ -95,3 +104,7 @@ runs:
           echo "(On an Apple **simulator** lane that variable only arrives via the build's"
           echo "\`SIMCTL_CHILD_\` forwarding — \`simctl spawn\` drops the ambient environment.)"
         } >> "$GITHUB_STEP_SUMMARY"
+
+        # The step's status is the last command's, and the last command here is a redirect into a
+        # file the runner owns. Say the contract instead of inheriting it.
+        exit 0

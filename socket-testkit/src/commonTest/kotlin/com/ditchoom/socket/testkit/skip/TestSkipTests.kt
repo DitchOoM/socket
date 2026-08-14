@@ -3,6 +3,7 @@ package com.ditchoom.socket.testkit.skip
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -68,6 +69,32 @@ class TestSkipTests {
         // through a `js(...)` block that no test had ever run — they compiled, which is not the same as
         // working, and a throw there would have turned every skip on those lanes into an error.
         assertNull(testkitEnv("SOCKET_TESTKIT_VARIABLE_THAT_IS_NEVER_SET"))
+    }
+
+    @Test
+    fun onlyALaneGatedSkipFailsWhenTheLaneRequiresEveryTest() {
+        // The whole decision matrix, with no environment involved. It is here because the one case
+        // that was wrong — a host-capability skip against SOCKET_REQUIRE_ALL_TESTS=1 — could
+        // previously only be observed by running a macOS lane and watching it go red.
+        assertTrue(skipIsForbidden(SkipGate.LaneMustRunEveryTest, "1"))
+        assertFalse(skipIsForbidden(SkipGate.LaneMustRunEveryTest, null))
+        assertFalse(skipIsForbidden(SkipGate.LaneMustRunEveryTest, "0"))
+
+        // Not even on a lane that demands every test: the lane cannot install a host capability, so
+        // gating on it would make the lane permanently red rather than measure anything.
+        val hostGate = SkipGate.HostCannotProvideIt("a bindable 127.0.0.2 loopback alias")
+        assertFalse(skipIsForbidden(hostGate, "1"))
+        assertFalse(skipIsForbidden(hostGate, null))
+    }
+
+    @Test
+    fun aHostExemptSkipIsStillRecordedAndStillCounted() {
+        // Exempt from failing is not exempt from being seen: the inventory greps this shape, so a
+        // host that quietly stops providing the capability still shows up as a skip on the page.
+        val marker = skipMarker("QuicMigrationLoopbackTests", SkipReason.HostBehaviourDiffers("no 127.0.0.2"))
+
+        assertTrue(marker.startsWith(SKIP_MARKER))
+        assertContains(marker, "site=QuicMigrationLoopbackTests")
     }
 
     @Test

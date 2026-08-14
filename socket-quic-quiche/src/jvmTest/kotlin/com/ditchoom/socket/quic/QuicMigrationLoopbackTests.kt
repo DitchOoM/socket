@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.socket.testkit.skip.SkipGate
 import com.ditchoom.socket.testkit.skip.SkipReason
 import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CompletableDeferred
@@ -116,12 +117,19 @@ class QuicMigrationLoopbackTests {
         if (!bindable) {
             // Reported, not escalated: see the docstring. It still has to be *visible*, because a host
             // that quietly stopped being able to bind the alias looks exactly like one that never could.
+            //
+            // The gate has to say so. Recording this under the default lane gate made every
+            // SOCKET_REQUIRE_ALL_TESTS=1 macOS lane fail here — a promise the lane cannot keep, since
+            // the alias needs a privileged `ifconfig` no lane setting installs. Escalation for this one
+            // stays with QUIC_MIGRATION_REQUIRE_RUN below, which is set only where 127.0.0.2 *is*
+            // bindable and where a sudden un-bindability is therefore a real regression.
             recordSkip(
                 QuicMigrationLoopbackTests::class,
                 SkipReason.HostBehaviourDiffers(
                     "loopback alias 127.0.0.2 is not bindable on this host; binding it needs a privileged " +
                         "`ifconfig lo0 alias` on macOS/BSD, which this suite does not require",
                 ),
+                SkipGate.HostCannotProvideIt("a bindable 127.0.0.2 loopback alias (privileged `ifconfig lo0 alias` on macOS/BSD)"),
             )
             assumeTrue("Loopback alias 127.0.0.2 not bindable on this host (needs a privileged alias)", false)
         }
