@@ -39,7 +39,8 @@ class LinuxWebTransportTest : WebTransportTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun openSingleSession(url: String): WebTransportSession = webTransportSupport().connect(url, loopbackClientConfig(clientTraceSink))
+    override suspend fun openSingleSession(url: String): WebTransportSession =
+        webTransportSupport().connect(url, loopbackClientConfig(clientTraceSink))
 
     override suspend fun openMultiplexed(url: String): MultiplexedWebTransport =
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig(clientTraceSink))
