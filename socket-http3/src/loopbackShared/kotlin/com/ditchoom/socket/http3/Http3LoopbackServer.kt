@@ -169,7 +169,13 @@ internal class Http3LoopbackServer(
                 Http3StreamType.QPACK_DECODER ->
                     if (serverDecoder != null) {
                         val reader = QpackInstructionReader.decoder(stream, processor)
-                        while (true) serverEncoder?.processDecoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
+                        while (true) {
+                            // Read FIRST, then dispatch — a safe call does not evaluate its argument, so the
+                            // one-liner this replaces spun at 100% CPU whenever there was no encoder yet.
+                            // Same bug, same shape as Http3ServerConnection's; see the comment there.
+                            val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
+                            serverEncoder?.processDecoderInstruction(instruction)
+                        }
                     } else {
                         drain(stream)
                     }

@@ -167,6 +167,10 @@ class Http3Connection private constructor(
     // The one place this connection puts bytes on a stream — see Http3StreamWriter.
     private val streamWriter = Http3StreamWriter(pool, config)
 
+    // RFC 9114 §6.2 / RFC 9204 §4.2: one control and one of each QPACK stream per peer. Every later
+    // one is a connection error — see CriticalStreamGuard for what a duplicate actually breaks.
+    private val criticalStreams = CriticalStreamGuard()
+
     private val pushMutex = Mutex()
     private val pushEntries = mutableMapOf<Long, PushEntry>()
     private val pushChannel = Channel<Http3ServerPush>(Channel.UNLIMITED)
@@ -704,11 +708,20 @@ class Http3Connection private constructor(
                 return
             }
             when (Http3StreamReader(stream, processor).nextVarInt()) {
-                Http3StreamType.CONTROL -> handleControl(Http3StreamReader(stream, processor))
+                Http3StreamType.CONTROL ->
+                    claimCriticalStream(CriticalStreamType.CONTROL) {
+                        handleControl(Http3StreamReader(stream, processor))
+                    }
                 // The peer's QPACK encoder stream drives our decoder's dynamic table (RFC 9204 §4.3).
-                Http3StreamType.QPACK_ENCODER -> readPeerEncoderInstructions(stream, processor)
+                Http3StreamType.QPACK_ENCODER ->
+                    claimCriticalStream(CriticalStreamType.QPACK_ENCODER) {
+                        readPeerEncoderInstructions(stream, processor)
+                    }
                 // The peer's QPACK decoder stream acks our encoder's inserts/sections (§4.4).
-                Http3StreamType.QPACK_DECODER -> readPeerDecoderInstructions(stream, processor)
+                Http3StreamType.QPACK_DECODER ->
+                    claimCriticalStream(CriticalStreamType.QPACK_DECODER) {
+                        readPeerDecoderInstructions(stream, processor)
+                    }
                 // A server-initiated push stream (RFC 9114 §4.6): the handler reads it and parks until
                 // the pushed response is consumed, releasing the processor + closing the stream itself.
                 Http3StreamType.PUSH -> {
@@ -738,6 +751,23 @@ class Http3Connection private constructor(
                 stream.close()
             }
         }
+    }
+
+    /**
+     * Run [handle] as the reader of this connection's one [type] stream, or abort the connection when
+     * the peer has already opened one (RFC 9114 §6.2 / RFC 9204 §4.2 — `H3_STREAM_CREATION_ERROR`).
+     *
+     * The guard sits here, in front of the handler, rather than inside each handler: what a duplicate
+     * breaks is the *single-reader* assumption every one of them is written on, so admitting it and
+     * then defending each component separately is strictly more work and more places to get it wrong.
+     */
+    private suspend fun claimCriticalStream(
+        type: CriticalStreamType,
+        handle: suspend () -> Unit,
+    ) {
+        val duplicate = criticalStreams.claim(type)
+        if (duplicate != null) return abortConnection(Http3StreamException(duplicate))
+        handle()
     }
 
     /**

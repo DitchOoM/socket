@@ -260,3 +260,24 @@ object Http3StreamType {
     const val QPACK_ENCODER: Long = 0x02
     const val QPACK_DECODER: Long = 0x03
 }
+
+/**
+ * The three unidirectional streams a peer may open **exactly once** each: the control stream
+ * (RFC 9114 §6.2) and the two QPACK instruction streams (RFC 9204 §4.2). A second instance of any of
+ * them is a connection error of type `H3_STREAM_CREATION_ERROR` — see
+ * [Http3Violation.DuplicateCriticalStream] and [CriticalStreamGuard].
+ *
+ * An enum rather than the bare [Http3StreamType] varint, so that "which critical stream" cannot be
+ * asked about [Http3StreamType.PUSH] or a GREASE type — those are legitimately repeatable, and a
+ * duplicate-detection state keyed by a raw `Long` would happily and wrongly accept them.
+ */
+enum class CriticalStreamType(
+    /** The §6.2 stream-type prefix that identifies this stream on the wire. */
+    val wireType: Long,
+    /** How the stream is named in a diagnostic. */
+    val label: String,
+) {
+    CONTROL(Http3StreamType.CONTROL, "control"),
+    QPACK_ENCODER(Http3StreamType.QPACK_ENCODER, "QPACK encoder"),
+    QPACK_DECODER(Http3StreamType.QPACK_DECODER, "QPACK decoder"),
+}
