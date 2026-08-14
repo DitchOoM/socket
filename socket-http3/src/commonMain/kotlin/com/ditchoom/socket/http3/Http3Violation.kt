@@ -277,11 +277,11 @@ sealed interface Http3Violation {
 
     /** An Insert Count Increment pushed the Known Received Count past the number of inserts. */
     data class QpackInsertCountIncrementPastInserts(
-        val increment: Long,
+        val increment: InsertCountDelta,
     ) : Http3Violation {
         override val errorCode get() = Http3ErrorCode.QPACK_DECODER_STREAM_ERROR
 
-        override fun describe() = "Insert Count Increment $increment pushes Known Received Count past inserts"
+        override fun describe() = "Insert Count Increment ${increment.value} pushes Known Received Count past inserts"
     }
 
     /** A Section Acknowledgment named a stream with no outstanding section. */

@@ -60,8 +60,8 @@ class QpackInstructionsTests {
             decoderRoundTrip(QpackDecoderInstruction.StreamCancellation(QuicStreamId(200L))),
         )
         assertEquals(
-            QpackDecoderInstruction.InsertCountIncrement(5),
-            decoderRoundTrip(QpackDecoderInstruction.InsertCountIncrement(5)),
+            QpackDecoderInstruction.InsertCountIncrement(InsertCountDelta(5)),
+            decoderRoundTrip(QpackDecoderInstruction.InsertCountIncrement(InsertCountDelta(5))),
         )
     }
 

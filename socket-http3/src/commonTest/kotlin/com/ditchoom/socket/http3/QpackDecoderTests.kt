@@ -26,7 +26,7 @@ class QpackDecoderTests {
         writeLines: PlatformBuffer.() -> Unit,
     ): PlatformBuffer {
         val buf = BufferFactory.Default.allocate(256)
-        QpackFieldSectionPrefix.encode(buf, requiredInsertCount, base, maxEntries)
+        QpackFieldSectionPrefix.encode(buf, InsertCount(requiredInsertCount), base, maxEntries)
         buf.writeLines()
         buf.resetForRead()
         return buf
@@ -47,7 +47,7 @@ class QpackDecoderTests {
             d.applyEncoderInstruction(QpackEncoderInstruction.SetCapacity(4096))
             d.applyEncoderInstruction(QpackEncoderInstruction.InsertWithLiteralName("x-a", "1")) // abs 0
             d.applyEncoderInstruction(QpackEncoderInstruction.InsertWithLiteralName("x-b", "2")) // abs 1
-            assertEquals(2L, d.insertCountValue)
+            assertEquals(InsertCount(2), d.insertCountValue)
 
             // RIC=2, Base=2: relIndex 1 → abs 0 (x-a), relIndex 0 → abs 1 (x-b).
             val buf =

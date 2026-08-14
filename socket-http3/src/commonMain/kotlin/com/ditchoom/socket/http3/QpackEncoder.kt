@@ -50,7 +50,7 @@ class QpackEncoder(
     private val emit: suspend (QpackEncoderInstruction) -> Unit,
 ) {
     private val table = QpackDynamicTable(peerMaxCapacity)
-    private var knownReceivedCount = 0L
+    private var knownReceivedCount = InsertCount.ZERO
 
     // Serializes the stateful encode path: concurrent encodeSection (per-request coroutines) and
     // processDecoderInstruction (the decoder-stream router) must not interleave on the table/KRC.
@@ -67,12 +67,12 @@ class QpackEncoder(
     private val entryRefCount = HashMap<Long, Int>()
 
     private class OutstandingSection(
-        val requiredInsertCount: Long,
+        val requiredInsertCount: InsertCount,
         val referencedAbsolutes: List<Long>,
     )
 
     /** Current dynamic-table insert count — for tests/diagnostics. */
-    val insertCountValue: Long get() = table.insertCount
+    val insertCountValue: InsertCount get() = table.insertCount
 
     /**
      * Raise the dynamic table capacity to [capacity] (≤ [peerMaxCapacity]) and tell the peer's decoder
@@ -112,8 +112,8 @@ class QpackEncoder(
                 if (op is Op.DynamicIndexed) maxReferencedAbsolute = maxOf(maxReferencedAbsolute, op.absoluteIndex)
                 ops += op
             }
-            val requiredInsertCount = if (maxReferencedAbsolute < 0) 0L else maxReferencedAbsolute + 1
-            val base = requiredInsertCount // all dynamic references are pre-Base (relative)
+            val requiredInsertCount = InsertCount(if (maxReferencedAbsolute < 0) 0L else maxReferencedAbsolute + 1)
+            val base = requiredInsertCount.value // all dynamic references are pre-Base (relative)
 
             val size = prefixUpperBound + ops.sumOf { it.maxSize(base) }
             val buffer = pool.allocate(size)
@@ -121,7 +121,7 @@ class QpackEncoder(
             for (op in ops) op.encode(buffer, base)
             buffer.resetForRead()
 
-            if (requiredInsertCount > 0) {
+            if (requiredInsertCount > InsertCount.ZERO) {
                 // Commit the pins now that the section is fully built and will be sent.
                 for (absolute in sectionRefs) entryRefCount[absolute] = (entryRefCount[absolute] ?: 0) + 1
                 outstandingSections
@@ -160,7 +160,10 @@ class QpackEncoder(
             // Reference it when it's acknowledged (never blocks) or when blocked-stream budget lets us
             // risk a reference the peer may not have processed yet (RFC 9204 §2.1.2). A pin keeps a later
             // insert in this same section from evicting it.
-            if (dynamicExact < knownReceivedCount || canBlock) {
+            // `.value` because this compares an absolute *index* against a *count*: entry i is
+            // acknowledged exactly when i < KRC. The two are different quantities that happen to
+            // share a number line, which is why the conversion is explicit rather than implied.
+            if (dynamicExact < knownReceivedCount.value || canBlock) {
                 sectionRefs += dynamicExact
                 return Op.DynamicIndexed(dynamicExact)
             }
@@ -251,7 +254,7 @@ class QpackEncoder(
         sectionRefs: List<Long>,
     ): Long? {
         val entry = table.getByAbsolute(absoluteIndex) ?: return null
-        val relativeIndex = table.insertCount - 1 - absoluteIndex
+        val relativeIndex = table.insertCount.value - 1 - absoluteIndex
         val inserted =
             table.insertIfEvictable(entry.name, entry.value) { e ->
                 !entryRefCount.containsKey(e.absoluteIndex) && e.absoluteIndex !in sectionRefs
@@ -268,9 +271,14 @@ class QpackEncoder(
     suspend fun processDecoderInstruction(instruction: QpackDecoderInstruction) {
         mutex.withLock {
             when (instruction) {
+                // These two branches are why the counts are typed. This one ADDS a delta; the
+                // SectionAck branch below JUMPS to an absolute. With both quantities as bare `Long`s
+                // nothing stopped an absolute being added here or a delta being assigned there — and
+                // the #353 bug was exactly a delta appearing where a difference of absolutes belonged.
+                // `plus` is now the only operator that accepts a delta, and it returns an InsertCount.
                 is QpackDecoderInstruction.InsertCountIncrement -> {
                     val updated = knownReceivedCount + instruction.increment
-                    if (instruction.increment <= 0 || updated > table.insertCount) {
+                    if (instruction.increment <= InsertCountDelta.ZERO || updated > table.insertCount) {
                         throw Http3StreamException(Http3Violation.QpackInsertCountIncrementPastInserts(instruction.increment))
                     }
                     knownReceivedCount = updated

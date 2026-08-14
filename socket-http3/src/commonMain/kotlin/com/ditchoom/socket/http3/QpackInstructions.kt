@@ -51,9 +51,14 @@ sealed interface QpackDecoderInstruction {
         val streamId: QuicStreamId,
     ) : QpackDecoderInstruction
 
-    /** Insert Count Increment (§4.4.3): `00` + 6-bit increment — entries inserted since the last ack. */
+    /**
+     * Insert Count Increment (§4.4.3): `00` + 6-bit increment — entries inserted since the last ack.
+     *
+     * [InsertCountDelta], not a bare `Long`: this is the one relative quantity in QPACK's counting,
+     * and #353 was a flat `1` emitted where the difference of two absolute counts belonged.
+     */
     data class InsertCountIncrement(
-        val increment: Long,
+        val increment: InsertCountDelta,
     ) : QpackDecoderInstruction
 }
 
@@ -158,7 +163,7 @@ object QpackDecoderInstructionCodec {
             is QpackDecoderInstruction.StreamCancellation ->
                 QpackPrefixedInteger.encode(buffer, instruction.streamId.id, prefixBits = 6, firstByteFlags = STREAM_CANCELLATION)
             is QpackDecoderInstruction.InsertCountIncrement ->
-                QpackPrefixedInteger.encode(buffer, instruction.increment, prefixBits = 6)
+                QpackPrefixedInteger.encode(buffer, instruction.increment.value, prefixBits = 6)
         }
     }
 
@@ -184,7 +189,12 @@ object QpackDecoderInstructionCodec {
                     QuicStreamId(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6)),
                 )
             else ->
-                QpackDecoderInstruction.InsertCountIncrement(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6))
+                // The wire-decode boundary: QpackPrefixedInteger rejects overflow with a typed
+                // DecodeException and yields non-negative values, so the delta's `require` here can
+                // only fire on a local bug, never on peer input.
+                QpackDecoderInstruction.InsertCountIncrement(
+                    InsertCountDelta(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6)),
+                )
         }
     }
 }

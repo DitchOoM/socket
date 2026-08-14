@@ -30,7 +30,7 @@ class QpackDecoder(
     private val table = QpackDynamicTable(maxCapacity)
 
     // Mirrors table.insertCount; lets a blocked decodeSection await new inserts reactively.
-    private val insertCount = MutableStateFlow(0L)
+    private val insertCount = MutableStateFlow(InsertCount.ZERO)
 
     // Guards table state: applyEncoderInstruction (the encoder-stream router coroutine) mutates it
     // while concurrent decodeSection calls (per-request coroutines on Dispatchers.Default) read it.
@@ -55,7 +55,7 @@ class QpackDecoder(
      * happen off different coroutines (the encoder-stream router vs. a per-request decode), so the order
      * was a race, which is why this surfaced as a rare dynamic-QPACK-only flake rather than a hard break.
      */
-    private var acknowledgedInsertCount = 0L
+    private var acknowledgedInsertCount = InsertCount.ZERO
 
     /**
      * Serializes decoder-stream emissions **together with** the [acknowledgedInsertCount] update.
@@ -80,10 +80,12 @@ class QpackDecoder(
      * already knows ([acknowledgedInsertCount]). Emits nothing when a Section Acknowledgment has already
      * carried the count that far — an Increment of zero is itself a decoder-stream error (§4.4.3).
      */
-    private suspend fun emitInsertCountIncrement(upTo: Long) {
+    private suspend fun emitInsertCountIncrement(upTo: InsertCount) {
         ackMutex.withLock(currentCoroutineContext()[Job]) {
+            // Subtraction is the ONLY way to obtain an InsertCountDelta, so the shape of #353's bug —
+            // handing InsertCountIncrement a flat `1` — no longer type-checks.
             val increment = upTo - acknowledgedInsertCount
-            if (increment <= 0) return@withLock
+            if (increment <= InsertCountDelta.ZERO) return@withLock
             emit(QpackDecoderInstruction.InsertCountIncrement(increment))
             // Only after a successful write: a failed emit never reached the peer, so its count did not move.
             acknowledgedInsertCount = upTo
@@ -93,7 +95,7 @@ class QpackDecoder(
     /** Acknowledge [streamId]'s section, recording the insertions [requiredInsertCount] implicitly covers. */
     private suspend fun emitSectionAck(
         streamId: QuicStreamId,
-        requiredInsertCount: Long,
+        requiredInsertCount: InsertCount,
     ) {
         ackMutex.withLock(currentCoroutineContext()[Job]) {
             emit(QpackDecoderInstruction.SectionAck(streamId))
@@ -102,7 +104,7 @@ class QpackDecoder(
     }
 
     /** Current number of insertions into the decoder table (RFC 9204 §3.2.4) — for tests/diagnostics. */
-    val insertCountValue: Long get() = table.insertCount
+    val insertCountValue: InsertCount get() = table.insertCount
 
     /**
      * Apply one encoder-stream instruction (RFC 9204 §4.3) to the decoder table, emitting an Insert
@@ -186,7 +188,7 @@ class QpackDecoder(
         } catch (e: Throwable) {
             throw Http3StreamException(Http3Violation.QpackDecompressionFailed(e))
         }
-        if (prefix.requiredInsertCount > 0) emitSectionAck(streamId, prefix.requiredInsertCount)
+        if (prefix.requiredInsertCount > InsertCount.ZERO) emitSectionAck(streamId, prefix.requiredInsertCount)
         return fields
     }
 
@@ -289,7 +291,7 @@ class QpackDecoder(
 
     /** Resolve an encoder-stream relative index (RFC 9204 §3.2.5): absolute = insertCount - 1 - index. */
     private fun relativeEntry(relativeIndex: Long): QpackDynamicTable.Entry =
-        table.getByAbsolute(table.insertCount - 1 - relativeIndex)
+        table.getByAbsolute(table.insertCount.value - 1 - relativeIndex)
             ?: throw Http3StreamException(Http3Violation.QpackEncoderRelativeIndexMissing(relativeIndex))
 
     private fun staticName(index: Long): String {

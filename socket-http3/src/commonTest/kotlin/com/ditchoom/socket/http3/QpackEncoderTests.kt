@@ -121,12 +121,12 @@ class QpackEncoderTests {
 
             // Request 1: x-custom is new → inserted into the dynamic table, encoded literally this time.
             assertEquals(fields, roundTrip(p, fields, streamId = 0))
-            assertEquals(1L, p.decoder.insertCountValue, "the new field was inserted once")
-            assertEquals(1L, p.encoder.insertCountValue)
+            assertEquals(InsertCount(1), p.decoder.insertCountValue, "the new field was inserted once")
+            assertEquals(InsertCount(1), p.encoder.insertCountValue)
 
             // Request 2: x-custom is now an acknowledged dynamic entry → referenced, no new insert.
             assertEquals(fields, roundTrip(p, fields, streamId = 4))
-            assertEquals(1L, p.decoder.insertCountValue, "request 2 reused the entry — no second insert")
+            assertEquals(InsertCount(1), p.decoder.insertCountValue, "request 2 reused the entry — no second insert")
         }
 
     /**
@@ -294,20 +294,20 @@ class QpackEncoderTests {
 
             assertEquals(listOf(a), roundTrip(p, listOf(a), streamId = 0)) // insert A (abs 0)
             assertEquals(listOf(b), roundTrip(p, listOf(b), streamId = 4)) // insert B (abs 1) — table now full
-            assertEquals(2L, p.encoder.insertCountValue)
+            assertEquals(InsertCount(2), p.encoder.insertCountValue)
 
             // C is new and the table is full; A (abs 0) is unreferenced, so eviction is safe.
             assertEquals(listOf(c), roundTrip(p, listOf(c), streamId = 8)) // evict A, insert C (abs 2)
-            assertEquals(3L, p.encoder.insertCountValue)
-            assertEquals(3L, p.decoder.insertCountValue, "decoder evicted + inserted in lockstep")
+            assertEquals(InsertCount(3), p.encoder.insertCountValue)
+            assertEquals(InsertCount(3), p.decoder.insertCountValue, "decoder evicted + inserted in lockstep")
 
             // C is now an acknowledged, still-live entry ⇒ referenced (no new insert) and decodes fine.
             assertEquals(listOf(c), roundTrip(p, listOf(c), streamId = 12))
-            assertEquals(3L, p.encoder.insertCountValue, "re-reference of a post-eviction entry inserts nothing")
+            assertEquals(InsertCount(3), p.encoder.insertCountValue, "re-reference of a post-eviction entry inserts nothing")
 
             // A was evicted, so it is unknown again ⇒ treated as brand-new (evicting B this time).
             assertEquals(listOf(a), roundTrip(p, listOf(a), streamId = 16))
-            assertEquals(4L, p.encoder.insertCountValue, "evicted entry re-inserted as new")
+            assertEquals(InsertCount(4), p.encoder.insertCountValue, "evicted entry re-inserted as new")
         }
 
     @Test
@@ -322,7 +322,7 @@ class QpackEncoderTests {
             // Fill the table with A (abs 0) and B (abs 1); full round-trips acknowledge both inserts.
             assertEquals(listOf(a), roundTrip(p, listOf(a), streamId = 0))
             assertEquals(listOf(b), roundTrip(p, listOf(b), streamId = 4))
-            assertEquals(2L, p.encoder.insertCountValue)
+            assertEquals(InsertCount(2), p.encoder.insertCountValue)
 
             // Emit a section on stream 8 that references A (abs 0) and deliver it to the decoder, but
             // HOLD the decoder's Section Acknowledgment — A is now pinned by an in-flight reference.
@@ -335,13 +335,13 @@ class QpackEncoderTests {
             // stream-8 section still references it ⇒ the encoder must NOT insert (encodes C literally).
             val held = p.encoder.encodeSection(listOf(c), streamId = QuicStreamId(12L), pool)
             p.flushEncoderStream()
-            assertEquals(2L, p.encoder.insertCountValue, "pinned entry blocks eviction → no insert")
+            assertEquals(InsertCount(2), p.encoder.insertCountValue, "pinned entry blocks eviction → no insert")
             assertEquals(listOf(c), p.decoder.decodeSection(held, streamId = QuicStreamId(12L), scratchPool = null))
 
             // Now deliver the held acknowledgment; A is released and eviction becomes safe.
             p.flushDecoderStream()
             assertEquals(listOf(c), roundTrip(p, listOf(c), streamId = 16)) // evict A, insert C (abs 2)
-            assertEquals(3L, p.encoder.insertCountValue, "once unpinned, the entry is evictable")
+            assertEquals(InsertCount(3), p.encoder.insertCountValue, "once unpinned, the entry is evictable")
         }
 
     @Test
@@ -361,7 +361,7 @@ class QpackEncoderTests {
             p.flushEncoderStream()
             val blocked = p.encoder.encodeSection(listOf(c), streamId = QuicStreamId(12L), pool)
             p.flushEncoderStream()
-            assertEquals(2L, p.encoder.insertCountValue, "pinned → eviction blocked")
+            assertEquals(InsertCount(2), p.encoder.insertCountValue, "pinned → eviction blocked")
             // Consume the literally-encoded section so the decoder table stays consistent.
             assertEquals(listOf(c), p.decoder.decodeSection(blocked, streamId = QuicStreamId(12L), scratchPool = null))
             p.flushDecoderStream() // ack for stream 12 (no pin to release)
@@ -371,7 +371,7 @@ class QpackEncoderTests {
             p.flushDecoderStream()
 
             assertEquals(listOf(c), roundTrip(p, listOf(c), streamId = 16)) // now free to evict A, insert C
-            assertEquals(3L, p.encoder.insertCountValue, "cancellation unpinned the entry")
+            assertEquals(InsertCount(3), p.encoder.insertCountValue, "cancellation unpinned the entry")
         }
 
     @Test
@@ -385,7 +385,7 @@ class QpackEncoderTests {
             val fields = listOf(QpackHeaderField(":method", "GET"), QpackHeaderField("x-custom", "v1"))
 
             val section = p.encoder.encodeSection(fields, streamId = QuicStreamId(0L), pool)
-            assertEquals(1L, p.encoder.insertCountValue, "the new field was inserted")
+            assertEquals(InsertCount(1), p.encoder.insertCountValue, "the new field was inserted")
 
             val decoding = async { p.decoder.decodeSection(section, streamId = QuicStreamId(0L), scratchPool = null) }
             runCurrent()
@@ -412,7 +412,7 @@ class QpackEncoderTests {
 
             // Stream 4 reuses x-c while it is unacknowledged → referenced, no second insert.
             val s4 = p.encoder.encodeSection(listOf(field), streamId = QuicStreamId(4L), pool)
-            assertEquals(1L, p.encoder.insertCountValue, "referenced the existing entry — no duplicate insert")
+            assertEquals(InsertCount(1), p.encoder.insertCountValue, "referenced the existing entry — no duplicate insert")
             assertEquals(listOf(field), p.decoder.decodeSection(s4, streamId = QuicStreamId(4L), scratchPool = null))
         }
 
@@ -426,7 +426,7 @@ class QpackEncoderTests {
 
             val s0 = p.encoder.encodeSection(listOf(QpackHeaderField("x-a", "1")), streamId = QuicStreamId(0L), pool)
             val s4 = p.encoder.encodeSection(listOf(QpackHeaderField("x-b", "2")), streamId = QuicStreamId(4L), pool)
-            assertEquals(2L, p.encoder.insertCountValue, "both headers inserted for future reuse")
+            assertEquals(InsertCount(2), p.encoder.insertCountValue, "both headers inserted for future reuse")
 
             // s4 was forced literal (budget spent on stream 0): it decodes immediately with NO inserts
             // delivered — a blocking section would have to wait.
@@ -455,14 +455,14 @@ class QpackEncoderTests {
 
             // Fill: 10 * 50 = 500 ≤ 512; an 11th 50-octet entry would need eviction (pressure). Ack all.
             for (i in 0 until 10) assertEquals(listOf(f(i)), roundTrip(p, listOf(f(i)), streamId = (i * 4).toLong()))
-            assertEquals(10L, p.encoder.insertCountValue)
+            assertEquals(InsertCount(10), p.encoder.insertCountValue)
             p.encoderInstructions.clear()
 
             // Re-reference the oldest entry (abs 0): draining + table full ⇒ refreshed via a Duplicate
             // (a cheap encoder-stream index, no value resend) rather than pinned or re-inserted literally.
             assertEquals(listOf(f(0)), roundTrip(p, listOf(f(0)), streamId = 100))
-            assertEquals(11L, p.encoder.insertCountValue, "the draining entry was duplicated (a fresh insert)")
-            assertEquals(11L, p.decoder.insertCountValue, "decoder applied the Duplicate in lockstep")
+            assertEquals(InsertCount(11), p.encoder.insertCountValue, "the draining entry was duplicated (a fresh insert)")
+            assertEquals(InsertCount(11), p.decoder.insertCountValue, "decoder applied the Duplicate in lockstep")
             assertEquals(
                 1,
                 p.encoderInstructions.count { it is QpackEncoderInstruction.Duplicate },
@@ -483,7 +483,7 @@ class QpackEncoderTests {
             p.encoderInstructions.clear()
 
             assertEquals(listOf(f), roundTrip(p, listOf(f), streamId = 4))
-            assertEquals(1L, p.encoder.insertCountValue, "no duplicate — the table has room")
+            assertEquals(InsertCount(1), p.encoder.insertCountValue, "no duplicate — the table has room")
             assertEquals(0, p.encoderInstructions.count { it is QpackEncoderInstruction.Duplicate })
         }
 
@@ -493,7 +493,7 @@ class QpackEncoderTests {
             val encoder = QpackEncoder(4096) { }
             val e =
                 assertFailsWith<Http3StreamException> {
-                    encoder.processDecoderInstruction(QpackDecoderInstruction.InsertCountIncrement(5))
+                    encoder.processDecoderInstruction(QpackDecoderInstruction.InsertCountIncrement(InsertCountDelta(5)))
                 }
             assertEquals(Http3ErrorCode.QPACK_DECODER_STREAM_ERROR, e.errorCode)
         }

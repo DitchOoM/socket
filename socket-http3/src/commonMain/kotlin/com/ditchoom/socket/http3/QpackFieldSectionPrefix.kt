@@ -6,7 +6,7 @@ import com.ditchoom.buffer.codec.DecodeException
 
 /** The decoded field-section prefix (RFC 9204 §4.5.1): the Required Insert Count and the Base. */
 data class QpackPrefix(
-    val requiredInsertCount: Long,
+    val requiredInsertCount: InsertCount,
     val base: Long,
 )
 
@@ -24,19 +24,23 @@ object QpackFieldSectionPrefix {
 
     fun encode(
         buffer: WriteBuffer,
-        requiredInsertCount: Long,
+        requiredInsertCount: InsertCount,
         base: Long,
         maxEntries: Long,
     ) {
+        // §4.5.1's wrapping is modular arithmetic on the raw magnitude, so it unwraps to Long here and
+        // the typed boundary is the signature. Wrapping a count into [1, 2*MaxEntries] does not produce
+        // a count — `encInsertCount` is a wire encoding of one, which is why it stays untyped.
+        val ric = requiredInsertCount.value
         // Required Insert Count (RFC 9204 §4.5.1.1): 0 stays 0; otherwise wrap into [1, 2*MaxEntries].
-        val encInsertCount = if (requiredInsertCount == 0L) 0L else (requiredInsertCount % (2 * maxEntries)) + 1
+        val encInsertCount = if (ric == 0L) 0L else (ric % (2 * maxEntries)) + 1
         QpackPrefixedInteger.encode(buffer, encInsertCount, prefixBits = 8)
         // Base (RFC 9204 §4.5.1.2): S=0 with DeltaBase = Base - RIC when Base ≥ RIC, else S=1 with
         // DeltaBase = RIC - Base - 1 (post-Base references).
-        if (base >= requiredInsertCount) {
-            QpackPrefixedInteger.encode(buffer, base - requiredInsertCount, prefixBits = 7)
+        if (base >= ric) {
+            QpackPrefixedInteger.encode(buffer, base - ric, prefixBits = 7)
         } else {
-            QpackPrefixedInteger.encode(buffer, requiredInsertCount - base - 1, prefixBits = 7, firstByteFlags = SIGN_BIT)
+            QpackPrefixedInteger.encode(buffer, ric - base - 1, prefixBits = 7, firstByteFlags = SIGN_BIT)
         }
     }
 
@@ -49,10 +53,10 @@ object QpackFieldSectionPrefix {
     fun decode(
         buffer: ReadBuffer,
         maxEntries: Long,
-        totalInserts: Long,
+        totalInserts: InsertCount,
     ): QpackPrefix {
         val encInsertCount = QpackPrefixedInteger.decode(buffer, prefixBits = 8)
-        val requiredInsertCount = decodeRequiredInsertCount(buffer, encInsertCount, maxEntries, totalInserts)
+        val requiredInsertCount = decodeRequiredInsertCount(buffer, encInsertCount, maxEntries, totalInserts.value)
         val baseFirst = buffer.readByte().toInt() and 0xFF
         val sign = baseFirst and SIGN_BIT != 0
         val deltaBase = QpackPrefixedInteger.decodeFromFirstByte(buffer, baseFirst, prefixBits = 7)
@@ -65,7 +69,9 @@ object QpackFieldSectionPrefix {
                 actual = base.toString(),
             )
         }
-        return QpackPrefix(requiredInsertCount, base)
+        // The wire-decode boundary: reconstruction has already rejected every out-of-range value, so
+        // InsertCount's `require` cannot fire on peer input here.
+        return QpackPrefix(InsertCount(requiredInsertCount), base)
     }
 
     /** RFC 9204 §4.5.1.1 Required Insert Count reconstruction. */
