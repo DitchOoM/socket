@@ -114,9 +114,14 @@ import kotlin.time.Duration.Companion.nanoseconds
  *
  * Phase-0 quiche-on-Apple pivot. This is a near-verbatim copy of the linux `CinteropQuicheApi`: every
  * `quiche_*` call is bound from the same `Quiche.def` cinterop, so the entire surface is identical
- * except the BSD/Darwin sockaddr decode at the bottom (see that section). Kept as a duplicate rather
- * than a shared `nativeMain` source set so the (here-untestable) linux build is not disturbed; dedup to
- * a shared source set is a follow-up once a linux-validating run is available.
+ * except the BSD/Darwin sockaddr decode at the bottom (see that section). Measured 2026-08-15: 957 vs
+ * 949 lines, a 25-line diff, and identical `quiche_*` symbol sets (83 each, none unique to either).
+ *
+ * ⚠️ **Every FFI fix here is owed to the linux copy too, and vice versa.** Dedup to a shared source
+ * set is tracked as #379. Until then `CinteropQuicheApiDriftGuardTest` fails CI on the commit that
+ * lets the two diverge, so this is caught by a test rather than by whoever next reads both files.
+ * The original reason for the duplicate — "so the (here-untestable) linux build is not disturbed" —
+ * expired when Linux started being validated on every run.
  *
  * Converts between [Long]-based handles and [kotlinx.cinterop.CPointer] types.
  * All `memScoped` blocks use stack allocation — fast, no GC pressure.

@@ -24,7 +24,7 @@ import com.ditchoom.buffer.flow.SocketAddress
  *   back to this host (`IP_MULTICAST_LOOP`; on by default, which is what same-host tests rely on).
  * - [setOutboundInterface] — which interface *outbound* multicast egresses (`IP_MULTICAST_IF`).
  *
- * Source-specific multicast (SSM, RFC 4607) is a deliberate follow-up; this first landing is any-source.
+ * Source-specific multicast (SSM, RFC 4607) is a deliberate follow-up (#378); this first landing is any-source.
  *
  * Threading matches [AddressedDatagramChannel]: confine `receive` and `send` each to one coroutine. The
  * control operations are `suspend` so a platform that must hop to a socket-owning dispatcher (Apple) can,

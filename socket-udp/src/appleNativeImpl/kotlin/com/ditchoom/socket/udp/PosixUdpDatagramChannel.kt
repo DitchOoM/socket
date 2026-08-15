@@ -52,7 +52,7 @@ import kotlin.concurrent.AtomicInt
  * to one coroutine (buffer-flow contract).
  *
  * Control plane: the rich Darwin POSIX ceiling (`IP_TOS`/`IP_DONTFRAG`/`IP_RECVTOS`/`IP_PKTINFO`) is a
- * labeled follow-up; this first landing advertises [DatagramCapabilities.None] (honest — the datapath
+ * labeled follow-up (#377); this first landing advertises [DatagramCapabilities.None] (honest — the datapath
  * uses plain `recvfrom`/`sendto` with no ancillary data), so every read field is its typed absent
  * state and every advisory send field a no-op.
  */

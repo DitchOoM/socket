@@ -38,7 +38,7 @@ import kotlin.concurrent.Volatile
  * a [QpackEncoder]. With capacity 0 (default) it stays static-table-only, which is always legal.
  *
  * This server does not initiate server push (RFC 9114 §4.6) — that is the inverse of the client push
- * support and a tracked follow-up; the client push API in [Http3Connection.pushes] is independent.
+ * support and is unimplemented (#375); the client push API in [Http3Connection.pushes] is independent.
  */
 class Http3ServerConnection internal constructor(
     private val scope: QuicScope,
