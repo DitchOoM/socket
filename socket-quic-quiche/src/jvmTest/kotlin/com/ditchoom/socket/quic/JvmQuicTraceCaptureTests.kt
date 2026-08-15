@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.networkId
@@ -51,6 +52,41 @@ class JvmQuicTraceCaptureTests {
         val tokens = line.split(' ')
         if (tokens.size < 5) return null
         return if (tokens[2] == "DGRAM_OUT" || tokens[2] == "DGRAM_IN") tokens[4] else null
+    }
+
+    /**
+     * The echoed payload — or, when the bytes that arrived are not the payload, a description of what
+     * did arrive.
+     *
+     * Capture, not a workaround. On 2026-08-14 a run of
+     * [server_capture_mints_a_fresh_sink_per_accepted_connection] failed decoding a client's echo with
+     * `MalformedInputException: Input length = 1` on `build-apple / JVM quiche (FFM)`, while the JNI
+     * lane on the identical commit passed. Both payloads here are ASCII, and `QuicheDriver.streamRead`
+     * sets the buffer's limit to exactly the byte count quiche reported — so invalid UTF-8 anywhere in
+     * that window means the bytes delivered were not the bytes sent. That is corruption, not a short
+     * read, and draining to an expected length would only hide it.
+     *
+     * One sighting is not a diagnosis, so this records the three facts that separate the candidates
+     * next time rather than guessing between them now:
+     *  - the byte **count**, against the payload's — a different length rules out a clean swap;
+     *  - the **hex** — the other connection's payload in ASCII means cross-connection delivery,
+     *    unrelated bytes mean a pooled buffer was reissued while a read was in flight (the hazard
+     *    `QuicheDriver.streamRead`'s in-flight join documents), all zeros mean nothing was ever written;
+     *  - that it is **decoded leniently** (U+FFFD, not an exception), so the evidence reaches the
+     *    assertion message instead of being thrown away as a stack trace with no bytes in it.
+     */
+    private fun describeEcho(
+        buffer: ReadBuffer,
+        expected: String,
+    ): String {
+        val bytes = ByteArray(buffer.remaining())
+        for (i in bytes.indices) bytes[i] = buffer.readByte()
+        val decoded = String(bytes, Charsets.UTF_8)
+        if (decoded == expected) return decoded
+
+        val hex = bytes.joinToString(" ") { it.toUByte().toString(16).padStart(2, '0') }
+        return "echo mismatch: expected ${expected.length}B \"$expected\", " +
+            "got ${bytes.size}B \"$decoded\" hex=[$hex]"
     }
 
     /**
@@ -294,7 +330,7 @@ class JvmQuicTraceCaptureTests {
                                 val response = stream.read(5.seconds)
                                 echoed.complete(
                                     if (response is ReadResult.Data) {
-                                        response.buffer.readString(response.buffer.remaining(), Charset.UTF8)
+                                        describeEcho(response.buffer, expected = payload)
                                     } else {
                                         "no_data"
                                     },

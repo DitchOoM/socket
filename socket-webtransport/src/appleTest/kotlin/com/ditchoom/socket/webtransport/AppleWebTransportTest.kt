@@ -10,7 +10,9 @@ import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.quicHarnessSkipReason
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.skip.recordSkip
+import com.ditchoom.socket.testkit.trace.TraceSink
 import platform.posix.F_OK
 import platform.posix.access
 import kotlin.time.Duration.Companion.seconds
@@ -45,10 +47,11 @@ class AppleWebTransportTest : WebTransportTestSuite() {
             privKeyPath = certPath("cert.key"),
         )
 
-    override suspend fun openSingleSession(url: String): WebTransportSession = webTransportSupport().connect(url, loopbackClientConfig())
+    override suspend fun openSingleSession(url: String): WebTransportSession =
+        webTransportSupport().connect(url, loopbackClientConfig(clientTraceSink))
 
     override suspend fun openMultiplexed(url: String): MultiplexedWebTransport =
-        (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig())
+        (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig(clientTraceSink))
 
     /** Skip on `--standalone` Apple simulators (see [quicHarnessSkipReason]). */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
@@ -63,7 +66,7 @@ class AppleWebTransportTest : WebTransportTestSuite() {
  * via `verifyPeer = false`, and use a native-memory buffer factory so QUIC zero-copy stream I/O is
  * correct on Kotlin/Native. Mirrors the JVM/Linux subclasses.
  */
-private fun loopbackClientConfig() =
+private fun loopbackClientConfig(trace: TraceSink) =
     Http3WebTransportConfig(
         quicOptions =
             QuicOptions(
@@ -71,6 +74,9 @@ private fun loopbackClientConfig() =
                 verifyPeer = false,
                 idleTimeout = 10.seconds,
                 datagrams = DatagramOptions(),
+                // Client half of the two-sided capture: an empty SERVER trace cannot distinguish a
+                // client that sent nothing from one that sent into the void. See WebTransportDiagnostics.
+                trace = QuicTraceCapture(trace),
             ),
         connectionOptions = TransportConfig(bufferFactory = BufferFactory.deterministic()),
     )
