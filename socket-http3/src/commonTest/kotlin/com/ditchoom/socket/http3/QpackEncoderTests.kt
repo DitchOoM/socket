@@ -60,7 +60,7 @@ class QpackEncoderTests {
                 encoderInstructions += it
                 encoderToDecoder.addLast(it)
             }
-        val decoder = QpackDecoder(maxCapacity) { decoderToEncoder.addLast(it) }
+        val decoder = QpackDecoder(maxCapacity, RecordingQpackDecoderStream { decoderToEncoder.addLast(it) })
 
         suspend fun pump() {
             while (encoderToDecoder.isNotEmpty() || decoderToEncoder.isNotEmpty()) {
@@ -165,17 +165,20 @@ class QpackEncoderTests {
             var decodeInFlightDuringIncrement = false
             lateinit var decode: Job
             val decoder =
-                QpackDecoder(4096) { instruction ->
-                    // Force the losing interleaving: a real decoder-stream write suspends, so let the
-                    // increment's write lose the race to the section decode that is about to acknowledge
-                    // the very same insertion. Yielding only for the increment picks one of the two
-                    // orderings a live connection produces; it does not create an impossible one.
-                    if (instruction is QpackDecoderInstruction.InsertCountIncrement) {
-                        repeat(writeSuspensions) { yield() }
-                        decodeInFlightDuringIncrement = !decode.isCompleted
-                    }
-                    decoderStream.addLast(instruction)
-                }
+                QpackDecoder(
+                    4096,
+                    RecordingQpackDecoderStream { instruction ->
+                        // Force the losing interleaving: a real decoder-stream write suspends, so let the
+                        // increment's write lose the race to the section decode that is about to acknowledge
+                        // the very same insertion. Yielding only for the increment picks one of the two
+                        // orderings a live connection produces; it does not create an impossible one.
+                        if (instruction is QpackDecoderInstruction.InsertCountIncrement) {
+                            repeat(writeSuspensions) { yield() }
+                            decodeInFlightDuringIncrement = !decode.isCompleted
+                        }
+                        decoderStream.addLast(instruction)
+                    },
+                )
 
             encoder.setCapacity(4096)
             // Blocked streams are permitted, so this section may reference the insert it just made —
@@ -232,10 +235,13 @@ class QpackEncoderTests {
                 val encoderStream = ArrayDeque<QpackEncoderInstruction>()
                 val encoder = QpackEncoder(4096, peerMaxBlockedStreams = 8) { encoderStream.addLast(it) }
                 val decoder =
-                    QpackDecoder(4096) { instruction ->
-                        if (instruction is QpackDecoderInstruction.InsertCountIncrement) repeat(yields) { yield() }
-                        decoderStream.addLast(instruction)
-                    }
+                    QpackDecoder(
+                        4096,
+                        RecordingQpackDecoderStream { instruction ->
+                            if (instruction is QpackDecoderInstruction.InsertCountIncrement) repeat(yields) { yield() }
+                            decoderStream.addLast(instruction)
+                        },
+                    )
 
                 encoder.setCapacity(4096)
                 // Distinct field values per seed and index, so each section forces its own insertion

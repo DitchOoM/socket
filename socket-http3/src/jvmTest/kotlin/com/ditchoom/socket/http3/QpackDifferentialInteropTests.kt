@@ -197,7 +197,7 @@ class QpackDifferentialInteropTests {
             "ref-encode->ours-decode",
             { "cap=$capacity blocked=$blocked stream=$streamId es=${encStream.toHex()} fr=${frame.toHex()} fields=$fields" },
         ) {
-            val decoder = QpackDecoder(capacity) { /* ignore decoder-stream acks for this one-shot decode */ }
+            val decoder = QpackDecoder(capacity, RecordingQpackDecoderStream()) // decoder-stream acks are irrelevant one-shot
             if (encStream.isNotEmpty()) {
                 val buf = bufferOf(encStream)
                 while (buf.hasRemaining()) decoder.applyEncoderInstruction(QpackEncoderInstructionCodec.decode(buf, scratchPool = null))

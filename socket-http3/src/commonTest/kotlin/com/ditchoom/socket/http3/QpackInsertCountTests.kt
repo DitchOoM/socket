@@ -3,6 +3,7 @@ package com.ditchoom.socket.http3
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -43,6 +44,22 @@ class QpackInsertCountTests {
             failure.message?.contains("forward only") == true,
             "the failure should say what the rule is; got: ${failure.message}",
         )
+    }
+
+    @Test
+    fun advanceFromYieldsTheSameDeltaAsSubtractionWhenItRunsForward() {
+        assertEquals(InsertCountDelta(7), InsertCount(10).advanceFrom(InsertCount(3)))
+    }
+
+    @Test
+    fun advanceFromReportsAlreadyCoveredInsteadOfFailingBackwards() {
+        // The decoder reaches this whenever a count it captured under the table lock is overtaken —
+        // by a Section Acknowledgment on another coroutine, or by a second peer encoder stream —
+        // before it acquires the acknowledgment lock. That ordering is chosen by the peer's traffic,
+        // so it must be an outcome, never a `require`. `minus` would throw here, which is the whole
+        // reason this operation exists.
+        assertNull(InsertCount(3).advanceFrom(InsertCount(10)))
+        assertNull(InsertCount(5).advanceFrom(InsertCount(5)))
     }
 
     @Test

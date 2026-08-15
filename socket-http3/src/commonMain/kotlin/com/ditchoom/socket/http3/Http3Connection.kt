@@ -227,12 +227,17 @@ class Http3Connection private constructor(
     // non-zero QPACK_MAX_TABLE_CAPACITY; until then (and against a capacity-0 peer) requests encode
     // statically. The write mutexes serialize bytes on each single-writer QPACK uni stream, since
     // multiple coroutines (the router + per-request encodes/decodes) emit on them concurrently.
-    private val decoder = QpackDecoder(QPACK_MAX_TABLE_CAPACITY) { writeDecoderInstruction(it) }
+    private val decoderAcks =
+        object : QpackDecoderStream() {
+            override suspend fun write(instruction: QpackDecoderInstruction) = writeDecoderInstruction(instruction)
+        }
+    private val decoder = QpackDecoder(QPACK_MAX_TABLE_CAPACITY, decoderAcks)
 
     @Volatile
     private var encoder: QpackEncoder? = null
     private val encoderStreamWriteMutex = Mutex()
-    private val decoderStreamWriteMutex = Mutex()
+    // No decoderStreamWriteMutex: [decoderAcks] owns that stream's lock, together with the
+    // acknowledgment accounting that has to be ordered with its writes.
 
     /**
      * The last client-initiated stream id the peer will process, from a server GOAWAY frame
@@ -579,13 +584,18 @@ class Http3Connection private constructor(
      * mid-session failure surfaces as a stream-level [QuicStreamException] (→ QPACK_DECODER_STREAM_ERROR),
      * which still propagates.
      */
-    private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction) {
+    private suspend fun writeDecoderInstruction(instruction: QpackDecoderInstruction): DecoderStreamWrite =
         try {
-            streamWriter.writeDecoderInstruction(qpackDecoderStream, decoderStreamWriteMutex, instruction)
-        } catch (_: QuicCloseException) {
-            // Connection already closed — the ack/ICI is moot. See KDoc.
+            streamWriter.writeDecoderInstruction(qpackDecoderStream, instruction)
+            DecoderStreamWrite.Sent
+        } catch (e: QuicCloseException) {
+            // Connection already closed — the ack/ICI is moot, so this is still swallowed rather than
+            // propagated (it must not cancel the router). But it is REPORTED, not hidden: the owner
+            // decides what an unsent instruction means for its accounting, and "the connection is gone
+            // so it does not matter" is a conclusion it can draw only if it is told. Returning Unit
+            // here made the swallow indistinguishable from a successful write.
+            DecoderStreamWrite.NotSent(DecoderStreamWrite.NotSentReason.ConnectionClosed(e))
         }
-    }
 
     private fun parseStatus(fields: List<QpackHeaderField>): Int {
         val raw =

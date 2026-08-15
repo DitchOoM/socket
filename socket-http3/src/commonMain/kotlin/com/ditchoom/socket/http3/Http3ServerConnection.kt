@@ -63,15 +63,23 @@ class Http3ServerConnection internal constructor(
     private val webTransportMux: WebTransportMux? =
         if (webTransport != null) WebTransportMux(scope, pool, config) else null
 
+    // Declared before [serverDecoder] because that initializer takes it. Reads `qpackDecoderStream`
+    // (assigned later, when the uni stream opens) only inside `write`, which cannot run until the
+    // connection is bootstrapped.
+    private val decoderAcks =
+        object : QpackDecoderStream() {
+            override suspend fun write(instruction: QpackDecoderInstruction) = writeQpackDecoderInstruction(instruction)
+        }
+
     private val serverDecoder: QpackDecoder? =
-        if (qpackCapacity > 0) QpackDecoder(qpackCapacity) { writeQpackDecoderInstruction(it) } else null
+        if (qpackCapacity > 0) QpackDecoder(qpackCapacity, decoderAcks) else null
 
     @Volatile
     private var serverEncoder: QpackEncoder? = null
     private var qpackEncoderStream: QuicByteStream? = null
     private var qpackDecoderStream: QuicByteStream? = null
     private val encoderStreamWriteMutex = Mutex()
-    private val decoderStreamWriteMutex = Mutex()
+    // No decoderStreamWriteMutex: [decoderAcks] owns that stream's lock. See [QpackDecoderStream].
 
     // Server-push state (RFC 9114 §4.6). clientMaxPushId is the largest Push ID the client will accept,
     // learned from its MAX_PUSH_ID frame(s) on the control stream (-1 = push not enabled). The server
@@ -624,9 +632,14 @@ class Http3ServerConnection internal constructor(
         streamWriter.writeEncoderInstruction(stream, encoderStreamWriteMutex, instruction)
     }
 
-    private suspend fun writeQpackDecoderInstruction(instruction: QpackDecoderInstruction) {
-        val stream = qpackDecoderStream ?: return
-        streamWriter.writeDecoderInstruction(stream, decoderStreamWriteMutex, instruction)
+    private suspend fun writeQpackDecoderInstruction(instruction: QpackDecoderInstruction): DecoderStreamWrite {
+        // Reported, not a silent early return: [serve] assigns the stream before it collects any peer
+        // stream, so this is unreachable today — but it is unreachable by statement order, not by
+        // construction, and the owner must not advance its count for bytes that never left. Unlike the
+        // client's swallowed close, this one would happen on a LIVE connection.
+        val stream = qpackDecoderStream ?: return DecoderStreamWrite.NotSent(DecoderStreamWrite.NotSentReason.StreamNotOpen)
+        streamWriter.writeDecoderInstruction(stream, instruction)
+        return DecoderStreamWrite.Sent
     }
 
     private suspend fun drain(stream: QuicByteStream) {
