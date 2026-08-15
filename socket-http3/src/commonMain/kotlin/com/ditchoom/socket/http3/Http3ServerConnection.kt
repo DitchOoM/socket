@@ -81,6 +81,10 @@ class Http3ServerConnection internal constructor(
     private val pushIdMutex = Mutex()
     private var nextPushId: Long = 0
 
+    // RFC 9114 §6.2 / RFC 9204 §4.2: one control and one of each QPACK stream per peer. Every later
+    // one is a connection error — see CriticalStreamGuard for what a duplicate actually breaks.
+    private val criticalStreams = CriticalStreamGuard()
+
     // Connection-abort latch (RFC 9114 §8): a fatal connection-level violation closes the connection
     // exactly once. Guarded by abortMutex so concurrent stream handlers can't double-close.
     private val abortMutex = Mutex()
@@ -120,18 +124,36 @@ class Http3ServerConnection internal constructor(
         var muxOwnsStream = false
         try {
             when (Http3StreamReader(stream, processor).nextVarInt()) {
-                Http3StreamType.CONTROL -> handleControl(Http3StreamReader(stream, processor))
+                Http3StreamType.CONTROL ->
+                    claimCriticalStream(CriticalStreamType.CONTROL) {
+                        handleControl(Http3StreamReader(stream, processor))
+                    }
                 Http3StreamType.QPACK_ENCODER ->
-                    serverDecoder?.let { dec ->
-                        val reader = QpackInstructionReader.encoder(stream, processor, pool)
-                        while (true) dec.applyEncoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
-                    } ?: drain(stream)
+                    claimCriticalStream(CriticalStreamType.QPACK_ENCODER) {
+                        serverDecoder?.let { dec ->
+                            val reader = QpackInstructionReader.encoder(stream, processor, pool)
+                            while (true) dec.applyEncoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
+                        } ?: drain(stream)
+                    }
                 Http3StreamType.QPACK_DECODER ->
-                    if (serverDecoder != null) {
-                        val reader = QpackInstructionReader.decoder(stream, processor)
-                        while (true) serverEncoder?.processDecoderInstruction(reader.next(config.readPolicy.toDeadline()) ?: break)
-                    } else {
-                        drain(stream)
+                    claimCriticalStream(CriticalStreamType.QPACK_DECODER) {
+                        if (serverDecoder != null) {
+                            val reader = QpackInstructionReader.decoder(stream, processor)
+                            while (true) {
+                                // Read FIRST, then dispatch. `serverEncoder?.process(reader.next() ?: break)`
+                                // reads like a loop over instructions, but a safe call does not evaluate its
+                                // argument when the receiver is null — so with no encoder yet (the client
+                                // advertised QPACK_MAX_TABLE_CAPACITY: 0, or its SETTINGS have not arrived)
+                                // nothing was read, nothing suspended, and `while (true)` spun at 100% CPU
+                                // for the life of the connection. A conformant client reaches that: §4.2 says
+                                // both endpoints open a decoder stream, whatever capacity they advertise.
+                                val instruction = reader.next(config.readPolicy.toDeadline()) ?: break
+                                // Dropped when we have no encoder: these acknowledge insertions we never made.
+                                serverEncoder?.processDecoderInstruction(instruction)
+                            }
+                        } else {
+                            drain(stream)
+                        }
                     }
                 // A peer-initiated unidirectional WebTransport stream (draft-ietf-webtrans-http3 §4.1).
                 WebTransportWire.WT_UNI_STREAM_TYPE ->
@@ -215,6 +237,23 @@ class Http3ServerConnection internal constructor(
                     )
             }
         }
+    }
+
+    /**
+     * Run [handle] as the reader of this connection's one [type] stream, or abort the connection when
+     * the client has already opened one (RFC 9114 §6.2 / RFC 9204 §4.2 — `H3_STREAM_CREATION_ERROR`).
+     *
+     * The abort has to happen here rather than by throwing: [serve]'s per-stream `catch` deliberately
+     * swallows an [Http3StreamException] so one stream cannot take the connection down, which is right
+     * for a request and wrong for this — a duplicate critical stream *is* a connection error.
+     */
+    private suspend fun claimCriticalStream(
+        type: CriticalStreamType,
+        handle: suspend () -> Unit,
+    ) {
+        val duplicate = criticalStreams.claim(type)
+        if (duplicate != null) return abortConnection(Http3StreamException(duplicate))
+        handle()
     }
 
     /**

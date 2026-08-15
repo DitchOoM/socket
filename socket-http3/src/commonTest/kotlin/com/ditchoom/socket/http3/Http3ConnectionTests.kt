@@ -422,6 +422,84 @@ class Http3ConnectionTests {
             assertNull(connection.connectionError, "a moot decoder ack racing close must not become a connection error")
         }
 
+    // --- critical stream creation (RFC 9114 §6.2 / RFC 9204 §4.2) -----------
+
+    /** A peer uni stream carrying only its [type] prefix, then end-of-stream. */
+    private fun peerUniStream(
+        id: Long,
+        type: Long,
+    ): QuicByteStream =
+        QuicByteStream(
+            QuicStreamId(id),
+            RecordingByteStream(listOf(dataChunk(listOf(type.toInt())), ReadResult.End)),
+        )
+
+    /** Runs a connection whose peer opens [incoming], joins the router, and returns the connection. */
+    private suspend fun connectionAfterRouting(incoming: List<QuicByteStream>): Http3Connection =
+        coroutineScope {
+            val scope = FakeQuicScope(this, ClientStreams().outgoing(), incoming = incoming)
+            Http3Connection.bootstrap(scope, TransportConfig())
+        }
+
+    @Test
+    fun secondPeerQpackEncoderStream_isAStreamCreationConnectionError() =
+        runTest {
+            // RFC 9204 §4.2: one QPACK encoder stream per peer; a second instance MUST be a connection
+            // error of type H3_STREAM_CREATION_ERROR. Not bookkeeping — each critical stream is read by
+            // its own router coroutine, so a second encoder stream puts two of them into
+            // QpackDecoder.applyEncoderInstruction, which is written for a single feeder: the insert
+            // count one captured under the table lock can be overtaken before it reports under the
+            // acknowledgment lock.
+            val connection =
+                connectionAfterRouting(
+                    listOf(
+                        peerUniStream(id = 7, type = Http3StreamType.QPACK_ENCODER),
+                        peerUniStream(id = 11, type = Http3StreamType.QPACK_ENCODER),
+                    ),
+                )
+
+            val error = connection.connectionError
+            assertEquals(Http3Violation.DuplicateCriticalStream(CriticalStreamType.QPACK_ENCODER), error?.violation)
+            assertEquals(Http3ErrorCode.STREAM_CREATION_ERROR, error?.errorCode)
+        }
+
+    @Test
+    fun secondPeerControlStream_isAStreamCreationConnectionError() =
+        runTest {
+            // RFC 9114 §6.2, same rule for the control stream. The first one carries valid SETTINGS, so
+            // the abort can only be the duplicate — not a malformed-control-stream error wearing its name.
+            val connection =
+                connectionAfterRouting(
+                    listOf(
+                        peerControlStream(clientSettings()),
+                        peerUniStream(id = 11, type = Http3StreamType.CONTROL),
+                    ),
+                )
+
+            val error = connection.connectionError
+            assertEquals(Http3Violation.DuplicateCriticalStream(CriticalStreamType.CONTROL), error?.violation)
+            assertEquals(Http3ErrorCode.STREAM_CREATION_ERROR, error?.errorCode)
+        }
+
+    @Test
+    fun repeatedReservedUniStreams_areNotACriticalStreamDuplicate() =
+        runTest {
+            // The other half of the rule: only the three critical types are once-per-peer. Reserved/GREASE
+            // streams (§6.2.3) may repeat and are drained, so keying the duplicate check on a raw stream
+            // type — rather than the closed set of critical ones — would close the connection on a
+            // perfectly conformant peer.
+            val connection =
+                connectionAfterRouting(
+                    listOf(
+                        peerControlStream(clientSettings()),
+                        peerUniStream(id = 11, type = 0x21),
+                        peerUniStream(id = 15, type = 0x21),
+                    ),
+                )
+
+            assertNull(connection.connectionError, "reserved uni streams may repeat")
+        }
+
     // --- request/response (RFC 9114 §4) -------------------------------------
 
     private fun encodedFieldSection(fields: List<QpackHeaderField>): ReadBuffer {

@@ -314,6 +314,26 @@ sealed interface Http3Violation {
         override fun describe() = "QPACK ${stream.label} stream ended mid-instruction"
     }
 
+    // --- Critical stream creation (RFC 9114 §6.2 / RFC 9204 §4.2) — H3_STREAM_CREATION_ERROR ------
+
+    /**
+     * The peer opened a second [type] stream. Exactly one control stream and one of each QPACK
+     * instruction stream is permitted per peer, and a second instance MUST be treated as a connection
+     * error of type `H3_STREAM_CREATION_ERROR` (RFC 9114 §6.2, RFC 9204 §4.2).
+     *
+     * Not merely a conformance rule: each critical stream is read by its own router coroutine, and the
+     * state behind it is written for a single reader. Two peer encoder streams put two coroutines into
+     * `QpackDecoder.applyEncoderInstruction` concurrently, where the insert count one of them captured
+     * under the table lock can be overtaken before it is reported under the acknowledgment lock.
+     */
+    data class DuplicateCriticalStream(
+        val type: CriticalStreamType,
+    ) : Http3Violation {
+        override val errorCode get() = Http3ErrorCode.STREAM_CREATION_ERROR
+
+        override fun describe() = "peer opened a second ${type.label} stream; only one per peer is permitted"
+    }
+
     // --- Connection / WebTransport — H3_GENERAL_PROTOCOL_ERROR ------------------------------------
 
     /** The connection closed before the peer's SETTINGS were received. */

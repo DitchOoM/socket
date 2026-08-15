@@ -17,15 +17,21 @@ import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestResult
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -106,6 +112,16 @@ class Http3ServerConnectionTests {
         QuicByteStream(
             QuicStreamId(2),
             RecordingByteStream(listOf(dataChunk(listOf(Http3StreamType.CONTROL.toInt()) + trailing), ReadResult.End)),
+        )
+
+    /** A peer (client-initiated, unidirectional) uni stream carrying only its [type] prefix, then FIN. */
+    private fun clientUniStream(
+        id: Long,
+        type: Long,
+    ): QuicByteStream =
+        QuicByteStream(
+            QuicStreamId(id),
+            RecordingByteStream(listOf(dataChunk(listOf(type.toInt())), ReadResult.End)),
         )
 
     /** A peer (client-initiated, bidirectional id 0) request stream carrying [bytes] then FIN. */
@@ -232,6 +248,132 @@ class Http3ServerConnectionTests {
         // A well-formed SETTINGS-first control stream is accepted — no connection error.
         runServer(listOf(clientControl(frameBytes(clientSettings())))) { scope ->
             assertFalse(scope.closeErrorCode.isCompleted, "a valid control stream must not abort the connection")
+        }
+
+    // === Critical stream creation (RFC 9114 §6.2 / RFC 9204 §4.2) ===========
+
+    @Test
+    fun control_secondInstance_isStreamCreationError(): TestResult =
+        // §6.2: one control stream per peer. The first carries valid SETTINGS, so the abort can only be
+        // the duplicate rather than a framing error wearing its name.
+        runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                clientUniStream(id = 6, type = Http3StreamType.CONTROL),
+            ),
+        ) { scope ->
+            assertEquals(Http3ErrorCode.STREAM_CREATION_ERROR, scope.awaitCloseCode())
+        }
+
+    @Test
+    fun qpackEncoderStream_secondInstance_isStreamCreationError(): TestResult =
+        // RFC 9204 §4.2: one QPACK encoder stream per peer. The server routes each uni stream in its own
+        // coroutine, so a second one would put two of them into QpackDecoder.applyEncoderInstruction —
+        // which captures the table's insert count under one lock and reports it under another, safe only
+        // while a single coroutine feeds it.
+        runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                clientUniStream(id = 6, type = Http3StreamType.QPACK_ENCODER),
+                clientUniStream(id = 10, type = Http3StreamType.QPACK_ENCODER),
+            ),
+            qpackCapacity = 4096,
+        ) { scope ->
+            assertEquals(Http3ErrorCode.STREAM_CREATION_ERROR, scope.awaitCloseCode())
+        }
+
+    @Test
+    fun qpackDecoderStream_secondInstance_isStreamCreationError(): TestResult =
+        runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                clientUniStream(id = 6, type = Http3StreamType.QPACK_DECODER),
+                clientUniStream(id = 10, type = Http3StreamType.QPACK_DECODER),
+            ),
+            qpackCapacity = 4096,
+        ) { scope ->
+            assertEquals(Http3ErrorCode.STREAM_CREATION_ERROR, scope.awaitCloseCode())
+        }
+
+    @Test
+    fun oneOfEachCriticalStream_isAccepted(): TestResult =
+        // The other half of the rule, and the regression this guard could plausibly cause: a conformant
+        // peer opens exactly one of each, and all three must still be read rather than closed on.
+        runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                clientUniStream(id = 6, type = Http3StreamType.QPACK_ENCODER),
+                clientUniStream(id = 10, type = Http3StreamType.QPACK_DECODER),
+            ),
+            qpackCapacity = 4096,
+        ) { scope ->
+            assertFalse(scope.closeErrorCode.isCompleted, "one of each critical stream is exactly what a peer must open")
+        }
+
+    @Test
+    fun repeatedReservedUniStreams_areNotACriticalStreamDuplicate(): TestResult =
+        // Only the three critical types are once-per-peer; reserved/GREASE uni streams (§6.2.3) repeat
+        // legitimately and are drained. Keying the check on a raw stream type would close on a
+        // conformant peer.
+        runServer(
+            listOf(
+                clientControl(frameBytes(clientSettings())),
+                clientUniStream(id = 6, type = 0x21),
+                clientUniStream(id = 10, type = 0x21),
+            ),
+        ) { scope ->
+            assertFalse(scope.closeErrorCode.isCompleted, "reserved uni streams may repeat")
+        }
+
+    @Test
+    fun qpackDecoderStreamWithNoEncoderYet_isReadRatherThanSpun(): TestResult =
+        runTest {
+            // The decoder-stream loop used to read `serverEncoder?.process(reader.next() ?: break)`. A safe
+            // call does not evaluate its argument when the receiver is null, so with no encoder the loop
+            // read nothing, suspended nowhere, and spun at 100% CPU for the life of the connection —
+            // measured at 641s of CPU on one coroutine before this was found. A *conformant* client gets
+            // there: RFC 9204 §4.2 has both endpoints open a decoder stream, and one advertising
+            // QPACK_MAX_TABLE_CAPACITY: 0 (as `clientSettings()` does) leaves the server no encoder to
+            // hand the instructions to.
+            //
+            // Watchdog rather than a plain assertion: an uninterruptible spin cannot be cancelled, so
+            // `withTimeout` around it would wait for a body that never completes, and the sibling tests
+            // covering this path would hang the job rather than fail it. Awaiting a *separate* deferred
+            // fails in seconds instead. The regressed loop then leaks one busy thread for the rest of the
+            // run, which is the price of failing fast — and on a single-threaded platform (JS/wasm) even
+            // this degrades to a hang, because there is no second thread to notice.
+            val served = CompletableDeferred<Unit>()
+            val detached = CoroutineScope(Dispatchers.Default)
+            detached.launch {
+                // coroutineScope, because `serve()` returns as soon as the stream flow completes and does
+                // NOT join the per-stream handlers it launched — the spin lives in one of those, so
+                // completing on `serve()` alone would report success while a handler burned a core.
+                coroutineScope {
+                    val scope =
+                        FakeQuicScope(
+                            this,
+                            serverOutgoing(),
+                            listOf(
+                                clientControl(frameBytes(clientSettings())),
+                                clientUniStream(id = 6, type = Http3StreamType.QPACK_DECODER),
+                            ),
+                        )
+                    Http3ServerConnection(
+                        scope,
+                        TransportConfig(),
+                        qpackCapacity = 4096,
+                        onRequest = { response.send(200) },
+                    ).serve()
+                }
+                served.complete(Unit)
+            }
+
+            // On Dispatchers.Default, not the test dispatcher: `runTest`'s clock is virtual, so a timeout
+            // measured there elapses instantly and this would report a spin on every run, bug or not.
+            val finished = withContext(Dispatchers.Default) { withTimeoutOrNull(10.seconds) { served.await() } }
+
+            detached.cancel() // best-effort: a spin ignores cancellation, which is the point of the watchdog
+            assertNotNull(finished, "the decoder stream was never read to end-of-stream — the loop is spinning")
         }
 
     @Test
