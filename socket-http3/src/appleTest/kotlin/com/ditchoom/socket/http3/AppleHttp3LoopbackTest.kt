@@ -1,12 +1,9 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlin.experimental.ExperimentalNativeApi::class)
-
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.fixtures.TestCerts
+import com.ditchoom.socket.testkit.fixtures.locateTestCerts
 import com.ditchoom.socket.testkit.skip.recordSkip
-import platform.posix.F_OK
-import platform.posix.access
 
 /**
  * Apple subclass of [Http3LoopbackTestSuite] — a comprehensive HTTP/3 exercise on the Apple **quiche**
@@ -17,50 +14,43 @@ import platform.posix.access
  * and the in-process NW-loopback flake this suite used to hit.)
  *
  * Like Linux's [LinuxHttp3LoopbackTest] it probes the cert/key on the filesystem and configures the
- * quiche server with loose PEM cert+key (no PKCS#12 — that was an NW-identity requirement). macOS K/N
- * runs the full suite; iOS/tvOS/watchOS `--standalone` simulators lack the `testcerts/` cwd, so
- * [wrapTestBody] reports a typed skip there rather than returning green.
+ * quiche server with loose PEM cert+key (no PKCS#12 — that was an NW-identity requirement).
+ *
+ * The simulator lanes run this suite too, as of #359. They used to skip all 31 invocations because
+ * `simctl spawn --standalone` starts in the device's data container rather than the module directory,
+ * so the cwd-relative cert probe found nothing; the build now exports the module's `testcerts/` by
+ * absolute path and [locateTestCerts] prefers it. [wrapTestBody] still reports a typed skip if the
+ * pair genuinely cannot be found, which on a macOS lane means a broken checkout and goes red.
  *
  * WebTransport datagrams work on the quiche backend (RFC 9221), so the inherited
  * [Http3LoopbackTestSuite.webTransport_datagramRoundTrip] runs unmodified.
  */
 class AppleHttp3LoopbackTest : Http3LoopbackTestSuite() {
-    private fun certPath(name: String): String {
-        val candidates =
-            listOf(
-                "testcerts/$name",
-                "socket-http3/testcerts/$name",
-            )
-        return candidates.firstOrNull { access(it, F_OK) == 0 }
-            ?: error("Test cert not found: $name (tried $candidates)")
-    }
+    private val certs = locateTestCerts(moduleDir = "socket-http3")
 
-    override fun testTlsConfig() =
-        QuicTlsConfig(
-            certChainPath = certPath("cert.crt"),
-            privKeyPath = certPath("cert.key"),
+    override fun testTlsConfig(): QuicTlsConfig {
+        val available =
+            certs as? TestCerts.Available
+                ?: error("testTlsConfig() reached with no fixtures; wrapTestBody should have skipped first")
+        return QuicTlsConfig(
+            certChainPath = available.certChainPath,
+            privKeyPath = available.privKeyPath,
         )
-
-    /** Skip on `--standalone` Apple simulators (no `testcerts/` cwd — see [simulatorLacksFixtures]). */
-    override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        val skip = simulatorLacksFixtures()
-        if (skip != null) return recordSkip(AppleHttp3LoopbackTest::class, skip)
-        block()
     }
-}
 
-// macOS K/N is OsFamily.MACOSX (real network stack + repo testcerts/ cwd — always runs). iOS/tvOS/watchOS
-// simulators run via `simctl spawn --standalone`, whose cwd lacks testcerts/, so skip there.
-//
-// Returns the typed reason rather than a Boolean, and the caller routes it through `recordSkip`, so
-// the skip lands in the test XML as a greppable line. It previously early-returned, which the report
-// records as a PASS — 31 tests in this suite reported green on three simulator lanes having executed
-// nothing. Mirrors :socket-testsuite's shouldSkipQuicHarnessOnSimulator; both now share
-// :socket-testkit's SkipReason, which is why the gate can no longer drift between the two modules.
-private fun simulatorLacksFixtures(): SkipReason? {
-    if (kotlin.native.Platform.osFamily == kotlin.native.OsFamily.MACOSX) return null
-    return SkipReason.SimulatorLacksFixtures(
-        "${kotlin.native.Platform.osFamily} simulator runs under `simctl spawn --standalone`, " +
-            "whose cwd has no testcerts/ — the loopback server has no cert+key to bind with",
-    )
+    /**
+     * Skip only when the fixtures are genuinely absent — a **measurement**, not an inference.
+     *
+     * This used to read `osFamily != MACOSX`, i.e. "a simulator, therefore no fixtures". That was
+     * true when written and stopped being true the moment the build began exporting an absolute
+     * path into the sandbox (#359): the suite would have gone on skipping 31 invocations per lane
+     * against fixtures sitting right there, and nothing would have said so. Probing the thing the
+     * skip is *about* means the skip disappears by itself the day the cause does.
+     */
+    override suspend fun wrapTestBody(block: suspend () -> Unit) {
+        when (certs) {
+            is TestCerts.Unavailable -> recordSkip(AppleHttp3LoopbackTest::class, certs.asSkipReason())
+            is TestCerts.Available -> block()
+        }
+    }
 }
