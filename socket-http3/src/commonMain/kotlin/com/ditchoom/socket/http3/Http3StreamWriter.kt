@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ByteSinkStalledException
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.buffer.utf8Size
 import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
 import kotlinx.coroutines.sync.Mutex
@@ -118,9 +119,9 @@ internal class Http3StreamWriter(
     ) {
         val capacity =
             when (instruction) {
-                is QpackEncoderInstruction.InsertWithNameRef -> INSTRUCTION_OVERHEAD + qpackUtf8ByteLength(instruction.value)
+                is QpackEncoderInstruction.InsertWithNameRef -> INSTRUCTION_OVERHEAD + instruction.value.utf8Size()
                 is QpackEncoderInstruction.InsertWithLiteralName ->
-                    INSTRUCTION_OVERHEAD + qpackUtf8ByteLength(instruction.name) + qpackUtf8ByteLength(instruction.value)
+                    INSTRUCTION_OVERHEAD + instruction.name.utf8Size() + instruction.value.utf8Size()
                 // SetCapacity / Duplicate: a single prefixed integer
                 else -> INSTRUCTION_OVERHEAD
             }

@@ -1,7 +1,8 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.MalformedTextException
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
@@ -138,7 +139,11 @@ internal object WebTransportWire {
         buffer.writeByte((code ushr 16).toByte())
         buffer.writeByte((code ushr 8).toByte())
         buffer.writeByte(code.toByte())
-        if (reasonUtf8Bytes > 0) buffer.writeString(reason, Charset.UTF8)
+        // Utf8.Lenient because [reasonUtf8Bytes] — already written into the capsule's Length above —
+        // comes from `utf8Size()`, which is this policy's `size`. Buffer guarantees the two agree
+        // byte-for-byte on every platform, so the Length cannot describe a different number of bytes
+        // than the value that follows it.
+        if (reasonUtf8Bytes > 0) buffer.writeText(reason, Utf8.Lenient)
     }
 
     /**
@@ -157,20 +162,18 @@ internal object WebTransportWire {
                 ((buffer.readByte().toInt() and 0xFF) shl 8) or
                 (buffer.readByte().toInt() and 0xFF)
         val reasonBytes = valueLength - 4
-        // draft §6: the reason is UTF-8. A strict decoder rejects invalid UTF-8 with a
-        // platform-specific charset error — remap it to the typed protocol violation so the parser's
-        // "malformed input → Http3StreamException" contract holds instead of leaking an untyped crash.
-        // (Caught by WebTransportCapsuleFuzzer.) It must be caught as Throwable, not Exception: the JVM
-        // throws a MalformedInputException (an Exception), but Kotlin/JS + wasmJs surface the strict
-        // TextDecoder failure as a raw JS TypeError, which is a Throwable that is NOT a Kotlin Exception —
-        // so `catch (Exception)` let it escape untyped on the JS/wasm targets.
+        // draft §6: the reason is UTF-8, and invalid UTF-8 is a protocol violation rather than a
+        // decoded string. [Utf8.Strict] is what makes that one behaviour everywhere: it raises the
+        // common, typed MalformedTextException on every target and rejects atomically. `readString`
+        // could not — it surfaced the failure as whatever the host decoder raised, a
+        // MalformedInputException on the JVM but a raw JS TypeError on JS/wasmJs, and a JS TypeError
+        // is a Throwable that is NOT a Kotlin Exception, so this had to `catch (Throwable)` and hope.
+        // (Caught by WebTransportCapsuleFuzzer.)
         val reason =
             if (reasonBytes > 0) {
                 try {
-                    buffer.readString(reasonBytes, Charset.UTF8)
-                } catch (e: Http3StreamException) {
-                    throw e
-                } catch (e: Throwable) {
+                    buffer.readText(reasonBytes, Utf8.Strict)
+                } catch (e: MalformedTextException) {
                     throw Http3StreamException(Http3Violation.WebTransportCloseReasonNotUtf8(e))
                 }
             } else {

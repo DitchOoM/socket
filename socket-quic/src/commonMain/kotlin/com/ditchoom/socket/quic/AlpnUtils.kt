@@ -1,12 +1,13 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.annotations.LengthPrefix
 import com.ditchoom.buffer.codec.annotations.LengthPrefixed
 import com.ditchoom.buffer.codec.annotations.ProtocolMessage
+import com.ditchoom.buffer.utf8Size
 import kotlin.random.Random
 
 /**
@@ -28,7 +29,7 @@ data class AlpnProtocol(
 /**
  * Encode ALPN protocols directly into a [BufferFactory]-allocated buffer.
  *
- * Uses [WriteBuffer.writeString] — no ByteArray intermediaries. The format
+ * Uses [WriteBuffer.writeText] — no ByteArray intermediaries. The format
  * matches what the generated `AlpnProtocolCodec.encode()` produces.
  *
  * Caller must free the returned buffer.
@@ -37,15 +38,18 @@ fun encodeAlpnList(
     protocols: List<String>,
     factory: BufferFactory,
 ): PlatformBuffer {
-    // Compute size: 1 byte length prefix + N bytes per protocol
+    // 1 byte length prefix + the protocol's UTF-8 octets. The prefix must count OCTETS, not UTF-16
+    // code units: `proto.length` is only the same number for ASCII, and RFC 7301 IDs are ASCII by
+    // convention rather than by anything enforced here. utf8Size() is Utf8.Lenient's size, so the
+    // prefix, the allocation, and the bytes writeText emits are all the same count on every platform.
     var totalSize = 0
     for (proto in protocols) {
-        totalSize += 1 + proto.length
+        totalSize += 1 + proto.utf8Size()
     }
     val buffer = factory.allocate(totalSize)
     for (proto in protocols) {
-        buffer.writeByte(proto.length.toByte())
-        buffer.writeString(proto, Charset.UTF8)
+        buffer.writeByte(proto.utf8Size().toByte())
+        buffer.writeText(proto, Utf8.Lenient)
     }
     buffer.resetForRead()
     return buffer

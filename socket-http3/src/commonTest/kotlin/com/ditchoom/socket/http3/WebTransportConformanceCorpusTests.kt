@@ -5,6 +5,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.utf8Size
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -70,7 +71,7 @@ class WebTransportConformanceCorpusTests {
                 3 to "a".repeat(WebTransportWire.MAX_CLOSE_REASON_BYTES), // §6 max reason (1024 bytes)
             )
         for ((code, reason) in corpus) {
-            val reasonBytes = qpackUtf8ByteLength(reason)
+            val reasonBytes = reason.utf8Size()
             val size = WebTransportWire.closeSessionCapsuleSize(reasonBytes)
             val buf = buffer(size)
             WebTransportWire.writeCloseSessionCapsule(buf, code, reason, reasonBytes)
@@ -123,7 +124,7 @@ class WebTransportConformanceCorpusTests {
         val buf = buffer(2048)
         WebTransportWire.writeDrainSessionCapsule(buf)
         writeUnknownCapsule(buf, type = 0x1f * 0x40 + 0x21, value = ByteArray(7) { (it + 1).toByte() }) // GREASE-ish
-        val reasonBytes = qpackUtf8ByteLength("bye")
+        val reasonBytes = "bye".utf8Size()
         WebTransportWire.writeCloseSessionCapsule(buf, 9, "bye", reasonBytes)
         buf.resetForRead()
 

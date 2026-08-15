@@ -12,6 +12,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.buffer.utf8Size
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
@@ -332,9 +333,9 @@ internal class WebTransportMux(
         code: Int,
         reason: String,
     ) {
-        val reasonBytes = qpackUtf8ByteLength(reason).coerceAtMost(WebTransportWire.MAX_CLOSE_REASON_BYTES)
+        val reasonBytes = reason.utf8Size().coerceAtMost(WebTransportWire.MAX_CLOSE_REASON_BYTES)
         // If truncation would split a multi-byte character, fall back to no reason (the code still carries).
-        val safeReason = if (reasonBytes == qpackUtf8ByteLength(reason)) reason else ""
+        val safeReason = if (reasonBytes == reason.utf8Size()) reason else ""
         val safeReasonBytes = if (safeReason.isEmpty()) 0 else reasonBytes
         val capsuleSize = WebTransportWire.closeSessionCapsuleSize(safeReasonBytes)
         val capsule = pool.allocate(capsuleSize)

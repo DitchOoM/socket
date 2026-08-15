@@ -8,6 +8,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.buffer.utf8Size
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -22,7 +23,7 @@ class WebTransportCapsuleTests {
         code: Int,
         reason: String,
     ): WebTransportCloseInfo {
-        val reasonBytes = qpackUtf8ByteLength(reason)
+        val reasonBytes = reason.utf8Size()
         val size = WebTransportWire.closeSessionCapsuleSize(reasonBytes)
         val buffer: PlatformBuffer = BufferFactory.deterministic().allocate(size.coerceAtLeast(1))
         WebTransportWire.writeCloseSessionCapsule(buffer, code, reason, reasonBytes)

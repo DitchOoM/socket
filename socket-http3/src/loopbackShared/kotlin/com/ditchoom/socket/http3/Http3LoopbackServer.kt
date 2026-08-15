@@ -11,6 +11,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.buffer.utf8Size
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicScope
@@ -434,9 +435,9 @@ internal class Http3LoopbackServer(
         val stream = qpackEncoderStream ?: return
         val capacity =
             when (instruction) {
-                is QpackEncoderInstruction.InsertWithNameRef -> 32 + qpackUtf8ByteLength(instruction.value)
+                is QpackEncoderInstruction.InsertWithNameRef -> 32 + instruction.value.utf8Size()
                 is QpackEncoderInstruction.InsertWithLiteralName ->
-                    32 + qpackUtf8ByteLength(instruction.name) + qpackUtf8ByteLength(instruction.value)
+                    32 + instruction.name.utf8Size() + instruction.value.utf8Size()
                 else -> 32
             }
         val buffer = pool.allocate(capacity)

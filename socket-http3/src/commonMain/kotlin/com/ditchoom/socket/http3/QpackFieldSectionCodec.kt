@@ -1,7 +1,7 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.codec.DecodeContext
@@ -12,6 +12,7 @@ import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.buffer.utf8Size
 
 /**
  * [DecodeContext] key supplying the [BufferPool] that Huffman (H=1) string decoding
@@ -85,7 +86,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         buffer: WriteBuffer,
         name: String,
     ) {
-        val raw = utf8ByteLength(name)
+        val raw = name.utf8Size()
         val huffman = QpackHuffman.huffmanByteLength(name)
         if (huffman < raw) {
             QpackPrefixedInteger.encode(
@@ -97,7 +98,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
             QpackHuffman.encode(buffer, name)
         } else {
             QpackPrefixedInteger.encode(buffer, raw.toLong(), prefixBits = 3, firstByteFlags = LITERAL_LITERAL_NAME)
-            buffer.writeString(name, Charset.UTF8)
+            buffer.writeText(name, Utf8.Lenient)
         }
     }
 
@@ -109,7 +110,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         buffer: WriteBuffer,
         string: String,
     ) {
-        val raw = utf8ByteLength(string)
+        val raw = string.utf8Size()
         val huffman = QpackHuffman.huffmanByteLength(string)
         if (huffman < raw) {
             QpackPrefixedInteger.encode(buffer, huffman.toLong(), prefixBits = 7, firstByteFlags = HUFFMAN_BIT)
@@ -117,7 +118,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         } else {
             // H=0: the 7-bit length prefix occupies the first byte, high bit clear.
             QpackPrefixedInteger.encode(buffer, raw.toLong(), prefixBits = 7)
-            buffer.writeString(string, Charset.UTF8)
+            buffer.writeText(string, Utf8.Lenient)
         }
     }
 
@@ -212,7 +213,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         return if (huffman) {
             QpackHuffman.decode(buffer, length, "QpackFieldSection.$what", scratchPool)
         } else {
-            buffer.readString(length, Charset.UTF8)
+            buffer.readQpackText(length, "QpackFieldSection.$what")
         }
     }
 
@@ -276,7 +277,7 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
      * [wireSize] stays exactly equal to the encoded length.
      */
     private fun encodedStringBytes(string: String): Int {
-        val raw = utf8ByteLength(string)
+        val raw = string.utf8Size()
         return minOf(raw, QpackHuffman.huffmanByteLength(string))
     }
 
@@ -285,27 +286,6 @@ object QpackFieldSectionCodec : Codec<List<QpackHeaderField>> {
         stream: StreamProcessor,
         baseOffset: Int,
     ): PeekResult = PeekResult.NoFraming
-
-    /** UTF-8 byte length of [string] without allocating a ByteArray. */
-    private fun utf8ByteLength(string: CharSequence): Int {
-        var bytes = 0
-        var i = 0
-        while (i < string.length) {
-            val code = string[i].code
-            bytes +=
-                when {
-                    code < 0x80 -> 1
-                    code < 0x800 -> 2
-                    code in 0xD800..0xDBFF && i + 1 < string.length && string[i + 1].code in 0xDC00..0xDFFF -> {
-                        i++ // consume the low surrogate; a full code point is 4 UTF-8 bytes
-                        4
-                    }
-                    else -> 3
-                }
-            i++
-        }
-        return bytes
-    }
 
     private const val PREFIX_SIZE = 2 // RIC (0x00) + Delta Base (0x00)
 

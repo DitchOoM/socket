@@ -1,5 +1,11 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.buffer.MalformedTextException
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
+import com.ditchoom.buffer.codec.DecodeException
+import com.ditchoom.buffer.utf8Size
+
 // Shared QPACK (RFC 9204) helpers used across the field-section codec, the dynamic table, and the
 // stateful encoder/decoder.
 
@@ -7,31 +13,46 @@ package com.ditchoom.socket.http3
 internal const val QPACK_ENTRY_OVERHEAD: Long = 32
 
 /**
- * UTF-8 byte length of [string] without allocating a `ByteArray` — the "length" QPACK uses for
- * dynamic-table size accounting (RFC 9204 §3.2.1) and string-literal framing.
+ * Size an entry contributes to the dynamic table: name + value octets + 32 (RFC 9204 §3.2.1).
+ *
+ * [utf8Size] is [Utf8.Lenient]'s `size`, which buffer guarantees equals the bytes
+ * `writeText(text, Utf8.Lenient)` emits — so the octet count charged here is the same function that
+ * produces the string literal's length prefix, on every platform.
  */
-internal fun qpackUtf8ByteLength(string: CharSequence): Int {
-    var bytes = 0
-    var i = 0
-    while (i < string.length) {
-        val code = string[i].code
-        bytes +=
-            when {
-                code < 0x80 -> 1
-                code < 0x800 -> 2
-                code in 0xD800..0xDBFF && i + 1 < string.length && string[i + 1].code in 0xDC00..0xDFFF -> {
-                    i++ // consume the low surrogate; a full code point is 4 UTF-8 bytes
-                    4
-                }
-                else -> 3
-            }
-        i++
-    }
-    return bytes
-}
-
-/** Size an entry contributes to the dynamic table: name + value octets + 32 (RFC 9204 §3.2.1). */
 internal fun qpackEntrySize(
     name: String,
     value: String,
-): Long = qpackUtf8ByteLength(name).toLong() + qpackUtf8ByteLength(value).toLong() + QPACK_ENTRY_OVERHEAD
+): Long = name.utf8Size().toLong() + value.utf8Size().toLong() + QPACK_ENTRY_OVERHEAD
+
+/**
+ * Decode [length] bytes at the cursor as a QPACK string, rejecting ill-formed UTF-8 as a typed
+ * [DecodeException] attributed to [fieldPath].
+ *
+ * [Utf8.Strict] is what makes malformed wire input a *codec* error on every platform. `readString`
+ * reports it through whatever the host charset decoder raises — a `MalformedInputException` on the
+ * JVM, a raw JS `TypeError` (a `Throwable` that is not a Kotlin `Exception`) on JS/wasmJs, nothing at
+ * all on the targets that substitute U+FFFD instead — so a hostile peer could either crash the codec
+ * with an untyped platform error or slip replacement characters through, depending on where the code
+ * happened to be running. Strict raises one common [MalformedTextException] carrying the offset, and
+ * rejects atomically: the cursor has not moved when this throws.
+ */
+internal fun ReadBuffer.readQpackText(
+    length: Int,
+    fieldPath: String,
+): String =
+    try {
+        readText(length, Utf8.Strict)
+    } catch (e: MalformedTextException) {
+        val detail =
+            when (e) {
+                is MalformedTextException.IllFormedBytes -> "ill-formed UTF-8 at byte offset ${e.byteOffset}"
+                is MalformedTextException.UnpairedSurrogate -> "unpaired surrogate at UTF-16 index ${e.charIndex}"
+            }
+        throw DecodeException(
+            fieldPath = fieldPath,
+            bufferPosition = position(),
+            expected = "well-formed UTF-8",
+            actual = detail,
+            cause = e,
+        )
+    }
