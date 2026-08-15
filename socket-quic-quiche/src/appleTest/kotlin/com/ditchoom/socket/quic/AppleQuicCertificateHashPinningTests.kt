@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.fromHexString
 
 /**
  * Apple K/Native member of [QuicCertificateHashPinningTestSuite] — the Apple counterpart of
@@ -59,11 +60,8 @@ class AppleQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite
         )
 
     override fun fixtureLeafHash(name: String): CertificateHash {
-        val bytes = hexToBytes(AppleTestCerts.readText(AppleTestCerts.requireGenerated("$name.sha256")).trim())
-        val buf = BufferFactory.deterministic().allocate(bytes.size)
-        bytes.forEach { buf.writeByte(it) }
-        buf.resetForRead()
-        return CertificateHash(buf)
+        val hex = AppleTestCerts.readText(AppleTestCerts.requireGenerated("$name.sha256")).trim()
+        return CertificateHash(BufferFactory.deterministic().fromHexString(hex))
     }
 
     /**
@@ -72,9 +70,4 @@ class AppleQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite
      * Apple simulator that is the whole suite; on macOS a missing fixture is a hard failure.
      */
     override suspend fun wrapTestBody(block: suspend () -> Unit) = AppleTestCerts.skippingWhenSimulatorLacksFixtures(block)
-
-    private fun hexToBytes(hex: String): ByteArray =
-        ByteArray(hex.length / 2) {
-            ((hex[it * 2].digitToInt(16) shl 4) or hex[it * 2 + 1].digitToInt(16)).toByte()
-        }
 }

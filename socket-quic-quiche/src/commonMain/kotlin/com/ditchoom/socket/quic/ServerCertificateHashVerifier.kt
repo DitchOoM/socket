@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.toHexString
 import com.ditchoom.socket.CertificateHashPinningException
 import com.ditchoom.socket.CertificateHashPinningFailure
 import kotlin.time.Clock
@@ -136,23 +137,8 @@ internal fun matchLeafHash(
         sha256Into(leafCertDer, digest)
         digest.resetForRead()
         val matched = hashes.any { it.value.contentEquals(digest) }
-        LeafHashMatch(matched, "sha-256:" + digest.toLowerHex())
+        LeafHashMatch(matched, "sha-256:" + digest.toHexString())
     } finally {
         digest.freeNativeMemory()
     }
-}
-
-private const val HEX_DIGITS = "0123456789abcdef"
-
-/** Lowercase hex of this buffer's remaining bytes. Positional (`get`) — does not consume the buffer. */
-private fun ReadBuffer.toLowerHex(): String {
-    val end = position() + remaining()
-    val sb = StringBuilder((end - position()) * 2)
-    var i = position()
-    while (i < end) {
-        val b = this[i].toInt() and 0xFF
-        sb.append(HEX_DIGITS[b ushr 4]).append(HEX_DIGITS[b and 0xF])
-        i++
-    }
-    return sb.toString()
 }

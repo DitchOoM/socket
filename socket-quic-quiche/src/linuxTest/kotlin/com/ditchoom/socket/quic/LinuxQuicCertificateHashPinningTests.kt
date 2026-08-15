@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.fromHexString
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
@@ -55,18 +56,9 @@ class LinuxQuicCertificateHashPinningTests : QuicCertificateHashPinningTestSuite
         // The build writes `<name>.sha256` (lowercase hex of the leaf DER, computed by java.security —
         // an impl independent of the verifier under test) alongside the cert, so the K/N test reads the
         // expected pin from disk rather than hard-coding a hash that drifts every regeneration.
-        val bytes = hexToBytes(readFileText(certPath("$name.sha256")).trim())
-        val buf = BufferFactory.deterministic().allocate(bytes.size)
-        bytes.forEach { buf.writeByte(it) }
-        buf.resetForRead()
-        return CertificateHash(buf)
+        return CertificateHash(BufferFactory.deterministic().fromHexString(readFileText(certPath("$name.sha256")).trim()))
     }
 
     // Linux enforces the W3C constraints via its BoringSSL-cinterop parser ([parsePinnedLeafFieldsLinux]),
     // so the constraint-reject tests run (inherits enforcesW3cConstraints() = true).
-
-    private fun hexToBytes(hex: String): ByteArray =
-        ByteArray(hex.length / 2) {
-            ((hex[it * 2].digitToInt(16) shl 4) or hex[it * 2 + 1].digitToInt(16)).toByte()
-        }
 }
