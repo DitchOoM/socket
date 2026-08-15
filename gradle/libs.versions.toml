@@ -100,7 +100,15 @@ kotlinWrappers = "2026.6.0"
 # owned the block, so once the owner was released and the allocator reissued that block, a read through the
 # view returned somebody else's bytes and a write overwrote them; a view now links to its OWNER and refuses
 # access after release. Nothing in the range is source-breaking.
-buffer = "6.30.3"
+# 6.30.4 (buffer #367): `BaseJvmBuffer.writeUtf8Substituting` encoded with `endOfInput = true` and never
+# called `flush`, so on Android's ICU encoder — which unlike the JDK's owes the pending high half only at
+# flush — `Utf8.Lenient` wrote NOTHING for text ending in an unpaired surrogate, against a `utf8Size()`
+# that had already charged 3 bytes. Socket does NOT consume this: the substituting path is reachable only
+# through `writeText(text, policy)`, and every socket call site is `writeString(text, Charset.UTF8)`
+# (WebTransportWire, Qpack{StringLiteral,FieldSectionCodec}, AlpnUtils), which takes the strict encoder
+# that throws on malformed input instead. Taken to keep the pin current, and because the fallback is the
+# only path Android has if socket ever adopts a TextPolicy. Drop-in, one file, no source changes here.
+buffer = "6.30.4"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"
