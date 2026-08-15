@@ -114,7 +114,11 @@ object Http3CodecFuzzer {
                 while (reader.nextFrame() != null) Unit
             }
             tolerate {
-                QpackDecoder(maxCapacity = 0) {}.decodeSection(fresh(source), streamId = QuicStreamId(0L), scratchPool = null)
+                QpackDecoder(
+                    maxCapacity = 0,
+                    com.ditchoom.socket.http3
+                        .RecordingQpackDecoderStream(),
+                ).decodeSection(fresh(source), streamId = QuicStreamId(0L), scratchPool = null)
             }
             tolerate {
                 val reader = QpackInstructionReader.encoder(OneShotByteStream(fresh(source)), pool())

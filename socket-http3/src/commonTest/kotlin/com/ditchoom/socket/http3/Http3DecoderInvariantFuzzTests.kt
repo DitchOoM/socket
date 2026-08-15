@@ -132,7 +132,10 @@ class Http3DecoderInvariantFuzzTests {
                     wire[1] = 0x00
                 }
                 assertTypedOnly("qpackDecodeSection#$i", wire) {
-                    QpackDecoder(maxCapacity = 0) {}.decodeSection(bufferOf(wire), streamId = QuicStreamId(0L), scratchPool = null)
+                    QpackDecoder(
+                        maxCapacity = 0,
+                        RecordingQpackDecoderStream(),
+                    ).decodeSection(bufferOf(wire), streamId = QuicStreamId(0L), scratchPool = null)
                 }
             }
         }
