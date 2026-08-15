@@ -122,10 +122,17 @@ jobs:
       # configure — same failure class android_integration.yaml already documents.
       # apt-safe-update first — see .github/actions/apt-safe-update.
       - uses: ./.github/actions/apt-safe-update
+      # ⚠️ This is the exact step that killed `Consumer Smoke (JVM + Linux link)` on PR #361 — it sat
+      # ~9 minutes on a single 21.1 MB gcc-13-aarch64-linux-gnu at ~40 KB/s and was cancelled at
+      # 20m16s, on a PR that had nothing to do with any of it (#368, second sighting).
       - name: Install arm64 cross toolchain (linux-target tasks in the jar's task graph)
-        run: |
-          sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
-          rustup target add aarch64-unknown-linux-gnu
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "consumer smoke: arm64 cross toolchain"
+          packages: >-
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
+      - name: Add Rust aarch64 target
+        run: rustup target add aarch64-unknown-linux-gnu
       - name: Build harness controller jar (harness infrastructure)
         run: ./gradlew :socket-testsuite:controllerJar --no-configuration-cache
       - name: Bring up harness (echo + controller)

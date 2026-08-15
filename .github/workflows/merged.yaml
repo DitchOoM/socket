@@ -342,8 +342,16 @@ jobs:
       # apt-safe-update first: an unused third-party source on the runner image can exit-100 the
       # whole job (see .github/actions/apt-safe-update). This is the RELEASE path.
       - uses: ./.github/actions/apt-safe-update
+      # Restore-only, and necessarily so: this workflow is `pull_request_target`, which cannot write
+      # caches even with `actions: write` (#351). It reads what the nightly warmer left on `main`.
+      # That is the right way round anyway — the RELEASE path should consume a known-good cache,
+      # not define one.
       - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64) + libclang
-        run: sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "release path: arm64 cross toolchain"
+          packages: >-
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
 
       - name: Build harness controller + udp-toxi jars
         run: ./gradlew :socket-testsuite:controllerJar :socket-testsuite:udpToxiJar --no-configuration-cache

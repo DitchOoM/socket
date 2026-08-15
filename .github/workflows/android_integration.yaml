@@ -74,11 +74,15 @@ jobs:
       # `apt-get update` the install below needs; do not drop it without adding one back.
       - uses: ./.github/actions/apt-safe-update
 
+      # libclang: quiche 0.29 dropped `boringssl-vendored`; the Android build now uses
+      # `boringssl-boring-crate`, whose boring-sys build runs bindgen and needs libclang
+      # on the host (the NDK clang covers the target compile).
       - name: Install aarch64 GNU cross-compiler (for :buildBoringsslArm64) + libclang
-        # libclang: quiche 0.29 dropped `boringssl-vendored`; the Android build now uses
-        # `boringssl-boring-crate`, whose boring-sys build runs bindgen and needs libclang
-        # on the host (the NDK clang covers the target compile).
-        run: sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "android emulator lane: arm64 cross toolchain"
+          packages: >-
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libclang-dev
 
       - name: Install Rust + cargo-ndk
         uses: dtolnay/rust-toolchain@stable

@@ -298,11 +298,33 @@ jobs:
       # for the same reason: an unused third-party source can otherwise exit-100 the whole job.
       - uses: ./.github/actions/apt-safe-update
 
+      # ⚠️ THE SINGLE WRITER of the .deb cache — `save: true` appears here and nowhere else.
+      #
+      # This job is the only one that qualifies. Cache scope follows the ref, so a PR run writes
+      # into `refs/pull/N/merge` where no other PR can read it (#352), and merged.yaml runs on
+      # `pull_request_target`, which cannot write caches at all (#351). This workflow runs on a
+      # schedule against `main`, so what it writes is the one scope every PR run can restore from.
+      #
+      # It also downloads the FULL manifest rather than just the two lines it used to install: the
+      # cache has to serve the other seven call sites, and this job needed neither libclang-dev nor
+      # the mingw pair. Warming only its own subset is what would leave every PR lane going back to
+      # the mirror for exactly the packages that stall.
+      #
+      # Ordering note: this deliberately runs BEFORE the freshness checks below rather than after.
+      # If a native build breaks, the .deb cache is still refreshed — the packages have nothing to
+      # do with why that build failed, and letting a red freshness run also expire the apt cache
+      # would couple two unrelated failures.
       - name: Install cross-compilation toolchains
-        run: |
-          # Keep in lockstep with build-linux.yaml so the warmed caches match the PR job's toolchain.
-          sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
-          sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "nightly warmer (writes the cache every other lane restores)"
+          save: "true"
+          # Generous: this job is not on anyone's critical path, and a slow mirror here should be
+          # survived rather than fled — failing means every PR lane tomorrow pays full price.
+          timeout: "20m"
+          packages: >-
+            build-essential perl pkg-config cmake nasm
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
