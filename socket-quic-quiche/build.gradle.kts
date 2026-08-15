@@ -2609,6 +2609,22 @@ val generateLocalhostCert =
 
             fun keytool(vararg args: String): Process = ProcessBuilder(listOf(keytool) + args).redirectErrorStream(false).start()
 
+            // ⚠️ Assembled from two halves instead of written as one literal, and it has to stay
+            // that way. Dependabot's Gradle parser scans build scripts for `group:artifact:version`
+            // string literals, and "bc:critical=ca:true" has exactly that shape — it read it as
+            // group `bc`, artifact `critical=ca`, version `true`, tried to resolve it, and failed
+            // the ENTIRE grouped update with:
+            //
+            //   | Dependency     | Error Type    | Error Details |
+            //   | bc:critical=ca | unknown_error | null          |
+            //
+            // Every daily run from at least 2026-08-07 onward errored this way, so gradle-wrapper,
+            // androidx.core and the publish plugin silently stopped being offered at all — no PR,
+            // no alert, just a red "Dependabot Updates" job nobody reads because it is not a PR
+            // check. The bare `keytool -ext` value is unchanged; only its spelling in Kotlin source
+            // is.
+            val basicConstraintsCaExt = "bc:critical=" + "ca:true"
+
             val gen =
                 keytool(
                     "-genkeypair",
@@ -2629,7 +2645,7 @@ val generateLocalhostCert =
                     "-ext",
                     "eku=serverAuth",
                     "-ext",
-                    "bc:critical=ca:true",
+                    basicConstraintsCaExt,
                     "-keystore",
                     tmpP12.absolutePath,
                     "-storetype",
