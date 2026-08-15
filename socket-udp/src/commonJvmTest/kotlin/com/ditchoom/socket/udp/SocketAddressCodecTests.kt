@@ -1,10 +1,10 @@
 package com.ditchoom.socket.udp
 
-import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.EncodeException
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
@@ -32,7 +32,7 @@ class SocketAddressCodecTests {
 
     private fun encodeToBytes(addr: SocketAddress): List<Int> {
         val size = if (addr.family == AddressFamily.IPv6) SOCKADDR_IN6_SIZE else SOCKADDR_IN_SIZE
-        val buf = PlatformBuffer.allocateNative(size)
+        val buf = BufferFactory.deterministic().allocate(size)
         codec.encode(buf, addr, EncodeContext.Empty)
         buf.resetForRead()
         return (0 until size).map { buf.readByte().toInt() and 0xFF }
@@ -89,7 +89,7 @@ class SocketAddressCodecTests {
 
     @Test
     fun roundtrip_ipv4() {
-        val buf = PlatformBuffer.allocateNative(SOCKADDR_IN_SIZE)
+        val buf = BufferFactory.deterministic().allocate(SOCKADDR_IN_SIZE)
         codec.encode(buf, jvmAddr("192.168.1.5", 5555), EncodeContext.Empty)
         buf.resetForRead()
         val decoded = codec.decode(buf, DecodeContext.Empty)
@@ -100,7 +100,7 @@ class SocketAddressCodecTests {
 
     @Test
     fun roundtrip_ipv6() {
-        val buf = PlatformBuffer.allocateNative(SOCKADDR_IN6_SIZE)
+        val buf = BufferFactory.deterministic().allocate(SOCKADDR_IN6_SIZE)
         codec.encode(buf, jvmAddr("2001:db8::1", 443), EncodeContext.Empty)
         buf.resetForRead()
         val decoded = codec.decode(buf, DecodeContext.Empty)
@@ -114,14 +114,14 @@ class SocketAddressCodecTests {
     fun encode_rejects_foreign_socketaddress() {
         val foreign = SocketAddress.ofLiteral("10.0.0.1", 80) // buffer-flow LiteralSocketAddress, not :socket-udp
         assertFailsWith<EncodeException> {
-            codec.encode(PlatformBuffer.allocateNative(SOCKADDR_IN_SIZE), foreign, EncodeContext.Empty)
+            codec.encode(BufferFactory.deterministic().allocate(SOCKADDR_IN_SIZE), foreign, EncodeContext.Empty)
         }
     }
 
     @Test
     fun ipv6_roundtrip_host_reparses_equal() {
         val original = jvmAddr("2001:db8::1", 443)
-        val buf = PlatformBuffer.allocateNative(SOCKADDR_IN6_SIZE)
+        val buf = BufferFactory.deterministic().allocate(SOCKADDR_IN6_SIZE)
         codec.encode(buf, original, EncodeContext.Empty)
         buf.resetForRead()
         val decoded = codec.decode(buf, DecodeContext.Empty)

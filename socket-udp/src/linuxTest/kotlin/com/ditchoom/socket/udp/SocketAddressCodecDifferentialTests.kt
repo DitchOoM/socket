@@ -2,9 +2,9 @@
 
 package com.ditchoom.socket.udp
 
-import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.codec.EncodeContext
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.cinterop.ByteVar
@@ -29,7 +29,7 @@ class SocketAddressCodecDifferentialTests {
 
     private fun codecBytes(addr: LinuxSocketAddress): List<Byte> {
         val size = if (addr.family == AddressFamily.IPv6) SOCKADDR_IN6_SIZE else SOCKADDR_IN_SIZE
-        val buf = PlatformBuffer.allocateNative(size)
+        val buf = BufferFactory.deterministic().allocate(size)
         codec.encode(buf, addr, EncodeContext.Empty)
         buf.resetForRead()
         return (0 until size).map { buf.readByte() }

@@ -1,8 +1,8 @@
 package com.ditchoom.socket.udp
 
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import kotlinx.coroutines.CompletableDeferred
@@ -233,7 +233,7 @@ private suspend fun probeSend(
 }
 
 private fun filled(size: Int): ReadBuffer {
-    val payload = PlatformBuffer.allocateNative(size)
+    val payload = BufferFactory.deterministic().allocate(size)
     repeat(size) { payload.writeByte(0x41) }
     payload.resetForRead()
     return payload

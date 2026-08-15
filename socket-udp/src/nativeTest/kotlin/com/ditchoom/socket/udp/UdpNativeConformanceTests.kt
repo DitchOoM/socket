@@ -1,7 +1,8 @@
 package com.ditchoom.socket.udp
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.DatagramChannel
@@ -52,7 +53,7 @@ class UdpNativeConformanceTests {
 
     private fun payload(text: String): PlatformBuffer {
         val bytes = text.encodeToByteArray()
-        val buf = PlatformBuffer.allocateNative(bytes.size)
+        val buf = BufferFactory.deterministic().allocate(bytes.size)
         buf.writeBytes(bytes)
         buf.resetForRead()
         return buf

@@ -59,7 +59,7 @@ internal interface PackedSocketAddress {
  * Encodes/decodes a [SocketAddress] as native C `sockaddr` bytes for handoff to a native transport
  * engine's FFI (quiche `recv_info`/`send_info`). Construct with the running target's [SockAddrLayout]
  * (from `linuxSockAddrLayout` / `appleSockAddrLayout` / `hostOsSockAddrLayout()`), write into a
- * **native** buffer (`PlatformBuffer.allocateNative`), and hand the engine `nativeAddress` +
+ * **native** buffer (`BufferFactory.deterministic()`), and hand the engine `nativeAddress` +
  * [wireSize]; quiche's `recv_info` copies the bytes inline, so the buffer need only outlive the call.
  *
  * Byte layout (network order for port/address, matching the proven quiche originals):
