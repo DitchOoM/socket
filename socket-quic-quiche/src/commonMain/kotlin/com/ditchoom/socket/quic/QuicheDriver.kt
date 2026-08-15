@@ -3,9 +3,9 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
@@ -686,7 +686,9 @@ class QuicheDriver(
             val len = api.connApplicationProto(conn, addr(buf), MAX_ALPN_LEN)
             if (len <= 0 || len > MAX_ALPN_LEN) return ""
             buf.setLimit(len)
-            return buf.readString(len, Charset.UTF8)
+            // Lenient: this is our own handshake result coming back out of quiche, not peer-framed
+            // input with a protocol violation to report, so it must not be able to throw.
+            return buf.readText(len, Utf8.Lenient)
         } finally {
             buf.freeNativeMemory()
         }

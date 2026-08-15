@@ -178,6 +178,36 @@ class QpackHuffmanTests {
     }
 
     @Test
+    fun encode_substitutesUnpairedSurrogate_neverCesu8() {
+        // An unpaired surrogate has no UTF-8 encoding. This encoder used to emit it as itself —
+        // three octets of CESU-8 (ED A0 80 for a lone D800) — which is ill-formed UTF-8 that the
+        // field-section codec's own validating decoder rejects, so socket could Huffman-code a
+        // header value it could not then read back. It now substitutes U+FFFD, matching
+        // utf8Size()/Utf8.Lenient, which is the same octet COUNT (3) and so cannot shift a length
+        // prefix — only the bytes change.
+        for (bad in listOf("\uD800", "\uDC00", "ok\uD800", "\uD800ok", "a\uDFFFb")) {
+            val octets = encode(bad)
+            // No ED A0..BF lead byte: that pair is only producible by encoding a surrogate directly.
+            for (i in 0 until octets.size - 1) {
+                assertTrue(
+                    !(octets[i] == 0xED && octets[i + 1] >= 0xA0),
+                    "encoded CESU-8 at octet $i for ${bad.map { it.code.toString(16) }}",
+                )
+            }
+            assertEquals(bad.replace(Regex("[\uD800-\uDFFF]"), "�"), decode(octets))
+        }
+    }
+
+    @Test
+    fun huffmanByteLength_agreesWithEncode_forUnpairedSurrogates() {
+        // huffmanByteLength drives the "is Huffman strictly shorter" choice AND the length prefix,
+        // so it must count the substituted octets the encoder actually writes.
+        for (bad in listOf("\uD800", "ok\uD800", "\uD800ok", "aaaaaaaaaaaaaaaaaaaaaa\uD800")) {
+            assertEquals(encode(bad).size, QpackHuffman.huffmanByteLength(bad), "for ${bad.length} chars")
+        }
+    }
+
+    @Test
     fun decode_doesNotOverAllocate_longInput() {
         // A long all-'0' run is the densest case (5-bit symbols); confirms the
         // output-size bound holds and decoding stays exact.

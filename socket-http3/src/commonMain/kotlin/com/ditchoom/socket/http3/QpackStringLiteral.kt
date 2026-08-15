@@ -1,11 +1,12 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.Utf8
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.buffer.utf8Size
 
 /**
  * A QPACK string literal (RFC 9204 §4.5.1's "String Literal", reused for names and values across the
@@ -16,6 +17,10 @@ import com.ditchoom.buffer.stream.StreamProcessor
  * Encoding chooses Huffman only when it is strictly shorter, matching the length [size] reports so
  * `wireSize` callers stay exact. The differing prefix widths (7 for values, 3/5 for names) are all
  * expressed by [prefixBits]; [flags] carries any representation pattern bits *above* the `H` bit.
+ *
+ * Raw literals transcode under [Utf8.Lenient] in **both** directions. That is the policy whose
+ * `size` is `utf8Size()`, so the length prefix written here cannot disagree with the bytes that
+ * follow it — the two are the same function by construction, on every platform.
  */
 internal object QpackStringLiteral {
     fun write(
@@ -24,7 +29,7 @@ internal object QpackStringLiteral {
         prefixBits: Int,
         flags: Int = 0,
     ) {
-        val raw = qpackUtf8ByteLength(string)
+        val raw = string.utf8Size()
         val huffman = QpackHuffman.huffmanByteLength(string)
         val huffmanBit = 1 shl prefixBits
         if (huffman < raw) {
@@ -32,7 +37,7 @@ internal object QpackStringLiteral {
             QpackHuffman.encode(buffer, string)
         } else {
             QpackPrefixedInteger.encode(buffer, raw.toLong(), prefixBits, firstByteFlags = flags)
-            buffer.writeString(string, Charset.UTF8)
+            buffer.writeText(string, Utf8.Lenient)
         }
     }
 
@@ -41,7 +46,7 @@ internal object QpackStringLiteral {
         string: String,
         prefixBits: Int,
     ): Int {
-        val bytes = minOf(qpackUtf8ByteLength(string), QpackHuffman.huffmanByteLength(string))
+        val bytes = minOf(string.utf8Size(), QpackHuffman.huffmanByteLength(string))
         return QpackPrefixedInteger.encodedLength(bytes.toLong(), prefixBits) + bytes
     }
 
@@ -89,7 +94,7 @@ internal object QpackStringLiteral {
         return if (huffman) {
             QpackHuffman.decode(buffer, length, fieldName, scratchPool)
         } else {
-            buffer.readString(length, Charset.UTF8)
+            buffer.readQpackText(length, fieldName)
         }
     }
 }

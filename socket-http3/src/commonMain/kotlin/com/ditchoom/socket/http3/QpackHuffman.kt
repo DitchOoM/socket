@@ -1,7 +1,6 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
@@ -35,6 +34,9 @@ object QpackHuffman {
     private const val EOS = 256
     private const val SYMBOL_COUNT = 257
     private const val MAX_PADDING_BITS = 7
+
+    /** U+FFFD REPLACEMENT CHARACTER — what an unpaired surrogate encodes as (see [forEachUtf8Octet]). */
+    private const val REPLACEMENT_CHAR = 0xFFFD
 
     /** Shortest code length, used to bound the decoded-octet count for allocation. */
     private const val MIN_CODE_BITS = 5
@@ -671,7 +673,7 @@ object QpackHuffman {
                 }
             }
             out.resetForRead()
-            return out.readString(outLength, Charset.UTF8)
+            return out.readQpackText(outLength, fieldPath)
         } finally {
             scratchPool?.release(out)
         }
@@ -716,10 +718,16 @@ object QpackHuffman {
     }
 
     /**
-     * Invokes [action] for each UTF-8 octet of [value] without allocating a buffer or
-     * ByteArray. Surrogate pairs become a 4-byte sequence (matching the field codec's
-     * `utf8ByteLength`); an unpaired surrogate falls through to the 3-byte branch, the
-     * same byte count platform `writeString` accounts for.
+     * Invokes [action] for each UTF-8 octet of [value] without allocating a buffer or ByteArray.
+     * Shared by [encode] and [huffmanByteLength] so the two can never disagree.
+     *
+     * The octets are exactly the ones `writeText(value, Utf8.Lenient)` emits and `utf8Size()`
+     * counts, which is what lets the Huffman and raw branches of a string literal be compared and
+     * length-prefixed with the same arithmetic. That includes **substituting U+FFFD for an unpaired
+     * surrogate**: encoding such a char as itself would emit a 3-byte CESU-8 sequence (`ED A0 80`
+     * for a lone `D800`) that is not well-formed UTF-8, so the peer — or our own [decode], which
+     * validates — would reject a literal we generated. Both forms cost 3 octets, so this is a
+     * change of bytes, never of length.
      */
     private inline fun forEachUtf8Octet(
         value: CharSequence,
@@ -743,9 +751,11 @@ object QpackHuffman {
                     i++ // consume the low surrogate
                 }
                 else -> {
-                    action(0xE0 or (c shr 12))
-                    action(0x80 or ((c shr 6) and 0x3F))
-                    action(0x80 or (c and 0x3F))
+                    // Unpaired surrogates substitute; every other BMP char encodes as itself.
+                    val cp = if (c in 0xD800..0xDFFF) REPLACEMENT_CHAR else c
+                    action(0xE0 or (cp shr 12))
+                    action(0x80 or ((cp shr 6) and 0x3F))
+                    action(0x80 or (cp and 0x3F))
                 }
             }
             i++

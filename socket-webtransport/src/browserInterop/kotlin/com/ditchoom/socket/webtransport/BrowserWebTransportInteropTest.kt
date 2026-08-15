@@ -1,9 +1,10 @@
 package com.ditchoom.socket.webtransport
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.allocateNative
 import com.ditchoom.buffer.decodeHexInto
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ByteStream
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
@@ -118,17 +119,15 @@ private fun browserTest(block: suspend () -> Unit) =
         null
     }
 
-/** Decode a hex string into a read-ready [PlatformBuffer] (the 32-byte sha-256 leaf hash). */
-private fun hexToBuffer(hex: String): PlatformBuffer {
-    // Use buffer's own hex decoder (ReadBuffer.decodeHexInto — validates digits). It is buffer→buffer, so
-    // the destination is a fresh native buffer (a one-shot String.hexToBuffer exists only in buffer-crypto,
-    // which isn't on the browser classpath). allocateNative is the one allocator shared by js + wasmJs, so
-    // this whole source set compiles unchanged into both browser test binaries.
-    val dest = PlatformBuffer.allocateNative(hex.length / 2)
-    hex.toReadBuffer(Charset.UTF8).decodeHexInto(dest) // hex digits are single-byte (ASCII⊂UTF-8); JS encodes only UTF-8
-    dest.resetForRead()
-    return dest
-}
+/**
+ * Decode a hex string into a read-ready [PlatformBuffer] (the 32-byte sha-256 leaf hash).
+ *
+ * `fromHexString` allocates from the receiver and returns the buffer read-ready, which is the whole of
+ * what this used to stage by hand (allocate → `toReadBuffer` the digits → `decodeHexInto` → reset). The
+ * factory is `deterministic()` because it is native-backed on js and wasmJs alike, so this one source
+ * set still compiles unchanged into both browser test binaries.
+ */
+private fun hexToBuffer(hex: String): PlatformBuffer = BufferFactory.deterministic().fromHexString(hex)
 
 /** Open a bidi stream, send [msg], half-close the send side, read the echoed reply to end-of-stream. */
 private suspend fun WebTransportSession.roundTripBidi(msg: String): String {

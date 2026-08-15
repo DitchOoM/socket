@@ -136,7 +136,7 @@ class QpackFieldSectionCodecTests {
     @Test
     fun roundTrip_nonBmpAndMultiByteUtf8() {
         // Surrogate-pair emoji (4 UTF-8 bytes) + CJK (3 bytes each) — guards the
-        // utf8ByteLength length-prefix against wire/size disagreement.
+        // utf8Size() length-prefix against wire/size disagreement.
         val headers =
             listOf(
                 QpackHeaderField("x-emoji", "👍"),
@@ -148,6 +148,51 @@ class QpackFieldSectionCodecTests {
         val size = QpackFieldSectionCodec.wireSize(headers, EncodeContext.Empty)
         assertIs<WireSize.Exact>(size)
         assertEquals(encode(headers).size, size.bytes)
+    }
+
+    @Test
+    fun unpairedSurrogate_encodesAsReplacementAndStaysSelfConsistent() {
+        // An unpaired surrogate is not representable in UTF-8, and the three parties that have to
+        // agree about it used to disagree: utf8Size()/qpackUtf8ByteLength charged 3 bytes (the
+        // U+FFFD substitution cost), the raw branch called writeString — which SUBSTITUTES on
+        // Apple/JS but THROWS on the JVM, after the length prefix was already written, leaving a
+        // truncated field section on the wire — and the Huffman branch emitted the surrogate as
+        // itself, a CESU-8 ED A0 80 that is not well-formed UTF-8 at all.
+        //
+        // Now every path substitutes U+FFFD, so the value survives a round trip as U+FFFD, the
+        // encoding is well-formed UTF-8 our own validating decoder accepts, and wireSize still
+        // equals the encoded length. Both a lone high and a lone low surrogate are covered, and a
+        // long value forces the raw branch (Huffman is only chosen when strictly shorter).
+        val loneHigh = "\uD800"
+        val loneLow = "\uDC00"
+        val headers =
+            listOf(
+                QpackHeaderField("x-lone-high", loneHigh),
+                QpackHeaderField("x-lone-low", loneLow),
+                QpackHeaderField("x-trailing", "ok$loneHigh"),
+                QpackHeaderField("x-leading", "${loneHigh}ok"),
+            )
+
+        val decoded = roundTrip(headers)
+        assertEquals(headers.map { it.name }, decoded.map { it.name })
+        assertEquals("�", decoded[0].value)
+        assertEquals("�", decoded[1].value)
+        assertEquals("ok�", decoded[2].value)
+        assertEquals("�ok", decoded[3].value)
+
+        // The prefix/value agreement that the JVM used to break mid-frame.
+        val size = QpackFieldSectionCodec.wireSize(headers, EncodeContext.Empty)
+        assertIs<WireSize.Exact>(size)
+        assertEquals(encode(headers).size, size.bytes)
+
+        // Nothing ill-formed reached the wire: no ED A0..BF lead byte anywhere in the encoding.
+        val bytes = encode(headers)
+        for (i in 0 until bytes.size - 1) {
+            assertTrue(
+                !(bytes[i] == 0xED && bytes[i + 1] >= 0xA0),
+                "encoded a CESU-8 surrogate sequence at byte $i",
+            )
+        }
     }
 
     @Test

@@ -2,10 +2,10 @@
 
 package com.ditchoom.socket.webtransport
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.NativeMemoryAccess
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
-import com.ditchoom.buffer.allocateNative
+import com.ditchoom.buffer.deterministic
 import kotlin.js.ExperimentalWasmJsInterop
 import kotlin.js.Promise
 import kotlin.wasm.unsafe.UnsafeWasmMemoryApi
@@ -210,7 +210,7 @@ private fun ByteArray.toJsUint8Array(): JsAny {
 /** Copy a `Uint8Array` chunk from a `ReadableStream` into a fresh read-ready native [ReadBuffer]. */
 internal fun JsAny.uint8ArrayToReadBuffer(): ReadBuffer {
     val length = jsArrayLength(this)
-    val buf = PlatformBuffer.allocateNative(length)
+    val buf = BufferFactory.deterministic().allocate(length)
     if (length > 0) {
         jsCopyToWasmMemory(this, (buf as NativeMemoryAccess).nativeAddress.toInt())
         buf.position(length)
