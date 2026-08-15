@@ -151,7 +151,7 @@ class QuicAutoMigrationTests {
                     }
                 }
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(QuicAutoMigrationTests::class, e)
             }
         }
 }

@@ -102,7 +102,7 @@ class QuicHarnessIntegrationTests {
         // macOS K/N always runs it. Fires on Apple only, so the `harness SKIP:` markers the CI
         // interop audit counts on Linux/JVM/JS (see logHarnessSkip) are unaffected. (Issue #81.)
         val simulatorSkip = quicHarnessSkipReason()
-        if (simulatorSkip != null) return recordSkip(simulatorSkip)
+        if (simulatorSkip != null) return recordSkip(QuicHarnessIntegrationTests::class, simulatorSkip)
         try {
             withQuicConnection(
                 harnessHost,
@@ -253,7 +253,7 @@ class QuicHarnessIntegrationTests {
      */
     private suspend fun withHarnessDatagrams(block: suspend QuicScope.() -> Unit) {
         val simulatorSkip = quicHarnessSkipReason()
-        if (simulatorSkip != null) return recordSkip(simulatorSkip)
+        if (simulatorSkip != null) return recordSkip(QuicHarnessIntegrationTests::class, simulatorSkip)
         try {
             withQuicConnection(
                 harnessHost,

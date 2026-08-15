@@ -113,7 +113,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun twoSequentialEchoConnectionsWork() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(StaleConnectionDiagnosticTests::class) {
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
@@ -134,7 +134,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun noStreamConnectionThenEchoConnection() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(StaleConnectionDiagnosticTests::class) {
                 withTimeout(20.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
@@ -162,7 +162,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun multipleNoStreamConnectionsThenEcho() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(StaleConnectionDiagnosticTests::class) {
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
@@ -189,7 +189,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun connectionsByDcidIsCleanedUpAfterConnectionClose() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(StaleConnectionDiagnosticTests::class) {
                 withTimeout(30.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }
@@ -259,7 +259,7 @@ class StaleConnectionDiagnosticTests {
     @Test
     fun immediateReconnectAfterNoStreamConnection() =
         runBlocking(Dispatchers.IO) {
-            skipOnMissingNativeLib {
+            skipOnMissingNativeLib(StaleConnectionDiagnosticTests::class) {
                 withTimeout(20.seconds) {
                     withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
                         val serverJob = launch(Dispatchers.IO) { echoHandler() }

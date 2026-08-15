@@ -4,6 +4,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.socket.testkit.skip.SkipGate
+import com.ditchoom.socket.testkit.skip.SkipReason
+import com.ditchoom.socket.testkit.skip.recordSkip
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -68,9 +71,21 @@ class QuicMigrationLoopbackTests {
     private val requireRun: Boolean =
         System.getenv("QUIC_MIGRATION_REQUIRE_RUN")?.lowercase() in setOf("1", "true", "yes")
 
-    private fun skipOrFail(reason: String): Nothing {
-        if (requireRun) kotlin.test.fail("QUIC_MIGRATION_REQUIRE_RUN set but test could not run: $reason")
-        assumeTrue(reason, false)
+    /**
+     * Report [reason] through the shared skip path, then apply this suite's own escalation.
+     *
+     * Two gates, deliberately: [recordSkip] emits the greppable marker the CI inventory counts and
+     * fails the lanes that set `SOCKET_REQUIRE_ALL_TESTS` — without it this suite's skips were the one
+     * quiche jvmTest hole in that inventory, invisible on exactly the lanes that forbid skipping — and
+     * `QUIC_MIGRATION_REQUIRE_RUN` then escalates on the narrower set of lanes that must run *this*
+     * test specifically. Whichever fires first, the run goes red naming the reason.
+     */
+    private fun skipOrFail(reason: SkipReason): Nothing {
+        recordSkip(QuicMigrationLoopbackTests::class, reason)
+        if (requireRun) {
+            kotlin.test.fail("QUIC_MIGRATION_REQUIRE_RUN set but test could not run: ${reason.detail}")
+        }
+        assumeTrue(reason.detail, false)
         error("unreachable") // assumeTrue(false) aborts via AssumptionViolatedException
     }
 
@@ -78,7 +93,7 @@ class QuicMigrationLoopbackTests {
         try {
             block()
         } catch (e: UnsatisfiedLinkError) {
-            skipOrFail("Native lib not available: ${e.message}")
+            skipOrFail(SkipReason.NativeLibraryUnavailable(e.message ?: "UnsatisfiedLinkError with no message"))
         }
     }
 
@@ -99,7 +114,25 @@ class QuicMigrationLoopbackTests {
             } catch (e: Exception) {
                 false
             }
-        assumeTrue("Loopback alias 127.0.0.2 not bindable on this host (needs a privileged alias)", bindable)
+        if (!bindable) {
+            // Reported, not escalated: see the docstring. It still has to be *visible*, because a host
+            // that quietly stopped being able to bind the alias looks exactly like one that never could.
+            //
+            // The gate has to say so. Recording this under the default lane gate made every
+            // SOCKET_REQUIRE_ALL_TESTS=1 macOS lane fail here — a promise the lane cannot keep, since
+            // the alias needs a privileged `ifconfig` no lane setting installs. Escalation for this one
+            // stays with QUIC_MIGRATION_REQUIRE_RUN below, which is set only where 127.0.0.2 *is*
+            // bindable and where a sudden un-bindability is therefore a real regression.
+            recordSkip(
+                QuicMigrationLoopbackTests::class,
+                SkipReason.HostBehaviourDiffers(
+                    "loopback alias 127.0.0.2 is not bindable on this host; binding it needs a privileged " +
+                        "`ifconfig lo0 alias` on macOS/BSD, which this suite does not require",
+                ),
+                SkipGate.HostCannotProvideIt("a bindable 127.0.0.2 loopback alias (privileged `ifconfig lo0 alias` on macOS/BSD)"),
+            )
+            assumeTrue("Loopback alias 127.0.0.2 not bindable on this host (needs a privileged alias)", false)
+        }
     }
 
     /**

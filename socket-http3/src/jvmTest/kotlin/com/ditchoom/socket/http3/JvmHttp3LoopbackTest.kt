@@ -33,7 +33,10 @@ class JvmHttp3LoopbackTest : Http3LoopbackTestSuite() {
         try {
             block()
         } catch (e: UnsatisfiedLinkError) {
-            recordSkip(SkipReason.NativeLibraryUnavailable(e.message ?: "UnsatisfiedLinkError with no message"))
+            recordSkip(
+                JvmHttp3LoopbackTest::class,
+                SkipReason.NativeLibraryUnavailable(e.message ?: "UnsatisfiedLinkError with no message"),
+            )
             assumeTrue("Native lib not available: ${e.message}", false)
         }
     }

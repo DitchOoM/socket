@@ -25,5 +25,5 @@ class AndroidQuicMalformedPacketTests : QuicMalformedPacketTestSuite() {
         }
     }
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQuicMalformedPacketTests::class, block)
 }

@@ -56,7 +56,7 @@ class AppleWebTransportTest : WebTransportTestSuite() {
     /** Skip on `--standalone` Apple simulators (see [quicHarnessSkipReason]). */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
         val skip = quicHarnessSkipReason()
-        if (skip != null) return recordSkip(skip)
+        if (skip != null) return recordSkip(AppleWebTransportTest::class, skip)
         block()
     }
 }

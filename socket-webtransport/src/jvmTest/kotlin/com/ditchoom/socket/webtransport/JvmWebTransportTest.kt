@@ -38,7 +38,7 @@ class JvmWebTransportTest : WebTransportTestSuite() {
     override suspend fun openMultiplexed(url: String): MultiplexedWebTransport =
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig(clientTraceSink))
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(JvmWebTransportTest::class, block)
 }
 
 /**

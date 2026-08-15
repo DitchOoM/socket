@@ -14,5 +14,5 @@ import org.junit.runner.RunWith
 class AndroidQuicConcurrencySoakTests : QuicConcurrencySoakTestSuite() {
     override fun testTlsConfig() = AndroidTestCerts.tlsConfig
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(AndroidQuicConcurrencySoakTests::class, block)
 }

@@ -45,7 +45,7 @@ class JvmCallerClockSimTests {
             try {
                 driveStructuralTrace()
             } catch (e: UnsatisfiedLinkError) {
-                recordMissingNativeLib(e)
+                recordMissingNativeLib(JvmCallerClockSimTests::class, e)
                 return
             }
         val traceB = driveStructuralTrace()

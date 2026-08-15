@@ -1,5 +1,7 @@
 package com.ditchoom.socket.testkit.skip
 
+import kotlin.reflect.KClass
+
 /**
  * Why a test did not run.
  *
@@ -90,12 +92,53 @@ sealed interface SkipReason {
  * Set to `1` on any lane where a skip is a failure rather than an accommodation.
  *
  * Lanes that build their own natives and own a real filesystem (JVM, Android instrumented, Linux
- * K/N, macOS K/N) set this: nothing in [SkipReason] can legitimately fire there, so if one does,
- * the environment is broken and the run must go red. The simulator lanes deliberately leave it
- * unset — their skips are real and documented — but still emit [SKIP_MARKER], so the inventory is
- * greppable instead of invisible.
+ * K/N, macOS K/N) set this: a skip whose cause the lane *provisions* — a native, a fixture — cannot
+ * legitimately fire there, so if one does, the environment is broken and the run must go red. The
+ * simulator lanes deliberately leave it unset — their skips are real and documented — but still emit
+ * [SKIP_MARKER], so the inventory is greppable instead of invisible.
+ *
+ * What it does **not** promise is that every test is runnable on every host: a lane cannot provision
+ * a capability the host does not have. Those skips say so in their [SkipGate] and this variable
+ * leaves them alone.
  */
 const val REQUIRE_ALL_TESTS_ENV: String = "SOCKET_REQUIRE_ALL_TESTS"
+
+/**
+ * Which promise decides whether a recorded skip is also a failure.
+ *
+ * Two gates rather than one because [REQUIRE_ALL_TESTS_ENV] is a statement about the *lane* ("I
+ * provisioned everything these tests need"), and not every skip is about provisioning. A host
+ * capability the lane cannot install no matter how it is configured — an unprivileged macOS runner
+ * cannot bind the 127.0.0.2 loopback alias, a Windows host does not produce POSIX errnos — makes
+ * that promise unsatisfiable, and a gate that cannot be satisfied is not a gate: the lane either
+ * stays red forever or stops gating the ~38 suites it was protecting.
+ *
+ * Measured, not hypothesised: the macOS quiche jvmTest lanes went red on exactly this, one
+ * `HostBehaviourDiffers` skip against a `SOCKET_REQUIRE_ALL_TESTS=1` lane.
+ */
+sealed interface SkipGate {
+    /**
+     * [REQUIRE_ALL_TESTS_ENV] decides. The default, and correct for every cause a lane provisions:
+     * a missing native or fixture on a lane that promised to build one is a broken lane.
+     */
+    data object LaneMustRunEveryTest : SkipGate
+
+    /**
+     * The lane gate does not apply, because no lane setting could make this test run — [capability]
+     * is missing from the *host*.
+     *
+     * Exempt from failing, never from being seen: the marker is still emitted and the CI inventory
+     * still counts it, so "this host has quietly stopped being able to do X" stays visible. Callers
+     * that own a narrower switch (`QUIC_MIGRATION_REQUIRE_RUN` on the lanes where the capability
+     * *is* present) escalate it themselves, which keeps the escalation where the knowledge is.
+     *
+     * [capability] is required so the exemption reads as a reviewable claim about a host rather than
+     * a bare opt-out of the gate.
+     */
+    data class HostCannotProvideIt(
+        val capability: String,
+    ) : SkipGate
+}
 
 /**
  * Prefix of the line every skip emits. Greppable from the test XML's `system-out`, which every
@@ -104,23 +147,56 @@ const val REQUIRE_ALL_TESTS_ENV: String = "SOCKET_REQUIRE_ALL_TESTS"
 const val SKIP_MARKER: String = "[TEST-SKIPPED]"
 
 /**
- * Record that the calling suite did not run a test body, and decide whether that is tolerable.
+ * Record that [site] did not run a test body, and decide whether that is tolerable.
  *
- * Always emits [SKIP_MARKER] so the skip appears in the run's artifacts. Throws when
- * [REQUIRE_ALL_TESTS_ENV] is set, which is what turns "silently green" into "red, with the reason
- * already in the message".
+ * Always emits [SKIP_MARKER] so the skip appears in the run's artifacts. Throws when [gate] says
+ * this lane promised to run the test and [REQUIRE_ALL_TESTS_ENV] is set, which is what turns
+ * "silently green" into "red, with the reason already in the message".
+ *
+ * ## Why the site is named rather than inferred
+ *
+ * This was `Any.recordSkip`, deriving the site from `this::class.simpleName`. That reads as "the suite
+ * I am in", and inside a lambda with a receiver it is not: an extension on `Any` binds to the
+ * **innermost implicit receiver**, so a call in a `runBlocking { }` body recorded
+ * `site=BlockingCoroutine` and one in `runTest { }` recorded `site=TestScopeImpl` — measured, at every
+ * such call site. The inventory groups by site, so the one column naming *which* suite stopped running
+ * named a coroutine implementation class instead.
+ *
+ * A [KClass] parameter cannot be captured by an enclosing lambda: the call site has to write the class
+ * down, and the compiler checks and renames it.
  */
-fun Any.recordSkip(reason: SkipReason): Unit = recordSkip(this::class.simpleName ?: "<anonymous>", reason)
+fun recordSkip(
+    site: KClass<*>,
+    reason: SkipReason,
+    gate: SkipGate = SkipGate.LaneMustRunEveryTest,
+): Unit = recordSkip(site.simpleName ?: "<anonymous>", reason, gate)
 
-/** [recordSkip] for callers that are not a suite instance (top-level helpers, companions). */
+/** [recordSkip] for callers with no class to name (top-level helpers, generated or synthetic sites). */
 fun recordSkip(
     site: String,
     reason: SkipReason,
+    gate: SkipGate = SkipGate.LaneMustRunEveryTest,
 ) {
     val marker = skipMarker(site, reason)
     println(marker)
-    if (testkitEnv(REQUIRE_ALL_TESTS_ENV) == "1") throw skipForbidden(marker)
+    if (skipIsForbidden(gate, testkitEnv(REQUIRE_ALL_TESTS_ENV))) throw skipForbidden(marker)
 }
+
+/**
+ * The decision [recordSkip] makes, as a pure function of the two things that decide it.
+ *
+ * Split out so the matrix is testable without an environment — the previous shape could only be
+ * checked by running a whole lane and reading whether it went red, which is how a gate that fires on
+ * a host that cannot satisfy it reached CI in the first place.
+ */
+internal fun skipIsForbidden(
+    gate: SkipGate,
+    requireAllTests: String?,
+): Boolean =
+    when (gate) {
+        SkipGate.LaneMustRunEveryTest -> requireAllTests == "1"
+        is SkipGate.HostCannotProvideIt -> false
+    }
 
 /**
  * The emitted line, split out from [recordSkip] so its format is testable without an environment:

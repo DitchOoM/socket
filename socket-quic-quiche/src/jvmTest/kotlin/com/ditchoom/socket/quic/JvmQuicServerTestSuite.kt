@@ -34,5 +34,5 @@ class JvmQuicServerTestSuite : QuicServerTestSuite() {
 
     override fun unrelatedCaPem() = java.io.File(certPath("cert.crt")).readText()
 
-    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(block)
+    override suspend fun wrapTestBody(block: suspend () -> Unit) = skipOnMissingNativeLib(JvmQuicServerTestSuite::class, block)
 }
