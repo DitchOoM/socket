@@ -108,7 +108,15 @@ kotlinWrappers = "2026.6.0"
 # (WebTransportWire, Qpack{StringLiteral,FieldSectionCodec}, AlpnUtils), which takes the strict encoder
 # that throws on malformed input instead. Taken to keep the pin current, and because the fallback is the
 # only path Android has if socket ever adopts a TextPolicy. Drop-in, one file, no source changes here.
-buffer = "6.30.4"
+# 6.31.0 (buffer #372): connection-owned send — `SendMode` (AwaitWritten default / Handoff fan-out),
+# `OutboundWriter` (one writer coroutine per connection, so a cancelled caller can no longer truncate a
+# frame and concurrent sends cannot interleave), `ConnectionPhase`/`CloseCause`, `Connection.abort()`
+# with a `close()` default, and `SharedBytes`/`SharedFrame`/`ContextFreeCodec.encodeShared` for
+# encode-once fan-out. All additive: `Connection`'s new member has a default body and `AwaitWritten` is
+# the drop-in mode, so nothing here changed shape. This is the UPSTREAM HALF of socket #382 — root
+# :socket's `CodecConnection`/`CodecSender` compose `OutboundWriter` in this PR rather than writing on
+# the caller's coroutine.
+buffer = "6.31.0"
 ksp = "2.3.9"
 # held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
 androidxCore = "1.18.0"

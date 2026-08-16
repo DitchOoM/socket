@@ -57,6 +57,36 @@ if (gradle.startParameter.logLevel != LogLevel.QUIET) {
     println("Version: ${project.version}\nisRunningOnGithub: $isRunningOnGithub\nisMainBranchGithub: $isMainBranchGithub")
 }
 
+/**
+ * Pre-release validation of the pinned buffer minor from its PR branch (buffer #372 -> 6.31.0),
+ * published into ~/.m2 with `publishToMavenLocal`. Filtered by MODULE, not by group: `com.ditchoom`
+ * is also socket's own group, so a whole-group filter would let a stale ~/.m2 `:socket` shadow the
+ * real thing. KMP publishes one Maven module per target beside the root one (buffer, buffer-jvm,
+ * buffer-linuxx64, …), so each name is admitted with an OPTIONAL known target suffix — bounded on
+ * purpose, so `buffer` cannot also admit `buffer-compression`.
+ *
+ * Every call site gates this on local dev. CI intentionally has no mavenLocal and resolves Central
+ * only, so this PR's CI stays red on resolution until buffer 6.31.0 is released — that red is the
+ * honest state for a draft PR rather than something to paper over.
+ */
+fun RepositoryHandler.prereleaseBufferMavenLocal() =
+    mavenLocal {
+        content {
+            val target = "^%s(-(android|js|jvm|wasm-js|(linux|macos|ios|tvos|watchos)[a-z0-9]*))?$"
+            listOf(
+                "buffer",
+                "buffer-flow",
+                "buffer-codec",
+                "buffer-codec-processor",
+                // Not consumed directly: buffer-codec-processor pulls it onto :socket-http3's KSP
+                // processor classpath, and a filter that admits the processor but not its own
+                // dependency resolves half a graph.
+                "buffer-codec-schema",
+                "buffer-crypto",
+            ).forEach { includeModuleByRegex("^com\\.ditchoom$", target.format(it)) }
+        }
+    }
+
 repositories {
     // Scoped mavenLocal: resolves the canonical :boringssl-canonical OWNER klib (external-mode linux
     // BoringSSL supply) from ~/.m2. Filtered to com.ditchoom.boringssl.* so an unrelated ~/.m2 artifact
@@ -65,8 +95,20 @@ repositories {
     mavenLocal {
         content { includeGroupByRegex("com\\.ditchoom\\.boringssl.*") }
     }
+    if (!isRunningOnGithub) prereleaseBufferMavenLocal()
     google()
     mavenCentral()
+}
+
+// Every module resolves buffer, and root's own jvmTest/linuxX64Test/jsNodeTest reach into
+// :socket-testkit, :socket-testsuite and :socket-quic-quiche (the harness jars below), so the
+// pre-release repo has to reach them too. Declared once here instead of copy-pasted into a dozen
+// module builds; each module keeps its own google()/mavenCentral() untouched, and this adds nothing
+// on CI.
+if (!isRunningOnGithub) {
+    subprojects {
+        repositories { prereleaseBufferMavenLocal() }
+    }
 }
 
 // Configure cinterop for NW helpers (C bridge for dispatch_data_t → NSData, connection creation, WS support)
