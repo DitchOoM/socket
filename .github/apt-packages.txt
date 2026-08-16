@@ -1,0 +1,55 @@
+# Canonical union of every apt package this repo's Linux jobs install.
+#
+# WHY A MANIFEST AND NOT JUST THE PER-CALL-SITE LISTS
+#
+# The nightly warmer (native-deps-freshness.yaml) is the ONLY writer of the .deb cache, and it
+# runs on `main`, so its cache scope is the one every PR run can read from. A PR run writes only
+# into its own `refs/pull/N/merge` scope, which no other PR can see (#352). That means the warmer
+# has to download the packages OTHER jobs need, not just its own — before this file existed the
+# warmer installed neither libclang-dev nor the mingw pair, so a PR job would have found them
+# missing from an otherwise-warm cache and gone back to the mirror for exactly the ~35 MB that
+# stalls most often.
+#
+# So: every package named at any call site of .github/actions/apt-install-cached belongs here.
+# The action warns (loudly, in the job log) when it is asked for something this file does not
+# list, because that package is silently uncached and is the next thing to delete a job.
+#
+# Cache key derives from a hash of this file, so editing it rotates the cache. The next nightly
+# warmer run repopulates; PR runs in between just download as they did before. Degrades, never
+# breaks.
+
+# --- Host build deps for BoringSSL / quiche (cmake-configured, perl-driven) ---
+build-essential
+perl
+pkg-config
+cmake
+nasm
+
+# --- aarch64 cross toolchain ---
+# The big one: g++-13-aarch64-linux-gnu (12.2 MB) + gcc-13-aarch64-linux-gnu (21.1 MB) are the two
+# packages seen stalling at ~40 KB/s in both sightings on #368.
+#
+# libc6-dev-arm64-cross is named explicitly, not left to Recommends: it supplies
+# /usr/aarch64-linux-gnu/include/sys/socket.h for the arm64 quiche_jni.c cross-compile, and as a
+# mere *Recommends* of gcc-aarch64-linux-gnu it can silently not arrive (→ `fatal error:
+# sys/socket.h: No such file`).
+gcc-aarch64-linux-gnu
+g++-aarch64-linux-gnu
+libc6-dev-arm64-cross
+
+# --- Windows cross toolchain (self-contained quiche build for windows-x64) ---
+gcc-mingw-w64-x86-64
+g++-mingw-w64-x86-64
+
+# --- BoringSSL ASAN lane ---
+# Its LLVM ASAN runtime must match cargo-fuzz's, so the lane installs clang rather than relying on
+# the image's gcc. That step carries `continue-on-error: true`, which makes it look harmless — but
+# continue-on-error does not survive the JOB timeout, so a stall there still deletes the lane
+# exactly the way #368 describes, just without even a red step to point at.
+clang
+
+# --- bindgen ---
+# quiche 0.29 dropped `boringssl-vendored`; the Windows/Android/fuzz builds use
+# `boringssl-boring-crate`, whose boring-sys build script runs bindgen and needs libclang on the
+# host. (Linux x64/arm64 use external BoringSSL + `ffi`, which needs no libclang.)
+libclang-dev

@@ -94,12 +94,25 @@ runs:
     # made `apt-get update` exit 100 and blocked the 1efafc4b release.
     - uses: ./.github/actions/apt-safe-update
 
+    # ⚠️ This is the composite that #368 was filed against: `Fuzz native ASAN (header-slice)` burned
+    # all 25 of its timeout-minutes inside the install below and was killed before one fuzz
+    # iteration ran, while its sibling lane finished the whole job in 5m53s off the same commit.
+    # apt-install-cached serves these from a nightly-warmed .deb cache and, on a miss, fails with a
+    # diagnostic instead of eating the budget. The 6m timeout is deliberately under this job's own
+    # 25m so setup can no longer present as "the fuzzer failed".
+    #
+    # libc6-dev-arm64-cross is NEW here, and was a latent bug: this composite installed
+    # gcc-aarch64-linux-gnu without it, relying on a *Recommends* that every other call site in
+    # this repo names explicitly precisely because it can silently not arrive.
     - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
-      shell: bash
-      run: |
-        sudo apt-get install -y build-essential perl pkg-config cmake nasm
-        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-        sudo apt-get install -y libclang-dev
+      uses: ./.github/actions/apt-install-cached
+      with:
+        purpose: "fuzz lane BoringSSL/quiche toolchain"
+        timeout: "6m"
+        packages: >-
+          build-essential perl pkg-config cmake nasm
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+          libclang-dev
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable

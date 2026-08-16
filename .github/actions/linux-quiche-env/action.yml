@@ -185,13 +185,19 @@ runs:
     # azure-cli source blocked the 1efafc4b release here. See .github/actions/apt-safe-update.
     - uses: ./.github/actions/apt-safe-update
 
+    # ⚠️ The highest-leverage call site: this composite runs in ~10 Linux jobs per run, so before
+    # the .deb cache existed one run pulled the same ~100 MB from the mirror ten times over, and
+    # any one of those ten had the power to stall past the job budget (#368). Retries do NOT cover
+    # it — apt's timeouts are inactivity timeouts and a 40 KB/s transfer is active; see the long
+    # note in .github/actions/apt-install-cached.
     - name: Install build toolchain (BoringSSL/quiche, incl. aarch64 cross)
-      shell: bash
-      run: |
-        # -o Acquire::Retries=3 absorbs transient archive-mirror 5xx/timeouts (a recurring CI flake).
-        sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
-        sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
-        sudo apt-get install -y -o Acquire::Retries=3 libclang-dev
+      uses: ./.github/actions/apt-install-cached
+      with:
+        purpose: "Linux fan-out BoringSSL/quiche toolchain"
+        packages: >-
+          build-essential perl pkg-config cmake nasm
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+          libclang-dev
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable

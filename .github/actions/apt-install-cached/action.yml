@@ -1,0 +1,206 @@
+name: "apt-get install, from a warmed .deb cache"
+description: >-
+  Installs apt packages from a nightly-warmed cache of .deb files, and puts a hard, legible
+  wall-clock budget on the install so a slow Ubuntu mirror can no longer delete a job. Restore-only
+  for every caller except the nightly warmer, which is the single writer.
+
+inputs:
+  packages:
+    description: "Packages to install. Whitespace- or newline-separated."
+    required: true
+  purpose:
+    description: "Short human-readable reason, shown in the job log so a cache miss says what it missed."
+    required: false
+    default: "build toolchain"
+  save:
+    description: >-
+      "true" ONLY in .github/workflows/native-deps-freshness.yaml. Every other caller is
+      restore-only. See the single-writer note in the step body.
+    required: false
+    default: "false"
+  timeout:
+    description: >-
+      Hard wall-clock budget for the download+install, as a timeout(1) duration. Exceeding it fails
+      the step with a diagnostic naming the mirror, instead of silently eating the job's budget.
+    required: false
+    default: "8m"
+
+runs:
+  using: composite
+  steps:
+    # ⚠️ WHY THIS ACTION EXISTS — it deleted two jobs on 2026-08-14 (issue #368).
+    #
+    # `setup-linux-fuzz` (PR #364) and `Consumer Smoke` (PR #361) both burned their ENTIRE job
+    # budget inside `apt-get install` of the aarch64 cross-toolchain, on two unrelated PRs, in the
+    # same 22:55-23:20 UTC window. Throughput on azure.archive.ubuntu.com collapsed mid-step:
+    #
+    #   22:56:14  Fetched 14.0 MB in 1s (18.9 MB/s)          # first 7 packages
+    #   23:18:40  Get:24 g++-13-aarch64-linux-gnu  12.2 MB   # 76s, still not done
+    #   23:20:51  ##[error]The operation was canceled.
+    #
+    # Both surfaced as a `cancelled` conclusion with the real work never started — which reads
+    # like a human cancelled the run, or (on a fuzz lane) like fuzzing found something. Neither
+    # was true, and both cost a full re-run to discover.
+    #
+    # ⚠️ `-o Acquire::Retries=` DOES NOT FIX THIS, and it is worth being precise about why, because
+    # the retry option was already present at 6 of the 8 call sites while both failures happened.
+    # apt's timeouts are INACTIVITY timeouts. A transfer crawling along at 40 KB/s is active, so
+    # neither Acquire::http::Timeout nor Retries ever fires — apt waits, correctly and forever, for
+    # a mirror that is technically still talking to it. There is no "minimum throughput" knob.
+    #
+    # So the fix is to not be on the mirror's critical path at all: the same ~100 MB of .debs, on
+    # every run of every Linux lane, is cached. The timeout below is the backstop for the residual
+    # case (cold cache AND slow mirror), and its job is to fail FAST and SAY WHY rather than to
+    # prevent the stall.
+
+    - name: Keep downloaded .debs (so there is something to cache)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # apt-get already keeps /var/cache/apt/archives by default, but the runner image is free to
+        # ship a DPkg::Post-Invoke cleaner (docker-clean does exactly this, and images inherit odd
+        # defaults over time). Be explicit rather than depend on an unstated default: the whole
+        # mechanism silently degrades to "always download" if the archives get swept.
+        echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' \
+          | sudo tee /etc/apt/apt.conf.d/99keep-downloaded-packages >/dev/null
+
+    - name: Compute .deb cache key
+      id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        manifest=".github/apt-packages.txt"
+        # Package versions are pinned by the runner image, not by us, so the image version belongs
+        # in the key: without it a cache warmed on an older image hands back .debs that apt will
+        # just re-download (a silent, permanent ~100% miss that still reports as a hit).
+        image="${ImageVersion:-unknown}"
+        arch="$(dpkg --print-architecture)"
+        manifest_hash="$(sha256sum "$manifest" | cut -c1-16)"
+        echo "value=apt-debs-${arch}-${image}-${manifest_hash}-v1" >>"$GITHUB_OUTPUT"
+        echo "staging=${RUNNER_TEMP}/apt-deb-cache" >>"$GITHUB_OUTPUT"
+
+    # Restore-only for every caller but the warmer. This follows the single-writer discipline the
+    # rest of this repo's caches already use (see linux-quiche-env's restore-only liburing/quiche
+    # keys, and setup-linux-fuzz's note on its one deliberate read-write key): exactly one job
+    # writes a key, so no two jobs can race to define what it means.
+    #
+    # It also sidesteps a mechanism that has burned this repo before — a `pull_request_target` run
+    # (merged.yaml, the RELEASE path) cannot write caches at all, and a denied save reports as a
+    # green step (#351). A restore-only caller has nothing to be denied.
+    - name: Restore .deb cache
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.key.outputs.staging }}
+        key: ${{ steps.key.outputs.value }}
+
+    - name: Seed apt's archive from the cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        staging="${{ steps.key.outputs.staging }}"
+        if [ -d "$staging" ] && compgen -G "$staging/*.deb" >/dev/null; then
+          n=$(find "$staging" -name '*.deb' | wc -l | tr -d ' ')
+          mb=$(du -sm "$staging" | cut -f1)
+          echo "::notice::apt .deb cache HIT — pre-seeding ${n} packages (${mb} MB), mirror not needed for these"
+          sudo cp "$staging"/*.deb /var/cache/apt/archives/
+        else
+          echo "::warning::apt .deb cache MISS for '${{ inputs.purpose }}' — downloading from the mirror."
+          echo "A miss is safe but slow, and is the condition in which #368 deletes a job."
+          echo "Expected key: ${{ steps.key.outputs.value }}"
+          echo "If this misses on every run, the nightly warmer (native-deps-freshness.yaml) is"
+          echo "not writing — check that job before assuming the mirror is at fault."
+        fi
+
+    # Only the warmer runs this: it downloads the FULL manifest, not just the packages this job
+    # happens to need, so that the single cached entry serves every call site. Without it the
+    # warmer would cache only its own subset and every other lane would still hit the mirror for
+    # the difference — which is precisely the state this repo was in (the warmer installed neither
+    # libclang-dev nor the mingw pair).
+    - name: Warm the full manifest (writer only)
+      if: inputs.save == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mapfile -t pkgs < <(grep -vE '^[[:space:]]*(#|$)' .github/apt-packages.txt)
+        # An empty manifest would make this step a silent no-op and publish an empty cache that
+        # every other lane would then "hit" while downloading everything anyway — the exact
+        # false-green shape a warmer must not have.
+        if [ "${#pkgs[@]}" -eq 0 ]; then
+          echo "::error::.github/apt-packages.txt parsed to zero packages — refusing to warm an empty cache."
+          exit 1
+        fi
+        echo "Pre-downloading the full manifest (${#pkgs[@]} packages) so PR lanes can restore it."
+        sudo apt-get install -y --download-only \
+          -o Acquire::Retries=3 \
+          -o Acquire::http::Timeout=30 \
+          -o Acquire::https::Timeout=30 \
+          "${pkgs[@]}"
+
+    - name: Install
+      shell: bash
+      run: |
+        set -uo pipefail
+
+        # Warn about anything not in the manifest. Not fatal: an unlisted package still installs,
+        # it is just uncached — and an uncached package is the next candidate to stall a job, so it
+        # should be visible rather than discovered the hard way.
+        manifest=".github/apt-packages.txt"
+        for p in ${{ inputs.packages }}; do
+          if ! grep -qxF "$p" "$manifest"; then
+            echo "::warning::'$p' is not in ${manifest}, so it is NOT covered by the .deb cache."
+            echo "  Add it there if it is a real dependency — see the header of that file for why."
+          fi
+        done
+
+        # NOTE: `timeout --foreground`, not a bare `timeout`. Composite-action steps do not support
+        # `timeout-minutes` (a GitHub limitation), so the budget has to come from inside the shell,
+        # and --foreground keeps apt attached to the job's TTY so its progress still streams.
+        set +e
+        timeout --foreground "${{ inputs.timeout }}" \
+          sudo apt-get install -y \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            ${{ inputs.packages }}
+        rc=$?
+        set -e
+
+        if [ "$rc" -eq 124 ]; then
+          echo "::error::apt-get install exceeded its ${{ inputs.timeout }} budget for '${{ inputs.purpose }}'."
+          echo ""
+          echo "This is almost certainly a slow Ubuntu mirror, NOT a problem with this PR — see #368."
+          echo "Both recorded sightings collapsed from ~19 MB/s to ~40 KB/s part-way through the"
+          echo "same install, on unrelated PRs, in the same 25-minute window."
+          echo ""
+          echo "This step now fails HERE, loudly, instead of silently consuming the job's whole"
+          echo "timeout-minutes and reporting as 'cancelled' with the real work never started."
+          echo "Re-running the job is the workaround; a warm .deb cache is the fix."
+          exit 1
+        fi
+        exit "$rc"
+
+    - name: Collect .debs for the cache (writer only)
+      if: inputs.save == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        staging="${{ steps.key.outputs.staging }}"
+        mkdir -p "$staging"
+        # `|| true` on the copy alone: an empty archive dir is a legitimate state (everything was
+        # already installed on the image), and should not fail the warmer.
+        sudo cp /var/cache/apt/archives/*.deb "$staging"/ 2>/dev/null || true
+        sudo chown -R "$(id -u):$(id -g)" "$staging"
+        n=$(find "$staging" -name '*.deb' | wc -l | tr -d ' ')
+        echo "::notice::warmer collected ${n} .deb files for the cache"
+        if [ "$n" -eq 0 ]; then
+          echo "::warning::nothing to cache — the warmer will publish an empty entry."
+          echo "That is the false-green shape to watch for: a HIT that seeds zero packages."
+        fi
+
+    - name: Save .deb cache (writer only)
+      if: inputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ steps.key.outputs.staging }}
+        key: ${{ steps.key.outputs.value }}

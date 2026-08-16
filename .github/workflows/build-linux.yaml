@@ -262,20 +262,20 @@ jobs:
       # made `apt-get update` exit 100 and blocked the 1efafc4b release.
       - uses: ./.github/actions/apt-safe-update
 
+      # The full manifest — this is the `natives` job, which builds every Linux/Windows artifact the
+      # rest of the fan-out then downloads. Per-package rationale now lives in
+      # .github/apt-packages.txt (libc6-dev-arm64-cross' Recommends trap, libclang for boring-sys'
+      # bindgen, the mingw pair for the self-contained windows-x64 quiche build) so the seven other
+      # call sites cannot drift from it.
       - name: Install cross-compilation toolchains
-        run: |
-          # -o Acquire::Retries=3 absorbs transient archive-mirror 5xx/timeouts (a recurring CI flake).
-          sudo apt-get install -y -o Acquire::Retries=3 build-essential perl pkg-config cmake nasm
-          # libc6-dev-arm64-cross provides /usr/aarch64-linux-gnu/include/sys/socket.h for the arm64
-          # quiche_jni.c cross-compile. It is only a *Recommends* of gcc-aarch64-linux-gnu, so it can
-          # silently not arrive (causing `fatal error: sys/socket.h: No such file`) — name it explicitly.
-          sudo apt-get install -y -o Acquire::Retries=3 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
-          sudo apt-get install -y -o Acquire::Retries=3 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
-          # quiche 0.29 dropped `boringssl-vendored`; the self-contained Windows/Android
-          # builds now use `boringssl-boring-crate`, whose boring-sys build runs bindgen
-          # and needs libclang on the host. (Linux x64/arm64 use external BoringSSL + `ffi`,
-          # which needs no libclang.)
-          sudo apt-get install -y -o Acquire::Retries=3 libclang-dev
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "natives job: Linux + Windows cross toolchains"
+          packages: >-
+            build-essential perl pkg-config cmake nasm
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+            libclang-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -2251,9 +2251,16 @@ jobs:
           cargo-fuzz: "true"
 
       # clang is required: its LLVM ASAN runtime must match cargo-fuzz's.
+      # continue-on-error stays — a missing clang should degrade this probe, not fail the lane — but
+      # note it never protected against the #368 stall: continue-on-error applies to a step that
+      # FAILS, not to one that is still running when the job's 25m timeout fires.
       - name: Install clang (for BoringSSL ASAN)
         continue-on-error: true
-        run: sudo apt-get install -y clang
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "BoringSSL ASAN: matching clang runtime"
+          timeout: "4m"
+          packages: "clang"
 
       - name: Prove BoringSSL-C ASAN instrumentation (clang, time-boxed)
         continue-on-error: true
