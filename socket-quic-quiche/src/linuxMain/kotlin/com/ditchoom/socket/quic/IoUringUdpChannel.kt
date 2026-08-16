@@ -34,7 +34,7 @@ internal class IoUringUdpChannel(
         dest: PathKey?,
     ) {
         // Connected client socket — always sends to the connected peer; [dest] (server egress
-        // routing to sendInfo.to) does not apply. Linux server-side migration is a separate follow-up.
+        // routing to sendInfo.to) does not apply. Linux server-side migration is unimplemented (#374).
         val ptr = buffer.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
         IoUringManager.submitAndWait(1.seconds) { sqe, _ ->
             io_uring_prep_send(sqe, fd, ptr, len.convert(), 0)
