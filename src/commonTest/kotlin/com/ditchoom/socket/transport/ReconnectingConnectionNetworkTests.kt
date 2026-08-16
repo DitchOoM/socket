@@ -15,6 +15,8 @@ import com.ditchoom.socket.ReconnectionClassifier
 import com.ditchoom.socket.SocketIOException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.canRouteOffLink
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,12 +25,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -95,6 +100,29 @@ class ReconnectingConnectionNetworkTests {
 
     private fun createParkingConnection(stream: ByteStream): CodecConnection<String> =
         CodecConnection(stream = stream, codec = TestStringCodec, config = parkingOptions)
+
+    /**
+     * Waits for something that finishes **off** the test scheduler.
+     *
+     * `advanceUntilIdle()` drains only the test dispatcher, and since #382 a [CodecConnection] owns
+     * its writer: the encode-and-write runs on the connection's own coroutine, so "the test scheduler
+     * is idle" no longer implies "the frame reached the peer". Poll in real time instead —
+     * `runTest`'s work runner keeps the virtual scheduler moving while this suspends, so the
+     * collecting coroutine still makes progress.
+     */
+    private suspend fun awaitOffScheduler(
+        timeout: Duration = 10.seconds,
+        condition: () -> Boolean,
+    ) {
+        val satisfied =
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(timeout) {
+                    while (!condition()) delay(5)
+                    true
+                }
+            }
+        assertNotNull(satisfied, "timed out waiting on work owned by the connection's writer")
+    }
 
     // ── NetworkMonitor integration ──
 
@@ -303,6 +331,8 @@ class ReconnectingConnectionNetworkTests {
                     conn.receive().collect { received.add(it) }
                 }
 
+            advanceUntilIdle()
+            awaitOffScheduler { received.isNotEmpty() }
             advanceUntilIdle()
             assertEquals(listOf("hello"), received)
 

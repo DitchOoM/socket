@@ -81,6 +81,14 @@ import kotlin.time.TimeSource
  *
  * conn.receive().collect { message -> handle(message) }
  * ```
+ *
+ * **Send contract.** This wrapper owns no writer of its own; it conforms to [Connection]'s atomic +
+ * serialized send contract by *delegation* — every [send] is handed to the current inner connection
+ * (a [CodecConnection], which owns its writer), so atomicity and serialization are the inner
+ * connection's structural guarantees, not something re-implemented here. What this layer adds is
+ * unchanged: a send that fails because the connection dropped is retried on the *next* connection,
+ * which is the documented at-least-once semantics — a frame written whole before the drop and then
+ * retried arrives twice, and never as two halves.
  */
 class ReconnectingConnection<T>(
     private val connect: suspend () -> Connection<T>,
@@ -237,6 +245,19 @@ class ReconnectingConnection<T>(
         if (closed) return
         closed = true
         currentConnection?.close()
+        currentConnection = null
+        _state.value = ConnectionState.Disconnected()
+    }
+
+    /**
+     * Immediate close: [abort][Connection.abort] the current connection instead of draining it, then do
+     * exactly what [close] does to this wrapper's own state. Reconnection stops either way — the
+     * difference is only whether the live connection's queued sends get a chance to reach the wire.
+     */
+    override suspend fun abort() {
+        if (closed) return
+        closed = true
+        currentConnection?.abort()
         currentConnection = null
         _state.value = ConnectionState.Disconnected()
     }

@@ -1,6 +1,7 @@
 package com.ditchoom.socket
 
 import com.ditchoom.buffer.flow.ByteSinkStalledException
+import com.ditchoom.buffer.flow.CloseCause
 import kotlin.time.Duration
 import kotlin.time.Instant
 
@@ -15,7 +16,8 @@ import kotlin.time.Instant
  * ├── SocketClosedException              — connection is gone
  * │   ├── ConnectionResetException       — peer sent RST (ECONNRESET)
  * │   ├── BrokenPipeException            — wrote to closed peer (EPIPE)
- * │   └── EndOfStreamException           — clean EOF (bytesRead ≤ 0)
+ * │   ├── EndOfStreamException           — clean EOF (bytesRead ≤ 0)
+ * │   └── OutboundClosed(closeCause)     — connection-owned writer refused/lost the send
  * ├── SocketConnectionException          — failed to establish connection   (ConnectionFailure)
  * │   ├── Refused                        — ECONNREFUSED
  * │   ├── NetworkUnreachable             — ENETUNREACH
@@ -80,6 +82,23 @@ abstract class SocketClosedException(
         message: String = "Connection closed by peer",
         cause: Throwable? = null,
     ) : SocketClosedException(message, cause)
+
+    /**
+     * The connection's outbound writer refused or lost the send. [closeCause] carries the sealed why.
+     *
+     * Socket's face of buffer's [OutboundClosedException][com.ditchoom.buffer.flow.OutboundClosedException],
+     * which is carried as [cause]. Re-homed for the same reason [SocketWriteStalledException] is: buffer
+     * raises an `IllegalStateException`, and this file's header promises consumers that every error a
+     * socket API produces is a [SocketException] — an `IOException` on JVM/Android. A send refused because
+     * the connection is gone belongs under [SocketClosedException] specifically, so the existing
+     * `catch (e: SocketClosedException)` sites that already handle "connection lost" cover it with no
+     * change; [closeCause] is there for callers that want to tell a graceful close from an abort or a
+     * transport failure without parsing a message.
+     */
+    class OutboundClosed(
+        val closeCause: CloseCause,
+        cause: Throwable? = null,
+    ) : SocketClosedException("outbound writer closed: $closeCause", cause)
 }
 
 // ──────────────────────────────────────────────────────────────────────

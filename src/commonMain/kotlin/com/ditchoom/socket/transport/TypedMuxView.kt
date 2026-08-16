@@ -6,6 +6,7 @@ import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.flow.ByteStreamMux
 import com.ditchoom.buffer.flow.Connection
 import com.ditchoom.buffer.flow.Receiver
+import com.ditchoom.buffer.flow.SendMode
 import com.ditchoom.buffer.flow.Sender
 import com.ditchoom.buffer.flow.StreamMux
 import com.ditchoom.socket.TransportConfig
@@ -29,20 +30,26 @@ class TypedMuxView<T>(
     private val config: TransportConfig = TransportConfig(),
     private val decodeContext: DecodeContext = DecodeContext.Empty,
     private val encodeContext: EncodeContext = EncodeContext.Empty,
+    /**
+     * The send-completion policy every leaf this view mints adopts. One value for the whole mux
+     * deliberately: the leaves are streams of one connection, so a per-stream mode would be a policy
+     * the transport has no way to choose between.
+     */
+    private val sendMode: SendMode<T> = SendMode.AwaitWritten,
 ) : StreamMux<T> {
     override suspend fun openBidirectional(): Connection<T> {
         val stream = raw.openBidirectional()
-        return CodecConnection(stream, codec, config, decodeContext, encodeContext, id = stream.muxStreamIdOrZero())
+        return CodecConnection(stream, codec, config, decodeContext, encodeContext, stream.muxStreamIdOrZero(), sendMode)
     }
 
     override suspend fun openUnidirectional(): Sender<T> {
         val sink = raw.openUnidirectional()
-        return CodecSender(sink, codec, config, encodeContext, id = sink.muxStreamIdOrZero())
+        return CodecSender(sink, codec, config, encodeContext, sink.muxStreamIdOrZero(), sendMode)
     }
 
     override suspend fun acceptBidirectional(): Connection<T> {
         val stream = raw.acceptBidirectional()
-        return CodecConnection(stream, codec, config, decodeContext, encodeContext, id = stream.muxStreamIdOrZero())
+        return CodecConnection(stream, codec, config, decodeContext, encodeContext, stream.muxStreamIdOrZero(), sendMode)
     }
 
     override suspend fun acceptUnidirectional(): Receiver<T> {

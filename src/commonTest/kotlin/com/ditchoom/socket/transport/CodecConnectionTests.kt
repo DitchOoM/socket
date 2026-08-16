@@ -9,6 +9,7 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
+import com.ditchoom.buffer.flow.CloseCause
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.stream.StreamProcessor
@@ -372,6 +373,13 @@ class CodecConnectionTests {
             server.close()
         }
 
+    /**
+     * Send-after-close is now the *writer's* answer, not a flag check: the connection owns its writer
+     * (#382), so a refused send arrives as `SocketClosedException.OutboundClosed` carrying the sealed
+     * [com.ditchoom.buffer.flow.CloseCause] instead of the old bare `IllegalStateException`. That is
+     * the intended move — a send refused because the connection is gone belongs in this library's
+     * error family (an `IOException` on JVM), which the old `check(!closed)` never satisfied.
+     */
     @Test
     fun sendAfterCloseThrows() =
         runTest {
@@ -384,9 +392,11 @@ class CodecConnectionTests {
                 )
 
             conn.close()
-            assertFailsWith<IllegalStateException> {
-                conn.send("should fail")
-            }
+            val failure =
+                assertFailsWith<SocketClosedException.OutboundClosed> {
+                    conn.send("should fail")
+                }
+            assertEquals(CloseCause.Graceful, failure.closeCause)
         }
 
     @Test
