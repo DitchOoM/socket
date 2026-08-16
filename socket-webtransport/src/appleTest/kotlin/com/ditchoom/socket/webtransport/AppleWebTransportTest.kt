@@ -11,10 +11,10 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.quicHarnessSkipReason
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.fixtures.TestCerts
+import com.ditchoom.socket.testkit.fixtures.locateTestCerts
 import com.ditchoom.socket.testkit.skip.recordSkip
 import com.ditchoom.socket.testkit.trace.TraceSink
-import platform.posix.F_OK
-import platform.posix.access
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -31,21 +31,17 @@ import kotlin.time.Duration.Companion.seconds
  * the Apple quiche backend.
  */
 class AppleWebTransportTest : WebTransportTestSuite() {
-    private fun certPath(name: String): String {
-        val candidates =
-            listOf(
-                "testcerts/$name",
-                "socket-webtransport/testcerts/$name",
-            )
-        return candidates.firstOrNull { access(it, F_OK) == 0 }
-            ?: error("Test cert not found: $name (tried $candidates)")
-    }
+    private val certs = locateTestCerts(moduleDir = "socket-webtransport")
 
-    override fun testTlsConfig() =
-        QuicTlsConfig(
-            certChainPath = certPath("cert.crt"),
-            privKeyPath = certPath("cert.key"),
+    override fun testTlsConfig(): QuicTlsConfig {
+        val available =
+            certs as? TestCerts.Available
+                ?: error("testTlsConfig() reached with no fixtures; wrapTestBody should have skipped first")
+        return QuicTlsConfig(
+            certChainPath = available.certChainPath,
+            privKeyPath = available.privKeyPath,
         )
+    }
 
     override suspend fun openSingleSession(url: String): WebTransportSession =
         webTransportSupport().connect(url, loopbackClientConfig(clientTraceSink))
@@ -53,11 +49,24 @@ class AppleWebTransportTest : WebTransportTestSuite() {
     override suspend fun openMultiplexed(url: String): MultiplexedWebTransport =
         (webTransportSupport() as WebTransportSupport.Multiplexed).connectMultiplexed(url, loopbackClientConfig(clientTraceSink))
 
-    /** Skip on `--standalone` Apple simulators (see [quicHarnessSkipReason]). */
+    /**
+     * Skip on `--standalone` Apple simulators (see [quicHarnessSkipReason]), or if the fixtures are
+     * genuinely missing.
+     *
+     * ⚠️ The order matters, and this suite is NOT unblocked by #359. Its skips are
+     * `simulator-lacks-network-services`, not `simulator-lacks-fixtures`: `simctl spawn --standalone`
+     * runs outside `launchd_sim`, so the network daemons a connection needs are unreachable no matter
+     * where the certs live. Exporting the cert path fixes the *second* of its two problems. This
+     * suite starts running on simulators when a booted-mode lane exists (#81), not before — which is
+     * why the three simulator shards still cannot set `SOCKET_REQUIRE_ALL_TESTS=1`.
+     */
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
-        val skip = quicHarnessSkipReason()
-        if (skip != null) return recordSkip(AppleWebTransportTest::class, skip)
-        block()
+        val networkSkip = quicHarnessSkipReason()
+        if (networkSkip != null) return recordSkip(AppleWebTransportTest::class, networkSkip)
+        when (certs) {
+            is TestCerts.Unavailable -> recordSkip(AppleWebTransportTest::class, certs.asSkipReason())
+            is TestCerts.Available -> block()
+        }
     }
 }
 

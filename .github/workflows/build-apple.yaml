@@ -362,10 +362,24 @@ jobs:
           #
           # `requireAllTests` turns a skipped test into a hard failure on the lanes whose first
           # inventory came back empty (see the skip-inventory step). It is deliberately absent from
-          # the three simulator shards, which legitimately skip: measured on run 31815357260, iOS
-          # skipped 43 test invocations, tvOS 36 and watchOS 36 — every one of which used to report
-          # as a PASS, because a Kotlin/Native skip is an early return. They stay reported, not
-          # enforced, until the `testcerts/` fixtures reach the simulator sandbox.
+          # the three simulator shards, which still legitimately skip.
+          #
+          # ⚠️ The reason is NOT the one this comment used to give, and the difference decides when
+          # the flag can be set. Re-measured from the markers in run 31890681923, the 115 skips split
+          # into TWO causes, not one:
+          #
+          #   simulator-lacks-fixtures        93  AppleHttp3LoopbackTest (31 x 3 lanes)
+          #   simulator-lacks-network-services 22  AppleWebTransportTest (5 x 3) + QuicHarnessIntegrationTests (7, iOS)
+          #
+          # #359 fixed the first 93 by exporting each module's testcerts/ into the sandbox by
+          # absolute path (see the root build.gradle.kts). It cannot fix the other 22: those suites
+          # skip because `simctl spawn --standalone` runs outside launchd_sim, so the network daemons
+          # a connection needs are unreachable wherever the certs are. That is #81, and it needs a
+          # booted-mode lane (`standalone = false`), not a fixture.
+          #
+          # So setting requireAllTests: "1" here today would convert 22 correct, documented skips into
+          # a permanently red lane — the SkipGate docs' exact "a gate that cannot be satisfied is not
+          # a gate". It goes on when #81 lands and the inventory reads zero, and not before.
           - name: "macOS x64 (quiche)"
             tasks: ":socket-quic-quiche:macosX64Test"
             requireAllTests: "1"
