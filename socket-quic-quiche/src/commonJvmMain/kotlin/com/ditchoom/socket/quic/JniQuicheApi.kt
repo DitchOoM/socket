@@ -251,6 +251,18 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
     ): Int = nConnApplicationProto(conn.handle, buf, bufLen)
 
+    override fun connTraceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnTraceId(conn.handle, buf, bufLen)
+
+    override fun connSourceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnSourceId(conn.handle, buf, bufLen)
+
     // --- Unreliable datagrams (RFC 9221) ---
 
     override fun configEnableDgram(
@@ -751,6 +763,22 @@ object JniQuicheApi : QuicheApi {
     @FastNative
     @JvmStatic
     private external fun nConnApplicationProto(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnTraceId(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnSourceId(
         conn: Long,
         buf: Long,
         bufLen: Int,

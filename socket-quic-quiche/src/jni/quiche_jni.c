@@ -239,16 +239,22 @@ JNIEXPORT jint JNICALL JNI_FN(nConnStreamShutdown)(
         (enum quiche_shutdown)direction, (uint64_t)err);
 }
 
-/* serverCertificateHashes leaf-pinning: copy the peer's TLS leaf certificate DER into the caller's
-   native buffer at `buf` (capacity `buf_len`). Returns the DER length: copied when it fits
-   (len <= buf_len), 0 when the peer presented no certificate, or the (larger) needed length WITHOUT
-   copying when it does not fit — the caller re-allocates and calls again (snprintf-style two-pass).
-   The DER quiche returns points into conn-owned memory valid for the connection's lifetime. */
-JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
-    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+/* Shared body for quiche's `(const quiche_conn *, const uint8_t **out, size_t *out_len)` readers,
+   honouring the snprintf-style two-pass contract: copy only when the value fits, and ALWAYS return
+   the true length so a caller that under-allocated can re-allocate and call again. Returns 0 when
+   quiche has no value to give. The bytes quiche hands back point into conn-owned memory valid for
+   the connection's lifetime, so they are copied out before returning.
+
+   Factored because four accessors (peer cert, ALPN, trace id, source id) differ only in which
+   quiche function they call. Mirrors FfmQuicheApi.copyConnBytes, which factored the same contract
+   for the same reason: one implementation cannot drift from itself. */
+typedef void (*quiche_conn_bytes_reader)(const quiche_conn *, const uint8_t **, size_t *);
+
+static jint copy_conn_bytes(
+    quiche_conn_bytes_reader reader, jlong conn, jlong buf, jint buf_len) {
     const uint8_t *out = NULL;
     size_t out_len = 0;
-    quiche_conn_peer_cert((quiche_conn *)(uintptr_t)conn, &out, &out_len);
+    reader((quiche_conn *)(uintptr_t)conn, &out, &out_len);
     if (out == NULL || out_len == 0) return 0;
     if ((jlong)out_len <= (jlong)buf_len) {
         memcpy((void *)(uintptr_t)buf, out, out_len);
@@ -256,19 +262,33 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
     return (jint)out_len;
 }
 
-/* Negotiated ALPN protocol (RFC 7301): copy the identifier's bytes into the caller's native buffer
-   at `buf` (capacity `buf_len`). Same snprintf-style two-pass contract as nConnPeerCert; returns 0
-   when no protocol has been negotiated. The bytes quiche returns point into conn-owned memory. */
+/* serverCertificateHashes leaf-pinning: the peer's TLS leaf certificate DER. 0 = peer presented no
+   certificate. */
+JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return copy_conn_bytes(quiche_conn_peer_cert, conn, buf, buf_len);
+}
+
+/* Negotiated ALPN protocol (RFC 7301). 0 = no protocol negotiated. */
 JNIEXPORT jint JNICALL JNI_FN(nConnApplicationProto)(
     JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
-    const uint8_t *out = NULL;
-    size_t out_len = 0;
-    quiche_conn_application_proto((quiche_conn *)(uintptr_t)conn, &out, &out_len);
-    if (out == NULL || out_len == 0) return 0;
-    if ((jlong)out_len <= (jlong)buf_len) {
-        memcpy((void *)(uintptr_t)buf, out, out_len);
-    }
-    return (jint)out_len;
+    return copy_conn_bytes(quiche_conn_application_proto, conn, buf, buf_len);
+}
+
+/* quiche's STABLE connection trace id — "a string uniquely representing the connection". Does not
+   rotate, which is what makes it usable as the identifier you follow a connection by across a
+   migration. 0 = unavailable. */
+JNIEXPORT jint JNICALL JNI_FN(nConnTraceId)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return copy_conn_bytes(quiche_conn_trace_id, conn, buf, buf_len);
+}
+
+/* The connection's CURRENT source connection ID. This CHANGES over the connection's life — CIDs
+   rotate, and migration issues a fresh one by design (RFC 9000 section 9.5) — so it must be read at
+   the moment it is needed; a cached value stops matching the wire. 0 = unavailable. */
+JNIEXPORT jint JNICALL JNI_FN(nConnSourceId)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return copy_conn_bytes(quiche_conn_source_id, conn, buf, buf_len);
 }
 
 /*

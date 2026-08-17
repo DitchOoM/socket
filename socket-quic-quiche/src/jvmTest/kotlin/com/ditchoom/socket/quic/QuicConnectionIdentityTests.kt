@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -60,21 +61,30 @@ class QuicConnectionIdentityTests {
                                     "correlation across a reconnect cycle",
                             )
 
-                            // The wire CID is backend-dependent and this pins which backends bind it.
-                            // FFM and both cinterops call quiche_conn_source_id; the JNI backend does
-                            // not (that needs a C shim entry), so it truthfully reports Unavailable —
-                            // which is the whole reason the type is sealed rather than a nullable or an
-                            // empty string. Whichever backend answers here, a Known value must be real:
-                            // a blank hex would be a fabricated id wearing the Known label.
-                            when (val wire = first.wire) {
-                                is QuicWireConnectionId.Known ->
-                                    assertTrue(
-                                        wire.hex.isNotBlank(),
-                                        "wire CID reported Known with a blank value — Known must mean the " +
-                                            "backend actually read a CID, not that it returned nothing",
-                                    )
-                                QuicWireConnectionId.Unavailable -> Unit // JNI: accessor not bound, stated honestly
-                            }
+                            // Every real backend now binds quiche_conn_source_id — FFM, both cinterops,
+                            // and JNI (the last added deliberately: JNI is Android's path, and a
+                            // diagnostic that is blank on the platform with production users is the one
+                            // place it must not be). So a real connection must answer Known; only test
+                            // doubles inheriting the QuicheApi default report Unavailable, and this test
+                            // holds a real connection. Asserting Known rather than accepting either is
+                            // what makes this test able to catch the binding regressing.
+                            val wire =
+                                assertIs<QuicWireConnectionId.Known>(
+                                    first.wire,
+                                    "wire CID was Unavailable on a real connection — some backend stopped " +
+                                        "binding quiche_conn_source_id, which silently blanks connection " +
+                                        "identity exactly where it is needed for debugging",
+                                )
+                            assertTrue(
+                                wire.hex.isNotBlank(),
+                                "wire CID reported Known with a blank value — Known must mean the backend " +
+                                    "actually read a CID, not that it returned nothing",
+                            )
+
+                            // Note: right after connect, wire == session. quiche's trace id is the hex of
+                            // the *initial* source CID, so the two coincide until the first rotation —
+                            // that is the expected reading, not one being derived from the other. They
+                            // diverge once a CID rotates, which is precisely why they are separate types.
 
                             // The second connection is the point: two live connections, two identities.
                             withQuicConnection("127.0.0.1", port, options, timeout = 10.seconds) {
