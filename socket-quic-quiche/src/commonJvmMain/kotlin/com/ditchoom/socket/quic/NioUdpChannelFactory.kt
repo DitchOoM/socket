@@ -34,6 +34,10 @@ internal class NioUdpChannelFactory(
             channel = NioUdpChannel(channel),
             localSockAddrAddress = localSockAddr.address,
             localSockAddrLength = localSockAddr.length,
+            // `channel.localAddress` after bind+connect is the resolved 4-tuple, so a wildcard bind
+            // reports the interface the route actually chose and an ephemeral port reports its number.
+            // Numeric form (never a reverse-resolved hostname) so it round-trips as a bind target.
+            localEndpoint = QuicLocalEndpoint(localAddr.address.hostAddress, localAddr.port),
             release = { localSockAddr.free() },
         )
     }

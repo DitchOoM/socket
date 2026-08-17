@@ -173,7 +173,7 @@ class IdleTimeoutTerminationTests {
     ): QuicheDriver =
         QuicheDriver(
             // Test double: never exercises a path move.
-            migration = MigrationCapability.Unsupported,
+            migration = MigrationCapability.BackendCannotMigrate,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

@@ -421,6 +421,21 @@ interface QuicheApi {
     ): QuicPathStats? = null
 
     /**
+     * The peer's transport parameters (`quiche_conn_peer_transport_params`), typed — including the
+     * `disable_active_migration` flag [connPeerMigrationPermission] projects for the migration path.
+     *
+     * **Deliberately has no default.** The other optional accessors above default to `null` because a
+     * backend that has not bound them still works; this one must not, because the value it carries is a
+     * *silent kill switch*: a wrong or absent answer makes active migration decline with no error
+     * anywhere. Making it abstract forces every implementation — real backend and test double alike — to
+     * state what it reports, which is the same reason the return type is sealed rather than nullable.
+     * All four real backends (FFM, JNI, Apple cinterop, Linux cinterop) bind it.
+     *
+     * Same threading contract as [connStats]: quiche is single-threaded — driver loop only.
+     */
+    fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams
+
+    /**
      * Enable qlog tracing on [conn], writing the connection's event log to [path]
      * (`quiche_conn_set_qlog_path`); [title] and [desc] populate the qlog's `title`/`description`
      * header fields. Returns `true` if qlog was enabled.

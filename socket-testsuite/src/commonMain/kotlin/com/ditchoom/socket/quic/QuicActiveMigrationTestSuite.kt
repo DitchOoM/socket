@@ -70,16 +70,19 @@ abstract class QuicActiveMigrationTestSuite {
     /**
      * The **capability** half, kept deliberately separate from the behavioural test below.
      *
-     * This asserts only that a live client connection does not answer [MigrationResult.Unsupported] —
-     * nothing about whether the migration then works. Splitting it means a red run names its own
-     * cause: this test failing is "the platform has no migration seam wired at all", while
-     * [streamSurvivesActiveMigrationToAFreshLocalPort] failing alone is "the seam exists but the
-     * migration is broken". Debugging the difference from a single combined failure costs far more
-     * than the extra connect this duplicates.
+     * This asserts only that a live client connection does not answer
+     * [MigrationResult.Unmoved.Impossible] — nothing about whether the migration then works. Splitting
+     * it means a red run names its own cause: this test failing is "the platform has no migration seam
+     * wired at all", while [streamSurvivesActiveMigrationToAFreshLocalPort] failing alone is "the seam
+     * exists but the migration is broken". Debugging the difference from a single combined failure costs
+     * far more than the extra connect this duplicates.
      *
-     * [MigrationResult.Unsupported] is documented as "this platform/connection does not support active
-     * migration", and every member of this suite is a client connection on a platform with a real QUIC
-     * engine — so reaching it here is by definition a gap, never a legitimate outcome.
+     * [MigrationResult.Unmoved.Impossible] is the family meaning "and never will, whatever the network
+     * does", and every member of this suite is a client connection on a platform with a real QUIC engine
+     * under the default (permitting) [MigrationPolicy] — so reaching it here is by definition a gap,
+     * never a legitimate outcome. A [MigrationResult.Unmoved.Failed] would be a different (and
+     * legitimate) story, which is exactly why the assertion names the family and not the whole of
+     * `Unmoved`.
      */
     @Test
     fun migrateReportsACapabilityNotAnAbsence() =
@@ -94,10 +97,10 @@ abstract class QuicActiveMigrationTestSuite {
                         withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
                             val result = migrate()
                             assertTrue(
-                                result !is MigrationResult.Unsupported,
-                                "this platform has a QUIC engine but reports active migration as unsupported — " +
-                                    "the connection has no UdpChannelFactory wired, so RFC 9000 §9 migration " +
-                                    "cannot be attempted at all. Got: $result",
+                                result !is MigrationResult.Unmoved.Impossible,
+                                "this platform has a QUIC engine but reports active migration as permanently " +
+                                    "impossible — the connection has no UdpChannelFactory wired, so RFC 9000 §9 " +
+                                    "migration cannot be attempted at all. Got: $result",
                             )
                         }
                     } finally {
@@ -147,6 +150,22 @@ abstract class QuicActiveMigrationTestSuite {
                             assertTrue(
                                 result is MigrationResult.Succeeded,
                                 "expected active migration to a fresh ephemeral local port to succeed, got $result",
+                            )
+                            // The endpoint reported is the one the platform RESOLVED, not the one asked
+                            // for: this call asked for MigrationTarget.FreshLocalEndpoint — no host, no
+                            // port — so a Succeeded that echoed its request could name nothing at all.
+                            // (It used to: `Succeeded(null, 0)`, on the very platform where an assigned
+                            // endpoint is the only thing the caller cannot otherwise learn.)
+                            assertTrue(
+                                result.localEndpoint.port in 1..65535 && result.localEndpoint.host.isNotBlank(),
+                                "migration must report the endpoint it bound, got ${result.localEndpoint}",
+                            )
+                            // …and the same resolved value reaches pathState. One fact, one place: a
+                            // migration whose result and whose path state disagree is two facts.
+                            assertEquals(
+                                QuicPathState.Migrated(result.localEndpoint),
+                                pathState.value,
+                                "pathState must carry the same resolved endpoint the result reports",
                             )
 
                             // Bounded well under the 10s idle timeout so a connection that never

@@ -25,18 +25,35 @@ package com.ditchoom.socket.quic
  * ## The invariant the type carries
  * In [Supported] the sockaddrs are real by construction — [PinnedSockAddr] rejects the null pointer and
  * a non-positive length — so no code downstream re-checks them, and `0L` can no longer mean "absent".
- * In [Unsupported] there are no addresses at all, rather than addresses that happen to be zero.
+ * In every other case there are no addresses at all, rather than addresses that happen to be zero.
+ *
+ * ## Why "cannot migrate" is three cases, not one
+ * A single `Unsupported` conflated three genuinely different facts — *this is a server*, *the caller
+ * forbade it*, and *this backend has no path factory* — and `QuicScope.migrate()` therefore answered one
+ * opaque value for all of them. Each maps 1:1 onto an [MigrationResult.Unmoved.Impossible] leaf, so
+ * `handleMigrate`'s answer is a translation rather than a judgement.
  */
 @InternalQuicApi
 sealed interface MigrationCapability {
     /**
-     * This connection does not migrate: a server-accepted driver (RFC 9000 §9 is a client-only
-     * capability — only clients migrate in QUIC v1), or a test double that never exercises a path move.
-     *
-     * `QuicScope.migrate()` answers [MigrationResult.Unsupported] here, which is the honest report: no
-     * attempt is made because none can be.
+     * A server-accepted driver: RFC 9000 §9 is a client-only capability — only clients migrate in
+     * QUIC v1. Answers [MigrationResult.Unmoved.Impossible.ServerConnection].
      */
-    data object Unsupported : MigrationCapability
+    data object ServerConnection : MigrationCapability
+
+    /**
+     * The caller chose [MigrationPolicy.Forbidden], so this endpoint advertised
+     * `disable_active_migration` and must not move its own path either. Answers
+     * [MigrationResult.Unmoved.Impossible.PolicyForbids].
+     */
+    data object PolicyForbids : MigrationCapability
+
+    /**
+     * No [UdpChannelFactory]: this backend cannot open a second local path — a non-quiche engine, or a
+     * test double that never exercises a path move. Answers
+     * [MigrationResult.Unmoved.Impossible.BackendCannotMigrate].
+     */
+    data object BackendCannotMigrate : MigrationCapability
 
     /**
      * A client connection that can open additional local paths.
@@ -51,6 +68,25 @@ sealed interface MigrationCapability {
         val channelFactory: UdpChannelFactory,
     ) : MigrationCapability
 }
+
+/**
+ * The [MigrationCapability] for a **client** connection under [policy] — the one place the public
+ * [MigrationPolicy] is translated into the driver seam, shared by all three platform connection setups
+ * so they cannot drift.
+ *
+ * [wiring] is called only when the policy permits migration, so a [MigrationPolicy.Forbidden]
+ * connection never builds a `UdpChannelFactory` it would refuse to use. [MigrationPolicy.Manual] and
+ * [MigrationPolicy.Automatic] produce the same capability on purpose: they differ in *who* calls
+ * `migrate()`, not in whether the connection can.
+ */
+internal fun clientMigrationCapability(
+    policy: MigrationPolicy,
+    wiring: () -> MigrationCapability.Supported,
+): MigrationCapability =
+    when (policy) {
+        MigrationPolicy.Forbidden -> MigrationCapability.PolicyForbids
+        MigrationPolicy.Manual, MigrationPolicy.Automatic -> wiring()
+    }
 
 /**
  * A pinned native `sockaddr`: its address and length, as quiche's FFI wants them.

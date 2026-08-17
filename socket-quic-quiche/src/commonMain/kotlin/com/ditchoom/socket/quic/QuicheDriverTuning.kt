@@ -46,4 +46,15 @@ internal class QuicheDriverTuning(
     val random: Random = Random.Default,
     val wallClock: () -> Instant = { Clock.System.now() },
     val recorderFactory: () -> QuicTraceRecorder? = { null },
+    /**
+     * The client connection's resolved [com.ditchoom.socket.NetworkMonitor] observation, threaded to the
+     * driver so it can latch [QuicConnection.networkAtClose] on the close transition. Default
+     * [ConnectionNetworkObservation.Unobserved] — a server bind or a test double watches no network, and
+     * says so with a value rather than with `null`.
+     *
+     * It rides this seam rather than a constructor argument on the connection wrapper because the value
+     * must be frozen on the **driver loop**, at the same instant the connection publishes
+     * [QuicConnectionState.Closed] — see `QuicheDriver.transitionToClosed`.
+     */
+    val networkObservation: ConnectionNetworkObservation = ConnectionNetworkObservation.Unobserved,
 )

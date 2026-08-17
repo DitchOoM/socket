@@ -33,8 +33,11 @@ internal class JvmQuicConnection(
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
+    QuicheBackedConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
+
+    override val quicheDriver: QuicheDriver get() = driver
 
     /**
      * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
@@ -100,18 +103,19 @@ internal class JvmQuicConnection(
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
-    override val pathState: StateFlow<PathInfo> = driver.pathState
+    override val pathState: StateFlow<QuicPathState> = driver.pathState
 
-    override suspend fun migrate(
-        localHost: String?,
-        localPort: Int,
-    ): MigrationResult =
+    override val networkAtClose: NetworkAtClose get() = driver.networkAtClose
+
+    override suspend fun migrate(target: MigrationTarget): MigrationResult =
         try {
             val deferred = CompletableDeferred<MigrationResult>()
-            driver.commands.send(QuicheCmd.Migrate(localHost, localPort, deferred))
+            driver.commands.send(QuicheCmd.Migrate(target, deferred))
+            // Suspends until the path has validated and the active path has switched, or the attempt
+            // has failed — the property the automatic reactor relies on instead of a quiet period.
             deferred.await()
         } catch (_: ClosedSendChannelException) {
-            MigrationResult.Failed("connection closed")
+            MigrationResult.Unmoved.Impossible.ConnectionClosed
         }
 
     /**

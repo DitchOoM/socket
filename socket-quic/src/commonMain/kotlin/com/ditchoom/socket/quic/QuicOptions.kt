@@ -232,46 +232,26 @@ data class QuicOptions(
     /** Initial congestion window in packets. Null uses quiche default. */
     val initialCongestionWindowPackets: Long? = null,
     /**
-     * Disable active connection migration entirely (RFC 9000 §9 transport parameter). When true the
-     * endpoint tells the peer it will not migrate, and [autoMigrateOnNetworkChange] is forced off. The
-     * *permission* gate — distinct from [autoMigrateOnNetworkChange], which decides whether we react to
-     * network changes automatically.
+     * Whether — and by whom — this connection's local path may move (RFC 9000 §9). Defaults to
+     * [MigrationPolicy.Automatic], because surviving a network change is the reason to run QUIC over TCP.
+     *
+     * One decision replacing the `disableActiveMigration` + `autoMigrateOnNetworkChange` pair, whose
+     * fourth combination (advertise `disable_active_migration` *and* react to network changes) was a
+     * contradiction the constructor resolved silently. See [MigrationPolicy].
      */
-    val disableActiveMigration: Boolean = false,
+    val migration: MigrationPolicy = MigrationPolicy.Automatic,
     /**
-     * Automatically migrate a **client** connection onto the new default interface whenever the network
-     * link changes (Wi-Fi↔cellular handoff, VPN up/down) — the RFC 9000 §9 active migration that keeps
-     * streams and datagrams flowing across the switch, done for you instead of via a manual
-     * [QuicScope.migrate]. **On by default**, because surviving a network change is the reason to run
-     * QUIC over TCP.
+     * Which [com.ditchoom.socket.NetworkMonitor] this connection observes — for
+     * [MigrationPolicy.Automatic], for [QuicConnection.networkAtClose], and for the trace's NET/NET_CAP
+     * lines when [trace] asks for them. Resolved **once per connection** and shared by all three, so the
+     * observation sequence they report indexes one stream rather than three unrelated ones.
      *
-     * The connection observes a [com.ditchoom.socket.NetworkMonitor] ([networkMonitor], or the engine's
-     * shared default) and migrates on each change to a new typed
-     * [com.ditchoom.socket.transport.NetworkId]. This is a genuine no-op — and costs nothing — on
-     * platforms whose monitor cannot identify the link (desktop JVM, Linux native, Node.js report
-     * [com.ditchoom.socket.transport.NetworkId.Unidentified]); the payoff is on Apple (native
-     * `NWPathMonitor`) and Android (with a `Context`-backed [networkMonitor]). Ignored on
-     * server-accepted connections and forced off when [disableActiveMigration] is set.
+     * Defaults to [NetworkMonitorSource.ProcessDefault]. Supply [NetworkMonitorSource.Supplied] to
+     * override per connection (a test double, or a pre-built Android monitor) — an injected monitor is
+     * **owned by you**, nothing here closes it. To observe nothing, supply
+     * [com.ditchoom.socket.NetworkMonitor.AlwaysAvailable].
      */
-    val autoMigrateOnNetworkChange: Boolean = true,
-    /**
-     * The [com.ditchoom.socket.NetworkMonitor] that drives [autoMigrateOnNetworkChange]. **Null (the
-     * default) means "use [com.ditchoom.socket.NetworkMonitor.processDefault]"** — not "off"; one
-     * process-shared monitor serves every connection, created lazily so it costs at most a single
-     * background socket/thread for the whole process, and only if some connection actually relies on it.
-     *
-     * The process default is functional out of the box on every platform that can identify a link,
-     * including **Android**: `ConnectivityManager` needs a `Context`, and
-     * `NetworkMonitorInitializer` supplies the application one via androidx.startup before app code
-     * runs, so no startup call is required. (An app that strips that initializer from its merged
-     * manifest, and does not call `NetworkMonitor.installAndroidContext(applicationContext)` itself,
-     * gets a no-op default and auto-migration does nothing.)
-     *
-     * Supply your own here to override the process default per connection (a test double, or a
-     * pre-built Android monitor). An injected monitor is **owned by you** — nothing here closes it.
-     * Ignored when [autoMigrateOnNetworkChange] is false.
-     */
-    val networkMonitor: com.ditchoom.socket.NetworkMonitor? = null,
+    val networkMonitor: NetworkMonitorSource = NetworkMonitorSource.ProcessDefault,
     /**
      * Number of connection IDs the endpoint is willing to maintain (RFC 9000 §5.1.1,
      * `active_connection_id_limit`). Must be >= 2 for active migration: the peer issues
@@ -375,8 +355,9 @@ data class QuicOptions(
     /**
      * Opt-in deterministic-replay trace capture (RFC_DETERMINISTIC_SIMULATION.md §5). Null (the
      * default) disables capture and is byte-identical to the pre-capture path. Set a
-     * [QuicTraceCapture] to record this connection's (or server's) QUIC traffic — and, with a
-     * [QuicTraceCapture.networkMonitor], the client's connectivity state — onto the supplied
+     * [QuicTraceCapture] to record this connection's (or server's) QUIC traffic — and, with
+     * [QuicTraceCapture.recordNetworkObservations], the connectivity stream [networkMonitor] resolves —
+     * onto the supplied
      * [com.ditchoom.socket.testkit.trace.TraceSink] for later replay through the sim harness. Capture
      * errors stay typed: the recorder emits the throwable/`QuicError` class name, never a bare
      * string (see `QuicTraceRecorder`).

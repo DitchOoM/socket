@@ -249,6 +249,10 @@ class FfmQuicheApi private constructor(
         // int quiche_conn_path_stats(const quiche_conn *conn, size_t idx, quiche_path_stats *out)
         downcall("quiche_conn_path_stats", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, ADDRESS))
     }
+    private val hConnPeerTransportParams by lazy {
+        // bool quiche_conn_peer_transport_params(const quiche_conn *conn, quiche_transport_params *out)
+        downcall("quiche_conn_peer_transport_params", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS))
+    }
     private val hConnPeerError by lazy {
         // bool quiche_conn_peer_error(conn, bool *is_app, uint64 *code, const uint8 **reason, size_t *reason_len)
         downcall("quiche_conn_peer_error", FunctionDescriptor.of(JAVA_BOOLEAN, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS))
@@ -670,6 +674,34 @@ class FfmQuicheApi private constructor(
                 dgramRecv = out.get(JAVA_LONG, 80),
                 dgramSent = out.get(JAVA_LONG, 88),
                 pathsCount = out.get(JAVA_LONG, 96),
+            )
+        }
+
+    /**
+     * `quiche_conn_peer_transport_params` returns false until the handshake has processed the peer's
+     * parameters — [PeerTransportParams.NotYetNegotiated], a timing state that resolves on its own.
+     *
+     * `Arena.allocate` already zeroes, so unlike the K/N backends there is nothing to `memset` here.
+     */
+    override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
+        Arena.ofConfined().use { arena ->
+            val out = arena.allocate(TRANSPORT_PARAMS_SIZE, 8)
+            val known = hConnPeerTransportParams.invokeExact(seg(conn.handle), out) as Boolean
+            if (!known) return@use PeerTransportParams.NotYetNegotiated
+            PeerTransportParams.Negotiated(
+                maxIdleTimeoutMillis = out.get(JAVA_LONG, 0),
+                maxUdpPayloadSize = out.get(JAVA_LONG, 8),
+                initialMaxData = out.get(JAVA_LONG, 16),
+                initialMaxStreamDataBidiLocal = out.get(JAVA_LONG, 24),
+                initialMaxStreamDataBidiRemote = out.get(JAVA_LONG, 32),
+                initialMaxStreamDataUni = out.get(JAVA_LONG, 40),
+                initialMaxStreamsBidi = out.get(JAVA_LONG, 48),
+                initialMaxStreamsUni = out.get(JAVA_LONG, 56),
+                ackDelayExponent = out.get(JAVA_LONG, 64),
+                maxAckDelayMillis = out.get(JAVA_LONG, 72),
+                disableActiveMigration = out.get(JAVA_BOOLEAN, TRANSPORT_PARAMS_DISABLE_ACTIVE_MIGRATION_OFFSET),
+                activeConnIdLimit = out.get(JAVA_LONG, 88),
+                maxDatagramFrameSize = out.get(JAVA_LONG, 96),
             )
         }
 
@@ -1231,6 +1263,19 @@ class FfmQuicheApi private constructor(
 
         private const val QUICHE_ERR_DONE = -1L
         private const val CONN_STATS_SIZE = 208L // quiche_stats: 25×8-byte fields + trailing bool, 8-aligned
+
+        // quiche_transport_params layout (64-bit): 10 consecutive uint64 fields [0..72], then the
+        // `peer_disable_active_migration` bool at [80] (padded to 8), then peer_active_conn_id_limit
+        // [88] and the ssize_t peer_max_datagram_frame_size [96] → 104 bytes, 8-aligned.
+        //
+        // ⚠️ This layout only holds because the module's build patches `#[repr(C)]` onto quiche's Rust
+        // `TransportParams` (patchQuicheTransportParamsRepr in build.gradle.kts). Upstream omits it, and
+        // repr(Rust) sinks the 1-byte bool to offset 96 while sizeof stays 104 — so a stale libquiche
+        // makes this read peer_active_conn_id_limit as the bool and silently disables migration.
+        // `PeerTransportParamsLayoutTestSuite` asserts the neighbour fields against configured values, which
+        // is the only thing that catches it (a size assertion cannot).
+        private const val TRANSPORT_PARAMS_SIZE = 104L
+        private const val TRANSPORT_PARAMS_DISABLE_ACTIVE_MIGRATION_OFFSET = 80L
         private const val PATH_STATS_SIZE = 448L // quiche_path_stats: 2×sockaddr_storage blocks + 22×8-byte fields
         private const val RECV_INFO_SIZE = 32
         private const val SEND_INFO_SIZE = 288

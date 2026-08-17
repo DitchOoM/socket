@@ -119,6 +119,19 @@ sealed interface QuicheCmd {
         val result: CompletableDeferred<QuicStatsSnapshot>,
     ) : QuicheCmd
 
+    /**
+     * Read the peer's negotiated transport parameters (`quiche_conn_peer_transport_params`) on the
+     * driver loop — the only place quiche may be touched. Completes with
+     * [PeerTransportParams.NotYetNegotiated] if the connection is already torn down (failCommand),
+     * which is also the honest answer there: nothing negotiated can be read from a freed handle.
+     *
+     * Routed through the channel rather than read directly for the same reason [Stats] is: a read that
+     * raced `connSend`/`connRecv` would be concurrent access to a `quiche_conn`, which is UB.
+     */
+    class PeerTransportParamsRead(
+        val result: CompletableDeferred<PeerTransportParams>,
+    ) : QuicheCmd
+
     /** Gracefully close the connection. */
     class Close(
         val error: QuicError,
@@ -126,13 +139,11 @@ sealed interface QuicheCmd {
     ) : QuicheCmd
 
     /**
-     * Actively migrate the connection to a new local path bound to [localHost]:[localPort]
-     * (null host = default interface, 0 port = ephemeral). The driver opens the path socket,
-     * probes it, and on validation switches the active path (slice 3).
+     * Actively migrate the connection to a new local path at [target]. The driver opens the path
+     * socket, probes it, and on validation switches the active path (RFC 9000 §9).
      */
     class Migrate(
-        val localHost: String?,
-        val localPort: Int,
+        val target: MigrationTarget,
         val result: CompletableDeferred<MigrationResult>,
     ) : QuicheCmd
 }

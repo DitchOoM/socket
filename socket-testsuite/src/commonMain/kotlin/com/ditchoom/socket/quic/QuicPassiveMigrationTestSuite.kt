@@ -49,8 +49,7 @@ abstract class QuicPassiveMigrationTestSuite {
      * source.
      *
      * True for the quiche-backed platforms (JVM/Linux), which do it via per-source recv_info +
-     * `sendInfo.to`. Apple's Network.framework exposes no path-migration control — `migrate()` is
-     * already [MigrationResult.Unsupported] there — and its server does not migrate egress to a
+     * `sendInfo.to`. Apple's server does not migrate egress to a
      * rebound source (observed deterministically: the post-rebind echo always times out, while the
      * 6 impairment-suite tests prove the same proxy forwards correctly, so the failure is the
      * source-rebind handling, not the proxy). The Apple member overrides this to false. (Issue #112.)

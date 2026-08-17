@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.NetworkMonitor
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
@@ -111,15 +112,24 @@ class QuicOptionsTests {
                 alpnProtocols = listOf("h3"),
                 flowControl = FlowControl(initialMaxData = 5_000_000),
                 maxUdpPayloadSize = 1400,
-                disableActiveMigration = true,
+                migration = MigrationPolicy.Forbidden,
+                networkMonitor = NetworkMonitorSource.Supplied(NetworkMonitor.AlwaysAvailable),
                 verifyPeer = false,
             )
         val copy = original.copy(idleTimeout = 60.seconds)
         kotlin.test.assertEquals(5_000_000, copy.flowControl.initialMaxData)
         kotlin.test.assertEquals(1400, copy.maxUdpPayloadSize)
-        kotlin.test.assertTrue(copy.disableActiveMigration)
+        kotlin.test.assertEquals(MigrationPolicy.Forbidden, copy.migration)
+        kotlin.test.assertEquals(NetworkMonitorSource.Supplied(NetworkMonitor.AlwaysAvailable), copy.networkMonitor)
         kotlin.test.assertFalse(copy.verifyPeer)
         kotlin.test.assertEquals(60.seconds, copy.idleTimeout)
+    }
+
+    @Test
+    fun migrationDefaultsToAutomaticAndProcessDefaultMonitor() {
+        val options = QuicOptions(alpnProtocols = listOf("h3"))
+        kotlin.test.assertEquals(MigrationPolicy.Automatic, options.migration)
+        kotlin.test.assertEquals(NetworkMonitorSource.ProcessDefault, options.networkMonitor)
     }
 
     @Test

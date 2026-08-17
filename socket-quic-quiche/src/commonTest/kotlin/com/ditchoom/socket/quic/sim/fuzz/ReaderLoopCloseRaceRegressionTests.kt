@@ -77,7 +77,7 @@ class ReaderLoopCloseRaceRegressionTests {
             val driver =
                 QuicheDriver(
                     // Test double: never exercises a path move.
-                    migration = MigrationCapability.Unsupported,
+                    migration = MigrationCapability.BackendCannotMigrate,
                     rawApi = StubQuicheApi(),
                     conn = QuicheConn(1L),
                     bufferFactory = tracking,

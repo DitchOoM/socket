@@ -1,9 +1,9 @@
 package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.socket.NetworkState
-import com.ditchoom.socket.quic.PathInfo
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicPathState
 import kotlin.test.fail
 import kotlin.time.Duration
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
@@ -46,7 +46,7 @@ internal sealed interface Observed {
     /** A `QuicheDriver.pathState` transition (initial dormant value not recorded). */
     data class PathStateChange(
         override val at: Duration,
-        val info: PathInfo,
+        val info: QuicPathState,
     ) : Observed
 
     /** A typed close reason surfaced on the terminal `Closed` state. */

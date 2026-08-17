@@ -27,6 +27,7 @@ import platform.posix.connect
 import platform.posix.freeaddrinfo
 import platform.posix.getaddrinfo
 import platform.posix.memcpy
+import platform.posix.ntohs
 import platform.posix.sockaddr
 import platform.posix.sockaddr_in
 import platform.posix.socket
@@ -99,10 +100,27 @@ internal class IoUringUdpChannelFactory(
                 memcpy(dst, localAddr.ptr, localSockAddrLen.convert())
                 localSockAddrBuf.resetForRead()
 
+                // The same resolved 4-tuple, in presentation form. `sin_addr.s_addr` and `sin_port` are
+                // in network byte order, so the octets read low-to-high and the port needs `ntohs`.
+                // This factory is IPv4-only (it creates AF_INET sockets above), so a dotted quad is
+                // exhaustive here.
+                val netAddr = localAddr.sin_addr.s_addr
+                val host =
+                    buildString {
+                        append((netAddr and 0xFFu).toInt())
+                        append('.')
+                        append(((netAddr shr 8) and 0xFFu).toInt())
+                        append('.')
+                        append(((netAddr shr 16) and 0xFFu).toInt())
+                        append('.')
+                        append(((netAddr shr 24) and 0xFFu).toInt())
+                    }
+
                 return NewPath(
                     channel = IoUringUdpChannel(fd),
                     localSockAddrAddress = localSockAddrBuf.nativeMemoryAccess!!.nativeAddress.toLong(),
                     localSockAddrLength = localSockAddrLen,
+                    localEndpoint = QuicLocalEndpoint(host, ntohs(localAddr.sin_port).toInt()),
                     release = { localSockAddrBuf.freeNativeMemory() },
                 )
             }

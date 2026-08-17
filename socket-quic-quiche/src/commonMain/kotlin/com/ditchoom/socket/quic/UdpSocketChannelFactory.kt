@@ -49,6 +49,10 @@ internal class UdpSocketChannelFactory(
             channel = DatagramChannelUdpChannel(channel),
             localSockAddrAddress = encoded.address,
             localSockAddrLength = encoded.length,
+            // The same resolved local address the sockaddr above encodes, in presentation form —
+            // `UdpSocket.connect` reports it on every platform, Apple included, which is what makes
+            // Succeeded name a real endpoint even where the platform picked it.
+            localEndpoint = QuicLocalEndpoint(local.host, local.port),
             release = { encoded.free() },
         )
     }

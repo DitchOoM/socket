@@ -129,7 +129,13 @@ sealed interface TraceEvent {
         override fun toString(): String = encodeTraceLine(this)
     }
 
-    /** A `PathInfo` (migration) transition: [phase] is the `MigrationPhase` name. Observation. */
+    /**
+     * A migration/path transition: [phase] is the v1 wire token for the producer's path state
+     * (`None`/`Probing`/`Validated`/`Migrated`/`Failed`), and [localHost]/[localPort] the endpoint that
+     * state names (`-`/`0` when it names none). Deliberately a token rather than the producer's type:
+     * the recorder translates at its boundary, so `:socket-quic`'s `QuicPathState` can be reshaped
+     * without invalidating a single recorded trace. Observation.
+     */
     data class PathState(
         override val at: Duration,
         val phase: String,

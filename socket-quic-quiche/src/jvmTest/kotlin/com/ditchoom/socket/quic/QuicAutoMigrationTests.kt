@@ -15,21 +15,23 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
  * End-to-end **automatic** connection migration driven by a [com.ditchoom.socket.NetworkMonitor]
- * ([QuicOptions.autoMigrateOnNetworkChange], on by default), over loopback.
+ * ([QuicOptions.migration] = [MigrationPolicy.Automatic], the default), over loopback.
  *
  * Unlike [QuicMigrationLoopbackTests] — which calls [QuicScope.migrate] by hand — this test never
  * touches `migrate()`. The client connects with a scriptable [SimNetworkMonitor] injected via
  * [QuicOptions.networkMonitor], whose baseline link is "Wi-Fi". After the first echo we flip the monitor's
  * [NetworkId] to a different link ("cellular"), simulating a handoff. The `wireAutoMigration` reactor
- * observes the `networkId` change and issues `migrate(null, 0)` on its own — re-binding to a fresh
+ * observes the `networkId` change and issues `migrate(MigrationTarget.FreshLocalEndpoint)` on its own —
+ * re-binding to a fresh
  * ephemeral loopback socket (a distinct 4-tuple, so quiche runs full PATH_CHALLENGE validation,
  * exactly the must-run case in [QuicMigrationLoopbackTests]).
  *
- * We assert the connection reaches [MigrationPhase.Migrated] with no manual migrate call, and that the
+ * We assert the connection reaches [QuicPathState.Migrated] with no manual migrate call, and that the
  * stream still round-trips afterwards — proving the monitor→migration wiring works end to end.
  *
  * Runs in CI (needs the built quiche native lib); skips cleanly without one.
@@ -79,8 +81,8 @@ class QuicAutoMigrationTests {
                             alpnProtocols = listOf("test"),
                             verifyPeer = false,
                             idleTimeout = 10.seconds,
-                            // autoMigrateOnNetworkChange defaults true; inject the scriptable monitor.
-                            networkMonitor = monitor,
+                            // QuicOptions.migration defaults to Automatic; inject the scriptable monitor.
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
                         )
                     val serverOptions =
                         QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
@@ -104,7 +106,7 @@ class QuicAutoMigrationTests {
                             }
 
                         val beforeEcho = CompletableDeferred<String>()
-                        val migratedPhase = CompletableDeferred<MigrationPhase>()
+                        val settledPathState = CompletableDeferred<QuicPathState>()
                         val afterEcho = CompletableDeferred<String>()
 
                         val clientJob =
@@ -117,10 +119,8 @@ class QuicAutoMigrationTests {
                                     // Wait for the auto-migration reactor to complete (or fail) the switch —
                                     // no manual migrate() call here; the monitor flip below drives it.
                                     val settled =
-                                        pathState.first {
-                                            it.phase == MigrationPhase.Migrated || it.phase == MigrationPhase.Failed
-                                        }
-                                    migratedPhase.complete(settled.phase)
+                                        pathState.first { it is QuicPathState.Migrated || it is QuicPathState.Failed }
+                                    settledPathState.complete(settled)
 
                                     afterEcho.complete(stream.echoOnce("after"))
                                     stream.close()
@@ -134,10 +134,13 @@ class QuicAutoMigrationTests {
                             // wireAutoMigration observes the networkId change and migrates the connection.
                             monitor.setNetworkId(NetworkId.Link(NetworkKind.Cellular, 2L))
 
-                            assertEquals(
-                                MigrationPhase.Migrated,
-                                withTimeout(12.seconds) { migratedPhase.await() },
-                                "network-change did not auto-migrate the connection",
+                            // Note the budget: unchanged from before this phase. The reactor applies no
+                            // quiet period, so a genuine handoff is never delayed — if this test needs a
+                            // longer wait, a timer crept back into the migration path.
+                            val settled = withTimeout(12.seconds) { settledPathState.await() }
+                            assertTrue(
+                                settled is QuicPathState.Migrated,
+                                "network-change did not auto-migrate the connection, settled on $settled",
                             )
                             assertEquals(
                                 "after",

@@ -54,6 +54,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_error
+import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
@@ -86,6 +87,7 @@ import com.ditchoom.socket.quic.quiche.quiche_set_virtual_time_nanos
 import com.ditchoom.socket.quic.quiche.quiche_stats
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_next
+import com.ditchoom.socket.quic.quiche.quiche_transport_params
 import kotlinx.cinterop.BooleanVar
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
@@ -109,6 +111,7 @@ import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import platform.posix.memcpy
+import platform.posix.memset
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.nanoseconds
 
@@ -526,6 +529,39 @@ internal object CinteropQuicheApi : QuicheApi {
                 dgramRecv = out.dgram_recv.toLong(),
                 dgramSent = out.dgram_sent.toLong(),
                 pathsCount = out.paths_count.toLong(),
+            )
+        }
+
+    /**
+     * `quiche_conn_peer_transport_params` returns false until the handshake has processed the peer's
+     * parameters — [PeerTransportParams.NotYetNegotiated], a timing state that resolves on its own.
+     *
+     * The out-struct is **zeroed before the call**: `memScoped { alloc<T>() }` hands back uninitialised
+     * stack, and while quiche writes every field on the `true` path, nothing in the type system says so.
+     * One refactor that reads a field on the `false` path would otherwise be reading stack garbage, and
+     * an ABI-sensitive struct is the last place to leave that latent.
+     */
+    override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
+        memScoped {
+            val out = alloc<quiche_transport_params>()
+            memset(out.ptr, 0, sizeOf<quiche_transport_params>().convert())
+            if (!quiche_conn_peer_transport_params(conn.handle.toCPointer()!!, out.ptr)) {
+                return@memScoped PeerTransportParams.NotYetNegotiated
+            }
+            PeerTransportParams.Negotiated(
+                maxIdleTimeoutMillis = out.peer_max_idle_timeout.toLong(),
+                maxUdpPayloadSize = out.peer_max_udp_payload_size.toLong(),
+                initialMaxData = out.peer_initial_max_data.toLong(),
+                initialMaxStreamDataBidiLocal = out.peer_initial_max_stream_data_bidi_local.toLong(),
+                initialMaxStreamDataBidiRemote = out.peer_initial_max_stream_data_bidi_remote.toLong(),
+                initialMaxStreamDataUni = out.peer_initial_max_stream_data_uni.toLong(),
+                initialMaxStreamsBidi = out.peer_initial_max_streams_bidi.toLong(),
+                initialMaxStreamsUni = out.peer_initial_max_streams_uni.toLong(),
+                ackDelayExponent = out.peer_ack_delay_exponent.toLong(),
+                maxAckDelayMillis = out.peer_max_ack_delay.toLong(),
+                disableActiveMigration = out.peer_disable_active_migration,
+                activeConnIdLimit = out.peer_active_conn_id_limit.toLong(),
+                maxDatagramFrameSize = out.peer_max_datagram_frame_size.toLong(),
             )
         }
 

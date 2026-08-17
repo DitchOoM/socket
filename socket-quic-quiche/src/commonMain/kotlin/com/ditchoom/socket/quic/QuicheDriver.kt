@@ -119,6 +119,15 @@ class QuicheDriver(
      */
     private val migration: MigrationCapability,
     /**
+     * The connection's shared [NetworkMonitor][com.ditchoom.socket.NetworkMonitor] observation, when a
+     * **client** engine resolved one; `null` on a server-accepted driver and on every test double, both
+     * of which then report [NetworkAtClose.NotObserved] — the truthful answer when nothing is observing.
+     *
+     * Held here, rather than on the connection wrapper, because the value has to be latched at the
+     * close transition ([transitionToClosed]) and that transition happens on the driver loop.
+     */
+    private val networkObservation: ConnectionNetworkObservation = ConnectionNetworkObservation.Unobserved,
+    /**
      * Called from [cleanup] after all quiche handles have been freed. Used by callers
      * to release platform-owned memory referenced by [recvInfo] (peer/local sockaddrs)
      * whose raw pointers are cached inside the recv_info struct. The closure itself
@@ -395,7 +404,10 @@ class QuicheDriver(
     private val primaryLocal: PinnedSockAddr? =
         when (migration) {
             is MigrationCapability.Supported -> migration.primaryLocal
-            MigrationCapability.Unsupported -> null
+            MigrationCapability.ServerConnection,
+            MigrationCapability.PolicyForbids,
+            MigrationCapability.BackendCannotMigrate,
+            -> null
         }
 
     private val primaryKey =
@@ -424,7 +436,10 @@ class QuicheDriver(
     private val migrationWiring: MigrationCapability.Supported? =
         when (migration) {
             is MigrationCapability.Supported -> migration
-            MigrationCapability.Unsupported -> null
+            MigrationCapability.ServerConnection,
+            MigrationCapability.PolicyForbids,
+            MigrationCapability.BackendCannotMigrate,
+            -> null
         }
 
     /** True only for a client connection wired for migration. */
@@ -434,8 +449,16 @@ class QuicheDriver(
     private var pendingMigration: PendingMigration? = null
     private var spareCidsIssued = false
 
-    private val _pathState = MutableStateFlow(PathInfo())
-    val pathState: StateFlow<PathInfo> = _pathState
+    private val _pathState = MutableStateFlow<QuicPathState>(QuicPathState.Original)
+    val pathState: StateFlow<QuicPathState> = _pathState
+
+    /**
+     * What the network was doing — live while the connection runs, frozen at [transitionToClosed].
+     * [NetworkAtClose.NotObserved] when no monitor was resolved for this driver (a server connection, a
+     * test double), which the observation itself reports via
+     * [ConnectionNetworkObservation.Unobserved] — there is no second, nullable encoding of that state.
+     */
+    val networkAtClose: NetworkAtClose get() = networkObservation.atClose
 
     private var driverScope: CoroutineScope? = null
 
@@ -451,10 +474,14 @@ class QuicheDriver(
 
     private fun addr(buf: PlatformBuffer?): Long = if (buf == null) 0L else buf.nativeMemoryAccess!!.nativeAddress.toLong()
 
+    /**
+     * The migration in flight: which path it opened, the endpoint that path **resolved to** (not the
+     * one requested — that distinction is the whole of the `Succeeded(null, 0)` bug), and the caller's
+     * deferred, completed by [drainPathEvents] once the peer validates or fails the path.
+     */
     private inner class PendingMigration(
         val key: PathKey,
-        val localHost: String?,
-        val localPort: Int,
+        val localEndpoint: QuicLocalEndpoint,
         val result: CompletableDeferred<MigrationResult>,
     )
 
@@ -670,6 +697,10 @@ class QuicheDriver(
                 cmd.result.complete(QuicStatsSnapshot(api.connStats(conn), api.connPathStats(conn, 0L)))
             }
 
+            is QuicheCmd.PeerTransportParamsRead -> {
+                cmd.result.complete(api.connPeerTransportParams(conn))
+            }
+
             is QuicheCmd.Close -> {
                 api.connClose(conn, cmd.error)
                 // Sync state from quiche BEFORE signalling the close completed, so a caller
@@ -690,9 +721,14 @@ class QuicheDriver(
         }
     }
 
-    /** Unreachable in practice — [run] routes [QuicheCmd.Migrate] to the suspending [handleMigrate]. */
+    /**
+     * Unreachable — [run] matches [QuicheCmd.Migrate] *before* calling [execute], so this arm exists
+     * only to keep [execute]'s `when` exhaustive. If it ever ran, no path would have been opened, so
+     * [MigrationResult.Unmoved.Failed.PathNotValidated] is the honest report: nothing moved, and a
+     * later attempt (dispatched correctly) could still succeed.
+     */
     private fun handleMigrateSync(cmd: QuicheCmd.Migrate) {
-        cmd.result.complete(MigrationResult.Failed("migrate dispatched on non-suspending path"))
+        cmd.result.complete(MigrationResult.Unmoved.Failed.PathNotValidated)
     }
 
     private suspend fun afterCommand() {
@@ -816,6 +852,11 @@ class QuicheDriver(
      */
     private fun transitionToClosed() {
         if (_state.value is QuicConnectionState.Closed) return
+        // Latch the network correlation BEFORE anything can observe Closed, so a reader that keys off
+        // the state gets what the network was doing when the connection died — not what it is doing when
+        // the log line is written. This is the whole point of freezing here rather than in a collector:
+        // the connection's scope children are cancelled at close, so a state collector may never run.
+        networkObservation.freeze()
         drainReadableStreamsIntoSlots()
         commands.close()
         _state.value = QuicConnectionState.Closed(resolveCloseReason())
@@ -1064,48 +1105,85 @@ class QuicheDriver(
      * completes the switch once the peer validates the path. Suspends to open the socket.
      */
     private suspend fun handleMigrate(cmd: QuicheCmd.Migrate) {
+        // One translation, not a judgement: each non-Supported capability names exactly one
+        // "and never will" outcome, so the caller learns *which* permanent condition applies rather
+        // than the single opaque `Unsupported` that used to cover all three.
         val wiring =
             when (migration) {
-                MigrationCapability.Unsupported -> {
-                    cmd.result.complete(MigrationResult.Unsupported)
+                MigrationCapability.ServerConnection -> {
+                    cmd.result.complete(MigrationResult.Unmoved.Impossible.ServerConnection)
+                    return
+                }
+                MigrationCapability.PolicyForbids -> {
+                    cmd.result.complete(MigrationResult.Unmoved.Impossible.PolicyForbids)
+                    return
+                }
+                MigrationCapability.BackendCannotMigrate -> {
+                    cmd.result.complete(MigrationResult.Unmoved.Impossible.BackendCannotMigrate)
                     return
                 }
                 is MigrationCapability.Supported -> migration
             }
+        // What the peer's transport parameters (RFC 9000 §18.2) say about moving to a new local address.
+        // Exhaustive over three states, with no boolean and no null: "the peer forbids it" and "we have
+        // not read the peer's parameters yet" are facts of different kinds — one permanent, one a timing
+        // state that resolves on its own — and a nullable Boolean made them share a token.
+        when (api.connPeerMigrationPermission(conn)) {
+            // Probing would burn a spare DCID only to fail validation.
+            PeerMigrationPermission.Forbidden -> {
+                cmd.result.complete(MigrationResult.Unmoved.Impossible.PeerForbids)
+                return
+            }
+            // RFC 9000 §9: an endpoint MUST NOT initiate migration before the handshake is confirmed.
+            // Retryable, so `Failed` — the very next attempt, once the handshake completes, can succeed.
+            PeerMigrationPermission.NotYetNegotiated -> {
+                cmd.result.complete(MigrationResult.Unmoved.Failed.HandshakeNotConfirmed)
+                return
+            }
+            PeerMigrationPermission.Permitted -> Unit
+        }
         val factory = wiring.channelFactory
         // Refuse a local endpoint this platform cannot bind, rather than opening a socket somewhere
         // else and reporting Succeeded. On Apple `UdpSocket.connect` hands the endpoint to NWConnection
         // and its own comment calls localHost/localPort "advisory", so honouring this request is not
         // possible — and silently substituting a different local address would make the Succeeded value
-        // itself a lie. The default request (null, 0) is served everywhere and is what automatic
-        // migration issues, so this rejects only an explicit, unserviceable ask.
-        val namesAnEndpoint = cmd.localHost != null || cmd.localPort != 0
+        // itself a lie. FreshLocalEndpoint is served everywhere and is what automatic migration issues,
+        // so this rejects only an explicit, unserviceable ask.
+        val namesAnEndpoint = cmd.target !is MigrationTarget.FreshLocalEndpoint
         if (namesAnEndpoint && factory.localEndpointSupport == LocalEndpointSupport.PlatformAssigned) {
-            cmd.result.complete(
-                MigrationResult.Failed(
-                    "this platform assigns the local endpoint itself and cannot bind the requested " +
-                        "${cmd.localHost ?: "*"}:${cmd.localPort}; migrate() with no arguments to move " +
-                        "to a fresh platform-chosen endpoint",
-                ),
-            )
+            cmd.result.complete(MigrationResult.Unmoved.Failed.EndpointNotSelectable)
             return
         }
         if (pendingMigration != null) {
-            cmd.result.complete(MigrationResult.Failed("a migration is already in progress"))
+            cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
             return
         }
         if (api.connAvailableDcids(conn) <= 0L) {
-            cmd.result.complete(MigrationResult.Failed("no spare destination connection id available"))
+            cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
         }
 
+        // The factory still speaks (host?, port) because that is what every platform's `bind` speaks;
+        // the sentinel pair is confined to this one line instead of reaching the public API.
+        val requestedHost =
+            when (val t = cmd.target) {
+                MigrationTarget.FreshLocalEndpoint -> null
+                is MigrationTarget.LocalAddress -> t.host
+                is MigrationTarget.LocalEndpoint -> t.host
+            }
+        val requestedPort =
+            when (val t = cmd.target) {
+                MigrationTarget.FreshLocalEndpoint, is MigrationTarget.LocalAddress -> 0
+                is MigrationTarget.LocalEndpoint -> t.port
+            }
+
         val newPath =
             try {
-                factory.openPath(cmd.localHost, cmd.localPort)
+                factory.openPath(requestedHost, requestedPort)
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                cmd.result.complete(MigrationResult.Failed("openPath failed: ${e.message}"))
+                cmd.result.complete(MigrationResult.Unmoved.Failed.LocalPathUnavailable(e))
                 return
             }
 
@@ -1127,12 +1205,13 @@ class QuicheDriver(
         val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
         if (rc < 0) {
             teardownPath(entry)
-            cmd.result.complete(MigrationResult.Failed("probe_path failed: rc=$rc"))
+            cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(rc))
             return
         }
 
-        pendingMigration = PendingMigration(key, cmd.localHost, cmd.localPort, cmd.result)
-        _pathState.value = PathInfo(MigrationPhase.Probing, cmd.localHost, cmd.localPort)
+        // Every state below names `newPath.localEndpoint` — what the socket BOUND — never the request.
+        pendingMigration = PendingMigration(key, newPath.localEndpoint, cmd.result)
+        _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
     }
 
@@ -1151,17 +1230,23 @@ class QuicheDriver(
                     if (pending.key != key) continue
                     val entry = paths[key]
                     if (entry == null) {
-                        completeMigration(pending, MigrationResult.Failed("validated path missing"), MigrationPhase.Failed)
+                        // Internal bookkeeping race: quiche validated a path this driver no longer
+                        // tracks. Observably the same as never validating, so it reports the same leaf.
+                        completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                         continue
                     }
-                    _pathState.value = PathInfo(MigrationPhase.Validated, pending.localHost, pending.localPort)
+                    _pathState.value = QuicPathState.Validated(pending.localEndpoint)
                     val rc =
                         api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
                     if (rc >= 0) {
                         activeKey = key
-                        completeMigration(pending, MigrationResult.Succeeded(pending.localHost, pending.localPort), MigrationPhase.Migrated)
+                        completeMigration(
+                            pending,
+                            MigrationResult.Succeeded(pending.localEndpoint),
+                            QuicPathState.Migrated(pending.localEndpoint),
+                        )
                     } else {
-                        completeMigration(pending, MigrationResult.Failed("migrate failed: rc=$rc"), MigrationPhase.Failed)
+                        completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(rc))
                     }
                 }
 
@@ -1170,7 +1255,7 @@ class QuicheDriver(
                     val pending = pendingMigration
                     if (pending != null && pending.key == key) {
                         paths[key]?.let { teardownPath(it) }
-                        completeMigration(pending, MigrationResult.Failed("path validation failed"), MigrationPhase.Failed)
+                        completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                     }
                 }
 
@@ -1189,12 +1274,32 @@ class QuicheDriver(
         }
     }
 
+    /**
+     * Publish the terminal path state for [pending] and hand [result] to the caller parked in
+     * `migrate()`.
+     *
+     * [state] defaults to `QuicPathState.Failed(result)` and is passed explicitly only for the one
+     * outcome that is not a failure. That default is what keeps the reported reason and the path state
+     * from drifting apart: the state *carries* the result rather than restating it, so there is exactly
+     * one place a migration's verdict is written down.
+     */
     private fun completeMigration(
         pending: PendingMigration,
-        result: MigrationResult,
-        phase: MigrationPhase,
+        result: MigrationResult.Unmoved,
+        state: QuicPathState = QuicPathState.Failed(result),
     ) {
-        _pathState.value = PathInfo(phase, pending.localHost, pending.localPort)
+        _pathState.value = state
+        pending.result.complete(result)
+        pendingMigration = null
+    }
+
+    /** [completeMigration]'s success overload — a [MigrationResult.Succeeded] is never a `Failed` state. */
+    private fun completeMigration(
+        pending: PendingMigration,
+        result: MigrationResult.Succeeded,
+        state: QuicPathState,
+    ) {
+        _pathState.value = state
         pending.result.complete(result)
         pendingMigration = null
     }
@@ -1254,7 +1359,7 @@ class QuicheDriver(
         }
 
         // A migration still in flight when the connection dies never completes — fail it.
-        pendingMigration?.result?.complete(MigrationResult.Failed("connection closed"))
+        pendingMigration?.result?.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
         pendingMigration = null
 
         for (slot in streams.values) {
@@ -1338,8 +1443,10 @@ class QuicheDriver(
             is QuicheCmd.PeerCert -> cmd.result.complete(0)
             // Connection gone — no quiche handles to read; an all-null snapshot is the typed "no stats".
             is QuicheCmd.Stats -> cmd.result.complete(QuicStatsSnapshot(null, null))
+            // Nothing negotiated can be read from a freed handle, which is exactly what this case means.
+            is QuicheCmd.PeerTransportParamsRead -> cmd.result.complete(PeerTransportParams.NotYetNegotiated)
             is QuicheCmd.Close -> cmd.result.complete(Unit)
-            is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Failed("connection closed"))
+            is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
         }
     }
 
@@ -1355,6 +1462,26 @@ class QuicheDriver(
             deferred.await()
         } catch (_: ClosedSendChannelException) {
             QuicStatsSnapshot(null, null)
+        }
+
+    /**
+     * Read the peer's transport parameters (RFC 9000 §18) on the driver loop — quiche is
+     * single-threaded, never off-loop. [PeerTransportParams.NotYetNegotiated] until the handshake has
+     * processed them, and once the connection is torn down.
+     *
+     * Exists for `PeerTransportParamsLayoutTestSuite`, which asserts the *neighbours* of
+     * `disable_active_migration` against the values this connection configured. That is the only thing
+     * that catches the quiche ABI defect this module patches around
+     * (`patchQuicheTransportParamsRepr`): the flag itself is a silent kill switch, so a wrong read
+     * turns active migration off with no error anywhere, and `sizeof` agrees either way.
+     */
+    suspend fun peerTransportParams(): PeerTransportParams =
+        try {
+            val deferred = CompletableDeferred<PeerTransportParams>()
+            commands.send(QuicheCmd.PeerTransportParamsRead(deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            PeerTransportParams.NotYetNegotiated
         }
 
     suspend fun destroy() {

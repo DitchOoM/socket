@@ -176,20 +176,17 @@ class QuicMigrationLoopbackTests {
             // it runs unprivileged on every platform — including BSD/macOS, where only
             // 127.0.0.1 is bound by default. This is the path #70 wanted exercised on
             // BSD layout (sendInfoToAddr/decodePathKey during a real flush).
-            migrationTest(localHost = "127.0.0.1", localPort = 0)
+            migrationTest(MigrationTarget.LocalAddress("127.0.0.1"))
         }
 
     @Test
     fun streamSurvivesActiveMigrationToLoopbackAlias() =
         runBlocking(Dispatchers.IO) {
             assumeLoopbackAliasBindable()
-            migrationTest(localHost = "127.0.0.2", localPort = 0)
+            migrationTest(MigrationTarget.LocalAddress("127.0.0.2"))
         }
 
-    private suspend fun migrationTest(
-        localHost: String,
-        localPort: Int,
-    ) {
+    private suspend fun migrationTest(target: MigrationTarget.LocalAddress) {
         skipOnMissingNativeLib {
             withTimeout(20.seconds) {
                 withQuicServer(port = 0, tlsConfig = tlsConfig, quicOptions = testQuicOptions) {
@@ -222,7 +219,7 @@ class QuicMigrationLoopbackTests {
                                 beforeEcho.complete(stream.echoOnce("before"))
 
                                 // Active migration to a new local source (different port and/or address).
-                                val result = migrate(localHost = localHost, localPort = localPort)
+                                val result = migrate(target)
                                 migrationResult.complete(result)
 
                                 afterEcho.complete(stream.echoOnce("after"))
@@ -236,6 +233,13 @@ class QuicMigrationLoopbackTests {
                         assertTrue(
                             result is MigrationResult.Succeeded,
                             "expected migration to succeed, got $result",
+                        )
+                        // The RESOLVED endpoint, not the request: the target named an address but left
+                        // the port ephemeral, so a Succeeded that echoed its request would report port 0.
+                        assertEquals(target.host, result.localEndpoint.host, "migration bound a different address")
+                        assertTrue(
+                            result.localEndpoint.port in 1..65535,
+                            "migration must report the ephemeral port it bound, got ${result.localEndpoint}",
                         )
                         assertEquals(
                             "after",

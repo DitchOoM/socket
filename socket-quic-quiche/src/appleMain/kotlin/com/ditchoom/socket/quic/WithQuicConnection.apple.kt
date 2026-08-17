@@ -212,6 +212,7 @@ internal suspend fun buildAppleQuicConnection(
                     driverContext = tuning.driverContext,
                     random = tuning.random,
                     recorder = tuning.recorderFactory(),
+                    networkObservation = tuning.networkObservation,
                     // RFC 9000 §9 active migration, over a SECOND NWConnection.
                     //
                     // The previous comment here said explicit quiche path migration "does not map to
@@ -227,23 +228,25 @@ internal suspend fun buildAppleQuicConnection(
                     // `UdpSocket.connect` yields a fresh NWConnection with its own NW-assigned local
                     // endpoint, which is exactly the new 4-tuple quiche probes and migrates onto.
                     migration =
-                        MigrationCapability.Supported(
-                            peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
-                            primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
-                            channelFactory =
-                                UdpSocketChannelFactory(
-                                    peer = peer,
-                                    codec = codec,
-                                    bufferFactory = bufferFactory,
-                                    recvBufferFactory = recvBufPool,
-                                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                                    // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
-                                    // localHost/localPort "advisory" and ignores them. Declared so the
-                                    // driver refuses an explicit endpoint instead of silently binding
-                                    // somewhere else and reporting success.
-                                    localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
-                                ),
-                        ),
+                        clientMigrationCapability(quicOptions.migration) {
+                            MigrationCapability.Supported(
+                                peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
+                                primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
+                                channelFactory =
+                                    UdpSocketChannelFactory(
+                                        peer = peer,
+                                        codec = codec,
+                                        bufferFactory = bufferFactory,
+                                        recvBufferFactory = recvBufPool,
+                                        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                                        // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
+                                        // localHost/localPort "advisory" and ignores them. Declared so the
+                                        // driver refuses an explicit endpoint instead of silently binding
+                                        // somewhere else and reporting success.
+                                        localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
+                                    ),
+                            )
+                        },
                     onCleanup = {
                         peerSockAddr.free()
                         localSockAddr.free()
@@ -306,8 +309,11 @@ internal class AppleQuicConnection(
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
+    QuicheBackedConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
+
+    override val quicheDriver: QuicheDriver get() = driver
 
     /**
      * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
@@ -370,18 +376,19 @@ internal class AppleQuicConnection(
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
-    override val pathState: StateFlow<PathInfo> = driver.pathState
+    override val pathState: StateFlow<QuicPathState> = driver.pathState
 
-    override suspend fun migrate(
-        localHost: String?,
-        localPort: Int,
-    ): MigrationResult =
+    override val networkAtClose: NetworkAtClose get() = driver.networkAtClose
+
+    override suspend fun migrate(target: MigrationTarget): MigrationResult =
         try {
             val deferred = CompletableDeferred<MigrationResult>()
-            driver.commands.send(QuicheCmd.Migrate(localHost, localPort, deferred))
+            driver.commands.send(QuicheCmd.Migrate(target, deferred))
+            // Suspends until the path has validated and the active path has switched, or the attempt
+            // has failed — the property the automatic reactor relies on instead of a quiet period.
             deferred.await()
         } catch (_: ClosedSendChannelException) {
-            MigrationResult.Failed("connection closed")
+            MigrationResult.Unmoved.Impossible.ConnectionClosed
         }
 
     /** Driver-level terminal close (user-callable mid-block via [closeWithError]) — no [onRelease]. */

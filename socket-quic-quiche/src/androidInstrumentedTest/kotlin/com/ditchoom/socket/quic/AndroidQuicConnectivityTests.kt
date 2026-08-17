@@ -13,6 +13,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -120,8 +121,11 @@ class AndroidQuicConnectivityTests {
                 val stream = openStream()
                 assertEquals("before", stream.echoOnce("before"))
 
-                val result = migrate(localHost = null, localPort = 0)
+                val result = migrate(MigrationTarget.FreshLocalEndpoint)
                 assertIs<MigrationResult.Succeeded>(result)
+                // FreshLocalEndpoint names no host and no port, so the reported endpoint can only have
+                // come from the socket the platform actually bound.
+                assertTrue(result.localEndpoint.port in 1..65535, "got ${result.localEndpoint}")
 
                 assertEquals("after", stream.echoOnce("after"), "stream did not round-trip after migration")
                 stream.close()

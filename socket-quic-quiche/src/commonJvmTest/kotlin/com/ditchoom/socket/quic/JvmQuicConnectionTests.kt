@@ -101,7 +101,7 @@ class JvmQuicConnectionTests {
         val channel = DatagramChannel.open().apply { configureBlocking(false) }
         return QuicheDriver(
             // Test double: never exercises a path move.
-            migration = MigrationCapability.Unsupported,
+            migration = MigrationCapability.BackendCannotMigrate,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

@@ -369,6 +369,32 @@ object JniQuicheApi : QuicheApi {
         )
     }
 
+    /**
+     * Bound here rather than inherited, because there is no inheritable answer: the interface
+     * declares [connPeerTransportParams] abstract precisely so no backend can quietly report
+     * "unknown" for a value that silently switches active migration off.
+     */
+    override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams {
+        // 13-slot layout contract with quiche_jni.c nConnPeerTransportParams — see the shim comment there.
+        val out = LongArray(13)
+        if (!nConnPeerTransportParams(conn.handle, out)) return PeerTransportParams.NotYetNegotiated
+        return PeerTransportParams.Negotiated(
+            maxIdleTimeoutMillis = out[0],
+            maxUdpPayloadSize = out[1],
+            initialMaxData = out[2],
+            initialMaxStreamDataBidiLocal = out[3],
+            initialMaxStreamDataBidiRemote = out[4],
+            initialMaxStreamDataUni = out[5],
+            initialMaxStreamsBidi = out[6],
+            initialMaxStreamsUni = out[7],
+            ackDelayExponent = out[8],
+            maxAckDelayMillis = out[9],
+            disableActiveMigration = out[10] != 0L,
+            activeConnIdLimit = out[11],
+            maxDatagramFrameSize = out[12],
+        )
+    }
+
     override fun connTimeout(conn: QuicheConn): Duration? {
         val nanos = nConnTimeoutAsNanos(conn.handle)
         // JNI casts uint64_t to jlong: UINT64_MAX becomes -1L (or any negative)
@@ -806,6 +832,13 @@ object JniQuicheApi : QuicheApi {
         pathIdx: Long,
         out: LongArray,
     ): Int
+
+    // Not @FastNative: writes the result through a JNI array region (SetLongArrayRegion).
+    @JvmStatic
+    private external fun nConnPeerTransportParams(
+        conn: Long,
+        out: LongArray,
+    ): Boolean
 
     @JvmStatic
     private external fun nConfigEnableDgram(

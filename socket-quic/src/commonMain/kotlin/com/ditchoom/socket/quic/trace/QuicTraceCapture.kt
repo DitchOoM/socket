@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic.trace
 
-import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
 
 // `as NeutralTraceSink`: the bare `TraceSink` in this package is the deprecated compat typealias
@@ -37,19 +36,24 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  *   for independent, replayable traces. The consumer
  *   owns IO (append to a file, ship over the network, buffer in memory) so capture stays platform-free.
  *   Each returned sink may be called from several coroutines concurrently — treat it like a log sink.
- * @property networkMonitor optional connectivity tap. When supplied, a **client** connection also
- *   records the monitor's `MonitorCapability` once (NET_CAP) and then collects its single `state`
- *   flow into the trace (NET — the whole `NetworkState`, identity included), so captured traces
- *   carry connectivity — the airplane-mode toggle / Wi-Fi↔cellular handoff
- *   that drives the transport layer's reconnection — not just QUIC-level traffic. Ignored on a
- *   server [bind][com.ditchoom.socket.quic.QuicEngine.bind] (a server has no local client network
- *   path to observe). Liveness (LIVENESS) is captured separately via
- *   [com.ditchoom.socket.quic.trace] `QuicTraceRecorder.wrap`, wired at the transport seam that
- *   drives probes ([com.ditchoom.socket.transport.Liveness]) — that seam lives above the engine.
+ * @property recordNetworkObservations record the connection's network observations (NET / NET_CAP) into
+ *   the trace alongside its QUIC traffic. The monitor recorded is **the connection's own** — the one
+ *   [com.ditchoom.socket.quic.QuicOptions.networkMonitor] resolves — so a captured trace, an automatic
+ *   migration, and [com.ditchoom.socket.quic.QuicConnection.networkAtClose] all describe the same
+ *   observation stream. This used to be a second, independent `NetworkMonitor?` on the same options
+ *   object, which meant a caller could (and one test did) hand two different fields two different
+ *   monitors and get a trace that indexed a stream nothing else had seen.
+ *
+ *   A plain `Boolean` because that is the whole truth here: *which* monitor is a separate, already-typed
+ *   decision ([com.ditchoom.socket.quic.NetworkMonitorSource]), and this only says whether to write it
+ *   down. Ignored on a server [bind][com.ditchoom.socket.quic.QuicEngine.bind] — a server has no local
+ *   client network path to observe. Liveness (LIVENESS) is captured separately via
+ *   `QuicTraceRecorder.wrap`, wired at the transport seam that drives probes
+ *   ([com.ditchoom.socket.transport.Liveness]) — that seam lives above the engine.
  */
 class QuicTraceCapture(
     val sinkFor: () -> NeutralTraceSink,
-    val networkMonitor: NetworkMonitor? = null,
+    val recordNetworkObservations: Boolean = false,
 ) {
     /**
      * Convenience for the single-connection case: every captured connection records onto the one
@@ -57,5 +61,6 @@ class QuicTraceCapture(
      * server diagnostics; for per-connection replay across concurrent connections use the primary
      * [sinkFor] factory constructor and return a fresh sink each call.
      */
-    constructor(sink: NeutralTraceSink, networkMonitor: NetworkMonitor? = null) : this({ sink }, networkMonitor)
+    constructor(sink: NeutralTraceSink, recordNetworkObservations: Boolean = false) :
+        this({ sink }, recordNetworkObservations)
 }

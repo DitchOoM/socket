@@ -536,6 +536,38 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connAvailableDcids(conn: QuicheConn) = 0L
 
+    /**
+     * Keyed to [established] rather than hardcoded, because that is what the real accessor is keyed to:
+     * `quiche_conn_peer_transport_params` returns false until the handshake has processed the peer's
+     * parameters. A stub that always answered "negotiated" would let a driver test pass a peer check the
+     * real connection would still be waiting on.
+     *
+     * The negotiated values mirror this module's own defaults so a driver test reads plausible numbers;
+     * nothing in [QuicheDriver] dispatches on any field but [PeerTransportParams.Negotiated.disableActiveMigration].
+     */
+    @Volatile var peerDisablesActiveMigration = false
+
+    override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
+        if (!established) {
+            PeerTransportParams.NotYetNegotiated
+        } else {
+            PeerTransportParams.Negotiated(
+                maxIdleTimeoutMillis = 10_000,
+                maxUdpPayloadSize = 1350,
+                initialMaxData = 10 * 1024 * 1024,
+                initialMaxStreamDataBidiLocal = 1024 * 1024,
+                initialMaxStreamDataBidiRemote = 1024 * 1024,
+                initialMaxStreamDataUni = 1024 * 1024,
+                initialMaxStreamsBidi = 100,
+                initialMaxStreamsUni = 100,
+                ackDelayExponent = 3,
+                maxAckDelayMillis = 25,
+                disableActiveMigration = peerDisablesActiveMigration,
+                activeConnIdLimit = 4,
+                maxDatagramFrameSize = -1,
+            )
+        }
+
     override fun connScidsLeft(conn: QuicheConn) = 0L
 
     override fun connPathEventNext(

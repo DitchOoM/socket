@@ -472,7 +472,7 @@ internal class SharedQuicheServer(
                 // migrate — so a server-accepted connection states that outright. The server still
                 // handles a *peer's* migration (per-source recv_info + sendInfo.to egress, see
                 // ServerConnectionUdpChannel); that is passive rebinding and needs no wiring here.
-                migration = MigrationCapability.Unsupported,
+                migration = MigrationCapability.ServerConnection,
                 // recvInfo holds raw pointers into peerSockAddr/localSockAddr; keep them reachable for the
                 // driver's life and freed on teardown so recv_info.from/to can never dangle.
                 onCleanup = {

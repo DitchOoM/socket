@@ -20,7 +20,7 @@ import kotlin.time.Duration.Companion.seconds
  * counterpart of the JVM `QuicMigrationLoopbackTests`.
  *
  * The client connects on 127.0.0.1, then [QuicScope.migrate]s to the loopback alias 127.0.0.2
- * (all of 127.0.0.0/8 is loopback on Linux). The [IoUringUdpChannelFactory] opens a second
+ * (all of 127.0.0.0/8 is loopback on Linux). The path factory opens a second
  * io_uring socket bound to 127.0.0.2; the in-process K/N server recognises the new source via
  * its per-source recv_info routing and replies follow the peer via `sendInfo.to`. We assert
  * migration succeeds and the stream still round-trips — proving cinterop migration on both ends.
@@ -83,7 +83,7 @@ class LinuxQuicMigrationLoopbackTests {
                             val stream = openStream()
                             beforeEcho.complete(stream.echoOnce("before"))
 
-                            val result = migrate(localHost = "127.0.0.2", localPort = 0)
+                            val result = migrate(MigrationTarget.LocalAddress("127.0.0.2"))
                             migrationResult.complete(result)
 
                             afterEcho.complete(stream.echoOnce("after"))
@@ -95,6 +95,13 @@ class LinuxQuicMigrationLoopbackTests {
                     assertEquals("before", beforeEcho.await())
                     val result = migrationResult.await()
                     assertTrue(result is MigrationResult.Succeeded, "expected migration to succeed, got $result")
+                    // The RESOLVED endpoint, not the request: the target named 127.0.0.2 but left the
+                    // port ephemeral, so a Succeeded echoing its request would report port 0.
+                    assertEquals("127.0.0.2", result.localEndpoint.host, "migration bound a different address")
+                    assertTrue(
+                        result.localEndpoint.port in 1..65535,
+                        "migration must report the ephemeral port it bound, got ${result.localEndpoint}",
+                    )
                     assertEquals("after", afterEcho.await(), "stream did not round-trip after migration")
                 } finally {
                     clientJob.cancel()

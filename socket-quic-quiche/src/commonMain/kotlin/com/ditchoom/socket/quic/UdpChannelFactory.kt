@@ -8,7 +8,8 @@ package com.ditchoom.socket.quic
  * different local endpoint) without knowing how sockets are created on each platform.
  *
  * Only clients migrate in QUIC v1, so only client connection setups construct one. A driver that has no
- * factory expresses that as [MigrationCapability.Unsupported] rather than by omitting an argument.
+ * factory expresses that as [MigrationCapability.BackendCannotMigrate] rather than by omitting an
+ * argument.
  */
 @InternalQuicApi
 interface UdpChannelFactory {
@@ -35,8 +36,10 @@ interface UdpChannelFactory {
      *
      * The returned [NewPath.localSockAddrAddress]/[NewPath.localSockAddrLength] point at pinned native
      * memory holding the socket's *resolved* local sockaddr — resolved, because on a platform that
-     * assigns the endpoint that is the only way to learn what was chosen. The driver owns the returned
-     * channel and must [UdpChannel.close] it and call [NewPath.release] when the path is torn down.
+     * assigns the endpoint that is the only way to learn what was chosen — and
+     * [NewPath.localEndpoint] is that same resolved endpoint in presentation form. The driver owns the
+     * returned channel and must [UdpChannel.close] it and call [NewPath.release] when the path is torn
+     * down.
      */
     suspend fun openPath(
         localHost: String?,
@@ -74,11 +77,19 @@ sealed interface LocalEndpointSupport {
  * A freshly-opened migration path: the channel plus its pinned local sockaddr and a hook to free that
  * sockaddr's backing memory. The driver decodes [localSockAddrAddress] into a [PathKey] to route
  * datagrams to this socket.
+ *
+ * @property localEndpoint the endpoint the socket **actually bound**, in presentation form — the same
+ *   fact as the pinned sockaddr, in the shape a caller can read. Every factory already resolves it (the
+ *   sockaddr has to be resolved for quiche to probe the 4-tuple), so this only stops discarding it: it
+ *   is what `QuicScope.migrate()` reports as [MigrationResult.Succeeded.localEndpoint], and on a
+ *   [LocalEndpointSupport.PlatformAssigned] platform it is the only way the caller can learn where the
+ *   connection landed.
  */
 @InternalQuicApi
 class NewPath(
     val channel: UdpChannel,
     val localSockAddrAddress: Long,
     val localSockAddrLength: Int,
+    val localEndpoint: QuicLocalEndpoint,
     val release: () -> Unit,
 )

@@ -40,11 +40,15 @@ interface QuicConnection : QuicScope {
      * doing now?".
      *
      * Defaults to [NetworkAtClose.NotObserved] — the truthful answer for a connection nothing is
-     * observing, and the current answer everywhere until the monitor handle is threaded through the
-     * connect paths. That wiring belongs with [QuicOptions.networkMonitor] resolution: the correlation
-     * **must** read the same monitor instance that drives auto-migration, or the `ObservationSequence`
-     * it reports would index a different stream than the one that triggered the migration — two
-     * unrelated counters that look joinable.
+     * observing: a test double, or a **server-accepted** connection, which has no local client network
+     * path to correlate against (the same reason automatic migration is client-only).
+     *
+     * A client connection resolves [QuicOptions.networkMonitor] **once**, at connect, and hands that one
+     * instance to auto-migration, to the trace tap, and to this correlation. Sharing the instance is the
+     * invariant, not an optimisation: a second monitor would report an `ObservationSequence` indexing a
+     * different stream than the one that triggered the migration — two unrelated counters that look
+     * joinable. A connection whose resolved monitor is [com.ditchoom.socket.NetworkMonitor.AlwaysAvailable]
+     * reports [NetworkAtClose.NotObserved], which that monitor's own KDoc names as the honest case.
      */
     override val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
 

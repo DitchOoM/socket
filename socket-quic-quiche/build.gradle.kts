@@ -134,6 +134,9 @@ fun downloadQuicheSource(
     // fails loudly if a quiche bump adds an un-clocked time read. Simulation-only; production keeps the real
     // clock (nothing sets the thread-local).
     patchQuicheForCallerClock(sourceDir)
+    // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
+    // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuicheTransportParamsRepr(sourceDir)
 
     return sourceDir
 }
@@ -396,6 +399,90 @@ fun patchQuicheForCallerClock(sourceDir: File) {
         """.trimMargin()
     libRs.appendText("\n" + clockModule + "\n")
     logger.lifecycle("Patched quiche source: caller-clock (crate::now() over 72 sites + virtual-time FFI)")
+}
+
+/**
+ * Patch quiche's `ffi.rs` so `pub struct TransportParams` carries **`#[repr(C)]`**.
+ *
+ * **Upstream bug.** `TransportParams` is the out-parameter of `quiche_conn_peer_transport_params`, and
+ * `quiche/include/quiche.h` declares it as a plain C struct — ten `uint64_t`, then `bool
+ * peer_disable_active_migration`, then `uint64_t peer_active_conn_id_limit`, then `ssize_t
+ * peer_max_datagram_frame_size`. But the Rust definition has **no `#[repr(C)]`**, while its immediate
+ * neighbours `Stats` (ffi.rs ~1325) and `PathStats` (~1437) both do — in 0.28.0, 0.29.2 and 0.29.3 alike.
+ * Without the attribute rustc is free to reorder by alignment, and it does: the 1-byte `bool` sinks to the
+ * end of the record. Measured, mutation-proven, on both K/N cinterop and JVM FFM:
+ *
+ * | offset | quiche.h claims                  | rustc actually emits             |
+ * |--------|----------------------------------|----------------------------------|
+ * | 0..72  | the ten `uint64_t`               | correct (all ten verified)       |
+ * | 80     | `peer_disable_active_migration`  | `peer_active_conn_id_limit`      |
+ * | 88     | `peer_active_conn_id_limit`      | `peer_max_datagram_frame_size`   |
+ * | 96     | `peer_max_datagram_frame_size`   | `peer_disable_active_migration`  |
+ *
+ * `sizeof` is 104 either way — which is exactly why nothing caught it. Every caller that trusts the header
+ * reads `peer_active_conn_id_limit` (a small non-zero count) where the `bool` should be, so
+ * [QuicheApi.connPeerMigrationPermission] answered `Forbidden` on essentially every connection and active
+ * migration silently vanished — a **silent kill switch**, no error anywhere.
+ *
+ * Fixing it here, at the source, is the only representable option: `repr(Rust)` field order carries no
+ * stability guarantee across rustc versions, and the K/N cinterop generates its accessors from the header's
+ * struct — it cannot address a hand-computed offset without abandoning the generated type entirely.
+ *
+ * **Tracked as DitchOoM/socket#388** (https://github.com/DitchOoM/socket/issues/388). The decision recorded
+ * there: patch our builds now, track it in this repo, report upstream to cloudflare/quiche eventually but do
+ * not block on it.
+ *
+ * **Idempotent and loud in both directions** (mirroring [patchQuicheForCallerClock]'s discipline):
+ * an already-applied marker returns; an anchor that has moved throws; and an upstream that has *fixed*
+ * this — `#[repr(C)]` already above the struct without our marker — also throws, so a quiche bump surfaces
+ * as a build failure telling you to delete this patch, never as a silent double-attribute or a no-op.
+ * When that day comes the correct move is to **delete this patch and keep `PeerTransportParamsLayoutTestSuite`**:
+ * the patch is the workaround, the neighbour-field guard is the thing that proves the ABI is right, and it
+ * is still the only check that can catch a future regression (see #388).
+ */
+fun patchQuicheTransportParamsRepr(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    if (text.contains("socket-transport-params-repr-c")) return // already patched
+
+    val anchor = "\npub struct TransportParams {\n"
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "socket-transport-params-repr-c (DitchOoM/socket#388): `pub struct TransportParams {` not found in " +
+                "quiche/src/ffi.rs. Either a quiche bump moved/renamed the struct behind " +
+                "quiche_conn_peer_transport_params, or upstream fixed the missing #[repr(C)] and reshaped this " +
+                "code. If upstream fixed it: DELETE patchQuicheTransportParamsRepr and its call site, and KEEP " +
+                "PeerTransportParamsLayoutTestSuite — the guard is what proves the ABI, the patch was only the " +
+                "workaround. Otherwise re-fit the patch and re-verify the field order against " +
+                "quiche/include/quiche.h before shipping. See https://github.com/DitchOoM/socket/issues/388",
+        )
+    }
+    if (text.contains("#[repr(C)]$anchor")) {
+        throw GradleException(
+            "socket-transport-params-repr-c (DitchOoM/socket#388): quiche's TransportParams already carries " +
+                "#[repr(C)] — upstream has fixed the layout bug this patch works around. DELETE " +
+                "patchQuicheTransportParamsRepr and its call site (do not double-apply the attribute), and KEEP " +
+                "PeerTransportParamsLayoutTestSuite, which is the regression guard and outlives the patch. " +
+                "See https://github.com/DitchOoM/socket/issues/388",
+        )
+    }
+
+    val replacement =
+        """
+        |
+        |// socket-transport-params-repr-c: upstream omits #[repr(C)] here while its neighbours Stats and
+        |// PathStats both have it, so rustc reorders the fields by alignment and sinks the 1-byte
+        |// `disable_active_migration` past the two integers that follow it — silently disagreeing with the
+        |// layout quiche/include/quiche.h declares (sizeof matches at 104 either way, so nothing catches it).
+        |// Every reader of quiche_conn_peer_transport_params then reads active_conn_id_limit as the bool.
+        |#[repr(C)]
+        |pub struct TransportParams {
+        |
+        """.trimMargin()
+
+    ffiRs.writeText(text.replaceFirst(anchor, replacement))
+    logger.lifecycle("Patched quiche source: #[repr(C)] on ffi.rs TransportParams (peer transport-params ABI)")
 }
 
 /**
