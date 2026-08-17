@@ -1536,10 +1536,29 @@ afterEvaluate {
             .get()
             .asFile
 
+    // Where the started servers record the port the OS actually gave them, so
+    // androidQuicIntegrationTest can hand it to the instrumented run. A file rather than a Gradle
+    // property because the servers are separate processes started in a doLast.
+    val quicTestServerPortFile =
+        layout.buildDirectory
+            .file("quic-test-server.port")
+            .get()
+            .asFile
+
     tasks.register("startQuicTestServer") {
         group = "verification"
-        description = "Start a QUIC echo server on localhost:4433 for Android instrumented tests"
-        dependsOn("compileTestKotlinJvm", "jvmTestProcessResources")
+        description = "Start a QUIC echo server on an OS-assigned port for Android instrumented tests"
+        // prepareQuicheNativeLib + stageQuicheNativeResources build and stage the *host* quiche
+        // natives. Without them this task starts a JVM whose classpath has no
+        // META-INF/native/<os>-<arch>/libquiche.dylib, and NativeLibLoader fails at
+        // JniQuicheApi.<clinit> — which is not a missing build so much as a missing dependency:
+        // the file exists in the staged dir, it simply was never put on this classpath.
+        dependsOn(
+            "compileTestKotlinJvm",
+            "jvmTestProcessResources",
+            "prepareQuicheNativeLib",
+            "stageQuicheNativeResources",
+        )
 
         doLast {
             if (quicTestServerPidFile.exists()) {
@@ -1564,7 +1583,12 @@ afterEvaluate {
                     kotlin
                         .jvm()
                         .compilations["java21"]
-                        .output.allOutputs.files
+                        .output.allOutputs.files +
+                    // The staged host natives (META-INF/native/<os>-<arch>/). Deliberately not in the
+                    // base jvmJar (see the comment at stagedNativeResourcesDir), so they have to be
+                    // added to *this* classpath explicitly — NativeLibLoader reads them as classpath
+                    // resources.
+                    files(stagedNativeResourcesDir)
 
             val classpathStr = testClasspath.joinToString(File.pathSeparator)
             val javaExec =
@@ -1584,32 +1608,50 @@ afterEvaluate {
                     "com.ditchoom.socket.quic.QuicEchoTestServerKt",
                     certDir.resolve("cert.crt").absolutePath,
                     certDir.resolve("cert.key").absolutePath,
+                    // 0 → the OS assigns. The bound port comes back on the READY line below.
+                    "0",
                 ).redirectErrorStream(true)
                     .start()
 
             quicTestServerPidFile.parentFile.mkdirs()
             quicTestServerPidFile.writeText(process.pid().toString())
 
-            // Wait for server to be ready (looks for "READY" on stdout)
+            // Wait for readiness AND capture the port the OS assigned. The port is only knowable
+            // from this line — that is the whole point of not pinning one.
             val reader = process.inputStream.bufferedReader()
-            val deadline = System.currentTimeMillis() + 10_000
+            val deadline = System.currentTimeMillis() + 30_000
+            var boundPort = -1
             while (System.currentTimeMillis() < deadline) {
                 if (reader.ready()) {
                     val line = reader.readLine() ?: break
                     logger.lifecycle("[quic-server] $line")
-                    if (line.contains("READY")) break
+                    if (line.contains("READY")) {
+                        boundPort =
+                            Regex("port=(\\d+)")
+                                .find(line)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.toIntOrNull()
+                                ?: throw GradleException("QUIC test server READY line had no parsable port: $line")
+                        break
+                    }
                 }
+                if (!process.isAlive) break
                 Thread.sleep(100)
             }
             if (!process.isAlive) throw GradleException("QUIC test server failed to start")
+            if (boundPort <= 0) throw GradleException("QUIC test server never reported a bound port")
 
-            // Set up adb reverse so emulator localhost:4433 → host:4433
-            ProcessBuilder("adb", "reverse", "tcp:4433", "tcp:4433")
+            quicTestServerPortFile.writeText(boundPort.toString())
+
+            // adb reverse maps the *device's* localhost:port to the host's. Using the same number on
+            // both sides keeps one value to reason about; it is discovered, not chosen.
+            ProcessBuilder("adb", "reverse", "tcp:$boundPort", "tcp:$boundPort")
                 .redirectErrorStream(true)
                 .start()
                 .waitFor()
 
-            logger.lifecycle("QUIC test server running (PID ${process.pid()}), adb reverse configured")
+            logger.lifecycle("QUIC test server running (PID ${process.pid()}) on port $boundPort, adb reverse configured")
         }
     }
 
@@ -1617,6 +1659,15 @@ afterEvaluate {
         group = "verification"
         description = "Stop the QUIC echo test server"
         doLast {
+            // Drop the adb reverse first so a dead mapping never outlives the server it pointed at.
+            if (quicTestServerPortFile.exists()) {
+                val p = quicTestServerPortFile.readText().trim()
+                ProcessBuilder("adb", "reverse", "--remove", "tcp:$p")
+                    .redirectErrorStream(true)
+                    .start()
+                    .waitFor()
+                quicTestServerPortFile.delete()
+            }
             if (quicTestServerPidFile.exists()) {
                 val pid = quicTestServerPidFile.readText().trim()
                 ProcessBuilder("kill", pid).start().waitFor()
@@ -1710,9 +1761,15 @@ afterEvaluate {
             .get()
             .asFile
 
+    val netCtrlPortFile =
+        layout.buildDirectory
+            .file("network-control-server.port")
+            .get()
+            .asFile
+
     tasks.register("startNetworkControlServer") {
         group = "verification"
-        description = "Start the network control server on localhost:9998 for migration tests"
+        description = "Start the network control server on an OS-assigned port for migration tests"
         dependsOn("compileTestKotlinJvm", "jvmTestProcessResources")
 
         doLast {
@@ -1755,6 +1812,8 @@ afterEvaluate {
                     "-cp",
                     classpathStr,
                     "com.ditchoom.socket.quic.netctrl.NetworkControlServerKt",
+                    // 0 → OS-assigned; the bound port is parsed off the READY line below.
+                    "0",
                 ).redirectErrorStream(true)
                     .start()
 
@@ -1762,23 +1821,37 @@ afterEvaluate {
             netCtrlPidFile.writeText(process.pid().toString())
 
             val reader = process.inputStream.bufferedReader()
-            val deadline = System.currentTimeMillis() + 10_000
+            val deadline = System.currentTimeMillis() + 30_000
+            var boundPort = -1
             while (System.currentTimeMillis() < deadline) {
                 if (reader.ready()) {
                     val line = reader.readLine() ?: break
                     logger.lifecycle("[net-ctrl] $line")
-                    if (line.contains("READY")) break
+                    if (line.contains("READY")) {
+                        boundPort =
+                            Regex("port=(\\d+)")
+                                .find(line)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.toIntOrNull()
+                                ?: throw GradleException("Network control server READY line had no parsable port: $line")
+                        break
+                    }
                 }
+                if (!process.isAlive) break
                 Thread.sleep(100)
             }
             if (!process.isAlive) throw GradleException("Network control server failed to start")
+            if (boundPort <= 0) throw GradleException("Network control server never reported a bound port")
 
-            ProcessBuilder("adb", "reverse", "tcp:9998", "tcp:9998")
+            netCtrlPortFile.writeText(boundPort.toString())
+
+            ProcessBuilder("adb", "reverse", "tcp:$boundPort", "tcp:$boundPort")
                 .redirectErrorStream(true)
                 .start()
                 .waitFor()
 
-            logger.lifecycle("Network control server running (PID ${process.pid()}), adb reverse configured")
+            logger.lifecycle("Network control server running (PID ${process.pid()}) on port $boundPort, adb reverse configured")
         }
     }
 
@@ -1786,6 +1859,14 @@ afterEvaluate {
         group = "verification"
         description = "Stop the network control server"
         doLast {
+            if (netCtrlPortFile.exists()) {
+                val p = netCtrlPortFile.readText().trim()
+                ProcessBuilder("adb", "reverse", "--remove", "tcp:$p")
+                    .redirectErrorStream(true)
+                    .start()
+                    .waitFor()
+                netCtrlPortFile.delete()
+            }
             if (netCtrlPidFile.exists()) {
                 val pid = netCtrlPidFile.readText().trim()
                 ProcessBuilder("kill", pid).start().waitFor()
@@ -1798,13 +1879,31 @@ afterEvaluate {
     tasks.register("androidQuicIntegrationTest") {
         group = "verification"
         description = "Build native libs, start servers, run Android instrumented tests, stop servers"
+        // The Android ABI shims are what the instrumented tests load; the host natives are what the
+        // servers this task starts need. Only the first set was wired, so the task could not
+        // bootstrap on a clean machine — it failed inside startQuicTestServer before reaching Android.
+        if (androidJniTasks.isNotEmpty()) dependsOn("buildAndroidNativeLibs")
         dependsOn("startQuicTestServer", "startNetworkControlServer")
         finalizedBy("stopQuicTestServer", "stopNetworkControlServer")
         doLast {
+            // The instrumented tests live in THIS module. The task previously ran
+            // `:socket-quic:connectedDebugAndroidTest`, and :socket-quic has no androidInstrumentedTest
+            // source set at all — so it reported success having executed zero instrumented tests, the
+            // exact green-but-ran-nothing shape this repo already guards against elsewhere.
+            val quicPort = quicTestServerPortFile.takeIf { it.exists() }?.readText()?.trim()
+            val ctrlPort = netCtrlPortFile.takeIf { it.exists() }?.readText()?.trim()
+            require(!quicPort.isNullOrEmpty() && !ctrlPort.isNullOrEmpty()) {
+                "server ports were not recorded — startQuicTestServer/startNetworkControlServer must run first"
+            }
+            // Carry the discovered ports to the device. Instrumentation arguments are the mechanism
+            // that lets the emulator side learn a port it cannot otherwise know, which is what makes
+            // ephemeral binding possible on both ends.
             val result =
                 ProcessBuilder(
                     "${rootProject.projectDir}/gradlew",
-                    ":socket-quic:connectedDebugAndroidTest",
+                    ":socket-quic-quiche:connectedDebugAndroidTest",
+                    "-Pandroid.testInstrumentationRunnerArguments.quicEchoPort=$quicPort",
+                    "-Pandroid.testInstrumentationRunnerArguments.netCtrlPort=$ctrlPort",
                 ).directory(rootProject.projectDir)
                     .inheritIO()
                     .start()

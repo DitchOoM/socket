@@ -18,7 +18,7 @@ import java.net.Socket
  */
 class NetworkControl(
     private val host: String = "10.0.2.2",
-    private val port: Int = 9998,
+    private val port: Int = HarnessPorts.netCtrl,
 ) : AutoCloseable {
     private var socket: Socket? = null
     private var inp: InputStream? = null

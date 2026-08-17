@@ -37,14 +37,13 @@ import kotlin.time.Duration.Companion.seconds
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicConnectivityTests {
-    // 10.0.2.2 is the Android emulator's alias for the host's loopback,
-    // and 14433/udp is where the docker-compose `quic-echo` service binds
-    // on the host (test-harness/docker-compose.yml). Must stay in sync with
-    // test-harness/harness.env QUIC_ECHO_PORT — mirrored manually here
-    // because androidInstrumentedTest doesn't depend on commonTest, so
-    // the generated QuicHarnessConfig isn't visible from this source set.
+    // 10.0.2.2 is the Android emulator's alias for the host's loopback. The port is *told* to us —
+    // see [HarnessPorts]: the Gradle harness binds port 0 and passes the OS-assigned port down as an
+    // instrumentation argument, and only the docker path (where the compose file fixes the published
+    // port) falls back to a constant. This used to be a hardcoded 14433 with a note to keep it in
+    // sync with harness.env by hand; the value is now carried instead of mirrored.
     private val serverHost = "10.0.2.2"
-    private val serverPort = 14433
+    private val serverPort = HarnessPorts.quicEcho
 
     private val testQuicOptions =
         QuicOptions(

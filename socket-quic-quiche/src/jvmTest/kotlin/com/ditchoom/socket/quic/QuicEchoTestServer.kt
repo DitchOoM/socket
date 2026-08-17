@@ -21,23 +21,30 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Usage: QuicEchoTestServerKt <cert.crt> <cert.key> [port]
  *
- * Binds on the given port (default 4433), echoes data back on each stream.
- * Prints "READY port=<port>" to stdout when accepting connections.
- * Runs until killed (SIGTERM/SIGINT).
+ * Binds on the given port (**default 0 — an OS-assigned free port**), echoes
+ * data back on each stream. Prints "READY port=<port>" with the *bound* port
+ * to stdout when accepting connections. Runs until killed (SIGTERM/SIGINT).
  *
- * Two-arg form keeps backwards compatibility with the Android instrumented-
- * test flow (`startQuicTestServer` Gradle task). The optional third arg lets
- * the harness container bind on `14433` directly without docker port-mapping
- * trickery — QUIC servers are generally fine with NAT/port translation
- * (quiche only echoes what it bound to), but keeping the in-container port
- * == published port avoids any surprises.
+ * Callers must parse the port off the READY line rather than assume one: the
+ * two-arg form no longer implies 4433. A fixed port is a machine-wide
+ * singleton, so a server that outlives its run silently wedges the next one —
+ * which is exactly what happened before this defaulted to 0.
+ *
+ * The optional third arg lets the harness container pin `14433` deliberately,
+ * because docker publishes a fixed port and the compose file is the one place
+ * where a constant is the contract.
  */
 fun main(args: Array<String>) {
     require(args.size == 2 || args.size == 3) { "Usage: QuicEchoTestServer <cert.crt> <cert.key> [port]" }
     val certPath = args[0]
     val keyPath = args[1]
 
-    val port = if (args.size == 3) args[2].toInt() else 4433
+    // 0 = let the OS assign a free port. "The port is taken" is not a network condition worth
+    // modelling — it is an artifact of choosing a constant, and a pinned port wedges the next run
+    // whenever a previous server outlives it. The bound port is read back below and printed, so the
+    // caller discovers it rather than assuming it. Defaults to 0 for the same reason the shared test
+    // suites bind `withQuicServer(port = 0, …)`: never identify a socket by a bare constant.
+    val requestedPort = if (args.size == 3) args[2].toInt() else 0
     val quicOptions =
         QuicOptions(
             alpnProtocols = listOf("test"),
@@ -51,8 +58,10 @@ fun main(args: Array<String>) {
     val tlsConfig = QuicTlsConfig(certChainPath = certPath, privKeyPath = keyPath)
 
     runBlocking(Dispatchers.IO) {
-        withQuicServer(port = port, tlsConfig = tlsConfig, quicOptions = quicOptions) {
-            // Signal readiness to the Gradle task
+        withQuicServer(port = requestedPort, tlsConfig = tlsConfig, quicOptions = quicOptions) {
+            // `port` here is the scope's *bound* port, not what we asked for — with requestedPort = 0
+            // the OS picks, and this is the only place the choice becomes knowable. The caller parses
+            // it off this line, so the two sides never share a hardcoded constant.
             println("READY port=$port")
             System.out.flush()
 

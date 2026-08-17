@@ -28,7 +28,7 @@ class AndroidQuicMigrationTests {
     // See AndroidQuicConnectivityTests for why these mirror
     // test-harness/harness.env QUIC_ECHO_PORT manually.
     private val serverHost = "10.0.2.2"
-    private val serverPort = 14433
+    private val serverPort = HarnessPorts.quicEcho
 
     private val testQuicOptions =
         QuicOptions(

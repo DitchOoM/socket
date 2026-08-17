@@ -12,11 +12,12 @@ import java.util.concurrent.TimeUnit
  * via `adb shell su 0 <command>`. The device test connects and sends [NetCtrlCommand]s;
  * this server responds with [NetCtrlResponse]s.
  *
- * Usage: `NetworkControlServerKt [port]`
- * Prints "READY port=<port>" when accepting connections.
+ * Usage: `NetworkControlServerKt [port]` — port defaults to 0, meaning OS-assigned.
+ * Prints "READY port=<port>" with the **bound** port when accepting connections; callers parse it
+ * from there instead of hardcoding a constant on both sides.
  */
 class NetworkControlServer(
-    private val port: Int = 9998,
+    private val port: Int = 0,
 ) {
     private val serverSocket = ServerSocket(port)
     private val appliedModifications = ConcurrentLinkedQueue<String>()
@@ -183,6 +184,8 @@ class NetworkControlServer(
 }
 
 fun main(args: Array<String>) {
-    val port = args.firstOrNull()?.toIntOrNull() ?: 9998
+    // 0 = OS-assigned. [run] prints the bound port, which the caller parses; a pinned default made
+    // "the port is taken" a failure mode that only existed because of the constant.
+    val port = args.firstOrNull()?.toIntOrNull() ?: 0
     NetworkControlServer(port).run()
 }
