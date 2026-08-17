@@ -46,6 +46,13 @@ internal class IoUringUdpChannelFactory(
     private val peerSockAddrLen: Int,
     private val bufferFactory: BufferFactory,
 ) : UdpChannelFactory {
+    /**
+     * [LocalEndpointSupport.Bindable]: [openPath] resolves [localHost]/[localPort] with `getaddrinfo`
+     * and `bind`s the socket to it before connecting, so a caller naming a specific source endpoint
+     * gets that endpoint rather than a substitute.
+     */
+    override val localEndpointSupport: LocalEndpointSupport = LocalEndpointSupport.Bindable
+
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,
