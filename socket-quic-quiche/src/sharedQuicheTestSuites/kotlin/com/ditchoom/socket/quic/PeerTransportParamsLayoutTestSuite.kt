@@ -49,8 +49,11 @@ import kotlin.time.Duration.Companion.seconds
  * The read is per-backend hand-written code — FFM computes byte offsets, JNI fills a `long[]`, the two
  * cinterop backends use a generated struct — so the layout can be wrong on one backend and right on
  * another. It was: the JVM run that passed was the JNI backend, where the accessor was simply unbound.
- * All four must run it: JVM default (JNI), JVM with `-PquicheJvmBackend=ffm` (FFM), Apple cinterop,
- * Linux cinterop.
+ * Every backend must run it: JVM default (JNI), JVM with `-PquicheJvmBackend=ffm` (FFM), Apple
+ * cinterop, Linux cinterop — and **Android**, whose JNI shim is a different native build of the same
+ * binding, via [AndroidPeerTransportParamsLayoutTests]. Android is why this file lives in
+ * `src/sharedQuicheTestSuites/kotlin` rather than `commonTest`: `androidInstrumentedTest` does not
+ * `dependsOn(commonTest)`, so a `commonTest` home would have silently excluded the newest binding.
  */
 abstract class PeerTransportParamsLayoutTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
