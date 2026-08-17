@@ -2397,6 +2397,11 @@ kotlin {
         }
         commonTest {
             kotlin.srcDir(generateQuicHarnessConfig.map { quicHarnessGeneratedDir })
+            // Cross-backend suites that need this module's INTERNAL seams (QuicheBackedConnection,
+            // QuicheDriver.peerTransportParams) and therefore cannot live in :socket-testsuite. Shared
+            // with androidInstrumentedTest by srcDir because that source set deliberately does not
+            // dependsOn commonTest — see the note there.
+            kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
@@ -2468,6 +2473,11 @@ kotlin {
         }
         val androidInstrumentedTest by getting {
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
+            // Android is the JNI backend, and the #388 peer-transport-params binding is JNI-only code
+            // that no other lane exercises. This source set does NOT dependsOn commonTest, so the
+            // neighbour-field ABI guard would have skipped the one backend whose binding is new;
+            // compiling the shared suite here directly is what makes it actually run on device.
+            kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)
