@@ -35,6 +35,8 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeMark
 
 /**
  * Drives a single quiche connection from one coroutine. No mutexes, no polling.
@@ -478,12 +480,76 @@ class QuicheDriver(
      * The migration in flight: which path it opened, the endpoint that path **resolved to** (not the
      * one requested — that distinction is the whole of the `Succeeded(null, 0)` bug), and the caller's
      * deferred, completed by [drainPathEvents] once the peer validates or fails the path.
+     *
+     * …or, if quiche reports **neither** outcome, by [abandonPathValidationIfDue] once [budget]
+     * elapses. Path validation is the one driver operation with no other bound on it: quiche can go
+     * silent on a probed path (measured on a real Wi-Fi↔cellular handoff — a probe stuck at
+     * `Probing` for the rest of a 2194-line trace), and because [handleMigrate] admits one migration
+     * at a time and the automatic reactor awaits each `migrate()` to completion, an unbounded probe
+     * parks the reactor for the connection's life: every later network change is either never
+     * observed or answered `AlreadyInProgress`. The deadline is timed off [clock] and off the same
+     * monotonic-mark shape as `lastActivity`/`keepAliveRemaining`, so it wakes on the driver's
+     * existing [select] — no extra timer, no polling.
      */
     private inner class PendingMigration(
         val key: PathKey,
         val localEndpoint: QuicLocalEndpoint,
         val result: CompletableDeferred<MigrationResult>,
-    )
+        /** RFC 9000 §8.2.4 abandon budget, computed once at arm time by [pathValidationBudget]. */
+        private val budget: Duration,
+    ) {
+        private val armedAt: TimeMark = clock.markNow()
+
+        /** Time left before validation must be abandoned; [Duration.ZERO] once due. Feeds the loop's `wait`. */
+        fun validationRemaining(): Duration = (budget - armedAt.elapsedNow()).coerceAtLeast(Duration.ZERO)
+
+        /** Re-*measured*, never inferred from which `select` clause won — see [abandonPathValidationIfDue]. */
+        fun isDue(): Boolean = armedAt.elapsedNow() >= budget
+    }
+
+    /**
+     * How long to let a PATH_CHALLENGE go unanswered before abandoning validation — RFC 9000 §8.2.4:
+     *
+     * > "Endpoints SHOULD abandon path validation based on a timer. When setting this timer,
+     * > implementations are cautioned that the new path could have a longer round-trip time than the
+     * > original. A value of three times the larger of the current PTO or the PTO for the new path
+     * > (using kInitialRtt, as defined in [QUIC-RECOVERY]) is RECOMMENDED."
+     *
+     * Derived, never configured. A [QuicOptions] knob would add a number that can contradict the
+     * migration policy, and this formula is self-tuning: it widens with the current path's RTT and
+     * never drops below the ~3s `kInitialRtt` floor.
+     *
+     * **The new path's PTO is genuinely unavailable here, and that is the RFC's own `kInitialRtt`
+     * branch — not a fallback hack.** This driver only ever reads `pathIdx = 0` (the primary) and
+     * keeps no path→index mapping, so there are no RTT samples for a path that has not yet answered
+     * a single PATH_CHALLENGE. [QuicheApi.connPathStats] also answers `null` on a backend that has
+     * not bound the stats FFI, which lands in exactly the same branch for the same reason: no
+     * sample, so assume `kInitialRtt`.
+     */
+    private fun pathValidationBudget(): Duration {
+        val currentPto = api.connPathStats(conn, 0L)?.let { pto(it.rtt, it.rttvar) }
+        return maxOf(currentPto ?: INITIAL_PTO, INITIAL_PTO) * PATH_VALIDATION_PTO_MULTIPLIER
+    }
+
+    /**
+     * RFC 9002 §6.2.1: `PTO = smoothed_rtt + max(4 * rttvar, kGranularity) + max_ack_delay`.
+     *
+     * `max_ack_delay` is the peer's advertised value (RFC 9000 §18.2), read through the same typed
+     * accessor the migration permission check uses; RFC 9002 §6.2.1 requires it be taken as zero
+     * until the handshake is confirmed, which is precisely what [PeerTransportParams.NotYetNegotiated]
+     * says.
+     */
+    private fun pto(
+        rtt: Duration,
+        rttvar: Duration,
+    ): Duration {
+        val maxAckDelay =
+            when (val params = api.connPeerTransportParams(conn)) {
+                PeerTransportParams.NotYetNegotiated -> Duration.ZERO
+                is PeerTransportParams.Negotiated -> params.maxAckDelayMillis.milliseconds
+            }
+        return rtt + maxOf(rttvar * 4, K_GRANULARITY) + maxAckDelay
+    }
 
     fun start(scope: CoroutineScope) {
         driverScope = scope
@@ -549,11 +615,13 @@ class QuicheDriver(
                     keepAliveInterval
                         ?.takeIf { api.connIsEstablished(conn) }
                         ?.let { (it - lastActivity.elapsedNow()).coerceAtLeast(Duration.ZERO) }
-                val wait =
-                    when {
-                        connTimeout != null && keepAliveRemaining != null -> minOf(connTimeout, keepAliveRemaining)
-                        else -> connTimeout ?: keepAliveRemaining
-                    }
+                // RFC 9000 §8.2.4's abandon timer for an in-flight PATH_CHALLENGE. Null whenever no
+                // migration is armed, so a connection that never migrates arms exactly the timers it
+                // always did.
+                val probeRemaining = pendingMigration?.validationRemaining()
+                // Three deadlines, one wake: whichever is soonest decides what the timer branch below
+                // does. A `when` over the 2×2 null matrix this replaced does not survive a third term.
+                val wait = listOfNotNull(connTimeout, keepAliveRemaining, probeRemaining).minOrNull()
                 val cmd =
                     if (wait == null) {
                         // No timer pending — block until next command (or channel close)
@@ -575,6 +643,14 @@ class QuicheDriver(
                         execute(cmd)
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
+                    // A timer fired, and the path-validation deadline is the soonest of the three →
+                    // abandon the probe. This arm must sit ABOVE the keepalive one: without it the
+                    // wake falls through to `else`, quiche is handed a timeout it did not ask for,
+                    // and the expired probe is silently swallowed — which is the shape of the defect,
+                    // not a variation on it.
+                    probeRemaining != null &&
+                        (connTimeout == null || probeRemaining <= connTimeout) &&
+                        (keepAliveRemaining == null || probeRemaining <= keepAliveRemaining) -> abandonPathValidationIfDue()
                     // A timer fired. If the keepalive deadline is strictly the sooner one, PING; quiche's
                     // idle timer is always later (keepAliveInterval < idleTimeout), so this fires first and
                     // prevents the idle close. Otherwise hand the (idle/loss-recovery) timeout to quiche.
@@ -1210,9 +1286,39 @@ class QuicheDriver(
         }
 
         // Every state below names `newPath.localEndpoint` — what the socket BOUND — never the request.
-        pendingMigration = PendingMigration(key, newPath.localEndpoint, cmd.result)
+        pendingMigration = PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget())
         _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
+    }
+
+    /**
+     * The RFC 9000 §8.2.4 abandon timer firing: give up on a path the peer has neither validated nor
+     * failed, so `migrate()` returns and the automatic reactor is released to follow the *next*
+     * network change.
+     *
+     * **Order is the correctness argument.** [drainPathEvents] runs FIRST, before anything is
+     * declared expired. The deadline and a `Validated` event can come due in the same wake — quiche
+     * queues path events and the driver only reads them at [afterCommand], which runs *after* this
+     * branch — so expiring first would fail a path the peer actually answered, converting a working
+     * migration into a spurious timeout. Draining first, then re-reading [pendingMigration] and
+     * re-*measuring* [PendingMigration.isDue], means a validated path wins the race and this only
+     * ever fires on genuine silence.
+     *
+     * Reports [MigrationResult.Unmoved.Failed.PathNotValidated] — the same leaf as an explicit
+     * `FailedValidation`, because it is the same fact ("PATH_CHALLENGE unanswered") learned from a
+     * timer instead of from quiche. `Failed` and not `Impossible`: nothing about this connection
+     * says a later attempt cannot work, and `Impossible` would cancel the reactor for good.
+     *
+     * The teardown mirrors the [QuichePathEventType.FailedValidation] arm exactly. Without it the
+     * probed path's socket, its `recv_info` and its pinned sockaddr stay alive for the connection's
+     * life — a per-failed-migration leak on the very code path a flapping network takes repeatedly.
+     */
+    private fun abandonPathValidationIfDue() {
+        if (migrationEnabled) drainPathEvents()
+        val pending = pendingMigration ?: return
+        if (!pending.isDue()) return
+        paths[pending.key]?.let { teardownPath(it) }
+        completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
     }
 
     /** Poll and react to quiche path events (validation, failure, path close). Migration-clients only. */
@@ -1491,6 +1597,25 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /** RFC 9002 §6.1.2 `kGranularity` — the timer-granularity floor inside the PTO formula. */
+        private val K_GRANULARITY = 1.milliseconds
+
+        /** RFC 9002 §6.2.2 `kInitialRtt` — the RTT an endpoint assumes before it has a single sample. */
+        private val K_INITIAL_RTT = 333.milliseconds
+
+        /**
+         * The PTO for a path with no RTT samples: `kInitialRtt` as the smoothed RTT, `kInitialRtt / 2`
+         * as rttvar (RFC 9002 §5.1 sets rttvar to half the RTT on the first sample) and no
+         * `max_ack_delay` (RFC 9002 §6.2.1 excludes it until the handshake is confirmed) — 999 ms.
+         *
+         * It is also the floor of [pathValidationBudget]: RFC 9000 §8.2.4 takes the *larger* of the two
+         * PTOs, so a very fast current path can never shrink the abandon timer below ~3 s.
+         */
+        private val INITIAL_PTO = K_INITIAL_RTT + maxOf((K_INITIAL_RTT / 2) * 4, K_GRANULARITY)
+
+        /** RFC 9000 §8.2.4: "three times the larger of the current PTO or the PTO for the new path". */
+        private const val PATH_VALIDATION_PTO_MULTIPLIER = 3
 
         /**
          * Scratch capacity for the connection-id readers. A CID is at most 20 bytes (RFC 9000 §17.2) and

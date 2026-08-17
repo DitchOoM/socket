@@ -151,7 +151,22 @@ sealed interface MigrationResult {
                 val code: Int,
             ) : Failed
 
-            /** The peer never validated the new path (PATH_CHALLENGE unanswered, or quiche failed it). */
+            /**
+             * The peer never validated the new path (PATH_CHALLENGE unanswered, or quiche failed it).
+             *
+             * Three sources, one fact. Two are quiche telling us: it reported the path failed
+             * validation, or it validated a path the driver no longer tracks. The third is a **timer**
+             * — RFC 9000 §8.2.4's "endpoints SHOULD abandon path validation based on a timer",
+             * `3 × max(current PTO, kInitialRtt PTO)` — and it is the one that has to exist, because
+             * quiche's other two answers are not guaranteed to arrive at all. Measured on a real
+             * Wi-Fi↔cellular handoff: a probe sat at [QuicPathState.Probing] with no further event for
+             * the rest of the connection, so without the timer `migrate()` never returned and every
+             * later network change went unmigrated.
+             *
+             * Deliberately not a distinct "timed out" leaf: a caller cannot act differently on
+             * "unanswered, and quiche said so" versus "unanswered, and quiche said nothing", and an
+             * extra leaf would only oblige every `when` to spell out the same branch twice.
+             */
             data object PathNotValidated : Failed
 
             /** The path validated but quiche refused to switch the active path onto it. */

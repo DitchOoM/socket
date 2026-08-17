@@ -35,5 +35,15 @@ class StubUdpChannel(
         return sendOutcomeOf { sendBehavior(buffer, len) }
     }
 
-    override fun close() {}
+    /**
+     * How many times the driver closed this channel. A migration path that is abandoned must have its
+     * socket closed at that moment — not left to `cleanup()` when the whole connection dies — so a
+     * teardown test needs to see the close happen while the connection is still live.
+     */
+    var closeCount: Int = 0
+        private set
+
+    override fun close() {
+        closeCount++
+    }
 }
