@@ -128,18 +128,20 @@ class QuicConnectionTests {
 
             val state = conn.state.value
             assertIs<QuicConnectionState.Closed>(state)
-            assertIs<QuicError.ProtocolViolation>(state.error)
+            val reason = state.reason
+            assertIs<QuicCloseReason.ByLocal>(reason, "a caller-initiated close is a local close")
+            assertIs<QuicError.ProtocolViolation>(reason.error)
         }
 
     @Test
-    fun close_withNoError_isCleanShutdown() =
+    fun close_withNoError_isGraceful() =
         runTest {
             val conn = MockQuicConnection()
             conn.close(QuicError.NoError)
 
             val state = conn.state.value
             assertIs<QuicConnectionState.Closed>(state)
-            assertTrue(state.isCleanShutdown)
+            assertIs<QuicCloseReason.Graceful>(state.reason)
         }
 
     @Test

@@ -14,6 +14,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -190,7 +191,14 @@ class QuicheDriver(
      * [DriverStreamAdapter], and every platform facade funnel through here so a [QuicCloseException]
      * always carries the most specific reason available.
      */
-    fun closeReasonOr(fallback: QuicError): QuicError = (state.value as? QuicConnectionState.Closed)?.error ?: fallback
+    fun closeReasonOr(fallback: QuicError): QuicError =
+        when (val r = (state.value as? QuicConnectionState.Closed)?.reason) {
+            is QuicCloseReason.ByPeer -> r.error
+            is QuicCloseReason.ByLocal -> r.error
+            // Graceful, Unspecified, and a state that is not Closed at all carry no specific error —
+            // the caller's fallback stays the answer, exactly as under the old nullable.
+            QuicCloseReason.Graceful, QuicCloseReason.Unspecified, null -> fallback
+        }
 
     /**
      * Suspend until the handshake **settles**, and fail if it settled anywhere other than
@@ -363,7 +371,7 @@ class QuicheDriver(
             scope.launch(driverContext) {
                 state.collect { s ->
                     r.connectionState(s)
-                    if (s is QuicConnectionState.Closed) s.error?.let { r.closeError(it) }
+                    if (s is QuicConnectionState.Closed) s.reason.errorOrNull?.let { r.closeError(it) }
                 }
             }
             scope.launch(driverContext) {
@@ -714,7 +722,7 @@ class QuicheDriver(
         if (_state.value is QuicConnectionState.Closed) return
         drainReadableStreamsIntoSlots()
         commands.close()
-        _state.value = QuicConnectionState.Closed(resolveCloseError())
+        _state.value = QuicConnectionState.Closed(resolveCloseReason())
     }
 
     /**
@@ -786,22 +794,32 @@ class QuicheDriver(
     }
 
     /**
-     * The typed [QuicError] for why the connection closed, or `null` for a clean shutdown. Prefers the
-     * **peer's** CONNECTION_CLOSE (the remote tore us down — e.g. a strict server rejecting our streams
-     * or transport params) over our **local** close (quiche itself aborted — handshake/TLS failure,
-     * protocol violation), since the peer's reason is the more actionable one when both exist. quiche is
+     * The exhaustive [QuicCloseReason] for why the connection closed. Prefers the **peer's**
+     * CONNECTION_CLOSE (the remote tore us down — e.g. a strict server rejecting our streams or
+     * transport params) over our **local** close (quiche itself aborted — handshake/TLS failure,
+     * protocol violation), since the peer's reason is the more actionable one when both exist; the
+     * result records which side it came from, which the old bare-[QuicError] return discarded. quiche is
      * single-threaded; this runs on the driver loop alongside [updateState], so the reads are safe.
-     * Both helpers are bound on every real backend (FFM, JNI/Android, cinterop); only test doubles
-     * return `null`, in which case the close looks clean.
+     *
+     * Both helpers are bound on every real backend (FFM, JNI/Android, cinterop). A test double that
+     * reports neither error nor timeout now yields [QuicCloseReason.Unspecified] rather than looking
+     * like a clean shutdown.
      */
-    private fun resolveCloseError(): QuicError? {
-        (api.connPeerError(conn) ?: api.connLocalError(conn))
-            ?.takeUnless { it is QuicError.NoError }
-            ?.let { return it }
+    private fun resolveCloseReason(): QuicCloseReason {
+        val peer = api.connPeerError(conn)
+        val local = api.connLocalError(conn)
+        // Precedence is unchanged: a real (non-NoError) reason wins, peer before local.
+        peer?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByPeer(it) }
+        local?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByLocal(it) }
         // No CONNECTION_CLOSE frame: distinguish an idle/handshake-stall timeout (a local event, no wire
         // code) from a genuinely clean shutdown — otherwise a stalled connection looks like NoError.
-        if (api.connIsTimedOut(conn)) return QuicError.IdleTimeout
-        return null
+        if (api.connIsTimedOut(conn)) return QuicCloseReason.ByLocal(QuicError.IdleTimeout)
+        // A CONNECTION_CLOSE carrying NO_ERROR was exchanged — a real graceful shutdown.
+        if (peer is QuicError.NoError || local is QuicError.NoError) return QuicCloseReason.Graceful
+        // Nothing was exchanged and nothing timed out: the scope was cancelled or a throw unwound the
+        // loop. Previously this returned null and read as a clean shutdown, which is what made the
+        // API-35 emulator teardown undiagnosable (see the transitionToClosed call site above).
+        return QuicCloseReason.Unspecified
     }
 
     private suspend fun flushOutgoing() {
@@ -821,17 +839,39 @@ class QuicheDriver(
             // their connected/path sockets. NioUdpChannel caches the reconstruction (steady state
             // targets one address), so the non-migrating server path stays allocation-free.
             val dest = if (isServer) api.decodePathKey(api.sendInfoToAddr(sendInfo)) else null
-            try {
-                channel.send(udpSendBuf, written, dest)
-            } catch (ce: kotlinx.coroutines.CancellationException) {
-                throw ce
-            } catch (_: Exception) {
-                // UDP send failed (peer unreachable, channel closed during shutdown, etc).
-                // The connection cannot make further progress — short-circuit to Closed and
-                // let the driver loop unwind via cleanup(). Letting the exception escape
-                // would leak it as an uncaught coroutine failure into the parent scope.
-                transitionToClosed()
-                return
+            // A channel reports failure as a value ([SendOutcome]); the `catch` here is only a net for
+            // a backend that throws outside that contract. It normalises into the type — it does not
+            // decide policy. That decision is the exhaustive `when` below, which is what makes adding
+            // a new outcome a compile error rather than a silent inheritance of whatever this branch
+            // happened to do. Letting anything escape would leak an uncaught coroutine failure into
+            // the parent scope, the original defect this site was written to fix.
+            val outcome =
+                try {
+                    channel.send(udpSendBuf, written, dest)
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (untyped: Exception) {
+                    SendOutcome.Failed(DatagramSendError.Transport(untyped))
+                }
+            when (outcome) {
+                is SendOutcome.Sent -> Unit // keep draining quiche's send queue
+                is SendOutcome.Failed -> {
+                    // Stop draining this flush — but do NOT end the connection.
+                    //
+                    // An undelivered datagram is the most ordinary event in QUIC: loss detection and
+                    // retransmission (RFC 9002) exist for exactly this, and a local send failure is
+                    // indistinguishable from a packet lost on the wire. RFC 9000 §10 enumerates the
+                    // three ways a connection may terminate — idle timeout, immediate close, and
+                    // stateless reset — and a failed send is not one of them.
+                    //
+                    // This site used to call transitionToClosed(), which made two things impossible:
+                    // riding out transient backpressure (ENOBUFS/EAGAIN), and active connection
+                    // migration at all — a handoff happens *because* the old path died, so the first
+                    // send afterwards killed the connection before the new path could be validated.
+                    // Termination is left to quiche's idle timer, which reports the truthful
+                    // QuicError.IdleTimeout (pinned by IdleTimeoutTerminationTests).
+                    return
+                }
             }
         }
     }

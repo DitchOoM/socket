@@ -37,6 +37,20 @@ import kotlin.time.Duration.Companion.seconds
  *    caught by the test's wall-clock timeout).
  * 5. **Determinism** — the same case replayed twice inside the same scope yields `==` traces
  *    (the W2 determinism bar, now enforced over arbitrary generated timelines).
+ * 6. **Survivability** — a transport send fault never terminates the connection. RFC 9000 §10 lists
+ *    the only three ways a connection may end, and a failed local send is not one of them; QUIC
+ *    already treats an undelivered datagram as something to retransmit. Without this the generator
+ *    was already producing `SendError` events against this exact code and reporting no violation,
+ *    because invariant 2 permits `Established -> Closed` and invariant 3 only inspects reasons that
+ *    were actually surfaced — a close carrying no reason at all had nothing to type-check.
+ *
+ * A seventh property — that a connection killed by the network must not report a *graceful* close —
+ * is deliberately absent, and is now **unrepresentable rather than untested**.
+ * `QuicConnectionState.Closed` carries an exhaustive `QuicCloseReason`, so a close with no
+ * CONNECTION_CLOSE and no timeout is `Unspecified`, not `Graceful`; there is no nullable left for a
+ * transport failure to hide in and nothing to assert at runtime. The stub was made coherent to match
+ * (`connOnTimeout` raises `timedOut` only when the idle timer actually fires), so a reported reason
+ * cannot outrun the cause that produced it.
  *
  * Returns the violation messages (empty = all invariants hold) plus the first run, so callers can
  * render the trace. Never throws on a violation — the shrinker needs the boolean signal.
@@ -85,9 +99,13 @@ private suspend fun TestScope.runOnce(case: FuzzCase): SingleRun {
         ) {
             // Idle timer armed and lethal, like the W2 goldens: without keepalive (per-case seeded)
             // a quiet 30 s stretch genuinely closes the connection with the typed IdleTimeout.
+            //
+            // `timedOut` is deliberately NOT pre-set. It used to be forced true here, which made every
+            // close — whatever caused it — report itself as an idle timeout, so the fuzzer could not
+            // have distinguished a network-killed connection from one that idled out. The stub now
+            // raises it when the idle timer actually fires, so the reported reason tracks the real one.
             connTimeout = SIM_IDLE_TIMEOUT
             closeOnTimeout = true
-            timedOut = true
             // Send-pressure model: every packet fed to quiche and every keepalive PING arms one
             // outbound datagram on the next flush, so SendError events have real sends to kill
             // (the bare stub never emits, which would leave the send path dead code under fuzz).
@@ -124,6 +142,32 @@ private suspend fun TestScope.runOnce(case: FuzzCase): SingleRun {
         if (!legalTransition(from, to)) {
             violations += "state-machine: illegal transition $from -> $to"
         }
+    }
+
+    // Invariant 6 — survivability: a transport fault is not a connection-termination event.
+    //
+    // RFC 9000 §10 lists exactly three ways a QUIC connection ends — idle timeout, immediate close
+    // (CONNECTION_CLOSE), and stateless reset. "A local send failed" is not among them, and treating
+    // it as terminal is what makes active connection migration impossible: a real handoff happens
+    // *because* the old path died, so the first send after it kills the connection before the new
+    // path can be validated.
+    //
+    // Attribution is exact under this harness rather than heuristic. [StubQuicheApi] can only reach
+    // Closed three ways: a Close command (fuzz fixtures never send one), a quiche timer fire while
+    // `closeOnTimeout` is set, or `flushOutgoing`'s send-failure short-circuit. `closeOnTimeout` is
+    // armed for every run above, so the *first* timer handed to quiche closes the connection —
+    // meaning a Closed observed while `onTimeoutCount` is still 0 cannot be the idle timeout and can
+    // only be a send fault. No magic constant, no timestamp window.
+    val closedDuringTimeline =
+        run.trace.events
+            .filterIsInstance<Observed.StateChange>()
+            .firstOrNull { it.state is QuicConnectionState.Closed && it.at < case.fixture.duration }
+    if (closedDuringTimeline != null && run.api.onTimeoutCount == 0) {
+        violations +=
+            "survivability: connection reached ${closedDuringTimeline.state} at ${closedDuringTimeline.at} " +
+            "with no quiche timer having fired, so the idle timeout cannot explain it — a transport " +
+            "send fault terminated the connection. A failed datagram is what QUIC retransmits; it must " +
+            "not become a lost session (RFC 9000 §10)."
     }
 
     // Invariant 3 — typed errors only.

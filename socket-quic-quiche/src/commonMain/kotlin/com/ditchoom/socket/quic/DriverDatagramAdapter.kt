@@ -47,7 +47,8 @@ internal class DriverDatagramAdapter(
     private val remote: SocketAddress,
 ) : ConnectedDatagramChannel {
     /** The structured close reason if the connection has closed, else [fallback]. */
-    private fun closedReason(fallback: QuicError): QuicError = (driver.state.value as? QuicConnectionState.Closed)?.error ?: fallback
+    private fun closedReason(fallback: QuicError): QuicError =
+        (driver.state.value as? QuicConnectionState.Closed)?.reason?.errorOrNull ?: fallback
 
     override val isOpen: Boolean
         get() = driver.state.value !is QuicConnectionState.Closed

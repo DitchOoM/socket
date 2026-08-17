@@ -7,15 +7,18 @@ import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.DriverClock
 import com.ditchoom.socket.quic.PathInfo
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.RealDriverClock
+import com.ditchoom.socket.quic.SendOutcome
 import com.ditchoom.socket.quic.UdpChannel
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TracePathStats
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.udp.DatagramSendException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -93,7 +96,16 @@ class QuicTraceRecorder(
         val detail =
             when (state) {
                 is QuicConnectionState.Established -> state.negotiatedAlpn
-                is QuicConnectionState.Closed -> state.error?.describe()
+                // Name the side and keep "unexplained" distinct from "graceful" — the trace is the
+                // artifact someone reads after the fact, and collapsing those two is what made the
+                // API-35 teardown undiagnosable.
+                is QuicConnectionState.Closed ->
+                    when (val r = state.reason) {
+                        is QuicCloseReason.ByPeer -> "peer: ${r.error.describe()}"
+                        is QuicCloseReason.ByLocal -> "local: ${r.error.describe()}"
+                        QuicCloseReason.Graceful -> "graceful"
+                        QuicCloseReason.Unspecified -> "unspecified"
+                    }
                 else -> null
             }
         record(TraceEvent.State(now(), state::class.qualifiedName ?: "Unknown", detail))
@@ -261,16 +273,22 @@ private class RecordingUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) {
-        try {
-            delegate.send(buffer, len, dest)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            recorder.error(e)
-            throw e
+    ): SendOutcome {
+        // A send now reports its failure instead of raising it, so the recorder branches on the
+        // outcome rather than catching. DatagramSendException is constructed only on the failure
+        // path, purely to give the recorder the Throwable its trace format takes — the structured
+        // reason stays the typed DatagramSendError carried by the outcome.
+        val outcome = delegate.send(buffer, len, dest)
+        return when (outcome) {
+            is SendOutcome.Sent -> {
+                recorder.datagram(out = true, buffer = buffer, len = len, path = dest ?: path)
+                outcome
+            }
+            is SendOutcome.Failed -> {
+                recorder.error(DatagramSendException(outcome.error))
+                outcome
+            }
         }
-        recorder.datagram(out = true, buffer = buffer, len = len, path = dest ?: path)
     }
 
     override fun close() = delegate.close()

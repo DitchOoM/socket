@@ -38,7 +38,7 @@ internal class ServerConnectionUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) {
+    ): SendOutcome {
         val target =
             when {
                 dest == null || dest == fixedPeerKey -> fixedPeer
@@ -46,7 +46,7 @@ internal class ServerConnectionUdpChannel(
             }
         buffer.position(0)
         buffer.setLimit(len)
-        channel.send(buffer, to = target)
+        return sendOutcomeOf { channel.send(buffer, to = target) }
     }
 
     /** The shared server socket is owned and closed by the platform server, never per-connection. */

@@ -351,7 +351,7 @@ interface QuicheApi {
      * C API's `is_app` flag + numeric code into the sealed hierarchy — application closes (frame 0x1d) →
      * [QuicError.ApplicationError]; transport closes (frame 0x1c) → [QuicError.fromTransportCode] (which
      * folds the 0x100..0x1ff range into [QuicError.CryptoError]). No stringly errors: the wire code
-     * becomes an exhaustive [QuicError]. Used to populate [QuicConnectionState.Closed.error] so a remote
+     * becomes an exhaustive [QuicError]. Used to populate [QuicConnectionState.Closed.reason] so a remote
      * close surfaces its real reason instead of [QuicError.NoError].
      *
      * quiche is single-threaded — call only from the driver loop. Bound on every real backend (FFM,

@@ -60,7 +60,11 @@ class MockQuicConnection(
     override suspend fun close(error: QuicError) {
         if (closed) return
         closed = true
-        _state.value = QuicConnectionState.Closed(error)
+        // A caller-initiated close is a local one; NO_ERROR is the graceful case by definition.
+        _state.value =
+            QuicConnectionState.Closed(
+                if (error is QuicError.NoError) QuicCloseReason.Graceful else QuicCloseReason.ByLocal(error),
+            )
         incomingStreams.close()
     }
 

@@ -127,7 +127,7 @@ internal class ImpairedPipe(
             buffer: PlatformBuffer,
             len: Int,
             dest: PathKey?,
-        ) {
+        ): SendOutcome {
             val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
             bb.clear()
             bb.limit(len)
@@ -163,6 +163,11 @@ internal class ImpairedPipe(
             }
             if (deliverPrimary) deliver(copy, deliveryDelay)
             if (deliverDuplicate) deliver(copy.copyOf(), deliveryDelay + 1.milliseconds)
+            // Impairment models the WIRE: a dropped or blackholed datagram left this endpoint
+            // successfully and vanished in transit. That is deliberately NOT a send failure — the
+            // distinction is the whole point of SendOutcome, and conflating them here would make the
+            // impairment suite assert the wrong contract.
+            return SendOutcome.Sent
         }
 
         private fun deliver(

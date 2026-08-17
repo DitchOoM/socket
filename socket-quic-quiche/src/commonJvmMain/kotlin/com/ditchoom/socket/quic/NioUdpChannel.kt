@@ -68,7 +68,7 @@ internal class NioUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) {
+    ): SendOutcome {
         val bb = (buffer.unwrapFully() as com.ditchoom.buffer.BaseJvmBuffer).byteBuffer
         bb.clear()
         bb.limit(len)
@@ -82,10 +82,12 @@ internal class NioUdpChannel(
             } else {
                 peerAddr
             }
-        if (target != null) {
-            channel.send(bb, target)
-        } else {
-            channel.write(bb)
+        return sendOutcomeOf {
+            if (target != null) {
+                channel.send(bb, target)
+            } else {
+                channel.write(bb)
+            }
         }
     }
 

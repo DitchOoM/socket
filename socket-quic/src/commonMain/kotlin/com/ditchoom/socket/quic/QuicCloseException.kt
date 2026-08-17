@@ -9,7 +9,12 @@ import com.ditchoom.socket.SocketClosedException
  * (`catch (e: SocketClosedException)`, or `catch (e: IOException)` on JVM/Android), while additionally
  * carrying the structured [QuicError] reason — so callers recover the protocol-level cause without
  * parsing a message string. This keeps the thrown channel as type-faithful as the state channel
- * ([QuicConnectionState.Closed.error]).
+ * ([QuicConnectionState.Closed.reason]).
+ *
+ * Note the two channels are not equivalent in precision: this carries a bare [QuicError], while the
+ * state carries a [QuicCloseReason] that also says whether the peer or the local endpoint closed, and
+ * distinguishes a graceful shutdown from one the protocol never explained. Read the state when that
+ * matters.
  */
 class QuicCloseException(
     val quicError: QuicError,

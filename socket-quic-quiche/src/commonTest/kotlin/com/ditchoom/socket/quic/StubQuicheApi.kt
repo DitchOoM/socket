@@ -342,7 +342,14 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connOnTimeout(conn: QuicheConn) {
         onTimeoutCount++
-        if (closeOnTimeout) closed = true
+        if (closeOnTimeout) {
+            closed = true
+            // A close caused by the idle timer IS a timeout, so report it as one. Keeping these coupled
+            // stops a test from configuring the incoherent pair quiche can never produce — "closed for
+            // no stated reason" that nonetheless answers `connIsTimedOut() == true` — which would let a
+            // close from some entirely different cause present itself as an idle timeout.
+            timedOut = true
+        }
     }
 
     /** Counts reactive-keepalive PINGs the driver scheduled, so tests can assert on them. */

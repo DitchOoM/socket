@@ -27,9 +27,12 @@ class StubUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) {
+    ): SendOutcome {
         sendCount++
-        sendBehavior(buffer, len)
+        // [sendBehavior] keeps its throwing shape so existing tests read unchanged; the conversion to
+        // the reporting contract goes through the same [sendOutcomeOf] the real backends use, so a
+        // test double cannot classify a failure differently from production.
+        return sendOutcomeOf { sendBehavior(buffer, len) }
     }
 
     override fun close() {}

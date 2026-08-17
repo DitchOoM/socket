@@ -2,7 +2,9 @@ package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.SendOutcome
 import com.ditchoom.socket.quic.UdpChannel
+import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.channels.Channel
 
 /**
@@ -66,12 +68,16 @@ internal class TimelineUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) {
+    ): SendOutcome {
         nextSendError?.let {
             nextSendError = null
-            throw SimIoException(it)
+            // Reported, not thrown — matching the real backends. The scripted fault stays typed by
+            // riding SimIoException inside DatagramSendError.Transport, which is what the fuzz
+            // harness's typed-errors invariant recognises.
+            return SendOutcome.Failed(DatagramSendError.Transport(SimIoException(it)))
         }
         trace.record(Observed.DatagramOut(trace.now(), len))
+        return SendOutcome.Sent
     }
 
     override fun close() {
