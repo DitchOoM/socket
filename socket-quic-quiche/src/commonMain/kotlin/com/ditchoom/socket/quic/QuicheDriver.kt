@@ -184,6 +184,79 @@ class QuicheDriver(
     val state: StateFlow<QuicConnectionState> = _state
 
     /**
+     * This connection's identity and network correlation, as a value snapshot for a
+     * [QuicCloseException].
+     *
+     * Deliberately excludes the close *reason*: the exception carries that already as its `quicError`,
+     * and a second copy here could disagree with it. Also excludes everything internal — no `PathKey`
+     * (opaque bits, deliberately not reversible into an address) and no native connection handle.
+     */
+    internal fun closeAttribution(): QuicCloseAttribution =
+        QuicCloseAttribution.Attributed(
+            identity = QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
+            network = NetworkAtClose.NotObserved,
+        )
+
+    /**
+     * This connection's [QuicSessionId] — quiche's stable trace id, read once and cached.
+     *
+     * Cached because it does not change: quiche documents `quiche_conn_trace_id` as "a string uniquely
+     * representing the connection", and unlike the source CID it survives rotation and migration. That
+     * stability is exactly what makes it the id you follow one connection by across a reconnect cycle.
+     *
+     * A backend that does not bind the accessor reports length 0; the session id then falls back to the
+     * connection handle, which is still unique within this process and still tells concurrent
+     * connections apart — the question the session id exists to answer.
+     */
+    internal val sessionId: QuicSessionId by lazy {
+        QuicSessionId(readConnBytes(asciiText = true) { b, n -> api.connTraceId(conn, b, n) } ?: "conn-${conn.handle.toString(16)}")
+    }
+
+    /**
+     * The CID currently on the wire, read fresh on every access.
+     *
+     * Deliberately **not** cached: CIDs rotate, and migration issues a new one by design (RFC 9000
+     * §9.5). A cached value would be right until the first handoff and quietly wrong afterwards —
+     * which is the moment someone is most likely to be reading it.
+     */
+    internal val wireConnectionId: QuicWireConnectionId
+        get() =
+            readConnBytes(asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
+                ?.let { QuicWireConnectionId.Known(it) }
+                ?: QuicWireConnectionId.Unavailable
+
+    /**
+     * Run one of quiche's snprintf-style `(buf, bufLen) -> length` readers and render the result, or
+     * `null` when the backend reports nothing (length 0 — including the interface default for a backend
+     * that has not bound the accessor).
+     *
+     * [asciiText] picks the rendering: quiche's trace id is documented as a string, while a connection
+     * ID is raw bytes that only mean anything as hex.
+     */
+    private inline fun readConnBytes(
+        asciiText: Boolean,
+        read: (Long, Int) -> Int,
+    ): String? {
+        val buf = bufferFactory.allocate(CONN_ID_TEXT_CAPACITY)
+        try {
+            val len = read(addr(buf), CONN_ID_TEXT_CAPACITY)
+            if (len <= 0 || len > CONN_ID_TEXT_CAPACITY) return null
+            val sb = StringBuilder(if (asciiText) len else len * 2)
+            repeat(len) {
+                val v = buf.readByte().toInt() and 0xFF
+                if (asciiText) {
+                    sb.append(v.toChar())
+                } else {
+                    sb.append(HEX[v ushr 4]).append(HEX[v and 0xF])
+                }
+            }
+            return sb.toString()
+        } finally {
+            buf.freeNativeMemory()
+        }
+    }
+
+    /**
      * The structured QUIC reason to report when an operation fails because the connection is gone:
      * the recorded close error if the connection has reached [QuicConnectionState.Closed], otherwise
      * [fallback]. Connection state is the single source of truth for the close reason — the driver,
@@ -223,7 +296,7 @@ class QuicheDriver(
                 state.first { it !is QuicConnectionState.Handshaking }
             }
         if (settled !is QuicConnectionState.Established) {
-            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed")
+            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
         }
     }
 
@@ -1249,7 +1322,7 @@ class QuicheDriver(
             }
             is QuicheCmd.OpenStream ->
                 cmd.result.completeExceptionally(
-                    QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed"),
+                    QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed", attribution = closeAttribution()),
                 )
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
             is QuicheCmd.StreamSend -> cmd.result.complete(StreamSendResult(-1))
@@ -1291,6 +1364,16 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /**
+         * Scratch capacity for the connection-id readers. A CID is at most 20 bytes (RFC 9000 §17.2) and
+         * quiche's trace id is its hex rendering, so 64 clears both with room to spare — and the
+         * snprintf-style contract means an over-long value reports its length rather than truncating
+         * silently.
+         */
+        private const val CONN_ID_TEXT_CAPACITY = 64
+
+        private val HEX = "0123456789abcdef".toCharArray()
 
         /** Max ALPN protocol identifier length (RFC 7301 — 1-byte length prefix, so ≤ 255). */
         private const val MAX_ALPN_LEN = 255
@@ -1550,6 +1633,7 @@ class DriverStreamAdapter(
                                 throw QuicCloseException(
                                     driver.closeReasonOr(QuicError.InternalError("quiche stream write error: $written")),
                                     "quiche stream write error: $written",
+                                    attribution = driver.closeAttribution(),
                                 )
                             }
                     }
@@ -1558,10 +1642,10 @@ class DriverStreamAdapter(
                 0
             }
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
             // writableSignal was closed by cleanup() — the connection went away while we were parked.
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } finally {
             // Wait — non-cancellably — for any in-flight StreamSend to finish reading `addr` before we
             // return to the caller who will free `buffer`. The driver always completes the deferred

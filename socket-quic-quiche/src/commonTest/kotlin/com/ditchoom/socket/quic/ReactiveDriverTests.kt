@@ -272,7 +272,7 @@ class ReactiveDriverTests {
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
                 // The peer's reason flows into Closed.error as an exhaustive QuicError (was always null
                 // before) — and closeReasonOr surfaces it instead of the NoError fallback.
-                assertEquals(QuicError.ProtocolViolation, closed.error)
+                assertEquals(QuicCloseReason.ByPeer(QuicError.ProtocolViolation), closed.reason)
                 assertEquals(QuicError.ProtocolViolation, driver.closeReasonOr(QuicError.NoError))
                 assertTrue(!closed.isCleanShutdown)
             } finally {
@@ -301,7 +301,7 @@ class ReactiveDriverTests {
                 d2.await()
 
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
-                assertEquals(QuicError.TransportParameterError("local"), closed.error)
+                assertEquals(QuicCloseReason.ByLocal(QuicError.TransportParameterError("local")), closed.reason)
             } finally {
                 driver.destroy()
             }
@@ -329,7 +329,7 @@ class ReactiveDriverTests {
                 d2.await()
 
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
-                assertEquals(QuicError.IdleTimeout, closed.error)
+                assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.reason)
                 assertTrue(!closed.isCleanShutdown)
             } finally {
                 driver.destroy()
@@ -363,7 +363,7 @@ class ReactiveDriverTests {
                 assertIs<QuicConnectionState.Closed>(
                     withTimeout(5.seconds) { driver.state.first { it is QuicConnectionState.Closed } },
                 )
-            assertEquals(QuicError.IdleTimeout, closed.error)
+            assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.reason)
             assertEquals(QuicError.IdleTimeout, driver.closeReasonOr(QuicError.NoError))
             Unit
         }
@@ -387,7 +387,7 @@ class ReactiveDriverTests {
                 d2.await()
 
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
-                assertNull(closed.error)
+                assertEquals(QuicCloseReason.Graceful, closed.reason)
                 assertTrue(closed.isCleanShutdown)
             } finally {
                 driver.destroy()

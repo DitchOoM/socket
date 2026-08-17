@@ -107,10 +107,10 @@ internal class DriverDatagramAdapter(
                 }
             }
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed")
+            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } catch (_: ClosedReceiveChannelException) {
             // dgramWritableSignal was closed by cleanup() — the connection went away while parked.
-            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed")
+            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } finally {
             inFlight?.let { withContext(NonCancellable) { it.join() } }
         }

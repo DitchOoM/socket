@@ -6,6 +6,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -140,8 +141,18 @@ class SendFailureClassificationTests {
                         sendOpenStream(driver)
                     }
 
+                // Wait for the send rather than sampling once. flushOutgoing runs on the driver loop, so
+                // the send completes asynchronously after sendOpenStream returns — reading sendCount
+                // immediately raced it, and the failure was self-refuting ("sendCount 1 -> 2 ... accepted":
+                // the condition sampled 1, the message string sampled 2 a moment later).
+                val progressed =
+                    withTimeoutOrNull(2.seconds) {
+                        while (channel.sendCount <= before) yield()
+                        true
+                    } ?: false
+
                 assertTrue(
-                    secondFlush.isSuccess && channel.sendCount > before,
+                    secondFlush.isSuccess && progressed,
                     "the driver could not send again after one transient failure — the connection " +
                         "was torn down rather than retransmitting, making 'cannot make further " +
                         "progress' self-fulfilling. sendCount $before -> ${channel.sendCount}; " +

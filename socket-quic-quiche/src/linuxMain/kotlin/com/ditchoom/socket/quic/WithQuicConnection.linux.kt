@@ -296,7 +296,7 @@ internal class LinuxQuicConnection(
                 ),
             )
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         }
     }
 

@@ -346,6 +346,36 @@ interface QuicheApi {
     ): Int = 0
 
     /**
+     * Copy quiche's **stable** connection trace id (`quiche_conn_trace_id`) into [buf]. Same
+     * snprintf-style contract as [connApplicationProto]; `0` also means "this backend does not bind it"
+     * (the interface default), which surfaces publicly as a session id the driver derives another way.
+     *
+     * quiche documents this as "a string uniquely representing the connection". Unlike [connSourceId] it
+     * does **not** rotate, which is what makes it usable as the identifier you follow a connection by
+     * across a migration.
+     */
+    fun connTraceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = 0
+
+    /**
+     * Copy the connection's **current** source connection ID (`quiche_conn_source_id`) into [buf]. Same
+     * snprintf-style contract as [connApplicationProto]; `0` also means "this backend does not bind it"
+     * (the interface default), which surfaces publicly as
+     * [com.ditchoom.socket.quic.QuicWireConnectionId.Unavailable].
+     *
+     * ⚠️ This **changes over the connection's life** — CIDs rotate, and migration issues a fresh one by
+     * design (RFC 9000 §9.5). Read it at the moment you need it; a cached value stops matching the wire.
+     */
+    fun connSourceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = 0
+
+    /**
      * The peer's CONNECTION_CLOSE reason as a typed [QuicError], or `null` if the peer has not closed
      * the connection (we closed first, or it is still open). Maps `quiche_conn_peer_error`, decoding the
      * C API's `is_app` flag + numeric code into the sealed hierarchy — application closes (frame 0x1d) →

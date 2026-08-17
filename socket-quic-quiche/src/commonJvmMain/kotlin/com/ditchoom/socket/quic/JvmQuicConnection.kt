@@ -36,6 +36,13 @@ internal class JvmQuicConnection(
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
 
+    /**
+     * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
+     * because it rotates — so this is rebuilt per read rather than stored.
+     */
+    override val identity: QuicConnectionIdentity
+        get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
+
     private val closed = AtomicBoolean(false)
 
     private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
@@ -67,7 +74,7 @@ internal class JvmQuicConnection(
                 ),
             )
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         }
     }
 

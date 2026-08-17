@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.sim
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.quic.MigrationCapability
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheDriver
@@ -91,7 +92,15 @@ internal suspend fun TestScope.runQuicSim(
         driver.state.collect { state ->
             trace.record(Observed.StateChange(trace.now(), state))
             if (state is QuicConnectionState.Closed) {
-                state.error?.let { trace.record(Observed.ErrorSurfaced(trace.now(), it)) }
+                // Exhaustive over the reason rather than the deprecated nullable `error`. Behaviour is
+                // identical — Graceful and Unspecified carry no error and record nothing — so existing
+                // golden traces are unchanged; this just stops the harness depending on an accessor
+                // whose whole problem is that it cannot tell those two apart.
+                when (val r = state.reason) {
+                    is QuicCloseReason.ByPeer -> trace.record(Observed.ErrorSurfaced(trace.now(), r.error))
+                    is QuicCloseReason.ByLocal -> trace.record(Observed.ErrorSurfaced(trace.now(), r.error))
+                    QuicCloseReason.Graceful, QuicCloseReason.Unspecified -> Unit
+                }
             }
         }
     }

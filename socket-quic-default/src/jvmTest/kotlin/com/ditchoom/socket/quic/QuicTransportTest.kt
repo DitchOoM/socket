@@ -148,6 +148,14 @@ class QuicTransportTest {
         override val coroutineContext: CoroutineContext = job + Dispatchers.Default
         override val bufferFactory: BufferFactory = BufferFactory.Default
         override val state: StateFlow<QuicConnectionState> = MutableStateFlow(QuicConnectionState.Established("test"))
+
+        /** No quiche connection behind this double, so both ids are stand-ins. */
+        override val identity: QuicConnectionIdentity =
+            QuicConnectionIdentity(
+                session = QuicSessionId("fake-session"),
+                wire = QuicWireConnectionId.Known("fake-wire"),
+            )
+
         var closed = false
         var lastPeerStream: ByteStream? = null
         private var nextId = 0L

@@ -16,6 +16,39 @@ interface QuicConnection : QuicScope {
     val state: StateFlow<QuicConnectionState>
 
     /**
+     * Which connection this is — the stable session id plus the current wire CID.
+     *
+     * Deliberately lives here rather than on [QuicConnectionState]: identity belongs to a connection
+     * *instance*, while a state is a lifecycle *value* that is compared by equality (golden traces and
+     * the fuzz determinism invariant both do exactly that). Folding an instance id into a value type
+     * would make every state comparison identity-sensitive, and would force doubles with no real
+     * connection to fabricate one.
+     *
+     * Required, with no default, for the reason Phase 3 made the migration capability required: a
+     * backend that cannot answer should fail to compile rather than silently report nothing.
+     */
+    override val identity: QuicConnectionIdentity
+
+    /**
+     * What the network was doing, for correlating this connection against a
+     * [com.ditchoom.socket.NetworkMonitor].
+     *
+     * Readable at any time. While the connection is live this reports the *current* observation — a
+     * preview of what a close would record. Once the connection reaches
+     * [QuicConnectionState.Closed] it is **frozen** at the value observed then, so reading it after
+     * the fact still answers "what was the network doing when this died?" rather than "what is it
+     * doing now?".
+     *
+     * Defaults to [NetworkAtClose.NotObserved] — the truthful answer for a connection nothing is
+     * observing, and the current answer everywhere until the monitor handle is threaded through the
+     * connect paths. That wiring belongs with [QuicOptions.networkMonitor] resolution: the correlation
+     * **must** read the same monitor instance that drives auto-migration, or the `ObservationSequence`
+     * it reports would index a different stream than the one that triggered the migration — two
+     * unrelated counters that look joinable.
+     */
+    override val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
+
+    /**
      * Derived from [state]: every driver-backed connection publishes the handshake's negotiated
      * protocol in [QuicConnectionState.Established], so one default here covers all platforms.
      * Readable while the connection is established — which is always the case inside the

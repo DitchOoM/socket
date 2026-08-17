@@ -231,6 +231,16 @@ class FfmQuicheApi private constructor(
         downcall("quiche_conn_application_proto", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
     }
 
+    private val hConnTraceId by lazy {
+        // void quiche_conn_trace_id(const quiche_conn *conn, const uint8_t **out, size_t *out_len)
+        downcall("quiche_conn_trace_id", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+    }
+
+    private val hConnSourceId by lazy {
+        // void quiche_conn_source_id(const quiche_conn *conn, const uint8_t **out, size_t *out_len)
+        downcall("quiche_conn_source_id", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS))
+    }
+
     private val hConnStats by lazy {
         // void quiche_conn_stats(const quiche_conn *conn, quiche_stats *out)
         downcall("quiche_conn_stats", FunctionDescriptor.ofVoid(ADDRESS, ADDRESS))
@@ -591,6 +601,42 @@ class FfmQuicheApi private constructor(
             val len = outLen.get(JAVA_LONG, 0).toInt()
             if (len <= 0) return@use 0
             // Same snprintf-style contract as connPeerCert: copy only when it fits.
+            if (len <= bufLen) {
+                val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
+                MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())
+            }
+            len
+        }
+
+    override fun connTraceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = copyConnBytes(hConnTraceId, conn, buf, bufLen)
+
+    override fun connSourceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = copyConnBytes(hConnSourceId, conn, buf, bufLen)
+
+    /**
+     * Shared body for quiche's `(const uint8_t **out, size_t *out_len)` readers, honouring the
+     * snprintf-style contract: copy only when it fits, always return the true length. Factored out
+     * because [connTraceId] and [connSourceId] differ only in which downcall handle they invoke.
+     */
+    private fun copyConnBytes(
+        handle: java.lang.invoke.MethodHandle,
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        Arena.ofConfined().use { arena ->
+            val outPtr = arena.allocate(ADDRESS)
+            val outLen = arena.allocate(JAVA_LONG)
+            handle.invokeExact(seg(conn.handle), outPtr, outLen)
+            val len = outLen.get(JAVA_LONG, 0).toInt()
+            if (len <= 0) return@use 0
             if (len <= bufLen) {
                 val src = outPtr.get(ADDRESS, 0).reinterpret(len.toLong())
                 MemorySegment.copy(src, 0L, seg(buf).reinterpret(len.toLong()), 0L, len.toLong())

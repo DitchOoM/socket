@@ -48,6 +48,26 @@ interface QuicScope : CoroutineScope {
         get() = throw UnsupportedOperationException("Negotiated ALPN is not available on this platform")
 
     /**
+     * Which connection this is — the stable session id plus the current wire CID.
+     *
+     * Declared here, not only on [QuicConnection], because this is the receiver user code actually has
+     * inside a `withQuicConnection { }` / `QuicServer.connections { }` block. Identity that a caller
+     * cannot reach from where they write their log line is identity that does not exist; the first test
+     * written against it caught exactly that.
+     *
+     * Defaults to throwing for scope implementations with no connection behind them, matching
+     * [negotiatedAlpn]. [QuicConnection] redeclares it abstract, so every real backend must answer.
+     */
+    val identity: QuicConnectionIdentity
+        get() = throw UnsupportedOperationException("Connection identity is not available on this platform")
+
+    /**
+     * What the network was doing, for correlating this connection against a
+     * [com.ditchoom.socket.NetworkMonitor]. See [QuicConnection.networkAtClose].
+     */
+    val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
+
+    /**
      * The [BufferFactory] this connection allocates from — the one passed via
      * [TransportConfig.bufferFactory][com.ditchoom.socket.TransportConfig.bufferFactory] (default
      * [BufferFactory.Default]). Allocate your send buffers and datagrams from here so they share the

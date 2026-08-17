@@ -43,6 +43,13 @@ class AutoMigrationReactorTests {
         private val job = SupervisorJob()
         override val coroutineContext: CoroutineContext = dispatcher + job
 
+        /** No quiche connection behind this double; the reactor under test never reads identity. */
+        override val identity: QuicConnectionIdentity =
+            QuicConnectionIdentity(
+                session = QuicSessionId("recording-session"),
+                wire = QuicWireConnectionId.Known("recording-wire"),
+            )
+
         val migrateArgs = mutableListOf<Pair<String?, Int>>()
         val migrateCount: Int get() = migrateArgs.size
 

@@ -61,11 +61,13 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
 import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
+import com.ditchoom.socket.quic.quiche.quiche_conn_trace_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_writable
 import com.ditchoom.socket.quic.quiche.quiche_connect
 import com.ditchoom.socket.quic.quiche.quiche_header_info
@@ -86,6 +88,7 @@ import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_next
 import kotlinx.cinterop.BooleanVar
 import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.NativePtr
 import kotlinx.cinterop.UByteVar
@@ -408,6 +411,50 @@ internal object CinteropQuicheApi : QuicheApi {
                 0
             } else {
                 // Same snprintf-style contract as connPeerCert: copy only when it fits.
+                if (len <= bufLen) {
+                    memcpy(buf.toCPointer<UByteVar>()!!, src, len.convert())
+                }
+                len
+            }
+        }
+
+    override fun connTraceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        copyConnBytes(buf, bufLen) { out, outLen ->
+            quiche_conn_trace_id(conn.handle.toCPointer()!!, out, outLen)
+        }
+
+    override fun connSourceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        copyConnBytes(buf, bufLen) { out, outLen ->
+            quiche_conn_source_id(conn.handle.toCPointer()!!, out, outLen)
+        }
+
+    /**
+     * Shared body for quiche's `(const uint8_t **out, size_t *out_len)` readers, honouring the
+     * snprintf-style contract: copy only when it fits, always return the true length. Factored out
+     * because [connTraceId] and [connSourceId] differ solely in which C function they call.
+     */
+    private inline fun copyConnBytes(
+        buf: Long,
+        bufLen: Int,
+        read: (CPointer<CPointerVar<UByteVar>>, CPointer<ULongVar>) -> Unit,
+    ): Int =
+        memScoped {
+            val out = alloc<CPointerVar<UByteVar>>()
+            val outLen = alloc<ULongVar>()
+            read(out.ptr, outLen.ptr)
+            val len = outLen.value.toInt()
+            val src = out.value
+            if (len <= 0 || src == null) {
+                0
+            } else {
                 if (len <= bufLen) {
                     memcpy(buf.toCPointer<UByteVar>()!!, src, len.convert())
                 }

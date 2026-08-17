@@ -31,6 +31,17 @@ class MockQuicConnection(
     private val _state = MutableStateFlow<QuicConnectionState>(initialState)
     override val state: StateFlow<QuicConnectionState> = _state
 
+    /**
+     * A mock has no quiche connection, so both ids are fixed stand-ins. Stated explicitly rather than
+     * defaulted on the interface: a real backend that cannot report identity should fail to compile,
+     * and only a double gets to invent one.
+     */
+    override val identity: QuicConnectionIdentity =
+        QuicConnectionIdentity(
+            session = QuicSessionId("mock-session"),
+            wire = QuicWireConnectionId.Known("mock-wire"),
+        )
+
     private var nextClientStreamId = 0L // client-initiated bidi: 0, 4, 8, ...
     private val incomingStreams = Channel<QuicByteStream>(Channel.UNLIMITED)
     private var closed = false

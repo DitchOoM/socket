@@ -62,6 +62,21 @@ sealed interface QuicCloseReason {
      * This is an honest "unknown", not a failure verdict, and it is the case the old nullable silently
      * folded into "clean". If you are seeing it where you expected [Graceful], the connection did not
      * shut down through the protocol.
+     *
+     * ## Where a stateless reset lands
+     * RFC 9000 §10 lists three ways a connection ends and this hierarchy names two of them —
+     * [ByPeer]/[ByLocal] cover immediate close, [ByLocal] with [QuicError.IdleTimeout] covers the idle
+     * timeout. The third, **stateless reset**, has no case here because quiche's C API cannot report it:
+     * the vendored header exposes `quiche_config_set_stateless_reset_token` and the `reset_token`
+     * argument to `quiche_conn_new_scid`, but nothing that says *this connection was terminated by a
+     * reset we received*. Every other `reset` symbol in that header is stream-scoped
+     * (`QUICHE_ERR_STREAM_RESET`, `reset_stream_count_*`), which is a different event entirely.
+     *
+     * So a received stateless reset arrives here: no CONNECTION_CLOSE was exchanged and nothing timed
+     * out. Adding a `StatelessReset` case would be modelling a state the backend has no way to produce —
+     * a variant no code could ever construct, which is worse than absent, because it reads as a
+     * distinction the library can draw. If quiche later exposes a connection-level accessor, this is the
+     * case that should split.
      */
     data object Unspecified : QuicCloseReason
 }
