@@ -204,6 +204,8 @@ internal suspend fun <R> withSemanticSim(
 
         val clientDriver =
             QuicheDriver(
+                // Test double: never exercises a path move.
+                migration = MigrationCapability.Unsupported,
                 rawApi = api,
                 conn = clientConn,
                 bufferFactory = bufferFactory,
@@ -224,6 +226,8 @@ internal suspend fun <R> withSemanticSim(
             )
         val serverDriver =
             QuicheDriver(
+                // Test double: never exercises a path move.
+                migration = MigrationCapability.Unsupported,
                 rawApi = api,
                 conn = serverConn,
                 bufferFactory = bufferFactory,

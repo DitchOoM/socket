@@ -1285,6 +1285,8 @@ class ReactiveDriverTests {
         clock: DriverClock = RealDriverClock,
     ): QuicheDriver =
         QuicheDriver(
+            // Test double: never exercises a path move.
+            migration = MigrationCapability.Unsupported,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

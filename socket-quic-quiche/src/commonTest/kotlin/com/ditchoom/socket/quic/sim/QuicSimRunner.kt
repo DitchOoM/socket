@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.socket.quic.MigrationCapability
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheDriver
@@ -67,6 +68,8 @@ internal suspend fun TestScope.runQuicSim(
     val clock = SimClock(testScheduler)
     val driver =
         QuicheDriver(
+            // Test double: never exercises a path move.
+            migration = MigrationCapability.Unsupported,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

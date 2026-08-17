@@ -109,16 +109,15 @@ class QuicheDriver(
      */
     private val recorder: QuicTraceRecorder? = null,
     /**
-     * Connection-migration wiring (slice 3). All default to "disabled" so server-accepted
-     * drivers, unit-test fakes, and the no-migration platforms keep their single-path
-     * behaviour untouched. A client setup that supports migration passes the peer sockaddr,
-     * the primary local sockaddr, and a [UdpChannelFactory] for opening additional paths.
+     * Connection-migration wiring (RFC 9000 §9), as one exhaustive answer.
+     *
+     * **Deliberately has no default.** It replaces five parameters that all defaulted to "disabled"
+     * (`udpChannelFactory: UdpChannelFactory? = null` plus four `0L`/`0` sockaddr sentinels), which
+     * meant a construction site could stay silent and get a connection that quietly could not migrate.
+     * That is how the Apple client shipped without migration for a year: nothing ever asked it. Now a
+     * new platform, backend, or test double cannot compile until it states which case applies.
      */
-    private val peerAddr: Long = 0L,
-    private val peerLen: Int = 0,
-    private val primaryLocalAddr: Long = 0L,
-    private val primaryLocalLen: Int = 0,
-    private val udpChannelFactory: UdpChannelFactory? = null,
+    private val migration: MigrationCapability,
     /**
      * Called from [cleanup] after all quiche handles have been freed. Used by callers
      * to release platform-owned memory referenced by [recvInfo] (peer/local sockaddrs)
@@ -316,23 +315,47 @@ class QuicheDriver(
         key: PathKey,
     ): UdpChannel = recorder?.wrap(channel, key.takeIf { it.family != 0 }) ?: channel
 
-    private val primaryKey = if (primaryLocalAddr != 0L) api.decodePathKey(primaryLocalAddr) else PathKey(0, 0, 0L, 0L)
+    // The primary path's local sockaddr, or null when this driver has no migration wiring. Reading it
+    // through the sealed capability is what retires the `0L`-means-absent sentinel: in the Supported
+    // branch a PinnedSockAddr exists and is real by construction, and in Unsupported there is no address
+    // at all rather than one that happens to be zero.
+    private val primaryLocal: PinnedSockAddr? =
+        when (migration) {
+            is MigrationCapability.Supported -> migration.primaryLocal
+            MigrationCapability.Unsupported -> null
+        }
+
+    private val primaryKey =
+        primaryLocal?.let { api.decodePathKey(it.address) } ?: PathKey(0, 0, 0L, 0L)
 
     private val primary =
         PathEntry(
             key = primaryKey,
             channel = tapChannel(udpChannel, primaryKey),
             recvInfo = recvInfo,
-            localAddr = primaryLocalAddr,
-            localLen = primaryLocalLen,
+            localAddr = primaryLocal?.address ?: 0L,
+            localLen = primaryLocal?.length ?: 0,
             isPrimary = true,
             // Primary sockaddr lifetime is owned by the connection setup's onCleanup; nothing to release here.
             release = {},
         )
     private val paths = mutableMapOf(primary.key to primary)
 
-    /** True only for a client connection wired with a [UdpChannelFactory] and peer/local sockaddrs. */
-    private val migrationEnabled: Boolean = clientMode && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L
+    /**
+     * The migration wiring when this driver has it, else null — one `when` over the sealed capability
+     * instead of the four-term boolean this replaced
+     * (`clientMode && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L`). Every
+     * conjunct of that expression is now either impossible to get wrong (the sockaddrs, by
+     * [PinnedSockAddr]'s own construction) or stated once at the call site.
+     */
+    private val migrationWiring: MigrationCapability.Supported? =
+        when (migration) {
+            is MigrationCapability.Supported -> migration
+            MigrationCapability.Unsupported -> null
+        }
+
+    /** True only for a client connection wired for migration. */
+    private val migrationEnabled: Boolean = migrationWiring != null
 
     private var activeKey: PathKey = primary.key
     private var pendingMigration: PendingMigration? = null
@@ -968,9 +991,30 @@ class QuicheDriver(
      * completes the switch once the peer validates the path. Suspends to open the socket.
      */
     private suspend fun handleMigrate(cmd: QuicheCmd.Migrate) {
-        val factory = udpChannelFactory
-        if (!migrationEnabled || factory == null) {
-            cmd.result.complete(MigrationResult.Unsupported)
+        val wiring =
+            when (migration) {
+                MigrationCapability.Unsupported -> {
+                    cmd.result.complete(MigrationResult.Unsupported)
+                    return
+                }
+                is MigrationCapability.Supported -> migration
+            }
+        val factory = wiring.channelFactory
+        // Refuse a local endpoint this platform cannot bind, rather than opening a socket somewhere
+        // else and reporting Succeeded. On Apple `UdpSocket.connect` hands the endpoint to NWConnection
+        // and its own comment calls localHost/localPort "advisory", so honouring this request is not
+        // possible — and silently substituting a different local address would make the Succeeded value
+        // itself a lie. The default request (null, 0) is served everywhere and is what automatic
+        // migration issues, so this rejects only an explicit, unserviceable ask.
+        val namesAnEndpoint = cmd.localHost != null || cmd.localPort != 0
+        if (namesAnEndpoint && factory.localEndpointSupport == LocalEndpointSupport.PlatformAssigned) {
+            cmd.result.complete(
+                MigrationResult.Failed(
+                    "this platform assigns the local endpoint itself and cannot bind the requested " +
+                        "${cmd.localHost ?: "*"}:${cmd.localPort}; migrate() with no arguments to move " +
+                        "to a fresh platform-chosen endpoint",
+                ),
+            )
             return
         }
         if (pendingMigration != null) {
@@ -993,7 +1037,8 @@ class QuicheDriver(
             }
 
         val key = api.decodePathKey(newPath.localSockAddrAddress)
-        val pathRecvInfo = api.recvInfoNew(peerAddr, peerLen, newPath.localSockAddrAddress, newPath.localSockAddrLength)
+        val pathRecvInfo =
+            api.recvInfoNew(wiring.peer.address, wiring.peer.length, newPath.localSockAddrAddress, newPath.localSockAddrLength)
         val entry =
             PathEntry(
                 key = key,
@@ -1006,7 +1051,7 @@ class QuicheDriver(
             )
         paths[key] = entry
 
-        val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, peerAddr, peerLen, addr(seqScratch))
+        val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
         if (rc < 0) {
             teardownPath(entry)
             cmd.result.complete(MigrationResult.Failed("probe_path failed: rc=$rc"))
@@ -1020,6 +1065,10 @@ class QuicheDriver(
 
     /** Poll and react to quiche path events (validation, failure, path close). Migration-clients only. */
     private fun drainPathEvents() {
+        // Only ever called under `if (migrationEnabled)`, and that is now the same fact as
+        // `migrationWiring != null` — so this is a re-read of the capability, not a null check on
+        // something that might legitimately be absent. Returning is the safe no-op either way.
+        val wiring = migrationWiring ?: return
         while (true) {
             val type = api.connPathEventNext(conn, addr(peLocalOut), addr(peLocalLenOut), addr(pePeerOut), addr(pePeerLenOut)) ?: break
             when (type) {
@@ -1033,7 +1082,8 @@ class QuicheDriver(
                         continue
                     }
                     _pathState.value = PathInfo(MigrationPhase.Validated, pending.localHost, pending.localPort)
-                    val rc = api.connMigrate(conn, entry.localAddr, entry.localLen, peerAddr, peerLen, addr(seqScratch))
+                    val rc =
+                        api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
                     if (rc >= 0) {
                         activeKey = key
                         completeMigration(pending, MigrationResult.Succeeded(pending.localHost, pending.localPort), MigrationPhase.Migrated)

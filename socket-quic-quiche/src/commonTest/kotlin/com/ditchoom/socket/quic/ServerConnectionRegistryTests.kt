@@ -39,6 +39,8 @@ class ServerConnectionRegistryTests {
     /** An accepted-but-unstarted driver — a valid stand-in for a live one in the ledger/routing map. */
     private fun idleDriver(api: QuicheApi = StubQuicheApi()): QuicheDriver =
         QuicheDriver(
+            // Test double: never exercises a path move.
+            migration = MigrationCapability.Unsupported,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

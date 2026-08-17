@@ -2187,6 +2187,14 @@ kotlin {
 
     applyDefaultHierarchyTemplate()
     sourceSets {
+        // This module OWNS the QUIC driver seam (@InternalQuicApi: UdpChannel, UdpChannelFactory,
+        // SendOutcome, NewPath, QuicheDriver, MigrationCapability), so every source set in it opts in
+        // wholesale rather than repeating @file:OptIn in ~20 files. The marker still does its real job:
+        // it is a compile ERROR for anyone outside this module, which is the audience it was added for.
+        all {
+            languageSettings.optIn("com.ditchoom.socket.quic.InternalQuicApi")
+        }
+
         commonMain.dependencies {
             api(project(":"))
             api(project(":socket-quic"))

@@ -100,6 +100,8 @@ class JvmQuicConnectionTests {
     private fun createTestDriver(api: StubQuicheApi = StubQuicheApi()): QuicheDriver {
         val channel = DatagramChannel.open().apply { configureBlocking(false) }
         return QuicheDriver(
+            // Test double: never exercises a path move.
+            migration = MigrationCapability.Unsupported,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

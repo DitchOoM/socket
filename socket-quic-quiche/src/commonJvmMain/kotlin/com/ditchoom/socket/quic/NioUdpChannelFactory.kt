@@ -14,6 +14,9 @@ internal class NioUdpChannelFactory(
     private val peer: InetSocketAddress,
     private val bufferFactory: BufferFactory,
 ) : UdpChannelFactory {
+    /** NIO `bind`s the requested local endpoint below before connecting, so the request is honoured exactly. */
+    override val localEndpointSupport: LocalEndpointSupport = LocalEndpointSupport.Bindable
+
     override suspend fun openPath(
         localHost: String?,
         localPort: Int,

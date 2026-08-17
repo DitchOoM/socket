@@ -280,6 +280,17 @@ internal class IoUringServerConnectionUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
+    ): SendOutcome = sendOutcomeOf { transmit(buffer, len, dest) }
+
+    /**
+     * The throwing send, kept separate so [send] is a one-line boundary crossing. Split rather than
+     * inlined into `sendOutcomeOf { }` because the destination-cache path returns early, and a
+     * non-local `return` out of an inline lambda would return from [send] itself.
+     */
+    private suspend fun transmit(
+        buffer: PlatformBuffer,
+        len: Int,
+        dest: PathKey?,
     ) {
         // [dest] is quiche's sendInfo.to: after a peer migrates, replies must follow it to its new
         // source. Reconstruct that sockaddr (cached) and send there; with no dest, use the fixed peer.

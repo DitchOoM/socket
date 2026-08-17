@@ -189,14 +189,24 @@ internal suspend fun buildLinuxQuicConnection(
                     driverContext = tuning.driverContext,
                     random = tuning.random,
                     recorder = tuning.recorderFactory(),
-                    // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs (kept pinned
-                    // via onCleanup for the driver's life) and a factory that opens additional :socket-udp
+                    // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned via
+                    // onCleanup for the driver's life) and a factory that opens additional :socket-udp
                     // path sockets to the same peer. Mirrors the JVM client.
-                    peerAddr = peerSockAddr.address,
-                    peerLen = peerSockAddr.length,
-                    primaryLocalAddr = localSockAddr.address,
-                    primaryLocalLen = localSockAddr.length,
-                    udpChannelFactory = UdpSocketChannelFactory(peer, codec, bufferFactory, recvBufPool, QuicheDriver.MAX_DATAGRAM_SIZE),
+                    migration =
+                        MigrationCapability.Supported(
+                            peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
+                            primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
+                            channelFactory =
+                                UdpSocketChannelFactory(
+                                    peer = peer,
+                                    codec = codec,
+                                    bufferFactory = bufferFactory,
+                                    recvBufferFactory = recvBufPool,
+                                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                                    // io_uring binds the requested local endpoint before connecting.
+                                    localEndpointSupport = LocalEndpointSupport.Bindable,
+                                ),
+                        ),
                     onCleanup = {
                         peerSockAddr.free()
                         localSockAddr.free()

@@ -212,15 +212,38 @@ internal suspend fun buildAppleQuicConnection(
                     driverContext = tuning.driverContext,
                     random = tuning.random,
                     recorder = tuning.recorderFactory(),
-                    // Peer + primary local sockaddrs (pinned via onCleanup) for the initial path's
-                    // recv_info/send_info. No udpChannelFactory: explicit quiche path migration via a second
-                    // local socket does not map to NWConnection (NW owns path moves); the NWPath-driven
-                    // migration glue is unimplemented (#374), so migrate() reports unsupported here.
-                    peerAddr = peerSockAddr.address,
-                    peerLen = peerSockAddr.length,
-                    primaryLocalAddr = localSockAddr.address,
-                    primaryLocalLen = localSockAddr.length,
-                    udpChannelFactory = null,
+                    // RFC 9000 §9 active migration, over a SECOND NWConnection.
+                    //
+                    // The previous comment here said explicit quiche path migration "does not map to
+                    // NWConnection (NW owns path moves)". That was written before the Phase 6 cutover and
+                    // is doubly stale. This client's datapath is already `UdpSocket.connect` ->
+                    // `DatagramChannelUdpChannel`, the same shared adapter Linux and the JVM use, so the
+                    // seam it claimed did not fit is the seam already in use. And NW does not own path
+                    // moves for UDP: measured on macOS, a UDP nw_connection_t whose path disappears goes
+                    // to `failed` with POSIX 57 in ~2s, never recovers, and its local endpoint never
+                    // changes. Nothing re-homes, so the app must open the new path itself — which is
+                    // Apple's own documented model (betterPathAvailable -> new connection -> move).
+                    //
+                    // `UdpSocket.connect` yields a fresh NWConnection with its own NW-assigned local
+                    // endpoint, which is exactly the new 4-tuple quiche probes and migrates onto.
+                    migration =
+                        MigrationCapability.Supported(
+                            peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
+                            primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
+                            channelFactory =
+                                UdpSocketChannelFactory(
+                                    peer = peer,
+                                    codec = codec,
+                                    bufferFactory = bufferFactory,
+                                    recvBufferFactory = recvBufPool,
+                                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                                    // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
+                                    // localHost/localPort "advisory" and ignores them. Declared so the
+                                    // driver refuses an explicit endpoint instead of silently binding
+                                    // somewhere else and reporting success.
+                                    localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
+                                ),
+                        ),
                     onCleanup = {
                         peerSockAddr.free()
                         localSockAddr.free()

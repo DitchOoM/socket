@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic.sim.fuzz
 
+import com.ditchoom.socket.quic.MigrationCapability
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.QuicheRecvInfo
@@ -75,6 +76,8 @@ class ReaderLoopCloseRaceRegressionTests {
             val udp = TimelineUdpChannel(trace)
             val driver =
                 QuicheDriver(
+                    // Test double: never exercises a path move.
+                    migration = MigrationCapability.Unsupported,
                     rawApi = StubQuicheApi(),
                     conn = QuicheConn(1L),
                     bufferFactory = tracking,
