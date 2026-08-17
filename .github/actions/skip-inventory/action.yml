@@ -41,7 +41,21 @@ runs:
         # `-r` (--no-run-if-empty): with no XML at all, GNU xargs still runs grep once, with no file
         # operands, so it reads stdin. That is harmless in Actions (stdin is /dev/null) and a hang
         # anywhere stdin is a live pipe. BSD xargs already declines to run; -r makes both agree.
-        MARKERS=$(find . -path '*/build/test-results/*' -name '*.xml' -print0 2>/dev/null \
+        #
+        # Two roots AND two file shapes, because Android is not like the others:
+        #   * AGP writes instrumented results to build/outputs/androidTest-results/, not
+        #     build/test-results/, so the original glob inventoried every lane EXCEPT the Android
+        #     one — the last place a silent skip could still hide, which is what this action's own
+        #     preamble is about;
+        #   * an instrumented test's stdout goes to LOGCAT, and AGP's JUnit XML records a skip as a
+        #     bare `<skipped />` with no message. So on Android the marker is in the per-test
+        #     `logcat-<class>-<method>.txt` beside the XML, and only there — verified by reading
+        #     both after a deliberately-unreachable run.
+        # Parenthesised so each root gets the right `-name` set (BSD and GNU find both accept it).
+        MARKERS=$(find . \
+            \( -path '*/build/test-results/*' -name '*.xml' \) \
+            -o \( -path '*/build/outputs/androidTest-results/*' \( -name '*.xml' -o -name 'logcat-*.txt' \) \) \
+            -print0 2>/dev/null \
           | xargs -0 -r grep -hoE '\[TEST-SKIPPED\] site=[^ ]+ reason=[^ ]+' 2>/dev/null | sort || true)
 
         # The runner's OWN skip count, independently of our markers: a JUnit `assumeTrue`, an
@@ -49,7 +63,8 @@ runs:
         # SkipReason. Those are invisible to the marker grep AND to SOCKET_REQUIRE_ALL_TESTS, so a
         # lane can read "0 skips" while genuinely skipping — the exact reading this inventory exists
         # to prevent. Counting both keeps the difference between them on the page.
-        RUNNER_SKIPS=$(find . -path '*/build/test-results/*' -name '*.xml' -print0 2>/dev/null \
+        RUNNER_SKIPS=$(find . \( -path '*/build/test-results/*' -o -path '*/build/outputs/androidTest-results/*' \) \
+          -name '*.xml' -print0 2>/dev/null \
           | xargs -0 -r grep -hoE '<skipped' 2>/dev/null | wc -l | tr -d ' ')
         RUNNER_SKIPS=${RUNNER_SKIPS:-0}
 

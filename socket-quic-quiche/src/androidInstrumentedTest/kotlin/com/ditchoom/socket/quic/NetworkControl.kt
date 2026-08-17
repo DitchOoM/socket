@@ -15,31 +15,39 @@ import java.net.Socket
  *
  * Sends type-safe [NetCtrlCommand]s over TCP, receives [NetCtrlResponse]s.
  * All commands are synchronous — the call blocks until the host confirms execution.
+ *
+ * [endpoint] is carried, never assumed: the server binds an OS-assigned port and is reached over an
+ * `adb reverse tcp:` mapping, which puts it on the device's own loopback on an emulator and on real
+ * hardware alike. (`adb reverse` is TCP-only, which is exactly why the *UDP* quic-echo harness in
+ * [HarnessEndpoints] cannot share this address.)
  */
-class NetworkControl(
-    private val host: String = "10.0.2.2",
-    private val port: Int = HarnessPorts.netCtrl,
+internal class NetworkControl(
+    private val endpoint: HarnessEndpoint,
 ) : AutoCloseable {
     private var socket: Socket? = null
     private var inp: InputStream? = null
     private var out: OutputStream? = null
 
     fun connect() {
-        val s = Socket(host, port)
+        val s = Socket(endpoint.host, endpoint.port)
         s.soTimeout = 10_000
         socket = s
         inp = s.getInputStream()
         out = s.getOutputStream()
     }
 
-    /** Check if the control server is reachable and responding. */
-    fun isAvailable(): Boolean =
+    /**
+     * Ping the control server. Returns `null` when it answered, otherwise **the failure that stopped
+     * it** — a `Boolean` here threw away the one piece of information a skip message needs, which is
+     * why the caller's skip could only ever say "not available".
+     */
+    fun probe(): Throwable? =
         try {
             if (socket == null) connect()
             sendCommand(NetCtrlCommand.Ping())
-            true
-        } catch (_: Exception) {
-            false
+            null
+        } catch (e: Exception) {
+            e
         }
 
     fun blockUdp() {
@@ -78,10 +86,13 @@ class NetworkControl(
         } catch (_: IOException) {
             // Expected: the send might fail if the network dies fast
         }
-        // Connection is now dead
-        socket = null
-        inp = null
-        out = null
+        // Close it, do not just forget it. "The connection is now dead" is a prediction about the
+        // radio, and it is only true where airplane mode actually fires; where it does not, nulling
+        // the field leaks a socket the server still considers live — and NetworkControlServer serves
+        // ONE client at a time, so the leak parks its accept loop and every later test's Ping times
+        // out against a server that is up. Closing makes the server see EOF either way, which is the
+        // state the prediction was assuming.
+        closeQuietly()
     }
 
     fun airplaneModeOff() {
@@ -103,13 +114,7 @@ class NetworkControl(
 
     /** Reconnects the control channel (e.g., after airplane mode recovery). */
     fun reconnect() {
-        try {
-            socket?.close()
-        } catch (_: IOException) {
-        }
-        socket = null
-        inp = null
-        out = null
+        closeQuietly()
         connect()
         sendCommand(NetCtrlCommand.Ping()) // verify connection works
     }
@@ -119,6 +124,17 @@ class NetworkControl(
             cleanup()
         } catch (_: IOException) {
         }
+        closeQuietly()
+    }
+
+    /**
+     * Drop the transport and forget it, in that order.
+     *
+     * One place, because the order is the whole content: nulling the fields without closing the
+     * socket leaves it open with no handle left to close it by — see [airplaneModeOn], where that
+     * shape parked the host server's single-client accept loop.
+     */
+    private fun closeQuietly() {
         try {
             socket?.close()
         } catch (_: IOException) {

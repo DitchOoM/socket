@@ -44,25 +44,53 @@ LOGCAT_FILE="emulator-diagnostics/logcat-api${API_LEVEL}.txt"
 adb logcat -v threadtime > "$LOGCAT_FILE" &
 LOGCAT_PID=$!
 
-# There is no `adb reverse tcp:4433 tcp:4433` here: QUIC is UDP and adb reverse only handles TCP.
-# The emulator reaches the host's docker-published 127.0.0.1:14433/udp via its built-in 10.0.2.2
-# host alias — no port forwarding needed. AndroidQuicConnectivityTests + AndroidQuicMigrationTests
-# point at 10.0.2.2:14433 (matches QuicHarnessConfig.quicEchoPort).
+# There is no `adb reverse tcp:<quic port>` here: QUIC is UDP and adb reverse only handles TCP.
+# This lane runs on an EMULATOR, which is the one device kind with a built-in `10.0.2.2` alias for
+# the host's loopback, so it can address the docker-published quic-echo container directly. That
+# pairing — the compose file's fixed published port plus the emulator alias — is the only case where
+# a constant is the contract rather than a guess; both halves are absent on a physical device, where
+# `:socket-quic-quiche:androidQuicIntegrationTest` computes a reachable host address, probes it, and
+# carries it down instead. No argument is passed for the quic-echo endpoint below precisely so the
+# device takes that documented docker fallback. See HarnessEndpoints.kt.
 #
-# Start the host-side NetworkControlServer (TCP :9998 + `adb reverse tcp:9998`) BEFORE the tests so
-# AndroidQuicMigrationTests' netem / resilience suite actually RUNS instead of skipping on
-# `NetworkControl.isAvailable() == false`. The server drives `adb shell su 0 iptables/tc/settings`
-# on the rooted emulator (the `adb root` above) to toggle UDP / latency / airplane-mode while the
-# device-side TCP control channel (10.0.2.2:9998) stays up. This is issue #72 Task 1 — the docker
-# quic-echo (14433/udp) stays up for the connect + migration tests. Run as a separate Gradle
-# invocation so its detached host JVM is alive before connectedAndroidTest starts.
+# Start the host-side NetworkControlServer BEFORE the tests so AndroidQuicMigrationTests' netem /
+# resilience suite actually RUNS instead of recording a skip. The server binds an OS-ASSIGNED port
+# (not the legacy 9998) and `adb reverse`s it — TCP, so the mapping genuinely applies — which puts it
+# on the device's own loopback. The port is therefore unknowable in advance and must be carried to
+# the device as an instrumentation argument; without that the suite resolved nothing and skipped, on
+# the very lane that had just started the server. The server drives `adb shell su 0
+# iptables/tc/settings` on the rooted emulator (the `adb root` above) to toggle UDP / latency /
+# airplane-mode. This is issue #72 Task 1 — the docker quic-echo stays up for the connect + migration
+# tests. Run as a separate Gradle invocation so its detached host JVM is alive before
+# connectedAndroidTest starts.
 ./gradlew :socket-quic-quiche:startNetworkControlServer
+
+NET_CTRL_PORT_FILE=socket-quic-quiche/build/network-control-server.port
+NET_CTRL_PORT=$(cat "$NET_CTRL_PORT_FILE" 2>/dev/null || true)
+if [ -z "$NET_CTRL_PORT" ]; then
+  echo "::error::startNetworkControlServer recorded no port at $NET_CTRL_PORT_FILE" >&2
+  exit 1
+fi
+echo "Network control server reachable from the device at 127.0.0.1:$NET_CTRL_PORT (adb reverse tcp)"
+
+# An instrumented test process is forked from zygote and inherits the DEVICE's environment, so a
+# SOCKET_REQUIRE_ALL_TESTS set on this runner never reaches it. Forward it as an instrumentation
+# argument — the one channel that crosses — so the skip gate can actually fire on this lane if it is
+# ever switched on. (Unset today: this lane's skips are still being inventoried, not gated.)
+REQUIRE_ALL_ARG=""
+if [ -n "${SOCKET_REQUIRE_ALL_TESTS:-}" ]; then
+  REQUIRE_ALL_ARG="-Pandroid.testInstrumentationRunnerArguments.SOCKET_REQUIRE_ALL_TESTS=${SOCKET_REQUIRE_ALL_TESTS}"
+fi
 
 # Keep going past a test failure so the logcat dump below still happens: the emulator is torn down
 # the moment this script exits, so a later workflow step cannot reach it. The test outcome is
 # preserved in TEST_EXIT and re-raised as this script's status.
 set +e
-./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest
+./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator \
+  -Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1 \
+  -Pandroid.testInstrumentationRunnerArguments.netCtrlPort="$NET_CTRL_PORT" \
+  ${REQUIRE_ALL_ARG}
 TEST_EXIT=$?
 set -e
 

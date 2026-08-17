@@ -1,4 +1,9 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.NetworkInterface
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
@@ -1613,10 +1618,168 @@ if (androidJniTasks.isNotEmpty()) {
     }
 }
 
-// --- QUIC test server for Android instrumented tests ---
-// Starts a QUIC echo server on the host so the emulator can connect via adb reverse.
+// --- Host-side harness servers for the Android instrumented tests ---
+//
+// Three independent facts decide how a device reaches a host-side harness server, and collapsing
+// them into one constant is what made this path answer all three wrong on real hardware:
+//
+//   * transport   — `adb reverse` forwards TCP only, so the TCP control channel can ride the
+//                   device's own loopback and the UDP quic-echo harness can never;
+//   * device kind — an emulator has a built-in `10.0.2.2` alias for the host's loopback, a physical
+//                   device has nothing of the kind and must traverse the real network;
+//   * liveness    — whether anything is actually listening on the port.
+//
+// Only the host can answer the first two, so it answers them here and CARRIES the result down as
+// instrumentation arguments, exactly as it already did for the OS-assigned ports. The device half is
+// HarnessEndpoints.kt in src/androidInstrumentedTest.
 
 afterEvaluate {
+    /**
+     * Which device every adb call below talks to.
+     *
+     * Bare `adb` fails with "more than one device/emulator" the moment a developer has an emulator
+     * and a handset attached — and the call that fails is `adb reverse`, which turns the control
+     * channel into a skipped suite rather than an error. A Gradle property takes precedence over
+     * ANDROID_SERIAL because it is the channel that reliably reaches the build: a long-lived Gradle
+     * daemon's environment comes from whichever client first started it, not from this invocation.
+     */
+    val androidSerial: String? =
+        (project.findProperty("androidSerial") as String?)?.takeIf { it.isNotBlank() }
+            ?: System.getenv("ANDROID_SERIAL")?.takeIf { it.isNotBlank() }
+
+    /** `adb`, pinned with `-s` whenever a serial is known. */
+    fun adbCommand(vararg args: String): List<String> =
+        buildList {
+            add("adb")
+            if (androidSerial != null) {
+                add("-s")
+                add(androidSerial)
+            }
+            addAll(args)
+        }
+
+    fun adbOutput(vararg args: String): String {
+        val process =
+            ProcessBuilder(adbCommand(*args))
+                .redirectErrorStream(true)
+                .start()
+        val text = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        return text.trim()
+    }
+
+    /**
+     * Emulator or physical device, read off the target itself.
+     *
+     * `getprop`, not a pattern match on the serial string: "emulator-5554" is a convention of the
+     * adb server's local-transport naming, not a property of the device, and it says nothing about a
+     * remote or Cuttlefish target. `ro.kernel.qemu` is the classic flag; `ro.boot.qemu` is what newer
+     * images set. Measured: `1`/`1` on the local API-36 AVD, `0`/absent on an SM-F956U1.
+     */
+    fun deviceIsEmulator(): Boolean =
+        adbOutput("shell", "getprop", "ro.kernel.qemu") == "1" ||
+            adbOutput("shell", "getprop", "ro.boot.qemu") == "1"
+
+    /** The device's own global IPv4 addresses, used to find which host interface shares its segment. */
+    fun deviceIpv4Addresses(): List<String> =
+        Regex("""inet (\d+\.\d+\.\d+\.\d+)""")
+            .findAll(adbOutput("shell", "ip", "-4", "-o", "addr", "show", "scope", "global"))
+            .map { it.groupValues[1] }
+            .toList()
+
+    fun sameIpv4Subnet(
+        host: InetAddress,
+        device: InetAddress,
+        prefixLength: Int,
+    ): Boolean {
+        val a = host.address
+        val b = device.address
+        if (a.size != 4 || b.size != 4) return false
+        for (i in 0 until 4) {
+            val bitsHere = minOf(8, maxOf(0, prefixLength - i * 8))
+            val mask = if (bitsHere == 0) 0 else (0xFF shl (8 - bitsHere)) and 0xFF
+            if ((a[i].toInt() and mask) != (b[i].toInt() and mask)) return false
+        }
+        return true
+    }
+
+    /**
+     * Host IPv4 addresses this device might be able to reach, best first.
+     *
+     * The ordering is a **routing** fact and never an address-range guess. On this developer's
+     * machine the Wi-Fi LAN and the VPN both sit inside 100.64.0.0/10, so a rule of the form "100.x
+     * means VPN" (or "means LAN") picks the wrong one about half the time; "the interface whose own
+     * subnet contains the device's address" is measured from both ends and cannot. Point-to-point
+     * interfaces are dropped outright: a /32 tunnel endpoint has no subnet for a device to be on.
+     *
+     * This is still only an ordering. The probe below is what decides.
+     */
+    fun hostIpv4Candidates(deviceAddresses: List<String>): List<String> {
+        val deviceInets =
+            deviceAddresses.mapNotNull { raw ->
+                runCatching { InetAddress.getByName(raw) }.getOrNull() as? Inet4Address
+            }
+        val ranked = mutableListOf<Pair<Int, String>>()
+        for (nif in NetworkInterface.getNetworkInterfaces().toList()) {
+            if (!nif.isUp || nif.isLoopback || nif.isPointToPoint) continue
+            for (ifAddr in nif.interfaceAddresses) {
+                val addr = ifAddr.address as? Inet4Address ?: continue
+                val prefix = ifAddr.networkPrefixLength.toInt()
+                val sharesSegment = deviceInets.any { sameIpv4Subnet(addr, it, prefix) }
+                ranked += (if (sharesSegment) 0 else 1) to addr.hostAddress
+            }
+        }
+        return ranked
+            .sortedBy { it.first }
+            .map { it.second }
+            .distinct()
+    }
+
+    /**
+     * Prove a UDP datagram round-trips device → host → device on [hostAddress], before the run.
+     *
+     * Detect-and-verify, never detect-and-hope: auto-detection on a multi-homed host is exactly the
+     * guess this wiring exists to remove, so the chosen address has to be demonstrated rather than
+     * argued for. An explicit override skips detection but not this.
+     *
+     * Deliberately bound to an **ephemeral** socket, not the harness port: this answers "can these
+     * two machines exchange UDP at all", which is a different question from "is the harness alive".
+     * Keeping them separate is what lets a dead harness port stay a loud failure instead of being
+     * downgraded to a routing skip.
+     */
+    fun probeUdpRoundTrip(hostAddress: String): Boolean {
+        val token = "socket-harness-probe-${System.nanoTime()}"
+        DatagramSocket(0).use { socket ->
+            socket.soTimeout = 6_000
+            // `timeout` bounds the whole thing because toybox nc lingers after stdin EOF; `-w`
+            // bounds nc's own wait for the echo it prints back to stdout.
+            val sender =
+                ProcessBuilder(
+                    adbCommand("shell", "echo -n $token | timeout 8 nc -u -w 4 $hostAddress ${socket.localPort}"),
+                ).redirectErrorStream(true)
+                    .start()
+            try {
+                // @Suppress("NoByteArrayInProd") — java.net.DatagramPacket's only constructor takes
+                // one; this is a build script, not a production source set.
+                val inbound = DatagramPacket(ByteArray(256), 256)
+                socket.receive(inbound)
+                val received = String(inbound.data, 0, inbound.length)
+                if (received != token) {
+                    logger.lifecycle("[harness-probe] $hostAddress: unexpected datagram '$received'")
+                    return false
+                }
+                socket.send(DatagramPacket(inbound.data, inbound.length, inbound.address, inbound.port))
+                val echoed = sender.inputStream.bufferedReader().readText()
+                return echoed.contains(token)
+            } catch (e: Exception) {
+                logger.lifecycle("[harness-probe] $hostAddress: ${e.javaClass.simpleName}: ${e.message}")
+                return false
+            } finally {
+                sender.destroy()
+            }
+        }
+    }
+
     val quicTestServerPidFile =
         layout.buildDirectory
             .file("quic-test-server.pid")
@@ -1731,14 +1894,12 @@ afterEvaluate {
 
             quicTestServerPortFile.writeText(boundPort.toString())
 
-            // adb reverse maps the *device's* localhost:port to the host's. Using the same number on
-            // both sides keeps one value to reason about; it is discovered, not chosen.
-            ProcessBuilder("adb", "reverse", "tcp:$boundPort", "tcp:$boundPort")
-                .redirectErrorStream(true)
-                .start()
-                .waitFor()
-
-            logger.lifecycle("QUIC test server running (PID ${process.pid()}) on port $boundPort, adb reverse configured")
+            // NO `adb reverse` here, deliberately. This server is UDP and `adb reverse` forwards TCP
+            // only, so the mapping that used to be set up here forwarded a TCP port nothing listened
+            // on — dead wiring that implied a device-side route which has never existed. The device
+            // reaches this server by address instead: the emulator's 10.0.2.2 host alias, or a probed
+            // host LAN address on real hardware. androidQuicIntegrationTest works out which.
+            logger.lifecycle("QUIC test server running (PID ${process.pid()}) on UDP port $boundPort")
         }
     }
 
@@ -1746,15 +1907,9 @@ afterEvaluate {
         group = "verification"
         description = "Stop the QUIC echo test server"
         doLast {
-            // Drop the adb reverse first so a dead mapping never outlives the server it pointed at.
-            if (quicTestServerPortFile.exists()) {
-                val p = quicTestServerPortFile.readText().trim()
-                ProcessBuilder("adb", "reverse", "--remove", "tcp:$p")
-                    .redirectErrorStream(true)
-                    .start()
-                    .waitFor()
-                quicTestServerPortFile.delete()
-            }
+            // No `adb reverse --remove` counterpart: startQuicTestServer no longer creates one,
+            // because adb reverse is TCP-only and this server is UDP. See the note there.
+            quicTestServerPortFile.delete()
             if (quicTestServerPidFile.exists()) {
                 val pid = quicTestServerPidFile.readText().trim()
                 ProcessBuilder("kill", pid).start().waitFor()
@@ -1901,6 +2056,10 @@ afterEvaluate {
                     "com.ditchoom.socket.quic.netctrl.NetworkControlServerKt",
                     // 0 → OS-assigned; the bound port is parsed off the READY line below.
                     "0",
+                    // The server runs `adb shell su 0 …` itself and re-establishes its own reverse
+                    // mapping after airplane mode, so it needs the same device pin this build uses —
+                    // it is a separate process and cannot see a Gradle property.
+                    "--serial=${androidSerial ?: ""}",
                 ).redirectErrorStream(true)
                     .start()
 
@@ -1933,7 +2092,10 @@ afterEvaluate {
 
             netCtrlPortFile.writeText(boundPort.toString())
 
-            ProcessBuilder("adb", "reverse", "tcp:$boundPort", "tcp:$boundPort")
+            // TCP, so `adb reverse` genuinely applies here — this is the one harness channel it can
+            // carry, and it works identically on an emulator and on a physical device. Same number on
+            // both sides keeps one value to reason about; it is discovered, not chosen.
+            ProcessBuilder(adbCommand("reverse", "tcp:$boundPort", "tcp:$boundPort"))
                 .redirectErrorStream(true)
                 .start()
                 .waitFor()
@@ -1948,7 +2110,7 @@ afterEvaluate {
         doLast {
             if (netCtrlPortFile.exists()) {
                 val p = netCtrlPortFile.readText().trim()
-                ProcessBuilder("adb", "reverse", "--remove", "tcp:$p")
+                ProcessBuilder(adbCommand("reverse", "--remove", "tcp:$p"))
                     .redirectErrorStream(true)
                     .start()
                     .waitFor()
@@ -1982,19 +2144,82 @@ afterEvaluate {
             require(!quicPort.isNullOrEmpty() && !ctrlPort.isNullOrEmpty()) {
                 "server ports were not recorded — startQuicTestServer/startNetworkControlServer must run first"
             }
-            // Carry the discovered ports to the device. Instrumentation arguments are the mechanism
-            // that lets the emulator side learn a port it cannot otherwise know, which is what makes
-            // ephemeral binding possible on both ends.
-            val result =
-                ProcessBuilder(
+
+            val emulator = deviceIsEmulator()
+            val deviceKind = if (emulator) "emulator" else "physical-device"
+
+            // An explicit override for hosts where detection cannot win (many interfaces, an
+            // asymmetric route, a device on a different segment reached through a router). It skips
+            // detection — it does NOT skip the probe, because an address nobody verified is the same
+            // guess whether a human or a heuristic wrote it down.
+            val overrideHost =
+                (project.findProperty("androidHarnessHost") as String?)?.takeIf { it.isNotBlank() }
+                    ?: System.getenv("SOCKET_ANDROID_HARNESS_HOST")?.takeIf { it.isNotBlank() }
+
+            val candidates =
+                when {
+                    overrideHost != null -> listOf(overrideHost)
+                    // The emulator's built-in alias for the host's loopback. This is the one address
+                    // that is a property of the emulator rather than of this machine's network.
+                    emulator -> listOf("10.0.2.2")
+                    else -> hostIpv4Candidates(deviceIpv4Addresses())
+                }
+            logger.lifecycle("Android harness: device=${androidSerial ?: "<unpinned>"} kind=$deviceKind candidates=$candidates")
+
+            val reachable = candidates.firstOrNull { probeUdpRoundTrip(it) }
+            if (reachable == null) {
+                logger.lifecycle(
+                    "Android harness: NO host address round-tripped UDP from this $deviceKind " +
+                        "(tried ${candidates.ifEmpty { listOf("<no non-loopback IPv4 interface>") }}). " +
+                        "The quic-echo suites will record a typed skip naming the address tried; pass " +
+                        "-PandroidHarnessHost=<addr> if this host's reachable address cannot be detected.",
+                )
+            } else {
+                logger.lifecycle("Android harness: quic-echo reachable at $reachable:$quicPort (UDP round-trip verified)")
+            }
+
+            // Carry every discovered fact to the device. Instrumentation arguments are the mechanism
+            // that lets the device side learn things it cannot otherwise know — an OS-assigned port,
+            // and now also which host ADDRESS this particular device can reach that port on, which
+            // differs by transport and by device kind and was previously hardcoded to the emulator's.
+            val args =
+                mutableListOf(
                     "${rootProject.projectDir}/gradlew",
                     ":socket-quic-quiche:connectedDebugAndroidTest",
-                    "-Pandroid.testInstrumentationRunnerArguments.quicEchoPort=$quicPort",
+                    "-PandroidSerial=${androidSerial ?: ""}",
+                    "-Pandroid.testInstrumentationRunnerArguments.deviceKind=$deviceKind",
+                    // adb reverse is TCP-only, which is precisely why the control channel gets the
+                    // device's own loopback and the UDP harness above cannot.
+                    "-Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1",
                     "-Pandroid.testInstrumentationRunnerArguments.netCtrlPort=$ctrlPort",
-                ).directory(rootProject.projectDir)
+                )
+            val chosenHost = reachable ?: candidates.firstOrNull()
+            if (chosenHost != null) {
+                args += "-Pandroid.testInstrumentationRunnerArguments.quicEchoHost=$chosenHost"
+                args += "-Pandroid.testInstrumentationRunnerArguments.quicEchoPort=$quicPort"
+                args +=
+                    "-Pandroid.testInstrumentationRunnerArguments.quicEchoProbe=" +
+                    (if (reachable != null) "round-tripped" else "no-route")
+            }
+            // An instrumented test process is forked from zygote, so it inherits the DEVICE's
+            // environment: SOCKET_REQUIRE_ALL_TESTS set beside this build never reached it, which is
+            // why the skip gate was inert on Android. Forward it as an argument, the one channel that
+            // does cross. (socket-testkit's androidMain testkitEnv reads it back under this name.)
+            val requireAllTests =
+                (project.findProperty("requireAllTests") as String?)?.takeIf { it.isNotBlank() }
+                    ?: System.getenv("SOCKET_REQUIRE_ALL_TESTS")?.takeIf { it.isNotBlank() }
+            if (requireAllTests != null) {
+                args += "-Pandroid.testInstrumentationRunnerArguments.SOCKET_REQUIRE_ALL_TESTS=$requireAllTests"
+            }
+
+            val builder =
+                ProcessBuilder(args)
+                    .directory(rootProject.projectDir)
                     .inheritIO()
-                    .start()
-                    .waitFor()
+            // Belt and braces with -PandroidSerial: AGP picks the connected device from
+            // ANDROID_SERIAL, and this nested build is a fresh process whose environment we control.
+            if (androidSerial != null) builder.environment()["ANDROID_SERIAL"] = androidSerial
+            val result = builder.start().waitFor()
             if (result != 0) throw GradleException("Android instrumented tests failed")
         }
     }

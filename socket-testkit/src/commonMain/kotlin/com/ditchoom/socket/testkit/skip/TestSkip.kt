@@ -86,6 +86,28 @@ sealed interface SkipReason {
     ) : SkipReason {
         override val label = "opt-in-lane-not-requested"
     }
+
+    /**
+     * A host-side harness server the test needs could not be reached from the device the test is
+     * running on — either because no address the device could try was ever supplied, or because the
+     * address that *was* supplied answered nothing.
+     *
+     * Distinct from [NativeLibraryUnavailable] and the simulator cases on purpose: those are about
+     * the test process itself being unable to start, this one is about the *path between two
+     * machines*. The fix implied by the label is a routing/provisioning fix (start the harness, or
+     * give the device an address it can actually reach), never "rebuild the native".
+     *
+     * [detail] must name the address that was tried and the kind of device that tried it — an
+     * Android emulator reaches a host-side server through its built-in `10.0.2.2` loopback alias,
+     * a physical device has no such alias and must traverse the real network, and `adb reverse`
+     * cannot stand in because it forwards TCP only. "Unreachable" without those two facts does not
+     * say which of the three is broken.
+     */
+    data class HarnessUnreachableFromDevice(
+        override val detail: String,
+    ) : SkipReason {
+        override val label = "harness-unreachable-from-device"
+    }
 }
 
 /**
@@ -100,6 +122,10 @@ sealed interface SkipReason {
  * What it does **not** promise is that every test is runnable on every host: a lane cannot provision
  * a capability the host does not have. Those skips say so in their [SkipGate] and this variable
  * leaves them alone.
+ *
+ * ⚠️ Android instrumented lanes cannot read this from the runner's environment — the test process is
+ * forked from zygote and inherits the *device's* environment. There it is carried as an
+ * instrumentation argument of the same name; see the `androidMain` actual of [testkitEnv].
  */
 const val REQUIRE_ALL_TESTS_ENV: String = "SOCKET_REQUIRE_ALL_TESTS"
 
