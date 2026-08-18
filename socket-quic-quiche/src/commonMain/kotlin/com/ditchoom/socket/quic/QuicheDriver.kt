@@ -1721,6 +1721,52 @@ class DriverStreamAdapter(
         }
     }
 
+    /**
+     * Rescue a chunk the driver delivered into a [streamRead] that has already unwound.
+     *
+     * `commands` is UNLIMITED, so the `StreamRecv` is queued before a `withTimeout` deadline (or an
+     * external cancel) can reach us; the driver then processes it regardless of what happened to the
+     * caller, and by the time [streamRead]'s non-cancellable join returns quiche may **already** have
+     * answered [StreamRecvResult.Data]. quiche has by then advanced the stream's receive offset and
+     * credited flow control, so the peer will never resend those bytes: freeing the buffer at that point
+     * — what the cancellation path used to do unconditionally — punches a permanent hole in the stream.
+     * A FIN riding on the same chunk was lost with it, because `slot.finReceived` is set inside the
+     * `when` the cancellation skipped, after which no `read()` can ever report a clean end.
+     *
+     * That is issue #393: on a 124-minute on-device Android handoff run the stream died on exactly the
+     * two migrations that a read timeout preceded (8.6s and 6.0s before), and stayed dead for the
+     * remaining 101 minutes while the connection itself kept exchanging keepalives. The migration only
+     * makes read timeouts likely; the timeout is what loses the data.
+     *
+     * The salvage is the cancellation-edge mirror of [drainStreamIntoSlot]'s teardown-edge drain (issue
+     * #318) and keeps its conventions: bytes go to [StreamSlot.pendingData] so the next `read()` hands
+     * them out ahead of any terminal verdict, the FIN is published *after* the chunk is queued so an
+     * `End` verdict can never race ahead of the data it is supposed to follow, and whatever is left
+     * undelivered is released by [releaseUndeliveredReads].
+     *
+     * @return true when ownership of [buffer] moved to the slot — the caller must **not** release it.
+     */
+    private fun salvageCancelledRecv(
+        completed: CompletableDeferred<StreamRecvResult>,
+        buffer: PlatformBuffer,
+    ): Boolean {
+        // A deferred that failed or was cancelled carries no result, and asking one for its value would
+        // rethrow inside a `finally` — masking the timeout the caller is already unwinding with.
+        if (completed.isCancelled) return false
+        // Done / Error deliver nothing: quiche advanced no offset, so there is nothing to salvage.
+        val result = completed.getCompleted() as? StreamRecvResult.Data ?: return false
+        var queued = false
+        if (result.bytesRead > 0) {
+            buffer.position(result.bytesRead)
+            buffer.resetForRead()
+            // UNLIMITED and never closed, so the send cannot fail; on the impossible branch report "not
+            // transferred" so the caller frees the buffer rather than leaking it.
+            queued = slot.pendingData.trySend(buffer).isSuccess
+        }
+        if (result.fin) slot.finReceived = true
+        return queued
+    }
+
     override suspend fun streamRead(
         streamId: QuicStreamId,
         bufferFactory: BufferFactory,
@@ -1739,7 +1785,9 @@ class DriverStreamAdapter(
         // a heap/GC-backed buffer simply dropped so its Cleaner reclaims the native memory) before the
         // driver finishes, quiche writes into freed memory and corrupts the native heap (the rare
         // "SIGSEGV in malloc" crash). So on every exit we first wait — non-cancellably — for any in-flight
-        // StreamRecv to complete, then release the buffer.
+        // StreamRecv to complete, and only then decide the buffer's fate: whatever quiche delivered into
+        // it while we were unwinding goes to the slot ([salvageCancelledRecv]), and only an empty buffer
+        // is released.
         var inFlight: CompletableDeferred<StreamRecvResult>? = null
         var transferred = false
         try {
@@ -1811,7 +1859,16 @@ class DriverStreamAdapter(
             // The driver ALWAYS completes the deferred — in execute() after connStreamRecv, or in
             // cleanup()/failCommand() on teardown (which does NOT dereference `addr`) — so this join can
             // never hang. After it returns, quiche is provably done with `addr`; only then release.
-            inFlight?.let { withContext(NonCancellable) { it.join() } }
+            val abandoned = inFlight
+            if (abandoned != null) {
+                withContext(NonCancellable) { abandoned.join() }
+                // ...and "release" is only right if the command came back empty-handed. We are here
+                // because a timeout or a cancel unwound this read, but the driver answered the queued
+                // StreamRecv anyway — and quiche has already moved the receive offset for whatever it
+                // handed over. Give those bytes (and any FIN with them) to the slot instead of freeing
+                // them; see [salvageCancelledRecv] for why dropping them killed streams in the field.
+                if (salvageCancelledRecv(abandoned, buffer)) transferred = true
+            }
             if (!transferred) buffer.freeNativeMemory()
         }
     }

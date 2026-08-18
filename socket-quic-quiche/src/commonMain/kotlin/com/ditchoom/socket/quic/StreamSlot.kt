@@ -38,8 +38,11 @@ class StreamSlot(
     var finReceived = false
 
     /**
-     * Stream bytes quiche had already delivered to us, drained out of the connection by
-     * [QuicheDriver.drainReadableStreamsIntoSlots] at teardown because no reader had consumed them yet.
+     * Stream bytes quiche had already delivered to us that no reader has taken yet. Two producers, both
+     * cases where quiche moved the receive offset but the `read()` that asked for the bytes is gone:
+     * [QuicheDriver.drainReadableStreamsIntoSlots] at connection teardown (issue #318), and
+     * [DriverStreamAdapter.salvageCancelledRecv] when a read's timeout or cancellation unwound it before
+     * the driver answered its still-queued `StreamRecv` (issue #393).
      *
      * The connection dying does not un-receive them (RFC 9000 §10.2: a CONNECTION_CLOSE ends the
      * connection; the stream data the transport already accepted and acknowledged is still the
