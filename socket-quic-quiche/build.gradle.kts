@@ -499,10 +499,22 @@ val quicheBuildDirVersionRegex = Regex("""^\d+\.\d+\.\d+$""")
  *
  * ## Why ask the binary instead of the marker beside it
  * Every cargo invocation in this file builds out of `build/quiche/quiche-<version>/`, and rustc bakes that
- * directory into the `panic!` location strings of every crate it compiles. It survives
- * `-C strip=symbols`: measured at 1304–2602 occurrences of `quiche-<version>/` in each of the five Apple
- * archives, always exactly one distinct version per archive. So the artifact itself can be asked what it
- * is, rather than trusting a `.built-…` marker — which is only ever a *claim about* a file.
+ * directory into the binary. So the artifact itself can be asked what it is, rather than trusting a
+ * `.built-…` marker — which is only ever a *claim about* a file.
+ *
+ * ## The terminator is NOT always `/`
+ * How that directory is spelled differs per host, and getting it wrong silently disables the whole check.
+ * On Apple, rustc records ABSOLUTE `panic!` locations, so it appears as `quiche-<ver>/quiche/src/…` —
+ * measured at 1304–2602 occurrences per archive, surviving `-C strip=symbols`. On **Linux** the same cargo
+ * build records RELATIVE source paths (`quiche/src/ffi.rs`, 25 of them) and the absolute build directory
+ * survives only 3 times, as a bare NUL-terminated directory with **no trailing slash**:
+ *
+ *     /…/socket-quic-quiche/build/quiche/quiche-0.29.3<NUL>
+ *
+ * An earlier revision required `quiche-<ver>` to be followed by `/`. Run against a real linux `libquiche.a`
+ * built from quiche 0.29.2 under a 0.29.3 project, that returned `null` — "no opinion" — i.e. it was
+ * structurally blind on the one host where [createBuildQuicheSharedTask] is the sole archive producer.
+ * So the version run is parsed on its own terms here and ANY byte may terminate it.
  *
  * That distinction was not academic. A working tree held **three quiche 0.28.0 Apple archives**
  * (`macos-x64`, `ios-arm64`, `ios-x64`) long after the project moved to 0.29.3, with no marker beside them
@@ -522,13 +534,13 @@ fun quicheBinaryForeignVersion(
     version: String,
 ): String? {
     if (!binary.isFile) return null
-    val expected = "quiche-$version/"
     val prefix = "quiche-"
     var foreign: String? = null
     runCatching {
         binary.inputStream().buffered().use { input ->
             val chunkSize = 1 shl 20
-            // Longest thing we can straddle a chunk boundary: "quiche-" + a version + "/" (~20 bytes).
+            // Longest thing we can straddle a chunk boundary: "quiche-" + a version + its terminator
+            // (~20 bytes), so every occurrence is seen whole in at least one chunk.
             val overlap = 32
             val buf = ByteArray(chunkSize + overlap)
             var carry = 0
@@ -541,13 +553,17 @@ fun quicheBinaryForeignVersion(
                 val text = String(buf, 0, len, Charsets.ISO_8859_1)
                 var idx = text.indexOf(prefix)
                 while (idx >= 0) {
-                    if (text.startsWith(expected, idx)) return null // agrees with [version]
-                    if (foreign == null) {
-                        val start = idx + prefix.length
-                        val slash = text.indexOf('/', start)
-                        if (slash in (start + 1)..(start + 12)) {
-                            val segment = text.substring(start, slash)
-                            if (quicheBuildDirVersionRegex.matches(segment)) foreign = segment
+                    // Consume the version run itself and let ANY byte end it — on Linux that byte is the
+                    // string's NUL, not '/'. See the KDoc: requiring '/' made this blind to every linux .a.
+                    val start = idx + prefix.length
+                    var end = start
+                    while (end < len && (text[end].isDigit() || text[end] == '.')) end++
+                    // end == len means the run may continue into the next chunk; the overlap re-scans it.
+                    if (end < len) {
+                        val segment = text.substring(start, end)
+                        if (quicheBuildDirVersionRegex.matches(segment)) {
+                            if (segment == version) return null // agrees with [version]
+                            if (foreign == null) foreign = segment
                         }
                     }
                     idx = text.indexOf(prefix, idx + prefix.length)
@@ -2558,6 +2574,7 @@ kotlin {
         }
         linuxX64 {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
+            val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
             val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxX64")
             // Order the def-gen after the cargo build (NOT dependsOn): the def-gen is reachable from the
@@ -2565,11 +2582,51 @@ kotlin {
             // dependsOn would force an arm64 cargo CROSS-compile there (E0463 on a runner without the rustup
             // target). mustRunAfter is a no-op unless the build is already scheduled — i.e. a real K/N compile.
             buildQuicheSharedLinuxX64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
+            // ── The real build dependency, and the one place it can safely live ────────────────────────
+            // A K/Native COMPILATION of this Linux target is the only node in the graph specific to actually
+            // building this target, so this is where "…and its libquiche.a must be current" belongs.
+            // Measured task graphs on a linux-x64 host, `./gradlew :socket-quic-quiche:<task> --dry-run`:
+            //
+            //   jvmTest                  → cinteropQuiche{LinuxX64,LinuxArm64} ARE present (commonizeCInterop
+            //                              pulls every K/N cinterop) but NO compileKotlinLinuxArm64 is.
+            //   quicEchoJar              → buildQuicheSharedLinuxX64 + buildJvmJniShimLinuxX64 only; the
+            //                              arm64 JNI shim rides the `quicEchoAllArches` CI flag, not this.
+            //   compileKotlinLinuxArm64  → cinteropQuicheLinuxArm64 and compileKotlinLinuxArm64, and — before
+            //                              this line — NO buildQuicheSharedLinuxArm64 ANYWHERE.
+            //
+            // So a dependsOn on the CINTEROP would drag the aarch64 cargo CROSS-build into an ordinary
+            // host-only `:jvmTest` (E0463 on a runner without the rustup target) — precisely the leak the
+            // genLinuxQuicheDef comment above records, and why that one is `mustRunAfter`. Hanging it off the
+            // compilations instead keeps the cross-build attached to the target that needs it, and nothing
+            // else.
+            //
+            // Before this existed, `buildQuicheSharedLinuxArm64` was reachable from NOTHING a Linux build
+            // runs: only `mustRunAfter` referenced it, and that is inert unless the task is already
+            // scheduled. A working tree therefore carried a quiche 0.29.2 linux-arm64 libquiche.a (no
+            // caller-clock export) plus a 0.28.0 libquiche_jni.so under a 0.29.3 project — see
+            // quicheBinaryForeignVersion for what that costs (DitchOoM/socket#388). linuxX64 escaped only
+            // because prepareQuicheNativeLib → the host-arch JNI shim happens to schedule
+            // buildQuicheSharedLinuxX64; that is luck, not a declared dependency.
+            buildQuicheSharedLinuxX64?.let { bt ->
+                compilations.configureEach { compileTaskProvider.configure { dependsOn(bt) } }
+            }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
                     includeDirs("libs/quiche/include")
-                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(genDefTask)
+                        // libquiche.a is COPIED INTO this klib (staticLibraries.linux + libraryPaths.linux in
+                        // the generated def), so it is a real input. Without it a rebuilt archive leaves the
+                        // def text byte-identical, the cinterop stays UP-TO-DATE, and the klib keeps serving
+                        // the OLD archive out of its included/ directory. FileCollection tolerates absence,
+                        // so a fresh tree still configures.
+                        inputs.files(quicheStatic).withPropertyName("quicheStaticArchive")
+                        // Ordering only — inert unless the build task is already scheduled, i.e. a real
+                        // compile of this target (see above). Guarantees the klib embeds the FRESH archive
+                        // rather than racing the cargo build that is about to overwrite it.
+                        buildQuicheSharedLinuxX64?.let { mustRunAfter(it) }
+                    }
                 }
                 // BoringSSL X.509 bindings for the W3C serverCertificateHashes cert-constraint parser
                 // (PinnedLeafFields.linux.kt). Headers come from the base :socket: module's BoringSSL
@@ -2589,16 +2646,39 @@ kotlin {
         }
         linuxArm64 {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
+            val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
             val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxArm64")
             // See linuxX64: mustRunAfter (not dependsOn) so the arm64 cross-build is never dragged into a
             // graph that doesn't actually compile the linuxArm64 K/N target.
             buildQuicheSharedLinuxArm64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
+            // ── The real build dependency, and the one place it can safely live ────────────────────────
+            // See linuxX64 for the measured task graphs and the full reasoning. Short version: hanging this
+            // off the CINTEROP would drag this aarch64 cargo CROSS-build into every host-only `:jvmTest`
+            // (commonizeCInterop pulls cinteropQuicheLinuxArm64 there), while `mustRunAfter` alone left
+            // buildQuicheSharedLinuxArm64 reachable from NOTHING — so linuxArm64 silently linked whatever
+            // libquiche.a was on disk, measured here as quiche 0.29.2 under a 0.29.3 project
+            // (DitchOoM/socket#388). The compilation is the one node specific to building this target.
+            buildQuicheSharedLinuxArm64?.let { bt ->
+                compilations.configureEach { compileTaskProvider.configure { dependsOn(bt) } }
+            }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
                     includeDirs("libs/quiche/include")
-                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(genDefTask)
+                        // libquiche.a is COPIED INTO this klib (staticLibraries.linux + libraryPaths.linux in
+                        // the generated def), so it is a real input. Without it a rebuilt archive leaves the
+                        // def text byte-identical, the cinterop stays UP-TO-DATE, and the klib keeps serving
+                        // the OLD archive out of its included/ directory. FileCollection tolerates absence,
+                        // so a fresh tree still configures.
+                        inputs.files(quicheStatic).withPropertyName("quicheStaticArchive")
+                        // Ordering only — inert unless the build task is already scheduled, i.e. a real
+                        // compile of this target (see above). Guarantees the klib embeds the FRESH archive
+                        // rather than racing the cargo build that is about to overwrite it.
+                        buildQuicheSharedLinuxArm64?.let { mustRunAfter(it) }
+                    }
                 }
                 // See linuxX64: BoringSSL X.509 bindings for the cert-constraint parser. Symbols are
                 // contributed transitively by the base :socket: module's arm64 cinterop.
