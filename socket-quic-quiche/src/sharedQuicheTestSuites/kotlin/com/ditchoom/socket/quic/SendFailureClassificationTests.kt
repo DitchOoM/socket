@@ -47,6 +47,13 @@ import kotlin.time.Duration.Companion.seconds
  *
  * These run on the [StubQuicheApi]/[StubUdpChannel] driver harness, so they are hermetic and
  * deterministic: no sockets, no network, no timing luck.
+ *
+ * ## Why this lives in `src/sharedQuicheTestSuites/kotlin` rather than `commonTest`
+ * `androidInstrumentedTest` deliberately does **not** `dependsOn(commonTest)`, so a `commonTest` home
+ * covered every platform *except* the one that ships this backend to users: Android is the only target
+ * that runs quiche over JNI, and it is where issue #393 was found in the field. This directory is
+ * `srcDir`'d into both source sets, so the same source runs unchanged on jvm/apple/linux **and** on a
+ * real device — the move adds the lane that was missing and takes none away. See DitchOoM/socket#390.
  */
 class SendFailureClassificationTests {
     private val bufferFactory = BufferFactory.deterministic()

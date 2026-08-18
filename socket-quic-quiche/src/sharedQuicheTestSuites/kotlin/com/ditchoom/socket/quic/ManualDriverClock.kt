@@ -23,6 +23,12 @@ import kotlin.time.TimeMark
  *
  * The fire channel is RENDEZVOUS, so [advance] suspends until the driver's `select` has taken the tick —
  * on return the driver has entered the "a timer fired" branch, so there is no settle delay to tune.
+ *
+ * Lives in `src/sharedQuicheTestSuites/kotlin` rather than `commonTest` because the driver suites that
+ * use it do: `androidInstrumentedTest` deliberately does **not** `dependsOn(commonTest)`, and this
+ * directory is `srcDir`'d into both, so one copy of the double serves jvm/apple/linux *and* the device
+ * lane. It is `internal`, so each compilation gets its own — there is no cross-source-set leak. See
+ * DitchOoM/socket#390.
  */
 internal class ManualDriverClock : DriverClock {
     private var elapsed: Duration = Duration.ZERO

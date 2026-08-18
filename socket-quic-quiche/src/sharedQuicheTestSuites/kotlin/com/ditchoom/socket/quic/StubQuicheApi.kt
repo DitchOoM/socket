@@ -6,6 +6,12 @@ import kotlin.time.Duration
 /**
  * Minimal [QuicheApi] stub for driver unit tests. All native calls are no-ops.
  * Controllable via [established], [closed], and [streamRecvResult].
+ *
+ * Lives in `src/sharedQuicheTestSuites/kotlin` rather than `commonTest` because the driver suites that
+ * use it do: `androidInstrumentedTest` deliberately does **not** `dependsOn(commonTest)`, and this
+ * directory is `srcDir`'d into both, so one copy of the double serves jvm/apple/linux *and* the device
+ * lane. It is `internal`, so each compilation gets its own — there is no cross-source-set leak. See
+ * DitchOoM/socket#390.
  */
 internal class StubQuicheApi : QuicheApi {
     @Volatile var established = true

@@ -65,6 +65,13 @@ import kotlin.time.Duration.Companion.seconds
  * flush behind a gated UDP send, so a `StreamRecv` enqueued after `start()` is *guaranteed* still
  * unprocessed when the read's own deadline fires. Releasing the gate afterwards makes the driver deliver
  * into a read that has already unwound — the exact interleaving, with no scheduler luck involved.
+ *
+ * ## Why this lives in `src/sharedQuicheTestSuites/kotlin` rather than `commonTest`
+ * `androidInstrumentedTest` deliberately does **not** `dependsOn(commonTest)`, so a `commonTest` home
+ * covered every platform *except* the one that ships this backend to users: Android is the only target
+ * that runs quiche over JNI, and it is where issue #393 was found in the field. This directory is
+ * `srcDir`'d into both source sets, so the same source runs unchanged on jvm/apple/linux **and** on a
+ * real device — the move adds the lane that was missing and takes none away. See DitchOoM/socket#390.
  */
 class StreamReadCancellationTests {
     private val bufferFactory = BufferFactory.deterministic()
