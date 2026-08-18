@@ -490,6 +490,76 @@ fun patchQuicheTransportParamsRepr(sourceDir: File) {
     logger.lifecycle("Patched quiche source: #[repr(C)] on ffi.rs TransportParams (peer transport-params ABI)")
 }
 
+/** A cargo build directory segment: `quiche-<major>.<minor>.<patch>`, and nothing else. */
+val quicheBuildDirVersionRegex = Regex("""^\d+\.\d+\.\d+$""")
+
+/**
+ * The quiche version a prebuilt binary was **actually** compiled from, when it disagrees with [version];
+ * `null` when it agrees or when the binary carries no recognisable build path.
+ *
+ * ## Why ask the binary instead of the marker beside it
+ * Every cargo invocation in this file builds out of `build/quiche/quiche-<version>/`, and rustc bakes that
+ * directory into the `panic!` location strings of every crate it compiles. It survives
+ * `-C strip=symbols`: measured at 1304–2602 occurrences of `quiche-<version>/` in each of the five Apple
+ * archives, always exactly one distinct version per archive. So the artifact itself can be asked what it
+ * is, rather than trusting a `.built-…` marker — which is only ever a *claim about* a file.
+ *
+ * That distinction was not academic. A working tree held **three quiche 0.28.0 Apple archives**
+ * (`macos-x64`, `ios-arm64`, `ios-x64`) long after the project moved to 0.29.3, with no marker beside them
+ * at all and — before the per-compilation `dependsOn` in `configureQuicheApple` — no task in any Apple
+ * graph that could rebuild them. The cost of that is specifically **DitchOoM/socket#388**: a 0.28.0 archive
+ * predates [patchQuicheTransportParamsRepr], so `TransportParams` keeps its `repr(Rust)` layout,
+ * `peer_disable_active_migration` is read out of `active_conn_id_limit`, and active migration refuses
+ * with no error anywhere. On `iosArm64` — a device lane nothing on a Mac can execute — that is invisible.
+ *
+ * ## Deliberately one-directional
+ * Returns `null` for "no opinion" (binary absent, unreadable, or path-free), so the worst a future
+ * `--remap-path-prefix` or a vendored prebuilt can do is make this check *silent*. It can never put a
+ * build into a rebuild loop, which is why callers may use it as a plain `onlyIf` disjunct.
+ */
+fun quicheBinaryForeignVersion(
+    binary: File,
+    version: String,
+): String? {
+    if (!binary.isFile) return null
+    val expected = "quiche-$version/"
+    val prefix = "quiche-"
+    var foreign: String? = null
+    runCatching {
+        binary.inputStream().buffered().use { input ->
+            val chunkSize = 1 shl 20
+            // Longest thing we can straddle a chunk boundary: "quiche-" + a version + "/" (~20 bytes).
+            val overlap = 32
+            val buf = ByteArray(chunkSize + overlap)
+            var carry = 0
+            while (true) {
+                val read = input.read(buf, carry, chunkSize)
+                if (read <= 0) break
+                val len = carry + read
+                // ISO_8859_1 is a byte->char identity map, so indexOf over this String is an exact byte
+                // search for our pure-ASCII needles — no decoding surprises on binary input.
+                val text = String(buf, 0, len, Charsets.ISO_8859_1)
+                var idx = text.indexOf(prefix)
+                while (idx >= 0) {
+                    if (text.startsWith(expected, idx)) return null // agrees with [version]
+                    if (foreign == null) {
+                        val start = idx + prefix.length
+                        val slash = text.indexOf('/', start)
+                        if (slash in (start + 1)..(start + 12)) {
+                            val segment = text.substring(start, slash)
+                            if (quicheBuildDirVersionRegex.matches(segment)) foreign = segment
+                        }
+                    }
+                    idx = text.indexOf(prefix, idx + prefix.length)
+                }
+                carry = minOf(overlap, len)
+                System.arraycopy(buf, len - carry, buf, 0, carry)
+            }
+        }
+    }
+    return foreign
+}
+
 /**
  * Build quiche as a shared library for JVM/Android (loaded via JNI or FFM).
  */
@@ -529,7 +599,31 @@ fun createBuildQuicheSharedTask(
         val destStatic = outputDir.resolve("lib/libquiche.a")
         inputs.property("quicheVersion", quicheVersion)
         outputs.files(markerFile, destLib, destStatic)
-        onlyIf { !markerFile.exists() || !destLib.exists() }
+        onlyIf {
+            when {
+                !markerFile.exists() -> true
+                !destLib.exists() -> true
+                // macOS: this .a is what the Apple K/Native cinterop embeds into its klib, and a Darwin
+                // cdylib build always emits the staticlib crate-type alongside it — so its absence here is
+                // a broken/partial output, not a legitimate state. Left out on Linux, where the copy above
+                // is conditional and a missing .a must not spin the task forever.
+                os == "macos" && !destStatic.exists() -> true
+                else -> {
+                    // Last resort: the marker claims this is $quicheVersion — ask the binaries. See
+                    // quicheBinaryForeignVersion; `null` means "no opinion", never a rebuild loop.
+                    val foreign =
+                        quicheBinaryForeignVersion(destStatic, quicheVersion)
+                            ?: quicheBinaryForeignVersion(destLib, quicheVersion)
+                    if (foreign != null) {
+                        logger.lifecycle(
+                            "quiche $os-$arch: on-disk library was built from quiche $foreign, not $quicheVersion " +
+                                "(marker ${markerFile.name} disagrees with the binary) — rebuilding.",
+                        )
+                    }
+                    foreign != null
+                }
+            }
+        }
 
         doLast {
             val buildDir = quicheBuildDir.get().asFile
@@ -778,7 +872,25 @@ fun createBuildQuicheAppleStaticTask(
         val destStatic = outputDir.resolve("lib/libquiche.a")
         inputs.property("quicheVersion", quicheVersion)
         outputs.files(markerFile, destStatic)
-        onlyIf { !markerFile.exists() || !destStatic.exists() }
+        onlyIf {
+            when {
+                !markerFile.exists() -> true
+                !destStatic.exists() -> true
+                else -> {
+                    // The marker claims this is $quicheVersion — ask the archive itself. This is the check
+                    // that catches a 0.28.0 libquiche.a sitting under a 0.29.3 build: it predates
+                    // patchQuicheTransportParamsRepr and silently reinstates DitchOoM/socket#388.
+                    val foreign = quicheBinaryForeignVersion(destStatic, quicheVersion)
+                    if (foreign != null) {
+                        logger.lifecycle(
+                            "quiche $libSubdir: libquiche.a was built from quiche $foreign, not $quicheVersion " +
+                                "(marker ${markerFile.name} disagrees with the binary) — rebuilding.",
+                        )
+                    }
+                    foreign != null
+                }
+            }
+        }
 
         doLast {
             val buildDir = quicheBuildDir.get().asFile
@@ -2528,12 +2640,11 @@ kotlin {
             val libCamel = libSubdir.split('-').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
             val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
             val generatedQuicheDef = projectDir.resolve("build/generated/cinterop/Quiche-$libSubdir.def")
-            // The cargo/static task that produces THIS target's libquiche.a. Depending on it (and reading
-            // existence in doLast, not at configuration time) is the clean-checkout fix — see the Linux
-            // genLinuxQuicheDef comment. On a fresh tree the archive doesn't exist at config time, so the
-            // old `embedStatic = quicheStatic.exists()` gate resolved false and the def dropped
-            // `staticLibraries`, producing a dangling K/N link. buildQuicheAppleStaticLibs happened to run
-            // these first in CI; the explicit dependsOn makes that ordering correct-by-construction.
+            // The cargo/static task that produces THIS target's libquiche.a. Reading the archive's
+            // existence in doLast rather than at configuration time is the clean-checkout fix — see the
+            // Linux genLinuxQuicheDef comment. On a fresh tree the archive doesn't exist at config time, so
+            // the old `embedStatic = quicheStatic.exists()` gate resolved false and the def dropped
+            // `staticLibraries`, producing a dangling K/N link.
             val buildTask: TaskProvider<Task>? =
                 when (libSubdir) {
                     "macos-arm64" -> buildQuicheSharedMacosArm64
@@ -2546,8 +2657,9 @@ kotlin {
             val genDefTask =
                 tasks.register("generateQuicheEmbedDef$libCamel") {
                     // mustRunAfter, not dependsOn — see the Linux genLinuxQuicheDef comment: the def-gen must
-                    // not pull the (cross-)build into graphs that don't compile this K/N target. The cinterop
-                    // that embeds libquiche.a owns the real build dependency (below).
+                    // not pull the (cross-)build into graphs that don't compile this K/N target. The real
+                    // build dependency hangs off this target's COMPILATIONS (below), which is the only place
+                    // in the graph that is specific to actually compiling this target.
                     buildTask?.let { mustRunAfter(it) }
                     inputs.file(baseQuicheDef)
                     inputs.files(quicheStatic) // tolerates absence; re-runs when the archive appears
@@ -2571,11 +2683,42 @@ kotlin {
                         generatedQuicheDef.writeText(baseQuicheDef.readText() + embed)
                     }
                 }
+            // ── The real build dependency, and the one place it can safely live ────────────────────────
+            // A K/Native COMPILATION of this Apple target is the only node in the graph that is specific
+            // to actually building this target, so this is where "…and its libquiche.a must be current"
+            // belongs. Measured task graphs, `./gradlew :socket-quic-quiche:<task> --dry-run`:
+            //
+            //   jvmTest / quicEchoJar  → cinteropQuiche{IosArm64,IosSimulatorArm64,IosX64,MacosX64} ARE
+            //                            present (commonizeCInterop pulls every Apple cinterop), but NO
+            //                            compileKotlin<AppleTarget> is.
+            //   macosArm64Test         → compileKotlinMacosArm64 / compileTestKotlinMacosArm64 only.
+            //
+            // So a dependsOn on the CINTEROP would drag three iOS cargo cross-builds plus a macOS-x64 one
+            // into an ordinary host-only `:jvmTest` — precisely the leak the Linux genLinuxQuicheDef
+            // comment records and the reason that one is `mustRunAfter`. Hanging it off the compilations
+            // instead keeps the cross-build attached to the target that needs it and to nothing else.
+            //
+            // Before this existed, `buildQuicheStaticIosArm64` was reachable from NOTHING an Apple build
+            // runs: only `mustRunAfter` referenced it, which is inert unless the task is already scheduled.
+            // A working tree therefore carried three quiche 0.28.0 archives under a 0.29.3 project — see
+            // quicheBinaryForeignVersion for what that costs (DitchOoM/socket#388).
+            buildTask?.let { bt -> compilations.configureEach { compileTaskProvider.configure { dependsOn(bt) } } }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedQuicheDef)
                     includeDirs("libs/quiche/include")
-                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(genDefTask)
+                        // libquiche.a is COPIED INTO this klib (staticLibraries/libraryPaths above), so it
+                        // is a real input — without it a rebuilt archive leaves the def text byte-identical,
+                        // the cinterop stays UP-TO-DATE, and the klib keeps serving the OLD archive out of
+                        // its included/ directory. Tolerates absence, so a fresh tree still configures.
+                        inputs.files(quicheStatic).withPropertyName("quicheStaticArchive")
+                        // Ordering only — inert unless buildTask is already scheduled, i.e. a real compile
+                        // of this target (see above). Guarantees the klib embeds the FRESH archive rather
+                        // than racing the cargo build that is about to overwrite it.
+                        buildTask?.let { mustRunAfter(it) }
+                    }
                 }
                 // SHA-256 for the W3C serverCertificateHashes leaf-cert pin. Binds BoringSSL's SHA256
                 // now embedded in (not force-loaded from) the Quiche klib's libquiche.a — collision-free
