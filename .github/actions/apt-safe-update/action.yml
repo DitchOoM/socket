@@ -1,7 +1,17 @@
 name: "apt-get update, resilient to unused third-party sources"
 description: >-
-  `apt-get update` that cannot be taken down by a third-party apt source this project does not use.
-  Wraps the one-line fix so the five call sites cannot drift apart.
+  `apt-get update` that cannot be taken down by a third-party apt source this project does not use,
+  and cannot silently eat a job's whole timeout-minutes budget if the Ubuntu mirror itself stalls.
+  Wraps the one-line fix so the call sites cannot drift apart.
+
+inputs:
+  timeout:
+    description: >-
+      Hard wall-clock budget for `apt-get update`, as a timeout(1) duration. Exceeding it fails the
+      step with a diagnostic instead of silently eating the job's whole timeout-minutes budget — see
+      the 2026-08-18 incident in the step body for why this exists.
+    required: false
+    default: "4m"
 
 runs:
   using: composite
@@ -49,7 +59,50 @@ runs:
           fi
         done
 
-        # Retries still worth keeping for the Ubuntu archives themselves, which do throw transient
-        # 5xx and timeouts (a recurring flake in this repo's history — a release once died on an
-        # apt stall).
-        sudo apt-get update -o Acquire::Retries=3
+        # ⚠️ WHY THE TIMEOUT BELOW EXISTS — six jobs across four runs died AT this exact step on
+        # 2026-08-18, all with conclusion `cancelled`:
+        #
+        #   `sudo apt-get update -o Acquire::Retries=3` ran against a stalled azure.archive.ubuntu.com
+        #   mirror with no budget of its own. `cancelled` reads like a human stopped the run — nobody
+        #   did. The JOB's overall timeout-minutes budget expired 20-40 minutes into a mirror fetch
+        #   that never produced an error to point at, only silence.
+        #
+        # `-o Acquire::Retries=3` cannot cover this, for the same reason apt-install-cached's header
+        # explains at length: apt's timeouts (Acquire::http::Timeout et al.) are INACTIVITY timeouts.
+        # A transfer crawling at a few KB/s is still "active", so neither a timeout nor a retry ever
+        # fires — apt waits, correctly and forever, for a mirror that is technically still talking to
+        # it. There is no "minimum throughput" knob to reach for here.
+        #
+        # So this step gets the same fix apt-install-cached already has, one stage earlier in the
+        # pipeline — the stage that turned out to actually be the one on the critical path on
+        # 2026-08-18. A fast, loud, RETRYABLE failure here is the design, not a shortcoming of it: it
+        # converts a job-eating 20-40 minute `cancelled` into a ~4-minute `error` that names the
+        # mirror and says re-running is the immediate workaround. (The apt-lists half of
+        # apt-install-cached's warmed cache is the actual fix for restore-only callers — it lets the
+        # install path that follows this one skip touching the mirror at all on a full hit.)
+        #
+        # `timeout --foreground`, not a bare `timeout`: composite-action steps do not support
+        # `timeout-minutes` (a GitHub limitation), so the budget has to come from inside the shell,
+        # and --foreground keeps apt-get attached to the job's TTY so its progress still streams
+        # instead of going silent until the whole thing exits.
+        set +e
+        timeout --foreground "${{ inputs.timeout }}" \
+          sudo apt-get update -o Acquire::Retries=3
+        rc=$?
+        set -e
+
+        if [ "$rc" -eq 124 ]; then
+          echo "::error::apt-get update exceeded its ${{ inputs.timeout }} budget."
+          echo ""
+          echo "This is almost certainly a slow/stalled Ubuntu archive mirror (azure.archive.ubuntu.com"
+          echo "on 2026-08-18's sightings), NOT a problem with this PR. apt's own retry/timeout options"
+          echo "cannot catch this: Acquire::Retries and Acquire::http::Timeout both watch for INACTIVITY,"
+          echo "and a crawling-but-still-sending mirror never goes inactive, so neither ever fires."
+          echo ""
+          echo "This step now fails HERE, loudly, in ~${{ inputs.timeout }}, instead of silently"
+          echo "consuming the job's whole timeout-minutes budget and reporting as 'cancelled' with no"
+          echo "work done and nothing in the log to explain why. Re-running the job is the immediate"
+          echo "workaround."
+          exit 1
+        fi
+        exit "$rc"

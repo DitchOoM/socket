@@ -49,9 +49,15 @@ jobs:
       # spurious apt failure here reads as "the bump is broken".
       - uses: ./.github/actions/apt-safe-update
 
+      # Was a raw `apt-get install` (no cache, no budget) — the same shape #368 deleted two jobs
+      # over and the same shape that made apt-safe-update's own update step die on 2026-08-18. All
+      # five packages are already in .github/apt-packages.txt, so this rides the nightly-warmed
+      # cache like every other Linux toolchain install in the repo.
       - name: Install native build deps
-        run: |
-          sudo apt-get install -y build-essential perl pkg-config cmake nasm
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "weekly dependency update: native build toolchain (quiche/BoringSSL/liburing)"
+          packages: build-essential perl pkg-config cmake nasm
 
       # No `cache: gradle` — see build-linux.yaml. setup-java's gradle cache stores the whole
       # ~/.gradle/caches tree under a second key, duplicating what the explicit `gradle-linux-*`

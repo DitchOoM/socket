@@ -1301,18 +1301,39 @@ jobs:
       # frame-pointer-preserving and only `--strip-debug`'d (function symbols kept,
       # see socket-quic-quiche/build.gradle.kts), these stacks NAME the quiche_jni frames —
       # turning the intermittent SIGABRT from "exit 134" into a real native stack.
-      - name: Native crash post-mortem (gdb backtrace from core)
+      #
+      # Split into three steps (was one, with a raw `apt-get update && apt-get install` inline):
+      # check for a core FIRST so a plain test failure with nothing native to inspect never pays
+      # for a gdb install, then install (from the nightly-warmed cache — gdb is in
+      # .github/apt-packages.txt — instead of an unbounded raw apt-get on the failure path, which
+      # is exactly the shape that deleted two jobs in #368), then run the backtrace.
+      - name: Check for a core dump to post-mortem
+        id: core-check
         if: failure()
         run: |
           shopt -s nullglob
           cores=(/tmp/cores/core.*)
           if [ ${#cores[@]} -eq 0 ]; then
             echo "No core dumps captured — the run failed without a native abort (or core_pattern was overridden)."
-            exit 0
+            echo "found=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "found=true" >>"$GITHUB_OUTPUT"
           fi
-          sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+
+      - name: Install gdb (native crash post-mortem)
+        if: steps.core-check.outputs.found == 'true'
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "native crash post-mortem: gdb backtrace from core"
+          timeout: "3m"
+          packages: gdb
+
+      - name: Native crash post-mortem (gdb backtrace from core)
+        if: steps.core-check.outputs.found == 'true'
+        run: |
+          shopt -s nullglob
           mkdir -p /tmp/cores/bt
-          for core in "${cores[@]}"; do
+          for core in /tmp/cores/core.*; do
             echo "==================== $core ===================="
             gdb --batch -q \
               -ex 'thread apply all bt full' \
@@ -1991,18 +2012,39 @@ jobs:
       # frame-pointer-preserving and only `--strip-debug`'d (function symbols kept), these
       # stacks NAME the quiche_jni frames — turning a SIGABRT from "exit 134" into a real
       # native stack.
-      - name: Native crash post-mortem (gdb backtrace from core)
+      #
+      # Split into three steps (was one, with a raw `apt-get update && apt-get install` inline):
+      # check for a core FIRST so a plain test failure with nothing native to inspect never pays
+      # for a gdb install, then install (from the nightly-warmed cache — gdb is in
+      # .github/apt-packages.txt — instead of an unbounded raw apt-get on the failure path, which
+      # is exactly the shape that deleted two jobs in #368), then run the backtrace.
+      - name: Check for a core dump to post-mortem
+        id: core-check
         if: failure()
         run: |
           shopt -s nullglob
           cores=(/tmp/cores/core.*)
           if [ ${#cores[@]} -eq 0 ]; then
             echo "No core dumps captured — the run failed without a native abort (or core_pattern was overridden)."
-            exit 0
+            echo "found=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "found=true" >>"$GITHUB_OUTPUT"
           fi
-          sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+
+      - name: Install gdb (native crash post-mortem)
+        if: steps.core-check.outputs.found == 'true'
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "native crash post-mortem: gdb backtrace from core"
+          timeout: "3m"
+          packages: gdb
+
+      - name: Native crash post-mortem (gdb backtrace from core)
+        if: steps.core-check.outputs.found == 'true'
+        run: |
+          shopt -s nullglob
           mkdir -p /tmp/cores/bt
-          for core in "${cores[@]}"; do
+          for core in /tmp/cores/core.*; do
             echo "==================== $core ===================="
             gdb --batch -q \
               -ex 'thread apply all bt full' \
@@ -2125,18 +2167,39 @@ jobs:
       # Native-crash post-mortem for the JNI lane: if the worker dumped a core, load it in gdb and
       # print every thread's backtrace into the live log AND a file, so an intermittent SIGABRT
       # that reproduces only under CI's load becomes a real named native stack instead of exit 134.
-      - name: Native crash post-mortem (gdb backtrace from core)
+      #
+      # Split into three steps (was one, with a raw `apt-get update && apt-get install` inline):
+      # check for a core FIRST so a fuzzer repro with nothing native to inspect never pays for a
+      # gdb install, then install (from the nightly-warmed cache — gdb is in
+      # .github/apt-packages.txt — instead of an unbounded raw apt-get on the failure path, which
+      # is exactly the shape that deleted two jobs in #368), then run the backtrace.
+      - name: Check for a core dump to post-mortem
+        id: core-check
         if: ${{ failure() && matrix.jni == 'true' }}
         run: |
           shopt -s nullglob
           cores=(/tmp/cores/core.*)
           if [ ${#cores[@]} -eq 0 ]; then
             echo "No core dumps captured — the fuzzer failed with a repro (see the crash-* artifact), not a native abort."
-            exit 0
+            echo "found=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "found=true" >>"$GITHUB_OUTPUT"
           fi
-          sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+
+      - name: Install gdb (native crash post-mortem)
+        if: steps.core-check.outputs.found == 'true'
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "native crash post-mortem: gdb backtrace from core"
+          timeout: "3m"
+          packages: gdb
+
+      - name: Native crash post-mortem (gdb backtrace from core)
+        if: steps.core-check.outputs.found == 'true'
+        run: |
+          shopt -s nullglob
           mkdir -p /tmp/cores/bt
-          for core in "${cores[@]}"; do
+          for core in /tmp/cores/core.*; do
             echo "==================== $core ===================="
             gdb --batch -q -ex 'thread apply all bt full' -ex 'info registers' -ex quit \
               "$(command -v java)" "$core" 2>&1 | tee "/tmp/cores/bt/$(basename "$core").bt.txt"
