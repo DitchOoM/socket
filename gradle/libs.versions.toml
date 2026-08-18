@@ -108,7 +108,16 @@ kotlinWrappers = "2026.6.0"
 # (WebTransportWire, Qpack{StringLiteral,FieldSectionCodec}, AlpnUtils), which takes the strict encoder
 # that throws on malformed input instead. Taken to keep the pin current, and because the fallback is the
 # only path Android has if socket ever adopts a TextPolicy. Drop-in, one file, no source changes here.
-buffer = "6.30.4"
+# 6.30.5 (buffer #374): PooledBuffer's per-buffer refcount was plain Int/Boolean even under
+# ThreadingMode.MultiThreaded — the freelist was lock-free, the refcount around it was not. Two threads
+# racing releaseRef() could both observe "last reference" and double-release the chunk; at maxPoolSize
+# that second release is a genuine native free, so a still-referenced buffer got handed back to the
+# allocator. Socket IS the field evidence: #401's corrupt QUIC echo carried glibc tcache pointers, and
+# socket runs three MultiThreaded pools (QuicheDriver streamReadPool + datagram pool, ReadBufferSource).
+# The count is now atomic exactly when threadingMode == MultiThreaded; SingleThreaded keeps the plain
+# counter (atomic RMW measured ~33% slower on x86_64, free on ARM64). Drop-in, no source changes here.
+# This pin is the #401 fix; the JDK17/JNI soak lane going green-in-a-streak is its acceptance test.
+buffer = "6.30.5"
 ksp = "2.3.9"
 # 1.19.0 requires consumers to compile against compileSdk 37; every module moved to 37 so this is
 # no longer held back. AAR-metadata enforces it, so a compileSdk regression fails the build loudly
