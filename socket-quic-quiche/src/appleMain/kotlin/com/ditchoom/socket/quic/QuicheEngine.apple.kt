@@ -36,6 +36,11 @@ object QuicheEngine : QuicEngine {
         // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
         val recorder = traceRecorderFor(quicOptions)
+        // ONE monitor per connection, resolved here and handed to all three consumers below. See
+        // `resolveNetworkMonitor`: sharing the instance is what keeps the observation sequence a
+        // migration reports and the one `networkAtClose` reports indexing the same stream.
+        val monitor = resolveNetworkMonitor(quicOptions.networkMonitor)
+        val observation = ConnectionNetworkObservation.of(monitor, RealDriverClock)
         val connection =
             buildAppleQuicConnection(
                 hostname,
@@ -43,11 +48,12 @@ object QuicheEngine : QuicEngine {
                 quicOptions,
                 transport,
                 timeout,
-                QuicheDriverTuning(recorderFactory = { recorder }),
+                QuicheDriverTuning(recorderFactory = { recorder }, networkObservation = observation),
             )
-        wireClientConnectivityTap(quicOptions, recorder, connection)
-        // Auto-migration (QuicOptions.autoMigrateOnNetworkChange, on by default): re-home on link change.
-        wireAutoMigration(quicOptions, connection)
+        observation.collectInto(connection)
+        wireClientConnectivityTap(quicOptions, recorder, connection, monitor)
+        // Auto-migration (QuicOptions.migration, Automatic by default): re-home on link change.
+        wireAutoMigration(quicOptions, connection, monitor)
         return connection
     }
 

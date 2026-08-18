@@ -54,6 +54,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_path_event_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_cert
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_error
+import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
@@ -61,11 +62,13 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
 import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
+import com.ditchoom.socket.quic.quiche.quiche_conn_trace_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_writable
 import com.ditchoom.socket.quic.quiche.quiche_connect
 import com.ditchoom.socket.quic.quiche.quiche_header_info
@@ -84,8 +87,10 @@ import com.ditchoom.socket.quic.quiche.quiche_set_virtual_time_nanos
 import com.ditchoom.socket.quic.quiche.quiche_stats
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_free
 import com.ditchoom.socket.quic.quiche.quiche_stream_iter_next
+import com.ditchoom.socket.quic.quiche.quiche_transport_params
 import kotlinx.cinterop.BooleanVar
 import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.NativePtr
 import kotlinx.cinterop.UByteVar
@@ -106,6 +111,7 @@ import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import platform.posix.memcpy
+import platform.posix.memset
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.nanoseconds
 
@@ -415,6 +421,50 @@ internal object CinteropQuicheApi : QuicheApi {
             }
         }
 
+    override fun connTraceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        copyConnBytes(buf, bufLen) { out, outLen ->
+            quiche_conn_trace_id(conn.handle.toCPointer()!!, out, outLen)
+        }
+
+    override fun connSourceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int =
+        copyConnBytes(buf, bufLen) { out, outLen ->
+            quiche_conn_source_id(conn.handle.toCPointer()!!, out, outLen)
+        }
+
+    /**
+     * Shared body for quiche's `(const uint8_t **out, size_t *out_len)` readers, honouring the
+     * snprintf-style contract: copy only when it fits, always return the true length. Factored out
+     * because [connTraceId] and [connSourceId] differ solely in which C function they call.
+     */
+    private inline fun copyConnBytes(
+        buf: Long,
+        bufLen: Int,
+        read: (CPointer<CPointerVar<UByteVar>>, CPointer<ULongVar>) -> Unit,
+    ): Int =
+        memScoped {
+            val out = alloc<CPointerVar<UByteVar>>()
+            val outLen = alloc<ULongVar>()
+            read(out.ptr, outLen.ptr)
+            val len = outLen.value.toInt()
+            val src = out.value
+            if (len <= 0 || src == null) {
+                0
+            } else {
+                if (len <= bufLen) {
+                    memcpy(buf.toCPointer<UByteVar>()!!, src, len.convert())
+                }
+                len
+            }
+        }
+
     override fun connPeerError(conn: QuicheConn): QuicError? = readConnError(conn, peer = true)
 
     override fun connLocalError(conn: QuicheConn): QuicError? = readConnError(conn, peer = false)
@@ -468,6 +518,39 @@ internal object CinteropQuicheApi : QuicheApi {
                 dgramRecv = out.dgram_recv.toLong(),
                 dgramSent = out.dgram_sent.toLong(),
                 pathsCount = out.paths_count.toLong(),
+            )
+        }
+
+    /**
+     * `quiche_conn_peer_transport_params` returns false until the handshake has processed the peer's
+     * parameters — [PeerTransportParams.NotYetNegotiated], a timing state that resolves on its own.
+     *
+     * The out-struct is **zeroed before the call**: `memScoped { alloc<T>() }` hands back uninitialised
+     * stack, and while quiche writes every field on the `true` path, nothing in the type system says so.
+     * One refactor that reads a field on the `false` path would otherwise be reading stack garbage, and
+     * an ABI-sensitive struct is the last place to leave that latent.
+     */
+    override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
+        memScoped {
+            val out = alloc<quiche_transport_params>()
+            memset(out.ptr, 0, sizeOf<quiche_transport_params>().convert())
+            if (!quiche_conn_peer_transport_params(conn.handle.toCPointer()!!, out.ptr)) {
+                return@memScoped PeerTransportParams.NotYetNegotiated
+            }
+            PeerTransportParams.Negotiated(
+                maxIdleTimeoutMillis = out.peer_max_idle_timeout.toLong(),
+                maxUdpPayloadSize = out.peer_max_udp_payload_size.toLong(),
+                initialMaxData = out.peer_initial_max_data.toLong(),
+                initialMaxStreamDataBidiLocal = out.peer_initial_max_stream_data_bidi_local.toLong(),
+                initialMaxStreamDataBidiRemote = out.peer_initial_max_stream_data_bidi_remote.toLong(),
+                initialMaxStreamDataUni = out.peer_initial_max_stream_data_uni.toLong(),
+                initialMaxStreamsBidi = out.peer_initial_max_streams_bidi.toLong(),
+                initialMaxStreamsUni = out.peer_initial_max_streams_uni.toLong(),
+                ackDelayExponent = out.peer_ack_delay_exponent.toLong(),
+                maxAckDelayMillis = out.peer_max_ack_delay.toLong(),
+                disableActiveMigration = out.peer_disable_active_migration,
+                activeConnIdLimit = out.peer_active_conn_id_limit.toLong(),
+                maxDatagramFrameSize = out.peer_max_datagram_frame_size.toLong(),
             )
         }
 

@@ -24,8 +24,18 @@ internal class DriverQuicConnection(
     override val remoteAddress: SocketAddress,
     connectionScope: CoroutineScope,
 ) : QuicConnection,
+    QuicheBackedConnection,
     CoroutineScope by connectionScope {
     override val state: StateFlow<QuicConnectionState> = driver.state
+
+    override val quicheDriver: QuicheDriver get() = driver
+
+    /**
+     * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
+     * because it rotates — so this is rebuilt per read rather than stored.
+     */
+    override val identity: QuicConnectionIdentity
+        get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
 
     private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
 
@@ -50,7 +60,7 @@ internal class DriverQuicConnection(
                 ),
             )
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         }
     }
 
@@ -59,6 +69,20 @@ internal class DriverQuicConnection(
     override fun streams(): Flow<QuicByteStream> = driver.incomingStreams.consumeAsFlow()
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
+
+    /**
+     * RFC 9000 §9 is client-only in QUIC v1, and this is the server-accepted side — stated here rather
+     * than inherited from [QuicScope]'s default, which would answer
+     * [MigrationResult.Unmoved.Impossible.BackendCannotMigrate] and blame the backend for a role
+     * constraint. The driver behind this connection is built with
+     * [MigrationCapability.ServerConnection] and would answer the same; overriding here means a server
+     * connection never has to reach the driver to learn it.
+     *
+     * ([networkAtClose] is deliberately left at the [QuicConnection] default: a server has no local
+     * client network path to correlate against, which is the same reason the connectivity tap is never
+     * wired from `bind`.)
+     */
+    override suspend fun migrate(target: MigrationTarget): MigrationResult = MigrationResult.Unmoved.Impossible.ServerConnection
 
     override suspend fun close(error: QuicError) {
         try {

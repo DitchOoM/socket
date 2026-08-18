@@ -14,6 +14,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +35,8 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeMark
 
 /**
  * Drives a single quiche connection from one coroutine. No mutexes, no polling.
@@ -108,16 +111,31 @@ class QuicheDriver(
      */
     private val recorder: QuicTraceRecorder? = null,
     /**
-     * Connection-migration wiring (slice 3). All default to "disabled" so server-accepted
-     * drivers, unit-test fakes, and the no-migration platforms keep their single-path
-     * behaviour untouched. A client setup that supports migration passes the peer sockaddr,
-     * the primary local sockaddr, and a [UdpChannelFactory] for opening additional paths.
+     * Connection-migration wiring (RFC 9000 §9), as one exhaustive answer.
+     *
+     * **Deliberately has no default.** It replaces five parameters that all defaulted to "disabled"
+     * (`udpChannelFactory: UdpChannelFactory? = null` plus four `0L`/`0` sockaddr sentinels), which
+     * meant a construction site could stay silent and get a connection that quietly could not migrate.
+     * That is how the Apple client shipped without migration for a year: nothing ever asked it. Now a
+     * new platform, backend, or test double cannot compile until it states which case applies.
+     *
+     * `internal` rather than `private` so `QuicCapabilityConformanceTestSuite` can read the **claim** a
+     * live connection was built with and check it against what that connection actually does. A
+     * declaration nothing verifies is just a comment the compiler happens to type-check: it was
+     * `Supported` that Apple would have had to state, and stating it wrongly costs nothing until
+     * something measures it. Internal, so this stays inside the module — the seam is a test seam, like
+     * [QuicheBackedConnection], not a consumer API.
      */
-    private val peerAddr: Long = 0L,
-    private val peerLen: Int = 0,
-    private val primaryLocalAddr: Long = 0L,
-    private val primaryLocalLen: Int = 0,
-    private val udpChannelFactory: UdpChannelFactory? = null,
+    internal val migration: MigrationCapability,
+    /**
+     * The connection's shared [NetworkMonitor][com.ditchoom.socket.NetworkMonitor] observation, when a
+     * **client** engine resolved one; `null` on a server-accepted driver and on every test double, both
+     * of which then report [NetworkAtClose.NotObserved] — the truthful answer when nothing is observing.
+     *
+     * Held here, rather than on the connection wrapper, because the value has to be latched at the
+     * close transition ([transitionToClosed]) and that transition happens on the driver loop.
+     */
+    private val networkObservation: ConnectionNetworkObservation = ConnectionNetworkObservation.Unobserved,
     /**
      * Called from [cleanup] after all quiche handles have been freed. Used by callers
      * to release platform-owned memory referenced by [recvInfo] (peer/local sockaddrs)
@@ -184,13 +202,93 @@ class QuicheDriver(
     val state: StateFlow<QuicConnectionState> = _state
 
     /**
+     * This connection's identity and network correlation, as a value snapshot for a
+     * [QuicCloseException].
+     *
+     * Deliberately excludes the close *reason*: the exception carries that already as its `quicError`,
+     * and a second copy here could disagree with it. Also excludes everything internal — no `PathKey`
+     * (opaque bits, deliberately not reversible into an address) and no native connection handle.
+     */
+    internal fun closeAttribution(): QuicCloseAttribution =
+        QuicCloseAttribution.Attributed(
+            identity = QuicConnectionIdentity(session = sessionId, wire = wireConnectionId),
+            network = NetworkAtClose.NotObserved,
+        )
+
+    /**
+     * This connection's [QuicSessionId] — quiche's stable trace id, read once and cached.
+     *
+     * Cached because it does not change: quiche documents `quiche_conn_trace_id` as "a string uniquely
+     * representing the connection", and unlike the source CID it survives rotation and migration. That
+     * stability is exactly what makes it the id you follow one connection by across a reconnect cycle.
+     *
+     * A backend that does not bind the accessor reports length 0; the session id then falls back to the
+     * connection handle, which is still unique within this process and still tells concurrent
+     * connections apart — the question the session id exists to answer.
+     */
+    internal val sessionId: QuicSessionId by lazy {
+        QuicSessionId(readConnBytes(asciiText = true) { b, n -> api.connTraceId(conn, b, n) } ?: "conn-${conn.handle.toString(16)}")
+    }
+
+    /**
+     * The CID currently on the wire, read fresh on every access.
+     *
+     * Deliberately **not** cached: CIDs rotate, and migration issues a new one by design (RFC 9000
+     * §9.5). A cached value would be right until the first handoff and quietly wrong afterwards —
+     * which is the moment someone is most likely to be reading it.
+     */
+    internal val wireConnectionId: QuicWireConnectionId
+        get() =
+            readConnBytes(asciiText = false) { b, n -> api.connSourceId(conn, b, n) }
+                ?.let { QuicWireConnectionId.Known(it) }
+                ?: QuicWireConnectionId.Unavailable
+
+    /**
+     * Run one of quiche's snprintf-style `(buf, bufLen) -> length` readers and render the result, or
+     * `null` when the backend reports nothing (length 0 — including the interface default for a backend
+     * that has not bound the accessor).
+     *
+     * [asciiText] picks the rendering: quiche's trace id is documented as a string, while a connection
+     * ID is raw bytes that only mean anything as hex.
+     */
+    private inline fun readConnBytes(
+        asciiText: Boolean,
+        read: (Long, Int) -> Int,
+    ): String? {
+        val buf = bufferFactory.allocate(CONN_ID_TEXT_CAPACITY)
+        try {
+            val len = read(addr(buf), CONN_ID_TEXT_CAPACITY)
+            if (len <= 0 || len > CONN_ID_TEXT_CAPACITY) return null
+            val sb = StringBuilder(if (asciiText) len else len * 2)
+            repeat(len) {
+                val v = buf.readByte().toInt() and 0xFF
+                if (asciiText) {
+                    sb.append(v.toChar())
+                } else {
+                    sb.append(HEX[v ushr 4]).append(HEX[v and 0xF])
+                }
+            }
+            return sb.toString()
+        } finally {
+            buf.freeNativeMemory()
+        }
+    }
+
+    /**
      * The structured QUIC reason to report when an operation fails because the connection is gone:
      * the recorded close error if the connection has reached [QuicConnectionState.Closed], otherwise
      * [fallback]. Connection state is the single source of truth for the close reason — the driver,
      * [DriverStreamAdapter], and every platform facade funnel through here so a [QuicCloseException]
      * always carries the most specific reason available.
      */
-    fun closeReasonOr(fallback: QuicError): QuicError = (state.value as? QuicConnectionState.Closed)?.error ?: fallback
+    fun closeReasonOr(fallback: QuicError): QuicError =
+        when (val r = (state.value as? QuicConnectionState.Closed)?.reason) {
+            is QuicCloseReason.ByPeer -> r.error
+            is QuicCloseReason.ByLocal -> r.error
+            // Graceful, Unspecified, and a state that is not Closed at all carry no specific error —
+            // the caller's fallback stays the answer, exactly as under the old nullable.
+            QuicCloseReason.Graceful, QuicCloseReason.Unspecified, null -> fallback
+        }
 
     /**
      * Suspend until the handshake **settles**, and fail if it settled anywhere other than
@@ -216,7 +314,7 @@ class QuicheDriver(
                 state.first { it !is QuicConnectionState.Handshaking }
             }
         if (settled !is QuicConnectionState.Established) {
-            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed")
+            throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
         }
     }
 
@@ -308,30 +406,68 @@ class QuicheDriver(
         key: PathKey,
     ): UdpChannel = recorder?.wrap(channel, key.takeIf { it.family != 0 }) ?: channel
 
-    private val primaryKey = if (primaryLocalAddr != 0L) api.decodePathKey(primaryLocalAddr) else PathKey(0, 0, 0L, 0L)
+    // The primary path's local sockaddr, or null when this driver has no migration wiring. Reading it
+    // through the sealed capability is what retires the `0L`-means-absent sentinel: in the Supported
+    // branch a PinnedSockAddr exists and is real by construction, and in Unsupported there is no address
+    // at all rather than one that happens to be zero.
+    private val primaryLocal: PinnedSockAddr? =
+        when (migration) {
+            is MigrationCapability.Supported -> migration.primaryLocal
+            MigrationCapability.ServerConnection,
+            MigrationCapability.PolicyForbids,
+            MigrationCapability.BackendCannotMigrate,
+            -> null
+        }
+
+    private val primaryKey =
+        primaryLocal?.let { api.decodePathKey(it.address) } ?: PathKey(0, 0, 0L, 0L)
 
     private val primary =
         PathEntry(
             key = primaryKey,
             channel = tapChannel(udpChannel, primaryKey),
             recvInfo = recvInfo,
-            localAddr = primaryLocalAddr,
-            localLen = primaryLocalLen,
+            localAddr = primaryLocal?.address ?: 0L,
+            localLen = primaryLocal?.length ?: 0,
             isPrimary = true,
             // Primary sockaddr lifetime is owned by the connection setup's onCleanup; nothing to release here.
             release = {},
         )
     private val paths = mutableMapOf(primary.key to primary)
 
-    /** True only for a client connection wired with a [UdpChannelFactory] and peer/local sockaddrs. */
-    private val migrationEnabled: Boolean = clientMode && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L
+    /**
+     * The migration wiring when this driver has it, else null — one `when` over the sealed capability
+     * instead of the four-term boolean this replaced
+     * (`clientMode && udpChannelFactory != null && peerAddr != 0L && primaryLocalAddr != 0L`). Every
+     * conjunct of that expression is now either impossible to get wrong (the sockaddrs, by
+     * [PinnedSockAddr]'s own construction) or stated once at the call site.
+     */
+    private val migrationWiring: MigrationCapability.Supported? =
+        when (migration) {
+            is MigrationCapability.Supported -> migration
+            MigrationCapability.ServerConnection,
+            MigrationCapability.PolicyForbids,
+            MigrationCapability.BackendCannotMigrate,
+            -> null
+        }
+
+    /** True only for a client connection wired for migration. */
+    private val migrationEnabled: Boolean = migrationWiring != null
 
     private var activeKey: PathKey = primary.key
     private var pendingMigration: PendingMigration? = null
     private var spareCidsIssued = false
 
-    private val _pathState = MutableStateFlow(PathInfo())
-    val pathState: StateFlow<PathInfo> = _pathState
+    private val _pathState = MutableStateFlow<QuicPathState>(QuicPathState.Original)
+    val pathState: StateFlow<QuicPathState> = _pathState
+
+    /**
+     * What the network was doing — live while the connection runs, frozen at [transitionToClosed].
+     * [NetworkAtClose.NotObserved] when no monitor was resolved for this driver (a server connection, a
+     * test double), which the observation itself reports via
+     * [ConnectionNetworkObservation.Unobserved] — there is no second, nullable encoding of that state.
+     */
+    val networkAtClose: NetworkAtClose get() = networkObservation.atClose
 
     private var driverScope: CoroutineScope? = null
 
@@ -347,12 +483,80 @@ class QuicheDriver(
 
     private fun addr(buf: PlatformBuffer?): Long = if (buf == null) 0L else buf.nativeMemoryAccess!!.nativeAddress.toLong()
 
+    /**
+     * The migration in flight: which path it opened, the endpoint that path **resolved to** (not the
+     * one requested — that distinction is the whole of the `Succeeded(null, 0)` bug), and the caller's
+     * deferred, completed by [drainPathEvents] once the peer validates or fails the path.
+     *
+     * …or, if quiche reports **neither** outcome, by [abandonPathValidationIfDue] once [budget]
+     * elapses. Path validation is the one driver operation with no other bound on it: quiche can go
+     * silent on a probed path (measured on a real Wi-Fi↔cellular handoff — a probe stuck at
+     * `Probing` for the rest of a 2194-line trace), and because [handleMigrate] admits one migration
+     * at a time and the automatic reactor awaits each `migrate()` to completion, an unbounded probe
+     * parks the reactor for the connection's life: every later network change is either never
+     * observed or answered `AlreadyInProgress`. The deadline is timed off [clock] and off the same
+     * monotonic-mark shape as `lastActivity`/`keepAliveRemaining`, so it wakes on the driver's
+     * existing [select] — no extra timer, no polling.
+     */
     private inner class PendingMigration(
         val key: PathKey,
-        val localHost: String?,
-        val localPort: Int,
+        val localEndpoint: QuicLocalEndpoint,
         val result: CompletableDeferred<MigrationResult>,
-    )
+        /** RFC 9000 §8.2.4 abandon budget, computed once at arm time by [pathValidationBudget]. */
+        private val budget: Duration,
+    ) {
+        private val armedAt: TimeMark = clock.markNow()
+
+        /** Time left before validation must be abandoned; [Duration.ZERO] once due. Feeds the loop's `wait`. */
+        fun validationRemaining(): Duration = (budget - armedAt.elapsedNow()).coerceAtLeast(Duration.ZERO)
+
+        /** Re-*measured*, never inferred from which `select` clause won — see [abandonPathValidationIfDue]. */
+        fun isDue(): Boolean = armedAt.elapsedNow() >= budget
+    }
+
+    /**
+     * How long to let a PATH_CHALLENGE go unanswered before abandoning validation — RFC 9000 §8.2.4:
+     *
+     * > "Endpoints SHOULD abandon path validation based on a timer. When setting this timer,
+     * > implementations are cautioned that the new path could have a longer round-trip time than the
+     * > original. A value of three times the larger of the current PTO or the PTO for the new path
+     * > (using kInitialRtt, as defined in [QUIC-RECOVERY]) is RECOMMENDED."
+     *
+     * Derived, never configured. A [QuicOptions] knob would add a number that can contradict the
+     * migration policy, and this formula is self-tuning: it widens with the current path's RTT and
+     * never drops below the ~3s `kInitialRtt` floor.
+     *
+     * **The new path's PTO is genuinely unavailable here, and that is the RFC's own `kInitialRtt`
+     * branch — not a fallback hack.** This driver only ever reads `pathIdx = 0` (the primary) and
+     * keeps no path→index mapping, so there are no RTT samples for a path that has not yet answered
+     * a single PATH_CHALLENGE. [QuicheApi.connPathStats] also answers `null` on a backend that has
+     * not bound the stats FFI, which lands in exactly the same branch for the same reason: no
+     * sample, so assume `kInitialRtt`.
+     */
+    private fun pathValidationBudget(): Duration {
+        val currentPto = api.connPathStats(conn, 0L)?.let { pto(it.rtt, it.rttvar) }
+        return maxOf(currentPto ?: INITIAL_PTO, INITIAL_PTO) * PATH_VALIDATION_PTO_MULTIPLIER
+    }
+
+    /**
+     * RFC 9002 §6.2.1: `PTO = smoothed_rtt + max(4 * rttvar, kGranularity) + max_ack_delay`.
+     *
+     * `max_ack_delay` is the peer's advertised value (RFC 9000 §18.2), read through the same typed
+     * accessor the migration permission check uses; RFC 9002 §6.2.1 requires it be taken as zero
+     * until the handshake is confirmed, which is precisely what [PeerTransportParams.NotYetNegotiated]
+     * says.
+     */
+    private fun pto(
+        rtt: Duration,
+        rttvar: Duration,
+    ): Duration {
+        val maxAckDelay =
+            when (val params = api.connPeerTransportParams(conn)) {
+                PeerTransportParams.NotYetNegotiated -> Duration.ZERO
+                is PeerTransportParams.Negotiated -> params.maxAckDelayMillis.milliseconds
+            }
+        return rtt + maxOf(rttvar * 4, K_GRANULARITY) + maxAckDelay
+    }
 
     fun start(scope: CoroutineScope) {
         driverScope = scope
@@ -363,7 +567,7 @@ class QuicheDriver(
             scope.launch(driverContext) {
                 state.collect { s ->
                     r.connectionState(s)
-                    if (s is QuicConnectionState.Closed) s.error?.let { r.closeError(it) }
+                    if (s is QuicConnectionState.Closed) s.reason.errorOrNull?.let { r.closeError(it) }
                 }
             }
             scope.launch(driverContext) {
@@ -418,11 +622,13 @@ class QuicheDriver(
                     keepAliveInterval
                         ?.takeIf { api.connIsEstablished(conn) }
                         ?.let { (it - lastActivity.elapsedNow()).coerceAtLeast(Duration.ZERO) }
-                val wait =
-                    when {
-                        connTimeout != null && keepAliveRemaining != null -> minOf(connTimeout, keepAliveRemaining)
-                        else -> connTimeout ?: keepAliveRemaining
-                    }
+                // RFC 9000 §8.2.4's abandon timer for an in-flight PATH_CHALLENGE. Null whenever no
+                // migration is armed, so a connection that never migrates arms exactly the timers it
+                // always did.
+                val probeRemaining = pendingMigration?.validationRemaining()
+                // Three deadlines, one wake: whichever is soonest decides what the timer branch below
+                // does. A `when` over the 2×2 null matrix this replaced does not survive a third term.
+                val wait = listOfNotNull(connTimeout, keepAliveRemaining, probeRemaining).minOrNull()
                 val cmd =
                     if (wait == null) {
                         // No timer pending — block until next command (or channel close)
@@ -444,6 +650,14 @@ class QuicheDriver(
                         execute(cmd)
                         lastActivity = clock.markNow() // any command is activity → defer keepalive
                     }
+                    // A timer fired, and the path-validation deadline is the soonest of the three →
+                    // abandon the probe. This arm must sit ABOVE the keepalive one: without it the
+                    // wake falls through to `else`, quiche is handed a timeout it did not ask for,
+                    // and the expired probe is silently swallowed — which is the shape of the defect,
+                    // not a variation on it.
+                    probeRemaining != null &&
+                        (connTimeout == null || probeRemaining <= connTimeout) &&
+                        (keepAliveRemaining == null || probeRemaining <= keepAliveRemaining) -> abandonPathValidationIfDue()
                     // A timer fired. If the keepalive deadline is strictly the sooner one, PING; quiche's
                     // idle timer is always later (keepAliveInterval < idleTimeout), so this fires first and
                     // prevents the idle close. Otherwise hand the (idle/loss-recovery) timeout to quiche.
@@ -566,6 +780,10 @@ class QuicheDriver(
                 cmd.result.complete(QuicStatsSnapshot(api.connStats(conn), api.connPathStats(conn, 0L)))
             }
 
+            is QuicheCmd.PeerTransportParamsRead -> {
+                cmd.result.complete(api.connPeerTransportParams(conn))
+            }
+
             is QuicheCmd.Close -> {
                 api.connClose(conn, cmd.error)
                 // Sync state from quiche BEFORE signalling the close completed, so a caller
@@ -586,9 +804,14 @@ class QuicheDriver(
         }
     }
 
-    /** Unreachable in practice — [run] routes [QuicheCmd.Migrate] to the suspending [handleMigrate]. */
+    /**
+     * Unreachable — [run] matches [QuicheCmd.Migrate] *before* calling [execute], so this arm exists
+     * only to keep [execute]'s `when` exhaustive. If it ever ran, no path would have been opened, so
+     * [MigrationResult.Unmoved.Failed.PathNotValidated] is the honest report: nothing moved, and a
+     * later attempt (dispatched correctly) could still succeed.
+     */
     private fun handleMigrateSync(cmd: QuicheCmd.Migrate) {
-        cmd.result.complete(MigrationResult.Failed("migrate dispatched on non-suspending path"))
+        cmd.result.complete(MigrationResult.Unmoved.Failed.PathNotValidated)
     }
 
     private suspend fun afterCommand() {
@@ -712,9 +935,14 @@ class QuicheDriver(
      */
     private fun transitionToClosed() {
         if (_state.value is QuicConnectionState.Closed) return
+        // Latch the network correlation BEFORE anything can observe Closed, so a reader that keys off
+        // the state gets what the network was doing when the connection died — not what it is doing when
+        // the log line is written. This is the whole point of freezing here rather than in a collector:
+        // the connection's scope children are cancelled at close, so a state collector may never run.
+        networkObservation.freeze()
         drainReadableStreamsIntoSlots()
         commands.close()
-        _state.value = QuicConnectionState.Closed(resolveCloseError())
+        _state.value = QuicConnectionState.Closed(resolveCloseReason())
     }
 
     /**
@@ -786,22 +1014,32 @@ class QuicheDriver(
     }
 
     /**
-     * The typed [QuicError] for why the connection closed, or `null` for a clean shutdown. Prefers the
-     * **peer's** CONNECTION_CLOSE (the remote tore us down — e.g. a strict server rejecting our streams
-     * or transport params) over our **local** close (quiche itself aborted — handshake/TLS failure,
-     * protocol violation), since the peer's reason is the more actionable one when both exist. quiche is
+     * The exhaustive [QuicCloseReason] for why the connection closed. Prefers the **peer's**
+     * CONNECTION_CLOSE (the remote tore us down — e.g. a strict server rejecting our streams or
+     * transport params) over our **local** close (quiche itself aborted — handshake/TLS failure,
+     * protocol violation), since the peer's reason is the more actionable one when both exist; the
+     * result records which side it came from, which the old bare-[QuicError] return discarded. quiche is
      * single-threaded; this runs on the driver loop alongside [updateState], so the reads are safe.
-     * Both helpers are bound on every real backend (FFM, JNI/Android, cinterop); only test doubles
-     * return `null`, in which case the close looks clean.
+     *
+     * Both helpers are bound on every real backend (FFM, JNI/Android, cinterop). A test double that
+     * reports neither error nor timeout now yields [QuicCloseReason.Unspecified] rather than looking
+     * like a clean shutdown.
      */
-    private fun resolveCloseError(): QuicError? {
-        (api.connPeerError(conn) ?: api.connLocalError(conn))
-            ?.takeUnless { it is QuicError.NoError }
-            ?.let { return it }
+    private fun resolveCloseReason(): QuicCloseReason {
+        val peer = api.connPeerError(conn)
+        val local = api.connLocalError(conn)
+        // Precedence is unchanged: a real (non-NoError) reason wins, peer before local.
+        peer?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByPeer(it) }
+        local?.takeUnless { it is QuicError.NoError }?.let { return QuicCloseReason.ByLocal(it) }
         // No CONNECTION_CLOSE frame: distinguish an idle/handshake-stall timeout (a local event, no wire
         // code) from a genuinely clean shutdown — otherwise a stalled connection looks like NoError.
-        if (api.connIsTimedOut(conn)) return QuicError.IdleTimeout
-        return null
+        if (api.connIsTimedOut(conn)) return QuicCloseReason.ByLocal(QuicError.IdleTimeout)
+        // A CONNECTION_CLOSE carrying NO_ERROR was exchanged — a real graceful shutdown.
+        if (peer is QuicError.NoError || local is QuicError.NoError) return QuicCloseReason.Graceful
+        // Nothing was exchanged and nothing timed out: the scope was cancelled or a throw unwound the
+        // loop. Previously this returned null and read as a clean shutdown, which is what made the
+        // API-35 emulator teardown undiagnosable (see the transitionToClosed call site above).
+        return QuicCloseReason.Unspecified
     }
 
     private suspend fun flushOutgoing() {
@@ -821,17 +1059,39 @@ class QuicheDriver(
             // their connected/path sockets. NioUdpChannel caches the reconstruction (steady state
             // targets one address), so the non-migrating server path stays allocation-free.
             val dest = if (isServer) api.decodePathKey(api.sendInfoToAddr(sendInfo)) else null
-            try {
-                channel.send(udpSendBuf, written, dest)
-            } catch (ce: kotlinx.coroutines.CancellationException) {
-                throw ce
-            } catch (_: Exception) {
-                // UDP send failed (peer unreachable, channel closed during shutdown, etc).
-                // The connection cannot make further progress — short-circuit to Closed and
-                // let the driver loop unwind via cleanup(). Letting the exception escape
-                // would leak it as an uncaught coroutine failure into the parent scope.
-                transitionToClosed()
-                return
+            // A channel reports failure as a value ([SendOutcome]); the `catch` here is only a net for
+            // a backend that throws outside that contract. It normalises into the type — it does not
+            // decide policy. That decision is the exhaustive `when` below, which is what makes adding
+            // a new outcome a compile error rather than a silent inheritance of whatever this branch
+            // happened to do. Letting anything escape would leak an uncaught coroutine failure into
+            // the parent scope, the original defect this site was written to fix.
+            val outcome =
+                try {
+                    channel.send(udpSendBuf, written, dest)
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (untyped: Exception) {
+                    SendOutcome.Failed(DatagramSendError.Transport(untyped))
+                }
+            when (outcome) {
+                is SendOutcome.Sent -> Unit // keep draining quiche's send queue
+                is SendOutcome.Failed -> {
+                    // Stop draining this flush — but do NOT end the connection.
+                    //
+                    // An undelivered datagram is the most ordinary event in QUIC: loss detection and
+                    // retransmission (RFC 9002) exist for exactly this, and a local send failure is
+                    // indistinguishable from a packet lost on the wire. RFC 9000 §10 enumerates the
+                    // three ways a connection may terminate — idle timeout, immediate close, and
+                    // stateless reset — and a failed send is not one of them.
+                    //
+                    // This site used to call transitionToClosed(), which made two things impossible:
+                    // riding out transient backpressure (ENOBUFS/EAGAIN), and active connection
+                    // migration at all — a handoff happens *because* the old path died, so the first
+                    // send afterwards killed the connection before the new path could be validated.
+                    // Termination is left to quiche's idle timer, which reports the truthful
+                    // QuicError.IdleTimeout (pinned by IdleTimeoutTerminationTests).
+                    return
+                }
             }
         }
     }
@@ -928,32 +1188,91 @@ class QuicheDriver(
      * completes the switch once the peer validates the path. Suspends to open the socket.
      */
     private suspend fun handleMigrate(cmd: QuicheCmd.Migrate) {
-        val factory = udpChannelFactory
-        if (!migrationEnabled || factory == null) {
-            cmd.result.complete(MigrationResult.Unsupported)
+        // One translation, not a judgement: each non-Supported capability names exactly one
+        // "and never will" outcome, so the caller learns *which* permanent condition applies rather
+        // than the single opaque `Unsupported` that used to cover all three.
+        val wiring =
+            when (migration) {
+                MigrationCapability.ServerConnection -> {
+                    cmd.result.complete(MigrationResult.Unmoved.Impossible.ServerConnection)
+                    return
+                }
+                MigrationCapability.PolicyForbids -> {
+                    cmd.result.complete(MigrationResult.Unmoved.Impossible.PolicyForbids)
+                    return
+                }
+                MigrationCapability.BackendCannotMigrate -> {
+                    cmd.result.complete(MigrationResult.Unmoved.Impossible.BackendCannotMigrate)
+                    return
+                }
+                is MigrationCapability.Supported -> migration
+            }
+        // What the peer's transport parameters (RFC 9000 §18.2) say about moving to a new local address.
+        // Exhaustive over three states, with no boolean and no null: "the peer forbids it" and "we have
+        // not read the peer's parameters yet" are facts of different kinds — one permanent, one a timing
+        // state that resolves on its own — and a nullable Boolean made them share a token.
+        when (api.connPeerMigrationPermission(conn)) {
+            // Probing would burn a spare DCID only to fail validation.
+            PeerMigrationPermission.Forbidden -> {
+                cmd.result.complete(MigrationResult.Unmoved.Impossible.PeerForbids)
+                return
+            }
+            // RFC 9000 §9: an endpoint MUST NOT initiate migration before the handshake is confirmed.
+            // Retryable, so `Failed` — the very next attempt, once the handshake completes, can succeed.
+            PeerMigrationPermission.NotYetNegotiated -> {
+                cmd.result.complete(MigrationResult.Unmoved.Failed.HandshakeNotConfirmed)
+                return
+            }
+            PeerMigrationPermission.Permitted -> Unit
+        }
+        val factory = wiring.channelFactory
+        // Refuse a local endpoint this platform cannot bind, rather than opening a socket somewhere
+        // else and reporting Succeeded. On Apple `UdpSocket.connect` hands the endpoint to NWConnection
+        // and its own comment calls localHost/localPort "advisory", so honouring this request is not
+        // possible — and silently substituting a different local address would make the Succeeded value
+        // itself a lie. FreshLocalEndpoint is served everywhere and is what automatic migration issues,
+        // so this rejects only an explicit, unserviceable ask.
+        val namesAnEndpoint = cmd.target !is MigrationTarget.FreshLocalEndpoint
+        if (namesAnEndpoint && factory.localEndpointSupport == LocalEndpointSupport.PlatformAssigned) {
+            cmd.result.complete(MigrationResult.Unmoved.Failed.EndpointNotSelectable)
             return
         }
         if (pendingMigration != null) {
-            cmd.result.complete(MigrationResult.Failed("a migration is already in progress"))
+            cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
             return
         }
         if (api.connAvailableDcids(conn) <= 0L) {
-            cmd.result.complete(MigrationResult.Failed("no spare destination connection id available"))
+            cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
         }
 
+        // The factory still speaks (host?, port) because that is what every platform's `bind` speaks;
+        // the sentinel pair is confined to this one line instead of reaching the public API.
+        val requestedHost =
+            when (val t = cmd.target) {
+                MigrationTarget.FreshLocalEndpoint -> null
+                is MigrationTarget.LocalAddress -> t.host
+                is MigrationTarget.LocalEndpoint -> t.host
+            }
+        val requestedPort =
+            when (val t = cmd.target) {
+                MigrationTarget.FreshLocalEndpoint, is MigrationTarget.LocalAddress -> 0
+                is MigrationTarget.LocalEndpoint -> t.port
+            }
+
         val newPath =
             try {
-                factory.openPath(cmd.localHost, cmd.localPort)
+                factory.openPath(requestedHost, requestedPort)
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                cmd.result.complete(MigrationResult.Failed("openPath failed: ${e.message}"))
+                cmd.result.complete(MigrationResult.Unmoved.Failed.LocalPathUnavailable(e))
                 return
             }
 
         val key = api.decodePathKey(newPath.localSockAddrAddress)
-        val pathRecvInfo = api.recvInfoNew(peerAddr, peerLen, newPath.localSockAddrAddress, newPath.localSockAddrLength)
+        val pathRecvInfo =
+            api.recvInfoNew(wiring.peer.address, wiring.peer.length, newPath.localSockAddrAddress, newPath.localSockAddrLength)
         val entry =
             PathEntry(
                 key = key,
@@ -966,20 +1285,55 @@ class QuicheDriver(
             )
         paths[key] = entry
 
-        val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, peerAddr, peerLen, addr(seqScratch))
+        val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
         if (rc < 0) {
             teardownPath(entry)
-            cmd.result.complete(MigrationResult.Failed("probe_path failed: rc=$rc"))
+            cmd.result.complete(MigrationResult.Unmoved.Failed.ProbeRejected(rc))
             return
         }
 
-        pendingMigration = PendingMigration(key, cmd.localHost, cmd.localPort, cmd.result)
-        _pathState.value = PathInfo(MigrationPhase.Probing, cmd.localHost, cmd.localPort)
+        // Every state below names `newPath.localEndpoint` — what the socket BOUND — never the request.
+        pendingMigration = PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget())
+        _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
+    }
+
+    /**
+     * The RFC 9000 §8.2.4 abandon timer firing: give up on a path the peer has neither validated nor
+     * failed, so `migrate()` returns and the automatic reactor is released to follow the *next*
+     * network change.
+     *
+     * **Order is the correctness argument.** [drainPathEvents] runs FIRST, before anything is
+     * declared expired. The deadline and a `Validated` event can come due in the same wake — quiche
+     * queues path events and the driver only reads them at [afterCommand], which runs *after* this
+     * branch — so expiring first would fail a path the peer actually answered, converting a working
+     * migration into a spurious timeout. Draining first, then re-reading [pendingMigration] and
+     * re-*measuring* [PendingMigration.isDue], means a validated path wins the race and this only
+     * ever fires on genuine silence.
+     *
+     * Reports [MigrationResult.Unmoved.Failed.PathNotValidated] — the same leaf as an explicit
+     * `FailedValidation`, because it is the same fact ("PATH_CHALLENGE unanswered") learned from a
+     * timer instead of from quiche. `Failed` and not `Impossible`: nothing about this connection
+     * says a later attempt cannot work, and `Impossible` would cancel the reactor for good.
+     *
+     * The teardown mirrors the [QuichePathEventType.FailedValidation] arm exactly. Without it the
+     * probed path's socket, its `recv_info` and its pinned sockaddr stay alive for the connection's
+     * life — a per-failed-migration leak on the very code path a flapping network takes repeatedly.
+     */
+    private fun abandonPathValidationIfDue() {
+        if (migrationEnabled) drainPathEvents()
+        val pending = pendingMigration ?: return
+        if (!pending.isDue()) return
+        paths[pending.key]?.let { teardownPath(it) }
+        completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
     }
 
     /** Poll and react to quiche path events (validation, failure, path close). Migration-clients only. */
     private fun drainPathEvents() {
+        // Only ever called under `if (migrationEnabled)`, and that is now the same fact as
+        // `migrationWiring != null` — so this is a re-read of the capability, not a null check on
+        // something that might legitimately be absent. Returning is the safe no-op either way.
+        val wiring = migrationWiring ?: return
         while (true) {
             val type = api.connPathEventNext(conn, addr(peLocalOut), addr(peLocalLenOut), addr(pePeerOut), addr(pePeerLenOut)) ?: break
             when (type) {
@@ -989,16 +1343,23 @@ class QuicheDriver(
                     if (pending.key != key) continue
                     val entry = paths[key]
                     if (entry == null) {
-                        completeMigration(pending, MigrationResult.Failed("validated path missing"), MigrationPhase.Failed)
+                        // Internal bookkeeping race: quiche validated a path this driver no longer
+                        // tracks. Observably the same as never validating, so it reports the same leaf.
+                        completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                         continue
                     }
-                    _pathState.value = PathInfo(MigrationPhase.Validated, pending.localHost, pending.localPort)
-                    val rc = api.connMigrate(conn, entry.localAddr, entry.localLen, peerAddr, peerLen, addr(seqScratch))
+                    _pathState.value = QuicPathState.Validated(pending.localEndpoint)
+                    val rc =
+                        api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
                     if (rc >= 0) {
                         activeKey = key
-                        completeMigration(pending, MigrationResult.Succeeded(pending.localHost, pending.localPort), MigrationPhase.Migrated)
+                        completeMigration(
+                            pending,
+                            MigrationResult.Succeeded(pending.localEndpoint),
+                            QuicPathState.Migrated(pending.localEndpoint),
+                        )
                     } else {
-                        completeMigration(pending, MigrationResult.Failed("migrate failed: rc=$rc"), MigrationPhase.Failed)
+                        completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(rc))
                     }
                 }
 
@@ -1007,7 +1368,7 @@ class QuicheDriver(
                     val pending = pendingMigration
                     if (pending != null && pending.key == key) {
                         paths[key]?.let { teardownPath(it) }
-                        completeMigration(pending, MigrationResult.Failed("path validation failed"), MigrationPhase.Failed)
+                        completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                     }
                 }
 
@@ -1026,12 +1387,32 @@ class QuicheDriver(
         }
     }
 
+    /**
+     * Publish the terminal path state for [pending] and hand [result] to the caller parked in
+     * `migrate()`.
+     *
+     * [state] defaults to `QuicPathState.Failed(result)` and is passed explicitly only for the one
+     * outcome that is not a failure. That default is what keeps the reported reason and the path state
+     * from drifting apart: the state *carries* the result rather than restating it, so there is exactly
+     * one place a migration's verdict is written down.
+     */
     private fun completeMigration(
         pending: PendingMigration,
-        result: MigrationResult,
-        phase: MigrationPhase,
+        result: MigrationResult.Unmoved,
+        state: QuicPathState = QuicPathState.Failed(result),
     ) {
-        _pathState.value = PathInfo(phase, pending.localHost, pending.localPort)
+        _pathState.value = state
+        pending.result.complete(result)
+        pendingMigration = null
+    }
+
+    /** [completeMigration]'s success overload — a [MigrationResult.Succeeded] is never a `Failed` state. */
+    private fun completeMigration(
+        pending: PendingMigration,
+        result: MigrationResult.Succeeded,
+        state: QuicPathState,
+    ) {
+        _pathState.value = state
         pending.result.complete(result)
         pendingMigration = null
     }
@@ -1091,7 +1472,7 @@ class QuicheDriver(
         }
 
         // A migration still in flight when the connection dies never completes — fail it.
-        pendingMigration?.result?.complete(MigrationResult.Failed("connection closed"))
+        pendingMigration?.result?.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
         pendingMigration = null
 
         for (slot in streams.values) {
@@ -1159,7 +1540,7 @@ class QuicheDriver(
             }
             is QuicheCmd.OpenStream ->
                 cmd.result.completeExceptionally(
-                    QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed"),
+                    QuicCloseException(closeReasonOr(QuicError.NoError), "connection closed", attribution = closeAttribution()),
                 )
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.Error(-2))
             is QuicheCmd.StreamSend -> cmd.result.complete(StreamSendResult(-1))
@@ -1175,8 +1556,10 @@ class QuicheDriver(
             is QuicheCmd.PeerCert -> cmd.result.complete(0)
             // Connection gone — no quiche handles to read; an all-null snapshot is the typed "no stats".
             is QuicheCmd.Stats -> cmd.result.complete(QuicStatsSnapshot(null, null))
+            // Nothing negotiated can be read from a freed handle, which is exactly what this case means.
+            is QuicheCmd.PeerTransportParamsRead -> cmd.result.complete(PeerTransportParams.NotYetNegotiated)
             is QuicheCmd.Close -> cmd.result.complete(Unit)
-            is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Failed("connection closed"))
+            is QuicheCmd.Migrate -> cmd.result.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
         }
     }
 
@@ -1194,6 +1577,26 @@ class QuicheDriver(
             QuicStatsSnapshot(null, null)
         }
 
+    /**
+     * Read the peer's transport parameters (RFC 9000 §18) on the driver loop — quiche is
+     * single-threaded, never off-loop. [PeerTransportParams.NotYetNegotiated] until the handshake has
+     * processed them, and once the connection is torn down.
+     *
+     * Exists for `PeerTransportParamsLayoutTestSuite`, which asserts the *neighbours* of
+     * `disable_active_migration` against the values this connection configured. That is the only thing
+     * that catches the quiche ABI defect this module patches around
+     * (`patchQuicheTransportParamsRepr`): the flag itself is a silent kill switch, so a wrong read
+     * turns active migration off with no error anywhere, and `sizeof` agrees either way.
+     */
+    suspend fun peerTransportParams(): PeerTransportParams =
+        try {
+            val deferred = CompletableDeferred<PeerTransportParams>()
+            commands.send(QuicheCmd.PeerTransportParamsRead(deferred))
+            deferred.await()
+        } catch (_: ClosedSendChannelException) {
+            PeerTransportParams.NotYetNegotiated
+        }
+
     suspend fun destroy() {
         commands.close()
         driverJob?.join()
@@ -1201,6 +1604,35 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /** RFC 9002 §6.1.2 `kGranularity` — the timer-granularity floor inside the PTO formula. */
+        private val K_GRANULARITY = 1.milliseconds
+
+        /** RFC 9002 §6.2.2 `kInitialRtt` — the RTT an endpoint assumes before it has a single sample. */
+        private val K_INITIAL_RTT = 333.milliseconds
+
+        /**
+         * The PTO for a path with no RTT samples: `kInitialRtt` as the smoothed RTT, `kInitialRtt / 2`
+         * as rttvar (RFC 9002 §5.1 sets rttvar to half the RTT on the first sample) and no
+         * `max_ack_delay` (RFC 9002 §6.2.1 excludes it until the handshake is confirmed) — 999 ms.
+         *
+         * It is also the floor of [pathValidationBudget]: RFC 9000 §8.2.4 takes the *larger* of the two
+         * PTOs, so a very fast current path can never shrink the abandon timer below ~3 s.
+         */
+        private val INITIAL_PTO = K_INITIAL_RTT + maxOf((K_INITIAL_RTT / 2) * 4, K_GRANULARITY)
+
+        /** RFC 9000 §8.2.4: "three times the larger of the current PTO or the PTO for the new path". */
+        private const val PATH_VALIDATION_PTO_MULTIPLIER = 3
+
+        /**
+         * Scratch capacity for the connection-id readers. A CID is at most 20 bytes (RFC 9000 §17.2) and
+         * quiche's trace id is its hex rendering, so 64 clears both with room to spare — and the
+         * snprintf-style contract means an over-long value reports its length rather than truncating
+         * silently.
+         */
+        private const val CONN_ID_TEXT_CAPACITY = 64
+
+        private val HEX = "0123456789abcdef".toCharArray()
 
         /** Max ALPN protocol identifier length (RFC 7301 — 1-byte length prefix, so ≤ 255). */
         private const val MAX_ALPN_LEN = 255
@@ -1296,6 +1728,52 @@ class DriverStreamAdapter(
         }
     }
 
+    /**
+     * Rescue a chunk the driver delivered into a [streamRead] that has already unwound.
+     *
+     * `commands` is UNLIMITED, so the `StreamRecv` is queued before a `withTimeout` deadline (or an
+     * external cancel) can reach us; the driver then processes it regardless of what happened to the
+     * caller, and by the time [streamRead]'s non-cancellable join returns quiche may **already** have
+     * answered [StreamRecvResult.Data]. quiche has by then advanced the stream's receive offset and
+     * credited flow control, so the peer will never resend those bytes: freeing the buffer at that point
+     * — what the cancellation path used to do unconditionally — punches a permanent hole in the stream.
+     * A FIN riding on the same chunk was lost with it, because `slot.finReceived` is set inside the
+     * `when` the cancellation skipped, after which no `read()` can ever report a clean end.
+     *
+     * That is issue #393: on a 124-minute on-device Android handoff run the stream died on exactly the
+     * two migrations that a read timeout preceded (8.6s and 6.0s before), and stayed dead for the
+     * remaining 101 minutes while the connection itself kept exchanging keepalives. The migration only
+     * makes read timeouts likely; the timeout is what loses the data.
+     *
+     * The salvage is the cancellation-edge mirror of [drainStreamIntoSlot]'s teardown-edge drain (issue
+     * #318) and keeps its conventions: bytes go to [StreamSlot.pendingData] so the next `read()` hands
+     * them out ahead of any terminal verdict, the FIN is published *after* the chunk is queued so an
+     * `End` verdict can never race ahead of the data it is supposed to follow, and whatever is left
+     * undelivered is released by [releaseUndeliveredReads].
+     *
+     * @return true when ownership of [buffer] moved to the slot — the caller must **not** release it.
+     */
+    private fun salvageCancelledRecv(
+        completed: CompletableDeferred<StreamRecvResult>,
+        buffer: PlatformBuffer,
+    ): Boolean {
+        // A deferred that failed or was cancelled carries no result, and asking one for its value would
+        // rethrow inside a `finally` — masking the timeout the caller is already unwinding with.
+        if (completed.isCancelled) return false
+        // Done / Error deliver nothing: quiche advanced no offset, so there is nothing to salvage.
+        val result = completed.getCompleted() as? StreamRecvResult.Data ?: return false
+        var queued = false
+        if (result.bytesRead > 0) {
+            buffer.position(result.bytesRead)
+            buffer.resetForRead()
+            // UNLIMITED and never closed, so the send cannot fail; on the impossible branch report "not
+            // transferred" so the caller frees the buffer rather than leaking it.
+            queued = slot.pendingData.trySend(buffer).isSuccess
+        }
+        if (result.fin) slot.finReceived = true
+        return queued
+    }
+
     override suspend fun streamRead(
         streamId: QuicStreamId,
         bufferFactory: BufferFactory,
@@ -1314,7 +1792,9 @@ class DriverStreamAdapter(
         // a heap/GC-backed buffer simply dropped so its Cleaner reclaims the native memory) before the
         // driver finishes, quiche writes into freed memory and corrupts the native heap (the rare
         // "SIGSEGV in malloc" crash). So on every exit we first wait — non-cancellably — for any in-flight
-        // StreamRecv to complete, then release the buffer.
+        // StreamRecv to complete, and only then decide the buffer's fate: whatever quiche delivered into
+        // it while we were unwinding goes to the slot ([salvageCancelledRecv]), and only an empty buffer
+        // is released.
         var inFlight: CompletableDeferred<StreamRecvResult>? = null
         var transferred = false
         try {
@@ -1386,7 +1866,16 @@ class DriverStreamAdapter(
             // The driver ALWAYS completes the deferred — in execute() after connStreamRecv, or in
             // cleanup()/failCommand() on teardown (which does NOT dereference `addr`) — so this join can
             // never hang. After it returns, quiche is provably done with `addr`; only then release.
-            inFlight?.let { withContext(NonCancellable) { it.join() } }
+            val abandoned = inFlight
+            if (abandoned != null) {
+                withContext(NonCancellable) { abandoned.join() }
+                // ...and "release" is only right if the command came back empty-handed. We are here
+                // because a timeout or a cancel unwound this read, but the driver answered the queued
+                // StreamRecv anyway — and quiche has already moved the receive offset for whatever it
+                // handed over. Give those bytes (and any FIN with them) to the slot instead of freeing
+                // them; see [salvageCancelledRecv] for why dropping them killed streams in the field.
+                if (salvageCancelledRecv(abandoned, buffer)) transferred = true
+            }
             if (!transferred) buffer.freeNativeMemory()
         }
     }
@@ -1460,6 +1949,7 @@ class DriverStreamAdapter(
                                 throw QuicCloseException(
                                     driver.closeReasonOr(QuicError.InternalError("quiche stream write error: $written")),
                                     "quiche stream write error: $written",
+                                    attribution = driver.closeAttribution(),
                                 )
                             }
                     }
@@ -1468,10 +1958,10 @@ class DriverStreamAdapter(
                 0
             }
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } catch (_: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
             // writableSignal was closed by cleanup() — the connection went away while we were parked.
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } finally {
             // Wait — non-cancellably — for any in-flight StreamSend to finish reading `addr` before we
             // return to the caller who will free `buffer`. The driver always completes the deferred

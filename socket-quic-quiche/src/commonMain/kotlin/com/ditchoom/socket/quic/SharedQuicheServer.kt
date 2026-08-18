@@ -468,6 +468,11 @@ internal class SharedQuicheServer(
                 driverContext = tuning.driverContext,
                 random = tuning.random,
                 recorder = tuning.recorderFactory(),
+                // RFC 9000 §9 active migration is a client-only capability — in QUIC v1 only clients
+                // migrate — so a server-accepted connection states that outright. The server still
+                // handles a *peer's* migration (per-source recv_info + sendInfo.to egress, see
+                // ServerConnectionUdpChannel); that is passive rebinding and needs no wiring here.
+                migration = MigrationCapability.ServerConnection,
                 // recvInfo holds raw pointers into peerSockAddr/localSockAddr; keep them reachable for the
                 // driver's life and freed on teardown so recv_info.from/to can never dangle.
                 onCleanup = {

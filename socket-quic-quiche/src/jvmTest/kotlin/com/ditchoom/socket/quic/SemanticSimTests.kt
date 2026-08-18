@@ -159,12 +159,20 @@ class SemanticSimTests {
                         withTimeout(20.seconds) {
                             clientDriver.state.first { it is QuicConnectionState.Closed }
                         } as QuicConnectionState.Closed
-                    assertEquals(QuicError.IdleTimeout, clientClosed.error, "client close reason must be the typed IdleTimeout")
+                    assertEquals(
+                        QuicCloseReason.ByLocal(QuicError.IdleTimeout),
+                        clientClosed.reason,
+                        "client close reason must be a local idle timeout",
+                    )
                     val serverClosed =
                         withTimeout(20.seconds) {
                             serverDriver.state.first { it is QuicConnectionState.Closed }
                         } as QuicConnectionState.Closed
-                    assertEquals(QuicError.IdleTimeout, serverClosed.error, "server close reason must be the typed IdleTimeout")
+                    assertEquals(
+                        QuicCloseReason.ByLocal(QuicError.IdleTimeout),
+                        serverClosed.reason,
+                        "server close reason must be a local idle timeout",
+                    )
                 }
             }
         }

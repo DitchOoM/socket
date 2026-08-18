@@ -1,4 +1,9 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.NetworkInterface
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PrivateKey
@@ -134,6 +139,9 @@ fun downloadQuicheSource(
     // fails loudly if a quiche bump adds an un-clocked time read. Simulation-only; production keeps the real
     // clock (nothing sets the thread-local).
     patchQuicheForCallerClock(sourceDir)
+    // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
+    // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuicheTransportParamsRepr(sourceDir)
 
     return sourceDir
 }
@@ -399,6 +407,176 @@ fun patchQuicheForCallerClock(sourceDir: File) {
 }
 
 /**
+ * Patch quiche's `ffi.rs` so `pub struct TransportParams` carries **`#[repr(C)]`**.
+ *
+ * **Upstream bug.** `TransportParams` is the out-parameter of `quiche_conn_peer_transport_params`, and
+ * `quiche/include/quiche.h` declares it as a plain C struct — ten `uint64_t`, then `bool
+ * peer_disable_active_migration`, then `uint64_t peer_active_conn_id_limit`, then `ssize_t
+ * peer_max_datagram_frame_size`. But the Rust definition has **no `#[repr(C)]`**, while its immediate
+ * neighbours `Stats` (ffi.rs ~1325) and `PathStats` (~1437) both do — in 0.28.0, 0.29.2 and 0.29.3 alike.
+ * Without the attribute rustc is free to reorder by alignment, and it does: the 1-byte `bool` sinks to the
+ * end of the record. Measured, mutation-proven, on both K/N cinterop and JVM FFM:
+ *
+ * | offset | quiche.h claims                  | rustc actually emits             |
+ * |--------|----------------------------------|----------------------------------|
+ * | 0..72  | the ten `uint64_t`               | correct (all ten verified)       |
+ * | 80     | `peer_disable_active_migration`  | `peer_active_conn_id_limit`      |
+ * | 88     | `peer_active_conn_id_limit`      | `peer_max_datagram_frame_size`   |
+ * | 96     | `peer_max_datagram_frame_size`   | `peer_disable_active_migration`  |
+ *
+ * `sizeof` is 104 either way — which is exactly why nothing caught it. Every caller that trusts the header
+ * reads `peer_active_conn_id_limit` (a small non-zero count) where the `bool` should be, so
+ * [QuicheApi.connPeerMigrationPermission] answered `Forbidden` on essentially every connection and active
+ * migration silently vanished — a **silent kill switch**, no error anywhere.
+ *
+ * Fixing it here, at the source, is the only representable option: `repr(Rust)` field order carries no
+ * stability guarantee across rustc versions, and the K/N cinterop generates its accessors from the header's
+ * struct — it cannot address a hand-computed offset without abandoning the generated type entirely.
+ *
+ * **Tracked as DitchOoM/socket#388** (https://github.com/DitchOoM/socket/issues/388). The decision recorded
+ * there: patch our builds now, track it in this repo, report upstream to cloudflare/quiche eventually but do
+ * not block on it.
+ *
+ * **Idempotent and loud in both directions** (mirroring [patchQuicheForCallerClock]'s discipline):
+ * an already-applied marker returns; an anchor that has moved throws; and an upstream that has *fixed*
+ * this — `#[repr(C)]` already above the struct without our marker — also throws, so a quiche bump surfaces
+ * as a build failure telling you to delete this patch, never as a silent double-attribute or a no-op.
+ * When that day comes the correct move is to **delete this patch and keep `PeerTransportParamsLayoutTestSuite`**:
+ * the patch is the workaround, the neighbour-field guard is the thing that proves the ABI is right, and it
+ * is still the only check that can catch a future regression (see #388).
+ */
+fun patchQuicheTransportParamsRepr(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    if (text.contains("socket-transport-params-repr-c")) return // already patched
+
+    val anchor = "\npub struct TransportParams {\n"
+    if (!text.contains(anchor)) {
+        throw GradleException(
+            "socket-transport-params-repr-c (DitchOoM/socket#388): `pub struct TransportParams {` not found in " +
+                "quiche/src/ffi.rs. Either a quiche bump moved/renamed the struct behind " +
+                "quiche_conn_peer_transport_params, or upstream fixed the missing #[repr(C)] and reshaped this " +
+                "code. If upstream fixed it: DELETE patchQuicheTransportParamsRepr and its call site, and KEEP " +
+                "PeerTransportParamsLayoutTestSuite — the guard is what proves the ABI, the patch was only the " +
+                "workaround. Otherwise re-fit the patch and re-verify the field order against " +
+                "quiche/include/quiche.h before shipping. See https://github.com/DitchOoM/socket/issues/388",
+        )
+    }
+    if (text.contains("#[repr(C)]$anchor")) {
+        throw GradleException(
+            "socket-transport-params-repr-c (DitchOoM/socket#388): quiche's TransportParams already carries " +
+                "#[repr(C)] — upstream has fixed the layout bug this patch works around. DELETE " +
+                "patchQuicheTransportParamsRepr and its call site (do not double-apply the attribute), and KEEP " +
+                "PeerTransportParamsLayoutTestSuite, which is the regression guard and outlives the patch. " +
+                "See https://github.com/DitchOoM/socket/issues/388",
+        )
+    }
+
+    val replacement =
+        """
+        |
+        |// socket-transport-params-repr-c: upstream omits #[repr(C)] here while its neighbours Stats and
+        |// PathStats both have it, so rustc reorders the fields by alignment and sinks the 1-byte
+        |// `disable_active_migration` past the two integers that follow it — silently disagreeing with the
+        |// layout quiche/include/quiche.h declares (sizeof matches at 104 either way, so nothing catches it).
+        |// Every reader of quiche_conn_peer_transport_params then reads active_conn_id_limit as the bool.
+        |#[repr(C)]
+        |pub struct TransportParams {
+        |
+        """.trimMargin()
+
+    ffiRs.writeText(text.replaceFirst(anchor, replacement))
+    logger.lifecycle("Patched quiche source: #[repr(C)] on ffi.rs TransportParams (peer transport-params ABI)")
+}
+
+/** A cargo build directory segment: `quiche-<major>.<minor>.<patch>`, and nothing else. */
+val quicheBuildDirVersionRegex = Regex("""^\d+\.\d+\.\d+$""")
+
+/**
+ * The quiche version a prebuilt binary was **actually** compiled from, when it disagrees with [version];
+ * `null` when it agrees or when the binary carries no recognisable build path.
+ *
+ * ## Why ask the binary instead of the marker beside it
+ * Every cargo invocation in this file builds out of `build/quiche/quiche-<version>/`, and rustc bakes that
+ * directory into the binary. So the artifact itself can be asked what it is, rather than trusting a
+ * `.built-…` marker — which is only ever a *claim about* a file.
+ *
+ * ## The terminator is NOT always `/`
+ * How that directory is spelled differs per host, and getting it wrong silently disables the whole check.
+ * On Apple, rustc records ABSOLUTE `panic!` locations, so it appears as `quiche-<ver>/quiche/src/…` —
+ * measured at 1304–2602 occurrences per archive, surviving `-C strip=symbols`. On **Linux** the same cargo
+ * build records RELATIVE source paths (`quiche/src/ffi.rs`, 25 of them) and the absolute build directory
+ * survives only 3 times, as a bare NUL-terminated directory with **no trailing slash**:
+ *
+ *     /…/socket-quic-quiche/build/quiche/quiche-0.29.3<NUL>
+ *
+ * An earlier revision required `quiche-<ver>` to be followed by `/`. Run against a real linux `libquiche.a`
+ * built from quiche 0.29.2 under a 0.29.3 project, that returned `null` — "no opinion" — i.e. it was
+ * structurally blind on the one host where [createBuildQuicheSharedTask] is the sole archive producer.
+ * So the version run is parsed on its own terms here and ANY byte may terminate it.
+ *
+ * That distinction was not academic. A working tree held **three quiche 0.28.0 Apple archives**
+ * (`macos-x64`, `ios-arm64`, `ios-x64`) long after the project moved to 0.29.3, with no marker beside them
+ * at all and — before the per-compilation `dependsOn` in `configureQuicheApple` — no task in any Apple
+ * graph that could rebuild them. The cost of that is specifically **DitchOoM/socket#388**: a 0.28.0 archive
+ * predates [patchQuicheTransportParamsRepr], so `TransportParams` keeps its `repr(Rust)` layout,
+ * `peer_disable_active_migration` is read out of `active_conn_id_limit`, and active migration refuses
+ * with no error anywhere. On `iosArm64` — a device lane nothing on a Mac can execute — that is invisible.
+ *
+ * ## Deliberately one-directional
+ * Returns `null` for "no opinion" (binary absent, unreadable, or path-free), so the worst a future
+ * `--remap-path-prefix` or a vendored prebuilt can do is make this check *silent*. It can never put a
+ * build into a rebuild loop, which is why callers may use it as a plain `onlyIf` disjunct.
+ */
+fun quicheBinaryForeignVersion(
+    binary: File,
+    version: String,
+): String? {
+    if (!binary.isFile) return null
+    val prefix = "quiche-"
+    var foreign: String? = null
+    runCatching {
+        binary.inputStream().buffered().use { input ->
+            val chunkSize = 1 shl 20
+            // Longest thing we can straddle a chunk boundary: "quiche-" + a version + its terminator
+            // (~20 bytes), so every occurrence is seen whole in at least one chunk.
+            val overlap = 32
+            val buf = ByteArray(chunkSize + overlap)
+            var carry = 0
+            while (true) {
+                val read = input.read(buf, carry, chunkSize)
+                if (read <= 0) break
+                val len = carry + read
+                // ISO_8859_1 is a byte->char identity map, so indexOf over this String is an exact byte
+                // search for our pure-ASCII needles — no decoding surprises on binary input.
+                val text = String(buf, 0, len, Charsets.ISO_8859_1)
+                var idx = text.indexOf(prefix)
+                while (idx >= 0) {
+                    // Consume the version run itself and let ANY byte end it — on Linux that byte is the
+                    // string's NUL, not '/'. See the KDoc: requiring '/' made this blind to every linux .a.
+                    val start = idx + prefix.length
+                    var end = start
+                    while (end < len && (text[end].isDigit() || text[end] == '.')) end++
+                    // end == len means the run may continue into the next chunk; the overlap re-scans it.
+                    if (end < len) {
+                        val segment = text.substring(start, end)
+                        if (quicheBuildDirVersionRegex.matches(segment)) {
+                            if (segment == version) return null // agrees with [version]
+                            if (foreign == null) foreign = segment
+                        }
+                    }
+                    idx = text.indexOf(prefix, idx + prefix.length)
+                }
+                carry = minOf(overlap, len)
+                System.arraycopy(buf, len - carry, buf, 0, carry)
+            }
+        }
+    }
+    return foreign
+}
+
+/**
  * Build quiche as a shared library for JVM/Android (loaded via JNI or FFM).
  */
 fun createBuildQuicheSharedTask(
@@ -437,7 +615,31 @@ fun createBuildQuicheSharedTask(
         val destStatic = outputDir.resolve("lib/libquiche.a")
         inputs.property("quicheVersion", quicheVersion)
         outputs.files(markerFile, destLib, destStatic)
-        onlyIf { !markerFile.exists() || !destLib.exists() }
+        onlyIf {
+            when {
+                !markerFile.exists() -> true
+                !destLib.exists() -> true
+                // macOS: this .a is what the Apple K/Native cinterop embeds into its klib, and a Darwin
+                // cdylib build always emits the staticlib crate-type alongside it — so its absence here is
+                // a broken/partial output, not a legitimate state. Left out on Linux, where the copy above
+                // is conditional and a missing .a must not spin the task forever.
+                os == "macos" && !destStatic.exists() -> true
+                else -> {
+                    // Last resort: the marker claims this is $quicheVersion — ask the binaries. See
+                    // quicheBinaryForeignVersion; `null` means "no opinion", never a rebuild loop.
+                    val foreign =
+                        quicheBinaryForeignVersion(destStatic, quicheVersion)
+                            ?: quicheBinaryForeignVersion(destLib, quicheVersion)
+                    if (foreign != null) {
+                        logger.lifecycle(
+                            "quiche $os-$arch: on-disk library was built from quiche $foreign, not $quicheVersion " +
+                                "(marker ${markerFile.name} disagrees with the binary) — rebuilding.",
+                        )
+                    }
+                    foreign != null
+                }
+            }
+        }
 
         doLast {
             val buildDir = quicheBuildDir.get().asFile
@@ -686,7 +888,25 @@ fun createBuildQuicheAppleStaticTask(
         val destStatic = outputDir.resolve("lib/libquiche.a")
         inputs.property("quicheVersion", quicheVersion)
         outputs.files(markerFile, destStatic)
-        onlyIf { !markerFile.exists() || !destStatic.exists() }
+        onlyIf {
+            when {
+                !markerFile.exists() -> true
+                !destStatic.exists() -> true
+                else -> {
+                    // The marker claims this is $quicheVersion — ask the archive itself. This is the check
+                    // that catches a 0.28.0 libquiche.a sitting under a 0.29.3 build: it predates
+                    // patchQuicheTransportParamsRepr and silently reinstates DitchOoM/socket#388.
+                    val foreign = quicheBinaryForeignVersion(destStatic, quicheVersion)
+                    if (foreign != null) {
+                        logger.lifecycle(
+                            "quiche $libSubdir: libquiche.a was built from quiche $foreign, not $quicheVersion " +
+                                "(marker ${markerFile.name} disagrees with the binary) — rebuilding.",
+                        )
+                    }
+                    foreign != null
+                }
+            }
+        }
 
         doLast {
             val buildDir = quicheBuildDir.get().asFile
@@ -1526,20 +1746,197 @@ if (androidJniTasks.isNotEmpty()) {
     }
 }
 
-// --- QUIC test server for Android instrumented tests ---
-// Starts a QUIC echo server on the host so the emulator can connect via adb reverse.
+// --- Host-side harness servers for the Android instrumented tests ---
+//
+// Three independent facts decide how a device reaches a host-side harness server, and collapsing
+// them into one constant is what made this path answer all three wrong on real hardware:
+//
+//   * transport   — `adb reverse` forwards TCP only, so the TCP control channel can ride the
+//                   device's own loopback and the UDP quic-echo harness can never;
+//   * device kind — an emulator has a built-in `10.0.2.2` alias for the host's loopback, a physical
+//                   device has nothing of the kind and must traverse the real network;
+//   * liveness    — whether anything is actually listening on the port.
+//
+// Only the host can answer the first two, so it answers them here and CARRIES the result down as
+// instrumentation arguments, exactly as it already did for the OS-assigned ports. The device half is
+// HarnessEndpoints.kt in src/androidInstrumentedTest.
 
 afterEvaluate {
+    /**
+     * Which device every adb call below talks to.
+     *
+     * Bare `adb` fails with "more than one device/emulator" the moment a developer has an emulator
+     * and a handset attached — and the call that fails is `adb reverse`, which turns the control
+     * channel into a skipped suite rather than an error. A Gradle property takes precedence over
+     * ANDROID_SERIAL because it is the channel that reliably reaches the build: a long-lived Gradle
+     * daemon's environment comes from whichever client first started it, not from this invocation.
+     */
+    val androidSerial: String? =
+        (project.findProperty("androidSerial") as String?)?.takeIf { it.isNotBlank() }
+            ?: System.getenv("ANDROID_SERIAL")?.takeIf { it.isNotBlank() }
+
+    /** `adb`, pinned with `-s` whenever a serial is known. */
+    fun adbCommand(vararg args: String): List<String> =
+        buildList {
+            add("adb")
+            if (androidSerial != null) {
+                add("-s")
+                add(androidSerial)
+            }
+            addAll(args)
+        }
+
+    fun adbOutput(vararg args: String): String {
+        val process =
+            ProcessBuilder(adbCommand(*args))
+                .redirectErrorStream(true)
+                .start()
+        val text = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        return text.trim()
+    }
+
+    /**
+     * Emulator or physical device, read off the target itself.
+     *
+     * `getprop`, not a pattern match on the serial string: "emulator-5554" is a convention of the
+     * adb server's local-transport naming, not a property of the device, and it says nothing about a
+     * remote or Cuttlefish target. `ro.kernel.qemu` is the classic flag; `ro.boot.qemu` is what newer
+     * images set. Measured: `1`/`1` on the local API-36 AVD, `0`/absent on an SM-F956U1.
+     */
+    fun deviceIsEmulator(): Boolean =
+        adbOutput("shell", "getprop", "ro.kernel.qemu") == "1" ||
+            adbOutput("shell", "getprop", "ro.boot.qemu") == "1"
+
+    /** The device's own global IPv4 addresses, used to find which host interface shares its segment. */
+    fun deviceIpv4Addresses(): List<String> =
+        Regex("""inet (\d+\.\d+\.\d+\.\d+)""")
+            .findAll(adbOutput("shell", "ip", "-4", "-o", "addr", "show", "scope", "global"))
+            .map { it.groupValues[1] }
+            .toList()
+
+    fun sameIpv4Subnet(
+        host: InetAddress,
+        device: InetAddress,
+        prefixLength: Int,
+    ): Boolean {
+        val a = host.address
+        val b = device.address
+        if (a.size != 4 || b.size != 4) return false
+        for (i in 0 until 4) {
+            val bitsHere = minOf(8, maxOf(0, prefixLength - i * 8))
+            val mask = if (bitsHere == 0) 0 else (0xFF shl (8 - bitsHere)) and 0xFF
+            if ((a[i].toInt() and mask) != (b[i].toInt() and mask)) return false
+        }
+        return true
+    }
+
+    /**
+     * Host IPv4 addresses this device might be able to reach, best first.
+     *
+     * The ordering is a **routing** fact and never an address-range guess. On this developer's
+     * machine the Wi-Fi LAN and the VPN both sit inside 100.64.0.0/10, so a rule of the form "100.x
+     * means VPN" (or "means LAN") picks the wrong one about half the time; "the interface whose own
+     * subnet contains the device's address" is measured from both ends and cannot. Point-to-point
+     * interfaces are dropped outright: a /32 tunnel endpoint has no subnet for a device to be on.
+     *
+     * This is still only an ordering. The probe below is what decides.
+     */
+    fun hostIpv4Candidates(deviceAddresses: List<String>): List<String> {
+        val deviceInets =
+            deviceAddresses.mapNotNull { raw ->
+                runCatching { InetAddress.getByName(raw) }.getOrNull() as? Inet4Address
+            }
+        val ranked = mutableListOf<Pair<Int, String>>()
+        for (nif in NetworkInterface.getNetworkInterfaces().toList()) {
+            if (!nif.isUp || nif.isLoopback || nif.isPointToPoint) continue
+            for (ifAddr in nif.interfaceAddresses) {
+                val addr = ifAddr.address as? Inet4Address ?: continue
+                val prefix = ifAddr.networkPrefixLength.toInt()
+                val sharesSegment = deviceInets.any { sameIpv4Subnet(addr, it, prefix) }
+                ranked += (if (sharesSegment) 0 else 1) to addr.hostAddress
+            }
+        }
+        return ranked
+            .sortedBy { it.first }
+            .map { it.second }
+            .distinct()
+    }
+
+    /**
+     * Prove a UDP datagram round-trips device → host → device on [hostAddress], before the run.
+     *
+     * Detect-and-verify, never detect-and-hope: auto-detection on a multi-homed host is exactly the
+     * guess this wiring exists to remove, so the chosen address has to be demonstrated rather than
+     * argued for. An explicit override skips detection but not this.
+     *
+     * Deliberately bound to an **ephemeral** socket, not the harness port: this answers "can these
+     * two machines exchange UDP at all", which is a different question from "is the harness alive".
+     * Keeping them separate is what lets a dead harness port stay a loud failure instead of being
+     * downgraded to a routing skip.
+     */
+    fun probeUdpRoundTrip(hostAddress: String): Boolean {
+        val token = "socket-harness-probe-${System.nanoTime()}"
+        DatagramSocket(0).use { socket ->
+            socket.soTimeout = 6_000
+            // `timeout` bounds the whole thing because toybox nc lingers after stdin EOF; `-w`
+            // bounds nc's own wait for the echo it prints back to stdout.
+            val sender =
+                ProcessBuilder(
+                    adbCommand("shell", "echo -n $token | timeout 8 nc -u -w 4 $hostAddress ${socket.localPort}"),
+                ).redirectErrorStream(true)
+                    .start()
+            try {
+                // @Suppress("NoByteArrayInProd") — java.net.DatagramPacket's only constructor takes
+                // one; this is a build script, not a production source set.
+                val inbound = DatagramPacket(ByteArray(256), 256)
+                socket.receive(inbound)
+                val received = String(inbound.data, 0, inbound.length)
+                if (received != token) {
+                    logger.lifecycle("[harness-probe] $hostAddress: unexpected datagram '$received'")
+                    return false
+                }
+                socket.send(DatagramPacket(inbound.data, inbound.length, inbound.address, inbound.port))
+                val echoed = sender.inputStream.bufferedReader().readText()
+                return echoed.contains(token)
+            } catch (e: Exception) {
+                logger.lifecycle("[harness-probe] $hostAddress: ${e.javaClass.simpleName}: ${e.message}")
+                return false
+            } finally {
+                sender.destroy()
+            }
+        }
+    }
+
     val quicTestServerPidFile =
         layout.buildDirectory
             .file("quic-test-server.pid")
             .get()
             .asFile
 
+    // Where the started servers record the port the OS actually gave them, so
+    // androidQuicIntegrationTest can hand it to the instrumented run. A file rather than a Gradle
+    // property because the servers are separate processes started in a doLast.
+    val quicTestServerPortFile =
+        layout.buildDirectory
+            .file("quic-test-server.port")
+            .get()
+            .asFile
+
     tasks.register("startQuicTestServer") {
         group = "verification"
-        description = "Start a QUIC echo server on localhost:4433 for Android instrumented tests"
-        dependsOn("compileTestKotlinJvm", "jvmTestProcessResources")
+        description = "Start a QUIC echo server on an OS-assigned port for Android instrumented tests"
+        // prepareQuicheNativeLib + stageQuicheNativeResources build and stage the *host* quiche
+        // natives. Without them this task starts a JVM whose classpath has no
+        // META-INF/native/<os>-<arch>/libquiche.dylib, and NativeLibLoader fails at
+        // JniQuicheApi.<clinit> — which is not a missing build so much as a missing dependency:
+        // the file exists in the staged dir, it simply was never put on this classpath.
+        dependsOn(
+            "compileTestKotlinJvm",
+            "jvmTestProcessResources",
+            "prepareQuicheNativeLib",
+            "stageQuicheNativeResources",
+        )
 
         doLast {
             if (quicTestServerPidFile.exists()) {
@@ -1564,7 +1961,12 @@ afterEvaluate {
                     kotlin
                         .jvm()
                         .compilations["java21"]
-                        .output.allOutputs.files
+                        .output.allOutputs.files +
+                    // The staged host natives (META-INF/native/<os>-<arch>/). Deliberately not in the
+                    // base jvmJar (see the comment at stagedNativeResourcesDir), so they have to be
+                    // added to *this* classpath explicitly — NativeLibLoader reads them as classpath
+                    // resources.
+                    files(stagedNativeResourcesDir)
 
             val classpathStr = testClasspath.joinToString(File.pathSeparator)
             val javaExec =
@@ -1584,32 +1986,48 @@ afterEvaluate {
                     "com.ditchoom.socket.quic.QuicEchoTestServerKt",
                     certDir.resolve("cert.crt").absolutePath,
                     certDir.resolve("cert.key").absolutePath,
+                    // 0 → the OS assigns. The bound port comes back on the READY line below.
+                    "0",
                 ).redirectErrorStream(true)
                     .start()
 
             quicTestServerPidFile.parentFile.mkdirs()
             quicTestServerPidFile.writeText(process.pid().toString())
 
-            // Wait for server to be ready (looks for "READY" on stdout)
+            // Wait for readiness AND capture the port the OS assigned. The port is only knowable
+            // from this line — that is the whole point of not pinning one.
             val reader = process.inputStream.bufferedReader()
-            val deadline = System.currentTimeMillis() + 10_000
+            val deadline = System.currentTimeMillis() + 30_000
+            var boundPort = -1
             while (System.currentTimeMillis() < deadline) {
                 if (reader.ready()) {
                     val line = reader.readLine() ?: break
                     logger.lifecycle("[quic-server] $line")
-                    if (line.contains("READY")) break
+                    if (line.contains("READY")) {
+                        boundPort =
+                            Regex("port=(\\d+)")
+                                .find(line)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.toIntOrNull()
+                                ?: throw GradleException("QUIC test server READY line had no parsable port: $line")
+                        break
+                    }
                 }
+                if (!process.isAlive) break
                 Thread.sleep(100)
             }
             if (!process.isAlive) throw GradleException("QUIC test server failed to start")
+            if (boundPort <= 0) throw GradleException("QUIC test server never reported a bound port")
 
-            // Set up adb reverse so emulator localhost:4433 → host:4433
-            ProcessBuilder("adb", "reverse", "tcp:4433", "tcp:4433")
-                .redirectErrorStream(true)
-                .start()
-                .waitFor()
+            quicTestServerPortFile.writeText(boundPort.toString())
 
-            logger.lifecycle("QUIC test server running (PID ${process.pid()}), adb reverse configured")
+            // NO `adb reverse` here, deliberately. This server is UDP and `adb reverse` forwards TCP
+            // only, so the mapping that used to be set up here forwarded a TCP port nothing listened
+            // on — dead wiring that implied a device-side route which has never existed. The device
+            // reaches this server by address instead: the emulator's 10.0.2.2 host alias, or a probed
+            // host LAN address on real hardware. androidQuicIntegrationTest works out which.
+            logger.lifecycle("QUIC test server running (PID ${process.pid()}) on UDP port $boundPort")
         }
     }
 
@@ -1617,6 +2035,9 @@ afterEvaluate {
         group = "verification"
         description = "Stop the QUIC echo test server"
         doLast {
+            // No `adb reverse --remove` counterpart: startQuicTestServer no longer creates one,
+            // because adb reverse is TCP-only and this server is UDP. See the note there.
+            quicTestServerPortFile.delete()
             if (quicTestServerPidFile.exists()) {
                 val pid = quicTestServerPidFile.readText().trim()
                 ProcessBuilder("kill", pid).start().waitFor()
@@ -1710,9 +2131,15 @@ afterEvaluate {
             .get()
             .asFile
 
+    val netCtrlPortFile =
+        layout.buildDirectory
+            .file("network-control-server.port")
+            .get()
+            .asFile
+
     tasks.register("startNetworkControlServer") {
         group = "verification"
-        description = "Start the network control server on localhost:9998 for migration tests"
+        description = "Start the network control server on an OS-assigned port for migration tests"
         dependsOn("compileTestKotlinJvm", "jvmTestProcessResources")
 
         doLast {
@@ -1755,6 +2182,12 @@ afterEvaluate {
                     "-cp",
                     classpathStr,
                     "com.ditchoom.socket.quic.netctrl.NetworkControlServerKt",
+                    // 0 → OS-assigned; the bound port is parsed off the READY line below.
+                    "0",
+                    // The server runs `adb shell su 0 …` itself and re-establishes its own reverse
+                    // mapping after airplane mode, so it needs the same device pin this build uses —
+                    // it is a separate process and cannot see a Gradle property.
+                    "--serial=${androidSerial ?: ""}",
                 ).redirectErrorStream(true)
                     .start()
 
@@ -1762,23 +2195,40 @@ afterEvaluate {
             netCtrlPidFile.writeText(process.pid().toString())
 
             val reader = process.inputStream.bufferedReader()
-            val deadline = System.currentTimeMillis() + 10_000
+            val deadline = System.currentTimeMillis() + 30_000
+            var boundPort = -1
             while (System.currentTimeMillis() < deadline) {
                 if (reader.ready()) {
                     val line = reader.readLine() ?: break
                     logger.lifecycle("[net-ctrl] $line")
-                    if (line.contains("READY")) break
+                    if (line.contains("READY")) {
+                        boundPort =
+                            Regex("port=(\\d+)")
+                                .find(line)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.toIntOrNull()
+                                ?: throw GradleException("Network control server READY line had no parsable port: $line")
+                        break
+                    }
                 }
+                if (!process.isAlive) break
                 Thread.sleep(100)
             }
             if (!process.isAlive) throw GradleException("Network control server failed to start")
+            if (boundPort <= 0) throw GradleException("Network control server never reported a bound port")
 
-            ProcessBuilder("adb", "reverse", "tcp:9998", "tcp:9998")
+            netCtrlPortFile.writeText(boundPort.toString())
+
+            // TCP, so `adb reverse` genuinely applies here — this is the one harness channel it can
+            // carry, and it works identically on an emulator and on a physical device. Same number on
+            // both sides keeps one value to reason about; it is discovered, not chosen.
+            ProcessBuilder(adbCommand("reverse", "tcp:$boundPort", "tcp:$boundPort"))
                 .redirectErrorStream(true)
                 .start()
                 .waitFor()
 
-            logger.lifecycle("Network control server running (PID ${process.pid()}), adb reverse configured")
+            logger.lifecycle("Network control server running (PID ${process.pid()}) on port $boundPort, adb reverse configured")
         }
     }
 
@@ -1786,6 +2236,14 @@ afterEvaluate {
         group = "verification"
         description = "Stop the network control server"
         doLast {
+            if (netCtrlPortFile.exists()) {
+                val p = netCtrlPortFile.readText().trim()
+                ProcessBuilder(adbCommand("reverse", "--remove", "tcp:$p"))
+                    .redirectErrorStream(true)
+                    .start()
+                    .waitFor()
+                netCtrlPortFile.delete()
+            }
             if (netCtrlPidFile.exists()) {
                 val pid = netCtrlPidFile.readText().trim()
                 ProcessBuilder("kill", pid).start().waitFor()
@@ -1798,17 +2256,98 @@ afterEvaluate {
     tasks.register("androidQuicIntegrationTest") {
         group = "verification"
         description = "Build native libs, start servers, run Android instrumented tests, stop servers"
+        // The Android ABI shims are what the instrumented tests load; the host natives are what the
+        // servers this task starts need. Only the first set was wired, so the task could not
+        // bootstrap on a clean machine — it failed inside startQuicTestServer before reaching Android.
+        if (androidJniTasks.isNotEmpty()) dependsOn("buildAndroidNativeLibs")
         dependsOn("startQuicTestServer", "startNetworkControlServer")
         finalizedBy("stopQuicTestServer", "stopNetworkControlServer")
         doLast {
-            val result =
-                ProcessBuilder(
+            // The instrumented tests live in THIS module. The task previously ran
+            // `:socket-quic:connectedDebugAndroidTest`, and :socket-quic has no androidInstrumentedTest
+            // source set at all — so it reported success having executed zero instrumented tests, the
+            // exact green-but-ran-nothing shape this repo already guards against elsewhere.
+            val quicPort = quicTestServerPortFile.takeIf { it.exists() }?.readText()?.trim()
+            val ctrlPort = netCtrlPortFile.takeIf { it.exists() }?.readText()?.trim()
+            require(!quicPort.isNullOrEmpty() && !ctrlPort.isNullOrEmpty()) {
+                "server ports were not recorded — startQuicTestServer/startNetworkControlServer must run first"
+            }
+
+            val emulator = deviceIsEmulator()
+            val deviceKind = if (emulator) "emulator" else "physical-device"
+
+            // An explicit override for hosts where detection cannot win (many interfaces, an
+            // asymmetric route, a device on a different segment reached through a router). It skips
+            // detection — it does NOT skip the probe, because an address nobody verified is the same
+            // guess whether a human or a heuristic wrote it down.
+            val overrideHost =
+                (project.findProperty("androidHarnessHost") as String?)?.takeIf { it.isNotBlank() }
+                    ?: System.getenv("SOCKET_ANDROID_HARNESS_HOST")?.takeIf { it.isNotBlank() }
+
+            val candidates =
+                when {
+                    overrideHost != null -> listOf(overrideHost)
+                    // The emulator's built-in alias for the host's loopback. This is the one address
+                    // that is a property of the emulator rather than of this machine's network.
+                    emulator -> listOf("10.0.2.2")
+                    else -> hostIpv4Candidates(deviceIpv4Addresses())
+                }
+            logger.lifecycle("Android harness: device=${androidSerial ?: "<unpinned>"} kind=$deviceKind candidates=$candidates")
+
+            val reachable = candidates.firstOrNull { probeUdpRoundTrip(it) }
+            if (reachable == null) {
+                logger.lifecycle(
+                    "Android harness: NO host address round-tripped UDP from this $deviceKind " +
+                        "(tried ${candidates.ifEmpty { listOf("<no non-loopback IPv4 interface>") }}). " +
+                        "The quic-echo suites will record a typed skip naming the address tried; pass " +
+                        "-PandroidHarnessHost=<addr> if this host's reachable address cannot be detected.",
+                )
+            } else {
+                logger.lifecycle("Android harness: quic-echo reachable at $reachable:$quicPort (UDP round-trip verified)")
+            }
+
+            // Carry every discovered fact to the device. Instrumentation arguments are the mechanism
+            // that lets the device side learn things it cannot otherwise know — an OS-assigned port,
+            // and now also which host ADDRESS this particular device can reach that port on, which
+            // differs by transport and by device kind and was previously hardcoded to the emulator's.
+            val args =
+                mutableListOf(
                     "${rootProject.projectDir}/gradlew",
-                    ":socket-quic:connectedDebugAndroidTest",
-                ).directory(rootProject.projectDir)
+                    ":socket-quic-quiche:connectedDebugAndroidTest",
+                    "-PandroidSerial=${androidSerial ?: ""}",
+                    "-Pandroid.testInstrumentationRunnerArguments.deviceKind=$deviceKind",
+                    // adb reverse is TCP-only, which is precisely why the control channel gets the
+                    // device's own loopback and the UDP harness above cannot.
+                    "-Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1",
+                    "-Pandroid.testInstrumentationRunnerArguments.netCtrlPort=$ctrlPort",
+                )
+            val chosenHost = reachable ?: candidates.firstOrNull()
+            if (chosenHost != null) {
+                args += "-Pandroid.testInstrumentationRunnerArguments.quicEchoHost=$chosenHost"
+                args += "-Pandroid.testInstrumentationRunnerArguments.quicEchoPort=$quicPort"
+                args +=
+                    "-Pandroid.testInstrumentationRunnerArguments.quicEchoProbe=" +
+                    (if (reachable != null) "round-tripped" else "no-route")
+            }
+            // An instrumented test process is forked from zygote, so it inherits the DEVICE's
+            // environment: SOCKET_REQUIRE_ALL_TESTS set beside this build never reached it, which is
+            // why the skip gate was inert on Android. Forward it as an argument, the one channel that
+            // does cross. (socket-testkit's androidMain testkitEnv reads it back under this name.)
+            val requireAllTests =
+                (project.findProperty("requireAllTests") as String?)?.takeIf { it.isNotBlank() }
+                    ?: System.getenv("SOCKET_REQUIRE_ALL_TESTS")?.takeIf { it.isNotBlank() }
+            if (requireAllTests != null) {
+                args += "-Pandroid.testInstrumentationRunnerArguments.SOCKET_REQUIRE_ALL_TESTS=$requireAllTests"
+            }
+
+            val builder =
+                ProcessBuilder(args)
+                    .directory(rootProject.projectDir)
                     .inheritIO()
-                    .start()
-                    .waitFor()
+            // Belt and braces with -PandroidSerial: AGP picks the connected device from
+            // ANDROID_SERIAL, and this nested build is a fresh process whose environment we control.
+            if (androidSerial != null) builder.environment()["ANDROID_SERIAL"] = androidSerial
+            val result = builder.start().waitFor()
             if (result != 0) throw GradleException("Android instrumented tests failed")
         }
     }
@@ -2035,6 +2574,7 @@ kotlin {
         }
         linuxX64 {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
+            val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
             val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxX64")
             // Order the def-gen after the cargo build (NOT dependsOn): the def-gen is reachable from the
@@ -2042,11 +2582,51 @@ kotlin {
             // dependsOn would force an arm64 cargo CROSS-compile there (E0463 on a runner without the rustup
             // target). mustRunAfter is a no-op unless the build is already scheduled — i.e. a real K/N compile.
             buildQuicheSharedLinuxX64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
+            // ── The real build dependency, and the one place it can safely live ────────────────────────
+            // A K/Native COMPILATION of this Linux target is the only node in the graph specific to actually
+            // building this target, so this is where "…and its libquiche.a must be current" belongs.
+            // Measured task graphs on a linux-x64 host, `./gradlew :socket-quic-quiche:<task> --dry-run`:
+            //
+            //   jvmTest                  → cinteropQuiche{LinuxX64,LinuxArm64} ARE present (commonizeCInterop
+            //                              pulls every K/N cinterop) but NO compileKotlinLinuxArm64 is.
+            //   quicEchoJar              → buildQuicheSharedLinuxX64 + buildJvmJniShimLinuxX64 only; the
+            //                              arm64 JNI shim rides the `quicEchoAllArches` CI flag, not this.
+            //   compileKotlinLinuxArm64  → cinteropQuicheLinuxArm64 and compileKotlinLinuxArm64, and — before
+            //                              this line — NO buildQuicheSharedLinuxArm64 ANYWHERE.
+            //
+            // So a dependsOn on the CINTEROP would drag the aarch64 cargo CROSS-build into an ordinary
+            // host-only `:jvmTest` (E0463 on a runner without the rustup target) — precisely the leak the
+            // genLinuxQuicheDef comment above records, and why that one is `mustRunAfter`. Hanging it off the
+            // compilations instead keeps the cross-build attached to the target that needs it, and nothing
+            // else.
+            //
+            // Before this existed, `buildQuicheSharedLinuxArm64` was reachable from NOTHING a Linux build
+            // runs: only `mustRunAfter` referenced it, and that is inert unless the task is already
+            // scheduled. A working tree therefore carried a quiche 0.29.2 linux-arm64 libquiche.a (no
+            // caller-clock export) plus a 0.28.0 libquiche_jni.so under a 0.29.3 project — see
+            // quicheBinaryForeignVersion for what that costs (DitchOoM/socket#388). linuxX64 escaped only
+            // because prepareQuicheNativeLib → the host-arch JNI shim happens to schedule
+            // buildQuicheSharedLinuxX64; that is luck, not a declared dependency.
+            buildQuicheSharedLinuxX64?.let { bt ->
+                compilations.configureEach { compileTaskProvider.configure { dependsOn(bt) } }
+            }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
                     includeDirs("libs/quiche/include")
-                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(genDefTask)
+                        // libquiche.a is COPIED INTO this klib (staticLibraries.linux + libraryPaths.linux in
+                        // the generated def), so it is a real input. Without it a rebuilt archive leaves the
+                        // def text byte-identical, the cinterop stays UP-TO-DATE, and the klib keeps serving
+                        // the OLD archive out of its included/ directory. FileCollection tolerates absence,
+                        // so a fresh tree still configures.
+                        inputs.files(quicheStatic).withPropertyName("quicheStaticArchive")
+                        // Ordering only — inert unless the build task is already scheduled, i.e. a real
+                        // compile of this target (see above). Guarantees the klib embeds the FRESH archive
+                        // rather than racing the cargo build that is about to overwrite it.
+                        buildQuicheSharedLinuxX64?.let { mustRunAfter(it) }
+                    }
                 }
                 // BoringSSL X.509 bindings for the W3C serverCertificateHashes cert-constraint parser
                 // (PinnedLeafFields.linux.kt). Headers come from the base :socket: module's BoringSSL
@@ -2066,16 +2646,39 @@ kotlin {
         }
         linuxArm64 {
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
+            val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
             val genDefTask = genLinuxQuicheDef(quicheLibDir, generatedDef, "LinuxArm64")
             // See linuxX64: mustRunAfter (not dependsOn) so the arm64 cross-build is never dragged into a
             // graph that doesn't actually compile the linuxArm64 K/N target.
             buildQuicheSharedLinuxArm64?.let { bt -> genDefTask.configure { mustRunAfter(bt) } }
+            // ── The real build dependency, and the one place it can safely live ────────────────────────
+            // See linuxX64 for the measured task graphs and the full reasoning. Short version: hanging this
+            // off the CINTEROP would drag this aarch64 cargo CROSS-build into every host-only `:jvmTest`
+            // (commonizeCInterop pulls cinteropQuicheLinuxArm64 there), while `mustRunAfter` alone left
+            // buildQuicheSharedLinuxArm64 reachable from NOTHING — so linuxArm64 silently linked whatever
+            // libquiche.a was on disk, measured here as quiche 0.29.2 under a 0.29.3 project
+            // (DitchOoM/socket#388). The compilation is the one node specific to building this target.
+            buildQuicheSharedLinuxArm64?.let { bt ->
+                compilations.configureEach { compileTaskProvider.configure { dependsOn(bt) } }
+            }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
                     includeDirs("libs/quiche/include")
-                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(genDefTask)
+                        // libquiche.a is COPIED INTO this klib (staticLibraries.linux + libraryPaths.linux in
+                        // the generated def), so it is a real input. Without it a rebuilt archive leaves the
+                        // def text byte-identical, the cinterop stays UP-TO-DATE, and the klib keeps serving
+                        // the OLD archive out of its included/ directory. FileCollection tolerates absence,
+                        // so a fresh tree still configures.
+                        inputs.files(quicheStatic).withPropertyName("quicheStaticArchive")
+                        // Ordering only — inert unless the build task is already scheduled, i.e. a real
+                        // compile of this target (see above). Guarantees the klib embeds the FRESH archive
+                        // rather than racing the cargo build that is about to overwrite it.
+                        buildQuicheSharedLinuxArm64?.let { mustRunAfter(it) }
+                    }
                 }
                 // See linuxX64: BoringSSL X.509 bindings for the cert-constraint parser. Symbols are
                 // contributed transitively by the base :socket: module's arm64 cinterop.
@@ -2117,12 +2720,11 @@ kotlin {
             val libCamel = libSubdir.split('-').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
             val baseQuicheDef = file("src/nativeInterop/cinterop/Quiche.def")
             val generatedQuicheDef = projectDir.resolve("build/generated/cinterop/Quiche-$libSubdir.def")
-            // The cargo/static task that produces THIS target's libquiche.a. Depending on it (and reading
-            // existence in doLast, not at configuration time) is the clean-checkout fix — see the Linux
-            // genLinuxQuicheDef comment. On a fresh tree the archive doesn't exist at config time, so the
-            // old `embedStatic = quicheStatic.exists()` gate resolved false and the def dropped
-            // `staticLibraries`, producing a dangling K/N link. buildQuicheAppleStaticLibs happened to run
-            // these first in CI; the explicit dependsOn makes that ordering correct-by-construction.
+            // The cargo/static task that produces THIS target's libquiche.a. Reading the archive's
+            // existence in doLast rather than at configuration time is the clean-checkout fix — see the
+            // Linux genLinuxQuicheDef comment. On a fresh tree the archive doesn't exist at config time, so
+            // the old `embedStatic = quicheStatic.exists()` gate resolved false and the def dropped
+            // `staticLibraries`, producing a dangling K/N link.
             val buildTask: TaskProvider<Task>? =
                 when (libSubdir) {
                     "macos-arm64" -> buildQuicheSharedMacosArm64
@@ -2135,8 +2737,9 @@ kotlin {
             val genDefTask =
                 tasks.register("generateQuicheEmbedDef$libCamel") {
                     // mustRunAfter, not dependsOn — see the Linux genLinuxQuicheDef comment: the def-gen must
-                    // not pull the (cross-)build into graphs that don't compile this K/N target. The cinterop
-                    // that embeds libquiche.a owns the real build dependency (below).
+                    // not pull the (cross-)build into graphs that don't compile this K/N target. The real
+                    // build dependency hangs off this target's COMPILATIONS (below), which is the only place
+                    // in the graph that is specific to actually compiling this target.
                     buildTask?.let { mustRunAfter(it) }
                     inputs.file(baseQuicheDef)
                     inputs.files(quicheStatic) // tolerates absence; re-runs when the archive appears
@@ -2160,11 +2763,42 @@ kotlin {
                         generatedQuicheDef.writeText(baseQuicheDef.readText() + embed)
                     }
                 }
+            // ── The real build dependency, and the one place it can safely live ────────────────────────
+            // A K/Native COMPILATION of this Apple target is the only node in the graph that is specific
+            // to actually building this target, so this is where "…and its libquiche.a must be current"
+            // belongs. Measured task graphs, `./gradlew :socket-quic-quiche:<task> --dry-run`:
+            //
+            //   jvmTest / quicEchoJar  → cinteropQuiche{IosArm64,IosSimulatorArm64,IosX64,MacosX64} ARE
+            //                            present (commonizeCInterop pulls every Apple cinterop), but NO
+            //                            compileKotlin<AppleTarget> is.
+            //   macosArm64Test         → compileKotlinMacosArm64 / compileTestKotlinMacosArm64 only.
+            //
+            // So a dependsOn on the CINTEROP would drag three iOS cargo cross-builds plus a macOS-x64 one
+            // into an ordinary host-only `:jvmTest` — precisely the leak the Linux genLinuxQuicheDef
+            // comment records and the reason that one is `mustRunAfter`. Hanging it off the compilations
+            // instead keeps the cross-build attached to the target that needs it and to nothing else.
+            //
+            // Before this existed, `buildQuicheStaticIosArm64` was reachable from NOTHING an Apple build
+            // runs: only `mustRunAfter` referenced it, which is inert unless the task is already scheduled.
+            // A working tree therefore carried three quiche 0.28.0 archives under a 0.29.3 project — see
+            // quicheBinaryForeignVersion for what that costs (DitchOoM/socket#388).
+            buildTask?.let { bt -> compilations.configureEach { compileTaskProvider.configure { dependsOn(bt) } } }
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedQuicheDef)
                     includeDirs("libs/quiche/include")
-                    tasks.named(interopProcessingTaskName) { dependsOn(genDefTask) }
+                    tasks.named(interopProcessingTaskName) {
+                        dependsOn(genDefTask)
+                        // libquiche.a is COPIED INTO this klib (staticLibraries/libraryPaths above), so it
+                        // is a real input — without it a rebuilt archive leaves the def text byte-identical,
+                        // the cinterop stays UP-TO-DATE, and the klib keeps serving the OLD archive out of
+                        // its included/ directory. Tolerates absence, so a fresh tree still configures.
+                        inputs.files(quicheStatic).withPropertyName("quicheStaticArchive")
+                        // Ordering only — inert unless buildTask is already scheduled, i.e. a real compile
+                        // of this target (see above). Guarantees the klib embeds the FRESH archive rather
+                        // than racing the cargo build that is about to overwrite it.
+                        buildTask?.let { mustRunAfter(it) }
+                    }
                 }
                 // SHA-256 for the W3C serverCertificateHashes leaf-cert pin. Binds BoringSSL's SHA256
                 // now embedded in (not force-loaded from) the Quiche klib's libquiche.a — collision-free
@@ -2187,6 +2821,14 @@ kotlin {
 
     applyDefaultHierarchyTemplate()
     sourceSets {
+        // This module OWNS the QUIC driver seam (@InternalQuicApi: UdpChannel, UdpChannelFactory,
+        // SendOutcome, NewPath, QuicheDriver, MigrationCapability), so every source set in it opts in
+        // wholesale rather than repeating @file:OptIn in ~20 files. The marker still does its real job:
+        // it is a compile ERROR for anyone outside this module, which is the audience it was added for.
+        all {
+            languageSettings.optIn("com.ditchoom.socket.quic.InternalQuicApi")
+        }
+
         commonMain.dependencies {
             api(project(":"))
             api(project(":socket-quic"))
@@ -2203,6 +2845,11 @@ kotlin {
         }
         commonTest {
             kotlin.srcDir(generateQuicHarnessConfig.map { quicHarnessGeneratedDir })
+            // Cross-backend suites that need this module's INTERNAL seams (QuicheBackedConnection,
+            // QuicheDriver.peerTransportParams) and therefore cannot live in :socket-testsuite. Shared
+            // with androidInstrumentedTest by srcDir because that source set deliberately does not
+            // dependsOn commonTest — see the note there.
+            kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
@@ -2274,6 +2921,11 @@ kotlin {
         }
         val androidInstrumentedTest by getting {
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
+            // Android is the JNI backend, and the #388 peer-transport-params binding is JNI-only code
+            // that no other lane exercises. This source set does NOT dependsOn commonTest, so the
+            // neighbour-field ABI guard would have skipped the one backend whose binding is new;
+            // compiling the shared suite here directly is what makes it actually run on device.
+            kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)

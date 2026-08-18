@@ -272,7 +272,7 @@ class ReactiveDriverTests {
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
                 // The peer's reason flows into Closed.error as an exhaustive QuicError (was always null
                 // before) — and closeReasonOr surfaces it instead of the NoError fallback.
-                assertEquals(QuicError.ProtocolViolation, closed.error)
+                assertEquals(QuicCloseReason.ByPeer(QuicError.ProtocolViolation), closed.reason)
                 assertEquals(QuicError.ProtocolViolation, driver.closeReasonOr(QuicError.NoError))
                 assertTrue(!closed.isCleanShutdown)
             } finally {
@@ -301,7 +301,7 @@ class ReactiveDriverTests {
                 d2.await()
 
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
-                assertEquals(QuicError.TransportParameterError("local"), closed.error)
+                assertEquals(QuicCloseReason.ByLocal(QuicError.TransportParameterError("local")), closed.reason)
             } finally {
                 driver.destroy()
             }
@@ -329,7 +329,7 @@ class ReactiveDriverTests {
                 d2.await()
 
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
-                assertEquals(QuicError.IdleTimeout, closed.error)
+                assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.reason)
                 assertTrue(!closed.isCleanShutdown)
             } finally {
                 driver.destroy()
@@ -363,7 +363,7 @@ class ReactiveDriverTests {
                 assertIs<QuicConnectionState.Closed>(
                     withTimeout(5.seconds) { driver.state.first { it is QuicConnectionState.Closed } },
                 )
-            assertEquals(QuicError.IdleTimeout, closed.error)
+            assertEquals(QuicCloseReason.ByLocal(QuicError.IdleTimeout), closed.reason)
             assertEquals(QuicError.IdleTimeout, driver.closeReasonOr(QuicError.NoError))
             Unit
         }
@@ -387,7 +387,7 @@ class ReactiveDriverTests {
                 d2.await()
 
                 val closed = assertIs<QuicConnectionState.Closed>(driver.state.value)
-                assertNull(closed.error)
+                assertEquals(QuicCloseReason.Graceful, closed.reason)
                 assertTrue(closed.isCleanShutdown)
             } finally {
                 driver.destroy()
@@ -433,7 +433,10 @@ class ReactiveDriverTests {
                         buffer: PlatformBuffer,
                         len: Int,
                         dest: PathKey?,
-                    ) = udpGate.await()
+                    ): SendOutcome {
+                        udpGate.await()
+                        return SendOutcome.Sent
+                    }
 
                     override fun close() {}
                 }
@@ -464,8 +467,25 @@ class ReactiveDriverTests {
     // uncaught exception then leaked into the surrounding runTest scope and flaked
     // an unrelated test in the next run. Real-world triggers were
     // PortUnreachableException (peer gone) and ClosedChannelException (channel
-    // closed during shutdown). The driver must swallow these, transition to
-    // Closed, and unwind cleanly via cleanup().
+    // closed during shutdown). The driver must never let one escape.
+    //
+    // The ORIGINAL fix also transitioned to Closed, and two tests below pinned that. The
+    // containment was right; the termination was not, and it has been reversed:
+    //
+    //   * A send failure is not a connection-termination event. RFC 9000 §10 lists the only three
+    //     (idle timeout, immediate close, stateless reset) and a failed local send is not among
+    //     them — it is indistinguishable from a packet lost on the wire, which QUIC retransmits.
+    //   * Closing here made active connection migration impossible. A handoff happens *because* the
+    //     old path died, so the first send afterwards ended the connection before the new path could
+    //     be validated. That is why Apple's migration could never have worked even once its
+    //     UdpChannelFactory exists.
+    //   * The close reported Closed(error = null) — the *clean shutdown* value — so a network
+    //     failure was indistinguishable from a peer closing politely.
+    //
+    // Termination is now quiche's idle timer, which reports the truthful QuicError.IdleTimeout
+    // (IdleTimeoutTerminationTests pins that it fires and what it says). Failure is also no longer
+    // signalled by throwing at all: UdpChannel.send returns a typed SendOutcome, so flushOutgoing
+    // decides per cause in an exhaustive `when` instead of inheriting one blanket policy.
 
     @Test
     fun flushOutgoing_swallowsExceptionFromUdpSend() =
@@ -484,48 +504,85 @@ class ReactiveDriverTests {
             assertEquals(1, udp.sendCount, "send was attempted exactly once")
         }
 
+    /**
+     * Was `flushOutgoing_transitionsToClosedOnUdpError`, which asserted the exact opposite.
+     *
+     * The connection must **survive** a failed send. Keeping the old assertion would have permanently
+     * blocked connection migration (see the section comment above), so the test is inverted rather
+     * than deleted — the scenario it covers is still the one that matters, only its verdict changed.
+     */
     @Test
-    fun flushOutgoing_transitionsToClosedOnUdpError() =
+    fun flushOutgoing_keepsConnectionAliveOnUdpError() =
         runQuicTest {
             val api = StubQuicheApi()
+            api.established = true
             api.connSendOnce = 1300
             val udp = StubUdpChannel(sendBehavior = { _, _ -> throw RuntimeException("send failed") })
             val driver = createTestDriver(api = api, udpChannel = udp)
             driver.start(this)
 
-            // The driver should observe the failure and short-circuit to Closed,
-            // closing the command channel so further sends fail predictably.
-            withTimeout(2.seconds) {
-                while (driver.state.value !is QuicConnectionState.Closed) {
-                    yield()
+            try {
+                // The send must actually have been attempted, or this asserts nothing.
+                withTimeout(2.seconds) {
+                    while (udp.sendCount == 0) yield()
                 }
-            }
-            assertIs<QuicConnectionState.Closed>(driver.state.value)
-            assertTrue(driver.commands.isClosedForSend, "commands channel closed after UDP failure")
 
-            driver.destroy()
+                // Give the driver every chance to close before concluding that it did not: poll the
+                // state for a bounded window rather than sampling once and hoping the race went our way.
+                val closed =
+                    withTimeoutOrNull(500.milliseconds) {
+                        driver.state.first { it is QuicConnectionState.Closed }
+                    }
+                assertNull(
+                    closed,
+                    "a failed UDP send terminated the connection ($closed). A lost datagram is what QUIC " +
+                        "retransmits; ending the session over one is what makes migration impossible.",
+                )
+                assertTrue(
+                    !driver.commands.isClosedForSend,
+                    "the command channel was closed after a send failure — the driver tore itself down",
+                )
+            } finally {
+                driver.destroy()
+            }
         }
 
+    /**
+     * Was `flushOutgoing_failsPendingCommandsAfterUdpError`.
+     *
+     * Its intent — a caller must never hang forever waiting on a driver that has given up — is
+     * preserved, but the correct answer is that the driver has *not* given up: it still accepts and
+     * completes commands, so nothing hangs. The genuine "peer is gone" signal now arrives from the
+     * idle timer instead (IdleTimeoutTerminationTests), on a truthful timescale and with a truthful
+     * reason.
+     */
     @Test
-    fun flushOutgoing_failsPendingCommandsAfterUdpError() =
+    fun flushOutgoing_stillAcceptsCommandsAfterUdpError() =
         runQuicTest {
             val api = StubQuicheApi()
+            api.established = true
             api.connSendOnce = 1300
             val udp = StubUdpChannel(sendBehavior = { _, _ -> throw RuntimeException("send failed") })
             val driver = createTestDriver(api = api, udpChannel = udp)
             driver.start(this)
 
-            // Wait for the driver to short-circuit, then verify a new OpenStream gets
-            // ClosedSendChannelException rather than hanging forever.
-            withTimeout(2.seconds) {
-                while (!driver.commands.isClosedForSend) yield()
-            }
-            assertFailsWith<kotlinx.coroutines.channels.ClosedSendChannelException> {
-                driver.commands.send(QuicheCmd.OpenStream(CompletableDeferred()))
-            }
+            try {
+                withTimeout(2.seconds) {
+                    while (udp.sendCount == 0) yield()
+                }
 
-            driver.destroy()
-            Unit
+                // A command issued after the failure must still complete — not throw
+                // ClosedSendChannelException, and not hang to the timeout.
+                val slot =
+                    withTimeout(2.seconds) {
+                        val deferred = CompletableDeferred<StreamSlot>()
+                        driver.commands.send(QuicheCmd.OpenStream(deferred))
+                        deferred.await()
+                    }
+                assertNotNull(slot, "driver did not service a command issued after a UDP send failure")
+            } finally {
+                driver.destroy()
+            }
         }
 
     // ---- streamWrite reactive back-pressure (writable-signal) ----
@@ -932,7 +989,10 @@ class ReactiveDriverTests {
                     buffer: PlatformBuffer,
                     len: Int,
                     dest: PathKey?,
-                ) = udpGate.await()
+                ): SendOutcome {
+                    udpGate.await()
+                    return SendOutcome.Sent
+                }
 
                 override fun close() {}
             }
@@ -1225,6 +1285,8 @@ class ReactiveDriverTests {
         clock: DriverClock = RealDriverClock,
     ): QuicheDriver =
         QuicheDriver(
+            // Test double: never exercises a path move.
+            migration = MigrationCapability.BackendCannotMigrate,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

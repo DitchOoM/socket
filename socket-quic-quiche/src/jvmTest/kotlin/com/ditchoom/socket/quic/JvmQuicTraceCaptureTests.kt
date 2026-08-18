@@ -212,7 +212,15 @@ class JvmQuicTraceCaptureTests {
                         val migratedTo = NetworkId.Link(NetworkKind.Wifi, 9L)
                         val clientOptions =
                             baseOptions.copy(
-                                trace = QuicTraceCapture(sink = { e -> lines += e.toString() }, networkMonitor = monitor),
+                                // The monitor is the CONNECTION's, supplied once via networkMonitor; the
+                                // capture only says whether to write its observations down. Two separate
+                                // monitor fields on one options object is exactly what this replaced.
+                                networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                                trace =
+                                    QuicTraceCapture(
+                                        sink = { e -> lines += e.toString() },
+                                        recordNetworkObservations = true,
+                                    ),
                             )
 
                         val clientJob =

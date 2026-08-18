@@ -76,6 +76,14 @@ kotlin {
             // transitively. No QUIC dependency — that is the whole point of the split.
             api(project(":"))
         }
+        androidMain.dependencies {
+            // compileOnly, NOT implementation: this module is published, and an instrumented-test
+            // registry has no business on a consumer's runtime classpath. TestSkip.android.kt reads
+            // instrumentation arguments through it because that is the only channel a host-side lane
+            // has into a zygote-forked test process — see the KDoc there — and guards the call so the
+            // class being absent off-device is a null, not a crash.
+            compileOnly("androidx.test:runner:1.7.0")
+        }
         commonTest {
             dependencies {
                 implementation(kotlin("test"))

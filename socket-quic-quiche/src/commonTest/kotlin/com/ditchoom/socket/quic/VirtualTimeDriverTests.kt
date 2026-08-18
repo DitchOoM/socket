@@ -73,6 +73,8 @@ class VirtualTimeDriverTests {
         driverContext: CoroutineContext = EmptyCoroutineContext,
     ): QuicheDriver =
         QuicheDriver(
+            // Test double: never exercises a path move.
+            migration = MigrationCapability.BackendCannotMigrate,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

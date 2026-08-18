@@ -212,15 +212,41 @@ internal suspend fun buildAppleQuicConnection(
                     driverContext = tuning.driverContext,
                     random = tuning.random,
                     recorder = tuning.recorderFactory(),
-                    // Peer + primary local sockaddrs (pinned via onCleanup) for the initial path's
-                    // recv_info/send_info. No udpChannelFactory: explicit quiche path migration via a second
-                    // local socket does not map to NWConnection (NW owns path moves); the NWPath-driven
-                    // migration glue is unimplemented (#374), so migrate() reports unsupported here.
-                    peerAddr = peerSockAddr.address,
-                    peerLen = peerSockAddr.length,
-                    primaryLocalAddr = localSockAddr.address,
-                    primaryLocalLen = localSockAddr.length,
-                    udpChannelFactory = null,
+                    networkObservation = tuning.networkObservation,
+                    // RFC 9000 §9 active migration, over a SECOND NWConnection.
+                    //
+                    // The previous comment here said explicit quiche path migration "does not map to
+                    // NWConnection (NW owns path moves)". That was written before the Phase 6 cutover and
+                    // is doubly stale. This client's datapath is already `UdpSocket.connect` ->
+                    // `DatagramChannelUdpChannel`, the same shared adapter Linux and the JVM use, so the
+                    // seam it claimed did not fit is the seam already in use. And NW does not own path
+                    // moves for UDP: measured on macOS, a UDP nw_connection_t whose path disappears goes
+                    // to `failed` with POSIX 57 in ~2s, never recovers, and its local endpoint never
+                    // changes. Nothing re-homes, so the app must open the new path itself — which is
+                    // Apple's own documented model (betterPathAvailable -> new connection -> move).
+                    //
+                    // `UdpSocket.connect` yields a fresh NWConnection with its own NW-assigned local
+                    // endpoint, which is exactly the new 4-tuple quiche probes and migrates onto.
+                    migration =
+                        clientMigrationCapability(quicOptions.migration) {
+                            MigrationCapability.Supported(
+                                peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
+                                primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
+                                channelFactory =
+                                    UdpSocketChannelFactory(
+                                        peer = peer,
+                                        codec = codec,
+                                        bufferFactory = bufferFactory,
+                                        recvBufferFactory = recvBufPool,
+                                        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                                        // NW assigns the local endpoint; `UdpSocket.apple.kt`'s connect calls
+                                        // localHost/localPort "advisory" and ignores them. Declared so the
+                                        // driver refuses an explicit endpoint instead of silently binding
+                                        // somewhere else and reporting success.
+                                        localEndpointSupport = LocalEndpointSupport.PlatformAssigned,
+                                    ),
+                            )
+                        },
                     onCleanup = {
                         peerSockAddr.free()
                         localSockAddr.free()
@@ -283,8 +309,18 @@ internal class AppleQuicConnection(
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
+    QuicheBackedConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
+
+    override val quicheDriver: QuicheDriver get() = driver
+
+    /**
+     * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
+     * because it rotates — so this is rebuilt per read rather than stored.
+     */
+    override val identity: QuicConnectionIdentity
+        get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
 
     private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
 
@@ -315,7 +351,7 @@ internal class AppleQuicConnection(
                 ),
             )
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         }
     }
 
@@ -340,18 +376,19 @@ internal class AppleQuicConnection(
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
-    override val pathState: StateFlow<PathInfo> = driver.pathState
+    override val pathState: StateFlow<QuicPathState> = driver.pathState
 
-    override suspend fun migrate(
-        localHost: String?,
-        localPort: Int,
-    ): MigrationResult =
+    override val networkAtClose: NetworkAtClose get() = driver.networkAtClose
+
+    override suspend fun migrate(target: MigrationTarget): MigrationResult =
         try {
             val deferred = CompletableDeferred<MigrationResult>()
-            driver.commands.send(QuicheCmd.Migrate(localHost, localPort, deferred))
+            driver.commands.send(QuicheCmd.Migrate(target, deferred))
+            // Suspends until the path has validated and the active path has switched, or the attempt
+            // has failed — the property the automatic reactor relies on instead of a quiet period.
             deferred.await()
         } catch (_: ClosedSendChannelException) {
-            MigrationResult.Failed("connection closed")
+            MigrationResult.Unmoved.Impossible.ConnectionClosed
         }
 
     /** Driver-level terminal close (user-callable mid-block via [closeWithError]) — no [onRelease]. */

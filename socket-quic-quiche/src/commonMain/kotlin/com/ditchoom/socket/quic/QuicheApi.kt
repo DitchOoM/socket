@@ -346,12 +346,42 @@ interface QuicheApi {
     ): Int = 0
 
     /**
+     * Copy quiche's **stable** connection trace id (`quiche_conn_trace_id`) into [buf]. Same
+     * snprintf-style contract as [connApplicationProto]; `0` also means "this backend does not bind it"
+     * (the interface default), which surfaces publicly as a session id the driver derives another way.
+     *
+     * quiche documents this as "a string uniquely representing the connection". Unlike [connSourceId] it
+     * does **not** rotate, which is what makes it usable as the identifier you follow a connection by
+     * across a migration.
+     */
+    fun connTraceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = 0
+
+    /**
+     * Copy the connection's **current** source connection ID (`quiche_conn_source_id`) into [buf]. Same
+     * snprintf-style contract as [connApplicationProto]; `0` also means "this backend does not bind it"
+     * (the interface default), which surfaces publicly as
+     * [com.ditchoom.socket.quic.QuicWireConnectionId.Unavailable].
+     *
+     * ⚠️ This **changes over the connection's life** — CIDs rotate, and migration issues a fresh one by
+     * design (RFC 9000 §9.5). Read it at the moment you need it; a cached value stops matching the wire.
+     */
+    fun connSourceId(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = 0
+
+    /**
      * The peer's CONNECTION_CLOSE reason as a typed [QuicError], or `null` if the peer has not closed
      * the connection (we closed first, or it is still open). Maps `quiche_conn_peer_error`, decoding the
      * C API's `is_app` flag + numeric code into the sealed hierarchy — application closes (frame 0x1d) →
      * [QuicError.ApplicationError]; transport closes (frame 0x1c) → [QuicError.fromTransportCode] (which
      * folds the 0x100..0x1ff range into [QuicError.CryptoError]). No stringly errors: the wire code
-     * becomes an exhaustive [QuicError]. Used to populate [QuicConnectionState.Closed.error] so a remote
+     * becomes an exhaustive [QuicError]. Used to populate [QuicConnectionState.Closed.reason] so a remote
      * close surfaces its real reason instead of [QuicError.NoError].
      *
      * quiche is single-threaded — call only from the driver loop. Bound on every real backend (FFM,
@@ -389,6 +419,21 @@ interface QuicheApi {
         conn: QuicheConn,
         pathIdx: Long,
     ): QuicPathStats? = null
+
+    /**
+     * The peer's transport parameters (`quiche_conn_peer_transport_params`), typed — including the
+     * `disable_active_migration` flag [connPeerMigrationPermission] projects for the migration path.
+     *
+     * **Deliberately has no default.** The other optional accessors above default to `null` because a
+     * backend that has not bound them still works; this one must not, because the value it carries is a
+     * *silent kill switch*: a wrong or absent answer makes active migration decline with no error
+     * anywhere. Making it abstract forces every implementation — real backend and test double alike — to
+     * state what it reports, which is the same reason the return type is sealed rather than nullable.
+     * All four real backends (FFM, JNI, Apple cinterop, Linux cinterop) bind it.
+     *
+     * Same threading contract as [connStats]: quiche is single-threaded — driver loop only.
+     */
+    fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams
 
     /**
      * Enable qlog tracing on [conn], writing the connection's event log to [path]

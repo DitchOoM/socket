@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -40,40 +41,60 @@ class QuicConnectionStateTests {
     // --- Closed state ---
 
     @Test
-    fun closed_withNullError_isCleanShutdown() {
-        val state = QuicConnectionState.Closed(null)
-        assertTrue(state.isCleanShutdown)
-        assertNull(state.error)
+    fun gracefulAndUnspecified_areDifferentClosures() {
+        // The distinction the old nullable could not express: both used to be `Closed(null)`.
+        val graceful = QuicConnectionState.Closed(QuicCloseReason.Graceful)
+        val unexplained = QuicConnectionState.Closed(QuicCloseReason.Unspecified)
+        assertNotEquals(
+            graceful,
+            unexplained,
+            "a graceful shutdown and an unexplained teardown must not be the same value — " +
+                "collapsing them is what let a network-killed connection report itself as clean",
+        )
     }
 
     @Test
-    fun closed_withNoError_isCleanShutdown() {
-        val state = QuicConnectionState.Closed(QuicError.NoError)
-        assertTrue(state.isCleanShutdown)
+    fun closed_recordsWhichSideClosed() {
+        // Also discarded by the old bare-QuicError shape: a peer rejecting us and quiche aborting
+        // locally arrived indistinguishable.
+        val byPeer = QuicConnectionState.Closed(QuicCloseReason.ByPeer(QuicError.ProtocolViolation))
+        val byLocal = QuicConnectionState.Closed(QuicCloseReason.ByLocal(QuicError.ProtocolViolation))
+        assertNotEquals(byPeer, byLocal, "the same QuicError from opposite sides must remain distinguishable")
     }
 
     @Test
-    fun closed_withRealError_isNotCleanShutdown() {
-        val state = QuicConnectionState.Closed(QuicError.ProtocolViolation)
-        assertFalse(state.isCleanShutdown)
+    fun deprecatedAccessors_stayBugCompatibleForExistingCallers() {
+        // These shims deliberately preserve the OLD answers so a consumer on the deprecated API does
+        // not silently acquire new behaviour. The truthful answer lives on `reason`.
+        @Suppress("DEPRECATION")
+        run {
+            assertNull(QuicConnectionState.Closed(QuicCloseReason.Graceful).error)
+            assertNull(QuicConnectionState.Closed(QuicCloseReason.Unspecified).error)
+            assertTrue(QuicConnectionState.Closed(QuicCloseReason.Graceful).isCleanShutdown)
+            assertTrue(
+                QuicConnectionState.Closed(QuicCloseReason.Unspecified).isCleanShutdown,
+                "bug-compatible on purpose: an unexplained teardown answered `true` under the old " +
+                    "contract, and a deprecated accessor must not change its answer",
+            )
+            assertFalse(QuicConnectionState.Closed(QuicCloseReason.ByPeer(QuicError.ProtocolViolation)).isCleanShutdown)
+            assertFalse(QuicConnectionState.Closed(QuicCloseReason.ByLocal(QuicError.CryptoError(40))).isCleanShutdown)
+            assertEquals(
+                QuicError.ConnectionRefused,
+                QuicConnectionState.Closed(QuicCloseReason.ByPeer(QuicError.ConnectionRefused)).error,
+            )
+        }
     }
 
     @Test
-    fun closed_withConnectionRefused_isNotCleanShutdown() {
-        val state = QuicConnectionState.Closed(QuicError.ConnectionRefused)
-        assertFalse(state.isCleanShutdown)
-    }
-
-    @Test
-    fun closed_withCryptoError_isNotCleanShutdown() {
-        val state = QuicConnectionState.Closed(QuicError.CryptoError(40))
-        assertFalse(state.isCleanShutdown)
-    }
-
-    @Test
-    fun closed_withPlatformError_isNotCleanShutdown() {
-        val state = QuicConnectionState.Closed(QuicError.PlatformError(RuntimeException()))
-        assertFalse(state.isCleanShutdown)
+    fun deprecatedConstructor_mapsOntoTheSealedReason() {
+        @Suppress("DEPRECATION")
+        run {
+            assertEquals(QuicCloseReason.Graceful, QuicConnectionState.Closed(null).reason)
+            assertEquals(
+                QuicCloseReason.ByLocal(QuicError.ProtocolViolation),
+                QuicConnectionState.Closed(QuicError.ProtocolViolation).reason,
+            )
+        }
     }
 
     // --- Exhaustive when coverage ---
@@ -86,7 +107,7 @@ class QuicConnectionStateTests {
                 QuicConnectionState.Handshaking,
                 QuicConnectionState.Established("h3"),
                 QuicConnectionState.Draining,
-                QuicConnectionState.Closed(null),
+                QuicConnectionState.Closed(QuicCloseReason.Graceful),
             )
         states.forEach { state ->
             // Exhaustive when — compiler enforces all branches
@@ -96,7 +117,14 @@ class QuicConnectionStateTests {
                     is QuicConnectionState.Handshaking -> "handshaking"
                     is QuicConnectionState.Established -> "established(${state.negotiatedAlpn})"
                     is QuicConnectionState.Draining -> "draining"
-                    is QuicConnectionState.Closed -> "closed(clean=${state.isCleanShutdown})"
+                    // Nested exhaustive when: the close reason is itself matched, not null-checked.
+                    is QuicConnectionState.Closed ->
+                        when (val r = state.reason) {
+                            QuicCloseReason.Graceful -> "closed(graceful)"
+                            QuicCloseReason.Unspecified -> "closed(unspecified)"
+                            is QuicCloseReason.ByPeer -> "closed(peer=${r.error.describe()})"
+                            is QuicCloseReason.ByLocal -> "closed(local=${r.error.describe()})"
+                        }
                 }
             assertTrue(description.isNotEmpty())
         }

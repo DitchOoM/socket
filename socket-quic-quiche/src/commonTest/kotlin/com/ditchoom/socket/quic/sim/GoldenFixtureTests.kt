@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.sim
 
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.sim.fixtures.SIM_IDLE_TIMEOUT
@@ -9,12 +10,15 @@ import com.ditchoom.socket.quic.sim.fixtures.SIM_KEEPALIVE_INTERVAL
 import com.ditchoom.socket.quic.sim.fixtures.datagramThenStalePath
 import com.ditchoom.socket.quic.sim.fixtures.idleTimeoutClose
 import com.ditchoom.socket.quic.sim.fixtures.keepaliveIdleSurvival
+import com.ditchoom.socket.quic.sim.fixtures.sendFaultSurvival
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -37,7 +41,6 @@ class GoldenFixtureTests {
             // would then show the Closed transition instead of the third PING.
             connTimeout = SIM_IDLE_TIMEOUT
             closeOnTimeout = true
-            timedOut = true
         }
 
     private val keepaliveIdleSurvivalGolden =
@@ -50,13 +53,16 @@ class GoldenFixtureTests {
             Observed.KeepAlivePing(20.seconds),
             Observed.KeepAlivePing(30.seconds),
             // End of life, at the end of the timeline: the driver publishes its terminal state
-            // whatever unwinds the loop, so a recorded session always ends with a typed reason
-            // instead of trailing off on Established. The reason is IdleTimeout only because this
-            // fixture arms `timedOut = true` for the whole run — quiche is scripted to report the
-            // idle timer as its terminal condition. The connection did NOT idle-close during the
-            // run: that is what the three PINGs and `onTimeoutCount == 0` below prove.
-            Observed.StateChange(30.seconds, QuicConnectionState.Closed(QuicError.IdleTimeout)),
-            Observed.ErrorSurfaced(30.seconds, QuicError.IdleTimeout),
+            // whatever unwinds the loop, so a recorded session always ends with a typed reason instead
+            // of trailing off on Established. [QuicCloseReason.Unspecified] is the honest one here —
+            // the harness tore the run down at its horizon, with no CONNECTION_CLOSE and no timeout.
+            //
+            // This used to read `Closed(IdleTimeout)` with a comment explaining that the connection had
+            // NOT actually idled out and only looked that way because the fixture pre-armed
+            // `timedOut = true`. A golden needing a disclaimer to be read correctly is recording the
+            // wrong thing; the stub now raises `timedOut` only when the idle timer really fires, so the
+            // trace says what happened. The three PINGs and `onTimeoutCount == 0` still prove survival.
+            Observed.StateChange(30.seconds, QuicConnectionState.Closed(QuicCloseReason.Unspecified)),
         )
 
     @Test
@@ -82,7 +88,6 @@ class GoldenFixtureTests {
         runQuicSim(idleTimeoutClose, keepAliveInterval = null) {
             connTimeout = SIM_IDLE_TIMEOUT
             closeOnTimeout = true
-            timedOut = true // quiche reports the close as an idle timeout, not a clean shutdown
         }
 
     private val idleTimeoutCloseGolden =
@@ -91,7 +96,7 @@ class GoldenFixtureTests {
             // Established carries the REAL negotiated ALPN read from the backend (quiche_conn_application_proto);
             // the scripted sim api models no ALPN, so the driver reports the empty string here.
             Observed.StateChange(Duration.ZERO, QuicConnectionState.Established("")),
-            Observed.StateChange(30.seconds, QuicConnectionState.Closed(QuicError.IdleTimeout)),
+            Observed.StateChange(30.seconds, QuicConnectionState.Closed(QuicCloseReason.ByLocal(QuicError.IdleTimeout))),
             Observed.ErrorSurfaced(30.seconds, QuicError.IdleTimeout),
         )
 
@@ -129,10 +134,13 @@ class GoldenFixtureTests {
                 NetworkState.Routable(NetworkId.KindOnly(NetworkKind.Cellular), InternetAccess.Unobserved),
             ),
             Observed.DatagramFed(3.seconds + 5.milliseconds, 6),
-            // End of life at the end of the timeline, with NO error: the stale-path packet was data,
-            // not a teardown signal, so the connection reached t=4s alive and closed cleanly. A
-            // `Closed(error=…)` here — or any Closed before t=4s — would be the regression.
-            Observed.StateChange(4.seconds, QuicConnectionState.Closed(null)),
+            // End of life at the end of the timeline: the stale-path packet was data, not a teardown
+            // signal, so the connection reached t=4s alive. The reason is [QuicCloseReason.Unspecified]
+            // because the harness tears the run down at its horizon — no CONNECTION_CLOSE is exchanged
+            // and nothing times out. That is deliberately NOT `Graceful`: this connection never shut
+            // down through the protocol, and the old nullable's `null` claimed otherwise. A
+            // `ByPeer`/`ByLocal` here — or any Closed before t=4s — would be the regression.
+            Observed.StateChange(4.seconds, QuicConnectionState.Closed(QuicCloseReason.Unspecified)),
         )
 
     @Test
@@ -155,6 +163,55 @@ class GoldenFixtureTests {
         runTest {
             repeat(50) {
                 runDatagramThenStalePath().trace.assertMatches(datagramThenStalePathGolden)
+            }
+        }
+
+    // ---- golden 5: send-fault-survival (the shrunk fuzz counterexample) ----
+
+    private suspend fun TestScope.runSendFaultSurvival(): QuicSimRun =
+        runQuicSim(sendFaultSurvival, keepAliveInterval = SIM_KEEPALIVE_INTERVAL, clientMode = true) {
+            connTimeout = SIM_IDLE_TIMEOUT
+            closeOnTimeout = true
+            // Same send-pressure model the fuzz harness uses: a PING arms one outbound datagram, so
+            // the armed fault has a real send to land on.
+            onAckEliciting = { connSendOnce = 1200 }
+        }
+
+    @Test
+    fun sendFaultSurvival_connectionSurvivesTheFaultAndKeepsPinging() =
+        runTest {
+            val run = runSendFaultSurvival()
+
+            // Bound on the fixture horizon, exactly as fuzz invariant 6 does: runQuicSim tears the
+            // driver down when the timeline ends, and that teardown records a terminal Closed. Counting
+            // it would make every fixture look like a failure.
+            val closedDuringTimeline =
+                run.trace.events
+                    .filterIsInstance<Observed.StateChange>()
+                    .firstOrNull { it.state is QuicConnectionState.Closed && it.at < sendFaultSurvival.duration }
+            assertNull(
+                closedDuringTimeline,
+                "a single transport send fault ended the connection at ${closedDuringTimeline?.at} — " +
+                    "one undelivered datagram must not cost the session",
+            )
+            assertEquals(
+                0,
+                run.api.onTimeoutCount,
+                "no quiche idle timer should have fired within the horizon, so any close would be the send fault",
+            )
+            assertTrue(
+                run.api.ackElicitingCount >= 2,
+                "keepalive stopped after the fault (${run.api.ackElicitingCount} PINGs) — the driver " +
+                    "stopped making progress even though only one datagram failed",
+            )
+        }
+
+    @Test
+    fun sendFaultSurvival_deterministic50x() =
+        runTest {
+            val golden = runSendFaultSurvival().trace.events
+            repeat(50) {
+                assertEquals(golden, runSendFaultSurvival().trace.events, "send-fault-survival is not deterministic")
             }
         }
 }

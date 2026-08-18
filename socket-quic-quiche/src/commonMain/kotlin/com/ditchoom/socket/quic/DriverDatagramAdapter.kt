@@ -47,7 +47,8 @@ internal class DriverDatagramAdapter(
     private val remote: SocketAddress,
 ) : ConnectedDatagramChannel {
     /** The structured close reason if the connection has closed, else [fallback]. */
-    private fun closedReason(fallback: QuicError): QuicError = (driver.state.value as? QuicConnectionState.Closed)?.error ?: fallback
+    private fun closedReason(fallback: QuicError): QuicError =
+        (driver.state.value as? QuicConnectionState.Closed)?.reason?.errorOrNull ?: fallback
 
     override val isOpen: Boolean
         get() = driver.state.value !is QuicConnectionState.Closed
@@ -106,10 +107,10 @@ internal class DriverDatagramAdapter(
                 }
             }
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed")
+            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } catch (_: ClosedReceiveChannelException) {
             // dgramWritableSignal was closed by cleanup() — the connection went away while parked.
-            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed")
+            throw QuicCloseException(closedReason(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         } finally {
             inFlight?.let { withContext(NonCancellable) { it.join() } }
         }

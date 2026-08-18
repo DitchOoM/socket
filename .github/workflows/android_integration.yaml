@@ -106,11 +106,19 @@ jobs:
         run: ./gradlew :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
 
       # Bring up the docker quic-echo harness (same image / port as
-      # build-linux + build-apple) before the emulator starts. The
-      # Android emulator's 10.0.2.2 maps to the host's loopback, so
-      # AndroidQuicConnectivityTests + AndroidQuicMigrationTests reach
-      # `10.0.2.2:<QuicHarnessConfig.quicEchoPort>` over UDP through to
-      # the container bound on `127.0.0.1:14433/udp`.
+      # build-linux + build-apple) before the emulator starts.
+      #
+      # ⚠️ `10.0.2.2:<port>` is a fact about an EMULATOR, not about Android.
+      # It is the AVD's built-in alias for the host's loopback; a physical
+      # device has no such alias, and `adb reverse` cannot stand in because
+      # it forwards TCP only while QUIC is UDP. This lane is emulator-only,
+      # so the pairing holds here: the compose file publishes a fixed port
+      # on the host's loopback and the alias makes that loopback
+      # addressable. The device side takes it as an explicit, named
+      # fallback (`EndpointOrigin.DockerContract` in HarnessEndpoints.kt),
+      # not as a hardcoded host — on real hardware the address is computed
+      # on the host, probed, and carried down as an instrumentation
+      # argument by `:socket-quic-quiche:androidQuicIntegrationTest`.
       #
       # Previous setup ran no server at all and used `adb reverse
       # tcp:4433 tcp:4433` — wrong on two counts: adb reverse only
@@ -120,7 +128,11 @@ jobs:
       # AndroidQuicConnectivityTests.checkServerReachable's catch
       # block. This was the Android side of the same silent-skip
       # failure mode being fixed across the comprehensive QUIC CI plan
-      # (macOS = PR #51, Linux ARM64 = PR #52).
+      # (macOS = PR #51, Linux ARM64 = PR #52). Both catch-alls are now
+      # gone: the causes they conflated are separate `SkipReason`s with
+      # separate `SkipGate`s, counted by the skip inventory, and the gate
+      # itself finally reaches the device — see the note on
+      # SOCKET_REQUIRE_ALL_TESTS in scripts/android-emulator-tests.sh.
       - name: Generate harness TLS certs
         run: bash test-harness/tls/gen-certs.sh
 
@@ -128,8 +140,9 @@ jobs:
       # has the COPY input it needs. Default (host-arch-only) is enough —
       # the docker image base + jar are both linux-x64 for this job, which
       # matches the ubuntu-latest runner. The container then exposes
-      # 14433/udp on the host's loopback, where the emulator reaches it via
-      # 10.0.2.2.
+      # 14433/udp on the host's loopback — the port half of the docker
+      # contract above, which this emulator (and only an emulator) can
+      # address through its 10.0.2.2 alias.
       - name: Build quic-echo fat jar (Linux x64)
         run: ./gradlew :socket-quic-quiche:quicEchoJar --no-configuration-cache
 
@@ -201,6 +214,16 @@ jobs:
           # had passed). The body therefore lives in a file that runs in a single shell; see the
           # header of scripts/android-emulator-tests.sh.
           script: bash scripts/android-emulator-tests.sh ${{ matrix.api-level }}
+
+      # Inventory whatever this lane skipped, the same way build-linux and build-apple do. Android
+      # was the last lane missing this: the instrumented XML lands under
+      # build/outputs/androidTest-results/ rather than build/test-results/, so the shared action's
+      # glob never reached it (fixed in the action). Reports only — the gate that FAILS is
+      # SOCKET_REQUIRE_ALL_TESTS=1, which now genuinely reaches the device (see
+      # scripts/android-emulator-tests.sh) and is deliberately left unset until this inventory shows
+      # the lane is clean.
+      - uses: ./.github/actions/skip-inventory
+        if: ${{ !cancelled() }}
 
       # Mirror the audit step from build-apple.yaml + build-linux.yaml:
       # count `harness OK` vs `harness SKIP` markers from

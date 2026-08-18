@@ -342,7 +342,14 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connOnTimeout(conn: QuicheConn) {
         onTimeoutCount++
-        if (closeOnTimeout) closed = true
+        if (closeOnTimeout) {
+            closed = true
+            // A close caused by the idle timer IS a timeout, so report it as one. Keeping these coupled
+            // stops a test from configuring the incoherent pair quiche can never produce — "closed for
+            // no stated reason" that nonetheless answers `connIsTimedOut() == true` — which would let a
+            // close from some entirely different cause present itself as an idle timeout.
+            timedOut = true
+        }
     }
 
     /** Counts reactive-keepalive PINGs the driver scheduled, so tests can assert on them. */
@@ -482,11 +489,32 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun sendInfoFromAddrLen(info: QuicheSendInfo) = 0
 
-    override fun sockAddrFamily(addr: Long) = 0
+    /**
+     * Synthetic sockaddr decoding: native pointer → UDP port, for the pointers a test has actually
+     * minted. **Empty by default**, so every existing test keeps the `family = 0` answer it has always
+     * had and [decodePathKey] keeps returning `PathKey(0, 0, 0, 0)` — this stub decodes no real memory
+     * and must not pretend to.
+     *
+     * A migration test registers the sockaddrs it made up ([registerSockAddr]) so the primary path and
+     * each probed path get **distinct** [PathKey]s. Without that they all collide on the zero key, the
+     * probed path silently overwrites the primary in the driver's `paths` map, and a teardown assertion
+     * would be measuring the wrong entry.
+     */
+    private val sockAddrPorts = mutableMapOf<Long, Int>()
 
-    override fun sockAddrPort(addr: Long) = 0
+    /** Declare that the sockaddr at [addr] is `127.0.0.1:[port]`. See [sockAddrPorts]. */
+    fun registerSockAddr(
+        addr: Long,
+        port: Int,
+    ) {
+        sockAddrPorts[addr] = port
+    }
 
-    override fun sockAddrV4(addr: Long) = 0L
+    override fun sockAddrFamily(addr: Long) = if (addr in sockAddrPorts) 4 else 0
+
+    override fun sockAddrPort(addr: Long) = sockAddrPorts[addr] ?: 0
+
+    override fun sockAddrV4(addr: Long) = if (addr in sockAddrPorts) LOOPBACK_V4 else 0L
 
     override fun sockAddrV6Hi(addr: Long) = 0L
 
@@ -527,9 +555,59 @@ internal class StubQuicheApi : QuicheApi {
         seqOut: Long,
     ) = 0
 
-    override fun connAvailableDcids(conn: QuicheConn) = 0L
+    /**
+     * Spare destination connection ids the peer has issued (`quiche_conn_available_dcids`).
+     *
+     * **0 by default, on purpose** — that is what real quiche reports until the peer sends
+     * NEW_CONNECTION_ID, and it is why [QuicheDriver.handleMigrate] bails at the DCID guard before it
+     * ever probes. A test that wants to reach the probe has to say the peer issued one, exactly as a
+     * real peer would have to.
+     */
+    @Volatile var availableDcids = 0L
+
+    override fun connAvailableDcids(conn: QuicheConn) = availableDcids
+
+    /**
+     * Keyed to [established] rather than hardcoded, because that is what the real accessor is keyed to:
+     * `quiche_conn_peer_transport_params` returns false until the handshake has processed the peer's
+     * parameters. A stub that always answered "negotiated" would let a driver test pass a peer check the
+     * real connection would still be waiting on.
+     *
+     * The negotiated values mirror this module's own defaults so a driver test reads plausible numbers;
+     * nothing in [QuicheDriver] dispatches on any field but [PeerTransportParams.Negotiated.disableActiveMigration].
+     */
+    @Volatile var peerDisablesActiveMigration = false
+
+    override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams =
+        if (!established) {
+            PeerTransportParams.NotYetNegotiated
+        } else {
+            PeerTransportParams.Negotiated(
+                maxIdleTimeoutMillis = 10_000,
+                maxUdpPayloadSize = 1350,
+                initialMaxData = 10 * 1024 * 1024,
+                initialMaxStreamDataBidiLocal = 1024 * 1024,
+                initialMaxStreamDataBidiRemote = 1024 * 1024,
+                initialMaxStreamDataUni = 1024 * 1024,
+                initialMaxStreamsBidi = 100,
+                initialMaxStreamsUni = 100,
+                ackDelayExponent = 3,
+                maxAckDelayMillis = 25,
+                disableActiveMigration = peerDisablesActiveMigration,
+                activeConnIdLimit = 4,
+                maxDatagramFrameSize = -1,
+            )
+        }
 
     override fun connScidsLeft(conn: QuicheConn) = 0L
+
+    /**
+     * Scripted `quiche_conn_path_event_next` queue, drained one event per call in FIFO order.
+     *
+     * **Empty by default**, so [connPathEventNext] answers `null` — "no events" — exactly as it always
+     * has, and no existing driver test sees a path event appear.
+     */
+    val pathEvents: ArrayDeque<StubPathEvent> = ArrayDeque()
 
     override fun connPathEventNext(
         conn: QuicheConn,
@@ -537,11 +615,33 @@ internal class StubQuicheApi : QuicheApi {
         localLenOut: Long,
         peerOut: Long,
         peerLenOut: Long,
-    ): QuichePathEventType? = null
+    ): QuichePathEventType? {
+        val event = pathEvents.removeFirstOrNull() ?: return null
+        // Real quiche fills the caller's out-buffer with the event's local sockaddr, and the driver then
+        // decodes THAT pointer to find which path the event is about. Model it by registering the
+        // out-pointer under the event's port, so `decodePathKey(localOut)` yields the same PathKey the
+        // probed path was opened with. Writing bytes would be a lie — this stub decodes no real memory.
+        registerSockAddr(localOut, event.localPort)
+        return event.type
+    }
 
     private companion object {
         /** Live-iterator handles: distinct so [streamIterNext] knows which queue it is draining. */
         const val READABLE_ITER = 2L
         const val WRITABLE_ITER = 1L
+
+        /** The v4 address every registered synthetic sockaddr claims; only the port distinguishes them. */
+        const val LOOPBACK_V4 = 0x7F000001L
     }
 }
+
+/**
+ * One entry in [StubQuicheApi.pathEvents]: what quiche reports, and for which local port.
+ *
+ * [localPort] is how the event is tied to a path — it is what the stub decodes back out of the
+ * driver's out-buffer, so it must match the port the path's sockaddr was registered under.
+ */
+internal class StubPathEvent(
+    val type: QuichePathEventType,
+    val localPort: Int,
+)

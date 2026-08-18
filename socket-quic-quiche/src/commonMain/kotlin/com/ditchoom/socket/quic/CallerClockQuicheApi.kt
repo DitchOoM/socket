@@ -129,4 +129,6 @@ internal class CallerClockQuicheApi(
         conn: QuicheConn,
         pathIdx: Long,
     ): QuicPathStats? = synced { delegate.connPathStats(conn, pathIdx) }
+
+    override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams = synced { delegate.connPeerTransportParams(conn) }
 }

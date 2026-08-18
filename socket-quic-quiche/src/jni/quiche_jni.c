@@ -239,16 +239,22 @@ JNIEXPORT jint JNICALL JNI_FN(nConnStreamShutdown)(
         (enum quiche_shutdown)direction, (uint64_t)err);
 }
 
-/* serverCertificateHashes leaf-pinning: copy the peer's TLS leaf certificate DER into the caller's
-   native buffer at `buf` (capacity `buf_len`). Returns the DER length: copied when it fits
-   (len <= buf_len), 0 when the peer presented no certificate, or the (larger) needed length WITHOUT
-   copying when it does not fit — the caller re-allocates and calls again (snprintf-style two-pass).
-   The DER quiche returns points into conn-owned memory valid for the connection's lifetime. */
-JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
-    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+/* Shared body for quiche's `(const quiche_conn *, const uint8_t **out, size_t *out_len)` readers,
+   honouring the snprintf-style two-pass contract: copy only when the value fits, and ALWAYS return
+   the true length so a caller that under-allocated can re-allocate and call again. Returns 0 when
+   quiche has no value to give. The bytes quiche hands back point into conn-owned memory valid for
+   the connection's lifetime, so they are copied out before returning.
+
+   Factored because four accessors (peer cert, ALPN, trace id, source id) differ only in which
+   quiche function they call. Mirrors FfmQuicheApi.copyConnBytes, which factored the same contract
+   for the same reason: one implementation cannot drift from itself. */
+typedef void (*quiche_conn_bytes_reader)(const quiche_conn *, const uint8_t **, size_t *);
+
+static jint copy_conn_bytes(
+    quiche_conn_bytes_reader reader, jlong conn, jlong buf, jint buf_len) {
     const uint8_t *out = NULL;
     size_t out_len = 0;
-    quiche_conn_peer_cert((quiche_conn *)(uintptr_t)conn, &out, &out_len);
+    reader((quiche_conn *)(uintptr_t)conn, &out, &out_len);
     if (out == NULL || out_len == 0) return 0;
     if ((jlong)out_len <= (jlong)buf_len) {
         memcpy((void *)(uintptr_t)buf, out, out_len);
@@ -256,19 +262,33 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
     return (jint)out_len;
 }
 
-/* Negotiated ALPN protocol (RFC 7301): copy the identifier's bytes into the caller's native buffer
-   at `buf` (capacity `buf_len`). Same snprintf-style two-pass contract as nConnPeerCert; returns 0
-   when no protocol has been negotiated. The bytes quiche returns point into conn-owned memory. */
+/* serverCertificateHashes leaf-pinning: the peer's TLS leaf certificate DER. 0 = peer presented no
+   certificate. */
+JNIEXPORT jint JNICALL JNI_FN(nConnPeerCert)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return copy_conn_bytes(quiche_conn_peer_cert, conn, buf, buf_len);
+}
+
+/* Negotiated ALPN protocol (RFC 7301). 0 = no protocol negotiated. */
 JNIEXPORT jint JNICALL JNI_FN(nConnApplicationProto)(
     JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
-    const uint8_t *out = NULL;
-    size_t out_len = 0;
-    quiche_conn_application_proto((quiche_conn *)(uintptr_t)conn, &out, &out_len);
-    if (out == NULL || out_len == 0) return 0;
-    if ((jlong)out_len <= (jlong)buf_len) {
-        memcpy((void *)(uintptr_t)buf, out, out_len);
-    }
-    return (jint)out_len;
+    return copy_conn_bytes(quiche_conn_application_proto, conn, buf, buf_len);
+}
+
+/* quiche's STABLE connection trace id — "a string uniquely representing the connection". Does not
+   rotate, which is what makes it usable as the identifier you follow a connection by across a
+   migration. 0 = unavailable. */
+JNIEXPORT jint JNICALL JNI_FN(nConnTraceId)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return copy_conn_bytes(quiche_conn_trace_id, conn, buf, buf_len);
+}
+
+/* The connection's CURRENT source connection ID. This CHANGES over the connection's life — CIDs
+   rotate, and migration issues a fresh one by design (RFC 9000 section 9.5) — so it must be read at
+   the moment it is needed; a cached value stops matching the wire. 0 = unavailable. */
+JNIEXPORT jint JNICALL JNI_FN(nConnSourceId)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return copy_conn_bytes(quiche_conn_source_id, conn, buf, buf_len);
 }
 
 /*
@@ -358,6 +378,51 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPathStats)(
     vals[17] = (jlong)stats.delivery_rate;
     (*env)->SetLongArrayRegion(env, out, 0, 18, vals);
     return 0;
+}
+
+/*
+ * nConnPeerTransportParams slots (13), in quiche_transport_params declaration order:
+ *   peer_max_idle_timeout, peer_max_udp_payload_size, peer_initial_max_data,
+ *   peer_initial_max_stream_data_bidi_local, peer_initial_max_stream_data_bidi_remote,
+ *   peer_initial_max_stream_data_uni, peer_initial_max_streams_bidi, peer_initial_max_streams_uni,
+ *   peer_ack_delay_exponent, peer_max_ack_delay, peer_disable_active_migration(0/1),
+ *   peer_active_conn_id_limit, peer_max_datagram_frame_size (signed; -1 == peer sent no
+ *   max_datagram_frame_size, i.e. no DATAGRAM support).
+ *
+ * Returns JNI_FALSE with the array untouched when the handshake has not processed the peer's
+ * transport parameters yet (PeerTransportParams.NotYetNegotiated).
+ *
+ * NOTE: reads the WHOLE struct, not just the disable_active_migration bool the migration path
+ * dispatches on. Upstream quiche declares `TransportParams` without `#[repr(C)]` (its neighbours
+ * `Stats` and `PathStats` both have it), so rustc reorders it and sinks that 1-byte bool past the two
+ * fields following it — with sizeof unchanged at 104, which is why it went unnoticed for three
+ * releases and silently disabled active migration on every backend that trusted this header. The
+ * module's build patches `#[repr(C)]` on (patchQuicheTransportParamsRepr); exposing the neighbours is
+ * what lets a Kotlin test assert them against configured values and catch a regression here.
+ */
+JNIEXPORT jboolean JNICALL JNI_FN(nConnPeerTransportParams)(
+    JNIEnv *env, jclass cls, jlong conn, jlongArray out) {
+    quiche_transport_params tp;
+    memset(&tp, 0, sizeof(tp));
+    if (!quiche_conn_peer_transport_params((const quiche_conn *)(uintptr_t)conn, &tp)) {
+        return JNI_FALSE;
+    }
+    jlong vals[13];
+    vals[0]  = (jlong)tp.peer_max_idle_timeout;
+    vals[1]  = (jlong)tp.peer_max_udp_payload_size;
+    vals[2]  = (jlong)tp.peer_initial_max_data;
+    vals[3]  = (jlong)tp.peer_initial_max_stream_data_bidi_local;
+    vals[4]  = (jlong)tp.peer_initial_max_stream_data_bidi_remote;
+    vals[5]  = (jlong)tp.peer_initial_max_stream_data_uni;
+    vals[6]  = (jlong)tp.peer_initial_max_streams_bidi;
+    vals[7]  = (jlong)tp.peer_initial_max_streams_uni;
+    vals[8]  = (jlong)tp.peer_ack_delay_exponent;
+    vals[9]  = (jlong)tp.peer_max_ack_delay;
+    vals[10] = (jlong)(tp.peer_disable_active_migration ? 1 : 0);
+    vals[11] = (jlong)tp.peer_active_conn_id_limit;
+    vals[12] = (jlong)tp.peer_max_datagram_frame_size;
+    (*env)->SetLongArrayRegion(env, out, 0, 13, vals);
+    return JNI_TRUE;
 }
 
 /* --- Unreliable datagrams (RFC 9221) --- */

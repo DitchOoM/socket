@@ -109,7 +109,7 @@ class AndroidQuicLoopbackTests {
                                     val stream = openStream()
                                     beforeEcho.complete(stream.echoOnce("before"))
 
-                                    val result = migrate(localHost = "127.0.0.2", localPort = 0)
+                                    val result = migrate(MigrationTarget.LocalAddress("127.0.0.2"))
                                     migrationResult.complete(result)
 
                                     afterEcho.complete(stream.echoOnce("after"))
@@ -124,6 +124,10 @@ class AndroidQuicLoopbackTests {
                                 result is MigrationResult.Succeeded,
                                 "expected migration to succeed, got $result",
                             )
+                            // The RESOLVED endpoint, not the request: the target left the port
+                            // ephemeral, so a Succeeded echoing its request would report port 0.
+                            assertEquals("127.0.0.2", result.localEndpoint.host)
+                            assertTrue(result.localEndpoint.port in 1..65535, "got ${result.localEndpoint}")
                             assertEquals(
                                 "after",
                                 withTimeout(12.seconds) { afterEcho.await() },

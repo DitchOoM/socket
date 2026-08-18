@@ -14,6 +14,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 
 /**
+ * The [QuicScope.pathState] default: one process-wide flow permanently holding [QuicPathState.Original].
+ * Private to this file and never mutated, so every scope that does not override `pathState` shares it
+ * instead of minting a `MutableStateFlow` per read.
+ */
+private val NeverMigratedPath: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
+
+/**
  * A QUIC connection scope — the receiver inside [withQuicConnection] and [QuicServer.connections].
  *
  * Extends [CoroutineScope] so you can [launch][kotlinx.coroutines.launch] child coroutines
@@ -46,6 +53,26 @@ interface QuicScope : CoroutineScope {
      */
     val negotiatedAlpn: String
         get() = throw UnsupportedOperationException("Negotiated ALPN is not available on this platform")
+
+    /**
+     * Which connection this is — the stable session id plus the current wire CID.
+     *
+     * Declared here, not only on [QuicConnection], because this is the receiver user code actually has
+     * inside a `withQuicConnection { }` / `QuicServer.connections { }` block. Identity that a caller
+     * cannot reach from where they write their log line is identity that does not exist; the first test
+     * written against it caught exactly that.
+     *
+     * Defaults to throwing for scope implementations with no connection behind them, matching
+     * [negotiatedAlpn]. [QuicConnection] redeclares it abstract, so every real backend must answer.
+     */
+    val identity: QuicConnectionIdentity
+        get() = throw UnsupportedOperationException("Connection identity is not available on this platform")
+
+    /**
+     * What the network was doing, for correlating this connection against a
+     * [com.ditchoom.socket.NetworkMonitor]. See [QuicConnection.networkAtClose].
+     */
+    val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
 
     /**
      * The [BufferFactory] this connection allocates from — the one passed via
@@ -98,22 +125,32 @@ interface QuicScope : CoroutineScope {
         throw UnsupportedOperationException("Application-coded connection close is not supported on this platform")
 
     /**
-     * Actively migrate the connection to a new local path (RFC 9000 §9). The driver opens a UDP
-     * socket bound to [localHost]:[localPort] (null host = default interface, 0 port = ephemeral),
-     * probes the path, and switches the connection's active path once the peer validates it. Streams
-     * keep flowing across the switch.
+     * Actively migrate the connection to a new local path (RFC 9000 §9). The driver opens a UDP socket
+     * at [target], probes the path, and switches the connection's active path once the peer validates
+     * it. Streams keep flowing across the switch.
      *
-     * Returns [MigrationResult.Unsupported] on platforms without controllable migration (Apple, JS)
-     * and on server-accepted connections. The default implementation is [MigrationResult.Unsupported].
+     * **Suspends for the whole operation** — it returns only once the path has validated and the active
+     * path has switched, or the attempt has failed. That is what makes a second call while one is in
+     * flight impossible for a sequential caller, and it is why automatic migration needs no timer.
+     *
+     * The answer is always typed: [MigrationResult.Succeeded] carries the endpoint the platform
+     * **resolved**, and every other outcome is an [MigrationResult.Unmoved] leaf saying whether a later
+     * attempt could ever differ. The default implementation is
+     * [MigrationResult.Unmoved.Impossible.BackendCannotMigrate] — an engine with no path factory behind
+     * it.
      */
-    suspend fun migrate(
-        localHost: String? = null,
-        localPort: Int = 0,
-    ): MigrationResult = MigrationResult.Unsupported
+    suspend fun migrate(target: MigrationTarget = MigrationTarget.FreshLocalEndpoint): MigrationResult =
+        MigrationResult.Unmoved.Impossible.BackendCannotMigrate
 
-    /** Current migration/path state. Defaults to a never-migrating [PathInfo]. */
-    val pathState: StateFlow<PathInfo>
-        get() = MutableStateFlow(PathInfo())
+    /**
+     * Current migration/path state. Defaults to a connection that has never migrated.
+     *
+     * One shared, immutable flow rather than a fresh `MutableStateFlow` per read: the old default
+     * allocated a new flow on **every** access, so two reads of the same connection's `pathState` were
+     * different objects and a collector on one could never see the other's value.
+     */
+    val pathState: StateFlow<QuicPathState>
+        get() = NeverMigratedPath
 
     // --- Unreliable datagrams (RFC 9221) ---
     // Folded onto the buffer-flow datagram trichotomy: [datagramChannel] is this connection's

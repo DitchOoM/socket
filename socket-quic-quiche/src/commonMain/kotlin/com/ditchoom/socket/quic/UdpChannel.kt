@@ -38,12 +38,18 @@ interface UdpChannel {
      * peer (the common case). When non-null — set by the server egress path from quiche's
      * `sendInfo.to` — send to that address instead, so replies follow a migrated peer to its new
      * source address. Channels that cannot target an arbitrary destination ignore [dest].
+     *
+     * **Reports failure, never throws it.** Returns [SendOutcome.Failed] with a typed
+     * [com.ditchoom.socket.udp.DatagramSendError] rather than raising, so the caller is made to
+     * decide per cause instead of inheriting one blanket policy from a `catch` — see [SendOutcome]
+     * for why that distinction is load-bearing. Cancellation is the sole exception and still
+     * propagates: it is lifecycle, not a network event.
      */
     suspend fun send(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey? = null,
-    )
+    ): SendOutcome
 
     /** Close the underlying socket. */
     fun close()

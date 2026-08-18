@@ -201,21 +201,27 @@ internal suspend fun buildJvmQuicConnection(
                 driverContext = tuning.driverContext,
                 random = tuning.random,
                 recorder = tuning.recorderFactory(),
-                // Connection-migration wiring (slice 3): the peer + primary local sockaddrs
-                // (kept pinned by onCleanup for the driver's life) and a factory for opening
-                // additional :socket-udp path sockets to the same peer.
-                peerAddr = peerSockAddr.address,
-                peerLen = peerSockAddr.length,
-                primaryLocalAddr = localSockAddr.address,
-                primaryLocalLen = localSockAddr.length,
-                udpChannelFactory =
-                    UdpSocketChannelFactory(
-                        peer = peer,
-                        codec = codec,
-                        bufferFactory = bufferFactory,
-                        recvBufferFactory = recvBufPool,
-                        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                    ),
+                networkObservation = tuning.networkObservation,
+                // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned by
+                // onCleanup for the driver's life) and a factory for opening additional :socket-udp path
+                // sockets to the same peer.
+                migration =
+                    clientMigrationCapability(quicOptions.migration) {
+                        MigrationCapability.Supported(
+                            peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
+                            primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
+                            channelFactory =
+                                UdpSocketChannelFactory(
+                                    peer = peer,
+                                    codec = codec,
+                                    bufferFactory = bufferFactory,
+                                    recvBufferFactory = recvBufPool,
+                                    receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                                    // NIO binds the requested local endpoint before connecting.
+                                    localEndpointSupport = LocalEndpointSupport.Bindable,
+                                ),
+                        )
+                    },
                 onCleanup = {
                     peerSockAddr.free()
                     localSockAddr.free()

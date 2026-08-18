@@ -22,13 +22,21 @@ import com.ditchoom.socket.udp.UdpSocket
  * allocates each datagram from it so a migrated path is as copy-free as the primary. [bufferFactory] is
  * the leaf factory used only for the tiny sockaddr encoding — never the pool, or a 28-byte sockaddr would
  * check out a 1350-byte pooled buffer for its whole lifetime.
+ *
+ * [localEndpointSupport] is supplied by the platform's connection setup rather than inferred here,
+ * because one shared factory sits over three different `UdpSocket.connect` actuals and they do not agree:
+ * the JVM and Linux actuals `bind` before `connect`, while the Apple actual hands the endpoint to
+ * `NWConnection` and its own comment calls `localHost`/`localPort` "advisory". The call site is the only
+ * place that knows which actual it is compiled against, so it is the only place that can answer honestly.
  */
+@OptIn(InternalQuicApi::class)
 internal class UdpSocketChannelFactory(
     private val peer: SocketAddress,
     private val codec: SocketAddressCodec,
     private val bufferFactory: BufferFactory,
     private val recvBufferFactory: BufferFactory,
     private val receiveBufferSize: Int,
+    override val localEndpointSupport: LocalEndpointSupport,
 ) : UdpChannelFactory {
     override suspend fun openPath(
         localHost: String?,
@@ -41,6 +49,10 @@ internal class UdpSocketChannelFactory(
             channel = DatagramChannelUdpChannel(channel),
             localSockAddrAddress = encoded.address,
             localSockAddrLength = encoded.length,
+            // The same resolved local address the sockaddr above encodes, in presentation form —
+            // `UdpSocket.connect` reports it on every platform, Apple included, which is what makes
+            // Succeeded name a real endpoint even where the platform picked it.
+            localEndpoint = QuicLocalEndpoint(local.host, local.port),
             release = { encoded.free() },
         )
     }

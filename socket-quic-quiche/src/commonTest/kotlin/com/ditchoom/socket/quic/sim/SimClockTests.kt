@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.sim
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.socket.quic.DriverClock
+import com.ditchoom.socket.quic.MigrationCapability
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.QuicheRecvInfo
@@ -106,6 +107,8 @@ class SimClockTests {
         clock: DriverClock,
     ): QuicheDriver =
         QuicheDriver(
+            // Test double: never exercises a path move.
+            migration = MigrationCapability.BackendCannotMigrate,
             rawApi = api,
             conn = QuicheConn(1L),
             bufferFactory = bufferFactory,

@@ -10,9 +10,17 @@ package com.ditchoom.socket.udp
  *
  * The split that matters is transient vs terminal. [WouldBlock] is the only transient member — the
  * socket could not accept the datagram *yet* — and backends absorb it internally rather than
- * surfacing it, because `QuicheDriver.flushOutgoing` treats any exception from a send as fatal and
- * would tear down a live connection over momentary local buffer pressure. It reaches a caller only
- * when a backend gave up waiting, which is a genuine failure to transmit.
+ * surfacing it, retrying within a send budget so that momentary local buffer pressure never reaches
+ * a caller as a failure. It reaches one only when a backend gave up waiting, which is a genuine
+ * failure to transmit.
+ *
+ * That absorption originally had a second motive: `QuicheDriver.flushOutgoing` treated *any* send
+ * exception as fatal and would end a live QUIC connection over a full send buffer. **That is no
+ * longer true** — `flushOutgoing` now branches on a typed `SendOutcome` and a failed send stops the
+ * flush without terminating the connection, because RFC 9000 §10 does not list a failed local send
+ * among the ways a connection ends. The absorption stays regardless, on its own merits: a discarded
+ * zero-length write would count as transmitted and inflate quiche's bytes-in-flight, surfacing later
+ * as spurious loss detection.
  *
  * Numeric codes are kept in their own namespaces on purpose. An `errno` and a Network.framework
  * `(domain, code)` are not the same kind of number, so flattening them into one field would make the

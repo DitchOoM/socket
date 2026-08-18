@@ -300,9 +300,12 @@ internal abstract class NioDatagramChannelCore(
      * A zero is therefore treated as backpressure, not as failure: wait briefly and retry the same
      * view (a datagram write is all-or-nothing, so a zero leaves the cursor untouched). Only when the
      * socket will not accept it within the send budget does it become a reported
-     * [DatagramSendError.WouldBlock]. Surfacing backpressure any earlier would be actively harmful —
-     * quiche treats any exception from a send as fatal and would tear down a live connection over a
-     * momentary full buffer.
+     * [DatagramSendError.WouldBlock]. Surfacing backpressure any earlier would still be wrong — the
+     * datagram genuinely has not been transmitted yet, and reporting a failure invites the caller to
+     * retransmit something the kernel is about to send anyway. (It used to be worse than wrong:
+     * `QuicheDriver.flushOutgoing` treated any send failure as terminal and would have ended a live
+     * connection over a momentary full buffer. It now stops the flush and leaves termination to the
+     * idle timer, so this is a quality-of-implementation concern rather than a correctness one.)
      *
      * The wait itself is [awaitWritable] — the socket's own `OP_WRITE` signal, not a timer (#303).
      */

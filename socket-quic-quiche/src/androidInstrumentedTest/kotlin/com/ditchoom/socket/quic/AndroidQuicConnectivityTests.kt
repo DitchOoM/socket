@@ -7,12 +7,12 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -21,30 +21,25 @@ import kotlin.time.Duration.Companion.seconds
  *
  * CI runs this via `.github/workflows/android_integration.yaml`, which
  * brings up the docker harness on the host (`14433/udp` published on
- * loopback) before the emulator boots. The emulator reaches the host
- * via its built-in `10.0.2.2` alias.
+ * loopback) before the emulator boots. That published port is the
+ * [EndpointOrigin.DockerContract] fallback, and an emulator reaches it
+ * through its built-in `10.0.2.2` alias — neither half of which exists
+ * on a physical device, where the address is computed on the host and
+ * carried down instead. See [HarnessEndpoints].
  *
  * For local dev:
  *   docker compose -f test-harness/docker-compose.yml up -d --wait quic-echo
- *   ./gradlew :socket-quic:connectedDebugAndroidTest
+ *   ./gradlew :socket-quic-quiche:connectedDebugAndroidTest
  *   docker compose -f test-harness/docker-compose.yml down -v
  *
- * The legacy `:socket-quic:androidQuicIntegrationTest` Gradle task is
- * still wired (starts a host-side `QuicEchoTestServer` JVM process)
- * for envs without Docker, but the docker harness is the canonical
- * path going forward — it matches the server used by every other
- * QUIC test target.
+ * `:socket-quic-quiche:androidQuicIntegrationTest` is the other path
+ * (it starts a host-side `QuicEchoTestServer` JVM process, works out
+ * which host address this device can reach it on, probes that address,
+ * and passes it down) and is the only one that works on real hardware.
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicConnectivityTests {
-    // 10.0.2.2 is the Android emulator's alias for the host's loopback,
-    // and 14433/udp is where the docker-compose `quic-echo` service binds
-    // on the host (test-harness/docker-compose.yml). Must stay in sync with
-    // test-harness/harness.env QUIC_ECHO_PORT — mirrored manually here
-    // because androidInstrumentedTest doesn't depend on commonTest, so
-    // the generated QuicHarnessConfig isn't visible from this source set.
-    private val serverHost = "10.0.2.2"
-    private val serverPort = 14433
+    private lateinit var server: HarnessEndpoint
 
     private val testQuicOptions =
         QuicOptions(
@@ -53,28 +48,35 @@ class AndroidQuicConnectivityTests {
             idleTimeout = 10.seconds,
         )
 
-    /** Skip the entire class if the test server isn't reachable. */
+    /**
+     * Resolve the harness address and prove something answers there, or record a typed skip.
+     *
+     * This used to be `try { connect() } catch (_: Throwable) { assumeTrue(…, false) }`, which
+     * reported every one of those causes — no harness started, no route from this device, a broken
+     * JNI native — as the same invisible green tick. Each now names itself, and `recordSkip`'s gate
+     * decides which of them is allowed to be a skip at all.
+     */
     @Before
     fun checkServerReachable() {
+        val harness = HarnessEndpoints.quicEcho.addressOrSkip(AndroidQuicConnectivityTests::class)
+        server = harness.endpoint
         try {
             runBlocking(Dispatchers.IO) {
-                withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 5.seconds) {}
+                withQuicConnection(server.host, server.port, testQuicOptions, timeout = 5.seconds) {}
             }
-        } catch (_: Throwable) {
-            assumeTrue(
-                "QUIC test server not reachable at $serverHost:$serverPort — " +
-                    "start the docker harness (`docker compose -f test-harness/docker-compose.yml " +
-                    "up -d --wait quic-echo`) or fall back to the legacy " +
-                    "`:socket-quic:androidQuicIntegrationTest` Gradle task.",
-                false,
-            )
+        } catch (t: Throwable) {
+            // A native that will not load is not an unreachable harness, and the fix for it is not a
+            // routing fix. Distinguishing them is the whole point of the sealed SkipReason — and this
+            // lane packages the .so into the test APK, so it is an error here, not a skip.
+            if (generateSequence(t) { it.cause }.any { it is UnsatisfiedLinkError }) throw t
+            harness.skipUnanswered(AndroidQuicConnectivityTests::class, t)
         }
     }
 
     @Test
     fun connectToLocalServer() =
         runBlocking(Dispatchers.IO) {
-            withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
+            withQuicConnection(server.host, server.port, testQuicOptions, timeout = 10.seconds) {
                 // If we reach here, handshake completed successfully
             }
         }
@@ -82,7 +84,7 @@ class AndroidQuicConnectivityTests {
     @Test
     fun echoOverQuic() =
         runBlocking(Dispatchers.IO) {
-            withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
+            withQuicConnection(server.host, server.port, testQuicOptions, timeout = 10.seconds) {
                 val stream = openStream()
                 val sendBuf = BufferFactory.Default.allocate(5)
                 sendBuf.writeString("hello", Charset.UTF8)
@@ -117,12 +119,15 @@ class AndroidQuicConnectivityTests {
     @Test
     fun streamSurvivesActiveMigration() =
         runBlocking(Dispatchers.IO) {
-            withQuicConnection(serverHost, serverPort, testQuicOptions, timeout = 10.seconds) {
+            withQuicConnection(server.host, server.port, testQuicOptions, timeout = 10.seconds) {
                 val stream = openStream()
                 assertEquals("before", stream.echoOnce("before"))
 
-                val result = migrate(localHost = null, localPort = 0)
+                val result = migrate(MigrationTarget.FreshLocalEndpoint)
                 assertIs<MigrationResult.Succeeded>(result)
+                // FreshLocalEndpoint names no host and no port, so the reported endpoint can only have
+                // come from the socket the platform actually bound.
+                assertTrue(result.localEndpoint.port in 1..65535, "got ${result.localEndpoint}")
 
                 assertEquals("after", stream.echoOnce("after"), "stream did not round-trip after migration")
                 stream.close()

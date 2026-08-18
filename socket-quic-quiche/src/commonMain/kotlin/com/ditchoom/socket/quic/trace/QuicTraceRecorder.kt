@@ -5,17 +5,20 @@ import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.DriverClock
-import com.ditchoom.socket.quic.PathInfo
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.RealDriverClock
+import com.ditchoom.socket.quic.SendOutcome
 import com.ditchoom.socket.quic.UdpChannel
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TracePathStats
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.udp.DatagramSendException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -47,7 +50,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  * event      := "DGRAM_OUT" SP len SP path SP hex        ; observation: datagram sent
  *             | "DGRAM_IN"  SP len SP path SP hex        ; input: datagram received
  *             | "STATE" SP name [SP detail...]           ; observation: QuicConnectionState
- *             | "PATH_STATE" SP phase SP host SP port    ; observation: PathInfo (host "-" if null)
+ *             | "PATH_STATE" SP phase SP host SP port    ; observation: QuicPathState (host "-" / port
+ *                                                        ;   0 when the state names no endpoint)
  *             | "ERROR" SP type SP message...            ; input: typed error (class name + message)
  *             | "STATS" SP f1 .. f18                     ; observation: QuicPathStats snapshot, in
  *                                                        ;   declaration order (durations as nanos,
@@ -93,15 +97,43 @@ class QuicTraceRecorder(
         val detail =
             when (state) {
                 is QuicConnectionState.Established -> state.negotiatedAlpn
-                is QuicConnectionState.Closed -> state.error?.describe()
+                // Name the side and keep "unexplained" distinct from "graceful" — the trace is the
+                // artifact someone reads after the fact, and collapsing those two is what made the
+                // API-35 teardown undiagnosable.
+                is QuicConnectionState.Closed ->
+                    when (val r = state.reason) {
+                        is QuicCloseReason.ByPeer -> "peer: ${r.error.describe()}"
+                        is QuicCloseReason.ByLocal -> "local: ${r.error.describe()}"
+                        QuicCloseReason.Graceful -> "graceful"
+                        QuicCloseReason.Unspecified -> "unspecified"
+                    }
                 else -> null
             }
         record(TraceEvent.State(now(), state::class.qualifiedName ?: "Unknown", detail))
     }
 
-    /** Record a `PathInfo` (migration) transition (PATH_STATE). */
-    fun pathState(info: PathInfo) {
-        record(TraceEvent.PathState(now(), info.phase.name, info.localHost, info.localPort))
+    /**
+     * Record a [QuicPathState] (migration) transition (PATH_STATE).
+     *
+     * The v1 wire tokens are frozen — `None`/`Probing`/`Validated`/`Migrated`/`Failed`, the names the
+     * long-deleted `MigrationPhase` enum happened to have — and this is the boundary that translates
+     * onto them, exactly as `PathKey.toTracePath()` translates the path types a few lines below. Keeping
+     * the translation here is what lets `:socket-quic` reshape its path model without invalidating a
+     * single recorded trace: `Original` still writes `None`, and a state that names no endpoint still
+     * writes the `-`/`0` pair a `PathInfo` with a null host used to.
+     */
+    fun pathState(state: QuicPathState) {
+        val (token, endpoint) =
+            when (state) {
+                QuicPathState.Original -> "None" to null
+                is QuicPathState.Probing -> "Probing" to state.endpoint
+                is QuicPathState.Validated -> "Validated" to state.endpoint
+                is QuicPathState.Migrated -> "Migrated" to state.endpoint
+                is QuicPathState.Failed -> "Failed" to null
+            }
+        // The `?.`/`?:` is the wire-format adapter, not a meaning-bearing nullable: v1 already spells
+        // "names no endpoint" as `-`/`0`, and typing it away here would churn every golden fixture.
+        record(TraceEvent.PathState(now(), token, endpoint?.host, endpoint?.port ?: 0))
     }
 
     /**
@@ -261,16 +293,22 @@ private class RecordingUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) {
-        try {
-            delegate.send(buffer, len, dest)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            recorder.error(e)
-            throw e
+    ): SendOutcome {
+        // A send now reports its failure instead of raising it, so the recorder branches on the
+        // outcome rather than catching. DatagramSendException is constructed only on the failure
+        // path, purely to give the recorder the Throwable its trace format takes — the structured
+        // reason stays the typed DatagramSendError carried by the outcome.
+        val outcome = delegate.send(buffer, len, dest)
+        return when (outcome) {
+            is SendOutcome.Sent -> {
+                recorder.datagram(out = true, buffer = buffer, len = len, path = dest ?: path)
+                outcome
+            }
+            is SendOutcome.Failed -> {
+                recorder.error(DatagramSendException(outcome.error))
+                outcome
+            }
         }
-        recorder.datagram(out = true, buffer = buffer, len = len, path = dest ?: path)
     }
 
     override fun close() = delegate.close()

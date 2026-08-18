@@ -83,12 +83,12 @@ internal class DatagramChannelUdpChannel(
         buffer: PlatformBuffer,
         len: Int,
         dest: PathKey?,
-    ) {
+    ): SendOutcome {
         // Present exactly [0, len) as the datagram window; the channel's send slices it non-destructively,
         // so the driver's reused send buffer is safe. `dest` is always null here (connected client).
         buffer.position(0)
         buffer.setLimit(len)
-        channel.send(buffer)
+        return sendOutcomeOf { channel.send(buffer) }
     }
 
     override fun close() {

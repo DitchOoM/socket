@@ -8,7 +8,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
-import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -18,17 +17,17 @@ import kotlin.time.Duration.Companion.seconds
  * Network migration tests using a host-side [NetworkControl] server.
  *
  * The host server executes `adb shell su 0 <iptables/tc/settings>` commands.
- * Run via `./gradlew :socket-quic:androidQuicIntegrationTest` which starts
- * both the QUIC echo server and network control server on the host.
+ * Run via `./gradlew :socket-quic-quiche:androidQuicIntegrationTest`, which starts
+ * both the QUIC echo server and the network control server on the host and carries
+ * each one's device-reachable address down as instrumentation arguments — the two
+ * addresses differ, because the control channel rides an `adb reverse tcp:` mapping
+ * and the UDP echo harness cannot (see [HarnessEndpoints]).
  *
  * Requires: rooted emulator (`adb root`).
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicMigrationTests {
-    // See AndroidQuicConnectivityTests for why these mirror
-    // test-harness/harness.env QUIC_ECHO_PORT manually.
-    private val serverHost = "10.0.2.2"
-    private val serverPort = 14433
+    private lateinit var server: HarnessEndpoint
 
     private val testQuicOptions =
         QuicOptions(
@@ -37,35 +36,48 @@ class AndroidQuicMigrationTests {
             idleTimeout = 10.seconds,
         )
 
-    private var networkControl = NetworkControl()
+    private var networkControl: NetworkControl? = null
 
+    /**
+     * Both harness servers, each resolved and each failing in its own name.
+     *
+     * The predecessor was `assumeTrue("Network control server not available", isAvailable())` beside
+     * a hardcoded `10.0.2.2` QUIC address — so on real hardware all five tests vanished into a green
+     * run without either address ever being printed.
+     */
     @Before
     fun checkPrerequisites() {
-        networkControl = NetworkControl()
-        assumeTrue(
-            "Network control server not available — run androidQuicIntegrationTest",
-            networkControl.isAvailable(),
-        )
+        server = HarnessEndpoints.quicEcho.addressOrSkip(AndroidQuicMigrationTests::class).endpoint
+        val ctrl = HarnessEndpoints.netCtrl.addressOrSkip(AndroidQuicMigrationTests::class)
+        val client = NetworkControl(ctrl.endpoint)
+        // Assigned before the probe so @After closes the socket even when the probe is what fails.
+        networkControl = client
+        val failure = client.probe()
+        if (failure != null) ctrl.skipUnanswered(AndroidQuicMigrationTests::class, failure)
     }
 
     @After
     fun cleanup() {
-        networkControl.close()
+        networkControl?.close()
+        networkControl = null
     }
 
-    /** Connect or skip if server isn't reachable. */
+    /** The control channel, which [checkPrerequisites] has already proven answers. */
+    private val control: NetworkControl
+        get() = checkNotNull(networkControl) { "checkPrerequisites did not run" }
+
     private suspend fun <R> withServerConnection(
         options: QuicOptions = testQuicOptions,
         block: suspend QuicScope.() -> R,
-    ): R = withQuicConnection(serverHost, serverPort, options, timeout = 15.seconds, block = block)
+    ): R = withQuicConnection(server.host, server.port, options, timeout = 15.seconds, block = block)
 
     @Test
     fun connectionSurvivesTemporaryNetworkLoss() =
         runBlocking(Dispatchers.IO) {
             withServerConnection {
-                networkControl.blockUdp()
+                control.blockUdp()
                 delay(2.seconds)
-                networkControl.unblockUdp()
+                control.unblockUdp()
                 delay(1.seconds)
                 // If we're still inside the block, connection survived
             }
@@ -77,9 +89,9 @@ class AndroidQuicMigrationTests {
             val options = testQuicOptions.copy(idleTimeout = 3.seconds)
             try {
                 withServerConnection(options) {
-                    networkControl.blockUdp()
+                    control.blockUdp()
                     delay(5.seconds)
-                    networkControl.unblockUdp()
+                    control.unblockUdp()
                     delay(1.seconds)
                 }
             } catch (_: Throwable) {
@@ -98,9 +110,9 @@ class AndroidQuicMigrationTests {
                 buf1.resetForRead()
                 stream.write(buf1, 5.seconds)
 
-                networkControl.blockUdp()
+                control.blockUdp()
                 delay(1.seconds)
-                networkControl.unblockUdp()
+                control.unblockUdp()
                 delay(1.seconds)
 
                 val buf2 = BufferFactory.Default.allocate(5)
@@ -116,7 +128,7 @@ class AndroidQuicMigrationTests {
     fun connectionWithHighLatency() =
         runBlocking(Dispatchers.IO) {
             withServerConnection {
-                networkControl.addLatency(500)
+                control.addLatency(500)
                 delay(1.seconds)
 
                 val stream = openStream()
@@ -126,7 +138,7 @@ class AndroidQuicMigrationTests {
                 stream.write(buf, 10.seconds)
 
                 stream.close()
-                networkControl.removeLatency()
+                control.removeLatency()
             }
         }
 
@@ -136,9 +148,9 @@ class AndroidQuicMigrationTests {
             try {
                 withServerConnection {
                     // Schedule recovery in 5s, then activate airplane mode
-                    networkControl.airplaneModeOn(recoveryDelayMs = 5000)
+                    control.airplaneModeOn(recoveryDelayMs = 5000)
                     // Wait for scheduled recovery + margin
-                    networkControl.waitForAirplaneModeRecovery(waitMs = 7000)
+                    control.waitForAirplaneModeRecovery(waitMs = 7000)
                     // If we're still here, connection survived (or we can verify state)
                 }
             } catch (_: Throwable) {

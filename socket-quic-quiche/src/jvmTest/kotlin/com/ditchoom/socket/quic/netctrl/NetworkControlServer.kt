@@ -12,11 +12,19 @@ import java.util.concurrent.TimeUnit
  * via `adb shell su 0 <command>`. The device test connects and sends [NetCtrlCommand]s;
  * this server responds with [NetCtrlResponse]s.
  *
- * Usage: `NetworkControlServerKt [port]`
- * Prints "READY port=<port>" when accepting connections.
+ * Usage: `NetworkControlServerKt [port] [--serial=<adb serial>]` — port defaults to 0, meaning
+ * OS-assigned. Prints "READY port=<port>" with the **bound** port when accepting connections;
+ * callers parse it from there instead of hardcoding a constant on both sides.
+ *
+ * [adbSerial] pins every `adb` invocation to one device with `-s`. Bare `adb` fails outright when
+ * more than one device is attached, which is not a hypothetical: a developer with an emulator *and*
+ * a handset plugged in gets `error: more than one device/emulator` from a server whose entire job is
+ * running adb commands, and every impairment silently becomes a no-op (this class logs adb failures
+ * as "non-fatal").
  */
 class NetworkControlServer(
-    private val port: Int = 9998,
+    private val port: Int = 0,
+    private val adbSerial: String? = null,
 ) {
     private val serverSocket = ServerSocket(port)
     private val appliedModifications = ConcurrentLinkedQueue<String>()
@@ -132,21 +140,82 @@ class NetworkControlServer(
         reestablishAdbReverse()
     }
 
+    /**
+     * Restore the one mapping this server owns: its **own** bound port, and only if it is gone.
+     *
+     * It used to re-establish `tcp:4433` and `tcp:9998` — two constants, both wrong by the time this
+     * ran. 9998 was the legacy control port from before the server started binding 0, so after
+     * airplane mode the recovery restored a mapping to a port nothing was listening on while the
+     * mapping the device actually needed stayed dropped. 4433 was the old QUIC port, which never
+     * needed a mapping at all: `adb reverse` forwards **TCP** and QUIC is UDP. Neither number can be
+     * known ahead of time or is needed, so neither is written down.
+     *
+     * ## Why it asks first
+     * "Restore" is not "re-register". Re-registering a mapping that is still **live** corrupts it:
+     * measured on an SM-F956U1, where airplane mode never actually fires (the device is not rooted,
+     * so `su 0 settings put …` is a no-op) and the mapping was therefore still up. After the
+     * unconditional re-add, every subsequent device connection arrived from the impossible peer
+     * address `/1.0.0.0:55917` — the *same* source port four times running — and although this server
+     * read the `Ping` and wrote `Ok`, the reply never reached the device, which timed out. Four
+     * migration tests skipped with "net-ctrl did not answer", on a channel that had answered.
+     *
+     * `adb reverse --list` costs one process and turns the operation idempotent: the airplane-mode
+     * case (mapping genuinely dropped) re-adds, and the case where nothing was dropped leaves a
+     * working channel alone. Removing-then-adding would also be idempotent but would tear down the
+     * live channel for no reason on exactly the hosts where nothing needed restoring.
+     */
     private fun reestablishAdbReverse() {
-        println("[net-ctrl] Re-establishing adb reverse port mappings")
-        ProcessBuilder("adb", "reverse", "tcp:4433", "tcp:4433")
-            .redirectErrorStream(true)
-            .start()
-            .waitFor()
-        ProcessBuilder("adb", "reverse", "tcp:9998", "tcp:9998")
+        val boundPort = serverSocket.localPort
+        val mapping = "tcp:$boundPort"
+        if (adbReverseListContains(mapping)) {
+            println("[net-ctrl] adb reverse $mapping still mapped — leaving it alone (re-adding a live mapping breaks it)")
+            return
+        }
+        println("[net-ctrl] Re-establishing adb reverse $mapping (the control channel)")
+        ProcessBuilder(adbCommand("reverse", mapping, mapping))
             .redirectErrorStream(true)
             .start()
             .waitFor()
     }
 
+    /**
+     * Whether adb still lists [mapping] as reversed for this device.
+     *
+     * A failed/empty `adb reverse --list` answers "no", which lands on the re-add path — the safe
+     * direction, since that is the branch that was unconditional before.
+     */
+    private fun adbReverseListContains(mapping: String): Boolean =
+        try {
+            val process =
+                ProcessBuilder(adbCommand("reverse", "--list"))
+                    .redirectErrorStream(true)
+                    .start()
+            val listing =
+                process.inputStream
+                    .bufferedReader()
+                    .readText()
+            process.waitFor()
+            // `adb reverse --list` prints `<transport> <remote> <local>`, e.g. `UsbFfs tcp:64779 tcp:64779`.
+            listing.lineSequence().any { it.split(Regex("\\s+")).contains(mapping) }
+        } catch (e: Exception) {
+            println("[net-ctrl]   adb reverse --list failed (${e.message}) — assuming the mapping is gone")
+            false
+        }
+
+    /** `adb`, pinned to [adbSerial] when one was supplied. */
+    private fun adbCommand(vararg args: String): List<String> =
+        buildList {
+            add("adb")
+            if (adbSerial != null) {
+                add("-s")
+                add(adbSerial)
+            }
+            addAll(args)
+        }
+
     private fun adb(shellCommand: String) {
         val result =
-            ProcessBuilder("adb", "shell", "su", "0", shellCommand)
+            ProcessBuilder(adbCommand("shell", "su", "0", shellCommand))
                 .redirectErrorStream(true)
                 .start()
         val output =
@@ -183,6 +252,16 @@ class NetworkControlServer(
 }
 
 fun main(args: Array<String>) {
-    val port = args.firstOrNull()?.toIntOrNull() ?: 9998
-    NetworkControlServer(port).run()
+    // 0 = OS-assigned. [run] prints the bound port, which the caller parses; a pinned default made
+    // "the port is taken" a failure mode that only existed because of the constant.
+    val port = args.firstOrNull { it.toIntOrNull() != null }?.toIntOrNull() ?: 0
+    // Falls back to ANDROID_SERIAL, which adb honours natively — so the two ways of pinning a device
+    // agree instead of one silently overriding the other.
+    val serial =
+        args
+            .firstOrNull { it.startsWith("--serial=") }
+            ?.removePrefix("--serial=")
+            ?.takeIf { it.isNotBlank() }
+            ?: System.getenv("ANDROID_SERIAL")?.takeIf { it.isNotBlank() }
+    NetworkControlServer(port, serial).run()
 }

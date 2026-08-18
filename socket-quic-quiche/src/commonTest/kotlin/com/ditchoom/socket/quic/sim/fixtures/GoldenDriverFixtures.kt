@@ -57,3 +57,31 @@ internal val datagramThenStalePath: SimFixture =
         at(3.seconds + 5.milliseconds) datagramIn "a1a2a3a4a5a6"
         runFor(4.seconds)
     }
+
+/**
+ * Golden 5 — `send-fault-survival`: one transport send fault on an otherwise healthy connection.
+ *
+ * Not hand-written. This is the **shrunk counterexample** the W5 fuzzer produced (seed 2, 9 events
+ * reduced to 1) the moment the survivability invariant was added, back when `flushOutgoing` treated
+ * any failed send as terminal. Its original trace ended:
+ *
+ * ```
+ * NetworkChanged(at=10.001s, Routable(Wifi))
+ * KeepAlivePing(at=18.417s)
+ * StateChange(at=18.417s, Closed(error=IdleTimeout))   <- at 18.4s, with a 30s idle timer
+ * ```
+ *
+ * The keepalive PING — whose entire purpose is keeping the session alive — triggered the flush that
+ * hit the armed fault and killed the connection, then mislabelled it as an idle timeout that had not
+ * happened. Pinned as a golden so the corrected behaviour (survive the fault, PING on schedule, stay
+ * Established) is a trace diff if it ever regresses, rather than a property failure to re-shrink.
+ *
+ * Run with keepalive = 10s and the 30s idle timer armed, matching the fuzz harness that found it.
+ */
+internal val sendFaultSurvival: SimFixture =
+    simFixture("send-fault-survival") {
+        at(9604.milliseconds) sendError
+            com.ditchoom.socket.quic.sim
+                .SimError("ECONNREFUSED: port unreachable")
+        runFor(25.seconds)
+    }

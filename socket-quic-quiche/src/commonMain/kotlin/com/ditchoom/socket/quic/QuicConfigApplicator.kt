@@ -133,7 +133,15 @@ internal fun applyQuicOptions(
     fc.maxConnectionWindow?.let { calls.setMaxConnectionWindow(it) }
     fc.maxStreamWindow?.let { calls.setMaxStreamWindow(it) }
 
-    calls.setDisableActiveMigration(options.disableActiveMigration)
+    // RFC 9000 §18.2. An exhaustive `when`, not a boolean read: the wire parameter and the reactor are
+    // now one decision, so a new MigrationPolicy case cannot be added without answering here what it
+    // tells the peer.
+    calls.setDisableActiveMigration(
+        when (options.migration) {
+            MigrationPolicy.Forbidden -> true
+            MigrationPolicy.Manual, MigrationPolicy.Automatic -> false
+        },
+    )
     calls.setActiveConnectionIdLimit(options.activeConnectionIdLimit)
     // Peer verification policy — see [resolveVerifyPeer].
     calls.verifyPeer(resolveVerifyPeer(options))

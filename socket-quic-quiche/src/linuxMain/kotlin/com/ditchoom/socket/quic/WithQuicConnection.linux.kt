@@ -189,14 +189,27 @@ internal suspend fun buildLinuxQuicConnection(
                     driverContext = tuning.driverContext,
                     random = tuning.random,
                     recorder = tuning.recorderFactory(),
-                    // Connection-migration wiring (Gap 4): the peer + primary local sockaddrs (kept pinned
-                    // via onCleanup for the driver's life) and a factory that opens additional :socket-udp
+                    networkObservation = tuning.networkObservation,
+                    // Connection-migration wiring: the peer + primary local sockaddrs (kept pinned via
+                    // onCleanup for the driver's life) and a factory that opens additional :socket-udp
                     // path sockets to the same peer. Mirrors the JVM client.
-                    peerAddr = peerSockAddr.address,
-                    peerLen = peerSockAddr.length,
-                    primaryLocalAddr = localSockAddr.address,
-                    primaryLocalLen = localSockAddr.length,
-                    udpChannelFactory = UdpSocketChannelFactory(peer, codec, bufferFactory, recvBufPool, QuicheDriver.MAX_DATAGRAM_SIZE),
+                    migration =
+                        clientMigrationCapability(quicOptions.migration) {
+                            MigrationCapability.Supported(
+                                peer = PinnedSockAddr(peerSockAddr.address, peerSockAddr.length),
+                                primaryLocal = PinnedSockAddr(localSockAddr.address, localSockAddr.length),
+                                channelFactory =
+                                    UdpSocketChannelFactory(
+                                        peer = peer,
+                                        codec = codec,
+                                        bufferFactory = bufferFactory,
+                                        recvBufferFactory = recvBufPool,
+                                        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                                        // io_uring binds the requested local endpoint before connecting.
+                                        localEndpointSupport = LocalEndpointSupport.Bindable,
+                                    ),
+                            )
+                        },
                     onCleanup = {
                         peerSockAddr.free()
                         localSockAddr.free()
@@ -254,8 +267,18 @@ internal class LinuxQuicConnection(
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
 ) : QuicConnection,
+    QuicheBackedConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
+
+    override val quicheDriver: QuicheDriver get() = driver
+
+    /**
+     * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
+     * because it rotates — so this is rebuilt per read rather than stored.
+     */
+    override val identity: QuicConnectionIdentity
+        get() = QuicConnectionIdentity(session = driver.sessionId, wire = driver.wireConnectionId)
 
     private val datagramAdapter = DriverDatagramAdapter(driver, remoteAddress)
 
@@ -286,7 +309,7 @@ internal class LinuxQuicConnection(
                 ),
             )
         } catch (_: ClosedSendChannelException) {
-            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed")
+            throw QuicCloseException(driver.closeReasonOr(QuicError.NoError), "connection closed", attribution = driver.closeAttribution())
         }
     }
 
@@ -311,18 +334,19 @@ internal class LinuxQuicConnection(
 
     override fun datagramChannel(): ConnectedDatagramChannel = datagramAdapter
 
-    override val pathState: StateFlow<PathInfo> = driver.pathState
+    override val pathState: StateFlow<QuicPathState> = driver.pathState
 
-    override suspend fun migrate(
-        localHost: String?,
-        localPort: Int,
-    ): MigrationResult =
+    override val networkAtClose: NetworkAtClose get() = driver.networkAtClose
+
+    override suspend fun migrate(target: MigrationTarget): MigrationResult =
         try {
             val deferred = CompletableDeferred<MigrationResult>()
-            driver.commands.send(QuicheCmd.Migrate(localHost, localPort, deferred))
+            driver.commands.send(QuicheCmd.Migrate(target, deferred))
+            // Suspends until the path has validated and the active path has switched, or the attempt
+            // has failed — the property the automatic reactor relies on instead of a quiet period.
             deferred.await()
         } catch (_: ClosedSendChannelException) {
-            MigrationResult.Failed("connection closed")
+            MigrationResult.Unmoved.Impossible.ConnectionClosed
         }
 
     /** Driver-level terminal close (user-callable mid-block via [closeWithError]) — no [onRelease]. */
