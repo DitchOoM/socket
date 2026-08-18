@@ -20,6 +20,13 @@ import kotlin.test.assertTrue
  * These complement the integration-level `ServerCloseRecvInfoRaceTest` (jvmTest, real server + gated
  * connRecv): that proves the JVM server *wires* the registry correctly; these prove the registry
  * *logic* on every target, and give the #179 recv_info-UAF invariant a fast deterministic home.
+ *
+ * ## Why this lives in `src/sharedQuicheTestSuites/kotlin` rather than `commonTest`
+ * `androidInstrumentedTest` deliberately does **not** `dependsOn(commonTest)`, so a `commonTest` home
+ * covered every platform *except* the one that ships this backend to users: Android is the only target
+ * that runs quiche over JNI, and it is where issue #393 was found in the field. This directory is
+ * `srcDir`'d into both source sets, so the same source runs unchanged on jvm/apple/linux **and** on a
+ * real device — the move adds the lane that was missing and takes none away. See DitchOoM/socket#390.
  */
 class ServerConnectionRegistryTests {
     private val bufferFactory = BufferFactory.deterministic()

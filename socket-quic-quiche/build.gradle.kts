@@ -2845,10 +2845,17 @@ kotlin {
         }
         commonTest {
             kotlin.srcDir(generateQuicHarnessConfig.map { quicHarnessGeneratedDir })
-            // Cross-backend suites that need this module's INTERNAL seams (QuicheBackedConnection,
-            // QuicheDriver.peerTransportParams) and therefore cannot live in :socket-testsuite. Shared
-            // with androidInstrumentedTest by srcDir because that source set deliberately does not
-            // dependsOn commonTest — see the note there.
+            // Every test in this module that can run on EVERY backend, including Android's JNI one.
+            // Two kinds live here:
+            //   * cross-backend suites that need this module's INTERNAL seams (QuicheBackedConnection,
+            //     QuicheDriver.peerTransportParams) and therefore cannot live in :socket-testsuite;
+            //   * the driver-level suites and their test doubles (StubQuicheApi/StubUdpChannel/
+            //     ManualDriverClock), which touch no socket and no native lib, so a device runs them
+            //     exactly as a desktop JVM does (#390).
+            // Shared with androidInstrumentedTest by srcDir because that source set deliberately does
+            // not dependsOn commonTest — see the note there. A file in commonTest is a file Android
+            // does not run, which is how 261 tests came to cover FFM/Apple/Linux and 64 to cover the
+            // one backend we actually ship to users.
             kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
             dependencies {
                 implementation(kotlin("test"))
@@ -2925,6 +2932,12 @@ kotlin {
             // that no other lane exercises. This source set does NOT dependsOn commonTest, so the
             // neighbour-field ABI guard would have skipped the one backend whose binding is new;
             // compiling the shared suite here directly is what makes it actually run on device.
+            //
+            // The same srcDir now also carries the driver/stream/datagram suites (#390). They were in
+            // commonTest, which this source set does not see, so the backend Android ships was the one
+            // backend they never ran on — including StreamReadCancellationTests, the regression guard
+            // for #393, a defect found on an Android device. They need no native lib and no socket
+            // (StubQuicheApi + a gated UdpChannel), so nothing about them is desktop-only.
             kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
             dependencies {
                 implementation(kotlin("test"))

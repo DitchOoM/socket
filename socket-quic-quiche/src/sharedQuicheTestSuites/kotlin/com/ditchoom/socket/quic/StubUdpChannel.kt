@@ -10,6 +10,12 @@ import kotlinx.coroutines.channels.Channel
  *
  * Tests that need to inject UDP send errors (e.g. PortUnreachableException,
  * ClosedChannelException) supply [sendBehavior] which is invoked on each send.
+ *
+ * Lives in `src/sharedQuicheTestSuites/kotlin` rather than `commonTest` because the driver suites that
+ * use it do: `androidInstrumentedTest` deliberately does **not** `dependsOn(commonTest)`, and this
+ * directory is `srcDir`'d into both, so one copy of the double serves jvm/apple/linux *and* the device
+ * lane. It is `internal`, so each compilation gets its own — there is no cross-source-set leak. See
+ * DitchOoM/socket#390.
  */
 class StubUdpChannel(
     private val sendBehavior: (PlatformBuffer, Int) -> Unit = { _, _ -> },

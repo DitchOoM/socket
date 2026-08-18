@@ -33,6 +33,13 @@ import kotlin.time.Duration.Companion.seconds
  * Runs on the virtual-time scheduler ([runTest] + `driverContext = EmptyCoroutineContext` +
  * [RealDriverClock], the [VirtualTimeDriverTests] seam), so a 30-second idle timeout costs no
  * wall-clock time and the result is deterministic rather than timing-dependent.
+ *
+ * ## Why this lives in `src/sharedQuicheTestSuites/kotlin` rather than `commonTest`
+ * `androidInstrumentedTest` deliberately does **not** `dependsOn(commonTest)`, so a `commonTest` home
+ * covered every platform *except* the one that ships this backend to users: Android is the only target
+ * that runs quiche over JNI, and it is where issue #393 was found in the field. This directory is
+ * `srcDir`'d into both source sets, so the same source runs unchanged on jvm/apple/linux **and** on a
+ * real device — the move adds the lane that was missing and takes none away. See DitchOoM/socket#390.
  */
 class IdleTimeoutTerminationTests {
     private val bufferFactory = BufferFactory.deterministic()
