@@ -22,11 +22,13 @@ import kotlin.time.Duration.Companion.seconds
  * when Apple shipped with `udpChannelFactory = null` the gap was invisible: there was no red test,
  * only an absent one. A platform's inability to migrate has to *fail*, not *not-exist*.
  *
- * So this suite deliberately has **no `supportsActiveMigration()` escape hatch**. The passive suite
- * has one (`supportsPassiveSourceRebind`) and that hook is exactly how a platform gap turns back into
- * a silent pass. A platform that genuinely cannot migrate must record that as a typed
- * [com.ditchoom.socket.testkit.SkipGate] on its member class, which keeps the absence *visible in the
- * skip inventory* rather than dissolving it into a green run.
+ * So this suite deliberately has **no `supportsActiveMigration()` escape hatch**, and the two QUIC
+ * suites that still had one — `QuicPassiveMigrationTestSuite.supportsPassiveSourceRebind` and
+ * `QuicConcurrencySoakTestSuite.supportsConcurrentConnectionsToSameEndpoint` — have since been brought
+ * to this shape, because such a hook is exactly how a platform gap turns back into a silent pass. A
+ * platform that genuinely cannot migrate must record that as a typed
+ * [com.ditchoom.socket.testkit.skip.SkipGate] on its member class, which keeps the absence *visible in
+ * the skip inventory* rather than dissolving it into a green run.
  *
  * ## Migrating to a fresh ephemeral port, not a loopback alias
  * The two pre-existing tests migrate to `127.0.0.2`, which only works because all of `127.0.0.0/8` is

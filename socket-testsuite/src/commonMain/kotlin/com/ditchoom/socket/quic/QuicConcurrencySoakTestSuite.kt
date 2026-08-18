@@ -41,6 +41,22 @@ import kotlin.time.Duration.Companion.seconds
  * **Determinism.** Fixed, bounded workloads (exact stream/connection/round counts) with exact-content
  * assertions — not probabilistic flake-catchers. Sizes are tuned to finish well inside `runQuicTest`'s
  * 15 s cap on loopback.
+ *
+ * ## No `supportsConcurrentConnectionsToSameEndpoint()` escape hatch
+ * The two `manyConnections*` tests used to sit behind one, defaulting to `true`, "because Network.
+ * framework allows only ONE multiplex QUIC group per (host, port) endpoint per process, so the Apple
+ * member overrides this to false (issue #112)". That described the **deleted** NW QUIC backend; since
+ * the June 2026 pivot Apple runs the same Cloudflare quiche engine over its own UDP sockets, and no
+ * member has overridden the hook on any platform. What remained was a live mechanism for making two of
+ * these five tests disappear: `false` skipped them by returning early, and an early return is reported
+ * as a **pass** — silently on Kotlin/Native, where there is no `assume`.
+ *
+ * A platform that genuinely cannot open concurrent connections to one endpoint must record a typed skip
+ * instead, as [QuicActiveMigrationTestSuite] requires: override [wrapTestBody] on the member class and
+ * call `recordSkip(TheMember::class, reason, gate)` without invoking the block, which emits the
+ * `[TEST-SKIPPED]` marker the CI skip inventory counts. (That gate is per-suite, not per-test, which is
+ * the honest granularity: a platform with that limitation cannot run *either* `manyConnections*` test,
+ * and splitting the suite is cheaper than reintroducing a per-test boolean.)
  */
 abstract class QuicConcurrencySoakTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
@@ -133,25 +149,11 @@ abstract class QuicConcurrencySoakTestSuite {
             }
         }
 
-    /**
-     * Whether the platform supports multiple INDEPENDENT connections to the SAME endpoint at once.
-     *
-     * True for the quiche-backed platforms (JVM/Linux). Apple's Network.framework allows only ONE
-     * multiplex QUIC group per (host, port) endpoint per process — a second concurrent group to the
-     * same endpoint fails its handshake with POSIX ENOMEM (proven deterministically against both an
-     * in-process listener and a public endpoint; different endpoints work fine). The NW model is to
-     * multiplex STREAMS over one connection instead — exactly what
-     * [manyConcurrentStreamsOnOneConnectionRoundTrip] exercises — so the Apple member overrides this
-     * to false and that test self-skips. (Issue #112.)
-     */
-    protected open fun supportsConcurrentConnectionsToSameEndpoint(): Boolean = true
-
     /** Open [CONCURRENT_CONNECTIONS] connections at once, one echo each; assert every one round-trips. */
     @Test
     fun manyConnectionsConcurrentlyRoundTrip() =
         runQuicTest {
             wrapTestBody {
-                if (!supportsConcurrentConnectionsToSameEndpoint()) return@wrapTestBody
                 coroutineScope {
                     withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
                         val serverJob = launch { connections { echoEveryStream() } }
@@ -182,16 +184,14 @@ abstract class QuicConcurrencySoakTestSuite {
     /**
      * Higher-concurrency connection stress: [HIGH_CONCURRENT_CONNECTIONS] independent connections opened
      * at once (~3x [CONCURRENT_CONNECTIONS]), each round-tripping one echo. Exercises simultaneous
-     * handshakes + per-connection driver setup/teardown under heavier load than the baseline. Same gating
-     * and assertions as [manyConnectionsConcurrentlyRoundTrip] (self-skips where
-     * [supportsConcurrentConnectionsToSameEndpoint] is false, e.g. Apple). CI-safe: the connection count is
-     * fixed and bounded; only the wall-clock budgets grow via `.scaled`.
+     * handshakes + per-connection driver setup/teardown under heavier load than the baseline. Same
+     * assertions as [manyConnectionsConcurrentlyRoundTrip]. CI-safe: the connection count is fixed and
+     * bounded; only the wall-clock budgets grow via `.scaled`.
      */
     @Test
     fun manyConnectionsHighConcurrencyRoundTrip() =
         runQuicTest(timeout = 30.seconds) {
             wrapTestBody {
-                if (!supportsConcurrentConnectionsToSameEndpoint()) return@wrapTestBody
                 withDiffDebug("manyConnectionsHighConcurrency", { "scale=${testTimeScale()} connections=$HIGH_CONCURRENT_CONNECTIONS" }) {
                     coroutineScope {
                         withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = options) {
