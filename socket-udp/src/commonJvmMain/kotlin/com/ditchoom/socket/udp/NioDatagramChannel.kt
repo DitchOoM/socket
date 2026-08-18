@@ -218,6 +218,14 @@ internal abstract class NioDatagramChannelCore(
         while (true) {
             if (closed) return DatagramReadResult.Closed()
             var payload: PlatformBuffer? = null
+            // Ownership of `payload` transfers to the caller only on the Received path. Tracking that
+            // explicitly, and freeing in `finally` otherwise, is what makes the staging buffer safe on
+            // *every* exit: the two Closed arms, a spurious wakeup's `continue`, cancellation, and —
+            // the case that leaked (#396) — any other IOException from channel.receive()
+            // (PortUnreachableException, ENETUNREACH/EHOSTUNREACH/ECONNABORTED when a network is torn
+            // down under the socket). That last path previously dropped one receiveBufferSize pooled
+            // buffer on the floor per throw, at the driver's retry rate.
+            var handedOff = false
             try {
                 // select() is the only blocking call; runInterruptible makes a cancelled receive
                 // interrupt the select (which returns) without closing the underlying socket.
@@ -233,16 +241,12 @@ internal abstract class NioDatagramChannelCore(
                 // the connected peer (value-equal via InternedJvmSocketAddress).
                 val sender =
                     channel.receive(byteBuffer) as InetSocketAddress?
-                        ?: run {
-                            buffer.freeNativeMemory() // spurious wakeup — do not leak the staging buffer
-                            payload = null
-                            null
-                        }
-                        ?: continue
+                        ?: continue // spurious wakeup — `finally` frees the staging buffer
                 val length = byteBuffer.position()
                 // Expose exactly the received datagram as the readable window [0, length).
                 buffer.position(0)
                 buffer.setLimit(length)
+                handedOff = true
                 return DatagramReadResult.Received(
                     Datagram(
                         payload = buffer,
@@ -258,15 +262,15 @@ internal abstract class NioDatagramChannelCore(
                 // close and sees the selector already gone. The contract is that a receive on a closed
                 // channel *yields* Closed, so this must not escape as an exception: a caller draining
                 // in a loop would take a spurious failure purely from shutdown ordering.
-                payload?.freeNativeMemory()
                 return DatagramReadResult.Closed()
             } catch (_: ClosedChannelException) {
                 // Same shutdown race, one layer down: close() closes the channel after the selector, so
                 // an in-flight receive() can find the channel gone. (ClosedByInterruptException is a
                 // subtype, but a cancelled receive unwinds through runInterruptible before reaching
                 // here, so cancellation still propagates as cancellation rather than as Closed.)
-                payload?.freeNativeMemory()
                 return DatagramReadResult.Closed()
+            } finally {
+                if (!handedOff) payload?.freeNativeMemory()
             }
         }
     }
