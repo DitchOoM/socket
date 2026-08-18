@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -1107,6 +1108,7 @@ class QuicheDriver(
         // other channel (test doubles, legacy io_uring/NIO proxies) fills a buffer we pre-allocate.
         if (entry.channel.ownsReceiveBuffer) return ownedBufferReaderLoop(entry)
         val pool = recvBufPool
+        var consecutiveFailures = 0
         try {
             while (coroutineContext[Job]?.isActive != false) {
                 val buf = pool.allocate(MAX_DATAGRAM_SIZE)
@@ -1119,8 +1121,11 @@ class QuicheDriver(
                     } catch (_: Exception) {
                         buf.freeNativeMemory()
                         if (commands.isClosedForSend) return
+                        if (++consecutiveFailures >= MAX_CONSECUTIVE_RECEIVE_FAILURES) return
+                        delay(receiveRetryBackoff(consecutiveFailures))
                         continue
                     }
+                consecutiveFailures = 0
                 if (received > 0) {
                     try {
                         commands.send(QuicheCmd.RecvPacket(buf, received, entry.key))
@@ -1157,6 +1162,7 @@ class QuicheDriver(
      * teardown — so there is no non-positive "keep looping" case to handle here.
      */
     private suspend fun ownedBufferReaderLoop(entry: PathEntry) {
+        var consecutiveFailures = 0
         try {
             while (coroutineContext[Job]?.isActive != false) {
                 val owned =
@@ -1166,8 +1172,11 @@ class QuicheDriver(
                         throw e
                     } catch (_: Exception) {
                         if (commands.isClosedForSend) return
+                        if (++consecutiveFailures >= MAX_CONSECUTIVE_RECEIVE_FAILURES) return
+                        delay(receiveRetryBackoff(consecutiveFailures))
                         continue
                     }
+                consecutiveFailures = 0
                 try {
                     commands.send(QuicheCmd.RecvPacket(owned.buffer, owned.length, entry.key))
                 } catch (e: ClosedSendChannelException) {
@@ -1604,6 +1613,39 @@ class QuicheDriver(
 
     companion object {
         const val MAX_DATAGRAM_SIZE = 1350
+
+        /**
+         * How many consecutive receive failures a path's reader tolerates before it stops (#396).
+         *
+         * The loops previously retried a failed `receive` with `continue` — no delay, no bound. A
+         * *persistent* socket error makes `selector.select()` return immediately every time, so the
+         * reader span the dispatcher at full tilt for the rest of the connection's life; combined with
+         * a path that is never retired (#395) it was still running 101 minutes later. Android's netd
+         * `SOCK_DESTROY` produces exactly that when a network goes away under a live socket.
+         *
+         * A bound plus backoff is deliberately generous: a genuinely transient error clears within a
+         * few milliseconds, so ~2s of retrying costs nothing, while a dead socket stops instead of
+         * burning a core indefinitely. Escalating a stopped reader into a path teardown belongs to
+         * #395, which owns path lifecycle; this only stops the spin and the per-iteration leak.
+         */
+        private const val MAX_CONSECUTIVE_RECEIVE_FAILURES = 20
+
+        /** Backoff ceiling for [receiveRetryBackoff]. */
+        private val RECEIVE_RETRY_BACKOFF_CAP = 100.milliseconds
+
+        /**
+         * Exponential backoff for consecutive receive failures: 1ms, 2ms, 4ms … capped at
+         * [RECEIVE_RETRY_BACKOFF_CAP]. Shifting is bounded before it can overflow the exponent.
+         */
+        private fun receiveRetryBackoff(consecutiveFailures: Int): Duration {
+            val shift = (consecutiveFailures - 1).coerceIn(0, 30)
+            val millis = 1L shl shift
+            return if (millis >= RECEIVE_RETRY_BACKOFF_CAP.inWholeMilliseconds) {
+                RECEIVE_RETRY_BACKOFF_CAP
+            } else {
+                millis.milliseconds
+            }
+        }
 
         /** RFC 9002 §6.1.2 `kGranularity` — the timer-granularity floor inside the PTO formula. */
         private val K_GRANULARITY = 1.milliseconds
