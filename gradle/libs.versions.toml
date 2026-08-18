@@ -110,8 +110,10 @@ kotlinWrappers = "2026.6.0"
 # only path Android has if socket ever adopts a TextPolicy. Drop-in, one file, no source changes here.
 buffer = "6.30.4"
 ksp = "2.3.9"
-# held at 1.18.0: androidx-core 1.19.0 requires compileSdk 37 (we compile against 36)
-androidxCore = "1.18.0"
+# 1.19.0 requires consumers to compile against compileSdk 37; every module moved to 37 so this is
+# no longer held back. AAR-metadata enforces it, so a compileSdk regression fails the build loudly
+# rather than drifting (it was `checkReleaseAarMetadata` that caught the mismatch in #384).
+androidxCore = "1.19.0"
 # androidx.startup — App Startup's InitializationProvider is how :network-monitor gets the application
 # Context on Android without the app remembering to call NetworkMonitor.installAndroidContext().
 # minSdk 21 (matches ours); its consumer proguard.txt already keeps `* extends Initializer`.

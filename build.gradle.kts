@@ -542,7 +542,7 @@ kotlin {
 }
 
 android {
-    compileSdk = 36
+    compileSdk = 37
     // AGP 9 + legacy-DSL opt-out: the `sourceSets[...]` Kotlin accessor casts to the
     // removed old API. Reach the source set via the new DSL interface instead.
     (this as com.android.build.api.dsl.LibraryExtension)

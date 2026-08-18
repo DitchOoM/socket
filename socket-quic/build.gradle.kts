@@ -144,7 +144,7 @@ tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
 }
 
 android {
-    compileSdk = 36
+    compileSdk = 37
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
