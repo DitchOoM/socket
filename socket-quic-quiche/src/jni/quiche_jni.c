@@ -190,14 +190,30 @@ JNIEXPORT jint JNICALL JNI_FN(nConnSend)(
 }
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnStreamRecv)(
-    JNIEnv *env, jclass cls, jlong conn, jlong stream_id, jlong buf, jint buf_len) {
+    JNIEnv *env, jclass cls, jlong conn, jlong stream_id, jlong buf, jint buf_len, jlong error_out) {
     bool fin = false;
     uint64_t error_code = 0;
     ssize_t result = quiche_conn_stream_recv(
         (quiche_conn *)(uintptr_t)conn, (uint64_t)stream_id,
         (uint8_t *)(uintptr_t)buf, (size_t)buf_len,
         &fin, &error_code);
-    if (result < 0) return (jlong)result;
+    if (result < 0) {
+        /* error_code is only meaningful on STREAM_RESET (-16); quiche leaves it 0 otherwise. Write it
+           big-endian into the caller's 8-byte native scratch (a buffer address, not a Java array —
+           FastNative-safe), mirroring nConnStreamSend's out_error_code convention. */
+        if (error_out != 0) {
+            uint8_t *p = (uint8_t *)(uintptr_t)error_out;
+            p[0] = (uint8_t)(error_code >> 56);
+            p[1] = (uint8_t)(error_code >> 48);
+            p[2] = (uint8_t)(error_code >> 40);
+            p[3] = (uint8_t)(error_code >> 32);
+            p[4] = (uint8_t)(error_code >> 24);
+            p[5] = (uint8_t)(error_code >> 16);
+            p[6] = (uint8_t)(error_code >> 8);
+            p[7] = (uint8_t)(error_code);
+        }
+        return (jlong)result;
+    }
     /* Pack fin flag into high bit of result */
     jlong packed = (jlong)result;
     if (fin) packed |= (1LL << 63);

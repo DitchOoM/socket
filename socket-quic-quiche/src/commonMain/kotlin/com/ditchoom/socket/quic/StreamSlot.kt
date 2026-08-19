@@ -27,15 +27,20 @@ class StreamSlot(
     val writableSignal = Channel<Unit>(Channel.CONFLATED)
 
     /**
-     * Set once quiche reports the stream's FIN — even when that FIN arrived *coalesced with the last
-     * data chunk* (`stream_recv` → bytes > 0 **and** fin = true). That data chunk is returned to the
-     * caller as [com.ditchoom.buffer.flow.ReadResult.Data], so the FIN itself can't be returned in the
-     * same `read()`; this flag carries it to the next `read()`, which returns
-     * [com.ditchoom.buffer.flow.ReadResult.End]. Without it, the reader would park on [dataSignal]
-     * forever — quiche has already delivered the FIN, so no further data or readable-signal is coming.
+     * Set once quiche reports a terminal event for the stream's read side — even when that event
+     * arrived *coalesced with the last data chunk* (`stream_recv` → bytes > 0 **and** fin/reset =
+     * true). That data chunk is returned to the caller as
+     * [com.ditchoom.buffer.flow.ReadResult.Data], so the terminal event itself can't be returned in
+     * the same `read()`; this field carries it to the next `read()`. Without it, the reader would
+     * park on [dataSignal] forever — quiche has already delivered the terminal event, so no further
+     * data or readable-signal is coming.
+     *
+     * [StreamEnd.Fin] means the next `read()` returns [com.ditchoom.buffer.flow.ReadResult.End].
+     * [StreamEnd.Reset] carries the peer's RESET_STREAM application error code to that same next
+     * `read()`.
      */
     @Volatile
-    var finReceived = false
+    var end: StreamEnd = StreamEnd.Open
 
     /**
      * Stream bytes quiche had already delivered to us that no reader has taken yet. Two producers, both
@@ -58,4 +63,20 @@ class StreamSlot(
      * is closed is released by [DriverStreamAdapter.releaseUndeliveredReads].
      */
     val pendingData = Channel<ReadBuffer>(Channel.UNLIMITED)
+}
+
+/**
+ * How the read side of a stream ends. [Open] until quiche reports a terminal event — a clean FIN or
+ * a peer RESET_STREAM — at which point [StreamSlot.end] latches to [Fin] or [Reset] and stays there;
+ * a stream never returns to [Open].
+ */
+sealed interface StreamEnd {
+    data object Open : StreamEnd
+
+    data object Fin : StreamEnd
+
+    /** Peer RESET_STREAM (RFC 9000 §19.4); [applicationErrorCode] is the peer's code. */
+    data class Reset(
+        val applicationErrorCode: QuicAppErrorCode,
+    ) : StreamEnd
 }

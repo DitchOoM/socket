@@ -241,7 +241,7 @@ internal class StubQuicheApi : QuicheApi {
     @Volatile var connStreamSendResult: Int? = null
 
     /** Peer application error code [connStreamSend] reports alongside a STREAM_STOPPED/RESET result. */
-    @Volatile var connStreamSendErrorCode: Long? = null
+    @Volatile var connStreamSendErrorCode: QuicAppErrorCode? = null
 
     override fun connStreamSend(
         conn: QuicheConn,
@@ -256,7 +256,7 @@ internal class StubQuicheApi : QuicheApi {
         // test didn't set one, and leave it null otherwise (a normal send carries no error code).
         val code =
             if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
-                connStreamSendErrorCode ?: 0L
+                connStreamSendErrorCode ?: QuicAppErrorCode(0)
             } else {
                 connStreamSendErrorCode
             }

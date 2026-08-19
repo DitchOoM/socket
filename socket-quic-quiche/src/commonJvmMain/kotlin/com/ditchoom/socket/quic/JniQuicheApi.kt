@@ -187,16 +187,36 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): StreamRecvResult {
-        val raw = nConnStreamRecv(conn.handle, streamId.id, buf, bufLen)
-        // JNI packs result: lower 63 bits = bytes read, bit 63 = FIN flag.
-        // Negative values are quiche error codes (small negative, so lower 63 bits are huge).
-        val lower63 = raw and 0x7FFFFFFFFFFFFFFFL
-        if (lower63 <= bufLen.toLong()) {
-            val bytesRead = lower63.toInt()
-            val fin = raw and (1L shl 63) != 0L
-            return StreamRecvResult.Data(bytesRead, fin)
+        // Per-call 8-byte native scratch for quiche's out_error_code, same reasoning as
+        // connStreamSend's scratch: JniQuicheApi is a shared singleton called from every connection's
+        // driver thread, so one reused scratch would race.
+        val scratch = BufferFactory.deterministic().allocate(8)
+        return try {
+            val addr = scratch.nativeMemoryAccess!!.nativeAddress.toLong()
+            val raw = nConnStreamRecv(conn.handle, streamId.id, buf, bufLen, addr)
+            // JNI packs result: lower 63 bits = bytes read, bit 63 = FIN flag.
+            // Negative values are quiche error codes (small negative, so lower 63 bits are huge).
+            val lower63 = raw and 0x7FFFFFFFFFFFFFFFL
+            if (lower63 <= bufLen.toLong()) {
+                val bytesRead = lower63.toInt()
+                val fin = raw and (1L shl 63) != 0L
+                StreamRecvResult.Data(bytesRead, fin)
+            } else {
+                when (raw) {
+                    QUICHE_ERR_DONE -> StreamRecvResult.Done
+                    QuicheDriver.QUICHE_ERR_STREAM_RESET.toLong() -> {
+                        // The C shim wrote the 8 bytes straight to native memory (it only has the raw
+                        // address, not the buffer object); read them back big-endian by absolute index.
+                        var code = 0L
+                        for (i in 0 until 8) code = (code shl 8) or (scratch[i].toLong() and 0xFF)
+                        StreamRecvResult.Reset(QuicAppErrorCode(code))
+                    }
+                    else -> StreamRecvResult.Error(raw.toInt())
+                }
+            }
+        } finally {
+            scratch.freeNativeMemory()
         }
-        return if (raw == QUICHE_ERR_DONE) StreamRecvResult.Done else StreamRecvResult.Error(raw.toInt())
     }
 
     override fun connStreamSend(
@@ -222,7 +242,7 @@ object JniQuicheApi : QuicheApi {
                     // cursor. Read them back big-endian by absolute index — no position bookkeeping needed.
                     var v = 0L
                     for (i in 0 until 8) v = (v shl 8) or (scratch[i].toLong() and 0xFF)
-                    v
+                    QuicAppErrorCode(v)
                 } else {
                     null
                 }
@@ -765,6 +785,7 @@ object JniQuicheApi : QuicheApi {
         streamId: Long,
         buf: Long,
         bufLen: Int,
+        errorOut: Long,
     ): Long
 
     @FastNative

@@ -364,15 +364,21 @@ abstract class QuicServerTestSuite {
         }
 
     /**
-     * The [ReadResult] a peer observes when the remote abruptly resets a stream.
-     * Apple's Network.framework surfaces it as [ReadResult.Reset]; the quiche driver
-     * (JVM/Linux) collapses a stream reset to EOF ([ReadResult.End]). Both are terminal
-     * (never [ReadResult.Data]) — the default accepts either; Apple tightens it to Reset.
+     * The [ReadResult] a peer observes when the remote abruptly resets a stream: [ReadResult.Reset],
+     * on every backend. [ReadResult.End] means the peer finished *politely* (a FIN), and reporting it
+     * for a RESET_STREAM launders an abnormal, code-carrying abort into a clean end-of-stream — the
+     * application cannot tell a cancelled request from a completed one (issue #398).
+     *
+     * This used to accept either value, justified by an Apple/Network.framework distinction that no
+     * longer exists (the June 2026 pivot made Apple a quiche backend like every other platform) — an
+     * assertion that cannot fail, documenting the defect as intended behaviour.
      */
     protected open fun assertResetObservedByPeer(resultClassName: String?) {
-        assertTrue(
-            resultClassName == "End" || resultClassName == "Reset",
-            "expected a terminal read after peer reset, got $resultClassName",
+        assertEquals(
+            "Reset",
+            resultClassName,
+            "a peer RESET_STREAM must surface as ReadResult.Reset; every stream-level quiche error " +
+                "collapsing to End is issue #398",
         )
     }
 
@@ -500,7 +506,7 @@ abstract class QuicServerTestSuite {
                             // The peer's application error code must round-trip via quiche's out_error_code
                             // on every quiche backend (FFM on JDK 21, JNI on JDK < 21, cinterop on K/N).
                             assertEquals(
-                                0x10cL,
+                                QuicAppErrorCode(0x10c),
                                 streamError.abort.applicationErrorCode,
                                 "the peer STOP_SENDING/RESET application error code must be surfaced",
                             )
