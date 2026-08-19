@@ -24,8 +24,34 @@ env:
   QUIC_TEST_TIME_SCALE: "3"
 
 jobs:
+  # linux-quiche-env downloads `quiche-linux-natives-full` from the CURRENT run (in build-linux.yaml
+  # the sibling `natives` job produces it). This standalone workflow has no natives job, so stage the
+  # artifact from a known-good main run (32303408955, the #411 merged run — its libquiche_jni.so
+  # matches current main's quiche_jni.c) into this run under the same name.
+  stage-natives:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download natives cross-run
+        uses: actions/download-artifact@v8
+        with:
+          name: quiche-linux-natives-full
+          path: natives
+          run-id: 32303408955
+          github-token: ${{ github.token }}
+          repository: DitchOoM/socket
+      - name: Re-upload into this run
+        uses: actions/upload-artifact@v7
+        with:
+          name: quiche-linux-natives-full
+          path: natives
+          # The cargo-skip markers are DOTFILES; without this the upload silently drops them and
+          # every shard re-runs a 10-20 minute cargo build (the #337 trap).
+          include-hidden-files: true
+
   hunt:
     name: hunt (${{ matrix.mode }} shard ${{ matrix.shard }})
+    needs: stage-natives
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
