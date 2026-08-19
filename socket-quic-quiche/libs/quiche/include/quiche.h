@@ -847,6 +847,10 @@ size_t quiche_conn_retired_scids(const quiche_conn *conn);
 // Destination Connection IDs that are still unused.
 size_t quiche_conn_available_dcids(const quiche_conn *conn);
 
+// Requests the retirement of the destination Connection ID with the given
+// sequence number. Returns 0 on success, or a negative quiche_error.
+int quiche_conn_retire_dcid(quiche_conn *conn, uint64_t dcid_seq);
+
 // Returns the number of source Connection IDs that should be provided
 // to the peer without exceeding the limit it advertised.
 size_t quiche_conn_scids_left(quiche_conn *conn);

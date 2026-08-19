@@ -549,15 +549,23 @@ JNIEXPORT jint JNICALL JNI_FN(nConnNewScid)(
         (uint64_t *)(uintptr_t)seq_out);
 }
 
-JNIEXPORT jint JNICALL JNI_FN(nConnMigrate)(
+/* Packs the (seq, rc) pair quiche_conn_migrate returns via out-param + return code into a
+   single jlong: on success (rc == 0) the result is (jlong)seq (always >= 0 — a u64 in principle,
+   but real DCID sequence numbers are tiny in practice, so a negative jlong is unambiguously the
+   rc < 0 error case below); on failure the result is (jlong)rc (< 0). Mirrors nConnStreamRecv's
+   single-value packing above, just without needing a bit to spare. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnMigrate)(
     JNIEnv *env, jclass cls,
     jlong conn, jlong local_addr, jint local_len,
-    jlong peer_addr, jint peer_len, jlong seq_out) {
-    return (jint)quiche_conn_migrate(
+    jlong peer_addr, jint peer_len) {
+    uint64_t seq = 0;
+    int rc = quiche_conn_migrate(
         (quiche_conn *)(uintptr_t)conn,
         (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
         (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len,
-        (uint64_t *)(uintptr_t)seq_out);
+        &seq);
+    if (rc == 0) return (jlong)seq;
+    return (jlong)rc;
 }
 
 JNIEXPORT jint JNICALL JNI_FN(nConnMigrateSource)(
@@ -571,6 +579,10 @@ JNIEXPORT jint JNICALL JNI_FN(nConnMigrateSource)(
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnAvailableDcids)(JNIEnv *env, jclass cls, jlong conn) {
     return (jlong)quiche_conn_available_dcids((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnRetireDcid)(JNIEnv *env, jclass cls, jlong conn, jlong dcid_seq) {
+    return (jint)quiche_conn_retire_dcid((quiche_conn *)(uintptr_t)conn, (uint64_t)dcid_seq);
 }
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnScidsLeft)(JNIEnv *env, jclass cls, jlong conn) {

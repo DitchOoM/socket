@@ -113,8 +113,12 @@ internal class CallerClockQuicheApi(
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int = synced { delegate.connMigrate(conn, localAddr, localLen, peerAddr, peerLen, seqOut) }
+    ): MigrateOutcome = synced { delegate.connMigrate(conn, localAddr, localLen, peerAddr, peerLen) }
+
+    override fun connRetireDcid(
+        conn: QuicheConn,
+        dcidSeq: Long,
+    ): Int = synced { delegate.connRetireDcid(conn, dcidSeq) }
 
     override fun connMigrateSource(
         conn: QuicheConn,

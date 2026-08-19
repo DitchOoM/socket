@@ -213,8 +213,16 @@ internal class StubQuicheApi : QuicheApi {
             connSendOnce = null
             return once
         }
+        connSendQueue.removeFirstOrNull()?.let { return it }
         return 0
     }
+
+    /**
+     * Scripted [connSend] queue, drained one value per call in FIFO order — after
+     * [emitOneDatagramOnClose] and [connSendOnce] have had their say, so neither existing seam's
+     * behavior changes. **Empty by default**, so every existing test keeps falling through to `0`.
+     */
+    val connSendQueue: ArrayDeque<Int> = ArrayDeque()
 
     /**
      * If non-empty, each [connStreamRecv] pops the next result (modelling quiche's sequence, e.g. a
@@ -491,7 +499,13 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun sendInfoToAddrLen(info: QuicheSendInfo) = 0
 
-    override fun sendInfoFromAddr(info: QuicheSendInfo) = 0L
+    /**
+     * Scripted [sendInfoFromAddr] queue, drained one value per call in FIFO order. **Empty by
+     * default**, so every existing test keeps the `0L` answer it has always had.
+     */
+    val sendInfoFromAddrQueue: ArrayDeque<Long> = ArrayDeque()
+
+    override fun sendInfoFromAddr(info: QuicheSendInfo) = sendInfoFromAddrQueue.removeFirstOrNull() ?: 0L
 
     override fun sendInfoFromAddrLen(info: QuicheSendInfo) = 0
 
@@ -543,7 +557,21 @@ internal class StubQuicheApi : QuicheApi {
         resetTokenAddr: Long,
         retireIfNeeded: Boolean,
         seqOut: Long,
-    ) = 0
+    ): Int {
+        newScidCalls++
+        // Mirror real quiche: a successful issue consumes one unit of the peer-granted capacity.
+        if (scidsLeft > 0L) scidsLeft--
+        return 0
+    }
+
+    /**
+     * Scripted [MigrateOutcome] queue, drained one outcome per [connMigrate] call in FIFO order.
+     * Falls back to [connMigrateOutcome] once drained — **`Migrated(1L)` by default**, matching the
+     * `= 0` (success) every existing test already relies on.
+     */
+    val connMigrateOutcomes: ArrayDeque<MigrateOutcome> = ArrayDeque()
+
+    @Volatile var connMigrateOutcome: MigrateOutcome = MigrateOutcome.Migrated(1L)
 
     override fun connMigrate(
         conn: QuicheConn,
@@ -551,8 +579,20 @@ internal class StubQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ) = 0
+    ): MigrateOutcome = connMigrateOutcomes.removeFirstOrNull() ?: connMigrateOutcome
+
+    /** Records every [connRetireDcid] call's [dcidSeq], so tests can assert what the driver retired. */
+    val retiredDcids: MutableList<Long> = mutableListOf()
+
+    @Volatile var connRetireDcidResult: Int = 0
+
+    override fun connRetireDcid(
+        conn: QuicheConn,
+        dcidSeq: Long,
+    ): Int {
+        retiredDcids += dcidSeq
+        return connRetireDcidResult
+    }
 
     override fun connMigrateSource(
         conn: QuicheConn,
@@ -605,7 +645,18 @@ internal class StubQuicheApi : QuicheApi {
             )
         }
 
-    override fun connScidsLeft(conn: QuicheConn) = 0L
+    /**
+     * Source-CID capacity the peer still allows us (`quiche_conn_scids_left`). **0 by default** — the
+     * historical answer, keeping `issueSpareCids` a no-op in every existing test. A replenishment test
+     * sets it and the stub then behaves like real quiche: each successful [connNewScid] consumes one.
+     */
+    @Volatile var scidsLeft = 0L
+
+    /** Every [connNewScid] call, successful or not — how a test measures SCID issuance. */
+    @Volatile var newScidCalls = 0
+        private set
+
+    override fun connScidsLeft(conn: QuicheConn) = scidsLeft
 
     /**
      * Scripted `quiche_conn_path_event_next` queue, drained one event per call in FIFO order.

@@ -385,9 +385,10 @@ class QuicheDriver(
 
     /**
      * One network path the connection can send/receive on. The connection always has
-     * a [primary] path; active migration ([handleMigrate]) opens more. Routing stays
-     * dormant while there is a single path — [flushOutgoing] sends straight to
-     * [primary] and never decodes — so single-path behaviour is byte-for-byte unchanged.
+     * a [primary] path; active migration ([handleMigrate]) opens more and retires the
+     * one migrated from. Routing stays dormant until the first probe ever opens
+     * ([routingLive]) — [flushOutgoing] sends straight to [primary] and never decodes —
+     * so never-migrating behaviour is byte-for-byte unchanged.
      */
     private inner class PathEntry(
         val key: PathKey,
@@ -455,9 +456,34 @@ class QuicheDriver(
     /** True only for a client connection wired for migration. */
     private val migrationEnabled: Boolean = migrationWiring != null
 
-    private var activeKey: PathKey = primary.key
+    /**
+     * The path the connection currently lives on — [primary] until the first successful migration,
+     * then whichever entry the latest [drainPathEvents] `Validated` arm switched to. Every fallback
+     * that used to name [primary] ([flushOutgoing]'s single-path egress, the untagged
+     * [QuicheCmd.RecvPacket] recv_info) names this instead: after the primary is retired, [primary]
+     * points at a closed socket and a recv_info the connection no longer uses.
+     */
+    private var active: PathEntry = primary
+
+    /**
+     * DCID sequence number in use on [active] — 0 at start (the initial connection ID's sequence,
+     * RFC 9000 §5.1.1), then whatever each successful `connMigrate` reports. Tracked so the *next*
+     * migration can retire exactly the CID the old path used (RFC 9000 §9.5); retiring anything else
+     * leaves the real one linked and quiche's path table pinned (#395).
+     */
+    private var activeDcidSeq: Long = 0
+
+    /**
+     * False until [handleMigrate] first opens a probe path; never reset. While false, [flushOutgoing]
+     * sends straight to [primary] with no decode — single-path behaviour is byte-for-byte what it
+     * always was. Once true, every datagram's egress is decoded: after an abandoned probe, quiche
+     * keeps scheduling that path's PATH_CHALLENGE for up to 3 PTOs (`MAX_PROBING_TIMEOUTS`) with the
+     * driver's `paths` map back to a single entry — so "one path in the map" stops implying "quiche
+     * only schedules on that path" the moment a probe has ever existed (#395 item 4).
+     */
+    private var routingLive = false
+
     private var pendingMigration: PendingMigration? = null
-    private var spareCidsIssued = false
 
     private val _pathState = MutableStateFlow<QuicPathState>(QuicPathState.Original)
     val pathState: StateFlow<QuicPathState> = _pathState
@@ -720,9 +746,28 @@ class QuicheDriver(
                         .toLong()
                 // Hand quiche the recv_info for this packet. Server: a per-datagram override whose
                 // `from` is the real source (passive migration). Client: the path the packet arrived
-                // on (local addr = that socket's). Null/unknown falls back to primary — single-path
-                // is unchanged.
-                val info = cmd.recvInfoOverride ?: cmd.pathKey?.let { paths[it]?.recvInfo } ?: recvInfo
+                // on (local addr = that socket's). Untagged falls back to the active path — which is
+                // the primary until the first migration, so single-path is unchanged.
+                val tagged = cmd.pathKey
+                val info =
+                    if (cmd.recvInfoOverride != null) {
+                        cmd.recvInfoOverride
+                    } else if (tagged == null) {
+                        active.recvInfo
+                    } else {
+                        val entry = paths[tagged]
+                        if (entry == null) {
+                            // The packet arrived on a path that has since been retired — a reader's
+                            // final datagrams can be queued behind their own teardown. Feeding it
+                            // under another path's recv_info would tell quiche it arrived somewhere
+                            // it did not (the stale attribution retirement exists to end); it is
+                            // bounded collateral of a path the connection already left. Drop it.
+                            cmd.buf.freeNativeMemory()
+                            cmd.onRecvInfoConsumed?.invoke()
+                            return
+                        }
+                        entry.recvInfo
+                    }
                 api.connRecv(conn, addr, cmd.len, info)
                 cmd.buf.freeNativeMemory()
                 // Signal the server it may now release the cached recv_info (quiche copied
@@ -890,6 +935,12 @@ class QuicheDriver(
     private fun updateState() {
         if (api.connIsEstablished(conn) && _state.value is QuicConnectionState.Handshaking) {
             _state.value = QuicConnectionState.Established(readNegotiatedAlpn())
+        }
+        // Not once, but whenever capacity exists: RFC 9000 §5.1.1 says supply a new CID when the peer
+        // retires one — which a migrating peer now does on every move (§9.5). Behind a one-shot flag,
+        // the peer of a migrating client ran dry after ~MAX_SPARE_SCIDS migrations (#395). The steady
+        // state costs one connScidsLeft read per wake, alongside the two state reads above.
+        if (_state.value is QuicConnectionState.Established) {
             issueSpareCids()
         }
         if (api.connIsClosed(conn)) {
@@ -1047,13 +1098,34 @@ class QuicheDriver(
         while (true) {
             val written = api.connSend(conn, sendAddr, MAX_DATAGRAM_SIZE, sendInfo)
             if (written <= 0) break
-            // Route by the local egress address quiche chose. With a single path this is
-            // dormant — send straight to primary, no decode — so the common case is unchanged.
+            // Route by the local egress address quiche chose. Until the first probe ever opens
+            // ([routingLive]) this is dormant — send straight to primary, no decode — so the
+            // never-migrating common case is byte-for-byte unchanged. Once a probe has existed,
+            // "one path in the map" no longer bounds what quiche schedules on (see [routingLive]),
+            // so every datagram is decoded from then on.
             val channel =
-                if (paths.size <= 1) {
+                if (!routingLive) {
                     primary.channel
                 } else {
-                    paths[api.decodePathKey(api.sendInfoFromAddr(sendInfo))]?.channel ?: primary.channel
+                    val from = api.decodePathKey(api.sendInfoFromAddr(sendInfo))
+                    if (from.family == 0) {
+                        // A backend that exposes no egress address (test doubles decode nothing);
+                        // quiche schedules non-probing data on the active path, so honour that.
+                        active.channel
+                    } else {
+                        val entry = paths[from]
+                        if (entry == null) {
+                            // quiche scheduled this datagram on a path the driver has torn down — an
+                            // abandoned probe re-arming its PATH_CHALLENGE for up to 3 PTOs, or a
+                            // just-retired path draining its last frames. There is no socket for that
+                            // 4-tuple; sending it out any other one answers the peer from an address
+                            // it never probed (the misroute), and a dead fallback socket would abort
+                            // this whole flush (the stall). It is already lost: skip it and keep
+                            // draining — RFC 9002 loss recovery owns it (#395 item 4).
+                            continue
+                        }
+                        entry.channel
+                    }
                 }
             // Server egress follows the peer: send to the destination quiche chose (sendInfo.to) so
             // a migrated client's new source receives replies. Clients leave this null and rely on
@@ -1280,6 +1352,28 @@ class QuicheDriver(
             }
 
         val key = api.decodePathKey(newPath.localSockAddrAddress)
+        if (paths.containsKey(key)) {
+            // The platform bound the probe to a 4-tuple already in `paths` — with retirement in place
+            // and AlreadyInProgress answered above, that can only be the path the connection is living
+            // on (a wildcard bind resolving to the active local endpoint after connect). The old
+            // unguarded `paths[key] = entry` silently replaced the live entry, orphaning its socket,
+            // reader and recv_info with no owner (#395 item 3). Refuse instead: release what the probe
+            // acquired (no recv_info exists yet — the guard sits before recvInfoNew on purpose) and
+            // report a retryable local failure, since a later bind can land elsewhere.
+            try {
+                newPath.channel.close()
+            } catch (_: Exception) {
+            }
+            newPath.release()
+            cmd.result.complete(
+                MigrationResult.Unmoved.Failed.LocalPathUnavailable(
+                    IllegalStateException(
+                        "migration probe bound the connection's current local endpoint (${newPath.localEndpoint})",
+                    ),
+                ),
+            )
+            return
+        }
         val pathRecvInfo =
             api.recvInfoNew(wiring.peer.address, wiring.peer.length, newPath.localSockAddrAddress, newPath.localSockAddrLength)
         val entry =
@@ -1293,6 +1387,9 @@ class QuicheDriver(
                 release = newPath.release,
             )
         paths[key] = entry
+        // From the first probe onward, egress routing must decode — see [routingLive]. Never reset:
+        // an abandoned probe keeps being scheduled by quiche after `paths` is back to one entry.
+        routingLive = true
 
         val rc = api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
         if (rc < 0) {
@@ -1358,17 +1455,32 @@ class QuicheDriver(
                         continue
                     }
                     _pathState.value = QuicPathState.Validated(pending.localEndpoint)
-                    val rc =
-                        api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length, addr(seqScratch))
-                    if (rc >= 0) {
-                        activeKey = key
-                        completeMigration(
-                            pending,
-                            MigrationResult.Succeeded(pending.localEndpoint),
-                            QuicPathState.Migrated(pending.localEndpoint),
-                        )
-                    } else {
-                        completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(rc))
+                    when (val outcome = api.connMigrate(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
+                        is MigrateOutcome.Migrated -> {
+                            // Retire the path we migrated FROM, now, while the connection is live —
+                            // not at cleanup(). Order matters: `active` moves first so nothing below
+                            // (or concurrent teardown-triggered routing) can resolve to the old entry.
+                            val previous = active
+                            active = entry
+                            teardownPath(previous)
+                            // RFC 9000 §9.5: retire the DCID used on the old path. This — with the
+                            // retire-no-relink source patch — is what clears the old path's
+                            // `active_dcid_seq` inside quiche, making its slot evictable; without it
+                            // the table fills at active_conn_id_limit and the 4th probe is refused
+                            // (#395). Best-effort: a refusal (e.g. OutOfIdentifiers under the no-spare
+                            // guard) costs one pinned slot, not the migration that already happened —
+                            // the multi-migration conformance test is the systemic check.
+                            api.connRetireDcid(conn, activeDcidSeq)
+                            activeDcidSeq = outcome.dcidSeq
+                            completeMigration(
+                                pending,
+                                MigrationResult.Succeeded(pending.localEndpoint),
+                                QuicPathState.Migrated(pending.localEndpoint),
+                            )
+                        }
+                        is MigrateOutcome.Rejected -> {
+                            completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(outcome.code))
+                        }
                     }
                 }
 
@@ -1383,7 +1495,11 @@ class QuicheDriver(
 
                 QuichePathEventType.Closed -> {
                     val key = api.decodePathKey(addr(peLocalOut))
-                    paths[key]?.let { if (!it.isPrimary) teardownPath(it) }
+                    // Never tear down the path the connection lives on. quiche 0.29 only emits Closed
+                    // for paths make_room_for_new_path evicted — which are never active — so this
+                    // guard is a backstop, replacing the old `!isPrimary` (post-migration the entry
+                    // to protect is `active`, which need not be the primary).
+                    paths[key]?.let { if (it !== active) teardownPath(it) }
                 }
 
                 QuichePathEventType.New,
@@ -1426,28 +1542,36 @@ class QuicheDriver(
         pendingMigration = null
     }
 
-    /** Cancel a non-primary path's reader, close its socket, and free its recv_info + sockaddr. */
+    /**
+     * Cancel a path's reader, close its socket, and — for non-primary paths — free its recv_info and
+     * pinned sockaddr. The primary's exemption is an *ownership* fact, not a lifecycle one: its
+     * recv_info is the driver-level [recvInfo] freed once in [cleanup], and its sockaddr belongs to
+     * the connection setup's [onCleanup] — freeing either here would be a use-after-free later, but
+     * its reader and socket retire exactly like any other path's when a migration moves off it
+     * (the old `if (entry.isPrimary) return` guard is precisely how the original path could never be
+     * released, #395).
+     */
     private fun teardownPath(entry: PathEntry) {
-        if (entry.isPrimary) return
         paths.remove(entry.key)
         entry.readerJob?.cancel()
         try {
             entry.channel.close()
         } catch (_: Exception) {
         }
+        if (entry.isPrimary) return
         api.recvInfoFree(entry.recvInfo) // free recv_info before the sockaddr it references
         entry.release()
     }
 
     /**
-     * Supply spare source connection IDs to the peer once established. quiche does not
-     * auto-issue CIDs, so without this the peer has no spare destination CID to migrate
-     * to ([connAvailableDcids] stays 0). Issued once per connection (both ends), bounded
-     * by [connScidsLeft] (which reflects the peer's active_connection_id_limit).
+     * Supply spare source connection IDs to the peer while established. quiche does not auto-issue
+     * CIDs, so without this the peer has no spare destination CID to migrate to
+     * ([connAvailableDcids] stays 0). Called from [updateState] on every established wake — a no-op
+     * costing one [connScidsLeft] read when the peer-granted capacity is full — so retired capacity
+     * is replenished (RFC 9000 §5.1.1), not issued exactly once. [MAX_SPARE_SCIDS] bounds the burst
+     * per wake, [connScidsLeft] the total outstanding (the peer's active_connection_id_limit).
      */
     private fun issueSpareCids() {
-        if (spareCidsIssued) return
-        spareCidsIssued = true
         var count = 0
         while (count < MAX_SPARE_SCIDS && api.connScidsLeft(conn) > 0L) {
             val scid = generateScid(bufferFactory, random) // 20 random bytes, reset for read

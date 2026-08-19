@@ -486,9 +486,9 @@ interface QuicheApi {
     ): Int
 
     /**
-     * Migrate the connection to the given local/peer path. Returns 0 on success or a negative
-     * quiche error code. [seqOut] is the native address of a `uint64_t` buffer the implementation
-     * writes the migrated path's sequence number to.
+     * Migrate the connection to the given local/peer path (`quiche_conn_migrate`). Returns a
+     * [MigrateOutcome]: [MigrateOutcome.Migrated] with the new path's DCID sequence number on
+     * success, or [MigrateOutcome.Rejected] with the raw quiche error code on failure.
      */
     fun connMigrate(
         conn: QuicheConn,
@@ -496,8 +496,7 @@ interface QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
-        seqOut: Long,
-    ): Int
+    ): MigrateOutcome
 
     /**
      * Migrate the connection's source (local) address only. Returns 0 on success or a negative
@@ -513,6 +512,16 @@ interface QuicheApi {
 
     /** Returns the number of source connection IDs that are available to migrate to. */
     fun connAvailableDcids(conn: QuicheConn): Long
+
+    /**
+     * Retire the destination connection ID with sequence number [dcidSeq]
+     * (`quiche_conn_retire_dcid`) — RFC 9000 §9.5: after migrating, retire the CID used on the old
+     * path. Returns 0 on success or a negative quiche error code.
+     */
+    fun connRetireDcid(
+        conn: QuicheConn,
+        dcidSeq: Long,
+    ): Int
 
     /** Returns the number of source connection IDs that are still left to be provided to the peer. */
     fun connScidsLeft(conn: QuicheConn): Long

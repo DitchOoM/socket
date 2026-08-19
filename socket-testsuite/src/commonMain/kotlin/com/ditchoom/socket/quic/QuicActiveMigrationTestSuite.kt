@@ -4,11 +4,13 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -177,6 +179,85 @@ abstract class QuicActiveMigrationTestSuite {
                                 stream.echoOnce("after", readTimeout = 9.seconds),
                                 "stream did not round-trip after active migration",
                             )
+                            stream.close()
+                        }
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * **Migration must keep working past `activeConnectionIdLimit` migrations** — the mobile-reality
+     * test (issue #395). A phone on a flapping network migrates over and over on one long-lived
+     * connection; nothing in RFC 9000 caps how many times.
+     *
+     * Two defects made migration N fail while migrations 1..N-1 passed, which is why this test
+     * counts to five (past the limit of 4) instead of stopping at one:
+     *
+     *  1. The driver never retired the path it migrated from, and quiche's path table caps at
+     *     `active_conn_id_limit` (= [QuicOptions.activeConnectionIdLimit] = 4) with eviction only
+     *     possible for paths holding no DCID — so the **4th** probe was refused outright
+     *     ([MigrationResult.Unmoved.Failed.ProbeRejected]).
+     *  2. Spare source CIDs were issued exactly once per connection, so the client's RFC 9000 §9.5
+     *     retirements freed capacity the peer never refilled and a later migration found no spare
+     *     DCID at all ([MigrationResult.Unmoved.Failed.NoSpareConnectionId]).
+     *
+     * [MigrationResult.Unmoved.Failed.NoSpareConnectionId] between attempts is *transient by
+     * design* — after a migration the peer needs a round trip to replenish the CID the client just
+     * retired (RFC 9000 §5.1.1) — so the loop retries exactly that answer, bounded, and every other
+     * non-success is a hard failure naming which migration died.
+     */
+    @Test
+    fun theConnectionCanKeepMigratingPastTheConnectionIdLimit() =
+        runQuicTest(timeout = 120.seconds) {
+            wrapTestBody {
+                withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = testQuicOptions) {
+                    val serverJob =
+                        launch {
+                            connections {
+                                val stream = acceptStream()
+                                while (true) {
+                                    val data = stream.read(8.seconds)
+                                    if (data is ReadResult.Data) {
+                                        stream.write(data.buffer, 5.seconds)
+                                    } else {
+                                        break
+                                    }
+                                }
+                                stream.close()
+                            }
+                        }
+
+                    try {
+                        withQuicConnection("127.0.0.1", port, testQuicOptions, timeout = 10.seconds) {
+                            val stream = openStream()
+                            assertEquals("m0", stream.echoOnce("m0", readTimeout = 5.seconds))
+
+                            repeat(5) { i ->
+                                val migration = i + 1
+                                var result = migrate()
+                                var retries = 0
+                                while (result is MigrationResult.Unmoved.Failed.NoSpareConnectionId && retries < 40) {
+                                    delay(50.milliseconds)
+                                    result = migrate()
+                                    retries++
+                                }
+                                assertTrue(
+                                    result is MigrationResult.Succeeded,
+                                    "migration $migration of 5 failed with $result — a migrated-from path is " +
+                                        "never released (its DCID is never retired, so quiche's path table " +
+                                        "fills at activeConnectionIdLimit and refuses the probe) and/or " +
+                                        "retired CID capacity is never re-issued by the peer; a long-lived " +
+                                        "connection on a flapping network loses the ability to migrate (#395)",
+                                )
+                                assertEquals(
+                                    "m$migration",
+                                    stream.echoOnce("m$migration", readTimeout = 9.seconds),
+                                    "stream did not round-trip after migration $migration",
+                                )
+                            }
                             stream.close()
                         }
                     } finally {
