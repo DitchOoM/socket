@@ -545,6 +545,8 @@ class FfmQuicheApi private constructor(
                 StreamRecvResult.Data(raw.toInt(), fin)
             } else if (raw == QUICHE_ERR_DONE) {
                 StreamRecvResult.Done
+            } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                StreamRecvResult.Reset(errOut.get(JAVA_LONG, 0))
             } else {
                 StreamRecvResult.Error(raw.toInt())
             }

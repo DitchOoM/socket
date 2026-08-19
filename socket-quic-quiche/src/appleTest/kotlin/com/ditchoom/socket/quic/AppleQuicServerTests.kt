@@ -10,9 +10,10 @@ package com.ditchoom.socket.quic
  * **not** overridden here, because the June 2026 pivot made Apple a Cloudflare-quiche backend like
  * every other platform:
  *
- *  - `assertResetObservedByPeer` — the NW-era note says Apple surfaces a peer reset as
- *    [com.ditchoom.buffer.flow.ReadResult.Reset]; the quiche driver collapses it to EOF, and the shared
- *    default already accepts either, so the default is the correct (and honest) assertion here.
+ *  - `assertResetObservedByPeer` — the NW-era note said Apple surfaces a peer reset as
+ *    [com.ditchoom.buffer.flow.ReadResult.Reset] while the quiche driver collapsed it to EOF. Since
+ *    #398 every quiche backend reports Reset, so the shared default asserts exactly that and this
+ *    class has nothing to add.
  *  - `connectionCloseWithErrorIsObservedByPeer` — the NW-era note says a Network.framework close is a
  *    local group cancel that never puts the application error code on the wire. quiche sends a real
  *    CONNECTION_CLOSE and reads the peer's code back through `quiche_conn_peer_error`, so Apple must

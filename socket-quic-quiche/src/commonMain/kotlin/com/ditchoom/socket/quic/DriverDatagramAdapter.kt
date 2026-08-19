@@ -149,6 +149,11 @@ internal class DriverDatagramAdapter(
                     }
                     is StreamRecvResult.Done -> driver.dgramSignal.receive() // park until one arrives, then retry
                     is StreamRecvResult.Error -> return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
+                    // Datagrams have no stream to reset. Reset -> here would mean a backend bug (quiche
+                    // decoded a stream-only sentinel out of a dgram recv); ConnectionGone is the old -2
+                    // teardown sentinel. Both land on the same verdict as any other Error above.
+                    is StreamRecvResult.Reset, is StreamRecvResult.ConnectionGone ->
+                        return DatagramReadResult.Closed(reason = closedReason(QuicError.NoError))
                 }
             }
             @Suppress("UNREACHABLE_CODE")

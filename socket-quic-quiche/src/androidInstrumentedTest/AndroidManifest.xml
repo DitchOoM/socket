@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Instrumented-test manifest. WAKE_LOCK exists for DeviceHandoffProbe: a coroutine `delay` parks a
+  thread and does NOT wake the application processor from suspend, so an unattended on-device probe
+  (and the QUIC keepalive it depends on) stalls the moment the screen locks. A Doze whitelist does
+  not substitute — that governs network policy, not CPU suspend.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+</manifest>

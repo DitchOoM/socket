@@ -1,0 +1,182 @@
+package com.ditchoom.socket.quic
+
+import android.content.Context
+import android.os.Build
+import android.os.PowerManager
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.flow.ReadResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.io.File
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * SCRATCH — a hand-driven on-device probe, not part of the automated suite.
+ *
+ * Records what a **real** QUIC connection does across a **real** network handoff, which nothing in this
+ * repository has ever measured. Every migration test on every platform migrates away from a *healthy*
+ * path (`127.0.0.1` never dies), and the impairment suite drops packets in the network, where the local
+ * send still succeeds — so the exact condition this campaign exists to fix has never been reproduced.
+ *
+ * Operator walks: apartment (Wi-Fi) → elevator (signal dies) → outside (cellular) → back in (Wi-Fi).
+ *
+ * Writes a newline-delimited log to the app's external files dir; `adb pull` it afterwards. It logs
+ * rather than asserts on purpose: the recording *is* the deliverable, and a probe that threw on the
+ * first read timeout would destroy the evidence at the moment it got interesting.
+ *
+ * Run (device may be unplugged once it starts — the log lands on the device, not over adb):
+ * ```
+ * adb -s <serial> shell am instrument -w \
+ *   -e class com.ditchoom.socket.quic.DeviceHandoffProbe \
+ *   -e probeHost 100.110.209.112 -e probePort 14433 -e probeMinutes 12 \
+ *   com.ditchoom.socket.quic.quiche.test/androidx.test.runner.AndroidJUnitRunner
+ * ```
+ */
+@RunWith(AndroidJUnit4::class)
+class DeviceHandoffProbe {
+    private fun arg(
+        name: String,
+        fallback: String,
+    ): String = InstrumentationRegistry.getArguments().getString(name) ?: fallback
+
+    @Test
+    fun walkAroundAndRecordTheHandoff() {
+        val host = arg("probeHost", "100.110.209.112")
+        val port = arg("probePort", "14433").toInt()
+        val minutes = arg("probeMinutes", "12").toInt()
+
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+        val log = File(dir, "quic-handoff-probe.log")
+        val started = System.currentTimeMillis()
+
+        fun emit(line: String) {
+            val t = System.currentTimeMillis() - started
+            val rendered = "t=${t}ms $line"
+            log.appendText(rendered + "\n")
+            // logcat too, so a tethered run is watchable live: adb logcat -s QuicHandoffProbe
+            android.util.Log.i("QuicHandoffProbe", rendered)
+        }
+
+        log.writeText("")
+        emit("START device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT} target=$host:$port minutes=$minutes")
+
+        val options =
+            QuicOptions(
+                alpnProtocols = listOf("test"),
+                verifyPeer = false,
+                // Long enough that a dead path is not immediately reaped, short enough that the walk
+                // shows a death rather than a hang. Keepalive keeps an idle connection honest.
+                idleTimeout = 30.seconds,
+                keepAliveInterval = 5.seconds,
+                migration = MigrationPolicy.Automatic,
+            )
+
+        val deadline = started + minutes * 60_000L
+        var attempt = 0
+
+        // A coroutine `delay` does NOT wake the application processor from suspend, so both the echo
+        // loop and the QUIC keepalive stall the moment the screen locks — i.e. exactly when this probe
+        // is in a pocket recording the walk it exists to record. A Doze whitelist does not help: that
+        // governs network policy, not CPU suspend. Acquired WITH a timeout so a probe that dies can
+        // never pin the AP awake; that timeout is also why no finally block is needed.
+        val power = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "socket:quic-handoff-probe")
+        wakeLock.acquire(minutes * 60_000L + 120_000L)
+        emit("WAKELOCK acquired held=${wakeLock.isHeld} timeoutMs=${minutes * 60_000L + 120_000L}")
+
+        runBlocking(Dispatchers.IO) {
+            while (System.currentTimeMillis() < deadline) {
+                attempt++
+                emit("CONNECT-ATTEMPT n=$attempt")
+                try {
+                    // NOTE: this `timeout` bounds the ENTIRE scope block, not just the connect —
+                    // measured, the first run of this probe tore the connection down every 15s with
+                    // `TimeoutCancellationException: Timed out waiting for 15000 ms` while echoes were
+                    // flowing fine. So it has to cover the whole walk, not the handshake.
+                    withQuicConnection(host, port, options, timeout = (minutes + 2).minutes) {
+                        emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
+
+                        val stream = openStream()
+                        var seq = 0
+                        var lastWire = identity.wire
+
+                        // A DEDICATED collector, replacing a `pathState.value` read inside the 2s echo
+                        // loop below. Phase 4 bounds an unanswered path probe at ~3s (RFC 9000 §8.2.4),
+                        // so a whole Probing -> Failed -> Probing sequence can fall between two samples
+                        // of a 2s poll and go UNCOUNTED — which would make a working fix look broken,
+                        // because the acceptance criterion here is "N handoffs produce N migration
+                        // attempts". StateFlow still conflates, but now at collector speed.
+                        launch { pathState.collect { emit("PATH $it") } }
+
+                        while (System.currentTimeMillis() < deadline) {
+                            // A wire CID that rotates while the session id holds is exactly what a
+                            // successful migration looks like.
+                            if (identity.wire != lastWire) {
+                                emit("WIRE-CID-ROTATED session=${identity.session} wire=${identity.wire}")
+                                lastWire = identity.wire
+                            }
+
+                            seq++
+                            val sentAt = System.currentTimeMillis()
+                            val payload = "probe-$seq"
+                            try {
+                                val out = BufferFactory.Default.allocate(payload.length)
+                                out.writeString(payload, Charset.UTF8)
+                                out.resetForRead()
+                                stream.write(out, 5.seconds)
+                                val resp = stream.read(8.seconds)
+                                val rtt = System.currentTimeMillis() - sentAt
+                                if (resp is ReadResult.Data) {
+                                    val echoed = resp.buffer.readString(resp.buffer.remaining(), Charset.UTF8)
+                                    emit("ECHO-OK seq=$seq rtt=${rtt}ms match=${echoed == payload}")
+                                } else {
+                                    emit("ECHO-NO-DATA seq=$seq after=${rtt}ms result=$resp")
+                                }
+                            } catch (e: Throwable) {
+                                // The interesting case. Record and keep going — the connection may still
+                                // be alive and migrating underneath us.
+                                emit(
+                                    "ECHO-FAIL seq=$seq after=${System.currentTimeMillis() - sentAt}ms " +
+                                        "err=${e::class.simpleName} msg=${e.message}",
+                                )
+                                // ...unless it is DEAD, in which case "keep going" means spinning this
+                                // loop against a closed connection for the rest of the run. Measured: a
+                                // connection that idle-timed out at t=178s produced an unbroken wall of
+                                // ECHO-FAIL to the deadline, so an unattended multi-hour recording would
+                                // capture one death and then nothing. Leave the scope instead and let the
+                                // outer loop reconnect — a reconnect is itself data (it is precisely what
+                                // distinguishes "migrated" from "had to start over").
+                                if (e is QuicCloseException) {
+                                    emit("CONNECTION-DEAD seq=$seq — leaving scope to reconnect")
+                                    return@withQuicConnection
+                                }
+                            }
+                            delay(2_000)
+                        }
+                    }
+                    emit("SCOPE-EXITED cleanly")
+                } catch (e: Throwable) {
+                    emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+                }
+                if (System.currentTimeMillis() < deadline) {
+                    emit("RECONNECTING in 3s")
+                    delay(3_000)
+                }
+            }
+        }
+
+        if (wakeLock.isHeld) wakeLock.release()
+        emit("WAKELOCK released")
+        emit("DONE attempts=$attempt log=${log.absolutePath}")
+    }
+}

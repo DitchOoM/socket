@@ -338,8 +338,9 @@ internal object CinteropQuicheApi : QuicheApi {
                 )
             return when {
                 result > 0 -> StreamRecvResult.Data(result.toInt(), fin.value)
-                result == 0L && fin.value -> StreamRecvResult.Data(0, true)
+                result == 0L -> StreamRecvResult.Data(0, fin.value)
                 result.toInt() == QUICHE_ERR_DONE -> StreamRecvResult.Done
+                result.toInt() == QUICHE_ERR_STREAM_RESET -> StreamRecvResult.Reset(errorCode.value.toLong())
                 else -> StreamRecvResult.Error(result.toInt())
             }
         }
@@ -1053,4 +1054,6 @@ internal object CinteropQuicheApi : QuicheApi {
     override fun sockAddrV6Lo(addr: Long): Long = beLong(addr, 16)
 
     private const val QUICHE_ERR_DONE = -1
+
+    private const val QUICHE_ERR_STREAM_RESET = -16
 }

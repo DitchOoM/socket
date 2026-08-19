@@ -145,7 +145,7 @@ class StreamReadCancellationTests {
      * passed, and hand back the adapter + slot so each test can assert on what the *next* read sees.
      */
     private suspend fun CoroutineScope.afterATimedOutReadAnsweredWith(
-        delivered: StreamRecvResult.Data,
+        delivered: StreamRecvResult,
         api: StubQuicheApi,
         udpGate: CompletableDeferred<Unit>,
         driver: QuicheDriver,
@@ -339,4 +339,43 @@ class StreamReadCancellationTests {
         /** Per-read buffer size, matching the other driver suites. */
         const val BUF = 1024
     }
+
+    /**
+     * **The cancellation-edge reset (#398, the #393 shape).** A RESET_STREAM answered into a read
+     * that already timed out must still end the stream *as a reset*: quiche collects the stream once
+     * the reset is observed, so nothing re-delivers it — if the salvage path drops it, the next read
+     * re-asks quiche, gets nothing forever, and the stream dies silently on a live connection.
+     */
+    @Test
+    fun aResetDeliveredIntoATimedOutReadStillEndsTheStreamAsReset() =
+        runQuicTest {
+            val api = StubQuicheApi()
+            val udpGate = CompletableDeferred<Unit>()
+            val driver = gatedStartupDriver(api, udpGate)
+            try {
+                val (adapter, slot) =
+                    afterATimedOutReadAnsweredWith(
+                        StreamRecvResult.Reset(0x10cL),
+                        api,
+                        udpGate,
+                        driver,
+                    )
+
+                val next = adapter.readCatching(slot, 1.seconds)
+                assertIs<ReadResult.Reset>(
+                    next.getOrNull(),
+                    "the RESET_STREAM answered into the timed-out read was dropped — quiche has already " +
+                        "collected the stream, so the abort is unrecoverable and the follow-up read " +
+                        "produced ${next.describe()} (#398)",
+                )
+                assertEquals(
+                    StreamEnd.Reset(0x10cL),
+                    slot.end,
+                    "the peer's application error code must survive the cancellation edge, typed",
+                )
+            } finally {
+                if (!udpGate.isCompleted) udpGate.complete(Unit)
+                driver.destroy()
+            }
+        }
 }
