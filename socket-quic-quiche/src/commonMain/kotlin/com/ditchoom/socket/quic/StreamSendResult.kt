@@ -15,5 +15,5 @@ package com.ditchoom.socket.quic
  */
 class StreamSendResult(
     val result: Int,
-    val errorCode: Long? = null,
+    val errorCode: QuicAppErrorCode? = null,
 )

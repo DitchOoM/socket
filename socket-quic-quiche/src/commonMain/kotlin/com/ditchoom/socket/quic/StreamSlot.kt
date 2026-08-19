@@ -77,6 +77,6 @@ sealed interface StreamEnd {
 
     /** Peer RESET_STREAM (RFC 9000 §19.4); [applicationErrorCode] is the peer's code. */
     data class Reset(
-        val applicationErrorCode: Long,
+        val applicationErrorCode: QuicAppErrorCode,
     ) : StreamEnd
 }

@@ -355,7 +355,7 @@ class StreamReadCancellationTests {
             try {
                 val (adapter, slot) =
                     afterATimedOutReadAnsweredWith(
-                        StreamRecvResult.Reset(0x10cL),
+                        StreamRecvResult.Reset(QuicAppErrorCode(0x10c)),
                         api,
                         udpGate,
                         driver,
@@ -369,7 +369,7 @@ class StreamReadCancellationTests {
                         "produced ${next.describe()} (#398)",
                 )
                 assertEquals(
-                    StreamEnd.Reset(0x10cL),
+                    StreamEnd.Reset(QuicAppErrorCode(0x10c)),
                     slot.end,
                     "the peer's application error code must survive the cancellation edge, typed",
                 )

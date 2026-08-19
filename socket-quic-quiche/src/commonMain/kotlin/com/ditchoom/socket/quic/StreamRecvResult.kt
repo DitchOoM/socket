@@ -30,7 +30,7 @@ sealed interface StreamRecvResult {
      * [applicationErrorCode] is the peer's code from `out_error_code`.
      */
     class Reset(
-        val applicationErrorCode: Long,
+        val applicationErrorCode: QuicAppErrorCode,
     ) : StreamRecvResult
 
     /**

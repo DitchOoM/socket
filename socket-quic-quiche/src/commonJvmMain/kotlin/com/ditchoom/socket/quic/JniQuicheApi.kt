@@ -209,7 +209,7 @@ object JniQuicheApi : QuicheApi {
                         // address, not the buffer object); read them back big-endian by absolute index.
                         var code = 0L
                         for (i in 0 until 8) code = (code shl 8) or (scratch[i].toLong() and 0xFF)
-                        StreamRecvResult.Reset(code)
+                        StreamRecvResult.Reset(QuicAppErrorCode(code))
                     }
                     else -> StreamRecvResult.Error(raw.toInt())
                 }
@@ -242,7 +242,7 @@ object JniQuicheApi : QuicheApi {
                     // cursor. Read them back big-endian by absolute index — no position bookkeeping needed.
                     var v = 0L
                     for (i in 0 until 8) v = (v shl 8) or (scratch[i].toLong() and 0xFF)
-                    v
+                    QuicAppErrorCode(v)
                 } else {
                     null
                 }

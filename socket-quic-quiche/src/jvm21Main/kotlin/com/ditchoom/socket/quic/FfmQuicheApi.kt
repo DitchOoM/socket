@@ -546,7 +546,7 @@ class FfmQuicheApi private constructor(
             } else if (raw == QUICHE_ERR_DONE) {
                 StreamRecvResult.Done
             } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
-                StreamRecvResult.Reset(errOut.get(JAVA_LONG, 0))
+                StreamRecvResult.Reset(QuicAppErrorCode(errOut.get(JAVA_LONG, 0)))
             } else {
                 StreamRecvResult.Error(raw.toInt())
             }
@@ -565,7 +565,7 @@ class FfmQuicheApi private constructor(
             // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET.
             val errorCode =
                 if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
-                    errOut.get(JAVA_LONG, 0)
+                    QuicAppErrorCode(errOut.get(JAVA_LONG, 0))
                 } else {
                     null
                 }

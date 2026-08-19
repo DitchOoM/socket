@@ -340,7 +340,7 @@ internal object CinteropQuicheApi : QuicheApi {
                 result > 0 -> StreamRecvResult.Data(result.toInt(), fin.value)
                 result == 0L -> StreamRecvResult.Data(0, fin.value)
                 result.toInt() == QUICHE_ERR_DONE -> StreamRecvResult.Done
-                result.toInt() == QUICHE_ERR_STREAM_RESET -> StreamRecvResult.Reset(errorCode.value.toLong())
+                result.toInt() == QUICHE_ERR_STREAM_RESET -> StreamRecvResult.Reset(QuicAppErrorCode(errorCode.value.toLong()))
                 else -> StreamRecvResult.Error(result.toInt())
             }
         }
@@ -367,7 +367,7 @@ internal object CinteropQuicheApi : QuicheApi {
             // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET.
             val peerCode =
                 if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
-                    errorCode.value.toLong()
+                    QuicAppErrorCode(errorCode.value.toLong())
                 } else {
                     null
                 }

@@ -37,7 +37,7 @@ import kotlin.time.Duration.Companion.seconds
 class StreamResetReadTests {
     private val bufferFactory = BufferFactory.deterministic()
 
-    private val resetCode = 0x10cL // HTTP/3 REQUEST_CANCELLED — the code the E2E suite also uses
+    private val resetCode = QuicAppErrorCode(0x10c) // HTTP/3 REQUEST_CANCELLED — the code the E2E suite also uses
 
     private fun createTestDriver(api: QuicheApi): QuicheDriver =
         QuicheDriver(

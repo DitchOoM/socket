@@ -506,7 +506,7 @@ abstract class QuicServerTestSuite {
                             // The peer's application error code must round-trip via quiche's out_error_code
                             // on every quiche backend (FFM on JDK 21, JNI on JDK < 21, cinterop on K/N).
                             assertEquals(
-                                0x10cL,
+                                QuicAppErrorCode(0x10c),
                                 streamError.abort.applicationErrorCode,
                                 "the peer STOP_SENDING/RESET application error code must be surfaced",
                             )

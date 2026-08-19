@@ -12,26 +12,26 @@ package com.ditchoom.socket.quic
  * JNI on JDK < 21 / Android, cinterop on Linux and Apple K/N. quiche fills the out-param (0 if the
  * peer used 0) only on STREAM_STOPPED / STREAM_RESET.
  *
- * The code is a 62-bit QUIC application error code (RFC 9000 §19.4-19.5 varint), hence [Long]. Higher
- * layers that speak a narrower space (e.g. WebTransport's 32-bit code) decode it themselves.
+ * The code is a typed [QuicAppErrorCode] (a 62-bit RFC 9000 §19.4-19.5 varint). Higher layers that
+ * speak a narrower space (e.g. WebTransport's 32-bit code) decode its raw value themselves.
  */
 sealed interface QuicStreamAbort {
     /** The peer's QUIC application error code (RFC 9000 §19.4-19.5). */
-    val applicationErrorCode: Long
+    val applicationErrorCode: QuicAppErrorCode
 
     /** Peer sent STOP_SENDING (RFC 9000 §19.5): it no longer wants what we're sending. */
     data class StopSending(
-        override val applicationErrorCode: Long,
+        override val applicationErrorCode: QuicAppErrorCode,
     ) : QuicStreamAbort
 
     /** Peer sent RESET_STREAM (RFC 9000 §19.4): it abruptly ended its send side. */
     data class ResetStream(
-        override val applicationErrorCode: Long,
+        override val applicationErrorCode: QuicAppErrorCode,
     ) : QuicStreamAbort
 
     /** The backend signalled a stream abort but couldn't resolve the direction. */
     data class Unspecified(
-        override val applicationErrorCode: Long,
+        override val applicationErrorCode: QuicAppErrorCode,
     ) : QuicStreamAbort
 }
 

@@ -36,7 +36,7 @@ class WebTransportStreamException internal constructor(
  * shared reset-observation seam for the WebTransport stream wrappers below.
  */
 internal fun QuicStreamException.toWebTransport(): WebTransportStreamException {
-    val wtCode = WebTransportWire.toWebTransportErrorCode(abort.applicationErrorCode).toUInt()
+    val wtCode = WebTransportWire.toWebTransportErrorCode(abort.applicationErrorCode.value).toUInt()
     return WebTransportStreamException(wtCode, "WebTransport stream $streamId aborted by peer: ${abort::class.simpleName}", this)
 }
 
