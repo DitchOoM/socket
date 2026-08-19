@@ -20,9 +20,9 @@ sealed interface StreamRecvResult {
     /** No data available yet (QUICHE_ERR_DONE). Caller should wait for a data signal and retry. */
     data object Done : StreamRecvResult
 
-    /** Stream error (reset, etc.). [code] is the quiche error code. */
+    /** Any other quiche stream-recv error. [code] carries the typed quiche code. */
     class Error(
-        val code: Int,
+        val code: QuicheErrorCode,
     ) : StreamRecvResult
 
     /**

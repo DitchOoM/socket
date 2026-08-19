@@ -548,7 +548,7 @@ class FfmQuicheApi private constructor(
             } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
                 StreamRecvResult.Reset(QuicAppErrorCode(errOut.get(JAVA_LONG, 0)))
             } else {
-                StreamRecvResult.Error(raw.toInt())
+                StreamRecvResult.Error(QuicheErrorCode(raw.toInt()))
             }
         }
 
@@ -803,7 +803,7 @@ class FfmQuicheApi private constructor(
         return when {
             raw >= 0 -> StreamRecvResult.Data(raw.toInt(), false)
             raw == QUICHE_ERR_DONE -> StreamRecvResult.Done
-            else -> StreamRecvResult.Error(raw.toInt())
+            else -> StreamRecvResult.Error(QuicheErrorCode(raw.toInt()))
         }
     }
 
@@ -904,13 +904,13 @@ class FfmQuicheApi private constructor(
                     peerLen,
                     seqOut,
                 ) as Int
-            if (rc >= 0) MigrateOutcome.Migrated(seqOut.get(JAVA_LONG, 0)) else MigrateOutcome.Rejected(rc)
+            if (rc >= 0) MigrateOutcome.Migrated(DcidSeq(seqOut.get(JAVA_LONG, 0))) else MigrateOutcome.Rejected(QuicheErrorCode(rc))
         }
 
     override fun connRetireDcid(
         conn: QuicheConn,
-        dcidSeq: Long,
-    ): Int = hConnRetireDcid.invokeExact(seg(conn.handle), dcidSeq) as Int
+        dcidSeq: DcidSeq,
+    ): Int = hConnRetireDcid.invokeExact(seg(conn.handle), dcidSeq.value) as Int
 
     override fun connMigrateSource(
         conn: QuicheConn,

@@ -520,7 +520,7 @@ interface QuicheApi {
      */
     fun connRetireDcid(
         conn: QuicheConn,
-        dcidSeq: Long,
+        dcidSeq: DcidSeq,
     ): Int
 
     /** Returns the number of source connection IDs that are still left to be provided to the peer. */

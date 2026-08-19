@@ -465,8 +465,8 @@ class QuicheDriver(
     private class ActivePath(
         /** [primary] until the first successful migration, then whatever the latest `Validated` arm switched to. */
         val entry: PathEntry,
-        /** 0 at start (the initial CID's sequence, RFC 9000 §5.1.1), then what each successful `connMigrate` reports. */
-        val dcidSeq: Long,
+        /** [DcidSeq] 0 at start (the initial CID, RFC 9000 §5.1.1), then what each successful `connMigrate` reports. */
+        val dcidSeq: DcidSeq,
     )
 
     /**
@@ -474,7 +474,7 @@ class QuicheDriver(
      * [PacketSource.Unattributed] recv_info) names this instead: after the primary is retired,
      * [primary] points at a closed socket and a recv_info the connection no longer uses.
      */
-    private var active = ActivePath(primary, dcidSeq = 0)
+    private var active = ActivePath(primary, dcidSeq = DcidSeq(0))
 
     /**
      * True once any probe path has ever opened; never true before, never false after. While false,
@@ -1509,7 +1509,7 @@ class QuicheDriver(
                             )
                         }
                         is MigrateOutcome.Rejected -> {
-                            completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(outcome.code))
+                            completeMigration(pending, MigrationResult.Unmoved.Failed.SwitchRejected(outcome.code.raw))
                         }
                     }
                 }

@@ -341,7 +341,7 @@ internal object CinteropQuicheApi : QuicheApi {
                 result == 0L -> StreamRecvResult.Data(0, fin.value)
                 result.toInt() == QUICHE_ERR_DONE -> StreamRecvResult.Done
                 result.toInt() == QUICHE_ERR_STREAM_RESET -> StreamRecvResult.Reset(QuicAppErrorCode(errorCode.value.toLong()))
-                else -> StreamRecvResult.Error(result.toInt())
+                else -> StreamRecvResult.Error(QuicheErrorCode(result.toInt()))
             }
         }
     }
@@ -625,7 +625,7 @@ internal object CinteropQuicheApi : QuicheApi {
         return when {
             result >= 0 -> StreamRecvResult.Data(result.toInt(), false)
             result.toInt() == QUICHE_ERR_DONE -> StreamRecvResult.Done
-            else -> StreamRecvResult.Error(result.toInt())
+            else -> StreamRecvResult.Error(QuicheErrorCode(result.toInt()))
         }
     }
 
@@ -733,14 +733,14 @@ internal object CinteropQuicheApi : QuicheApi {
                     peerLen.convert(),
                     seq.ptr,
                 )
-            return if (rc >= 0) MigrateOutcome.Migrated(seq.value.toLong()) else MigrateOutcome.Rejected(rc)
+            return if (rc >= 0) MigrateOutcome.Migrated(DcidSeq(seq.value.toLong())) else MigrateOutcome.Rejected(QuicheErrorCode(rc))
         }
     }
 
     override fun connRetireDcid(
         conn: QuicheConn,
-        dcidSeq: Long,
-    ): Int = quiche_conn_retire_dcid(conn.handle.toCPointer()!!, dcidSeq.toULong())
+        dcidSeq: DcidSeq,
+    ): Int = quiche_conn_retire_dcid(conn.handle.toCPointer()!!, dcidSeq.value.toULong())
 
     override fun connMigrateSource(
         conn: QuicheConn,

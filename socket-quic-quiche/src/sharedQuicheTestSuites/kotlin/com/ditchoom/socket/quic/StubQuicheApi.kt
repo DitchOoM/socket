@@ -571,7 +571,7 @@ internal class StubQuicheApi : QuicheApi {
      */
     val connMigrateOutcomes: ArrayDeque<MigrateOutcome> = ArrayDeque()
 
-    @Volatile var connMigrateOutcome: MigrateOutcome = MigrateOutcome.Migrated(1L)
+    @Volatile var connMigrateOutcome: MigrateOutcome = MigrateOutcome.Migrated(DcidSeq(1L))
 
     override fun connMigrate(
         conn: QuicheConn,
@@ -582,13 +582,13 @@ internal class StubQuicheApi : QuicheApi {
     ): MigrateOutcome = connMigrateOutcomes.removeFirstOrNull() ?: connMigrateOutcome
 
     /** Records every [connRetireDcid] call's [dcidSeq], so tests can assert what the driver retired. */
-    val retiredDcids: MutableList<Long> = mutableListOf()
+    val retiredDcids: MutableList<DcidSeq> = mutableListOf()
 
     @Volatile var connRetireDcidResult: Int = 0
 
     override fun connRetireDcid(
         conn: QuicheConn,
-        dcidSeq: Long,
+        dcidSeq: DcidSeq,
     ): Int {
         retiredDcids += dcidSeq
         return connRetireDcidResult

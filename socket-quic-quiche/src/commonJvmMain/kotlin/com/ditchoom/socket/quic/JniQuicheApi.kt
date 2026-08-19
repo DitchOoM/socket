@@ -211,7 +211,7 @@ object JniQuicheApi : QuicheApi {
                         for (i in 0 until 8) code = (code shl 8) or (scratch[i].toLong() and 0xFF)
                         StreamRecvResult.Reset(QuicAppErrorCode(code))
                     }
-                    else -> StreamRecvResult.Error(raw.toInt())
+                    else -> StreamRecvResult.Error(QuicheErrorCode(raw.toInt()))
                 }
             }
         } finally {
@@ -308,7 +308,7 @@ object JniQuicheApi : QuicheApi {
         return when {
             raw >= 0 -> StreamRecvResult.Data(raw.toInt(), false)
             raw == QUICHE_ERR_DONE -> StreamRecvResult.Done
-            else -> StreamRecvResult.Error(raw.toInt())
+            else -> StreamRecvResult.Error(QuicheErrorCode(raw.toInt()))
         }
     }
 
@@ -470,13 +470,13 @@ object JniQuicheApi : QuicheApi {
         // JNI packs the result: >= 0 is the migrated path's DCID sequence number, < 0 is a quiche
         // error code. Real DCID sequence numbers are tiny, so this is unambiguous in practice.
         val raw = nConnMigrate(conn.handle, localAddr, localLen, peerAddr, peerLen)
-        return if (raw >= 0) MigrateOutcome.Migrated(raw) else MigrateOutcome.Rejected(raw.toInt())
+        return if (raw >= 0) MigrateOutcome.Migrated(DcidSeq(raw)) else MigrateOutcome.Rejected(QuicheErrorCode(raw.toInt()))
     }
 
     override fun connRetireDcid(
         conn: QuicheConn,
-        dcidSeq: Long,
-    ): Int = nConnRetireDcid(conn.handle, dcidSeq)
+        dcidSeq: DcidSeq,
+    ): Int = nConnRetireDcid(conn.handle, dcidSeq.value)
 
     override fun connMigrateSource(
         conn: QuicheConn,

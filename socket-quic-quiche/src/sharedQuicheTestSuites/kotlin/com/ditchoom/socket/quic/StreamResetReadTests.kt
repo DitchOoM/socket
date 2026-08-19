@@ -106,7 +106,7 @@ class StreamResetReadTests {
         runQuicTest {
             val api = StubQuicheApi()
             api.streamRecvSequence.addLast(StreamRecvResult.Reset(resetCode))
-            api.streamRecvResult = StreamRecvResult.Error(QuicheDriver.QUICHE_ERR_INVALID_STREAM_STATE)
+            api.streamRecvResult = StreamRecvResult.Error(QuicheErrorCode(QuicheDriver.QUICHE_ERR_INVALID_STREAM_STATE))
             val driver = createTestDriver(api)
             driver.start(this)
             try {

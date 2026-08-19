@@ -257,7 +257,7 @@ class PathRetirementTests {
                         "onCleanup, and an early free is a use-after-free for every later RecvPacket fallback",
                 )
                 assertEquals(
-                    listOf(0L),
+                    listOf(DcidSeq(0L)),
                     f.stub.retiredDcids,
                     "the DCID used on the migrated-from path (initial sequence 0) was never retired — " +
                         "RFC 9000 §9.5, and the reason quiche's path table pins the old path forever",
@@ -277,8 +277,8 @@ class PathRetirementTests {
     fun aSecondMigrationTearsDownTheFirstMigratedToPathAndItsReader() =
         runTest {
             val f = Fixture()
-            f.stub.connMigrateOutcomes += MigrateOutcome.Migrated(5L)
-            f.stub.connMigrateOutcomes += MigrateOutcome.Migrated(9L)
+            f.stub.connMigrateOutcomes += MigrateOutcome.Migrated(DcidSeq(5L))
+            f.stub.connMigrateOutcomes += MigrateOutcome.Migrated(DcidSeq(9L))
             f.driver.start(this)
             try {
                 runCurrent()
@@ -316,7 +316,7 @@ class PathRetirementTests {
                 )
                 assertEquals(1, f.factory.releases, "the retired path's pinned sockaddr was never released")
                 assertEquals(
-                    listOf(0L, 5L),
+                    listOf(DcidSeq(0L), DcidSeq(5L)),
                     f.stub.retiredDcids,
                     "the second retirement must name the DCID sequence the first connMigrate reported (5) — " +
                         "anything else retires a CID the old path never used and leaves the real one pinned",

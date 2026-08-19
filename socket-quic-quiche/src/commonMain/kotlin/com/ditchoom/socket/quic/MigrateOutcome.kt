@@ -10,13 +10,13 @@ package com.ditchoom.socket.quic
  * format into this hierarchy, so the driver never deals with raw packed values.
  */
 sealed interface MigrateOutcome {
-    /** quiche accepted the switch; [dcidSeq] is the DCID sequence number now active on the new path. */
+    /** quiche accepted the switch; [dcidSeq] is the DCID sequence now active on the new path. */
     class Migrated(
-        val dcidSeq: Long,
+        val dcidSeq: DcidSeq,
     ) : MigrateOutcome
 
-    /** quiche refused (`quiche_conn_migrate` < 0). [code] is the raw quiche error. */
+    /** quiche refused (`quiche_conn_migrate` < 0). [code] carries the typed quiche error. */
     class Rejected(
-        val code: Int,
+        val code: QuicheErrorCode,
     ) : MigrateOutcome
 }

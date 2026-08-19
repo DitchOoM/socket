@@ -117,7 +117,7 @@ internal class CallerClockQuicheApi(
 
     override fun connRetireDcid(
         conn: QuicheConn,
-        dcidSeq: Long,
+        dcidSeq: DcidSeq,
     ): Int = synced { delegate.connRetireDcid(conn, dcidSeq) }
 
     override fun connMigrateSource(
