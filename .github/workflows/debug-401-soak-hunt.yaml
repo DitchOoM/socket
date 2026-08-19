@@ -40,6 +40,9 @@ jobs:
           - { shard: 6, mode: full }
     env:
       MALLOC_PERTURB_: "213"
+      # linux-quiche-env enforces the #329 per-job version pin. A fixed dummy is exactly right
+      # here: nothing publishes, and it keeps the hunt hermetic (no live Central metadata fetch).
+      ORG_GRADLE_PROJECT_version: "0.0.0-hunt"
     steps:
       - uses: actions/checkout@v7
 
