@@ -223,7 +223,12 @@ class QuicTraceRecorder(
 
     // Project the quiche-side path/stats types onto the neutral trace model in `:socket-quic` at the
     // two choke points that carry them — so `PathKey`/`QuicPathStats` stay in this module untouched.
-    private fun PathKey.toTracePath(): TracePath = TracePath(family, port, hi, lo)
+    private fun PathKey.toTracePath(): TracePath =
+        when (this) {
+            is PathKey.V4 -> TracePath(family = 4, port = port, hi = 0L, lo = addr)
+            is PathKey.V6 -> TracePath(family = 6, port = port, hi = hi, lo = lo)
+            PathKey.Undecoded -> TracePath(family = 0, port = 0, hi = 0L, lo = 0L)
+        }
 
     private fun QuicPathStats.toTracePathStats(): TracePathStats =
         TracePathStats(

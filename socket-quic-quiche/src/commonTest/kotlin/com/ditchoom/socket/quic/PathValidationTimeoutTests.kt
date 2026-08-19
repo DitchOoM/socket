@@ -96,7 +96,7 @@ class PathValidationTimeoutTests {
      * deliberately is not.
      *
      * Each `openPath` mints a **distinct** synthetic sockaddr and registers it with [api], so the probed
-     * path decodes to a [PathKey] of its own. Without that every path collides on `PathKey(0,0,0,0)` and
+     * path decodes to a [PathKey] of its own. Without that every path collides on `PathKey.Undecoded` and
      * the probed entry silently replaces the primary in the driver's routing map, which would make the
      * teardown assertions measure the wrong entry.
      */

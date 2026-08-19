@@ -99,33 +99,36 @@ internal fun InetSocketAddress.toNativeSockAddr(bufferFactory: BufferFactory): N
  * `lo`/`hi` hold the address bytes in canonical network order interpreted
  * big-endian (see the JNI/FFM/cinterop decode), so the high byte is emitted
  * first. Used by the server egress path to turn `sendInfo.to` into a NIO send
- * destination. Returns null for the empty/unknown family (PathKey family 0).
+ * destination. Returns null for [PathKey.Undecoded] (no address to reconstruct).
  */
-internal fun PathKey.toInetSocketAddress(): InetSocketAddress? {
-    val bytes =
-        when (family) {
-            // java.net.InetAddress requires a ByteArray at this boundary; the 4/16-byte
-            // address is tiny and built once per distinct destination (cached upstream).
-            4 ->
-                @Suppress("NoByteArrayInProd") // java.net.InetAddress.getByAddress boundary
+internal fun PathKey.toInetSocketAddress(): InetSocketAddress? =
+    // java.net.InetAddress requires a ByteArray at this boundary; the 4/16-byte
+    // address is tiny and built once per distinct destination (cached upstream).
+    when (this) {
+        is PathKey.V4 -> {
+            @Suppress("NoByteArrayInProd") // java.net.InetAddress.getByAddress boundary
+            val bytes =
                 byteArrayOf(
-                    (lo ushr 24).toByte(),
-                    (lo ushr 16).toByte(),
-                    (lo ushr 8).toByte(),
-                    lo.toByte(),
+                    (addr ushr 24).toByte(),
+                    (addr ushr 16).toByte(),
+                    (addr ushr 8).toByte(),
+                    addr.toByte(),
                 )
-            6 ->
-                @Suppress("NoByteArrayInProd") // java.net.InetAddress.getByAddress boundary
+            InetSocketAddress(java.net.InetAddress.getByAddress(bytes), port)
+        }
+        is PathKey.V6 -> {
+            @Suppress("NoByteArrayInProd") // java.net.InetAddress.getByAddress boundary
+            val bytes =
                 ByteArray(16).also { b ->
                     for (i in 0 until 8) {
                         b[i] = (hi ushr (8 * (7 - i))).toByte()
                         b[i + 8] = (lo ushr (8 * (7 - i))).toByte()
                     }
                 }
-            else -> return null
+            InetSocketAddress(java.net.InetAddress.getByAddress(bytes), port)
         }
-    return InetSocketAddress(java.net.InetAddress.getByAddress(bytes), port)
-}
+        PathKey.Undecoded -> null
+    }
 
 private val IS_BSD: Boolean by lazy {
     System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") || it.contains("bsd") }

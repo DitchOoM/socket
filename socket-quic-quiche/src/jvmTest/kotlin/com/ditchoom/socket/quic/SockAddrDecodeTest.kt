@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Default
 import java.net.InetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 
 /**
@@ -35,14 +36,14 @@ class SockAddrDecodeTest {
     @Test
     fun decodesIpv4FamilyAndPort() {
         val k = key("127.0.0.1", 4433)
-        assertEquals(4, k.family)
+        assertIs<PathKey.V4>(k)
         assertEquals(4433, k.port)
     }
 
     @Test
     fun decodesIpv6FamilyAndPort() {
         val k = key("::1", 8443)
-        assertEquals(6, k.family)
+        assertIs<PathKey.V6>(k)
         assertEquals(8443, k.port)
     }
 

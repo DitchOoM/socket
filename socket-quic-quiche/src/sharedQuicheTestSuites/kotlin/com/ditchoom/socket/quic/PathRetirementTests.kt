@@ -464,10 +464,10 @@ class PathRetirementTests {
                 f.validate(1)
                 runCurrent()
                 result.assertSucceeded()
-                val retiredKey = PathKey(family = 4, port = primaryPort, hi = 0L, lo = STUB_LOOPBACK_V4)
+                val retiredKey = PathKey.V4(port = primaryPort, addr = STUB_LOOPBACK_V4)
 
                 // Anti-vacuity: a packet tagged with the LIVE path's key must reach quiche.
-                val liveKey = PathKey(family = 4, port = probePortBase + 1, hi = 0L, lo = STUB_LOOPBACK_V4)
+                val liveKey = PathKey.V4(port = probePortBase + 1, addr = STUB_LOOPBACK_V4)
                 sendPacket(f, liveKey)
                 runCurrent()
                 assertEquals(1, recvs, "a live-path packet must reach connRecv — the test harness is broken")

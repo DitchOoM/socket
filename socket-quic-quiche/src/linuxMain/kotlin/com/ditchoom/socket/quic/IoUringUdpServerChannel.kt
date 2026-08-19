@@ -49,8 +49,8 @@ internal fun PathKey.toSockAddrBuffer(bufferFactory: BufferFactory): Pair<Platfo
         buf.resetForRead()
         return buf to size
     }
-    return when (family) {
-        4 ->
+    return when (this) {
+        is PathKey.V4 ->
             build(
                 sizeOf<sockaddr_in>().toInt(),
                 listOf(
@@ -59,13 +59,13 @@ internal fun PathKey.toSockAddrBuffer(bufferFactory: BufferFactory): Pair<Platfo
                     (port shr 8) and 0xFF,
                     port and 0xFF, // sin_port (network order)
                     // sin_addr (network order)
-                    ((lo shr 24) and 0xFF).toInt(),
-                    ((lo shr 16) and 0xFF).toInt(),
-                    ((lo shr 8) and 0xFF).toInt(),
-                    (lo and 0xFF).toInt(),
+                    ((addr shr 24) and 0xFF).toInt(),
+                    ((addr shr 16) and 0xFF).toInt(),
+                    ((addr shr 8) and 0xFF).toInt(),
+                    (addr and 0xFF).toInt(),
                 ),
             )
-        6 ->
+        is PathKey.V6 ->
             build(
                 sizeOf<sockaddr_in6>().toInt(),
                 buildList {
@@ -78,7 +78,7 @@ internal fun PathKey.toSockAddrBuffer(bufferFactory: BufferFactory): Pair<Platfo
                     for (i in 0 until 8) add(((lo shr (56 - 8 * i)) and 0xFF).toInt()) // sin6_addr low 8
                 },
             )
-        else -> null
+        PathKey.Undecoded -> null
     }
 }
 
@@ -294,7 +294,7 @@ internal class IoUringServerConnectionUdpChannel(
     ) {
         // [dest] is quiche's sendInfo.to: after a peer migrates, replies must follow it to its new
         // source. Reconstruct that sockaddr (cached) and send there; with no dest, use the fixed peer.
-        if (dest != null && dest.family != 0) {
+        if (dest != null && dest !is PathKey.Undecoded) {
             if (dest != lastDestKey) {
                 lastDestBuf?.freeNativeMemory()
                 val reconstructed = dest.toSockAddrBuffer(bufferFactory)

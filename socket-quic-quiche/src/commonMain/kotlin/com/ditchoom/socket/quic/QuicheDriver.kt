@@ -406,7 +406,7 @@ class QuicheDriver(
     private fun tapChannel(
         channel: UdpChannel,
         key: PathKey,
-    ): UdpChannel = recorder?.wrap(channel, key.takeIf { it.family != 0 }) ?: channel
+    ): UdpChannel = recorder?.wrap(channel, key.takeIf { it !is PathKey.Undecoded }) ?: channel
 
     // The primary path's local sockaddr, or null when this driver has no migration wiring. Reading it
     // through the sealed capability is what retires the `0L`-means-absent sentinel: in the Supported
@@ -422,7 +422,7 @@ class QuicheDriver(
         }
 
     private val primaryKey =
-        primaryLocal?.let { api.decodePathKey(it.address) } ?: PathKey(0, 0, 0L, 0L)
+        primaryLocal?.let { api.decodePathKey(it.address) } ?: PathKey.Undecoded
 
     private val primary =
         PathEntry(
@@ -494,7 +494,18 @@ class QuicheDriver(
      */
     private val routingLive: Boolean get() = _pathState.value != QuicPathState.Original
 
-    private var pendingMigration: PendingMigration? = null
+    /**
+     * Whether a migration is in flight — [MigrationSlot.Idle] when not, [PendingMigration] itself
+     * when so. Replaces a nullable `PendingMigration?`, where `null` meant "no migration in flight":
+     * a nullable carrying meaning the type system could not check, and every reader had to remember
+     * the convention rather than have the compiler enforce it. `Idle` carries no fields because there
+     * is nothing to carry — the in-flight case *is* [PendingMigration], not a wrapper around it.
+     */
+    private sealed interface MigrationSlot {
+        data object Idle : MigrationSlot
+    }
+
+    private var migrationSlot: MigrationSlot = MigrationSlot.Idle
 
     private val _pathState = MutableStateFlow<QuicPathState>(QuicPathState.Original)
     val pathState: StateFlow<QuicPathState> = _pathState
@@ -542,7 +553,7 @@ class QuicheDriver(
         val result: CompletableDeferred<MigrationResult>,
         /** RFC 9000 §8.2.4 abandon budget, computed once at arm time by [pathValidationBudget]. */
         private val budget: Duration,
-    ) {
+    ) : MigrationSlot {
         private val armedAt: TimeMark = clock.markNow()
 
         /** Time left before validation must be abandoned; [Duration.ZERO] once due. Feeds the loop's `wait`. */
@@ -663,7 +674,11 @@ class QuicheDriver(
                 // RFC 9000 §8.2.4's abandon timer for an in-flight PATH_CHALLENGE. Null whenever no
                 // migration is armed, so a connection that never migrates arms exactly the timers it
                 // always did.
-                val probeRemaining = pendingMigration?.validationRemaining()
+                val probeRemaining =
+                    when (val slot = migrationSlot) {
+                        MigrationSlot.Idle -> null
+                        is PendingMigration -> slot.validationRemaining()
+                    }
                 // Three deadlines, one wake: whichever is soonest decides what the timer branch below
                 // does. A `when` over the 2×2 null matrix this replaced does not survive a third term.
                 val wait = listOfNotNull(connTimeout, keepAliveRemaining, probeRemaining).minOrNull()
@@ -1121,24 +1136,26 @@ class QuicheDriver(
                 if (!routingLive) {
                     primary.channel
                 } else {
-                    val from = api.decodePathKey(api.sendInfoFromAddr(sendInfo))
-                    if (from.family == 0) {
-                        // A backend that exposes no egress address (test doubles decode nothing);
-                        // quiche schedules non-probing data on the active path, so honour that.
-                        active.entry.channel
-                    } else {
-                        val entry = paths[from]
-                        if (entry == null) {
-                            // quiche scheduled this datagram on a path the driver has torn down — an
-                            // abandoned probe re-arming its PATH_CHALLENGE for up to 3 PTOs, or a
-                            // just-retired path draining its last frames. There is no socket for that
-                            // 4-tuple; sending it out any other one answers the peer from an address
-                            // it never probed (the misroute), and a dead fallback socket would abort
-                            // this whole flush (the stall). It is already lost: skip it and keep
-                            // draining — RFC 9002 loss recovery owns it (#395 item 4).
-                            continue
+                    when (val from = api.decodePathKey(api.sendInfoFromAddr(sendInfo))) {
+                        PathKey.Undecoded -> {
+                            // A backend that exposes no egress address (test doubles decode nothing);
+                            // quiche schedules non-probing data on the active path, so honour that.
+                            active.entry.channel
                         }
-                        entry.channel
+                        is PathKey.V4, is PathKey.V6 -> {
+                            val entry = paths[from]
+                            if (entry == null) {
+                                // quiche scheduled this datagram on a path the driver has torn down — an
+                                // abandoned probe re-arming its PATH_CHALLENGE for up to 3 PTOs, or a
+                                // just-retired path draining its last frames. There is no socket for that
+                                // 4-tuple; sending it out any other one answers the peer from an address
+                                // it never probed (the misroute), and a dead fallback socket would abort
+                                // this whole flush (the stall). It is already lost: skip it and keep
+                                // draining — RFC 9002 loss recovery owns it (#395 item 4).
+                                continue
+                            }
+                            entry.channel
+                        }
                     }
                 }
             // Server egress follows the peer: send to the destination quiche chose (sendInfo.to) so
@@ -1279,7 +1296,7 @@ class QuicheDriver(
     }
 
     /**
-     * Open a new local path, probe it, and arm [pendingMigration]; [drainPathEvents]
+     * Open a new local path, probe it, and arm [migrationSlot]; [drainPathEvents]
      * completes the switch once the peer validates the path. Suspends to open the socket.
      */
     private suspend fun handleMigrate(cmd: QuicheCmd.Migrate) {
@@ -1332,9 +1349,12 @@ class QuicheDriver(
             cmd.result.complete(MigrationResult.Unmoved.Failed.EndpointNotSelectable)
             return
         }
-        if (pendingMigration != null) {
-            cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
-            return
+        when (migrationSlot) {
+            is PendingMigration -> {
+                cmd.result.complete(MigrationResult.Unmoved.Failed.AlreadyInProgress)
+                return
+            }
+            MigrationSlot.Idle -> Unit
         }
         if (api.connAvailableDcids(conn) <= 0L) {
             cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
@@ -1410,7 +1430,7 @@ class QuicheDriver(
         }
 
         // Every state below names `newPath.localEndpoint` — what the socket BOUND — never the request.
-        pendingMigration = PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget())
+        migrationSlot = PendingMigration(key, newPath.localEndpoint, cmd.result, pathValidationBudget())
         _pathState.value = QuicPathState.Probing(newPath.localEndpoint)
         startReaderLoop(entry) // PATH_CHALLENGE egresses the new socket via flushOutgoing routing
     }
@@ -1424,7 +1444,7 @@ class QuicheDriver(
      * declared expired. The deadline and a `Validated` event can come due in the same wake — quiche
      * queues path events and the driver only reads them at [afterCommand], which runs *after* this
      * branch — so expiring first would fail a path the peer actually answered, converting a working
-     * migration into a spurious timeout. Draining first, then re-reading [pendingMigration] and
+     * migration into a spurious timeout. Draining first, then re-reading [migrationSlot] and
      * re-*measuring* [PendingMigration.isDue], means a validated path wins the race and this only
      * ever fires on genuine silence.
      *
@@ -1439,7 +1459,7 @@ class QuicheDriver(
      */
     private fun abandonPathValidationIfDue() {
         if (migrationEnabled) drainPathEvents()
-        val pending = pendingMigration ?: return
+        val pending = migrationSlot as? PendingMigration ?: return
         if (!pending.isDue()) return
         paths[pending.key]?.let { teardownPath(it) }
         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
@@ -1456,7 +1476,7 @@ class QuicheDriver(
             when (type) {
                 QuichePathEventType.Validated -> {
                     val key = api.decodePathKey(addr(peLocalOut))
-                    val pending = pendingMigration ?: continue
+                    val pending = migrationSlot as? PendingMigration ?: continue
                     if (pending.key != key) continue
                     val entry = paths[key]
                     if (entry == null) {
@@ -1496,7 +1516,7 @@ class QuicheDriver(
 
                 QuichePathEventType.FailedValidation -> {
                     val key = api.decodePathKey(addr(peLocalOut))
-                    val pending = pendingMigration
+                    val pending = migrationSlot as? PendingMigration
                     if (pending != null && pending.key == key) {
                         paths[key]?.let { teardownPath(it) }
                         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
@@ -1538,7 +1558,7 @@ class QuicheDriver(
     ) {
         _pathState.value = state
         pending.result.complete(result)
-        pendingMigration = null
+        migrationSlot = MigrationSlot.Idle
     }
 
     /** [completeMigration]'s success overload — a [MigrationResult.Succeeded] is never a `Failed` state. */
@@ -1549,7 +1569,7 @@ class QuicheDriver(
     ) {
         _pathState.value = state
         pending.result.complete(result)
-        pendingMigration = null
+        migrationSlot = MigrationSlot.Idle
     }
 
     /**
@@ -1615,8 +1635,8 @@ class QuicheDriver(
         }
 
         // A migration still in flight when the connection dies never completes — fail it.
-        pendingMigration?.result?.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
-        pendingMigration = null
+        (migrationSlot as? PendingMigration)?.result?.complete(MigrationResult.Unmoved.Impossible.ConnectionClosed)
+        migrationSlot = MigrationSlot.Idle
 
         for (slot in streams.values) {
             slot.dataSignal.close()

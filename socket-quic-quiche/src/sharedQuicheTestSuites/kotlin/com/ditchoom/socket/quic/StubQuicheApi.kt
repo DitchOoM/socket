@@ -512,13 +512,13 @@ internal class StubQuicheApi : QuicheApi {
     /**
      * Synthetic sockaddr decoding: native pointer → UDP port, for the pointers a test has actually
      * minted. **Empty by default**, so every existing test keeps the `family = 0` answer it has always
-     * had and [decodePathKey] keeps returning `PathKey(0, 0, 0, 0)` — this stub decodes no real memory
+     * had and [decodePathKey] keeps returning [PathKey.Undecoded] — this stub decodes no real memory
      * and must not pretend to.
      *
      * A migration test registers the sockaddrs it made up ([registerSockAddr]) so the primary path and
-     * each probed path get **distinct** [PathKey]s. Without that they all collide on the zero key, the
-     * probed path silently overwrites the primary in the driver's `paths` map, and a teardown assertion
-     * would be measuring the wrong entry.
+     * each probed path get **distinct** [PathKey]s. Without that they all collide on [PathKey.Undecoded],
+     * the probed path silently overwrites the primary in the driver's `paths` map, and a teardown
+     * assertion would be measuring the wrong entry.
      */
     private val sockAddrPorts = mutableMapOf<Long, Int>()
 
