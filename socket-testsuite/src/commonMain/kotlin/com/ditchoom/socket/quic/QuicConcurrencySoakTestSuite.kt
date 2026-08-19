@@ -302,27 +302,84 @@ abstract class QuicConcurrencySoakTestSuite {
         } finally {
             out.freeNativeMemory()
         }
-        return readExactly(payload.length, 10.seconds.scaled)
+        return readExactly(payload.length, 10.seconds.scaled, payload)
     }
 
+    /**
+     * Reads [total] bytes, then decodes — deliberately in that order (#401).
+     *
+     * The previous version decoded each chunk as it arrived, so when the echoed bytes were **not**
+     * what was sent it died inside `readString` with a bare
+     * `MalformedInputException: Input length = 1` and discarded the very evidence needed to diagnose
+     * it. That is a data-integrity symptom, not a timing one: something delivered bytes that were
+     * never sent. Capturing the raw bytes first makes the next occurrence self-diagnosing instead
+     * of merely reproducible-if-you-are-lucky, which is what unblocked #291/#292.
+     *
+     * Tests may use `ByteArray` freely; the no-ByteArray rule is production-only.
+     */
     private suspend fun QuicByteStream.readExactly(
         total: Int,
         timeout: Duration,
+        expected: String,
     ): String {
-        val sb = StringBuilder(total)
-        while (sb.length < total) {
+        val received = ArrayList<Byte>(total)
+        var chunks = 0
+        while (received.size < total) {
             val r = read(timeout)
             if (r is ReadResult.Data) {
-                sb.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))
+                chunks++
+                repeat(r.buffer.remaining()) { received.add(r.buffer.readByte()) }
                 r.buffer.freeIfNeeded() // read transfers buffer ownership to us (see QuicheStreamAdapter)
             } else {
                 break
             }
         }
+        val bytes = received.toByteArray()
+        return try {
+            bytes.decodeToString(throwOnInvalidSequence = true)
+        } catch (e: CharacterCodingException) {
+            throw AssertionError(describeCorruption(expected, bytes, chunks), e)
+        }
+    }
+
+    /** The evidence the bare `MalformedInputException` used to throw away (#401). */
+    private fun describeCorruption(
+        expected: String,
+        received: ByteArray,
+        chunks: Int,
+    ): String {
+        val expectedBytes = expected.encodeToByteArray()
+        val divergence =
+            received.indices.firstOrNull { i ->
+                i >= expectedBytes.size || received[i] != expectedBytes[i]
+            } ?: -1
+        return listOf(
+            "#401: echoed bytes are not valid UTF-8 — the peer returned bytes that were never sent.",
+            "  expected : \"$expected\" (${expectedBytes.size} bytes)",
+            "  expected : ${expectedBytes.toHex()}",
+            "  received : ${received.toHex()} (${received.size} bytes)",
+            "  printable: ${received.toPrintable()}",
+            "  chunks   : $chunks read(s); first divergence at index $divergence",
+        ).joinToString("\n")
+    }
+
+    private fun ByteArray.toHex(): String =
+        joinToString(" ") { b ->
+            val v = b.toInt() and 0xFF
+            "${HEX[v shr 4]}${HEX[v and 0xF]}"
+        }
+
+    private fun ByteArray.toPrintable(): String {
+        val sb = StringBuilder(size)
+        for (b in this) {
+            sb.append(if (b >= 0x20 && b < 0x7F) b.toInt().toChar() else '.')
+        }
         return sb.toString()
     }
 
     private companion object {
+        private const val HEX = "0123456789abcdef"
+
         private const val CONCURRENT_STREAMS = 20
         private const val CONCURRENT_CONNECTIONS = 8
 

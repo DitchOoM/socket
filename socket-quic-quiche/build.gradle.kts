@@ -1383,6 +1383,16 @@ afterEvaluate {
         // loads the pure `libquiche.{so,dylib}` via Panama (falling back to JNI
         // only if that lib is absent). Requires a JDK 21+ launcher (FFM bindings
         // are JVM-21 bytecode). This is what gives CI an FFM-backed test run.
+        // #399: declare the INTENDED backend to the test JVM so a test can assert intent against
+        // reality. `dependsOn("compileJava21KotlinJvm")` is not usable as evidence — that task runs
+        // in the default JNI build too, so its presence in the log proves nothing. Selection here is
+        // pure classpath ordering, which leaves no trace; without this the FFM lane could silently
+        // run JNI a second time and still report green.
+        systemProperty(
+            "quiche.expectedJvmBackend",
+            if (providers.gradleProperty("quicheJvmBackend").orNull == "ffm") "ffm" else "jni",
+        )
+
         if (providers.gradleProperty("quicheJvmBackend").orNull == "ffm") {
             dependsOn("compileJava21KotlinJvm")
             val ffmOutput =
@@ -3033,7 +3043,7 @@ tasks.matching { it.name.startsWith("compileTestKotlin") || it.name.contains("Te
 }
 
 android {
-    compileSdk = 36
+    compileSdk = 37
     // AGP 9 + legacy-DSL opt-out: the `sourceSets[...]` Kotlin accessor casts to the
     // removed old API. Reach the source set via the new DSL interface instead.
     (this as com.android.build.api.dsl.LibraryExtension).sourceSets.getByName("main").apply {

@@ -162,7 +162,7 @@ kotlin {
 }
 
 android {
-    compileSdk = 36
+    compileSdk = 37
     // AGP 9 + legacy-DSL opt-out: reach the source set via the new DSL interface (the
     // `sourceSets[...]` Kotlin accessor casts to the removed old API). Mirrors :socket-quic.
     (this as com.android.build.api.dsl.LibraryExtension).sourceSets.getByName("main").apply {

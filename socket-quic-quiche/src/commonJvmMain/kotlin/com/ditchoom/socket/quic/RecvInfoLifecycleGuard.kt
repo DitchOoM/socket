@@ -105,7 +105,10 @@ fun maybeGuardRecvInfo(api: QuicheApi): QuicheApi = if (RecvInfoLifecycleGuard.e
  * lifecycle-relevant methods carry guard overhead.
  */
 internal class RecvInfoGuardQuicheApi(
-    private val delegate: QuicheApi,
+    // Not private: #399's backend-identity guard has to see *through* this wrapper to name the
+    // concrete backend, otherwise "which backend ran" stays unobservable and the FFM CI lane can
+    // report green having silently run JNI.
+    internal val delegate: QuicheApi,
 ) : QuicheApi by delegate {
     override fun recvInfoNew(
         fromAddr: Long,
