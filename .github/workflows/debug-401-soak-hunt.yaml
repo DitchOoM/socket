@@ -1,0 +1,116 @@
+# DEBUG-ONLY — lives on branch debug/401-soak-hunt, never merged to main.
+#
+# Hunts issue #401's corrupt echo in its native habitat: the same ubuntu-x64 runner + JDK17/JNI
+# setup as build-linux.yaml's failing lane, looped, with glibc's MALLOC_PERTURB_ poisoning freed
+# memory (memset to 0xD5 on free, ~0xD5=0x2A on malloc). When the corruption fires, the payload
+# bytes name the mechanism:
+#   d5 d5 d5 ...      -> something READ memory after a real free() in our layer
+#   2a 2a 2a ...      -> read-before-fill (delivered without quiche ever writing)
+#   hi-stream-NN      -> pool-recycle race (another acquirer's live data)
+#   heap pointers     -> freed-then-relinked chunk (glibc bin metadata over the poison)
+# Three shards loop just the soak class (fast, many samples); three loop the full jvmTest task
+# (matches the CI load profile the 1-in-14 sightings actually had).
+name: 401 Soak Hunt
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Base loop count (class shards run 3x this, full shards run this/2)"
+        default: "25"
+
+env:
+  # Matches build-linux.yaml — the failing run's capture printed scale=3.0, so keep every
+  # .scaled budget identical to the environment the flake lives in.
+  QUIC_TEST_TIME_SCALE: "3"
+
+jobs:
+  hunt:
+    name: hunt (${{ matrix.mode }} shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, mode: class }
+          - { shard: 2, mode: class }
+          - { shard: 3, mode: class }
+          - { shard: 4, mode: full }
+          - { shard: 5, mode: full }
+          - { shard: 6, mode: full }
+    env:
+      MALLOC_PERTURB_: "213"
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same composite the real lane uses: apt toolchain (cached), natives artifact or rebuild,
+      # JDK 21 + 17. konan:false — JVM-only, exactly like the quiche-jvm job.
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          konan: "false"
+          jdk17: "true"
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      - name: Trust harness CA (Linux)
+        run: |
+          sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
+          sudo update-ca-certificates
+
+      - name: Trust harness CA in JVM keystore (Linux)
+        run: |
+          sudo keytool -delete -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit 2>/dev/null || true
+          sudo keytool -importcert -trustcacerts \
+              -file test-harness/tls/certs/ca.crt \
+              -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit -noprompt
+
+      - name: Hunt loop
+        timeout-minutes: 110
+        run: |
+          set -uo pipefail
+          mkdir -p hunt-results
+          base="${{ inputs.iterations }}"
+          if [ "${{ matrix.mode }}" = "class" ]; then
+            n=$(( base * 3 ))
+          else
+            n=$(( base / 2 ))
+          fi
+          echo "mode=${{ matrix.mode }} iterations=$n MALLOC_PERTURB_=$MALLOC_PERTURB_"
+          for i in $(seq 1 "$n"); do
+            echo "=== hunt iteration $i/$n ($(date -u +%H:%M:%S)) ==="
+            set +e
+            if [ "${{ matrix.mode }}" = "class" ]; then
+              ./gradlew :socket-quic-quiche:jvmTest --tests "*QuicConcurrencySoakTests*" \
+                --rerun --continue --no-configuration-cache \
+                -PjvmTestLauncher=17 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
+            else
+              ./gradlew :socket-quic-quiche:jvmTest \
+                --rerun --continue --no-configuration-cache \
+                -PjvmTestLauncher=17 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
+            fi
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              if grep -rlE "<failure|<error" socket-quic-quiche/build/test-results/jvmTest >/dev/null 2>&1; then
+                echo "::error::CAPTURED test failure at iteration $i (mode=${{ matrix.mode }})"
+                cp -r socket-quic-quiche/build/test-results/jvmTest "hunt-results/fail-iter-$i"
+                grep -rh -A8 "<failure" "hunt-results/fail-iter-$i" | head -40
+                exit 1
+              fi
+              echo "::warning::non-test failure at iteration $i (rc=$rc) — continuing"
+            fi
+          done
+          echo "all $n iterations green — no corruption captured on this shard"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hunt-results-${{ matrix.mode }}-${{ matrix.shard }}
+          path: hunt-results/
+          if-no-files-found: ignore
