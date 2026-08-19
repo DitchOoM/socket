@@ -104,6 +104,15 @@ runs:
         # sources, 403s) still fails immediately below, unretried.
         if [ "$rc" -eq 124 ]; then
           echo "::warning::apt-get update stalled past ${{ inputs.timeout }} on the default (Azure) mirror — failing over to archive.ubuntu.com and retrying once."
+          # The runner image points ubuntu.sources at `mirror+file:/etc/apt/apt-mirrors.txt`, a
+          # MIRRORLIST — there is no azure hostname in the sources files themselves (the first
+          # version of this failover sed-rewrote them and changed nothing: the retry replayed the
+          # same mirrorlist, measured on 2026-08-19's PR #412 run — 'Get:1 file:/etc/apt/apt-mirrors.txt'
+          # followed by minutes of azure Ign: cycles). Overwriting the mirrorlist is the rewrite that
+          # apt actually reads; the sed stays for any image that configures a direct URL instead.
+          if [ -e /etc/apt/apt-mirrors.txt ]; then
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
           for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
             if [ -e "$f" ]; then
               sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' "$f"
