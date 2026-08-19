@@ -294,9 +294,9 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
 
       # ---- Toolchain the native builds need (mirrors build-linux.yaml) ----
-      # See .github/actions/apt-safe-update — kept in lockstep with build-linux.yaml, which needs it
-      # for the same reason: an unused third-party source can otherwise exit-100 the whole job.
-      - uses: ./.github/actions/apt-safe-update
+      # No apt-safe-update step: as the writer (`save: true`), apt-install-cached always runs its
+      # own fresh `apt-get update` internally — tonight's cache must never be staged from last
+      # night's index.
 
       # ⚠️ THE SINGLE WRITER of the .deb cache — `save: true` appears here and nowhere else.
       #

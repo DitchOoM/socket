@@ -339,9 +339,8 @@ jobs:
       # aarch64-linux-gnu-g++. Without the cross-toolchain on PATH the job dies with
       # "CMAKE_C_COMPILER aarch64-linux-gnu-gcc ... not found in the PATH" (same fix as review.yaml /
       # android_integration.yaml / native-deps-freshness.yaml).
-      # apt-safe-update first: an unused third-party source on the runner image can exit-100 the
-      # whole job (see .github/actions/apt-safe-update). This is the RELEASE path.
-      - uses: ./.github/actions/apt-safe-update
+      # No apt-safe-update step: apt-install-cached runs it itself, only on a cache miss. On a warm
+      # hit the RELEASE path touches no apt mirror at all — exactly the exposure a release wants.
       # Restore-only, and necessarily so: this workflow is `pull_request_target`, which cannot write
       # caches even with `actions: write` (#351). It reads what the nightly warmer left on `main`.
       # That is the right way round anyway — the RELEASE path should consume a known-good cache,

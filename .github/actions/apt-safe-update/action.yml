@@ -2,7 +2,10 @@ name: "apt-get update, resilient to unused third-party sources"
 description: >-
   `apt-get update` that cannot be taken down by a third-party apt source this project does not use,
   and cannot silently eat a job's whole timeout-minutes budget if the Ubuntu mirror itself stalls.
-  Wraps the one-line fix so the call sites cannot drift apart.
+  Wraps the one-line fix so the call sites cannot drift apart. Since 2026-08-19 this is invoked
+  from INSIDE apt-install-cached (only when its cache cannot fully serve) — do NOT add it
+  unconditionally before a cached install; that re-adds the warm-path mirror round-trip the cache
+  exists to remove.
 
 inputs:
   timeout:

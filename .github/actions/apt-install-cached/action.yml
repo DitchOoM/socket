@@ -2,8 +2,10 @@ name: "apt-get install, from a warmed .deb + package-index cache"
 description: >-
   Installs apt packages from a nightly-warmed cache of .deb files (and, since -v2, the apt package
   index that resolves them), and puts a hard, legible wall-clock budget on any path that still has
-  to touch the mirror. Restore-only for every caller except the nightly warmer, which is the single
-  writer.
+  to touch the mirror. Since 2026-08-19 it also owns its `apt-get update` (via apt-safe-update),
+  run ONLY when the cache cannot fully serve — call sites must not add their own update step, or
+  every job pays a mirror round-trip that a warm cache exists to avoid. Restore-only for every
+  caller except the nightly warmer, which is the single writer.
 
 inputs:
   packages:
@@ -60,6 +62,14 @@ runs:
     # full hit, the Install step below never has to reach the mirror either — see the `--no-download`
     # path. Two independent mitigations for the same root cause (an inactivity-timeout blind spot on
     # a crawling mirror), because each protects a different step.
+    #
+    # ⚠️ 2026-08-19 EXTENSION — the `apt-get update` itself moved INSIDE this action (the step after
+    # the cache seed), gated so it runs only when the cache cannot fully serve. Call sites used to
+    # run apt-safe-update unconditionally before this composite, so even a full cache hit still paid
+    # one mirror round-trip for an index the seed step was about to overwrite with the cached copy
+    # anyway — the exact small fetch that died mirror-wide on 2026-08-18. Now a full hit contacts no
+    # mirror at all, and the miss paths get a FRESH index instead of last night's (a ≤24h-stale
+    # index against a live archive risks 404s on any package version that rotated since the warm).
 
     - name: Keep downloaded .debs (so there is something to cache)
       shell: bash
@@ -137,17 +147,16 @@ runs:
         #
         # The nightly warmer (save == 'true') is deliberately excluded from seeding this onto
         # itself. It is the single writer: what it stages here IS tomorrow's cache. If it kept
-        # overwriting the fresh index its own apt-safe-update step just fetched with LAST NIGHT's
+        # overwriting the fresh index the update step below is about to fetch with LAST NIGHT's
         # cached copy, freshness would never advance — a silent, self-perpetuating stale loop with
-        # no red step to point at. The warmer's on-disk index is always current already (its own
-        # apt-safe-update ran moments before this composite), so it is safe to use for the
-        # `--no-download` path below without seeding anything.
+        # no red step to point at. The writer's `lists=true` here only records that it needs no
+        # seeding; the update step's gate below still runs a fresh `apt-get update` for it.
         #
         # compgen guarded the same way as the .deb check above: a bare unmatched glob under `set -e`
         # kills a composite step with zero output (bitten before — see apt-safe-update's header and
         # the composite-`-e` trap note in this repo's CI docs).
         if [ "${{ inputs.save }}" = "true" ]; then
-          echo "::notice::writer run — using its own just-fetched apt-get update output, not seeding the cached index onto itself (see comment above)."
+          echo "::notice::writer run — a fresh apt-get update follows in the next step; not seeding the cached index onto itself (see comment above)."
           lists_present="true"
         elif [ -d "$staging/lists" ] && compgen -G "$staging/lists/*" >/dev/null; then
           n=$(find "$staging/lists" -maxdepth 1 -type f | wc -l | tr -d ' ')
@@ -158,11 +167,27 @@ runs:
           sudo rsync -a "$staging/lists/" /var/lib/apt/lists/
           lists_present="true"
         else
-          echo "::notice::apt package-index cache MISS for '${{ inputs.purpose }}' — Install will rely on the preceding apt-safe-update step's index instead."
+          echo "::notice::apt package-index cache MISS for '${{ inputs.purpose }}' — a fresh index will be fetched in the next step (budgeted apt-safe-update)."
         fi
 
         echo "debs=${debs_present}" >>"$GITHUB_OUTPUT"
         echo "lists=${lists_present}" >>"$GITHUB_OUTPUT"
+
+    # The `apt-get update`, now owned by this action and CONDITIONAL — this is what makes a warm
+    # cache mean zero mirror contact (call sites used to run apt-safe-update unconditionally before
+    # this composite; none do anymore, so nothing else supplies an index). It runs when:
+    #   - the writer is running (`save`): what it resolves and stages IS tomorrow's cache, so it
+    #     must never ride its own previous night's index — freshness would silently freeze;
+    #   - either half of the cache MISSED: something below is about to touch the mirror anyway, and
+    #     resolving against a ≤24h-stale cached index risks a 404 on any package version the
+    #     archive rotated since the warm — one small budgeted index fetch buys correct resolution;
+    #   - full hit (everyone else): SKIPPED. The fast --no-download install below needs no mirror,
+    #     and the cached .debs were staged against the very index sitting next to them in the cache.
+    # apt-safe-update also still drops the runner image's broken third-party sources first and
+    # carries the archive.ubuntu.com failover — see that action for both war stories.
+    - name: apt-get update (only when the cache cannot fully serve)
+      if: inputs.save == 'true' || steps.seed.outputs.debs != 'true' || steps.seed.outputs.lists != 'true'
+      uses: ./.github/actions/apt-safe-update
 
     # Only the warmer runs this: it downloads the FULL manifest, not just the packages this job
     # happens to need, so that the single cached entry serves every call site. Without it the
@@ -220,11 +245,10 @@ runs:
         echo "apt cache FULL HIT (.debs + index) for '${{ inputs.purpose }}' — installing with --no-download; mirror untouched."
         sudo apt-get install --no-download -y ${{ inputs.packages }}
 
-    # Only reached if the fast path above actually ran and failed (not on a plain miss, where
-    # fast-install never ran and the index on disk was never touched by this action). The seed step
-    # already overwrote /var/lib/apt/lists with the (possibly-stale, nightly-warmed) cached copy, so
-    # whatever fresher index the caller's own apt-safe-update fetched moments earlier no longer
-    # exists on disk — re-fetch it before the normal path below tries to resolve anything.
+    # Only reached if the fast path above actually ran and failed. Getting here means the cache
+    # fully hit, so the conditional update step above was SKIPPED and the index on disk is the
+    # (possibly-stale, nightly-warmed) cached copy — re-fetch a fresh one before the networked
+    # fallback below tries to resolve anything against it.
     - name: Refresh package index before falling back (full-hit install failed)
       if: steps.fast-install.outcome == 'failure'
       uses: ./.github/actions/apt-safe-update
